@@ -18,7 +18,7 @@ def window(tot_len: int, max_len: int, stride: int) -> np.ndarray:
 class PSGPretrainDataset(DefaultDataset):
     def __init__(
         self,
-        channel_names: t.List[int],
+        channel_names: t.List[str],
         save_preset_path: str,
         load_preset_path: str,
         index: str,
@@ -67,7 +67,7 @@ class PSGPretrainDataset(DefaultDataset):
 
             csv = _load_index_df(index)
 
-            data: list[SampleIndex] = []
+            data: t.List[SampleIndex] = []
 
             # 遍历所有 rows
             for i, (_, row) in enumerate(csv.iterrows()):

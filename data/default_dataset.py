@@ -724,4 +724,3 @@ def make_weighted_sampler_from_labels(
         replacement=True,
     )
     return sampler
-
