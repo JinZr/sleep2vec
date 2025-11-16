@@ -1,4 +1,6 @@
+import copy
 import os
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -44,11 +46,13 @@ def roc_auc_from_two_logits(gts, preds) -> float:
         return np.nan
 
 
-def save_result_csv(pretrain_result: dict, csv_path: str, args=None):
+def save_result_csv(
+    pretrain_result: Mapping[str, float], csv_path: str, args: Any | None = None
+):
     """
     将实验结果写入/追加到 CSV 文件中。
     """
-    new_row = pretrain_result.copy()
+    new_row: dict[str, Any] = dict(copy.deepcopy(pretrain_result))
 
     if args is not None:
         new_row["ckpt_path"] = getattr(args, "ckpt_path", None)
@@ -56,7 +60,13 @@ def save_result_csv(pretrain_result: dict, csv_path: str, args=None):
         new_row["batch_size"] = getattr(args, "batch_size", None)
         new_row["n_few_shot"] = getattr(args, "n_few_shot", None)
         new_row["label_name"] = getattr(args, "label_name", None)
-        new_row["channel_names"] = ",".join(getattr(args, "channel_names", []))
+        channel_names = getattr(args, "channel_names", None)
+        if isinstance(channel_names, (list, tuple)):
+            new_row["channel_names"] = ",".join(str(name) for name in channel_names)
+        elif isinstance(channel_names, str):
+            new_row["channel_names"] = channel_names
+        else:
+            new_row["channel_names"] = ""
 
     df_new = pd.DataFrame([new_row])
 
@@ -68,7 +78,7 @@ def save_result_csv(pretrain_result: dict, csv_path: str, args=None):
         df_merged = df_new
 
     df_merged.to_csv(csv_path, index=False)
-    print(f"✅ Results written to {csv_path}")
+    print(f"Results written to {csv_path}")
 
 
 def macro_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float:

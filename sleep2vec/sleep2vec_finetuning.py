@@ -42,18 +42,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
             output_dim=args.output_dim,
             is_classification=args.is_classification,
             is_seq=args.is_seq,
-             head_name=getattr(args, "head_name", None),
-             head_kwargs=head_kwargs,
+            head_name=getattr(args, "head_name", None),
+            head_kwargs=head_kwargs,
         ).to(args.device)
 
         if args.pretrained_backbone_path:
-            logging.info(
-                f"loading pretrain model from {args.pretrained_backbone_path}"
-            )
+            logging.info(f"loading pretrain model from {args.pretrained_backbone_path}")
             self.model.load_pretrained_backbone(args.pretrained_backbone_path)
-            logging.info(
-                f"loaded pretrain model from {args.pretrained_backbone_path}"
-            )
+            logging.info(f"loaded pretrain model from {args.pretrained_backbone_path}")
 
         if args.freeze_backbone_and_insert_lora:
             self.model.freeze_backbone_and_insert_lora(

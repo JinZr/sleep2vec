@@ -66,7 +66,9 @@ class Sleep2vecPretraining(pl.LightningModule):
                 sync_dist=True,
             )
             if self.val_contrastive_sample:
-                _val_contrastive_sample = torch.stack(self.val_contrastive_sample).mean()
+                _val_contrastive_sample = torch.stack(
+                    self.val_contrastive_sample
+                ).mean()
                 self.log(
                     "val_contrastive_acc",
                     _val_contrastive_sample,
@@ -75,7 +77,6 @@ class Sleep2vecPretraining(pl.LightningModule):
                 )
             self.val_contrastive_loss.clear()
             self.val_contrastive_sample.clear()
-
 
     # ---------- 公共计算逻辑 ----------
     def _contrastive_step(self, batch, log_prefix=None):
@@ -204,7 +205,11 @@ class Sleep2vecPretraining(pl.LightningModule):
         if hasattr(args, "loss_name"):
             loss_name = args.loss_name
         else:
-            loss_name = "weighted_info_nce" if getattr(args, "use_weighted_info_nce", True) else "info_nce"
+            loss_name = (
+                "weighted_info_nce"
+                if getattr(args, "use_weighted_info_nce", True)
+                else "info_nce"
+            )
         temperature = getattr(args, "temperature", 0.2)
         loss_kwargs = {"temperature": temperature}
         if loss_name == "weighted_info_nce":

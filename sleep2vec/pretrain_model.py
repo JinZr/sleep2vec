@@ -20,7 +20,7 @@ class Sleep2vecPretrainModel(nn.Module):
         transformer_num_hidden_layers: int = 12,
         transformer_num_attention_heads: int = 16,
         encoder_factory: TransformerEncoderFactory | None = None,
-        encoder_config_overrides: t.Optional[dict[str, t.Any]] = None,
+        encoder_config_overrides: t.Optional[t.Dict[t.Dict, t.Any]] = None,
         encoder_forward: t.Optional[
             t.Callable[[nn.Module, torch.Tensor, torch.Tensor], torch.Tensor]
         ] = None,
@@ -214,7 +214,7 @@ class Sleep2vecPretrainModel(nn.Module):
         # 构造 padding mask：1 表示有效，0 表示 padding
         padding_mask = torch.zeros(B, L, dtype=torch.bool, device=device)
         for i in range(B):
-            valid_len = lengths[i].item()
+            valid_len = int(lengths[i].item())
             padding_mask[i, :valid_len] = True  # 有效位置设为 1
 
         return tokens.float(), padding_mask

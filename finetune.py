@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+from pathlib import Path
 
 import pytorch_lightning as pl
 import wandb
@@ -19,14 +20,12 @@ from utils import get_finetune_dataloaders
 def prepare_dataloader(args):
     train_loader, val_loader, test_loader = get_finetune_dataloaders(args)
 
-    print(len(train_loader), len(val_loader), len(test_loader))
+    logging.info(len(train_loader), len(val_loader), len(test_loader))
     return train_loader, val_loader, test_loader
 
 
 def supervised(args):
     # get data loaders
-
-    #################################
     train_loader, val_loader, test_loader = prepare_dataloader(args)
 
     # define the model/lightning module
@@ -86,8 +85,8 @@ def supervised(args):
         ckpt_path="best" if args.epochs > 0 else args.ckpt_path,
         dataloaders=test_loader,
     )[0]
-    print(pretrain_result)
-    save_result_csv(pretrain_result, "/data/ywx/BIOT/results.csv", args)
+    logging.info(pretrain_result)
+    save_result_csv(pretrain_result, args.results_csv_path, args)
 
 
 if __name__ == "__main__":
@@ -167,13 +166,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--finetune-data-index",
-        type=str,
+        type=Path,
         default="index/hsp_psg_pretrain.csv",
         help="CSV index file listing PSG samples for finetuning",
     )
     parser.add_argument(
         "--finetune-preset-path",
-        type=str,
+        type=Path,
         default="/data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle",
         help="path to preset pickle used to accelerate finetuning dataset loading",
     )
@@ -330,6 +329,12 @@ if __name__ == "__main__":
         type=str,
         default="",
         help="optional suffix appended to auto-generated version name",
+    )
+    parser.add_argument(
+        "--results-csv-path",
+        type=Path,
+        required=True,
+        help="path to the CSV file storing aggregated evaluation metrics",
     )
     parser.add_argument(
         "--check-val-every-n-epoch",

@@ -90,7 +90,7 @@ def sleep2vec_pretrain(args):
         logger=logger,
         max_epochs=args.epochs,
         log_every_n_steps=5,
-        num_sanity_val_steps=0,  
+        num_sanity_val_steps=0,
         precision=args.precision,
         gradient_clip_val=args.gradient_clip_val,
     )
