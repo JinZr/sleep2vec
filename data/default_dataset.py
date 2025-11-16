@@ -131,7 +131,7 @@ def pad(
 
 
 def pad_batch(
-    x: list[torch.Tensor],
+    x: t.List[torch.Tensor],
     max_len: t.Union[int, None] = None,
     pad_value: torch.types.Number = 0,
     dim: int = 0,
@@ -147,7 +147,7 @@ def filter_valid_sample_indices(
     tokenizers: t.Mapping[str, t.Callable],
     tolerance: int = 1,
     max_workers: int = 128,  # 线程数
-) -> list["SampleIndex"]:
+) -> t.List["SampleIndex"]:
     """
     多线程版本：过滤掉 token 长度差距过大的样本
     """
@@ -217,7 +217,7 @@ class DefaultDataset(BaseDataset):
             data: list of SampleIndex
             extractors: mapping, key : ((NpzFile, start, end) -> fetched value)
             tokenizers: mapping, key : ((NpzFile, start, end) -> fetched value)
-            collators: mapping, key : (is_input, (list[Sample]) -> batched value)
+            collators: mapping, key : (is_input, (t.List[Sample]) -> batched value)
             dataloader_config: DataLoader kwargs except dataset and collate_fn
         """
         self.split = split
@@ -254,7 +254,7 @@ class DefaultDataset(BaseDataset):
 
     def filter_with_metadata(
         self,
-    ) -> list["SampleIndex"]:
+    ) -> t.List["SampleIndex"]:
         # if not self.meta_data_names:
         #     return
 
@@ -291,7 +291,7 @@ class DefaultDataset(BaseDataset):
 
     def select_few_shot(
         self,
-    ) -> list["SampleIndex"]:
+    ) -> t.List["SampleIndex"]:
         """
         从数据中随机选择 few_shot 个样本。
         如果 0 < few_shot < 1，则按比例采样；
@@ -484,7 +484,6 @@ class DefaultDataset(BaseDataset):
             **dl_kwargs,
             collate_fn=collate_fn,
             sampler=sampler,
-            num_workers=24,
             drop_last=True,
         )
 
@@ -725,3 +724,4 @@ def make_weighted_sampler_from_labels(
         replacement=True,
     )
     return sampler
+

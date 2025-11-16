@@ -52,7 +52,7 @@ def get_pretrain_dataloader(args):
     main_val_loader = PSGPretrainDataset(
         channel_names=args.channel_names,
         save_preset_path=None,
-        load_preset_path=args.load_preset_path,
+        load_preset_path=args.pretrain_preset_path,
         index=args.pretrain_data_index,
         split=["val"],
         max_tokens=args.max_tokens,
