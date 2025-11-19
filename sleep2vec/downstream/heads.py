@@ -8,6 +8,74 @@ import torch.nn.functional as F
 from .head_registry import register_head
 
 
+class FeatureFusion(nn.Module):
+    """Shared multi-modal fusion block used by both classification and regression."""
+
+    def __init__(self, feature_dim: int, n_mods: int, agg: str):
+        super().__init__()
+        if n_mods < 1:
+            raise ValueError("n_mods must be >= 1.")
+        assert agg in {"mean", "concat", "gated_scalar"}
+        if n_mods == 1 and agg != "concat":
+            agg = "concat"  # fall back to concatenation for single modality
+        self.feature_dim = feature_dim
+        self.n_mods = n_mods
+        self.agg = agg
+        self.output_dim = feature_dim * n_mods if agg == "concat" else feature_dim
+        if agg == "gated_scalar":
+            # 每个模态一个可学习标量 → softmax 归一化
+            self.gates = nn.Parameter(torch.zeros(n_mods))
+
+    def forward(
+        self, feature_of_different_mods: t.List[torch.Tensor]
+    ) -> tuple[torch.Tensor, bool]:
+        if len(feature_of_different_mods) != self.n_mods:
+            raise ValueError(
+                f"Expect {self.n_mods} modality features, got {len(feature_of_different_mods)}"
+            )
+
+        x0 = feature_of_different_mods[0]
+        has_L = x0.dim() == 3  # [B, L, D] or [B, D]
+
+        feats = []
+        for feat in feature_of_different_mods:
+            if feat.dim() == 2:  # [B, D] -> [B, 1, D]
+                feat_has_L = False
+                feat = feat.unsqueeze(1)
+            elif feat.dim() == 3:
+                feat_has_L = True
+            else:
+                raise ValueError(
+                    "Each modality feature must be rank-2 or rank-3, "
+                    f"got shape {feat.shape}."
+                )
+            if feat_has_L != has_L:
+                raise ValueError(
+                    "Mixing sequential and non-sequential features is not supported."
+                )
+            if has_L and feat.size(1) != x0.size(1):
+                raise ValueError("All modalities must have matching sequence length.")
+            if feat.shape[-1] != self.feature_dim:
+                raise ValueError(
+                    f"feature_dim mismatch: expect {self.feature_dim}, got {feat.shape[-1]}"
+                )
+            feats.append(feat)
+
+        if self.agg == "concat":
+            fused = torch.cat(feats, dim=-1)
+        elif self.agg == "mean":
+            fused = torch.stack(feats, dim=0).mean(dim=0)
+        else:  # gated_scalar
+            weights = F.softmax(self.gates, dim=0)  # [n_mods]
+            stack = torch.stack(feats, dim=0)
+            fused = (weights[:, None, None, None] * stack).sum(dim=0)
+
+        if not has_L:
+            fused = fused.squeeze(1)
+
+        return fused, has_L
+
+
 class ClassificationHead(nn.Module):
     """
     三种聚合：
@@ -31,24 +99,14 @@ class ClassificationHead(nn.Module):
         act: t.Type[nn.Module] = nn.ELU,
     ):
         super().__init__()
-        assert agg in {"mean", "concat", "gated_scalar"}
-        if n_mods == 1:
-            agg == "concat"
         self.feature_dim = feature_dim
         self.n_mods = n_mods
         self.n_classes = n_classes
-        self.agg = agg
         self.dropout = dropout
         self.act = act
 
-        if agg == "concat":
-            in_dim = feature_dim * n_mods
-        elif agg == "mean":
-            in_dim = feature_dim
-        else:  # gated_scalar
-            # 每个模态一个可学习标量 → softmax 归一化
-            self.gates = nn.Parameter(torch.zeros(n_mods))
-            in_dim = feature_dim
+        self.fusion = FeatureFusion(feature_dim, n_mods, agg)
+        in_dim = self.fusion.output_dim
         self.mlp = self._build_two_layer_mlp(
             in_dim=in_dim,
             hidden_dim=hidden_dim or in_dim,
@@ -100,76 +158,56 @@ class ClassificationHead(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, feature_of_different_mods: t.List[torch.Tensor]) -> torch.Tensor:
-        assert (
-            len(feature_of_different_mods) == self.n_mods
-        ), f"Expect {self.n_mods} modality features, got {len(feature_of_different_mods)}"
-
-        x0 = feature_of_different_mods[0]
-        has_L = x0.dim() == 3  # [B, L, D] or [B, D]
-
-        # 统一成 [B, L, D]
-        feats = []
-        for f in feature_of_different_mods:
-            if f.dim() == 2:  # [B, D] -> [B, 1, D]
-                f = f.unsqueeze(1)
-            # 断言特征维一致
-            assert (
-                f.shape[-1] == self.feature_dim
-            ), f"feature_dim mismatch: expect {self.feature_dim}, got {f.shape[-1]}"
-            feats.append(f)  # [B, L, D]
-
-        if self.agg == "concat":
-            # [B, L, n_mods*D]
-            x = torch.cat(feats, dim=-1)
-            if not has_L:
-                x = x.squeeze(1)  # [B, n_mods*D]
-                out = self.mlp(x)  # [B, C]
-            else:
-                B, L, E = x.shape
-                x = x.view(B * L, E)
-                out = self.mlp(x).view(B, L, self.n_classes)
-            return out
-
-        elif self.agg == "mean":
-            # [B, L, D], 先 stack 再沿模态均值
-            stack = torch.stack(feats, dim=0)  # [n_mods, B, L, D]
-            x = stack.mean(dim=0)  # [B, L, D]
-            if not has_L:
-                x = x.squeeze(1)  # [B, D]
-                out = self.mlp(x)  # [B, C]
-            else:
-                B, L, E = x.shape
-                x = x.view(B * L, E)
-                out = self.mlp(x).view(B, L, self.n_classes)
-            return out
-
-        else:  # gated_scalar
-            w = F.softmax(self.gates, dim=0)  # [n_mods]
-            stack = torch.stack(feats, dim=0)  # [n_mods, B, L, D]
-            x = (w[:, None, None, None] * stack).sum(dim=0)  # [B, L, D]
-            if not has_L:
-                x = x.squeeze(1)
-                out = self.mlp(x)
-            else:
-                B, L, E = x.shape
-                x = x.view(B * L, E)
-                out = self.mlp(x).view(B, L, self.n_classes)
-            return out
+        fused, has_L = self.fusion(feature_of_different_mods)
+        if has_L:
+            B, L, E = fused.shape
+            fused = fused.view(B * L, E)
+            out = self.mlp(fused).view(B, L, self.n_classes)
+        else:
+            out = self.mlp(fused)
+        return out
 
 
 class RegressionHead(nn.Module):
-    def __init__(self, target, feature_dim, n_mods, out_dim=1):
+    """Two-layer regression head that reuses the shared fusion logic."""
+
+    def __init__(
+        self,
+        target: str,
+        feature_dim: int,
+        n_mods: int,
+        out_dim: int = 1,
+        *,
+        agg: str = "gated_scalar",
+        hidden_dim: t.Optional[int] = None,
+        dropout: float = 0.1,
+        act: t.Type[nn.Module] = nn.ELU,
+    ):
         super().__init__()
         self.target = target
-        self.reghead = ClassificationHead(feature_dim, n_mods, out_dim)
+        self.fusion = FeatureFusion(feature_dim, n_mods, agg)
+        self.out_dim = out_dim
+        in_dim = self.fusion.output_dim
+        hidden_dim = hidden_dim or in_dim
 
-    def forward(self, x):
-        x = self.reghead(x)
-        if self.target == "age":
-            x = torch.sigmoid(x) * 100
-        return x
+        layers: t.List[nn.Module] = [nn.Linear(in_dim, hidden_dim), act()]
+        if dropout and dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        layers.append(nn.Linear(hidden_dim, out_dim))
+        self.regressor = nn.Sequential(*layers)
 
+    def forward(self, feature_of_different_mods: t.List[torch.Tensor]):
+        fused, has_L = self.fusion(feature_of_different_mods)
+        if has_L:
+            B, L, E = fused.shape
+            fused = fused.view(B * L, E)
+            out = self.regressor(fused).view(B, L, self.out_dim)
+        else:
+            out = self.regressor(fused)
 
+        return out
+
+ 
 class AttnPooling(nn.Module):
     def __init__(self, d, heads=1, temp=1.0, dropout=0.0):
         super().__init__()
@@ -221,6 +259,19 @@ def build_regression_head(
     feature_dim,
     n_mods,
     output_dim,
+    agg: str = "mean",
+    hidden_dim: t.Optional[int] = None,
+    dropout: float = 0.1,
+    act: t.Type[nn.Module] = nn.ELU,
     **_,
 ) -> nn.Module:
-    return RegressionHead(target, feature_dim, n_mods, out_dim=output_dim)
+    return RegressionHead(
+        target,
+        feature_dim,
+        n_mods,
+        out_dim=output_dim,
+        agg=agg,
+        hidden_dim=hidden_dim,
+        dropout=dropout,
+        act=act,
+    )

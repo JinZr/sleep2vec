@@ -29,7 +29,13 @@ def sleep2vec_pretrain(args):
         wandb_id = run_name  # 简单做法，也可手动传 id
     else:
         # 2. 全新训练：创建新目录
-        run_name = f"{args.version_name}-unsupervised"
+        exp_bits = [args.version_name, args.backbone_arch]
+        extra_tag = getattr(args, "exp_info", "") or ""
+        extra_tag = extra_tag.strip().replace(" ", "_")
+        if extra_tag:
+            exp_bits.append(extra_tag)
+        exp_bits.append("unsupervised")
+        run_name = "-".join(filter(None, exp_bits))
         save_path = f"log-pretrain/{run_name}/checkpoints"
         os.makedirs(save_path, exist_ok=True)
         wandb_id = None  # 让 wandb 自动分配
@@ -244,6 +250,15 @@ if __name__ == "__main__":
             "Backbone encoder architecture. "
             "'hf_bert' demonstrates wiring a vanilla HuggingFace Transformer via "
             "TransformerEncoderFactory."
+        ),
+    )
+    parser.add_argument(
+        "--exp-info",
+        type=str,
+        default="",
+        help=(
+            "Extra tag inserted into log-pretrain/<run_name>; useful for noting "
+            "backbone variants or ablation identifiers."
         ),
     )
     parser.add_argument(
