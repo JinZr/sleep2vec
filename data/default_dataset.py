@@ -233,7 +233,7 @@ class DefaultDataset(BaseDataset):
         self.dataloader_config = dataloader_config
 
         if load_preset_path:
-            print(f"Start loading data preset from {load_preset_path}")
+            logging.info(f"Start loading data preset from {load_preset_path}")
             # 从文件中读取对象
             with open(load_preset_path, "rb") as f:
                 self.data = pickle.load(f)

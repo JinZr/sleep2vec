@@ -8,6 +8,7 @@ import wandb
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies.ddp import DDPStrategy
 
 from metrics import save_result_csv
 from sleep2vec.downstream.head_registry import available_heads
@@ -58,7 +59,7 @@ def supervised(args):
     trainer = pl.Trainer(
         devices=args.devices,
         accelerator="gpu",
-        # strategy=DDPStrategy(find_unused_parameters=True),
+        strategy=DDPStrategy(find_unused_parameters=True),
         # strategy=DeepSpeedStrategy(config="ds_config.json"),  # ← 就这行！
         benchmark=True,
         enable_checkpointing=True,
