@@ -26,5 +26,5 @@ def create_head(name: str, **kwargs) -> nn.Module:
     return HEAD_REGISTRY[name](**kwargs)
 
 
-def available_heads() -> list[str]:
+def available_heads() -> t.List[str]:
     return sorted(HEAD_REGISTRY.keys())

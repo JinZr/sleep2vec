@@ -5,18 +5,24 @@ import typing as t
 import torch
 import torch.nn as nn
 
-from .encoder_factory import TransformerEncoderFactory
-from .pretrain.projection import SimCLRProjectionHead
-from .pretrain.tokenizers import LinearTokenizer, SundialTokenizer
+from sleep2vec.builders import (
+    build_encoder_factory,
+    build_projection,
+    build_tokenizers_and_dim,
+)
+from sleep2vec.config import ModelConfig, ProjectionConfig
+from sleep2vec.encoder_factory import TransformerEncoderFactory
+from sleep2vec.pretrain.projection import SimCLRProjectionHead
+from sleep2vec.pretrain.tokenizers import LinearTokenizer, SundialTokenizer
 
 
 class Sleep2vecPretrainModel(nn.Module):
     def __init__(
         self,
-        channel_feature_dim: int,
-        transformer_hidden_size: int,
-        channel_names: t.List[str],
-        projection: bool,
+        channel_feature_dim: int | None = None,
+        transformer_hidden_size: int | None = None,
+        channel_names: t.List[str] | None = None,
+        projection: bool | None = None,
         transformer_num_hidden_layers: int = 12,
         transformer_num_attention_heads: int = 16,
         encoder_factory: TransformerEncoderFactory | None = None,
@@ -27,90 +33,125 @@ class Sleep2vecPretrainModel(nn.Module):
         specified_two_mods: t.List[str] | None = None,
         two_layer_embedding: bool = False,
         device: str = "cuda",
+        model_config: ModelConfig | None = None,
+        projection_config: ProjectionConfig | None = None,
     ):
         super().__init__()
-        self.channel_names = channel_names
         self.specified_two_mods = specified_two_mods
         self.device = device
         self.high_sr, self.low_sr = 3840, 120
-        self.projection = projection
+        self._custom_encoder_forward = encoder_forward
         overrides = dict(encoder_config_overrides or {})
-        if encoder_factory is None:
-            vocab_size = overrides.pop("vocab_size", 1)
-            encoder_factory = TransformerEncoderFactory.roformer(
-                hidden_size=transformer_hidden_size,
-                num_hidden_layers=transformer_num_hidden_layers,
-                num_attention_heads=transformer_num_attention_heads,
-                vocab_size=vocab_size,
-                **overrides,
+
+        if model_config is not None:
+            self.channel_names = [c.name for c in model_config.channels]
+            self.tokenizer_mapping, channel_feature_dim = build_tokenizers_and_dim(
+                model_config, device=self.device
             )
+            projection_config = projection_config or model_config.projection
+            projection = projection_config.enabled
+            encoder_factory = encoder_factory or build_encoder_factory(
+                model_config.backbone
+            )
+            transformer_hidden_size = (
+                transformer_hidden_size or model_config.backbone.hidden_size
+            )
+        else:
+            if channel_feature_dim is None or channel_names is None:
+                raise ValueError(
+                    "channel_feature_dim and channel_names are required when model_config is absent."
+                )
+
+            self.channel_names = channel_names
+            tokenizer_type = SundialTokenizer if two_layer_embedding else LinearTokenizer
+
+            self.high_tokenizer_1 = tokenizer_type(
+                in_feature_dim=self.high_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+            self.high_tokenizer_2 = tokenizer_type(
+                in_feature_dim=self.high_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+            self.high_tokenizer_3 = tokenizer_type(
+                in_feature_dim=self.high_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+            self.high_tokenizer_4 = tokenizer_type(
+                in_feature_dim=self.high_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+            self.low_tokenizer_1 = tokenizer_type(
+                in_feature_dim=self.low_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+            self.low_tokenizer_2 = tokenizer_type(
+                in_feature_dim=self.low_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+            self.low_tokenizer_3 = tokenizer_type(
+                in_feature_dim=self.low_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+            self.low_tokenizer_4 = tokenizer_type(
+                in_feature_dim=self.low_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+            self.low_tokenizer_5 = tokenizer_type(
+                in_feature_dim=self.low_sr,
+                out_feature_dim=channel_feature_dim,
+                device=self.device,
+            )
+
+            self.tokenizer_mapping = {
+                "eeg_original": self.high_tokenizer_1,
+                "eog_original": self.high_tokenizer_2,
+                "emg_original": self.high_tokenizer_3,
+                "ecg_original": self.high_tokenizer_4,
+                "heartbeat": self.low_tokenizer_1,
+                "spo2": self.low_tokenizer_2,
+                "breath": self.low_tokenizer_3,
+                "resp_original": self.low_tokenizer_4,
+                "resp_nasal_original": self.low_tokenizer_5,
+            }
+
+            if projection_config is None:
+                projection_config = ProjectionConfig(
+                    name="simclr",
+                    enabled=bool(projection) if projection is not None else True,
+                    hidden_dim=transformer_hidden_size,
+                    out_dim=128,
+                )
+
+            if encoder_factory is None:
+                vocab_size = overrides.pop("vocab_size", 1)
+                encoder_factory = TransformerEncoderFactory.roformer(
+                    hidden_size=transformer_hidden_size,
+                    num_hidden_layers=transformer_num_hidden_layers,
+                    num_attention_heads=transformer_num_attention_heads,
+                    vocab_size=vocab_size,
+                    **overrides,
+                )
+
+        if transformer_hidden_size is None:
+            raise ValueError("transformer_hidden_size must be provided or inferred.")
+
+        if encoder_factory is None:
+            raise ValueError("encoder_factory could not be built.")
 
         self.encoder_factory = encoder_factory
         self.encoder, inferred_hidden_size = encoder_factory.build()
         self.roformer = self.encoder  # backward compatibility for existing code
         self.transformer_hidden_size = inferred_hidden_size
         self.encoder_name = encoder_factory.name
-        self._custom_encoder_forward = encoder_forward
-
-        tokenizer_type = SundialTokenizer if two_layer_embedding else LinearTokenizer
-
-        self.high_tokenizer_1 = tokenizer_type(
-            in_feature_dim=self.high_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-        self.high_tokenizer_2 = tokenizer_type(
-            in_feature_dim=self.high_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-        self.high_tokenizer_3 = tokenizer_type(
-            in_feature_dim=self.high_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-        self.high_tokenizer_4 = tokenizer_type(
-            in_feature_dim=self.high_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-        self.low_tokenizer_1 = tokenizer_type(
-            in_feature_dim=self.low_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-        self.low_tokenizer_2 = tokenizer_type(
-            in_feature_dim=self.low_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-        self.low_tokenizer_3 = tokenizer_type(
-            in_feature_dim=self.low_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-        self.low_tokenizer_4 = tokenizer_type(
-            in_feature_dim=self.low_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-        self.low_tokenizer_5 = tokenizer_type(
-            in_feature_dim=self.low_sr,
-            out_feature_dim=channel_feature_dim,
-            device=self.device,
-        )
-
-        self.tokenizer_mapping = {
-            "eeg_original": self.high_tokenizer_1,
-            "eog_original": self.high_tokenizer_2,
-            "emg_original": self.high_tokenizer_3,
-            "ecg_original": self.high_tokenizer_4,
-            "heartbeat": self.low_tokenizer_1,
-            "spo2": self.low_tokenizer_2,
-            "breath": self.low_tokenizer_3,
-            "resp_original": self.low_tokenizer_4,
-            "resp_nasal_original": self.low_tokenizer_5,
-        }
 
         self.mask_embed = nn.ParameterDict(
             {
@@ -123,11 +164,22 @@ class Sleep2vecPretrainModel(nn.Module):
             channel_feature_dim, self.transformer_hidden_size
         )
 
-        self.proj_head = SimCLRProjectionHead(
+        self.proj_head = build_projection(
+            projection_config
+            if projection_config is not None
+            else ProjectionConfig(enabled=projection or False),
             in_dim=self.transformer_hidden_size,
-            hidden_dim=self.transformer_hidden_size,
-            out_dim=128,
         )
+        self.projection = bool(self.proj_head)
+
+        # backward compatibility: keep a SimCLR head when no registry is involved
+        if self.proj_head is None and (projection if projection is not None else True):
+            self.proj_head = SimCLRProjectionHead(
+                in_dim=self.transformer_hidden_size,
+                hidden_dim=self.transformer_hidden_size,
+                out_dim=128,
+            )
+            self.projection = True
 
         self.total_params = sum(p.numel() for p in self.parameters())
         logging.info(f"Total parameters: {self.total_params}")

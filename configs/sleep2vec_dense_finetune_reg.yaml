@@ -1,0 +1,54 @@
+model:
+  backbone:
+    name: roformer
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 16
+    vocab_size: 1
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      out_dim: 768
+      tokenizer: sundial
+    - name: breath
+      input_dim: 120
+      out_dim: 768
+      tokenizer: sundial
+    - name: eeg_original
+      input_dim: 3840
+      out_dim: 768
+      tokenizer: sundial
+    - name: ecg_original
+      input_dim: 3840
+      out_dim: 768
+      tokenizer: sundial
+    - name: eog_original
+      input_dim: 3840
+      out_dim: 768
+      tokenizer: sundial
+    - name: emg_original
+      input_dim: 3840
+      out_dim: 768
+      tokenizer: sundial
+    - name: spo2
+      input_dim: 120
+      out_dim: 768
+      tokenizer: sundial
+    - name: resp_original
+      input_dim: 120
+      out_dim: 768
+      tokenizer: sundial
+    - name: resp_nasal_original
+      input_dim: 120
+      out_dim: 768
+      tokenizer: sundial
+  head:
+    name: regression
+    agg: mean
+    dropout: 0.1
+    hidden_dim: null

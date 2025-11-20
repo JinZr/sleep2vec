@@ -1,6 +1,6 @@
 import argparse
-import json
 import logging
+import shutil
 from pathlib import Path
 
 import pytorch_lightning as pl
@@ -11,7 +11,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
 
 from metrics import save_result_csv
-from sleep2vec.downstream.head_registry import available_heads
+from sleep2vec.config import load_finetune_config
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from utils import get_finetune_dataloaders
 
@@ -25,12 +25,24 @@ def prepare_dataloader(args):
     return train_loader, val_loader, test_loader
 
 
-def supervised(args):
+def supervised(args, config_bundle):
+    model_config = config_bundle.model
+
+    # Persist YAML alongside experiment artifacts
+    exp_root = Path(f"log-finetune/{args.version}/")
+    exp_root.mkdir(parents=True, exist_ok=True)
+    dest_config = exp_root / "config.yaml"
+    try:
+        shutil.copy2(args.config, dest_config)
+        logging.info(f"Copied config to {dest_config}")
+    except Exception as exc:  # pragma: no cover - best-effort
+        logging.warning(f"Failed to copy config to {dest_config}: {exc}")
+
     # get data loaders
     train_loader, val_loader, test_loader = prepare_dataloader(args)
 
     # define the model/lightning module
-    model = Sleep2vecFinetuning(args)
+    model = Sleep2vecFinetuning(args, model_config)
 
     # logger and callbacks
     version = args.version
@@ -98,6 +110,12 @@ if __name__ == "__main__":
         description="Fine-tune Sleep2Vec downstream models on PSG data."
     )
 
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="YAML file containing model and loss configuration.",
+    )
     # ---------------- Optimization & training hyper-parameters ----------------
     parser.add_argument(
         "--epochs", type=int, default=200, help="number of fine-tuning epochs"
@@ -148,12 +166,6 @@ if __name__ == "__main__":
         help="downstream label to predict (e.g. age, sex, stage5)",
     )
     parser.add_argument(
-        "--channel-names",
-        type=str,
-        default="eeg_original",
-        help="comma-separated backbone channel names",
-    )
-    parser.add_argument(
         "--data-channel-names",
         type=str,
         default="",
@@ -190,67 +202,10 @@ if __name__ == "__main__":
         help="comma-separated dataset identifiers used for test split",
     )
     parser.add_argument(
-        "--channel-feature-dim",
-        type=int,
-        default=768,
-        help="per-channel feature dimension inside the backbone",
-    )
-    parser.add_argument(
-        "--transformer-hidden-size",
-        type=int,
-        default=768,
-        help="hidden size of Transformer encoder blocks",
-    )
-    parser.add_argument(
-        "--transformer-num-hidden-layers",
-        type=int,
-        default=12,
-        help="number of Transformer encoder layers",
-    )
-    parser.add_argument(
-        "--num-heads",
-        type=int,
-        default=16,
-        help="number of attention heads in each Transformer layer",
-    )
-    parser.add_argument(
-        "--backbone-arch",
-        type=str,
-        default="roformer",
-        choices=["roformer", "hf_bert"],
-        help="backbone encoder architecture when building Sleep2vecPretrainModel",
-    )
-    parser.add_argument(
-        "--projection",
-        dest="projection",
-        action="store_true",
-        help="enable projection head on top of the backbone",
-    )
-    parser.add_argument(
-        "--no-projection",
-        dest="projection",
-        action="store_false",
-        help="disable projection head on top of the backbone",
-    )
-    parser.set_defaults(projection=False)
-    parser.add_argument(
         "--n-few-shot",
         type=int,
         default=1280,
         help="number of labeled samples for few-shot setting",
-    )
-    parser.add_argument(
-        "--head-name",
-        type=str,
-        default="",
-        choices=[""] + available_heads(),
-        help="registered downstream head name (default auto-selects classification/regression)",
-    )
-    parser.add_argument(
-        "--head-config",
-        type=str,
-        default="",
-        help="JSON string of kwargs forwarded to the downstream head factory",
     )
 
     # ---------------- Pretrained backbone / LoRA configuration ----------------
@@ -347,8 +302,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # ---- Post-process list-like arguments ----
-    args.channel_names = [c.strip() for c in args.channel_names.split(",") if c.strip()]
+    config_bundle = load_finetune_config(args.config)
+    args.channel_names = [c.name for c in config_bundle.model.channels]
     if args.data_channel_names:
         args.data_channel_names = [
             c.strip() for c in args.data_channel_names.split(",") if c.strip()
@@ -365,15 +320,7 @@ if __name__ == "__main__":
         args.train_dataset_names = ["shhs"]
     if not args.test_dataset_names:
         args.test_dataset_names = ["shhs"]
-    if args.head_name == "":
-        args.head_name = None
-    if args.head_config:
-        try:
-            args.head_kwargs = json.loads(args.head_config)
-        except json.JSONDecodeError as exc:
-            raise SystemExit(f"Invalid JSON for --head-config: {exc}") from exc
-    else:
-        args.head_kwargs = {}
+    args.head_kwargs = {}
 
     # ---- Infer task spec from label_name (same spirit as TaskSpec in batch_run_few_shot.py) ----
     if args.label_name == "stage5":
@@ -418,4 +365,4 @@ if __name__ == "__main__":
     logging.info(args)
 
     # Run fine-tuning
-    supervised(args)
+    supervised(args, config_bundle)

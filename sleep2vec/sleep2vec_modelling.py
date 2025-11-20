@@ -3,29 +3,27 @@ import math
 
 import pytorch_lightning as pl
 import torch
-from transformers import BertConfig, BertModel
-
-from sleep2vec.encoder_factory import TransformerEncoderFactory
 from sleep2vec.losses import create_loss
 from sleep2vec.pretrain_model import Sleep2vecPretrainModel
 
 
 class Sleep2vecPretraining(pl.LightningModule):
-    def __init__(self, args):
+    def __init__(self, args, model_config, loss_config):
         super().__init__()
         self.args = args
-        self.T = args.temperature
-        encoder_factory = self._build_encoder_factory(args)
-        self.loss_fn = self._build_loss(args)
+        self.model_config = model_config
+        self.loss_config = loss_config
+        self.loss_fn = self._build_loss()
         self.model = Sleep2vecPretrainModel(
-            channel_feature_dim=args.channel_feature_dim,
-            transformer_hidden_size=args.transformer_hidden_size,
-            transformer_num_hidden_layers=args.transformer_num_hidden_layers,
-            transformer_num_attention_heads=args.num_heads,
-            channel_names=args.channel_names,
-            projection=args.projection,
-            encoder_factory=encoder_factory,
-            two_layer_embedding=True,
+            channel_feature_dim=None,
+            transformer_hidden_size=model_config.backbone.hidden_size,
+            transformer_num_hidden_layers=model_config.backbone.num_hidden_layers,
+            transformer_num_attention_heads=model_config.backbone.num_attention_heads,
+            channel_names=[c.name for c in model_config.channels],
+            projection=True,
+            encoder_factory=None,
+            model_config=model_config,
+            projection_config=model_config.projection,
         )
 
         # 缓存 val 损失（每 step append，epoch 末取均值）
@@ -175,44 +173,7 @@ class Sleep2vecPretraining(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
-    def _build_encoder_factory(self, args):
-        arch = getattr(args, "backbone_arch", "roformer")
-        if arch == "roformer":
-            # default Sleep2vecPretrainModel constructor already builds RoFormer
-            return None
-        if arch == "hf_bert":
-            # Demo: plug a vanilla HuggingFace BertModel as the encoder backbone.
-            logging.info(
-                "Building HuggingFace BertModel backbone via TransformerEncoderFactory."
-            )
-            bert_config = BertConfig(
-                hidden_size=args.transformer_hidden_size,
-                num_hidden_layers=args.transformer_num_hidden_layers,
-                num_attention_heads=args.num_heads,
-                intermediate_size=args.transformer_hidden_size * 4,
-                hidden_dropout_prob=0.1,
-                attention_probs_dropout_prob=0.1,
-                vocab_size=1,
-            )
-            return TransformerEncoderFactory.from_hf_config(
-                name="bert",
-                model_cls=BertModel,
-                config=bert_config,
-            )
-        raise ValueError(f"Unsupported backbone_arch '{arch}'.")
-
-    def _build_loss(self, args):
-        if hasattr(args, "loss_name"):
-            loss_name = args.loss_name
-        else:
-            loss_name = (
-                "weighted_info_nce"
-                if getattr(args, "use_weighted_info_nce", True)
-                else "info_nce"
-            )
-        temperature = getattr(args, "temperature", 0.2)
-        loss_kwargs = {"temperature": temperature}
-        if loss_name == "weighted_info_nce":
-            loss_kwargs["hard_scale"] = getattr(args, "loss_hard_scale", 0.10)
-            loss_kwargs["pos_margin"] = getattr(args, "loss_pos_margin", 0.0)
-        return create_loss(loss_name, **loss_kwargs)
+    def _build_loss(self):
+        loss_kwargs = dict(self.loss_config.params or {})
+        loss_kwargs.setdefault("temperature", self.loss_config.temperature)
+        return create_loss(self.loss_config.name, **loss_kwargs)

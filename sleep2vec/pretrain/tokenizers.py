@@ -1,6 +1,12 @@
+import typing as t
+
 import torch.nn as nn
 
+from sleep2vec.config import ChannelConfig
+from sleep2vec.registry import get_tokenizer_builder, register_tokenizer
 
+
+@register_tokenizer("linear")
 class LinearTokenizer(nn.Module):
     def __init__(
         self,
@@ -30,6 +36,7 @@ class LinearTokenizer(nn.Module):
         return x
 
 
+@register_tokenizer("sundial")
 class SundialTokenizer(nn.Module):
     def __init__(
         self,
@@ -68,3 +75,32 @@ class SundialTokenizer(nn.Module):
         out = y + res
         out = self.norm(out)
         return out
+
+
+def build_tokenizer_from_channel(
+    channel: ChannelConfig, *, device: str = "cuda"
+) -> nn.Module:
+    """Instantiate a tokenizer for a specific channel config."""
+    builder = get_tokenizer_builder(channel.tokenizer)
+    kwargs = dict(channel.tokenizer_kwargs or {})
+    kwargs.setdefault("in_feature_dim", channel.input_dim)
+    kwargs.setdefault("out_feature_dim", channel.out_dim)
+    kwargs.setdefault("device", device)
+    return builder(**kwargs)
+
+
+def build_tokenizer_mapping(
+    channels: t.List[ChannelConfig], *, device: str = "cuda"
+) -> t.Dict[str, nn.Module]:
+    return {
+        channel.name: build_tokenizer_from_channel(channel, device=device)
+        for channel in channels
+    }
+
+
+__all__ = [
+    "LinearTokenizer",
+    "SundialTokenizer",
+    "build_tokenizer_from_channel",
+    "build_tokenizer_mapping",
+]

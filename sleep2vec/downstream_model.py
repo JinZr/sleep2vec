@@ -5,9 +5,25 @@ import torch
 import torch.nn as nn
 from peft import LoraConfig, TaskType, get_peft_model
 
+from sleep2vec.config import HeadConfig, ModelConfig
 from .downstream.head_registry import create_head
 from .downstream.heads import AttnPooling
 from .pretrain_model import Sleep2vecPretrainModel
+
+
+def _resolve_act(name: str | None):
+    if not name:
+        return None
+    mapping = {
+        "elu": nn.ELU,
+        "relu": nn.ReLU,
+        "gelu": nn.GELU,
+        "silu": nn.SiLU,
+    }
+    key = name.lower()
+    if key not in mapping:
+        raise ValueError(f"Unsupported activation '{name}'.")
+    return mapping[key]
 
 
 class Sleep2vecDownstreamModel(nn.Module):
@@ -22,10 +38,16 @@ class Sleep2vecDownstreamModel(nn.Module):
         device: str = "cuda",
         head_name: str | None = None,
         head_kwargs: t.Optional[dict] = None,
+        model_config: ModelConfig | None = None,
+        head_config: HeadConfig | None = None,
     ):
         super().__init__()
         self.backbone = backbone
-        self.channel_names = channel_names
+        self.channel_names = (
+            [c.name for c in model_config.channels]
+            if model_config is not None
+            else channel_names
+        )
         self.device = device
         self.output_dim = output_dim
         self.is_classification = is_classification
@@ -35,9 +57,19 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.n_channels = len(self.channel_names)
 
         head_kwargs = head_kwargs or {}
-        inferred_head = head_name or (
-            "classification" if self.is_classification else "regression"
-        )
+        if head_config is not None:
+            inferred_head = head_config.name
+            if head_config.act:
+                head_kwargs.setdefault("act", _resolve_act(head_config.act))
+            head_kwargs.setdefault("agg", head_config.agg)
+            head_kwargs.setdefault("hidden_dim", head_config.hidden_dim)
+            head_kwargs.setdefault("dropout", head_config.dropout)
+            head_kwargs.update(head_config.kwargs or {})
+        else:
+            inferred_head = head_name or (
+                "classification" if self.is_classification else "regression"
+            )
+
         self.head = create_head(
             inferred_head,
             target=target,

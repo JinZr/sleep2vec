@@ -82,7 +82,7 @@ class ClassificationHead(nn.Module):
       - 'mean'         : Mean Pool (跨模态求均值)      -> 两层 MLP
       - 'concat'       : 拼接 (沿特征维拼接)           -> 两层 MLP
       - 'gated_scalar' : 学习到的标量权重(softmax)加权 -> 单层 Linear
-    输入：list[Tensor]，长度 = n_mods
+    输入：t.List[Tensor]，长度 = n_mods
          每个张量形状为 [B, D] 或 [B, L, D]（D = feature_dim）
     输出：logits [B, n_classes] 或 [B, L, n_classes]（若 L>1 则逐位置分类）
     """
