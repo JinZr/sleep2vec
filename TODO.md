@@ -1,65 +1,35 @@
-# TODO: Adding a MoE-based Sleep2Vec model (sleep2vec_moe) while reusing pretrain.py/finetune.py
+# TODO: Build a MoE-based Sleep2Vec in a sibling package (sleep2vec_moe) while sharing pretrain.py/finetune.py
 
-Goal: introduce a MoE Transformer backbone and any bespoke heads/tokenizers under a new recipe directory (e.g., `configs/sleep2vec_moe_*`), without changing `pretrain.py`/`finetune.py` logic.
+Goal: add an MoE backbone and any MoE-specific components under a new `sleep2vec_moe/` folder, reuse as much code as possible via soft links/imports, and keep using the existing `pretrain.py` and `finetune.py` entrypoints driven by YAML recipes.
 
-## 1) Backbone (MoE) – registry hook
-- Add MoE implementation and register it:
-  - File: `sleep2vec/encoder_factory.py` (or new module imported there)
-  - Decorate a builder with `@register_backbone("moe_roformer")` (or your chosen name).
-  - The builder should accept `BackboneConfig` and return a `TransformerEncoderFactory`-like object exposing `.build() -> (encoder, hidden_size)`.
-  - Support MoE hyperparams via `config_overrides` in YAML (e.g., `num_experts`, `top_k`, router settings).
-- Ensure the MoE model is PEFT-compatible if you plan to use LoRA in finetune.
+## Plan
+1) Create folder & reuse via symlinks
+   - Add `sleep2vec_moe/` next to `sleep2vec/`.
+   - Symlink modules that stay identical (e.g., `downstream/`, `losses/`, registries, common tokenizers/projection, builders).
+   - Keep MoE-specific code (encoder/backbone or tokenizer variants) in dedicated files inside `sleep2vec_moe/`.
 
-## 2) Tokenizers (optional)
-- If MoE requires special input projections, register new tokenizers in `sleep2vec/pretrain/tokenizers.py` via `@register_tokenizer("my_moe_tok")`.
-- Update channel entries in the MoE YAML to use the new tokenizer and `out_dim` matching the MoE hidden size.
+2) Register MoE backbone
+   - Implement a builder in `sleep2vec_moe/encoder_factory.py` (or import into the shared registry) and register with `@register_backbone("moe_roformer")` (or similar).
+   - Accept MoE hyperparams via `config_overrides` in YAML (e.g., `num_experts`, `top_k`, router type).
+   - Ensure `.build()` returns `(encoder, hidden_size)` to match the existing factory contract.
 
-## 3) Projection head (optional)
-- If contrastive projection differs, register a new projection in `sleep2vec/pretrain/projection.py` with `@register_projection("my_moe_proj")`.
-- Reference it in MoE pretrain YAML under `model.projection`.
+3) Tokenizers (if needed)
+   - If MoE needs special tokenizers, add and register them in `sleep2vec_moe/pretrain/tokenizers.py`; otherwise soft-link to the shared tokenizers.
+   - Point the MoE YAML channels to these tokenizers; keep `out_dim` consistent across channels.
 
-## 4) Downstream head/fusion (optional)
-- If MoE outputs need a custom fusion/head, add a new head in `sleep2vec/downstream/heads.py` and register with `@register_head("my_moe_head")`.
-- In MoE finetune YAML, set `model.head.name: my_moe_head` and supply kwargs in `model.head.kwargs`.
+4) Projection/head tweaks (optional)
+   - Register any MoE-specific projection in `pretrain/projection.py` (shared or MoE copy).
+   - For downstream, add heads/fusion in `downstream/heads.py` and register (or reuse existing ones).
 
-## 5) YAML recipes
-- Create configs (examples):
-  - `configs/sleep2vec_moe_pretrain.yaml`:
-    ```yaml
-    model:
-      backbone:
-        name: moe_roformer
-        hidden_size: 768
-        num_hidden_layers: 12
-        num_attention_heads: 16
-        config_overrides:
-          num_experts: 4
-          top_k: 2
-      projection:
-        name: simclr
-        enabled: true
-        hidden_dim: 768
-        out_dim: 128
-      channels:
-        - name: eeg_original
-          input_dim: 3840
-          out_dim: 768
-          tokenizer: sundial
-    loss:
-      name: weighted_info_nce
-      temperature: 0.2
-      params:
-        hard_scale: 0.1
-    ```
-  - `configs/sleep2vec_moe_finetune_cls.yaml` and `_reg.yaml`: same `model` block, adjust `model.head` for classification/regression.
-- Keep training hyperparameters on CLI (epochs, lr, devices, etc.).
+5) YAML recipes
+   - Add `configs/sleep2vec_moe_pretrain.yaml` plus finetune YAMLs (cls/reg) pointing to the MoE backbone and tokenizers.
+   - Keep training hyperparameters on the CLI; model/loss selections live in YAML.
 
-## 6) Reuse pretrain/finetune entrypoints
-- Pretrain: `python pretrain.py --config configs/sleep2vec_moe_pretrain.yaml --epochs ... --lr ...`
-- Finetune: `python finetune.py --config configs/sleep2vec_moe_finetune_cls.yaml --label-name ... --results-csv-path ...`
-- The entrypoints will auto-copy the YAML into the run directory; no code changes needed if registry names match YAML.
+6) Running
+   - Pretrain: `python pretrain.py --config configs/sleep2vec_moe_pretrain.yaml ...`
+   - Finetune: `python finetune.py --config configs/sleep2vec_moe_finetune_cls.yaml --label-name ... --results-csv-path ...`
 
-## 7) Validation checklist
-- Ensure YAML `channels` share the same `out_dim` matching MoE hidden size.
-- Confirm `config_overrides` aligns with your MoE implementation signature.
-- Run a small sanity experiment to verify shapes, router behavior, and that LoRA (if used) still targets attention/FFN modules as expected.
+7) Validation checklist
+   - Verify MoE config_overrides align with the implementation.
+   - Confirm all channels share the same `out_dim` and match the MoE hidden size.
+   - Run a small smoke test to check shape/routing and that `pretrain.py`/`finetune.py` still work unchanged.
