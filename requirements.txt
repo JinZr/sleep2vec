@@ -13,3 +13,5 @@ transformers==4.55.4
 peft==0.17.1
 pyhealth==1.1.6
 pyyaml==6.0.2
+black==24.10.0
+flake8==7.1.1
