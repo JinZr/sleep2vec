@@ -77,11 +77,11 @@ class FinetuneConfigBundle:
 @dataclass
 class FinetuneDataConfig:
     max_tokens: int = 120
-    data_channel_names: list[str] | None = None
+    data_channel_names: t.List[str] | None = None
     finetune_data_index: str | None = None
     finetune_preset_path: str | None = None
-    train_dataset_names: list[str] | None = None
-    test_dataset_names: list[str] | None = None
+    train_dataset_names: t.List[str] | None = None
+    test_dataset_names: t.List[str] | None = None
     n_few_shot: int = 1280
 
 
