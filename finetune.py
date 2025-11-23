@@ -1,14 +1,14 @@
 import argparse
 import logging
-import shutil
 from pathlib import Path
+import shutil
 
 import pytorch_lightning as pl
-import wandb
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
+import wandb
 
 from metrics import save_result_csv
 from sleep2vec.config import load_finetune_config
@@ -27,8 +27,6 @@ def prepare_dataloader(args):
 
 def supervised(args, config_bundle):
     model_config = config_bundle.model
-    data_cfg = config_bundle.data
-    lora_cfg = config_bundle.lora
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
@@ -108,9 +106,7 @@ if __name__ == "__main__":
     # Login to WandB only when running as a script
     wandb.login()
 
-    parser = argparse.ArgumentParser(
-        description="Fine-tune Sleep2Vec downstream models on PSG data."
-    )
+    parser = argparse.ArgumentParser(description="Fine-tune Sleep2Vec downstream models on PSG data.")
 
     parser.add_argument(
         "--config",
@@ -119,12 +115,8 @@ if __name__ == "__main__":
         help="YAML file containing model and loss configuration.",
     )
     # ---------------- Optimization & training hyper-parameters ----------------
-    parser.add_argument(
-        "--epochs", type=int, default=200, help="number of fine-tuning epochs"
-    )
-    parser.add_argument(
-        "--lr", type=float, default=1e-6, help="learning rate for AdamW"
-    )
+    parser.add_argument("--epochs", type=int, default=200, help="number of fine-tuning epochs")
+    parser.add_argument("--lr", type=float, default=1e-6, help="learning rate for AdamW")
     parser.add_argument(
         "--weight-decay",
         dest="weight_decay",
@@ -132,12 +124,8 @@ if __name__ == "__main__":
         default=1e-5,
         help="weight decay for AdamW",
     )
-    parser.add_argument(
-        "--batch-size", type=int, default=12, help="batch size for dataloader"
-    )
-    parser.add_argument(
-        "--num-workers", type=int, default=32, help="number of dataloader workers"
-    )
+    parser.add_argument("--batch-size", type=int, default=12, help="batch size for dataloader")
+    parser.add_argument("--num-workers", type=int, default=32, help="number of dataloader workers")
     parser.add_argument(
         "--patience",
         type=int,
@@ -186,10 +174,7 @@ if __name__ == "__main__":
         "--version-name",
         type=str,
         default=None,
-        help=(
-            "explicit run name for logging and checkpoint directory; "
-            "if not set, a name will be generated"
-        ),
+        help=("explicit run name for logging and checkpoint directory; " "if not set, a name will be generated"),
     )
     parser.add_argument(
         "--version-prefix",
@@ -228,24 +213,16 @@ if __name__ == "__main__":
     args.max_tokens = data_cfg.max_tokens
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
     args.finetune_data_index = (
-        Path(data_cfg.finetune_data_index)
-        if data_cfg.finetune_data_index
-        else args.finetune_data_index
+        Path(data_cfg.finetune_data_index) if data_cfg.finetune_data_index else args.finetune_data_index
     )
     args.finetune_preset_path = (
-        Path(data_cfg.finetune_preset_path)
-        if data_cfg.finetune_preset_path
-        else args.finetune_preset_path
+        Path(data_cfg.finetune_preset_path) if data_cfg.finetune_preset_path else args.finetune_preset_path
     )
     args.train_dataset_names = (
-        data_cfg.train_dataset_names
-        if data_cfg.train_dataset_names
-        else args.train_dataset_names.split(",")
+        data_cfg.train_dataset_names if data_cfg.train_dataset_names else args.train_dataset_names.split(",")
     )
     args.test_dataset_names = (
-        data_cfg.test_dataset_names
-        if data_cfg.test_dataset_names
-        else args.test_dataset_names.split(",")
+        data_cfg.test_dataset_names if data_cfg.test_dataset_names else args.test_dataset_names.split(",")
     )
     args.n_few_shot = data_cfg.n_few_shot
 
@@ -281,9 +258,7 @@ if __name__ == "__main__":
     else:
         ch_stub = args.channel_names[0] if args.channel_names else "mixed"
         few_stub = f"fewshot-{args.n_few_shot}"
-        pretrain_suffix = (
-            "with_pretrain" if args.pretrained_backbone_path else "from_scratch"
-        )
+        pretrain_suffix = "with_pretrain" if args.pretrained_backbone_path else "from_scratch"
         pieces = [
             args.version_prefix,
             args.label_name,

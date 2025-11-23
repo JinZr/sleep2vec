@@ -24,9 +24,7 @@ class LinearTokenizer(nn.Module):
 
         self.total_params = sum(p.numel() for p in self.parameters())
         print(f"Total parameters: {self.total_params}")
-        self.trainable_params = sum(
-            p.numel() for p in self.parameters() if p.requires_grad
-        )
+        self.trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"Trainable parameters: {self.trainable_params}")
 
     def forward(self, x):
@@ -59,9 +57,7 @@ class SundialTokenizer(nn.Module):
         self.norm = nn.LayerNorm(out_feature_dim) if norm_layer else nn.Identity()
 
         self.total_params = sum(p.numel() for p in self.parameters())
-        self.trainable_params = sum(
-            p.numel() for p in self.parameters() if p.requires_grad
-        )
+        self.trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     def forward(self, x):
         y = self.hidden_layer(x)
@@ -75,9 +71,7 @@ class SundialTokenizer(nn.Module):
         return out
 
 
-def build_tokenizer_from_channel(
-    channel: ChannelConfig, *, device: str = "cuda"
-) -> nn.Module:
+def build_tokenizer_from_channel(channel: ChannelConfig, *, device: str = "cuda") -> nn.Module:
     """Instantiate a tokenizer for a specific channel config."""
     builder = get_tokenizer_builder(channel.tokenizer)
     kwargs = dict(channel.tokenizer_kwargs or {})
@@ -87,13 +81,8 @@ def build_tokenizer_from_channel(
     return builder(**kwargs)
 
 
-def build_tokenizer_mapping(
-    channels: t.List[ChannelConfig], *, device: str = "cuda"
-) -> t.Dict[str, nn.Module]:
-    return {
-        channel.name: build_tokenizer_from_channel(channel, device=device)
-        for channel in channels
-    }
+def build_tokenizer_mapping(channels: t.List[ChannelConfig], *, device: str = "cuda") -> t.Dict[str, nn.Module]:
+    return {channel.name: build_tokenizer_from_channel(channel, device=device) for channel in channels}
 
 
 __all__ = [

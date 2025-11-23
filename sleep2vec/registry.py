@@ -43,25 +43,19 @@ def register_projection(name: str):
 
 def get_backbone_builder(name: str) -> BackboneBuilder:
     if name not in BACKBONE_REGISTRY:
-        raise KeyError(
-            f"Unknown backbone '{name}'. Available: {sorted(BACKBONE_REGISTRY)}"
-        )
+        raise KeyError(f"Unknown backbone '{name}'. Available: {sorted(BACKBONE_REGISTRY)}")
     return BACKBONE_REGISTRY[name]
 
 
 def get_tokenizer_builder(name: str) -> TokenizerBuilder:
     if name not in TOKENIZER_REGISTRY:
-        raise KeyError(
-            f"Unknown tokenizer '{name}'. Available: {sorted(TOKENIZER_REGISTRY)}"
-        )
+        raise KeyError(f"Unknown tokenizer '{name}'. Available: {sorted(TOKENIZER_REGISTRY)}")
     return TOKENIZER_REGISTRY[name]
 
 
 def get_projection_builder(name: str) -> ProjectionBuilder:
     if name not in PROJECTION_REGISTRY:
-        raise KeyError(
-            f"Unknown projection '{name}'. Available: {sorted(PROJECTION_REGISTRY)}"
-        )
+        raise KeyError(f"Unknown projection '{name}'. Available: {sorted(PROJECTION_REGISTRY)}")
     return PROJECTION_REGISTRY[name]
 
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import typing as t
 from dataclasses import dataclass, field
 from pathlib import Path
+import typing as t
 
 import yaml
 
@@ -126,10 +126,7 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
     """Checks model config sanity and returns the shared channel feature dim."""
     out_dims = {ch.out_dim for ch in model_cfg.channels}
     if len(out_dims) != 1:
-        raise ValueError(
-            "All channels must share the same out_dim for now. "
-            f"Got: {sorted(out_dims)}"
-        )
+        raise ValueError("All channels must share the same out_dim for now. " f"Got: {sorted(out_dims)}")
     return next(iter(out_dims))
 
 

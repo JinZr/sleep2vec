@@ -1,11 +1,12 @@
 import logging
 import typing as t
 
+from peft import LoraConfig, TaskType, get_peft_model
 import torch
 import torch.nn as nn
-from peft import LoraConfig, TaskType, get_peft_model
 
 from sleep2vec.config import HeadConfig, ModelConfig
+
 from .downstream.head_registry import create_head
 from .downstream.heads import AttnPooling
 from .pretrain_model import Sleep2vecPretrainModel
@@ -43,11 +44,7 @@ class Sleep2vecDownstreamModel(nn.Module):
     ):
         super().__init__()
         self.backbone = backbone
-        self.channel_names = (
-            [c.name for c in model_config.channels]
-            if model_config is not None
-            else channel_names
-        )
+        self.channel_names = [c.name for c in model_config.channels] if model_config is not None else channel_names
         self.device = device
         self.output_dim = output_dim
         self.is_classification = is_classification
@@ -66,9 +63,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             head_kwargs.setdefault("dropout", head_config.dropout)
             head_kwargs.update(head_config.kwargs or {})
         else:
-            inferred_head = head_name or (
-                "classification" if self.is_classification else "regression"
-            )
+            inferred_head = head_name or ("classification" if self.is_classification else "regression")
 
         self.head = create_head(
             inferred_head,
@@ -86,9 +81,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         self._adapter_warning_logged = False
 
         if (not self.is_seq) and self.use_temporal_attn:
-            self.temporal_agg = AttnPooling(
-                self.backbone.transformer_hidden_size, heads=1, temp=1.0, dropout=0.0
-            )
+            self.temporal_agg = AttnPooling(self.backbone.transformer_hidden_size, heads=1, temp=1.0, dropout=0.0)
 
     def _backbone_encoder(self) -> nn.Module:
         """Returns the encoder module inside the backbone."""
@@ -120,30 +113,22 @@ class Sleep2vecDownstreamModel(nn.Module):
         if hasattr(encoder, "set_adapter"):
             encoder.set_adapter(adapter_name)
         elif not self._adapter_warning_logged:
-            logging.warning(
-                "Encoder lacks 'set_adapter'; separate adapters are ignored."
-            )
+            logging.warning("Encoder lacks 'set_adapter'; separate adapters are ignored.")
             self._adapter_warning_logged = True
 
     def forward(self, batch):
         tokens = batch["tokens"]
 
         token_embeddings = self.backbone._tokenize_all(tokens)
-        token_names, token_embeddings = list(token_embeddings.keys()), list(
-            token_embeddings.values()
-        )
+        token_names, token_embeddings = list(token_embeddings.keys()), list(token_embeddings.values())
 
         feature_of_different_mods = []
-        for token_name, single_mod_token_embeddings in zip(
-            token_names, token_embeddings
-        ):
+        for token_name, single_mod_token_embeddings in zip(token_names, token_embeddings):
 
             if getattr(self, "separate_adapters", False):
                 self._set_active_adapter(f"ch_{token_name}")
 
-            hidden = self.backbone._token_embeddings_to_hidden(
-                single_mod_token_embeddings, batch
-            )
+            hidden = self.backbone._token_embeddings_to_hidden(single_mod_token_embeddings, batch)
 
             if self.is_seq:
                 seq_hidden = hidden
@@ -172,11 +157,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         state_dict = ckpt["state_dict"]
 
         # 仅保留属于 model.backbone 的权重
-        filtered_state_dict = {
-            k.replace("model.", ""): v
-            for k, v in state_dict.items()
-            if k.startswith("model.")
-        }
+        filtered_state_dict = {k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")}
 
         # 加载到 self.backbone
         load_info = self.backbone.load_state_dict(filtered_state_dict, strict=False)
@@ -186,9 +167,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         missing_keys = load_info.missing_keys
         unexpected_keys = load_info.unexpected_keys
 
-        logging.info(
-            f"✅ Loaded {total_keys - len(missing_keys)} / {total_keys} keys into backbone."
-        )
+        logging.info(f"✅ Loaded {total_keys - len(missing_keys)} / {total_keys} keys into backbone.")
         if missing_keys:
             logging.warning(f"Missing keys ({len(missing_keys)}):")
             for k in missing_keys:
@@ -241,26 +220,25 @@ class Sleep2vecDownstreamModel(nn.Module):
 
         # —— 全模型统计 ——
         total_all = sum(p.numel() for _, p in self.named_parameters())
-        train_all = sum(
-            p.numel() for _, p in self.named_parameters() if p.requires_grad
-        )
+        train_all = sum(p.numel() for _, p in self.named_parameters() if p.requires_grad)
         logging.info(
-            f"[insert_lora] model trainable params: {train_all}/{total_all} ({train_all/total_all:.4%})"
+            "[insert_lora] model trainable params: %s/%s (%s)",
+            train_all,
+            total_all,
+            f"{train_all/total_all:.4%}",
         )
 
         # —— 只看 backbone 统计 ——
         b_total = sum(p.numel() for _, p in self.backbone.named_parameters())
-        b_train = sum(
-            p.numel() for _, p in self.backbone.named_parameters() if p.requires_grad
-        )
+        b_train = sum(p.numel() for _, p in self.backbone.named_parameters() if p.requires_grad)
         b_ratio = b_train / b_total if b_total > 0 else 0.0
-        lora_train = sum(
-            p.numel()
-            for n, p in self.backbone.named_parameters()
-            if p.requires_grad and "lora_" in n
-        )
+        lora_train = sum(p.numel() for n, p in self.backbone.named_parameters() if p.requires_grad and "lora_" in n)
         logging.info(
-            f"[insert_lora] backbone trainable params: {b_train}/{b_total} ({b_ratio:.4%}); LoRA-only trainable: {lora_train}"
+            "[insert_lora] backbone trainable params: %s/%s (%s); LoRA-only trainable: %s",
+            b_train,
+            b_total,
+            f"{b_ratio:.4%}",
+            lora_train,
         )
 
     # 在所有 adapter 都 add 完之后调用

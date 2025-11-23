@@ -65,9 +65,7 @@ class TransformerEncoderFactory:
             num_attention_heads=num_attention_heads,
             **config_overrides,
         )
-        return cls.from_hf_config(
-            name="roformer", model_cls=RoFormerModel, config=config
-        )
+        return cls.from_hf_config(name="roformer", model_cls=RoFormerModel, config=config)
 
 
 @register_backbone("roformer")
