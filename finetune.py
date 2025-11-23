@@ -125,7 +125,7 @@ if __name__ == "__main__":
         help="weight decay for AdamW",
     )
     parser.add_argument("--batch-size", type=int, default=12, help="batch size for dataloader")
-    parser.add_argument("--num-workers", type=int, default=32, help="number of dataloader workers")
+    parser.add_argument("--num-workers", type=int, default=8, help="number of dataloader workers")
     parser.add_argument(
         "--patience",
         type=int,
