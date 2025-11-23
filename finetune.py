@@ -212,18 +212,10 @@ if __name__ == "__main__":
     # Data-related overrides from YAML
     args.max_tokens = data_cfg.max_tokens
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
-    args.finetune_data_index = (
-        Path(data_cfg.finetune_data_index) if data_cfg.finetune_data_index else args.finetune_data_index
-    )
-    args.finetune_preset_path = (
-        Path(data_cfg.finetune_preset_path) if data_cfg.finetune_preset_path else args.finetune_preset_path
-    )
-    args.train_dataset_names = (
-        data_cfg.train_dataset_names if data_cfg.train_dataset_names else args.train_dataset_names.split(",")
-    )
-    args.test_dataset_names = (
-        data_cfg.test_dataset_names if data_cfg.test_dataset_names else args.test_dataset_names.split(",")
-    )
+    args.finetune_data_index = Path(data_cfg.finetune_data_index) if data_cfg.finetune_data_index else None
+    args.finetune_preset_path = Path(data_cfg.finetune_preset_path) if data_cfg.finetune_preset_path else None
+    args.train_dataset_names = data_cfg.train_dataset_names or []
+    args.test_dataset_names = data_cfg.test_dataset_names or []
     args.n_few_shot = data_cfg.n_few_shot
 
     # LoRA-related toggles from YAML
