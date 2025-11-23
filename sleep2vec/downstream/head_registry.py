@@ -20,11 +20,9 @@ def register_head(name: str):
 
 def create_head(name: str, **kwargs) -> nn.Module:
     if name not in HEAD_REGISTRY:
-        raise KeyError(
-            f"Unknown head '{name}'. Available: {sorted(HEAD_REGISTRY.keys())}"
-        )
+        raise KeyError(f"Unknown head '{name}'. Available: {sorted(HEAD_REGISTRY.keys())}")
     return HEAD_REGISTRY[name](**kwargs)
 
 
-def available_heads() -> list[str]:
+def available_heads() -> t.List[str]:
     return sorted(HEAD_REGISTRY.keys())

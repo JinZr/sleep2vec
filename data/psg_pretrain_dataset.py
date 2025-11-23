@@ -1,18 +1,25 @@
 import os
-import typing as t
 from pathlib import Path
+import typing as t
 
+import numpy as np
 import pandas as pd
 
-from data.default_dataset import *
+from data.default_dataset import (
+    DefaultDataset,
+    SampleIndex,
+    default_extractor,
+    default_mlm_mask_generator,
+    default_tokenizer,
+)
 
 PAD_STAGE = -1
 
 
 def window(tot_len: int, max_len: int, stride: int) -> np.ndarray:
-    l = np.arange(0, tot_len, stride) if stride > 0 else np.array([0])
-    r = np.clip(l + max_len, 0, tot_len)
-    return np.stack([l, r], axis=1)
+    left = np.arange(0, tot_len, stride) if stride > 0 else np.array([0])
+    right = np.clip(left + max_len, 0, tot_len)
+    return np.stack([left, right], axis=1)
 
 
 class PSGPretrainDataset(DefaultDataset):
@@ -46,7 +53,7 @@ class PSGPretrainDataset(DefaultDataset):
         if not load_preset_path:
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
-                idx: t.Union[str, os.PathLike, t.List[t.Union[str, os.PathLike]]]
+                idx: t.Union[str, os.PathLike, t.List[t.Union[str, os.PathLike]]],
             ) -> pd.DataFrame:
                 # 单个路径
                 if isinstance(idx, (str, os.PathLike, Path)):
@@ -87,23 +94,19 @@ class PSGPretrainDataset(DefaultDataset):
                 n = int(row["duration"] // self.token_sec)
 
                 # stride_tokens = 0 代表只取前面的1535个token，否则取滑窗 ceil((n - 1535) / stride_tokens) 个滑窗
-                for l, r in window(n, max_tokens, stride_tokens):
+                for left, right in window(n, max_tokens, stride_tokens):
                     data.append(
                         SampleIndex(
                             id=i,
                             path=row["path"],
-                            start=l,
-                            end=r,
+                            start=left,
+                            end=right,
                             metadata=metadata,  # ✅ 添加 metadata
                         )
                     )
         else:
             data = None
 
-        # TODO: 后面用 body_movement 做 mask
-        body_movement_channel = "body_movement"
-        if use_legacy_body_movement:
-            body_movement_channel = "legacy_body_movement"
         super().__init__(
             save_preset_path,
             load_preset_path,
@@ -118,9 +121,7 @@ class PSGPretrainDataset(DefaultDataset):
                 "emg_original": default_extractor("emg_original", self.token_sec * 128),
                 "spo2": default_extractor("spo2", self.token_sec * 4),
                 "resp_original": default_extractor("resp_original", self.token_sec * 4),
-                "resp_nasal_original": default_extractor(
-                    "resp_nasal_original", self.token_sec * 4
-                ),
+                "resp_nasal_original": default_extractor("resp_nasal_original", self.token_sec * 4),
                 # "ah_event": default_extractor("ah_event", self.token_sec * 1),
                 "stage5": default_extractor("stage5", 1),
             },

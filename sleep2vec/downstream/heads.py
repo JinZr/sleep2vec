@@ -26,13 +26,9 @@ class FeatureFusion(nn.Module):
             # 每个模态一个可学习标量 → softmax 归一化
             self.gates = nn.Parameter(torch.zeros(n_mods))
 
-    def forward(
-        self, feature_of_different_mods: t.List[torch.Tensor]
-    ) -> tuple[torch.Tensor, bool]:
+    def forward(self, feature_of_different_mods: t.List[torch.Tensor]) -> tuple[torch.Tensor, bool]:
         if len(feature_of_different_mods) != self.n_mods:
-            raise ValueError(
-                f"Expect {self.n_mods} modality features, got {len(feature_of_different_mods)}"
-            )
+            raise ValueError(f"Expect {self.n_mods} modality features, got {len(feature_of_different_mods)}")
 
         x0 = feature_of_different_mods[0]
         has_L = x0.dim() == 3  # [B, L, D] or [B, D]
@@ -45,20 +41,13 @@ class FeatureFusion(nn.Module):
             elif feat.dim() == 3:
                 feat_has_L = True
             else:
-                raise ValueError(
-                    "Each modality feature must be rank-2 or rank-3, "
-                    f"got shape {feat.shape}."
-                )
+                raise ValueError("Each modality feature must be rank-2 or rank-3, " f"got shape {feat.shape}.")
             if feat_has_L != has_L:
-                raise ValueError(
-                    "Mixing sequential and non-sequential features is not supported."
-                )
+                raise ValueError("Mixing sequential and non-sequential features is not supported.")
             if has_L and feat.size(1) != x0.size(1):
                 raise ValueError("All modalities must have matching sequence length.")
             if feat.shape[-1] != self.feature_dim:
-                raise ValueError(
-                    f"feature_dim mismatch: expect {self.feature_dim}, got {feat.shape[-1]}"
-                )
+                raise ValueError(f"feature_dim mismatch: expect {self.feature_dim}, got {feat.shape[-1]}")
             feats.append(feat)
 
         if self.agg == "concat":
@@ -82,7 +71,7 @@ class ClassificationHead(nn.Module):
       - 'mean'         : Mean Pool (跨模态求均值)      -> 两层 MLP
       - 'concat'       : 拼接 (沿特征维拼接)           -> 两层 MLP
       - 'gated_scalar' : 学习到的标量权重(softmax)加权 -> 单层 Linear
-    输入：list[Tensor]，长度 = n_mods
+    输入：t.List[Tensor]，长度 = n_mods
          每个张量形状为 [B, D] 或 [B, L, D]（D = feature_dim）
     输出：logits [B, n_classes] 或 [B, L, n_classes]（若 L>1 则逐位置分类）
     """
@@ -207,7 +196,7 @@ class RegressionHead(nn.Module):
 
         return out
 
- 
+
 class AttnPooling(nn.Module):
     def __init__(self, d, heads=1, temp=1.0, dropout=0.0):
         super().__init__()

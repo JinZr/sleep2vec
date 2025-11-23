@@ -2,20 +2,29 @@ import argparse
 import logging
 import os
 from pathlib import Path
+import shutil
 
 import pytorch_lightning as pl
-import wandb
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
+import wandb
 
-from sleep2vec.losses import available_losses
+from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
 from utils import get_pretrain_dataloader
 
 
 def sleep2vec_pretrain(args):
+
+    config_bundle = load_pretrain_config(args.config)
+    model_config = config_bundle.model
+    loss_config = config_bundle.loss
+    args.mask_rate = config_bundle.data.mask_rate
+    args.max_tokens = config_bundle.data.max_tokens
+    args.channel_names = [c.name for c in model_config.channels]
+    args.backbone_arch = model_config.backbone.name
 
     # get data loaders
     train_loader, val_loader_main = get_pretrain_dataloader(args)
@@ -41,7 +50,17 @@ def sleep2vec_pretrain(args):
         wandb_id = None  # 让 wandb 自动分配
         args.ckpt_path = None  # 防止误传
 
-    model = Sleep2vecPretraining(args)
+    # Always stash the YAML used for this run alongside checkpoints.
+    exp_dir = Path(save_path).parent
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    dest_config = exp_dir / "config.yaml"
+    try:
+        shutil.copy2(args.config, dest_config)
+        logging.info(f"Copied config to {dest_config}")
+    except Exception as exc:  # pragma: no cover - best-effort
+        logging.warning(f"Failed to copy config to {dest_config}: {exc}")
+
+    model = Sleep2vecPretraining(args, model_config, loss_config)
 
     logger = WandbLogger(
         project="sleep2vec-pretrain",
@@ -76,9 +95,7 @@ def sleep2vec_pretrain(args):
         strategy = DDPStrategy(find_unused_parameters=True)
     elif args.strategy == "deepspeed":
         if args.deepspeed_config is None:
-            raise ValueError(
-                "deepspeed_config must be provided when using DeepSpeed strategy."
-            )
+            raise ValueError("deepspeed_config must be provided when using DeepSpeed strategy.")
         strategy = DeepSpeedStrategy(
             config=args.deepspeed_config,
         )
@@ -114,18 +131,18 @@ if __name__ == "__main__":
     wandb.login()
 
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="YAML file containing model and loss configuration.",
+    )
     parser.add_argument("--epochs", type=int, default=120, help="number of epochs")
     parser.add_argument("--lr", type=float, default=5e-5, help="learning rate")
-    parser.add_argument(
-        "--weight-decay", type=float, default=1e-2, help="weight decay for AdamW"
-    )
+    parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
     parser.add_argument("--batch-size", type=int, default=320, help="batch size")
-    parser.add_argument(
-        "--num-workers", type=int, default=32, help="number of dataloader workers"
-    )
-    parser.add_argument(
-        "--devices", type=int, nargs="+", default=[4, 7], help="GPU device ids"
-    )
+    parser.add_argument("--num-workers", type=int, default=8, help="number of dataloader workers")
+    parser.add_argument("--devices", type=int, nargs="+", default=[0, 1], help="GPU device ids")
     parser.add_argument(
         "--ckpt-path",
         type=Path,
@@ -139,37 +156,8 @@ if __name__ == "__main__":
         required=True,
         help="version name used for logging and checkpoint directory",
     )
-    parser.add_argument(
-        "--patience", type=int, default=20, help="early stopping patience in epochs"
-    )
-    parser.add_argument(
-        "--device", type=str, default="cuda", help="torch device used by dataloader"
-    )
-    parser.add_argument(
-        "--mask-rate", type=float, default=0.15, help="masking rate for pretraining"
-    )
-    parser.add_argument(
-        "--max-tokens", type=int, default=120, help="maximum tokens per window"
-    )
-
-    parser.add_argument(
-        "--channel-names",
-        type=str,
-        nargs="+",
-        default=[
-            "heartbeat",
-            "breath",
-            "eeg_original",
-            "ecg_original",
-            "eog_original",
-            "emg_original",
-            "spo2",
-            "resp_original",
-            "resp_nasal_original",
-        ],
-        help="list of channel names used for pretraining",
-    )
-
+    parser.add_argument("--patience", type=int, default=20, help="early stopping patience in epochs")
+    parser.add_argument("--device", type=str, default="cuda", help="torch device used by dataloader")
     parser.add_argument(
         "--pretrain-data-index",
         type=Path,
@@ -182,76 +170,6 @@ if __name__ == "__main__":
         default="/data/ywx/BIOT/data/5dataset_preset_120.pickle",
         help="path to precomputed preset pickle for PSG dataset",
     )
-
-    parser.add_argument(
-        "--projection",
-        dest="projection",
-        action="store_true",
-        default=True,
-        help="enable projection head on top of backbone",
-    )
-    parser.add_argument(
-        "--no-projection",
-        dest="projection",
-        action="store_false",
-        help="disable projection head on top of backbone",
-    )
-
-    parser.add_argument(
-        "--loss-name",
-        type=str,
-        default="weighted_info_nce",
-        choices=available_losses(),
-        help="contrastive loss to optimize (registered via sleep2vec.losses).",
-    )
-    parser.add_argument(
-        "--loss-hard-scale",
-        type=float,
-        default=0.10,
-        help="hard negative scaling factor for weighted InfoNCE.",
-    )
-    parser.add_argument(
-        "--loss-pos-margin",
-        type=float,
-        default=0.0,
-        help="positive pair margin for weighted InfoNCE.",
-    )
-
-    parser.add_argument(
-        "--channel-feature-dim",
-        type=int,
-        default=768,
-        help="per-channel feature dimension in backbone",
-    )
-    parser.add_argument(
-        "--transformer-hidden-size",
-        type=int,
-        default=768,
-        help="hidden size of Transformer blocks in backbone",
-    )
-    parser.add_argument(
-        "--transformer-num-hidden-layers",
-        type=int,
-        default=12,
-        help="number of Transformer encoder layers in backbone",
-    )
-    parser.add_argument(
-        "--num-heads",
-        type=int,
-        default=16,
-        help="number of attention heads in Transformer blocks",
-    )
-    parser.add_argument(
-        "--backbone-arch",
-        type=str,
-        default="roformer",
-        choices=["roformer", "hf_bert"],
-        help=(
-            "Backbone encoder architecture. "
-            "'hf_bert' demonstrates wiring a vanilla HuggingFace Transformer via "
-            "TransformerEncoderFactory."
-        ),
-    )
     parser.add_argument(
         "--exp-info",
         type=str,
@@ -261,12 +179,6 @@ if __name__ == "__main__":
             "backbone variants or ablation identifiers."
         ),
     )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.2,
-        help="temperature used in contrastive loss",
-    )
 
     parser.add_argument(
         "--precision",
@@ -274,9 +186,7 @@ if __name__ == "__main__":
         default="bf16",
         help="mixed precision setting passed to Lightning Trainer",
     )
-    parser.add_argument(
-        "--gradient-clip-val", type=float, default=1.0, help="gradient clipping value"
-    )
+    parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
     parser.add_argument(
         "--strategy",
         type=str,

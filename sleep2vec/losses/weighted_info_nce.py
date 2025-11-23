@@ -6,15 +6,11 @@ import torch.nn.functional as F
 from .base import ContrastiveLoss, LossOutput, register_loss
 
 
-def _contrastive_accuracy(
-    logits_12: torch.Tensor, logits_21: torch.Tensor, labels: torch.Tensor
-) -> torch.Tensor:
+def _contrastive_accuracy(logits_12: torch.Tensor, logits_21: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     with torch.no_grad():
         pred12 = logits_12.argmax(dim=-1)
         pred21 = logits_21.argmax(dim=-1)
-        acc = 0.5 * (
-            (pred12 == labels).float().mean() + (pred21 == labels).float().mean()
-        )
+        acc = 0.5 * ((pred12 == labels).float().mean() + (pred21 == labels).float().mean())
     return acc
 
 
@@ -39,9 +35,7 @@ class WeightedInfoNCELoss(ContrastiveLoss):
         batch: t.Mapping[str, torch.Tensor],
     ) -> LossOutput:
         if "w" not in batch or "h" not in batch:
-            raise KeyError(
-                "Batch missing 'w' or 'h' tensors required for weighted InfoNCE."
-            )
+            raise KeyError("Batch missing 'w' or 'h' tensors required for weighted InfoNCE.")
         T = self.temperature
         B, L, _ = first_hidden.shape
 
@@ -79,9 +73,7 @@ class WeightedInfoNCELoss(ContrastiveLoss):
         loss_21 = F.cross_entropy(logits_21_flat, labels_flat)
         loss = 0.5 * (loss_12 + loss_21)
 
-        acc = _contrastive_accuracy(
-            base_12.reshape(L * B, B), base_21.reshape(L * B, B), labels_flat
-        )
+        acc = _contrastive_accuracy(base_12.reshape(L * B, B), base_21.reshape(L * B, B), labels_flat)
         metrics = {
             "contrastive_loss": loss.detach(),
             "contrastive_acc": acc,

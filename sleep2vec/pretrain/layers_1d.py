@@ -16,9 +16,7 @@ class ResBlock1d(nn.Module):
     ) -> None:
         super().__init__()
         layers = [
-            nn.Conv1d(
-                in_channels, out_channels, 3, stride=stride, padding=1, bias=False
-            ),
+            nn.Conv1d(in_channels, out_channels, 3, stride=stride, padding=1, bias=False),
             norm_layer(out_channels),
             nn.ReLU(),
         ]

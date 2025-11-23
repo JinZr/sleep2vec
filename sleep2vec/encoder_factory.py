@@ -3,6 +3,9 @@ import typing as t
 import torch.nn as nn
 from transformers import RoFormerConfig, RoFormerModel
 
+from sleep2vec.config import BackboneConfig
+from sleep2vec.registry import register_backbone
+
 
 class TransformerEncoderFactory:
     """Utility that builds transformer-style encoders on demand."""
@@ -62,6 +65,38 @@ class TransformerEncoderFactory:
             num_attention_heads=num_attention_heads,
             **config_overrides,
         )
-        return cls.from_hf_config(
-            name="roformer", model_cls=RoFormerModel, config=config
-        )
+        return cls.from_hf_config(name="roformer", model_cls=RoFormerModel, config=config)
+
+
+@register_backbone("roformer")
+def build_roformer(cfg: BackboneConfig) -> TransformerEncoderFactory:
+    overrides = dict(cfg.config_overrides or {})
+    return TransformerEncoderFactory.roformer(
+        hidden_size=cfg.hidden_size,
+        num_hidden_layers=cfg.num_hidden_layers,
+        num_attention_heads=cfg.num_attention_heads,
+        vocab_size=cfg.vocab_size,
+        **overrides,
+    )
+
+
+@register_backbone("hf_bert")
+def build_hf_bert(cfg: BackboneConfig) -> TransformerEncoderFactory:
+    # Local import to avoid forcing Bert dependency if unused.
+    from transformers import BertConfig, BertModel
+
+    bert_config = BertConfig(
+        hidden_size=cfg.hidden_size,
+        num_hidden_layers=cfg.num_hidden_layers,
+        num_attention_heads=cfg.num_attention_heads,
+        intermediate_size=cfg.hidden_size * 4,
+        hidden_dropout_prob=0.1,
+        attention_probs_dropout_prob=0.1,
+        vocab_size=cfg.vocab_size,
+        **(cfg.config_overrides or {}),
+    )
+    return TransformerEncoderFactory.from_hf_config(
+        name="bert",
+        model_cls=BertModel,
+        config=bert_config,
+    )

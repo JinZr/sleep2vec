@@ -1,10 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 import logging
 import math
 import pickle
 import random
 import typing as t
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
 
 import numpy as np
 import torch
@@ -115,9 +115,7 @@ def default_mlm_mask_generator(mask_ratio: float = 0.15):
     return generate_mask
 
 
-def pad(
-    x, max_len: int, pad_value: torch.types.Number = 0, dim: int = 0
-) -> torch.Tensor:
+def pad(x, max_len: int, pad_value: torch.types.Number = 0, dim: int = 0) -> torch.Tensor:
     if not isinstance(x, torch.Tensor):
         x = torch.tensor(x)
     if x.shape[dim] == max_len:
@@ -155,21 +153,20 @@ def filter_valid_sample_indices(
     def process_sample(sample_index):
         try:
             with np.load(sample_index.path) as npz:
-                payload = {
-                    key: fn(npz, sample_index.start, sample_index.end)
-                    for key, fn in extractors.items()
-                }
+                payload = {key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()}
                 tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
                 lengths = [v.shape[0] for v in tokens.values()]
                 max_len, min_len = max(lengths), min(lengths)
 
                 if max_len - min_len <= tolerance:
                     return sample_index
-                else:
-                    logging.info(
-                        f"[Skip] Token length mismatch at {sample_index.id}: {lengths}. Meta: {sample_index.metadata}"
-                    )
-                    return None
+                logging.info(
+                    "[Skip] Token length mismatch at %s: %s. Meta: %s",
+                    sample_index.id,
+                    lengths,
+                    sample_index.metadata,
+                )
+                return None
         except Exception as e:
             logging.info(f"[Skip] Error loading sample {sample_index.id}: {e}")
             return None
@@ -239,9 +236,7 @@ class DefaultDataset(BaseDataset):
                 self.data = pickle.load(f)
         else:
             # ✅ 初始化时检查并过滤掉 token 长度不一致的样本
-            self.data = filter_valid_sample_indices(
-                data, extractors, tokenizers, tolerance=1
-            )
+            self.data = filter_valid_sample_indices(data, extractors, tokenizers, tolerance=1)
             with open(save_preset_path, "wb") as f:
                 pickle.dump(data, f)
 
@@ -283,9 +278,7 @@ class DefaultDataset(BaseDataset):
             if keep:
                 selected.append(d)
 
-        logging.info(
-            f"Filtered metadata: kept {len(selected)} / {len(self.data)} samples"
-        )
+        logging.info(f"Filtered metadata: kept {len(selected)} / {len(self.data)} samples")
         self.data = selected
         return selected
 
@@ -302,9 +295,7 @@ class DefaultDataset(BaseDataset):
 
         total = len(self.data)
         if self.few_shot >= total:
-            logging.info(
-                f"self.few_shot={self.few_shot} >= total samples={total}, skipping sampling"
-            )
+            logging.info(f"self.few_shot={self.few_shot} >= total samples={total}, skipping sampling")
             return list(self.data)
 
         # 设定随机种子，保证顺序一致
@@ -319,9 +310,7 @@ class DefaultDataset(BaseDataset):
             num_samples = int(self.few_shot)
 
         selected = shuffled[:num_samples]
-        logging.info(
-            f"Selected {len(selected)} samples out of {total} for few-shot setting"
-        )
+        logging.info(f"Selected {len(selected)} samples out of {total} for few-shot setting")
         self.data = selected
         return selected
 
@@ -377,9 +366,7 @@ class DefaultDataset(BaseDataset):
             for src in indices:
 
                 with np.load(src.path) as npz:
-                    payload = {
-                        k: self.extractors[k](npz, src.start, src.end) for k in chosen
-                    }
+                    payload = {k: self.extractors[k](npz, src.start, src.end) for k in chosen}
                     tokens = {k: self.tokenizers[k](payload[k]) for k in chosen}
                     masks = {k: self.mask_generators[k](tokens[k]) for k in chosen}
                 payload.update(src.payload)
@@ -399,9 +386,7 @@ class DefaultDataset(BaseDataset):
                 max_len, min_len = max(lengths), min(lengths)
 
                 if max_len - min_len > tolerance:
-                    raise ValueError(
-                        f"Token length mismatch > tolerance in sample {sample.id}: {lengths}"
-                    )
+                    raise ValueError(f"Token length mismatch > tolerance in sample {sample.id}: {lengths}")
 
                 # ✅ 将每个通道裁剪到该样本的最小长度
                 for k in sample.tokens:
@@ -605,7 +590,7 @@ def safe_cast(v, default=-1):
         if isinstance(v, float) and math.isnan(v):
             return default
         return int(float(v))  # 支持 '42.0' 这样的字符串
-    except:
+    except Exception:
         return default
 
 
@@ -632,9 +617,7 @@ def process_metadata(samples, disease_names):
     # return processed
 
     # 处理 age（转为 float tensor）
-    processed["age"] = torch.tensor(
-        [safe_cast(v, -1) for v in batch_metadata["age"]], dtype=torch.float
-    )
+    processed["age"] = torch.tensor([safe_cast(v, -1) for v in batch_metadata["age"]], dtype=torch.float)
 
     # 处理性别（0: male, 1: female, -1: 其他或缺失）
 
@@ -661,16 +644,12 @@ def process_metadata(samples, disease_names):
                 return -1
             if v in (0.0, 1.0):
                 return int(v)
-            raise NotImplementedError(
-                f"Invalid float binary label: {v}, must be 0.0 or 1.0"
-            )
+            raise NotImplementedError(f"Invalid float binary label: {v}, must be 0.0 or 1.0")
 
         # 其它类型：按缺失处理
         return -1
 
-    processed["sex"] = torch.tensor(
-        [encode_binary_label(v) for v in batch_metadata["sex"]], dtype=torch.long
-    )
+    processed["sex"] = torch.tensor([encode_binary_label(v) for v in batch_metadata["sex"]], dtype=torch.long)
     for disease_name in disease_names:
         processed[disease_name] = torch.tensor(
             [encode_binary_label(v) for v in batch_metadata[disease_name]],
@@ -686,11 +665,7 @@ def extract_binary_labels(dataset, target_name: str):
     # dataset.data 里是你的 Sample，对每个 Sample 的 metadata 读一次
     labels = np.fromiter(
         (
-            (
-                int(float(s.metadata[target_name]))
-                if (hasattr(s, "metadata") and (target_name in s.metadata))
-                else -1
-            )
+            (int(float(s.metadata[target_name])) if (hasattr(s, "metadata") and (target_name in s.metadata)) else -1)
             for s in dataset.data
         ),
         dtype=np.int64,
@@ -698,18 +673,14 @@ def extract_binary_labels(dataset, target_name: str):
     return labels  # 值域 {-1, 0, 1}
 
 
-def make_weighted_sampler_from_labels(
-    labels: np.ndarray, epoch_size: int | None = None
-):
+def make_weighted_sampler_from_labels(labels: np.ndarray, epoch_size: int | None = None):
     valid = labels != -1
     if not valid.any():
         return None  # 没有效标签就不用加权
 
     # 类频统计（仅 0/1）
     uniq, counts = np.unique(labels[valid], return_counts=True)
-    class_weight = {
-        int(c): 1.0 / float(n) for c, n in zip(uniq.tolist(), counts.tolist())
-    }
+    class_weight = {int(c): 1.0 / float(n) for c, n in zip(uniq.tolist(), counts.tolist())}
 
     # 为每个样本分配权重；无效标签 -> 0
     w = np.zeros_like(labels, dtype=np.float32)
