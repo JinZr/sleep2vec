@@ -30,7 +30,6 @@ class LinearTokenizer(nn.Module):
         print(f"Trainable parameters: {self.trainable_params}")
 
     def forward(self, x):
-        x = x.to(self.device)
         x = self.proj(x)
         x = self.norm(x)
         return x
@@ -65,7 +64,6 @@ class SundialTokenizer(nn.Module):
         )
 
     def forward(self, x):
-        x = x.to(self.device)
         y = self.hidden_layer(x)
         y = self.act(y)
         y = self.output_layer(y)

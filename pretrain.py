@@ -149,7 +149,7 @@ if __name__ == "__main__":
         "--num-workers", type=int, default=32, help="number of dataloader workers"
     )
     parser.add_argument(
-        "--devices", type=int, nargs="+", default=[4, 7], help="GPU device ids"
+        "--devices", type=int, nargs="+", default=[0, 1], help="GPU device ids"
     )
     parser.add_argument(
         "--ckpt-path",
