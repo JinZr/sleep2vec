@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import typing as t
-
 import torch.nn as nn
 
 from sleep2vec.config import (

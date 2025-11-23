@@ -27,9 +27,7 @@ class Sleep2vecPretrainModel(nn.Module):
         transformer_num_attention_heads: int = 16,
         encoder_factory: TransformerEncoderFactory | None = None,
         encoder_config_overrides: t.Optional[t.Dict[t.Dict, t.Any]] = None,
-        encoder_forward: t.Optional[
-            t.Callable[[nn.Module, torch.Tensor, torch.Tensor], torch.Tensor]
-        ] = None,
+        encoder_forward: t.Optional[t.Callable[[nn.Module, torch.Tensor, torch.Tensor], torch.Tensor]] = None,
         specified_two_mods: t.List[str] | None = None,
         two_layer_embedding: bool = False,
         device: str = "cuda",
@@ -45,28 +43,18 @@ class Sleep2vecPretrainModel(nn.Module):
 
         if model_config is not None:
             self.channel_names = [c.name for c in model_config.channels]
-            tokenizer_mapping, channel_feature_dim = build_tokenizers_and_dim(
-                model_config, device=self.device
-            )
+            tokenizer_mapping, channel_feature_dim = build_tokenizers_and_dim(model_config, device=self.device)
             self.tokenizer_mapping = nn.ModuleDict(tokenizer_mapping)
             projection_config = projection_config or model_config.projection
             projection = projection_config.enabled
-            encoder_factory = encoder_factory or build_encoder_factory(
-                model_config.backbone
-            )
-            transformer_hidden_size = (
-                transformer_hidden_size or model_config.backbone.hidden_size
-            )
+            encoder_factory = encoder_factory or build_encoder_factory(model_config.backbone)
+            transformer_hidden_size = transformer_hidden_size or model_config.backbone.hidden_size
         else:
             if channel_feature_dim is None or channel_names is None:
-                raise ValueError(
-                    "channel_feature_dim and channel_names are required when model_config is absent."
-                )
+                raise ValueError("channel_feature_dim and channel_names are required when model_config is absent.")
 
             self.channel_names = channel_names
-            tokenizer_type = (
-                SundialTokenizer if two_layer_embedding else LinearTokenizer
-            )
+            tokenizer_type = SundialTokenizer if two_layer_embedding else LinearTokenizer
 
             self.high_tokenizer_1 = tokenizer_type(
                 in_feature_dim=self.high_sr,
@@ -158,22 +146,13 @@ class Sleep2vecPretrainModel(nn.Module):
         self.encoder_name = encoder_factory.name
 
         self.mask_embed = nn.ParameterDict(
-            {
-                channel_name: nn.Parameter(torch.ones(channel_feature_dim))
-                for channel_name in self.channel_names
-            }
+            {channel_name: nn.Parameter(torch.ones(channel_feature_dim)) for channel_name in self.channel_names}
         )
 
-        self.embedding_projection = nn.Linear(
-            channel_feature_dim, self.transformer_hidden_size
-        )
+        self.embedding_projection = nn.Linear(channel_feature_dim, self.transformer_hidden_size)
 
         self.proj_head = build_projection(
-            (
-                projection_config
-                if projection_config is not None
-                else ProjectionConfig(enabled=projection or False)
-            ),
+            (projection_config if projection_config is not None else ProjectionConfig(enabled=projection or False)),
             in_dim=self.transformer_hidden_size,
         )
         self.projection = bool(self.proj_head)
@@ -189,9 +168,7 @@ class Sleep2vecPretrainModel(nn.Module):
 
         self.total_params = sum(p.numel() for p in self.parameters())
         logging.info(f"Total parameters: {self.total_params}")
-        self.trainable_params = sum(
-            p.numel() for p in self.parameters() if p.requires_grad
-        )
+        self.trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         logging.info(f"Trainable parameters: {self.trainable_params}")
 
     def _tokenize_two_random_channels(self, tokens):
@@ -209,8 +186,7 @@ class Sleep2vecPretrainModel(nn.Module):
             chosen_channels = random.sample(available, 2)  # 随机选2个不同的模态
             # logging.info(f"chosen_channels: {chosen_channels}")
         return {
-            channel_name: self.tokenizer_mapping[channel_name](tokens[channel_name])
-            for channel_name in chosen_channels
+            channel_name: self.tokenizer_mapping[channel_name](tokens[channel_name]) for channel_name in chosen_channels
         }
 
     def _tokenize_one_channel(self, tokens):
@@ -255,9 +231,7 @@ class Sleep2vecPretrainModel(nn.Module):
         return {channel_name: mask_one(channel_name) for channel_name in tokens.keys()}
 
     def _fuse_modalities(self, token_embeddings):
-        modalities = [
-            token_embeddings[key] for key in token_embeddings
-        ]  # 取出 N 个 [4, 120, 512] 张量
+        modalities = [token_embeddings[key] for key in token_embeddings]  # 取出 N 个 [4, 120, 512] 张量
         fused_token_embeddings = torch.cat(modalities, dim=-1)  # 拼接最后一维
         return fused_token_embeddings
 
@@ -283,9 +257,7 @@ class Sleep2vecPretrainModel(nn.Module):
         token_embeddings = self.embedding_projection(token_embeddings)
 
         # 4. 添加 padding mask
-        token_embeddings, first_padding_mask = self.apply_padding_mask(
-            token_embeddings, batch["length"]
-        )
+        token_embeddings, first_padding_mask = self.apply_padding_mask(token_embeddings, batch["length"])
 
         # 5. Transformer encoder
         hidden = self._run_encoder(token_embeddings, first_padding_mask)
@@ -295,13 +267,9 @@ class Sleep2vecPretrainModel(nn.Module):
     def _run_encoder(self, token_embeddings, attention_mask):
         """Routes embeddings through the selected encoder."""
         if self._custom_encoder_forward is not None:
-            return self._custom_encoder_forward(
-                self.encoder, token_embeddings, attention_mask
-            )
+            return self._custom_encoder_forward(self.encoder, token_embeddings, attention_mask)
 
-        encoder_output = self.encoder(
-            inputs_embeds=token_embeddings, attention_mask=attention_mask
-        )
+        encoder_output = self.encoder(inputs_embeds=token_embeddings, attention_mask=attention_mask)
         if isinstance(encoder_output, torch.Tensor):
             return encoder_output
         if hasattr(encoder_output, "last_hidden_state"):
@@ -327,9 +295,7 @@ class Sleep2vecPretrainModel(nn.Module):
     def forward(self, batch, apply_mask):
 
         # 随机选择两个 channel 做 mask 对比学习
-        assert (
-            len(self.channel_names) >= 2
-        ), "At two channels are required for this method!"
+        assert len(self.channel_names) >= 2, "At two channels are required for this method!"
         tokens = batch["tokens"]
 
         # 1. 随机选择两个通道并 tokenize
@@ -337,9 +303,7 @@ class Sleep2vecPretrainModel(nn.Module):
 
         # 2. mask 选择的两个通道
         if apply_mask:
-            token_embeddings = self._mask_modalities(
-                token_embeddings, batch["mlm_mask"]
-            )
+            token_embeddings = self._mask_modalities(token_embeddings, batch["mlm_mask"])
 
         # modality_names = list(token_embeddings.keys())
         token_embeddings = list(token_embeddings.values())
@@ -349,12 +313,8 @@ class Sleep2vecPretrainModel(nn.Module):
         )
 
         # 3/4/5
-        first_hidden = self._token_embeddings_to_hidden(
-            first_mod_token_embeddings, batch
-        )
-        second_hidden = self._token_embeddings_to_hidden(
-            second_mod_token_embeddings, batch
-        )
+        first_hidden = self._token_embeddings_to_hidden(first_mod_token_embeddings, batch)
+        second_hidden = self._token_embeddings_to_hidden(second_mod_token_embeddings, batch)
 
         # ★ 对所有 token 逐个投影：得到 [B, L, 128]
         if self.projection:
@@ -408,9 +368,7 @@ class Sleep2vecPretrainModel(nn.Module):
         if train_mask_embed:
             _select_parameters(lambda n: n.startswith("mask_embed."))
         if train_tokenizers:
-            _select_parameters(
-                lambda n: any(key in n for key in ["high_tokenizer", "low_tokenizer"])
-            )
+            _select_parameters(lambda n: any(key in n for key in ["high_tokenizer", "low_tokenizer"]))
 
         # 4) 冻结了 tokenizer 时，把其中的 BN/Dropout 置 eval，避免统计量漂移
         if not train_tokenizers:
@@ -426,9 +384,5 @@ class Sleep2vecPretrainModel(nn.Module):
 
         # 打印统计
         total = sum(p.numel() for _, p in self.named_parameters())
-        trainable = sum(
-            p.numel() for _, p in self.named_parameters() if p.requires_grad
-        )
-        logging.info(
-            f"[freeze_backbone_groups] backbone trainable: {trainable}/{total} ({trainable/total:.4%})"
-        )
+        trainable = sum(p.numel() for _, p in self.named_parameters() if p.requires_grad)
+        logging.info(f"[freeze_backbone_groups] backbone trainable: {trainable}/{total} ({trainable/total:.4%})")

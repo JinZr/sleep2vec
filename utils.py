@@ -76,9 +76,7 @@ def _build_finetune_loader(
     is_train_set,
     few_shot=None,
 ):
-    meta_data_names = (
-        [] if args.label_name in {"age", "sex", "stage5"} else [args.label_name]
-    )
+    meta_data_names = [] if args.label_name in {"age", "sex", "stage5"} else [args.label_name]
 
     dataset_kwargs = dict(
         channel_names=args.data_channel_names,

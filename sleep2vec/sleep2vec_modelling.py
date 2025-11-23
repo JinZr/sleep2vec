@@ -1,8 +1,8 @@
-import logging
 import math
 
 import pytorch_lightning as pl
 import torch
+
 from sleep2vec.losses import create_loss
 from sleep2vec.pretrain_model import Sleep2vecPretrainModel
 
@@ -64,9 +64,7 @@ class Sleep2vecPretraining(pl.LightningModule):
                 sync_dist=True,
             )
             if self.val_contrastive_sample:
-                _val_contrastive_sample = torch.stack(
-                    self.val_contrastive_sample
-                ).mean()
+                _val_contrastive_sample = torch.stack(self.val_contrastive_sample).mean()
                 self.log(
                     "val_contrastive_acc",
                     _val_contrastive_sample,
@@ -140,11 +138,7 @@ class Sleep2vecPretraining(pl.LightningModule):
         decay, no_decay = [], []
         for n, p in self.model.named_parameters():
             if p.requires_grad:
-                if (
-                    p.ndim >= 2
-                    and ("norm" not in n.lower())
-                    and ("bias" not in n.lower())
-                ):
+                if p.ndim >= 2 and ("norm" not in n.lower()) and ("bias" not in n.lower()):
                     decay.append(p)
                 else:
                     no_decay.append(p)

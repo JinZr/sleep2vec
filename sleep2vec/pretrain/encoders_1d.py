@@ -41,9 +41,7 @@ class UNetEncoderHigh(nn.Module):
 
         self.total_params = sum(p.numel() for p in self.parameters())
         print(f"Total parameters: {self.total_params}")
-        self.trainable_params = sum(
-            p.numel() for p in self.parameters() if p.requires_grad
-        )
+        self.trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"Trainable parameters: {self.trainable_params}")
 
     def _make_layer(self, planes: int, blocks: int, stride: int = 1) -> nn.Sequential:
@@ -118,9 +116,7 @@ class UNetEncoderLow(nn.Module):
 
         self.total_params = sum(p.numel() for p in self.parameters())
         print(f"Total parameters: {self.total_params}")
-        self.trainable_params = sum(
-            p.numel() for p in self.parameters() if p.requires_grad
-        )
+        self.trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"Trainable parameters: {self.trainable_params}")
 
     def _make_layer(self, planes: int, blocks: int, stride: int = 1) -> nn.Sequential:

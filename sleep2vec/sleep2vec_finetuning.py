@@ -4,9 +4,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytorch_lightning as pl
 import seaborn as sns
+from sklearn.metrics import confusion_matrix
 import torch
 import wandb
-from sklearn.metrics import confusion_matrix
 
 from metrics import compute_downstream_metrics
 
@@ -83,11 +83,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return
         preds, gts = result
         trainer = getattr(self, "trainer", None)
-        if (
-            self.args.is_classification
-            and trainer is not None
-            and trainer.is_global_zero
-        ):
+        if self.args.is_classification and trainer is not None and trainer.is_global_zero:
             self._log_confusion_matrix(preds, gts)
 
     # ---------- Internal helpers ----------

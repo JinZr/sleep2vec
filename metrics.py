@@ -24,11 +24,7 @@ def roc_auc_from_two_logits(gts, preds) -> float:
         raise ValueError(f"preds 必须是 (N,2)，当前 {y_pred.shape}")
 
     row_sum = y_pred.sum(axis=1, keepdims=True)
-    looks_like_prob = (
-        y_pred.min() >= 0.0
-        and y_pred.max() <= 1.0
-        and np.allclose(row_sum, 1.0, atol=1e-4)
-    )
+    looks_like_prob = y_pred.min() >= 0.0 and y_pred.max() <= 1.0 and np.allclose(row_sum, 1.0, atol=1e-4)
     if looks_like_prob:
         y_score = y_pred[:, 1].astype(np.float32)
     else:
@@ -46,9 +42,7 @@ def roc_auc_from_two_logits(gts, preds) -> float:
         return np.nan
 
 
-def save_result_csv(
-    pretrain_result: Mapping[str, float], csv_path: str, args: Any | None = None
-):
+def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: Any | None = None):
     """
     将实验结果写入/追加到 CSV 文件中。
     """
@@ -122,9 +116,7 @@ def compute_downstream_metrics(
             y_pred = probs.argmax(axis=1)
 
             labels = np.arange(output_dim)
-            f1_per_class = f1_score(
-                y_true, y_pred, labels=labels, average=None, zero_division=0
-            )
+            f1_per_class = f1_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
 
             stage_names = stage_names or ["W", "N1", "N2", "N3", "REM"]
             assert len(stage_names) == output_dim

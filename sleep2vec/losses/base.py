@@ -42,9 +42,7 @@ def register_loss(name: str):
 
 def create_loss(name: str, **kwargs) -> ContrastiveLoss:
     if name not in LOSS_REGISTRY:
-        raise KeyError(
-            f"Unknown loss '{name}'. Available losses: {sorted(LOSS_REGISTRY.keys())}"
-        )
+        raise KeyError(f"Unknown loss '{name}'. Available losses: {sorted(LOSS_REGISTRY.keys())}")
     return LOSS_REGISTRY[name](**kwargs)
 
 
