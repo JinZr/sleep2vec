@@ -45,9 +45,10 @@ class Sleep2vecPretrainModel(nn.Module):
 
         if model_config is not None:
             self.channel_names = [c.name for c in model_config.channels]
-            self.tokenizer_mapping, channel_feature_dim = build_tokenizers_and_dim(
+            tokenizer_mapping, channel_feature_dim = build_tokenizers_and_dim(
                 model_config, device=self.device
             )
+            self.tokenizer_mapping = nn.ModuleDict(tokenizer_mapping)
             projection_config = projection_config or model_config.projection
             projection = projection_config.enabled
             encoder_factory = encoder_factory or build_encoder_factory(
@@ -124,6 +125,7 @@ class Sleep2vecPretrainModel(nn.Module):
                 "resp_original": self.low_tokenizer_4,
                 "resp_nasal_original": self.low_tokenizer_5,
             }
+            self.tokenizer_mapping = nn.ModuleDict(self.tokenizer_mapping)
 
             if projection_config is None:
                 projection_config = ProjectionConfig(
