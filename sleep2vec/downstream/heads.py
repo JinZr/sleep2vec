@@ -207,7 +207,7 @@ class RegressionHead(nn.Module):
 
         return out
 
- 
+
 class AttnPooling(nn.Module):
     def __init__(self, d, heads=1, temp=1.0, dropout=0.0):
         super().__init__()

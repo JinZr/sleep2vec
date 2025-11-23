@@ -64,11 +64,38 @@ class LossConfig:
 class PretrainConfigBundle:
     model: ModelConfig
     loss: LossConfig
+    data: "PretrainDataConfig"
 
 
 @dataclass
 class FinetuneConfigBundle:
     model: ModelConfig
+    data: "FinetuneDataConfig"
+    lora: "LoraConfig"
+
+
+@dataclass
+class FinetuneDataConfig:
+    max_tokens: int = 120
+    data_channel_names: list[str] | None = None
+    finetune_data_index: str | None = None
+    finetune_preset_path: str | None = None
+    train_dataset_names: list[str] | None = None
+    test_dataset_names: list[str] | None = None
+    n_few_shot: int = 1280
+
+
+@dataclass
+class LoraConfig:
+    freeze_backbone_and_insert_lora: bool = False
+    insert_lora: bool = True
+    separate_adapters: bool = False
+
+
+@dataclass
+class PretrainDataConfig:
+    mask_rate: float = 0.15
+    max_tokens: int = 120
 
 
 def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
@@ -113,6 +140,7 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
 
     model_block = data.get("model", {})
     loss_block = data.get("loss", {})
+    data_block = data.get("data", {})
 
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
@@ -126,7 +154,8 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     )
 
     loss_cfg = _build_loss(loss_block)
-    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg)
+    data_cfg = PretrainDataConfig(**data_block)
+    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg)
 
 
 def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
@@ -134,6 +163,8 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     if not isinstance(data, dict):
         raise ValueError("Top-level YAML must be a mapping with a model block.")
     model_block = data.get("model", {})
+    data_block = data.get("data", {})
+    lora_block = data.get("lora", {})
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
     projection = ProjectionConfig(**(model_block.get("projection") or {}))
@@ -144,19 +175,23 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         projection=projection,
         head=head,
     )
-    return FinetuneConfigBundle(model=model_cfg)
+    data_cfg = FinetuneDataConfig(**data_block)
+    lora_cfg = LoraConfig(**lora_block)
+    return FinetuneConfigBundle(model=model_cfg, data=data_cfg, lora=lora_cfg)
 
 
 __all__ = [
     "FinetuneConfigBundle",
     "PretrainConfigBundle",
+    "FinetuneDataConfig",
+    "PretrainDataConfig",
     "BackboneConfig",
     "ChannelConfig",
-    "PretrainConfigBundle",
     "HeadConfig",
     "LossConfig",
     "ModelConfig",
     "ProjectionConfig",
+    "LoraConfig",
     "load_finetune_config",
     "load_pretrain_config",
     "validate_model_config",

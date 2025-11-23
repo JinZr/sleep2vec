@@ -40,9 +40,7 @@ class SimCLRProjectionHead(nn.Module):
             raise ValueError(f"SimCLRProjectionHead expects 2D/3D, got shape {h.shape}")
 
 
-def build_projection_head(
-    cfg: ProjectionConfig, *, in_dim: int
-) -> nn.Module | None:
+def build_projection_head(cfg: ProjectionConfig, *, in_dim: int) -> nn.Module | None:
     """Construct projection head from config; returns None if disabled."""
     if not cfg.enabled:
         return None

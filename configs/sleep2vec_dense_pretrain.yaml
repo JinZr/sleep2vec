@@ -58,3 +58,6 @@ loss:
   params:
     hard_scale: 0.10
     pos_margin: 0.0
+data:
+  mask_rate: 0.15
+  max_tokens: 120

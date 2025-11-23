@@ -27,6 +27,8 @@ def prepare_dataloader(args):
 
 def supervised(args, config_bundle):
     model_config = config_bundle.model
+    data_cfg = config_bundle.data
+    lora_cfg = config_bundle.lora
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
@@ -165,50 +167,7 @@ if __name__ == "__main__":
         default="age",
         help="downstream label to predict (e.g. age, sex, stage5)",
     )
-    parser.add_argument(
-        "--data-channel-names",
-        type=str,
-        default="",
-        help="comma-separated dataset channel names; if empty, defaults to --channel-names",
-    )
-    parser.add_argument(
-        "--max-tokens",
-        type=int,
-        default=120,
-        help="maximum number of tokens per PSG window",
-    )
-    parser.add_argument(
-        "--finetune-data-index",
-        type=Path,
-        default="index/hsp_psg_pretrain.csv",
-        help="CSV index file listing PSG samples for finetuning",
-    )
-    parser.add_argument(
-        "--finetune-preset-path",
-        type=Path,
-        default="/data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle",
-        help="path to preset pickle used to accelerate finetuning dataset loading",
-    )
-    parser.add_argument(
-        "--train-dataset-names",
-        type=str,
-        default="shhs",
-        help="comma-separated dataset identifiers used for train/val splits",
-    )
-    parser.add_argument(
-        "--test-dataset-names",
-        type=str,
-        default="shhs",
-        help="comma-separated dataset identifiers used for test split",
-    )
-    parser.add_argument(
-        "--n-few-shot",
-        type=int,
-        default=1280,
-        help="number of labeled samples for few-shot setting",
-    )
-
-    # ---------------- Pretrained backbone / LoRA configuration ----------------
+    # ---------------- Data/configuration now YAML-driven; keep CLI for ckpt paths only ----------------
     parser.add_argument(
         "--pretrained-backbone-path",
         type=str,
@@ -221,48 +180,6 @@ if __name__ == "__main__":
         default=None,
         help="optional checkpoint (.ckpt) to resume fine-tuning / testing",
     )
-
-    parser.add_argument(
-        "--freeze-backbone-and-insert-lora",
-        dest="freeze_backbone_and_insert_lora",
-        action="store_true",
-        help="freeze backbone weights and insert LoRA adapters",
-    )
-    parser.add_argument(
-        "--no-freeze-backbone-and-insert-lora",
-        dest="freeze_backbone_and_insert_lora",
-        action="store_false",
-        help="keep backbone trainable and do not insert LoRA adapters",
-    )
-    parser.set_defaults(freeze_backbone_and_insert_lora=False)
-
-    parser.add_argument(
-        "--insert-lora",
-        dest="insert_lora",
-        action="store_true",
-        help="enable insertion of LoRA layers (effective when freezing backbone)",
-    )
-    parser.add_argument(
-        "--no-insert-lora",
-        dest="insert_lora",
-        action="store_false",
-        help="disable insertion of LoRA layers",
-    )
-    parser.set_defaults(insert_lora=True)
-
-    parser.add_argument(
-        "--separate-adapters",
-        dest="separate_adapters",
-        action="store_true",
-        help="use separate LoRA adapters for each task/head",
-    )
-    parser.add_argument(
-        "--no-separate-adapters",
-        dest="separate_adapters",
-        action="store_false",
-        help="share LoRA adapters across tasks",
-    )
-    parser.set_defaults(separate_adapters=False)
 
     # ---------------- Logging / versioning ----------------
     parser.add_argument(
@@ -304,22 +221,38 @@ if __name__ == "__main__":
 
     config_bundle = load_finetune_config(args.config)
     args.channel_names = [c.name for c in config_bundle.model.channels]
-    if args.data_channel_names:
-        args.data_channel_names = [
-            c.strip() for c in args.data_channel_names.split(",") if c.strip()
-        ]
-    else:
-        args.data_channel_names = args.channel_names
-    args.train_dataset_names = [
-        name.strip() for name in args.train_dataset_names.split(",") if name.strip()
-    ]
-    args.test_dataset_names = [
-        name.strip() for name in args.test_dataset_names.split(",") if name.strip()
-    ]
-    if not args.train_dataset_names:
-        args.train_dataset_names = ["shhs"]
-    if not args.test_dataset_names:
-        args.test_dataset_names = ["shhs"]
+    data_cfg = config_bundle.data
+    lora_cfg = config_bundle.lora
+
+    # Data-related overrides from YAML
+    args.max_tokens = data_cfg.max_tokens
+    args.data_channel_names = data_cfg.data_channel_names or args.channel_names
+    args.finetune_data_index = (
+        Path(data_cfg.finetune_data_index)
+        if data_cfg.finetune_data_index
+        else args.finetune_data_index
+    )
+    args.finetune_preset_path = (
+        Path(data_cfg.finetune_preset_path)
+        if data_cfg.finetune_preset_path
+        else args.finetune_preset_path
+    )
+    args.train_dataset_names = (
+        data_cfg.train_dataset_names
+        if data_cfg.train_dataset_names
+        else args.train_dataset_names.split(",")
+    )
+    args.test_dataset_names = (
+        data_cfg.test_dataset_names
+        if data_cfg.test_dataset_names
+        else args.test_dataset_names.split(",")
+    )
+    args.n_few_shot = data_cfg.n_few_shot
+
+    # LoRA-related toggles from YAML
+    args.freeze_backbone_and_insert_lora = lora_cfg.freeze_backbone_and_insert_lora
+    args.insert_lora = lora_cfg.insert_lora
+    args.separate_adapters = lora_cfg.separate_adapters
     args.head_kwargs = {}
 
     # ---- Infer task spec from label_name (same spirit as TaskSpec in batch_run_few_shot.py) ----

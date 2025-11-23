@@ -46,7 +46,7 @@ class PSGPretrainDataset(DefaultDataset):
         if not load_preset_path:
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
-                idx: t.Union[str, os.PathLike, t.List[t.Union[str, os.PathLike]]]
+                idx: t.Union[str, os.PathLike, t.List[t.Union[str, os.PathLike]]],
             ) -> pd.DataFrame:
                 # 单个路径
                 if isinstance(idx, (str, os.PathLike, Path)):

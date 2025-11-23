@@ -54,7 +54,7 @@ model:
     hidden_dim: null
 data:
   max_tokens: 120
-  data_channel_names: null
+  data_channel_names: null    # optional override for dataset channel names
   finetune_data_index: index/hsp_psg_pretrain.csv
   finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
   train_dataset_names: [shhs]

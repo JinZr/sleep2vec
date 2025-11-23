@@ -21,6 +21,8 @@ def sleep2vec_pretrain(args):
     config_bundle = load_pretrain_config(args.config)
     model_config = config_bundle.model
     loss_config = config_bundle.loss
+    args.mask_rate = config_bundle.data.mask_rate
+    args.max_tokens = config_bundle.data.max_tokens
     args.channel_names = [c.name for c in model_config.channels]
     args.backbone_arch = model_config.backbone.name
 
@@ -168,13 +170,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--device", type=str, default="cuda", help="torch device used by dataloader"
     )
-    parser.add_argument(
-        "--mask-rate", type=float, default=0.15, help="masking rate for pretraining"
-    )
-    parser.add_argument(
-        "--max-tokens", type=int, default=120, help="maximum tokens per window"
-    )
-
     parser.add_argument(
         "--pretrain-data-index",
         type=Path,

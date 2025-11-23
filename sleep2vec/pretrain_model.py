@@ -63,7 +63,9 @@ class Sleep2vecPretrainModel(nn.Module):
                 )
 
             self.channel_names = channel_names
-            tokenizer_type = SundialTokenizer if two_layer_embedding else LinearTokenizer
+            tokenizer_type = (
+                SundialTokenizer if two_layer_embedding else LinearTokenizer
+            )
 
             self.high_tokenizer_1 = tokenizer_type(
                 in_feature_dim=self.high_sr,
@@ -165,9 +167,11 @@ class Sleep2vecPretrainModel(nn.Module):
         )
 
         self.proj_head = build_projection(
-            projection_config
-            if projection_config is not None
-            else ProjectionConfig(enabled=projection or False),
+            (
+                projection_config
+                if projection_config is not None
+                else ProjectionConfig(enabled=projection or False)
+            ),
             in_dim=self.transformer_hidden_size,
         )
         self.projection = bool(self.proj_head)
