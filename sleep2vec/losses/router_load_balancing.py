@@ -51,6 +51,7 @@ class RouterLoadBalancingLoss(AuxiliaryLoss):
             for layer_out in layers:
                 router_logits = None
                 router_probs = None
+                logits_were_int = False
 
                 if isinstance(layer_out, (list, tuple)) and layer_out and isinstance(layer_out[0], torch.Tensor):
                     router_logits = layer_out[0]
@@ -59,13 +60,17 @@ class RouterLoadBalancingLoss(AuxiliaryLoss):
                 else:
                     router_logits, router_probs = _extract_logits_and_probs(layer_out)
 
+                if router_logits is not None and not torch.is_floating_point(router_logits):
+                    logits_were_int = True
+                    router_logits = router_logits.float()
+
                 if router_logits is not None and router_logits.dim() < 2:
                     continue
                 if router_logits is None and router_probs is None:
                     continue
 
                 if router_probs is None:
-                    router_probs = torch.softmax(router_logits, dim=-1)
+                    router_probs = router_logits if logits_were_int else torch.softmax(router_logits, dim=-1)
                 if router_probs.dim() < 2:
                     continue
 
