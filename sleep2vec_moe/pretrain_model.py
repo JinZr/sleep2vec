@@ -277,14 +277,17 @@ class Sleep2vecPretrainModel(nn.Module):
             attention_mask=attention_mask,
             # Ask for router logits so aux losses receive router outputs.
             output_router_logits=return_router,
+            # Also request router probabilities directly when available.
+            output_router_probs=return_router,
         )
 
         router_outputs = None
         if return_router:
-            if hasattr(encoder_output, "router_logits"):
-                router_outputs = encoder_output.router_logits
-            elif hasattr(encoder_output, "router_probs"):
-                router_outputs = encoder_output.router_probs
+            probs = getattr(encoder_output, "router_probs", None)
+            logits = getattr(encoder_output, "router_logits", None)
+            if probs is not None or logits is not None:
+                # Keep both when available so downstream losses can choose.
+                router_outputs = {"router_probs": probs, "router_logits": logits}
             elif hasattr(encoder_output, "router_outputs"):
                 router_outputs = encoder_output.router_outputs
 
