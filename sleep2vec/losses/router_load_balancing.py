@@ -28,24 +28,48 @@ class RouterLoadBalancingLoss(AuxiliaryLoss):
 
         per_view_losses: list[torch.Tensor] = []
 
-        for single_router in router_outputs:
+        router_views = list(router_outputs) if isinstance(router_outputs, (list, tuple)) else [router_outputs]
+
+        def _extract_logits_and_probs(candidate):
+            logits = None
+            probs = None
+
+            if isinstance(candidate, dict):
+                logits = candidate.get("router_logits")
+                probs = candidate.get("router_probs")
+            else:
+                logits = getattr(candidate, "router_logits", None)
+                probs = getattr(candidate, "router_probs", None)
+
+            return logits, probs
+
+        for single_router in router_views:
             if single_router is None:
                 continue
 
             layers = list(single_router) if isinstance(single_router, (list, tuple)) else [single_router]
             for layer_out in layers:
+                router_logits = None
+                router_probs = None
+
                 if isinstance(layer_out, (list, tuple)) and layer_out and isinstance(layer_out[0], torch.Tensor):
                     router_logits = layer_out[0]
                 elif isinstance(layer_out, torch.Tensor):
                     router_logits = layer_out
                 else:
+                    router_logits, router_probs = _extract_logits_and_probs(layer_out)
+
+                if router_logits is not None and router_logits.dim() < 2:
+                    continue
+                if router_logits is None and router_probs is None:
                     continue
 
-                if router_logits.dim() < 2:
+                if router_probs is None:
+                    router_probs = torch.softmax(router_logits, dim=-1)
+                if router_probs.dim() < 2:
                     continue
 
-                router_probs = torch.softmax(router_logits, dim=-1)
-                expert_indices = torch.argmax(router_logits, dim=-1)
+                expert_indices = torch.argmax(router_probs, dim=-1)
                 per_view_losses.append(load_balancing_loss_func(router_probs, expert_indices))
 
         if not per_view_losses:
