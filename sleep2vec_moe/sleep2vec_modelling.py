@@ -3,6 +3,7 @@ import typing as t
 
 import pytorch_lightning as pl
 import torch
+import torch.nn as nn
 
 from .config import AuxLossConfig
 from .losses import create_aux_loss, create_loss
@@ -185,11 +186,22 @@ class Sleep2vecPretraining(pl.LightningModule):
 
     def _build_aux_losses(self):
         aux_losses = []
+        self.aux_loss_modules = nn.ModuleDict()
         for idx, cfg in enumerate(self.aux_loss_configs):
             if cfg is None:
                 continue
             aux_fn = create_aux_loss(cfg.name, **(cfg.params or {}))
-            aux_losses.append({"fn": aux_fn, "weight": cfg.weight, "name": cfg.name, "index": idx + 1})
+            module_name = f"aux_loss_{idx + 1}_{cfg.name}"
+            self.aux_loss_modules[module_name] = aux_fn
+            aux_losses.append(
+                {
+                    "fn": aux_fn,
+                    "weight": cfg.weight,
+                    "name": cfg.name,
+                    "index": idx + 1,
+                    "module_name": module_name,
+                }
+            )
         return aux_losses
 
     def configure_optimizers(self):
