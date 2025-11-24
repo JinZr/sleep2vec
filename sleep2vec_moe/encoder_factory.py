@@ -4,7 +4,7 @@ import torch.nn as nn
 from transformers import RoFormerConfig, RoFormerModel
 
 try:
-    from switch_roformers import SwitchRoFormerConfig, SwitchRoFormerEncoderModel
+    from transformers import SwitchRoFormerConfig, SwitchRoFormerEncoderModel
 except ImportError as exc:  # pragma: no cover - dependency is external
     SwitchRoFormerConfig = None
     SwitchRoFormerEncoderModel = None
