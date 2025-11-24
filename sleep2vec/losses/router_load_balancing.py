@@ -43,39 +43,100 @@ class RouterLoadBalancingLoss(AuxiliaryLoss):
 
             return logits, probs
 
-        for single_router in router_views:
+        def _iter_layers(single_router):
+            """Yield (logits, probs) pairs for each layer across all router output formats."""
             if single_router is None:
-                continue
+                return
 
-            layers = list(single_router) if isinstance(single_router, (list, tuple)) else [single_router]
-            for layer_out in layers:
-                router_logits = None
-                router_probs = None
+            if isinstance(single_router, (list, tuple)):
+                for element in single_router:
+                    # Common HF pattern: a tuple of (logits, probs) tensors per layer.
+                    if (
+                        isinstance(element, (list, tuple))
+                        and len(element) == 2
+                        and all(torch.is_tensor(e) for e in element)
+                    ):
+                        yield element[0], element[1]
+                    else:
+                        yield from _iter_layers(element)
+                return
+
+            if isinstance(single_router, dict) or hasattr(single_router, "router_logits") or hasattr(
+                single_router, "router_probs"
+            ):
+                logits, probs = _extract_logits_and_probs(single_router)
+                logits_seq = list(logits) if isinstance(logits, (list, tuple)) else ([logits] if logits is not None else [])
+                probs_seq = list(probs) if isinstance(probs, (list, tuple)) else ([probs] if probs is not None else [])
+                max_len = max(len(logits_seq), len(probs_seq))
+                if max_len == 0:
+                    return
+                logits_seq += [None] * (max_len - len(logits_seq))
+                probs_seq += [None] * (max_len - len(probs_seq))
+                for lg, pb in zip(logits_seq, probs_seq):
+                    yield lg, pb
+                return
+
+            # Fallback: treat the object itself as logits.
+            yield single_router, None
+
+        def _scatter_selected_probs(router_logits: torch.Tensor, router_probs: torch.Tensor | None):
+            """
+            Handle dispatch-style outputs where router_logits carries a one-hot mask and
+            router_probs only contains the selected expert weight(s).
+            """
+            if router_probs is None or router_logits is None or router_logits.dim() < 2:
+                return router_probs
+
+            # Case 1: probs missing the expert dimension entirely, e.g. [B, top_k] vs [B, top_k, num_experts].
+            if router_logits.dim() == router_probs.dim() + 1 and router_logits.shape[:-1] == router_probs.shape:
+                expert_indices = torch.argmax(router_logits, dim=-1)
+                dense = torch.zeros(router_logits.shape, device=router_probs.device, dtype=router_probs.dtype)
+                dense.scatter_(dense.dim() - 1, expert_indices.unsqueeze(-1), router_probs.unsqueeze(-1))
+                return dense
+
+            # Case 2: probs has a trailing singleton expert dim, e.g. [B, top_k, 1] vs [B, top_k, num_experts].
+            if router_logits.shape[:-1] == router_probs.shape[:-1] and router_probs.shape[-1] == 1:
+                expert_indices = torch.argmax(router_logits, dim=-1)
+                squeezed = router_probs.squeeze(-1)
+                dense = torch.zeros(router_logits.shape, device=router_probs.device, dtype=router_probs.dtype)
+                dense.scatter_(dense.dim() - 1, expert_indices.unsqueeze(-1), squeezed.unsqueeze(-1))
+                return dense
+
+            return router_probs
+
+        for single_router in router_views:
+            for router_logits, router_probs in _iter_layers(single_router):
+                if router_logits is not None and not torch.is_tensor(router_logits):
+                    continue
+                if router_probs is not None and not torch.is_tensor(router_probs):
+                    continue
+
                 logits_were_int = False
-
-                if isinstance(layer_out, (list, tuple)) and layer_out and isinstance(layer_out[0], torch.Tensor):
-                    router_logits = layer_out[0]
-                elif isinstance(layer_out, torch.Tensor):
-                    router_logits = layer_out
-                else:
-                    router_logits, router_probs = _extract_logits_and_probs(layer_out)
-
                 if router_logits is not None and not torch.is_floating_point(router_logits):
                     logits_were_int = True
                     router_logits = router_logits.float()
 
-                if router_logits is not None and router_logits.dim() < 2:
-                    continue
-                if router_logits is None and router_probs is None:
-                    continue
+                router_probs = _scatter_selected_probs(router_logits, router_probs)
 
                 if router_probs is None:
+                    if router_logits is None or router_logits.dim() < 2:
+                        continue
                     router_probs = router_logits if logits_were_int else torch.softmax(router_logits, dim=-1)
-                if router_probs.dim() < 2:
+
+                if router_probs is None or router_probs.dim() < 2:
                     continue
 
                 expert_indices = torch.argmax(router_probs, dim=-1)
-                per_view_losses.append(load_balancing_loss_func(router_probs, expert_indices))
+
+                # Flatten across any token/top-k dims so the HF helper sees [N, num_experts].
+                router_probs_flat = router_probs.view(-1, router_probs.shape[-1])
+                expert_indices_flat = (
+                    expert_indices.reshape(-1, expert_indices.shape[-1])
+                    if expert_indices.dim() > 1
+                    else expert_indices.view(-1)
+                )
+
+                per_view_losses.append(load_balancing_loss_func(router_probs_flat, expert_indices_flat))
 
         if not per_view_losses:
             return None
