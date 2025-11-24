@@ -61,10 +61,18 @@ class LossConfig:
 
 
 @dataclass
+class AuxLossConfig:
+    name: str
+    weight: float = 1.0
+    params: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass
 class PretrainConfigBundle:
     model: ModelConfig
     loss: LossConfig
     data: "PretrainDataConfig"
+    aux_losses: t.List[AuxLossConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -122,6 +130,29 @@ def _build_loss(loss_block: dict[str, t.Any]) -> LossConfig:
     return LossConfig(**loss_block)
 
 
+def _build_aux_losses(raw_config: dict[str, t.Any]) -> t.List[AuxLossConfig]:
+    aux_losses: list[AuxLossConfig] = []
+    for key in sorted(raw_config.keys()):
+        if not key.startswith("aux_loss"):
+            continue
+        block = raw_config[key]
+        if block is None:
+            continue
+        if not isinstance(block, dict):
+            raise ValueError(f"{key} must be a mapping with name/weight/params fields.")
+        if "name" not in block:
+            raise ValueError(f"{key}.name is required in YAML config.")
+        params = dict(block.get("params") or {})
+        aux_losses.append(
+            AuxLossConfig(
+                name=block["name"],
+                weight=block.get("weight", 1.0),
+                params=params,
+            )
+        )
+    return aux_losses
+
+
 def validate_model_config(model_cfg: ModelConfig) -> int:
     """Checks model config sanity and returns the shared channel feature dim."""
     out_dims = {ch.out_dim for ch in model_cfg.channels}
@@ -135,9 +166,10 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     if not isinstance(data, dict):
         raise ValueError("Top-level YAML must be a mapping with model/loss blocks.")
 
-    model_block = data.get("model", {})
-    loss_block = data.get("loss", {})
-    data_block = data.get("data", {})
+    model_block = data.get("model", {}) or {}
+    loss_block = data.get("loss", {}) or {}
+    data_block = data.get("data", {}) or {}
+    aux_losses_cfg = _build_aux_losses(data)
 
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
@@ -150,9 +182,18 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
         head=head,
     )
 
-    loss_cfg = _build_loss(loss_block)
+    loss_params = dict((loss_block or {}).get("params") or {})
+    if not aux_losses_cfg and "router_lb_coef" in loss_params:
+        aux_losses_cfg.append(
+            AuxLossConfig(
+                name="router_load_balancing",
+                weight=loss_params.pop("router_lb_coef"),
+                params={},
+            )
+        )
+    loss_cfg = _build_loss({**loss_block, "params": loss_params})
     data_cfg = PretrainDataConfig(**data_block)
-    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg)
+    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg, aux_losses=aux_losses_cfg)
 
 
 def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
@@ -189,6 +230,7 @@ __all__ = [
     "ModelConfig",
     "ProjectionConfig",
     "LoraConfig",
+    "AuxLossConfig",
     "load_finetune_config",
     "load_pretrain_config",
     "validate_model_config",

@@ -1,4 +1,5 @@
 import math
+import typing as t
 
 import pytorch_lightning as pl
 import torch
@@ -8,11 +9,18 @@ from sleep2vec.pretrain_model import Sleep2vecPretrainModel
 
 
 class Sleep2vecPretraining(pl.LightningModule):
-    def __init__(self, args, model_config, loss_config):
+    def __init__(
+        self,
+        args,
+        model_config,
+        loss_config,
+        aux_loss_configs: t.Optional[t.Sequence[t.Any]] = None,
+    ):
         super().__init__()
         self.args = args
         self.model_config = model_config
         self.loss_config = loss_config
+        self.aux_loss_configs = list(aux_loss_configs or [])
         self.loss_fn = self._build_loss()
         self.model = Sleep2vecPretrainModel(
             channel_feature_dim=None,
@@ -169,5 +177,6 @@ class Sleep2vecPretraining(pl.LightningModule):
 
     def _build_loss(self):
         loss_kwargs = dict(self.loss_config.params or {})
+        loss_kwargs.pop("router_lb_coef", None)  # handled via aux losses in MOE variant
         loss_kwargs.setdefault("temperature", self.loss_config.temperature)
         return create_loss(self.loss_config.name, **loss_kwargs)

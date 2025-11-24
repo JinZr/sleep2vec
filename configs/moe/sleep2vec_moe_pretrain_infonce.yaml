@@ -64,7 +64,9 @@ loss:
   params:
     hard_scale: 0.10
     pos_margin: 0.0
-    router_lb_coef: 0.001
+aux_loss1:
+  name: router_load_balancing
+  weight: 0.001
 data:
   mask_rate: 0.15
   max_tokens: 120

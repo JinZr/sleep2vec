@@ -64,6 +64,25 @@ Only change CLI flags for training hyperparameters (epochs, lr, devices, etc.). 
    ```
 3. Run `python -m sleep2vec.pretrain_main --config your_pretrain.yaml ...`. Loss is no longer controlled via CLI.
 
+## 4b) Change auxiliary losses (router load balancing, etc.)
+Auxiliary objectives are declared alongside the main loss in pretrain YAML using `aux_lossN` blocks so you can add multiple extras without changing code.
+
+```yaml
+loss:
+  name: weighted_info_nce
+  temperature: 0.2
+  params:
+    hard_scale: 0.10
+    pos_margin: 0.0
+aux_loss1:
+  name: router_load_balancing   # registered in sleep2vec/losses/router_load_balancing.py
+  weight: 0.001                 # scales the aux loss before adding to total
+# aux_loss2/aux_loss3 ... can be added the same way
+```
+
+- Set `name` to any registered aux loss; provide `params` if the aux implementation expects them.
+- If you still have `router_lb_coef` inside `loss.params`, it will be auto-migrated to `router_load_balancing`, but prefer using the `aux_loss` block explicitly for clarity.
+
 ## 5) Change downstream model architecture
 Two options:
 1. **Adjust head settings in YAML** (no code change):

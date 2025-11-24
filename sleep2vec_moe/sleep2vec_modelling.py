@@ -1,23 +1,40 @@
 import math
+import typing as t
 
 import pytorch_lightning as pl
 import torch
-from transformers.models.switch_transformers.modeling_switch_transformers import (
-    load_balancing_loss_func,
-)
 
-from .losses import create_loss
+from .config import AuxLossConfig
+from .losses import create_aux_loss, create_loss
 from .pretrain_model import Sleep2vecPretrainModel
 
 
 class Sleep2vecPretraining(pl.LightningModule):
-    def __init__(self, args, model_config, loss_config):
+    def __init__(
+        self,
+        args,
+        model_config,
+        loss_config,
+        aux_loss_configs: t.Optional[t.Sequence[AuxLossConfig]] = None,
+    ):
         super().__init__()
         self.args = args
         self.model_config = model_config
         self.loss_config = loss_config
+
+        aux_loss_configs = list(aux_loss_configs or [])
+        if not aux_loss_configs:
+            router_coef = (self.loss_config.params or {}).get("router_lb_coef")
+            if router_coef is not None:
+                aux_loss_configs.append(AuxLossConfig(name="router_load_balancing", weight=router_coef))
+        self.aux_loss_configs = aux_loss_configs
+
         self.loss_fn = self._build_loss()
-        self.router_loss_weight = getattr(self.loss_config, "params", {}).get("router_lb_coef", 0.0)
+        self.aux_loss_fns = self._build_aux_losses()
+        self.requires_router_outputs = any(
+            getattr(spec["fn"], "requires_router_outputs", False) for spec in self.aux_loss_fns
+        )
+
         self.model = Sleep2vecPretrainModel(
             channel_feature_dim=None,
             transformer_hidden_size=model_config.backbone.hidden_size,
@@ -80,7 +97,7 @@ class Sleep2vecPretraining(pl.LightningModule):
 
     # ---------- 公共计算逻辑 ----------
     def _contrastive_step(self, batch, log_prefix=None):
-        model_out = self.model(batch, apply_mask=True, return_router=self.router_loss_weight > 0)
+        model_out = self.model(batch, apply_mask=True, return_router=self.requires_router_outputs)
         if isinstance(model_out, (list, tuple)) and len(model_out) == 3:
             first_hidden, second_hidden, router_outputs = model_out
         else:
@@ -93,18 +110,14 @@ class Sleep2vecPretraining(pl.LightningModule):
         contrastive_loss = metrics.get("contrastive_loss", total_loss.detach())
         acc_contrastive = metrics.get("contrastive_acc")
 
-        router_lb_loss = None
-        if self.router_loss_weight > 0 and router_outputs is not None:
-            router_lb_loss = self._compute_router_aux_loss(router_outputs)
-            if router_lb_loss is not None:
-                total_loss = total_loss + self.router_loss_weight * router_lb_loss
-
-        # # ---- logging ----
-        # if log_prefix is not None:
-        #     # step 级
-        #     self.log(f"{log_prefix}_loss", total_loss, prog_bar=True, sync_dist=True)
-        #     self.log(f"{log_prefix}_contrastive_loss", loss_contrastive_sample, prog_bar=False, sync_dist=True)
-        #     self.log(f"{log_prefix}_contrastive_acc", acc_contrastive, prog_bar=True, sync_dist=True)
+        aux_loss_results = []
+        for spec in self.aux_loss_fns:
+            aux_out = spec["fn"](router_outputs, batch)
+            if aux_out is None:
+                continue
+            weighted_loss = spec["weight"] * aux_out.loss
+            total_loss = total_loss + weighted_loss
+            aux_loss_results.append((spec, aux_out, weighted_loss))
 
         # ---- logging ----
         if log_prefix is not None:
@@ -136,20 +149,31 @@ class Sleep2vecPretraining(pl.LightningModule):
                     prog_bar=True,
                     sync_dist=True,
                     on_step=True,
-                on_epoch=True,
-                batch_size=B,
-            )
+                    on_epoch=True,
+                    batch_size=B,
+                )
 
-            if router_lb_loss is not None:
+            for spec, aux_out, weighted_loss in aux_loss_results:
+                log_base = f"{log_prefix}_aux{spec['index']}_{spec['name']}"
                 self.log(
-                    f"{log_prefix}_router_lb_loss",
-                    router_lb_loss,
+                    log_base,
+                    weighted_loss,
                     prog_bar=False,
                     sync_dist=True,
                     on_step=True,
                     on_epoch=True,
                     batch_size=B,
                 )
+                for metric_name, metric_val in (aux_out.metrics or {}).items():
+                    self.log(
+                        f"{log_base}_{metric_name}",
+                        metric_val,
+                        prog_bar=False,
+                        sync_dist=True,
+                        on_step=True,
+                        on_epoch=True,
+                        batch_size=B,
+                    )
 
         # 验证集：缓存到 epoch 末求均值
         if log_prefix == "val":
@@ -159,38 +183,14 @@ class Sleep2vecPretraining(pl.LightningModule):
 
         return total_loss, acc_contrastive  # 返回一个主 acc（sample-wise）
 
-    def _compute_router_aux_loss(self, router_outputs):
-        """Compute mean load-balancing loss across all available router outputs."""
-        if router_outputs is None:
-            return None
-
-        per_view_losses: list[torch.Tensor] = []
-
-        for single_router in router_outputs:
-            if single_router is None:
+    def _build_aux_losses(self):
+        aux_losses = []
+        for idx, cfg in enumerate(self.aux_loss_configs):
+            if cfg is None:
                 continue
-
-            # router outputs may be a tuple/list over layers; normalize to a flat list
-            layers = list(single_router) if isinstance(single_router, (list, tuple)) else [single_router]
-            for layer_out in layers:
-                if isinstance(layer_out, (list, tuple)) and layer_out and isinstance(layer_out[0], torch.Tensor):
-                    router_logits = layer_out[0]
-                elif isinstance(layer_out, torch.Tensor):
-                    router_logits = layer_out
-                else:
-                    continue
-
-                if router_logits.dim() < 2:
-                    continue
-
-                router_probs = torch.softmax(router_logits, dim=-1)
-                expert_indices = torch.argmax(router_logits, dim=-1)
-                per_view_losses.append(load_balancing_loss_func(router_probs, expert_indices))
-
-        if not per_view_losses:
-            return None
-
-        return torch.stack(per_view_losses).mean()
+            aux_fn = create_aux_loss(cfg.name, **(cfg.params or {}))
+            aux_losses.append({"fn": aux_fn, "weight": cfg.weight, "name": cfg.name, "index": idx + 1})
+        return aux_losses
 
     def configure_optimizers(self):
         # 参数分组：LN/BN权重与bias不做WD
@@ -228,5 +228,6 @@ class Sleep2vecPretraining(pl.LightningModule):
 
     def _build_loss(self):
         loss_kwargs = dict(self.loss_config.params or {})
+        loss_kwargs.pop("router_lb_coef", None)  # handled via aux_loss_configs
         loss_kwargs.setdefault("temperature", self.loss_config.temperature)
         return create_loss(self.loss_config.name, **loss_kwargs)

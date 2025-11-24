@@ -22,6 +22,7 @@ def sleep2vec_pretrain(args):
     config_bundle = load_pretrain_config(args.config)
     model_config = config_bundle.model
     loss_config = config_bundle.loss
+    aux_loss_configs = getattr(config_bundle, "aux_losses", None)
     args.mask_rate = config_bundle.data.mask_rate
     args.max_tokens = config_bundle.data.max_tokens
     args.channel_names = [c.name for c in model_config.channels]
@@ -61,7 +62,7 @@ def sleep2vec_pretrain(args):
     except Exception as exc:  # pragma: no cover - best-effort
         logging.warning(f"Failed to copy config to {dest_config}: {exc}")
 
-    model = Sleep2vecPretraining(args, model_config, loss_config)
+    model = Sleep2vecPretraining(args, model_config, loss_config, aux_loss_configs=aux_loss_configs)
 
     logger = WandbLogger(
         project="sleep2vec-moe-pretrain",
