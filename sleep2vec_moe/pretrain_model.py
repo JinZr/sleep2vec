@@ -272,7 +272,12 @@ class Sleep2vecPretrainModel(nn.Module):
                 return out, None
             return out
 
-        encoder_output = self.encoder(inputs_embeds=token_embeddings, attention_mask=attention_mask)
+        encoder_output = self.encoder(
+            inputs_embeds=token_embeddings,
+            attention_mask=attention_mask,
+            # Ask for router logits so aux losses receive router outputs.
+            output_router_logits=return_router,
+        )
 
         router_outputs = None
         if return_router:
