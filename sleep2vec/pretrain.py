@@ -11,9 +11,10 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
 import wandb
 
-from sleep2vec.config import load_pretrain_config
-from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
 from utils import get_pretrain_dataloader
+
+from .config import load_pretrain_config
+from .sleep2vec_modelling import Sleep2vecPretraining
 
 
 def sleep2vec_pretrain(args):
@@ -203,4 +204,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     logging.info(args)
+    sleep2vec_pretrain(args)
     sleep2vec_pretrain(args)

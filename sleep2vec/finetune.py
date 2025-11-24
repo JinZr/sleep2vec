@@ -11,9 +11,10 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 import wandb
 
 from metrics import save_result_csv
-from sleep2vec.config import load_finetune_config
-from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from utils import get_finetune_dataloaders
+
+from .config import load_finetune_config
+from .sleep2vec_finetuning import Sleep2vecFinetuning
 
 # from model.ahi_metric import AHIMetricsCollection
 
@@ -265,4 +266,5 @@ if __name__ == "__main__":
     logging.info(args)
 
     # Run fine-tuning
+    supervised(args, config_bundle)
     supervised(args, config_bundle)
