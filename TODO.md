@@ -1,6 +1,6 @@
-# TODO: Build a MoE-based Sleep2Vec in a sibling package (sleep2vec_moe) while sharing pretrain.py/finetune.py
+# TODO: Build a MoE-based Sleep2Vec in a sibling package (sleep2vec_moe) while sharing pretrain_main.py/finetune.py
 
-Goal: add an MoE backbone and any MoE-specific components under a new `sleep2vec_moe/` folder, reuse as much code as possible via soft links/imports, and keep using the existing `pretrain.py` and `finetune.py` entrypoints driven by YAML recipes.
+Goal: add an MoE backbone and any MoE-specific components under a new `sleep2vec_moe/` folder, reuse as much code as possible via soft links/imports, and keep using the existing `pretrain_main.py` and `finetune.py` entrypoints driven by YAML recipes.
 
 ## Plan
 1) Create folder & reuse via symlinks
@@ -26,10 +26,10 @@ Goal: add an MoE backbone and any MoE-specific components under a new `sleep2vec
    - Keep training hyperparameters on the CLI; model/loss selections live in YAML.
 
 6) Running
-   - Pretrain: `python pretrain.py --config configs/sleep2vec_moe_pretrain.yaml ...`
+   - Pretrain: `python -m sleep2vec_moe.pretrain_main --config configs/sleep2vec_moe_pretrain.yaml ...`
    - Finetune: `python finetune.py --config configs/sleep2vec_moe_finetune_cls.yaml --label-name ... --results-csv-path ...`
 
 7) Validation checklist
    - Verify MoE config_overrides align with the implementation.
    - Confirm all channels share the same `out_dim` and match the MoE hidden size.
-   - Run a small smoke test to check shape/routing and that `pretrain.py`/`finetune.py` still work unchanged.
+   - Run a small smoke test to check shape/routing and that `pretrain_main.py`/`finetune.py` still work unchanged.

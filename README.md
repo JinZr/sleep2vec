@@ -3,7 +3,7 @@
 This repo now separates **model/loss definition (YAML)** from **training hyperparameters (CLI flags)**. Use the examples in `configs/` as templates and follow the steps below to swap components.
 
 ## Running
-- Pretrain: `python pretrain.py --config configs/sleep2vec_dense_pretrain.yaml --epochs 120 --lr 5e-5 --devices 0 1`
+- Pretrain: `python -m sleep2vec.pretrain_main --config configs/sleep2vec_dense_pretrain.yaml --epochs 120 --lr 5e-5 --devices 0 1`
 - Finetune (classification): `python finetune.py --config configs/sleep2vec_dense_finetune_cls.yaml --label-name stage5 --results-csv-path outputs.csv --epochs 50 --lr 1e-5`
 - Finetune (regression): `python finetune.py --config configs/sleep2vec_dense_finetune_reg.yaml --label-name age --results-csv-path outputs.csv --epochs 50 --lr 1e-5`
 
@@ -62,7 +62,7 @@ Only change CLI flags for training hyperparameters (epochs, lr, devices, etc.). 
      params:
        # custom kwargs passed to your loss
    ```
-3. Run `pretrain.py --config your_pretrain.yaml ...`. Loss is no longer controlled via CLI.
+3. Run `python -m sleep2vec.pretrain_main --config your_pretrain.yaml ...`. Loss is no longer controlled via CLI.
 
 ## 5) Change downstream model architecture
 Two options:
