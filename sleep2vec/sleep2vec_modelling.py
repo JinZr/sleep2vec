@@ -3,8 +3,9 @@ import typing as t
 
 import pytorch_lightning as pl
 import torch
+import torch.nn as nn
 
-from sleep2vec.losses import create_loss
+from sleep2vec.losses import create_aux_loss, create_loss
 from sleep2vec.pretrain_model import Sleep2vecPretrainModel
 
 
@@ -22,6 +23,7 @@ class Sleep2vecPretraining(pl.LightningModule):
         self.loss_config = loss_config
         self.aux_loss_configs = list(aux_loss_configs or [])
         self.loss_fn = self._build_loss()
+        self.aux_loss_fns = self._build_aux_losses()
         self.model = Sleep2vecPretrainModel(
             channel_feature_dim=None,
             transformer_hidden_size=model_config.backbone.hidden_size,
@@ -92,6 +94,16 @@ class Sleep2vecPretraining(pl.LightningModule):
         contrastive_loss = metrics.get("contrastive_loss", total_loss.detach())
         acc_contrastive = metrics.get("contrastive_acc")
 
+        aux_loss_results = []
+        router_outputs = None
+        for spec in self.aux_loss_fns:
+            aux_out = spec["fn"](router_outputs, batch)
+            if aux_out is None:
+                continue
+            weighted_loss = spec["weight"] * aux_out.loss
+            total_loss = total_loss + weighted_loss
+            aux_loss_results.append((spec, aux_out, weighted_loss))
+
         # # ---- logging ----
         # if log_prefix is not None:
         #     # step 级
@@ -132,6 +144,28 @@ class Sleep2vecPretraining(pl.LightningModule):
                     on_epoch=True,
                     batch_size=B,
                 )
+
+            for spec, aux_out, weighted_loss in aux_loss_results:
+                log_base = f"{log_prefix}_aux{spec['index']}_{spec['name']}"
+                self.log(
+                    log_base,
+                    weighted_loss,
+                    prog_bar=False,
+                    sync_dist=True,
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=B,
+                )
+                for metric_name, metric_val in (aux_out.metrics or {}).items():
+                    self.log(
+                        f"{log_base}_{metric_name}",
+                        metric_val,
+                        prog_bar=False,
+                        sync_dist=True,
+                        on_step=True,
+                        on_epoch=True,
+                        batch_size=B,
+                    )
 
         # 验证集：缓存到 epoch 末求均值
         if log_prefix == "val":
@@ -180,3 +214,23 @@ class Sleep2vecPretraining(pl.LightningModule):
         loss_kwargs.pop("router_lb_coef", None)  # handled via aux losses in MOE variant
         loss_kwargs.setdefault("temperature", self.loss_config.temperature)
         return create_loss(self.loss_config.name, **loss_kwargs)
+
+    def _build_aux_losses(self):
+        aux_losses = []
+        self.aux_loss_modules = nn.ModuleDict()
+        for idx, cfg in enumerate(self.aux_loss_configs):
+            if cfg is None:
+                continue
+            aux_fn = create_aux_loss(cfg.name, **(cfg.params or {}))
+            module_name = f"aux_loss_{idx + 1}_{cfg.name}"
+            self.aux_loss_modules[module_name] = aux_fn
+            aux_losses.append(
+                {
+                    "fn": aux_fn,
+                    "weight": cfg.weight,
+                    "name": cfg.name,
+                    "index": idx + 1,
+                    "module_name": module_name,
+                }
+            )
+        return aux_losses
