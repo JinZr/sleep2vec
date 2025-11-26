@@ -41,6 +41,8 @@ class PSGPretrainDataset(DefaultDataset):
         randomly_select_channels: bool = True,
         generative: bool = False,
         is_train_set: bool = True,
+        length_check_workers: int | None = None,
+        mmap_mode: str | None = "r",
         **kwargs: t.Any,
     ) -> None:
 
@@ -156,4 +158,6 @@ class PSGPretrainDataset(DefaultDataset):
             meta_data_names=meta_data_names,
             sources=sources,
             dataloader_config=kwargs,
+            length_check_workers=length_check_workers,
+            mmap_mode=mmap_mode,
         )

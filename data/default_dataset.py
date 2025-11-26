@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import logging
 import math
+import os
 import pickle
 import random
 import typing as t
@@ -31,6 +32,17 @@ class Sample:
     tokens: dict
     masks: dict
     metadata: dict = field(default_factory=lambda: {})  # ✅ 新增字段
+
+
+def load_npz_file(path: str, mmap_mode: str | None = "r"):
+    """Load npz with mmap when possible to avoid pulling whole arrays into RAM."""
+    if mmap_mode:
+        try:
+            return np.load(path, allow_pickle=False, mmap_mode=mmap_mode)
+        except ValueError:
+            # Some archives (e.g., compressed) do not support mmap; fall back to standard load.
+            pass
+    return np.load(path, allow_pickle=False)
 
 
 def default_extractor(name: str, frames_per_token: int):
@@ -144,32 +156,46 @@ def filter_valid_sample_indices(
     extractors: t.Mapping[str, t.Callable],
     tokenizers: t.Mapping[str, t.Callable],
     tolerance: int = 1,
-    max_workers: int = 128,  # 线程数
+    max_workers: int | None = None,  # 线程数
+    mmap_mode: str | None = "r",
 ) -> t.List["SampleIndex"]:
     """
     多线程版本：过滤掉 token 长度差距过大的样本
     """
 
+    if max_workers is None or max_workers <= 0:
+        max_workers = min(8, os.cpu_count() or 1)
+
     def process_sample(sample_index):
         try:
-            with np.load(sample_index.path) as npz:
-                payload = {key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()}
-                tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
-                lengths = [v.shape[0] for v in tokens.values()]
-                max_len, min_len = max(lengths), min(lengths)
-
-                if max_len - min_len <= tolerance:
-                    return sample_index
-                logging.info(
-                    "[Skip] Token length mismatch at %s: %s. Meta: %s",
-                    sample_index.id,
-                    lengths,
-                    sample_index.metadata,
-                )
-                return None
+            npz = load_npz_file(sample_index.path, mmap_mode=mmap_mode)
         except Exception as e:
             logging.info(f"[Skip] Error loading sample {sample_index.id}: {e}")
             return None
+
+        try:
+            payload = {key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()}
+            tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
+            lengths = [v.shape[0] for v in tokens.values()]
+            max_len, min_len = max(lengths), min(lengths)
+
+            if max_len - min_len <= tolerance:
+                return sample_index
+            logging.info(
+                "[Skip] Token length mismatch at %s: %s. Meta: %s",
+                sample_index.id,
+                lengths,
+                sample_index.metadata,
+            )
+            return None
+        except Exception as e:
+            logging.info(f"[Skip] Error loading sample {sample_index.id}: {e}")
+            return None
+        finally:
+            try:
+                npz.close()
+            except Exception:
+                pass
 
     filtered_data = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -208,6 +234,8 @@ class DefaultDataset(BaseDataset):
         meta_data_names=None,  # ← 新增参数
         sources=None,  # ← 新增参数
         seed: int = 42,
+        length_check_workers: int | None = None,
+        mmap_mode: str | None = "r",
     ) -> None:
         """
         Args:
@@ -226,6 +254,8 @@ class DefaultDataset(BaseDataset):
         self.extractors = extractors
         self.tokenizers = tokenizers
         self.mask_generators = mask_generators
+        self.mmap_mode = mmap_mode
+        self.length_check_workers = length_check_workers or min(8, os.cpu_count() or 1)
         # self.collators = collators
         self.dataloader_config = dataloader_config
 
@@ -236,7 +266,14 @@ class DefaultDataset(BaseDataset):
                 self.data = pickle.load(f)
         else:
             # ✅ 初始化时检查并过滤掉 token 长度不一致的样本
-            self.data = filter_valid_sample_indices(data, extractors, tokenizers, tolerance=1)
+            self.data = filter_valid_sample_indices(
+                data,
+                extractors,
+                tokenizers,
+                tolerance=1,
+                max_workers=self.length_check_workers,
+                mmap_mode=self.mmap_mode,
+            )
             with open(save_preset_path, "wb") as f:
                 pickle.dump(data, f)
 
@@ -365,15 +402,21 @@ class DefaultDataset(BaseDataset):
             samples = []
             for src in indices:
 
-                with np.load(src.path) as npz:
-                    payload = {k: self.extractors[k](npz, src.start, src.end) for k in chosen}
-                    tokens = {k: self.tokenizers[k](payload[k]) for k in chosen}
+                npz = load_npz_file(src.path, mmap_mode=self.mmap_mode)
+                try:
+                    signals = {k: self.extractors[k](npz, src.start, src.end) for k in chosen}
+                    tokens = {k: self.tokenizers[k](signals[k]) for k in chosen}
                     masks = {k: self.mask_generators[k](tokens[k]) for k in chosen}
-                payload.update(src.payload)
+                finally:
+                    try:
+                        npz.close()
+                    except Exception:
+                        pass
+
                 sample = Sample(
                     id=src.id,
                     length=src.end - src.start,
-                    payload=payload,
+                    payload=dict(src.payload),
                     tokens=tokens,
                     masks=masks,
                     metadata=src.metadata,  # ✅ 传入 metadata
