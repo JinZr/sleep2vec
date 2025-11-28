@@ -133,8 +133,8 @@ class Sleep2vecPretraining(pl.LightningModule):
             final_momentum=final_m,
         )
 
-    def on_train_batch_end(self, outputs, batch, batch_idx, dataloader_idx=0):
-        super().on_train_batch_end(outputs, batch, batch_idx, dataloader_idx)
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        super().on_train_batch_end(outputs, batch, batch_idx)
         if self._should_use_ema():
             momentum = self._ema_momentum_for_step()
             ema_update(self.model, self.ema_model, momentum=momentum)
