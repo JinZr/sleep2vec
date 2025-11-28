@@ -73,7 +73,7 @@ class PretrainConfigBundle:
     model: ModelConfig
     loss: LossConfig
     data: "PretrainDataConfig"
-    ema: "EmaConfig" = EmaConfig()
+    ema: "EmaConfig" = field(default_factory=EmaConfig)
 
 
 @dataclass
