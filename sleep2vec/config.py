@@ -61,10 +61,19 @@ class LossConfig:
 
 
 @dataclass
+class EmaConfig:
+    enabled: bool = False
+    base_momentum: float = 0.996
+    final_momentum: float = 1.0
+    use_for_eval: bool = True
+
+
+@dataclass
 class PretrainConfigBundle:
     model: ModelConfig
     loss: LossConfig
     data: "PretrainDataConfig"
+    ema: "EmaConfig" = EmaConfig()
 
 
 @dataclass
@@ -138,6 +147,7 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     model_block = data.get("model", {})
     loss_block = data.get("loss", {})
     data_block = data.get("data", {})
+    ema_block = data.get("ema", {}) or {}
 
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
@@ -152,7 +162,8 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
 
     loss_cfg = _build_loss(loss_block)
     data_cfg = PretrainDataConfig(**data_block)
-    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg)
+    ema_cfg = EmaConfig(**ema_block)
+    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg, ema=ema_cfg)
 
 
 def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
@@ -189,6 +200,7 @@ __all__ = [
     "ModelConfig",
     "ProjectionConfig",
     "LoraConfig",
+    "EmaConfig",
     "load_finetune_config",
     "load_pretrain_config",
     "validate_model_config",
