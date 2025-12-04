@@ -61,8 +61,10 @@ loss:
 data:
   mask_rate: 0.15
   max_tokens: 120
-ema:
-  enabled: true
-  base_momentum: 0.996
-  final_momentum: 1.0
-  use_for_eval: true
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true
