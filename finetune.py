@@ -11,7 +11,7 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 import wandb
 
 from metrics import save_result_csv
-from sleep2vec.config import load_finetune_config
+from sleep2vec.common import apply_finetune_config
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from utils import get_finetune_dataloaders
 
@@ -204,45 +204,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    config_bundle = load_finetune_config(args.config)
-    args.channel_names = [c.name for c in config_bundle.model.channels]
-    data_cfg = config_bundle.data
-    lora_cfg = config_bundle.lora
-
-    # Data-related overrides from YAML
-    args.max_tokens = data_cfg.max_tokens
-    args.data_channel_names = data_cfg.data_channel_names or args.channel_names
-    args.finetune_data_index = Path(data_cfg.finetune_data_index) if data_cfg.finetune_data_index else None
-    args.finetune_preset_path = Path(data_cfg.finetune_preset_path) if data_cfg.finetune_preset_path else None
-    args.train_dataset_names = data_cfg.train_dataset_names or []
-    args.test_dataset_names = data_cfg.test_dataset_names or []
-    args.n_few_shot = data_cfg.n_few_shot
-
-    # LoRA-related toggles from YAML
-    args.freeze_backbone_and_insert_lora = lora_cfg.freeze_backbone_and_insert_lora
-    args.insert_lora = lora_cfg.insert_lora
-    args.separate_adapters = lora_cfg.separate_adapters
-    args.head_kwargs = {}
-
-    # ---- Infer task spec from label_name (same spirit as TaskSpec in batch_run_few_shot.py) ----
-    if args.label_name == "stage5":
-        args.output_dim = 5
-        args.is_classification = True
-        args.is_seq = True
-        args.monitor = "val_accuracy"
-        args.monitor_mod = "max"
-    elif args.label_name == "sex":
-        args.output_dim = 2
-        args.is_classification = True
-        args.is_seq = False
-        args.monitor = "val_accuracy"
-        args.monitor_mod = "max"
-    else:  # default: regression-style task (e.g. age)
-        args.output_dim = 1
-        args.is_classification = False
-        args.is_seq = False
-        args.monitor = "val_mae"
-        args.monitor_mod = "min"
+    config_bundle, _ = apply_finetune_config(args)
 
     # ---- Build version string used by WandB and checkpoint directory ----
     if args.version_name:
