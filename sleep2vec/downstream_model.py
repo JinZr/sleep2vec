@@ -151,13 +151,18 @@ class Sleep2vecDownstreamModel(nn.Module):
         output = self.head(feature_of_different_mods)
         return output
 
-    def load_pretrained_backbone(self, ckpt_path):
+    def load_pretrained_backbone(self, ckpt_path, use_ema: bool = True):
         logging.info(f"Loading backbone from {ckpt_path}")
         ckpt = torch.load(ckpt_path, map_location="cpu")
         state_dict = ckpt["state_dict"]
 
-        # 仅保留属于 model.backbone 的权重
-        filtered_state_dict = {k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")}
+        prefix = "ema_model." if use_ema else "model."
+        filtered_state_dict = {k.replace(prefix, ""): v for k, v in state_dict.items() if k.startswith(prefix)}
+
+        if use_ema and not filtered_state_dict:
+            logging.warning("EMA weights not found in checkpoint; falling back to student weights.")
+            prefix = "model."
+            filtered_state_dict = {k.replace(prefix, ""): v for k, v in state_dict.items() if k.startswith(prefix)}
 
         # 加载到 self.backbone
         load_info = self.backbone.load_state_dict(filtered_state_dict, strict=False)
