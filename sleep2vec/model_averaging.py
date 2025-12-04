@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import typing as t
 
 import torch
@@ -151,6 +152,8 @@ class RunningAverageModelAverager(BaseModelAverager):
         self.average_period = max(1, int(params.get("average_period", 200)))
         self.start_step = max(1, int(params.get("start_step", self.average_period)))
         self._enabled_flag = enabled
+        self._avg_origin_step: int | None = 0
+        self._missing_avg_on_resume = False
 
         if enabled:
             self.averaged_model = clone_ema_model(student)
@@ -177,14 +180,26 @@ class RunningAverageModelAverager(BaseModelAverager):
         if avg_state:
             state_dict.update(avg_state)
             checkpoint["state_dict"] = state_dict
+        else:
+            # Missing averaged weights; we'll restart averaging from the resume step.
+            self._avg_origin_step = None
+            self._missing_avg_on_resume = True
+            logging.warning("Running-mean averager: averaged weights missing in checkpoint; restarting average from resume step.")
 
     def on_train_batch_end(self, *, trainer, global_step: int) -> None:
         if not self.enabled or self.averaged_model is None:
             return
         step = global_step + 1  # Lightning global_step is zero-based
-        if step < self.start_step or step % self.average_period != 0:
+        update_due = step >= self.start_step and (step - self.start_step) % self.average_period == 0
+        if not update_due:
             return
-        weight_cur = self.average_period / float(step)
+
+        if self._avg_origin_step is None:
+            # Restart averaging from current step when no historical average exists.
+            self._avg_origin_step = step - self.average_period
+
+        effective_step = max(self.average_period, step - self._avg_origin_step)
+        weight_cur = self.average_period / float(effective_step)
         weight_avg = 1.0 - weight_cur
         _inplace_weighted_average(self.averaged_model, self.student, weight_dst=weight_avg, weight_src=weight_cur)
 
