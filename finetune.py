@@ -152,7 +152,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--label-name",
         type=str,
-        default="age",
+        required=True,
+        choices=["age", "sex", "stage5"],
         help="downstream label to predict (e.g. age, sex, stage5)",
     )
     # ---------------- Data/configuration now YAML-driven; keep CLI for ckpt paths only ----------------
