@@ -4,8 +4,8 @@ from pathlib import Path
 
 import numpy as np
 import pytorch_lightning as pl
-import torch
 from pytorch_lightning.strategies import DDPStrategy
+import torch
 
 from metrics import save_result_csv
 from sleep2vec.common import apply_finetune_config
@@ -42,9 +42,7 @@ def run_inference(args):
         trainer_precision = 32
 
     strategy = (
-        DDPStrategy(find_unused_parameters=True)
-        if args.accelerator != "cpu" and len(args.devices) > 1
-        else "auto"
+        DDPStrategy(find_unused_parameters=True) if args.accelerator != "cpu" and len(args.devices) > 1 else "auto"
     )
 
     trainer = pl.Trainer(
