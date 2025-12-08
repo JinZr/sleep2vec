@@ -61,11 +61,9 @@ class LossConfig:
 
 
 @dataclass
-class EmaConfig:
-    enabled: bool = False
-    base_momentum: float = 0.996
-    final_momentum: float = 1.0
-    use_for_eval: bool = True
+class ModelAveragingConfig:
+    name: str | None = None
+    params: dict[str, t.Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -73,7 +71,7 @@ class PretrainConfigBundle:
     model: ModelConfig
     loss: LossConfig
     data: "PretrainDataConfig"
-    ema: "EmaConfig" = field(default_factory=EmaConfig)
+    averaging: "ModelAveragingConfig | None" = None
 
 
 @dataclass
@@ -139,6 +137,40 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
     return next(iter(out_dims))
 
 
+def _build_model_averaging_config(data: dict[str, t.Any]) -> ModelAveragingConfig | None:
+    """
+    Supports both the new `model_averaging:` block and the legacy `ema:` block.
+    """
+    averaging_block = data.get("model_averaging") or data.get("averaging")
+    fallback_name = None
+
+    if averaging_block is None:
+        ema_block = data.get("ema", {}) or {}
+        if ema_block:
+            averaging_block = ema_block
+            fallback_name = "ema"
+
+    if averaging_block is None or (isinstance(averaging_block, dict) and not averaging_block and fallback_name is None):
+        return None
+    if not isinstance(averaging_block, dict):
+        raise ValueError("model_averaging/ema block must be a mapping when provided.")
+
+    params = dict(averaging_block.get("params") or {})
+    for key, value in averaging_block.items():
+        if key in {"name", "params"}:
+            continue
+        params.setdefault(key, value)
+
+    name = averaging_block.get("name") or fallback_name
+    if name is None and averaging_block:
+        name = "ema"  # default legacy behavior
+
+    if name is None:
+        return None
+
+    return ModelAveragingConfig(name=name, params=params)
+
+
 def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     data = yaml.safe_load(Path(path).read_text())
     if not isinstance(data, dict):
@@ -147,7 +179,6 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     model_block = data.get("model", {})
     loss_block = data.get("loss", {})
     data_block = data.get("data", {})
-    ema_block = data.get("ema", {}) or {}
 
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
@@ -162,8 +193,8 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
 
     loss_cfg = _build_loss(loss_block)
     data_cfg = PretrainDataConfig(**data_block)
-    ema_cfg = EmaConfig(**ema_block)
-    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg, ema=ema_cfg)
+    averaging_cfg = _build_model_averaging_config(data)
+    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg, averaging=averaging_cfg)
 
 
 def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
@@ -198,9 +229,9 @@ __all__ = [
     "HeadConfig",
     "LossConfig",
     "ModelConfig",
+    "ModelAveragingConfig",
     "ProjectionConfig",
     "LoraConfig",
-    "EmaConfig",
     "load_finetune_config",
     "load_pretrain_config",
     "validate_model_config",

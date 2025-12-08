@@ -84,6 +84,30 @@ Two options:
 
 If you need multi-branch fusion changes, extend `FeatureFusion` or create a new head that performs custom fusion, then register it.
 
+## 6) Switch model averaging
+1. Register a strategy with `@register_model_averager("my_avg")` in `sleep2vec/model_averaging.py` (EMA is registered by default).
+2. Toggle it in pretrain YAML:
+   ```yaml
+   model_averaging:
+     name: ema
+     params:
+       enabled: true
+       base_momentum: 0.996
+       final_momentum: 1.0
+       use_for_eval: true
+   ```
+3. To load averaged weights downstream, pass the averaging name (e.g., `use_ema="ema"`) or `False` to fall back to student weights.
+4. Icefall-style arithmetic running average is available as `name: running_mean`:
+   ```yaml
+   model_averaging:
+     name: running_mean
+     params:
+       enabled: true
+       average_period: 200   # update cadence in steps
+       start_step: 200       # first update step (defaults to average_period)
+       use_for_eval: true
+   ```
+
 ## Tips
 - Keep YAML per stage: `*_pretrain.yaml` includes `loss`; finetune YAML omits `loss` and only describes the model.
 - All channels must share the same `out_dim`.
