@@ -7,10 +7,10 @@ import pytorch_lightning as pl
 from pytorch_lightning.strategies import DDPStrategy
 import torch
 
-from metrics import save_result_csv
 from sleep2vec.common import apply_finetune_config
+from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
-from utils import _build_finetune_loader
+from sleep2vec.utils import _build_finetune_loader
 
 
 def _build_inference_loader(args):

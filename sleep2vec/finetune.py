@@ -10,10 +10,10 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
 import wandb
 
-from metrics import save_result_csv
 from sleep2vec.common import apply_finetune_config, dump_cli_args_yaml
+from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
-from utils import get_finetune_dataloaders
+from sleep2vec.utils import get_finetune_dataloaders
 
 # from model.ahi_metric import AHIMetricsCollection
 

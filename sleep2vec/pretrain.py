@@ -14,7 +14,7 @@ import wandb
 from sleep2vec.common import dump_cli_args_yaml
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
-from utils import get_pretrain_dataloader
+from sleep2vec.utils import get_pretrain_dataloader
 
 
 def sleep2vec_pretrain(args):

@@ -5,11 +5,11 @@ import typing as t
 import torch
 import torch.nn as nn
 
+from sleep2vec.backbone.encoder_factory import TransformerEncoderFactory
 from sleep2vec.builders import build_encoder_factory, build_projection, build_tokenizers_and_dim
 from sleep2vec.config import ModelConfig, ProjectionConfig
-from sleep2vec.encoder_factory import TransformerEncoderFactory
-from sleep2vec.pretrain.projection import SimCLRProjectionHead
-from sleep2vec.pretrain.tokenizers import LinearTokenizer, SundialTokenizer
+from sleep2vec.modules.projection import SimCLRProjectionHead
+from sleep2vec.modules.tokenizers import LinearTokenizer, SundialTokenizer
 
 
 class Sleep2vecPretrainModel(nn.Module):
