@@ -158,11 +158,7 @@ def process_metadata(samples, disease_names):
 def extract_binary_labels(dataset, target_name: str):
     labels = np.fromiter(
         (
-            (
-                int(float(s.metadata[target_name]))
-                if (hasattr(s, "metadata") and (target_name in s.metadata))
-                else -1
-            )
+            (int(float(s.metadata[target_name])) if (hasattr(s, "metadata") and (target_name in s.metadata)) else -1)
             for s in dataset.data
         ),
         dtype=np.int64,
@@ -190,4 +186,3 @@ def make_weighted_sampler_from_labels(labels: np.ndarray, epoch_size: int | None
         replacement=True,
     )
     return sampler
-
