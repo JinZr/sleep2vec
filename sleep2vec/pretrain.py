@@ -11,9 +11,10 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
 import wandb
 
+from sleep2vec.common import dump_cli_args_yaml
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
-from utils import get_pretrain_dataloader
+from sleep2vec.utils import get_pretrain_dataloader
 
 
 def sleep2vec_pretrain(args):
@@ -21,7 +22,7 @@ def sleep2vec_pretrain(args):
     config_bundle = load_pretrain_config(args.config)
     model_config = config_bundle.model
     loss_config = config_bundle.loss
-    ema_config = config_bundle.ema
+    averaging_config = config_bundle.averaging
     args.mask_rate = config_bundle.data.mask_rate
     args.max_tokens = config_bundle.data.max_tokens
     args.channel_names = [c.name for c in model_config.channels]
@@ -61,7 +62,14 @@ def sleep2vec_pretrain(args):
     except Exception as exc:  # pragma: no cover - best-effort
         logging.warning(f"Failed to copy config to {dest_config}: {exc}")
 
-    model = Sleep2vecPretraining(args, model_config, loss_config, ema_config=ema_config)
+    cli_args_path = exp_dir / "cli_args.yaml"
+    try:
+        dump_cli_args_yaml(args, cli_args_path)
+        logging.info(f"Saved CLI args to {cli_args_path}")
+    except Exception as exc:  # pragma: no cover - best-effort
+        logging.warning(f"Failed to write CLI args YAML to {cli_args_path}: {exc}")
+
+    model = Sleep2vecPretraining(args, model_config, loss_config, averaging_config=averaging_config)
 
     logger = WandbLogger(
         project="sleep2vec-pretrain",

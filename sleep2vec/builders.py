@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import torch.nn as nn
 
+from sleep2vec.backbone.encoder_factory import TransformerEncoderFactory
 from sleep2vec.config import BackboneConfig, ModelConfig, ProjectionConfig, validate_model_config
-from sleep2vec.encoder_factory import TransformerEncoderFactory
-from sleep2vec.pretrain.projection import build_projection_head
-from sleep2vec.pretrain.tokenizers import build_tokenizer_mapping
+from sleep2vec.modules.projection import build_projection_head
+from sleep2vec.modules.tokenizers import build_tokenizer_mapping
 from sleep2vec.registry import get_backbone_builder
 
 

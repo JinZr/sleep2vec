@@ -10,10 +10,10 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
 import wandb
 
-from metrics import save_result_csv
-from sleep2vec.common import apply_finetune_config
+from sleep2vec.common import apply_finetune_config, dump_cli_args_yaml
+from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
-from utils import get_finetune_dataloaders
+from sleep2vec.utils import get_finetune_dataloaders
 
 # from model.ahi_metric import AHIMetricsCollection
 
@@ -37,6 +37,13 @@ def supervised(args, config_bundle):
         logging.info(f"Copied config to {dest_config}")
     except Exception as exc:  # pragma: no cover - best-effort
         logging.warning(f"Failed to copy config to {dest_config}: {exc}")
+
+    cli_args_path = exp_root / "cli_args.yaml"
+    try:
+        dump_cli_args_yaml(args, cli_args_path)
+        logging.info(f"Saved CLI args to {cli_args_path}")
+    except Exception as exc:  # pragma: no cover - best-effort
+        logging.warning(f"Failed to write CLI args YAML to {cli_args_path}: {exc}")
 
     # get data loaders
     train_loader, val_loader, test_loader = prepare_dataloader(args)

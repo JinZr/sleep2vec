@@ -3,9 +3,9 @@
 This repo now separates **model/loss definition (YAML)** from **training hyperparameters (CLI flags)**. Use the examples in `configs/` as templates and follow the steps below to swap components.
 
 ## Running
-- Pretrain: `python pretrain.py --config configs/sleep2vec_dense_pretrain.yaml --epochs 120 --lr 5e-5 --devices 0 1`
-- Finetune (classification): `python finetune.py --config configs/sleep2vec_dense_finetune_cls.yaml --label-name stage5 --results-csv-path outputs.csv --epochs 50 --lr 1e-5`
-- Finetune (regression): `python finetune.py --config configs/sleep2vec_dense_finetune_reg.yaml --label-name age --results-csv-path outputs.csv --epochs 50 --lr 1e-5`
+- Pretrain: `python sleep2vec/pretrain.py --config configs/sleep2vec_dense_pretrain.yaml --epochs 120 --lr 5e-5 --devices 0 1`
+- Finetune (classification): `python sleep2vec/finetune.py --config configs/sleep2vec_dense_finetune_cls.yaml --label-name stage5 --results-csv-path outputs.csv --epochs 50 --lr 1e-5`
+- Finetune (regression): `python sleep2vec/finetune.py --config configs/sleep2vec_dense_finetune_reg.yaml --label-name age --results-csv-path outputs.csv --epochs 50 --lr 1e-5`
 
 Only change CLI flags for training hyperparameters (epochs, lr, devices, etc.). All model/loss choices belong in YAML.
 
@@ -62,7 +62,7 @@ Only change CLI flags for training hyperparameters (epochs, lr, devices, etc.). 
      params:
        # custom kwargs passed to your loss
    ```
-3. Run `pretrain.py --config your_pretrain.yaml ...`. Loss is no longer controlled via CLI.
+3. Run `python sleep2vec/pretrain.py --config your_pretrain.yaml ...`. Loss is no longer controlled via CLI.
 
 ## 5) Change downstream model architecture
 Two options:
@@ -83,6 +83,30 @@ Two options:
    - Reference it in finetune YAML: `model.head.name: my_head` plus any kwargs in `model.head.kwargs`.
 
 If you need multi-branch fusion changes, extend `FeatureFusion` or create a new head that performs custom fusion, then register it.
+
+## 6) Switch model averaging
+1. Register a strategy with `@register_model_averager("my_avg")` in `sleep2vec/model_averaging.py` (EMA is registered by default).
+2. Toggle it in pretrain YAML:
+   ```yaml
+   model_averaging:
+     name: ema
+     params:
+       enabled: true
+       base_momentum: 0.996
+       final_momentum: 1.0
+       use_for_eval: true
+   ```
+3. To load averaged weights downstream, pass the averaging name (e.g., `use_ema="ema"`) or `False` to fall back to student weights.
+4. Icefall-style arithmetic running average is available as `name: running_mean`:
+   ```yaml
+   model_averaging:
+     name: running_mean
+     params:
+       enabled: true
+       average_period: 200   # update cadence in steps
+       start_step: 200       # first update step (defaults to average_period)
+       use_for_eval: true
+   ```
 
 ## Tips
 - Keep YAML per stage: `*_pretrain.yaml` includes `loss`; finetune YAML omits `loss` and only describes the model.

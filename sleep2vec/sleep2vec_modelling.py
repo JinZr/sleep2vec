@@ -3,18 +3,18 @@ import math
 import pytorch_lightning as pl
 import torch
 
+from sleep2vec.averaging.base import BaseModelAverager, build_model_averager
 from sleep2vec.losses import create_loss
-from sleep2vec.pretrain.ema import clone_ema_model, cosine_ema_momentum, ema_update
 from sleep2vec.pretrain_model import Sleep2vecPretrainModel
 
 
 class Sleep2vecPretraining(pl.LightningModule):
-    def __init__(self, args, model_config, loss_config, ema_config=None):
+    def __init__(self, args, model_config, loss_config, averaging_config=None):
         super().__init__()
         self.args = args
         self.model_config = model_config
         self.loss_config = loss_config
-        self.ema_config = ema_config
+        self.averaging_config = averaging_config
         self.loss_fn = self._build_loss()
         self.model = Sleep2vecPretrainModel(
             channel_feature_dim=None,
@@ -34,10 +34,9 @@ class Sleep2vecPretraining(pl.LightningModule):
         self.val_contrastive_loss = []
         self.val_contrastive_sample = []
 
-        self.ema_model = None
-        self._ema_total_steps = None
-        if self.ema_config is not None and getattr(self.ema_config, "enabled", False):
-            self.ema_model = clone_ema_model(self.model)
+        self.model_averager: BaseModelAverager | None = build_model_averager(averaging_config, self.model)
+        if self.model_averager is not None:
+            self.model_averager.attach_to_module(self)
 
     # ---------- Train ----------
     def training_step(self, batch, batch_idx):
@@ -84,60 +83,23 @@ class Sleep2vecPretraining(pl.LightningModule):
 
     def on_fit_start(self):
         super().on_fit_start()
-        if self.ema_model is not None:
-            if hasattr(self.trainer, "estimated_stepping_batches"):
-                self._ema_total_steps = int(self.trainer.estimated_stepping_batches)
-            else:
-                self._ema_total_steps = None
+        if self.model_averager is not None:
+            self.model_averager.on_fit_start(self.trainer)
 
     def on_load_checkpoint(self, checkpoint):
         super().on_load_checkpoint(checkpoint)
-        if not self._should_use_ema():
-            return
-        state_dict = checkpoint.get("state_dict", {})
-        has_ema = any(k.startswith("ema_model.") for k in state_dict)
-        if has_ema:
-            return
-        # Seed EMA weights from student when resuming old checkpoints without EMA.
-        if self.ema_model is None:
-            self.ema_model = clone_ema_model(self.model)
-        ema_state = {f"ema_model.{k[len('model.'):]}": v for k, v in state_dict.items() if k.startswith("model.")}
-        if ema_state:
-            state_dict.update(ema_state)
-            checkpoint["state_dict"] = state_dict
+        if self.model_averager is not None:
+            self.model_averager.on_load_checkpoint(checkpoint)
 
     def _get_eval_backbone(self):
-        if (
-            self.ema_model is not None
-            and self.ema_config is not None
-            and getattr(self.ema_config, "use_for_eval", False)
-        ):
-            return self.ema_model
+        if self.model_averager is not None:
+            return self.model_averager.eval_model()
         return self.model
-
-    def _should_use_ema(self) -> bool:
-        return self.ema_model is not None and self.ema_config is not None and getattr(self.ema_config, "enabled", False)
-
-    def _ema_momentum_for_step(self) -> float:
-        if not self._should_use_ema():
-            return 0.0
-        total_steps = self._ema_total_steps
-        if total_steps is None:
-            total_steps = int(getattr(self.trainer, "estimated_stepping_batches", 0))
-        base_m = self.ema_config.base_momentum
-        final_m = getattr(self.ema_config, "final_momentum", 1.0)
-        return cosine_ema_momentum(
-            step=self.global_step,
-            total_steps=total_steps,
-            base_momentum=base_m,
-            final_momentum=final_m,
-        )
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
         super().on_train_batch_end(outputs, batch, batch_idx)
-        if self._should_use_ema():
-            momentum = self._ema_momentum_for_step()
-            ema_update(self.model, self.ema_model, momentum=momentum)
+        if self.model_averager is not None:
+            self.model_averager.on_train_batch_end(trainer=self.trainer, global_step=self.global_step)
 
     # ---------- 公共计算逻辑 ----------
     def _contrastive_step(self, batch, log_prefix=None, model=None):
