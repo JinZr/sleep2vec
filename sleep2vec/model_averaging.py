@@ -116,7 +116,9 @@ class EmaModelAverager(BaseModelAverager):
             self.averaged_model = clone_ema_model(self.student)
 
         student_prefix = "model."
-        ema_state = {f"{prefix}{k[len(student_prefix):]}": v for k, v in state_dict.items() if k.startswith(student_prefix)}
+        ema_state = {
+            f"{prefix}{k[len(student_prefix):]}": v for k, v in state_dict.items() if k.startswith(student_prefix)
+        }
         if ema_state:
             state_dict.update(ema_state)
             checkpoint["state_dict"] = state_dict
@@ -176,7 +178,9 @@ class RunningAverageModelAverager(BaseModelAverager):
             self.averaged_model = clone_ema_model(self.student)
 
         student_prefix = "model."
-        avg_state = {f"{prefix}{k[len(student_prefix):]}": v for k, v in state_dict.items() if k.startswith(student_prefix)}
+        avg_state = {
+            f"{prefix}{k[len(student_prefix):]}": v for k, v in state_dict.items() if k.startswith(student_prefix)
+        }
         if avg_state:
             state_dict.update(avg_state)
             checkpoint["state_dict"] = state_dict
@@ -184,7 +188,9 @@ class RunningAverageModelAverager(BaseModelAverager):
             # Missing averaged weights; we'll restart averaging from the resume step.
             self._avg_origin_step = None
             self._missing_avg_on_resume = True
-            logging.warning("Running-mean averager: averaged weights missing in checkpoint; restarting average from resume step.")
+            logging.warning(
+                "Running-mean averager: averaged weights missing in checkpoint; restarting average from resume step."
+            )
 
     def on_train_batch_end(self, *, trainer, global_step: int) -> None:
         if not self.enabled or self.averaged_model is None:
