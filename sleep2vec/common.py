@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import typing as t
+
+import yaml
 
 from sleep2vec.config import load_finetune_config
 
@@ -56,3 +59,30 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
 
     apply_task_flags(args)
     return config_bundle, model_cfg
+
+
+def _to_yamlable(obj: t.Any) -> t.Any:
+    """Convert argparse / pathlib objects into YAML-safe primitives."""
+
+    if isinstance(obj, argparse.Namespace):
+        obj = vars(obj)
+
+    if isinstance(obj, Path):
+        return str(obj)
+
+    if isinstance(obj, dict):
+        return {k: _to_yamlable(v) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple)):
+        return [_to_yamlable(v) for v in obj]
+
+    return obj
+
+
+def dump_cli_args_yaml(args: argparse.Namespace, dest_path: Path) -> Path:
+    """Persist CLI/derived args to ``dest_path`` as YAML for experiment tracking."""
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_safe_obj = _to_yamlable(args)
+    dest_path.write_text(yaml.safe_dump(yaml_safe_obj, sort_keys=True))
+    return dest_path
