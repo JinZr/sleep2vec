@@ -8,7 +8,7 @@ from sklearn.metrics import confusion_matrix
 import torch
 import wandb
 
-from metrics import compute_downstream_metrics
+from sleep2vec.metrics import compute_downstream_metrics
 
 from .downstream_model import Sleep2vecDownstreamModel
 from .pretrain_model import Sleep2vecPretrainModel

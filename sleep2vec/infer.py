@@ -1,16 +1,21 @@
 import argparse
 import logging
 from pathlib import Path
+import sys
 
 import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.strategies import DDPStrategy
 import torch
 
-from metrics import save_result_csv
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from sleep2vec.common import apply_finetune_config
+from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
-from utils import _build_finetune_loader
+from sleep2vec.utils import _build_finetune_loader
 
 
 def _build_inference_loader(args):

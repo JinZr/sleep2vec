@@ -3,6 +3,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import sys
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -11,10 +12,14 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
 import wandb
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from sleep2vec.common import dump_cli_args_yaml
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
-from utils import get_pretrain_dataloader
+from sleep2vec.utils import get_pretrain_dataloader
 
 
 def sleep2vec_pretrain(args):
