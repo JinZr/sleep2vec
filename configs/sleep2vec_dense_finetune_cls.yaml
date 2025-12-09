@@ -10,6 +10,9 @@ model:
     enabled: true
     hidden_dim: 768
     out_dim: 128
+  cls:
+    strategy: null          # set "bert" to prepend CLS token
+    downstream: tokens      # required: "cls" or "tokens"
   channels:
     - name: heartbeat
       input_dim: 120
@@ -49,9 +52,14 @@ model:
       tokenizer: sundial
   head:
     name: classification
-    agg: gated_scalar
     dropout: 0.1
     hidden_dim: null
+    channel_agg:
+      name: gated_scalar
+      kwargs: {}
+    temporal_agg:
+      name: mean
+      kwargs: {}
 data:
   max_tokens: 120
   data_channel_names: null

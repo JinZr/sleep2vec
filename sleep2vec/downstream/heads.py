@@ -3,66 +3,23 @@ import typing as t
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+from sleep2vec.downstream.channel_aggregation import build_channel_aggregator
 
 from .head_registry import register_head
 
 
 class FeatureFusion(nn.Module):
-    """Shared multi-modal fusion block used by both classification and regression."""
+    """Shared multi-modal fusion block using pluggable channel aggregators."""
 
     def __init__(self, feature_dim: int, n_mods: int, agg: str):
         super().__init__()
         if n_mods < 1:
             raise ValueError("n_mods must be >= 1.")
-        assert agg in {"mean", "concat", "gated_scalar"}
         if n_mods == 1 and agg != "concat":
             agg = "concat"  # fall back to concatenation for single modality
-        self.feature_dim = feature_dim
-        self.n_mods = n_mods
-        self.agg = agg
+        self.aggregator = build_channel_aggregator(agg, feature_dim=feature_dim, n_mods=n_mods)
         self.output_dim = feature_dim * n_mods if agg == "concat" else feature_dim
-        if agg == "gated_scalar":
-            # 每个模态一个可学习标量 → softmax 归一化
-            self.gates = nn.Parameter(torch.zeros(n_mods))
-
-    def forward(self, feature_of_different_mods: t.List[torch.Tensor]) -> tuple[torch.Tensor, bool]:
-        if len(feature_of_different_mods) != self.n_mods:
-            raise ValueError(f"Expect {self.n_mods} modality features, got {len(feature_of_different_mods)}")
-
-        x0 = feature_of_different_mods[0]
-        has_L = x0.dim() == 3  # [B, L, D] or [B, D]
-
-        feats = []
-        for feat in feature_of_different_mods:
-            if feat.dim() == 2:  # [B, D] -> [B, 1, D]
-                feat_has_L = False
-                feat = feat.unsqueeze(1)
-            elif feat.dim() == 3:
-                feat_has_L = True
-            else:
-                raise ValueError("Each modality feature must be rank-2 or rank-3, " f"got shape {feat.shape}.")
-            if feat_has_L != has_L:
-                raise ValueError("Mixing sequential and non-sequential features is not supported.")
-            if has_L and feat.size(1) != x0.size(1):
-                raise ValueError("All modalities must have matching sequence length.")
-            if feat.shape[-1] != self.feature_dim:
-                raise ValueError(f"feature_dim mismatch: expect {self.feature_dim}, got {feat.shape[-1]}")
-            feats.append(feat)
-
-        if self.agg == "concat":
-            fused = torch.cat(feats, dim=-1)
-        elif self.agg == "mean":
-            fused = torch.stack(feats, dim=0).mean(dim=0)
-        else:  # gated_scalar
-            weights = F.softmax(self.gates, dim=0)  # [n_mods]
-            stack = torch.stack(feats, dim=0)
-            fused = (weights[:, None, None, None] * stack).sum(dim=0)
-
-        if not has_L:
-            fused = fused.squeeze(1)
-
-        return fused, has_L
 
 
 class ClassificationHead(nn.Module):
@@ -147,7 +104,7 @@ class ClassificationHead(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, feature_of_different_mods: t.List[torch.Tensor]) -> torch.Tensor:
-        fused, has_L = self.fusion(feature_of_different_mods)
+        fused, has_L = self.fusion.aggregator(feature_of_different_mods)
         if has_L:
             B, L, E = fused.shape
             fused = fused.view(B * L, E)
@@ -186,7 +143,7 @@ class RegressionHead(nn.Module):
         self.regressor = nn.Sequential(*layers)
 
     def forward(self, feature_of_different_mods: t.List[torch.Tensor]):
-        fused, has_L = self.fusion(feature_of_different_mods)
+        fused, has_L = self.fusion.aggregator(feature_of_different_mods)
         if has_L:
             B, L, E = fused.shape
             fused = fused.view(B * L, E)
