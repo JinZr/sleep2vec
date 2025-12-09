@@ -216,6 +216,20 @@ if __name__ == "__main__":
         "--precision",
         type=str,
         default="bf16",
+        choices=[
+            "transformer-engine",
+            "transformer-engine-float16",
+            "16-true",
+            "16-mixed",
+            "bf16-true",
+            "bf16-mixed",
+            "32-true",
+            "64-true",
+            "64",
+            "32",
+            "16",
+            "bf16",
+        ],
         help="mixed precision setting passed to Lightning Trainer",
     )
     parser.add_argument(
