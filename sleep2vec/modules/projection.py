@@ -19,7 +19,7 @@ class SimCLRProjectionHead(nn.Module):
         if h.dim() == 2:
             x = self.fc1(h)
             x = self.bn1(x)
-            x = F.relu(x, inplace=True)
+            x = F.relu(x, inplace=False)  # avoid autograd + backward-hook conflicts
             x = self.fc2(x)
             x = self.bn2(x)
             z = F.normalize(x, dim=-1)
@@ -30,7 +30,7 @@ class SimCLRProjectionHead(nn.Module):
             x = h.view(B * T, H)
             x = self.fc1(x)
             x = self.bn1(x)
-            x = F.relu(x, inplace=True)
+            x = F.relu(x, inplace=False)  # avoid autograd + backward-hook conflicts
             x = self.fc2(x)
             x = self.bn2(x)
             z = F.normalize(x, dim=-1)

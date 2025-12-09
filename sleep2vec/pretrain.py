@@ -118,13 +118,13 @@ def sleep2vec_pretrain(args):
         # fall back to Lightning's default strategy selection
         strategy = "auto"
 
-    trainer = pl.Trainer(
-        callbacks=[checkpoint_cb, early_stop_cb, lr_monitor],
+    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor]
+    enable_checkpointing = True
+    trainer_kwargs = dict(
         devices=args.devices,
         accelerator="gpu",
         strategy=strategy,
         benchmark=True,
-        enable_checkpointing=True,
         logger=logger,
         max_epochs=args.epochs,
         log_every_n_steps=5,
@@ -132,12 +132,29 @@ def sleep2vec_pretrain(args):
         precision=args.precision,
         gradient_clip_val=args.gradient_clip_val,
     )
+    if args.print_diagnostics:
+        # short diagnostic run: disable bar/ckpt/val to keep output clean
+        callbacks = []
+        enable_checkpointing = False
+        trainer_kwargs.update(
+            dict(
+                enable_progress_bar=False,
+                max_steps=args.diagnostics_steps,
+                limit_val_batches=0,
+            )
+        )
+
+    trainer = pl.Trainer(
+        callbacks=callbacks,
+        enable_checkpointing=enable_checkpointing,
+        **trainer_kwargs,
+    )
 
     # train the model
     trainer.fit(
         model,
         train_dataloaders=train_loader,
-        val_dataloaders=[val_loader_main],
+        val_dataloaders=[val_loader_main] if not args.print_diagnostics else None,
         ckpt_path=args.ckpt_path,
     )
 
@@ -199,7 +216,32 @@ if __name__ == "__main__":
         "--precision",
         type=str,
         default="bf16",
+        choices=[
+            "transformer-engine",
+            "transformer-engine-float16",
+            "16-true",
+            "16-mixed",
+            "bf16-true",
+            "bf16-mixed",
+            "32-true",
+            "64-true",
+            "64",
+            "32",
+            "16",
+            "bf16",
+        ],
         help="mixed precision setting passed to Lightning Trainer",
+    )
+    parser.add_argument(
+        "--print-diagnostics",
+        action="store_true",
+        help="Run a short batch or two, print tensor diagnostics, and exit (disables progress bar).",
+    )
+    parser.add_argument(
+        "--diagnostics-steps",
+        type=int,
+        default=5,
+        help="Number of training steps to accumulate diagnostics before stopping.",
     )
     parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
     parser.add_argument(

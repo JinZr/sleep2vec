@@ -81,19 +81,35 @@ def supervised(args, config_bundle):
         filename="{epoch:02d}",
     )
 
-    trainer = pl.Trainer(
+    callbacks = [early_stop_callback, checkpoint_callback]
+    enable_checkpointing = True
+    trainer_kwargs = dict(
         devices=args.devices,
         accelerator="gpu",
         strategy=DDPStrategy(find_unused_parameters=True),
         # strategy=DeepSpeedStrategy(config="ds_config.json"),  # ← 就这行！
         benchmark=True,
-        enable_checkpointing=True,
         logger=logger,
         max_epochs=args.epochs,
-        callbacks=[early_stop_callback, checkpoint_callback],
         gradient_clip_val=1.0,
         precision="bf16-mixed",  # <---- 开启 BF16
         check_val_every_n_epoch=args.check_val_every_n_epoch,
+    )
+    if args.print_diagnostics:
+        callbacks = []
+        enable_checkpointing = False
+        trainer_kwargs.update(
+            dict(
+                enable_progress_bar=False,
+                max_steps=args.diagnostics_steps,
+                limit_val_batches=0,
+            )
+        )
+
+    trainer = pl.Trainer(
+        callbacks=callbacks,
+        enable_checkpointing=enable_checkpointing,
+        **trainer_kwargs,
     )
 
     if args.epochs > 0:
@@ -104,6 +120,10 @@ def supervised(args, config_bundle):
             val_dataloaders=val_loader,
             ckpt_path=args.ckpt_path if args.ckpt_path != "" else None,
         )
+
+    if args.print_diagnostics:
+        # only collect diagnostics, skip evaluation
+        return
 
     # test the model
     pretrain_result = trainer.test(
@@ -154,7 +174,7 @@ if __name__ == "__main__":
     # Login to WandB only when running as a script
     wandb.login()
 
-    parser = argparse.ArgumentParser(description="Fine-tune Sleep2Vec downstream models on PSG data.")
+    parser = argparse.ArgumentParser(description="Fine-tune sleep2vec downstream models on PSG data.")
 
     parser.add_argument(
         "--config",
@@ -194,6 +214,17 @@ if __name__ == "__main__":
         type=str,
         default="cuda",
         help="torch device string passed to model and dataloaders",
+    )
+    parser.add_argument(
+        "--print-diagnostics",
+        action="store_true",
+        help="Run a short diagnostic pass (few batches), print tensor stats, and exit (progress bar off).",
+    )
+    parser.add_argument(
+        "--diagnostics-steps",
+        type=int,
+        default=5,
+        help="Number of training steps to gather diagnostics before stopping.",
     )
 
     # ---------------- Task & data configuration ----------------

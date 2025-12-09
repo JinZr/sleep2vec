@@ -1,4 +1,4 @@
-# Sleep2Vec Refactor Quick Guide
+# sleep2vec Refactor Quick Guide
 
 This repo now separates **model/loss definition (YAML)** from **training hyperparameters (CLI flags)**. Use the examples in `configs/` as templates and follow the steps below to swap components.
 
@@ -6,13 +6,24 @@ This repo now separates **model/loss definition (YAML)** from **training hyperpa
 - Pretrain: `python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml --epochs 120 --lr 5e-5 --devices 0 1`
 - Finetune (classification): `python -m sleep2vec.finetune --config configs/sleep2vec_dense_finetune_cls.yaml --label-name stage5 --results-csv-path outputs.csv --epochs 50 --lr 1e-5`
 - Finetune (regression): `python -m sleep2vec.finetune --config configs/sleep2vec_dense_finetune_reg.yaml --label-name age --results-csv-path outputs.csv --epochs 50 --lr 1e-5`
+- Diagnostics-only run (no progress bar):  
+  - Pretrain: `python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml --print-diagnostics --diagnostics-steps 5 --devices 0`  
+  - Finetune: `python -m sleep2vec.finetune --config configs/sleep2vec_dense_finetune_cls.yaml --label-name stage5 --results-csv-path /tmp/out.csv --print-diagnostics --diagnostics-steps 5 --devices 0`
 
 Only change CLI flags for training hyperparameters (epochs, lr, devices, etc.). All model/loss choices belong in YAML.
+
+### Diagnostics mode (icefall-style tensor stats)
+- Flags: `--print-diagnostics` enables hooks that capture activations, gradients, and parameter stats; `--diagnostics-steps` controls how many train steps to observe (default 5).
+- Behavior: progress bar is disabled, validation and checkpointing are skipped, and training stops after the given steps. Stats print to stdout at the end.
+
+> [!Important]
+> ``--precision`` has to be set to `32` when using diagnostics mode, as mixed precision interferes with accurate stats collection and may cause unexpected behavior.
+
 
 ## 1) Change backbone
 1. Pick or create a backbone builder registered via `@register_backbone` in `sleep2vec/encoder_factory.py` (e.g., add `moe_roformer`).
 2. Edit your YAML:
-   ```yaml
+  ```yaml
    model:
      backbone:
        name: roformer            # switch to your new registry name

@@ -3,6 +3,7 @@ import math
 import pytorch_lightning as pl
 import torch
 
+from sleep2vec import diagnostics
 from sleep2vec.averaging.base import BaseModelAverager, build_model_averager
 from sleep2vec.losses import create_loss
 from sleep2vec.pretrain_model import Sleep2vecPretrainModel
@@ -27,6 +28,13 @@ class Sleep2vecPretraining(pl.LightningModule):
             model_config=model_config,
             projection_config=model_config.projection,
         )
+
+        # Optional tensor diagnostics (borrowed from icefall)
+        self._diagnostic = None
+        self._diag_steps = getattr(args, "diagnostics_steps", 5)
+        if getattr(args, "print_diagnostics", False):
+            opts = diagnostics.TensorDiagnosticOptions(max_eig_dim=512)
+            self._diagnostic = diagnostics.attach_diagnostics(self.model, opts)
 
         # 缓存 val 损失（每 step append，epoch 末取均值）
         self.val_losses = []
@@ -100,6 +108,15 @@ class Sleep2vecPretraining(pl.LightningModule):
         super().on_train_batch_end(outputs, batch, batch_idx)
         if self.model_averager is not None:
             self.model_averager.on_train_batch_end(trainer=self.trainer, global_step=self.global_step)
+        if self._diagnostic is not None and self.global_step >= self._diag_steps:
+            # stop as soon as enough batches have been observed
+            if self.trainer is not None:
+                self.trainer.should_stop = True
+
+    def on_train_end(self):
+        super().on_train_end()
+        if self._diagnostic is not None:
+            self._diagnostic.print_diagnostics()
 
     # ---------- 公共计算逻辑 ----------
     def _contrastive_step(self, batch, log_prefix=None, model=None):
