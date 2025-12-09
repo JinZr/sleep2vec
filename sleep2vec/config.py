@@ -153,10 +153,14 @@ def _build_cls_config(model_block: dict[str, t.Any]) -> ClsConfig | None:
     return ClsConfig(**raw)
 
 
-def _build_head_config(model_block: dict[str, t.Any]) -> HeadConfig | None:
+def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> HeadConfig | None:
     head_raw = model_block.get("head")
-    if head_raw is None or not isinstance(head_raw, dict):
-        raise ValueError("model.head must be a mapping and is required.")
+    if head_raw is None:
+        if required:
+            raise ValueError("model.head must be a mapping and is required.")
+        return None
+    if not isinstance(head_raw, dict):
+        raise ValueError("model.head must be a mapping when provided.")
 
     temporal_block = head_raw.pop("temporal_agg", None)
     channel_block = head_raw.pop("channel_agg", None)
@@ -195,7 +199,7 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
         if model_cfg.cls.downstream not in {"cls", "tokens"}:
             raise ValueError("model.cls.downstream must be 'cls' or 'tokens'.")
 
-    if model_cfg.head:
+    if model_cfg.head is not None:
         if model_cfg.head.temporal_agg.name not in {"mean", "attn"}:
             raise ValueError("model.head.temporal_agg.name must be 'mean' or 'attn'.")
         if model_cfg.head.channel_agg.name not in {"mean", "concat", "gated_scalar"}:
@@ -234,7 +238,7 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
     projection = ProjectionConfig(**(model_block.get("projection") or {}))
     cls_cfg = _build_cls_config(model_block)
-    head = _build_head_config(model_block)
+    head = _build_head_config(model_block, required=False)
     model_cfg = ModelConfig(
         channels=channels,
         backbone=backbone,
@@ -260,7 +264,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
     projection = ProjectionConfig(**(model_block.get("projection") or {}))
     cls_cfg = _build_cls_config(model_block)
-    head = _build_head_config(model_block)
+    head = _build_head_config(model_block, required=True)
     model_cfg = ModelConfig(
         channels=channels,
         backbone=backbone,

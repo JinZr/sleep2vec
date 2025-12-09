@@ -11,7 +11,7 @@ model:
     hidden_dim: 768
     out_dim: 128
   cls:
-    strategy: null          # null -> no CLS, "bert" -> prepend learnable CLS token
+    embedding_type: null    # null -> no CLS, "bert" -> prepend learnable CLS token
     downstream: tokens      # "tokens" or "cls" (required)
   channels:
     - name: heartbeat
@@ -50,13 +50,6 @@ model:
       input_dim: 120
       out_dim: 768
       tokenizer: sundial
-  head:
-    name: classification
-    dropout: 0.1
-    hidden_dim: null
-    channel_agg:
-      name: gated_scalar
-      kwargs: {}
 loss:
   name: weighted_info_nce
   temperature: 0.2
