@@ -2,24 +2,12 @@ import os
 from pathlib import Path
 import typing as t
 
-import numpy as np
 import pandas as pd
 
-from data.default_dataset import (
-    DefaultDataset,
-    SampleIndex,
-    default_extractor,
-    default_mlm_mask_generator,
-    default_tokenizer,
-)
+from data.default_dataset import DefaultDataset, SampleIndex
+from data.utils import default_extractor, default_mlm_mask_generator, default_tokenizer, window
 
 PAD_STAGE = -1
-
-
-def window(tot_len: int, max_len: int, stride: int) -> np.ndarray:
-    left = np.arange(0, tot_len, stride) if stride > 0 else np.array([0])
-    right = np.clip(left + max_len, 0, tot_len)
-    return np.stack([left, right], axis=1)
 
 
 class PSGPretrainDataset(DefaultDataset):
@@ -36,8 +24,8 @@ class PSGPretrainDataset(DefaultDataset):
         mask_rate: float = 0.15,
         use_legacy_body_movement: bool = False,
         few_shot: int | float | None = None,  # ← 新增参数
-        meta_data_names: t.List[str] = [],  # ← 新增参数
-        sources: t.List[str] = [],  # ← 新增参数
+        meta_data_names: t.Optional[t.List[str]] = None,  # ← 新增参数
+        sources: t.Optional[t.List[str]] = None,  # ← 新增参数
         randomly_select_channels: bool = True,
         generative: bool = False,
         is_train_set: bool = True,
@@ -49,6 +37,8 @@ class PSGPretrainDataset(DefaultDataset):
         self.token_sec = token_sec
         self.generative = generative
         self.is_train_set = is_train_set
+        meta_data_names = meta_data_names or []
+        sources = sources or []
 
         if not load_preset_path:
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
