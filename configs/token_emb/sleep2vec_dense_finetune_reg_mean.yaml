@@ -11,8 +11,8 @@ model:
     hidden_dim: 768
     out_dim: 128
   cls:
-    embedding_type: bert    # null -> no CLS, "bert" -> prepend learnable CLS token
-    downstream: cls         # "tokens" or "cls" (required)
+    embedding_type: null    # null -> no CLS token, operate on per-token embeddings
+    downstream: tokens      # use token sequence for downstream pooling
   channels:
     - name: heartbeat
       input_dim: 120
@@ -55,7 +55,7 @@ model:
     dropout: 0.1
     hidden_dim: null
     channel_agg:
-      name: mean
+      name: gated_scalar
       kwargs: {}
     temporal_agg:
       name: mean

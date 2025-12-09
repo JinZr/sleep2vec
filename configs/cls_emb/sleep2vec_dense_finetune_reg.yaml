@@ -55,9 +55,10 @@ model:
     dropout: 0.1
     hidden_dim: null
     channel_agg:
-      name: mean
+      name: gated_scalar
       kwargs: {}
     temporal_agg:
+      # unused for cls embedding downstream
       name: mean
       kwargs: {}
 data:
