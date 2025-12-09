@@ -50,13 +50,6 @@ model:
       input_dim: 120
       out_dim: 768
       tokenizer: sundial
-  head:
-    name: classification
-    dropout: 0.1
-    hidden_dim: null
-    channel_agg:
-      name: gated_scalar
-      kwargs: {}
 loss:
   name: weighted_info_nce
   temperature: 0.2
