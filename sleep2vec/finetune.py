@@ -174,7 +174,7 @@ if __name__ == "__main__":
     # Login to WandB only when running as a script
     wandb.login()
 
-    parser = argparse.ArgumentParser(description="Fine-tune Sleep2Vec downstream models on PSG data.")
+    parser = argparse.ArgumentParser(description="Fine-tune sleep2vec downstream models on PSG data.")
 
     parser.add_argument(
         "--config",

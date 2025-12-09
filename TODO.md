@@ -1,4 +1,4 @@
-# TODO: Build a MoE-based Sleep2Vec in a sibling package (sleep2vec_moe) while sharing pretrain.py/finetune.py
+# TODO: Build a MoE-based sleep2vec in a sibling package (sleep2vec_moe) while sharing pretrain.py/finetune.py
 
 Goal: add an MoE backbone and any MoE-specific components under a new `sleep2vec_moe/` folder, reuse as much code as possible via soft links/imports, and keep using the existing `pretrain.py` and `finetune.py` entrypoints driven by YAML recipes.
 

@@ -1,4 +1,4 @@
-# Sleep2Vec Refactor Quick Guide
+# sleep2vec Refactor Quick Guide
 
 This repo now separates **model/loss definition (YAML)** from **training hyperparameters (CLI flags)**. Use the examples in `configs/` as templates and follow the steps below to swap components.
 
