@@ -17,9 +17,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass
 import logging
 import random
-from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
@@ -260,9 +260,7 @@ class TensorDiagnostic(object):
                 else:
                     # a dimension that has variable size in different nnet
                     # forwards, e.g. a time dimension in an ASR model.
-                    stats = torch.cat(
-                        [x.tensor / get_count(x.count) for x in stats_list], dim=0
-                    )
+                    stats = torch.cat([x.tensor / get_count(x.count) for x in stats_list], dim=0)
 
                 if stats_type == "eigs":
                     try:
@@ -288,9 +286,7 @@ class TensorDiagnostic(object):
 
                 # if `summarize` we print percentiles of the stats; else,
                 # we print out individual elements.
-                summarize = (len(stats_list) > 1) or self.opts.dim_is_summarized(
-                    stats.numel()
-                )
+                summarize = (len(stats_list) > 1) or self.opts.dim_is_summarized(stats.numel())
                 if summarize:  # usually `summarize` will be true
                     # print out percentiles.
                     stats = stats.sort()[0]
@@ -322,15 +318,9 @@ class TensorDiagnostic(object):
                 # ans = "percentiles: [0.43 0.46 0.48 0.49 0.49 0.5 0.51 0.52 0.53 0.54 0.59], mean=0.5, rms=0.5"
 
                 sizes = [x.tensor.shape[0] for x in stats_list]
-                size_str = (
-                    f"{sizes[0]}" if len(sizes) == 1 else f"{min(sizes)}..{max(sizes)}"
-                )
-                maybe_class_name = (
-                    f" type={self.class_name}," if self.class_name is not None else ""
-                )
-                print(
-                    f"module={self.name},{maybe_class_name} dim={dim}, size={size_str}, {stats_type} {ans}"
-                )
+                size_str = f"{sizes[0]}" if len(sizes) == 1 else f"{min(sizes)}..{max(sizes)}"
+                maybe_class_name = f" type={self.class_name}," if self.class_name is not None else ""
+                print(f"module={self.name},{maybe_class_name} dim={dim}, size={size_str}, {stats_type} {ans}")
 
 
 class ScalarDiagnostic(object):
@@ -385,9 +375,7 @@ class ScalarDiagnostic(object):
         if self.is_forward_pass:
             self.is_forward_pass = False
 
-        last_shape = (
-            "n/a" if len(self.saved_inputs) == 0 else self.saved_inputs[-1].shape
-        )
+        last_shape = "n/a" if len(self.saved_inputs) == 0 else self.saved_inputs[-1].shape
         if len(self.saved_inputs) == 0 or grad.shape != last_shape:
             print(
                 f"ERROR: shape mismatch or no forward activation present when backward "
@@ -414,19 +402,11 @@ class ScalarDiagnostic(object):
             self.tick_scale = float(x_abs_sorted[index] / num_ticks_per_side)
 
             # integerize from tick * (-num ticks_per_side ..  num_ticks_per_side - 1]
-            self.counts = torch.zeros(
-                2 * num_ticks_per_side, dtype=torch.long, device=x.device
-            )
-            self.sum_grad = torch.zeros(
-                2 * num_ticks_per_side, dtype=torch.double, device=x.device
-            )
+            self.counts = torch.zeros(2 * num_ticks_per_side, dtype=torch.long, device=x.device)
+            self.sum_grad = torch.zeros(2 * num_ticks_per_side, dtype=torch.double, device=x.device)
             # sum_gradsq is for getting error bars.
-            self.sum_gradsq = torch.zeros(
-                2 * num_ticks_per_side, dtype=torch.double, device=x.device
-            )
-            self.sum_abs_grad = torch.zeros(
-                2 * num_ticks_per_side, dtype=torch.double, device=x.device
-            )
+            self.sum_gradsq = torch.zeros(2 * num_ticks_per_side, dtype=torch.double, device=x.device)
+            self.sum_abs_grad = torch.zeros(2 * num_ticks_per_side, dtype=torch.double, device=x.device)
 
         # this will round down.
         x = (x / self.tick_scale).to(torch.long)
@@ -435,9 +415,7 @@ class ScalarDiagnostic(object):
 
         self.counts.index_add_(dim=0, index=x, source=torch.ones_like(x))
         self.sum_grad.index_add_(dim=0, index=x, source=grad.to(torch.double))
-        self.sum_gradsq.index_add_(
-            dim=0, index=x, source=(grad * grad).to(torch.double)
-        )
+        self.sum_gradsq.index_add_(dim=0, index=x, source=(grad * grad).to(torch.double))
         self.sum_abs_grad.index_add_(dim=0, index=x, source=grad.abs().to(torch.double))
 
     def print_diagnostics(self):
@@ -475,9 +453,7 @@ class ScalarDiagnostic(object):
         avg_grad = bin_grad / bin_counts
         avg_grad_stddev = (bin_gradsq / bin_counts).sqrt()
 
-        bin_boundary_counts = (
-            torch.arange(num_bins + 1, dtype=torch.long) * counts_per_bin
-        )
+        bin_boundary_counts = torch.arange(num_bins + 1, dtype=torch.long) * counts_per_bin
         bin_tick_indexes = torch.searchsorted(counts_cumsum, bin_boundary_counts)
         # boundaries are the "x" values between the bins, e.g. corresponding to the
         # locations of percentiles of the distribution.
@@ -485,9 +461,7 @@ class ScalarDiagnostic(object):
         bin_boundaries = (bin_tick_indexes - num_ticks_per_side) * self.tick_scale
 
         bin_grad = bin_grad / (bin_counts + 1)
-        bin_conf_interval = bin_gradsq.sqrt() / (
-            bin_counts + 1
-        )  # consider this a standard deviation.
+        bin_conf_interval = bin_gradsq.sqrt() / (bin_counts + 1)  # consider this a standard deviation.
         # bin_grad / bin_abs_grad will give us a sense for how important in a practical sense,
         # the gradients are.
         bin_abs_grad = bin_abs_grad / (bin_counts + 1)
@@ -500,9 +474,7 @@ class ScalarDiagnostic(object):
             x = "[" + " ".join(x) + "]"
             return x
 
-        maybe_class_name = (
-            f" type={self.class_name}," if self.class_name is not None else ""
-        )
+        maybe_class_name = f" type={self.class_name}," if self.class_name is not None else ""
 
         print(
             f"module={self.name},{maybe_class_name} bin-boundaries={tensor_to_str(bin_boundaries)}, "
@@ -556,9 +528,7 @@ def get_class_name(module: nn.Module):
     return ans
 
 
-def attach_diagnostics(
-    model: nn.Module, opts: Optional[TensorDiagnosticOptions] = None
-) -> ModelDiagnostic:
+def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions] = None) -> ModelDiagnostic:
     """Attach a ModelDiagnostic object to the model by
     1) registering forward hook and backward hook on each module, to accumulate
     its output tensors and gradient tensors, respectively;
@@ -594,9 +564,7 @@ def attach_diagnostics(
                 torch.float16,
                 torch.float64,
             ):
-                _model_diagnostic[f"{_name}.output"].accumulate(
-                    _output, class_name=get_class_name(_module)
-                )
+                _model_diagnostic[f"{_name}.output"].accumulate(_output, class_name=get_class_name(_module))
             elif isinstance(_output, tuple):
                 for i, o in enumerate(_output):
                     if isinstance(o, Tensor) and o.dtype in (
@@ -604,9 +572,7 @@ def attach_diagnostics(
                         torch.float16,
                         torch.float64,
                     ):
-                        _model_diagnostic[f"{_name}.output[{i}]"].accumulate(
-                            o, class_name=get_class_name(_module)
-                        )
+                        _model_diagnostic[f"{_name}.output[{i}]"].accumulate(o, class_name=get_class_name(_module))
 
         def backward_hook(_module, _input, _output, _model_diagnostic=ans, _name=name):
             if isinstance(_output, tuple) and len(_output) == 1:
@@ -616,9 +582,7 @@ def attach_diagnostics(
                 torch.float16,
                 torch.float64,
             ):
-                _model_diagnostic[f"{_name}.grad"].accumulate(
-                    _output, class_name=get_class_name(_module)
-                )
+                _model_diagnostic[f"{_name}.grad"].accumulate(_output, class_name=get_class_name(_module))
             elif isinstance(_output, tuple):
                 for i, o in enumerate(_output):
                     if isinstance(o, Tensor) and o.dtype in (
@@ -626,9 +590,7 @@ def attach_diagnostics(
                         torch.float16,
                         torch.float64,
                     ):
-                        _model_diagnostic[f"{_name}.grad[{i}]"].accumulate(
-                            o, class_name=get_class_name(_module)
-                        )
+                        _model_diagnostic[f"{_name}.grad[{i}]"].accumulate(o, class_name=get_class_name(_module))
 
         module.register_forward_hook(forward_hook)
         if hasattr(module, "register_full_backward_hook"):
@@ -649,19 +611,13 @@ def attach_diagnostics(
             # that can help us improve the activation function.  These require a lot of memory,
             # to save the forward activations, so limit this to some select classes.
             # Note: this will not work correctly for all model types.
-            def scalar_forward_hook(
-                _module, _input, _output, _model_diagnostic=ans, _name=name
-            ):
+            def scalar_forward_hook(_module, _input, _output, _model_diagnostic=ans, _name=name):
                 if isinstance(_input, tuple):
                     (_input,) = _input
                 assert isinstance(_input, Tensor)
-                _model_diagnostic[f"{_name}.scalar"].accumulate_input(
-                    _input, class_name=get_class_name(_module)
-                )
+                _model_diagnostic[f"{_name}.scalar"].accumulate_input(_input, class_name=get_class_name(_module))
 
-            def scalar_backward_hook(
-                _module, _input, _output, _model_diagnostic=ans, _name=name
-            ):
+            def scalar_backward_hook(_module, _input, _output, _model_diagnostic=ans, _name=name):
                 if isinstance(_output, tuple):
                     (_output,) = _output
                 assert isinstance(_output, Tensor)
@@ -675,9 +631,7 @@ def attach_diagnostics(
 
     for name, parameter in model.named_parameters():
 
-        def param_backward_hook(
-            grad, _parameter=parameter, _model_diagnostic=ans, _name=name
-        ):
+        def param_backward_hook(grad, _parameter=parameter, _model_diagnostic=ans, _name=name):
             _model_diagnostic[f"{_name}.param_value"].accumulate(_parameter)
             _model_diagnostic[f"{_name}.param_grad"].accumulate(grad)
 
@@ -685,8 +639,7 @@ def attach_diagnostics(
             parameter.register_hook(param_backward_hook)
         except:
             logging.warning(
-                f"Warning: could not register backward hook for parameter {name}, "
-                f"it might not be differentiable."
+                f"Warning: could not register backward hook for parameter {name}, " f"it might not be differentiable."
             )
 
     return ans
