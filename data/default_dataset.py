@@ -327,5 +327,5 @@ class DefaultDataset(BaseDataset):
             **dl_kwargs,
             collate_fn=collate_fn,
             sampler=sampler,
-            drop_last=True,
+            drop_last=self.is_train_set,  # only drop last batch for training
         )
