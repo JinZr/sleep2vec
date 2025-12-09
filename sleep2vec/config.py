@@ -198,6 +198,8 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
             raise ValueError("model.cls.embedding_type must be null/none or 'bert'.")
         if model_cfg.cls.downstream not in {"cls", "tokens"}:
             raise ValueError("model.cls.downstream must be 'cls' or 'tokens'.")
+        if model_cfg.cls.downstream == "cls" and model_cfg.cls.embedding_type in {None, "null", "none"}:
+            raise ValueError("model.cls.embedding_type must be set when model.cls.downstream is 'cls'.")
 
     if model_cfg.head is not None:
         if model_cfg.head.temporal_agg.name not in {"mean", "attn"}:

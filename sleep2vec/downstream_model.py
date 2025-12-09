@@ -57,6 +57,12 @@ class Sleep2vecDownstreamModel(nn.Module):
         cls_cfg = model_config.cls if model_config else None
         self.cls_usage = cls_cfg.downstream if cls_cfg else None
 
+        if self.cls_usage == "cls" and self.cls_embedding is None:
+            raise ValueError(
+                "Backbone provides no CLS embedding; set model.cls.embedding_type to 'bert' when "
+                "model.cls.downstream is 'cls'."
+            )
+
         head_kwargs = head_kwargs or {}
         if head_config is None:
             raise ValueError("head_config must be provided for downstream model construction.")
