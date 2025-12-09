@@ -16,6 +16,10 @@ Only change CLI flags for training hyperparameters (epochs, lr, devices, etc.). 
 - Flags: `--print-diagnostics` enables hooks that capture activations, gradients, and parameter stats; `--diagnostics-steps` controls how many train steps to observe (default 5).
 - Behavior: progress bar is disabled, validation and checkpointing are skipped, and training stops after the given steps. Stats print to stdout at the end.
 
+> [!Important]
+> ``--precision`` has to be set to `32` when using diagnostics mode, as mixed precision interferes with accurate stats collection and may cause unexpected behavior.
+
+
 ## 1) Change backbone
 1. Pick or create a backbone builder registered via `@register_backbone` in `sleep2vec/encoder_factory.py` (e.g., add `moe_roformer`).
 2. Edit your YAML:
