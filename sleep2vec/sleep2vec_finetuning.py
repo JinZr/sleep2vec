@@ -8,6 +8,7 @@ from sklearn.metrics import confusion_matrix
 import torch
 import wandb
 
+from sleep2vec import diagnostics
 from sleep2vec.metrics import compute_downstream_metrics
 
 from .downstream_model import Sleep2vecDownstreamModel
@@ -60,6 +61,13 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
         self._regression_loss = torch.nn.MSELoss()
+
+        # Optional tensor diagnostics (borrowed from icefall)
+        self._diagnostic = None
+        self._diag_steps = getattr(args, "diagnostics_steps", 5)
+        if getattr(args, "print_diagnostics", False):
+            opts = diagnostics.TensorDiagnosticOptions(max_eig_dim=512)
+            self._diagnostic = diagnostics.attach_diagnostics(self.model, opts)
 
     # ---------- Lightning hooks ----------
     def training_step(self, batch, batch_idx):
@@ -197,6 +205,17 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
         outputs.clear()
         return preds, gts
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        super().on_train_batch_end(outputs, batch, batch_idx)
+        if self._diagnostic is not None and self.global_step >= self._diag_steps:
+            if self.trainer is not None:
+                self.trainer.should_stop = True
+
+    def on_train_end(self):
+        super().on_train_end()
+        if self._diagnostic is not None:
+            self._diagnostic.print_diagnostics()
 
     def _log_confusion_matrix(self, preds: np.ndarray, gts: np.ndarray):
         pred_labels = preds.argmax(axis=1)
