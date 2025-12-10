@@ -90,8 +90,6 @@ class Sleep2vecDownstreamModel(nn.Module):
 
         encoder = getattr(self.backbone, "encoder", None)
         if encoder is None:
-            encoder = getattr(self.backbone, "roformer", None)
-        if encoder is None:
             raise AttributeError(
                 "Provided backbone does not expose an encoder. If you pass a custom "
                 "backbone ensure it implements get_encoder()."
@@ -104,8 +102,6 @@ class Sleep2vecDownstreamModel(nn.Module):
             self.backbone.replace_encoder(encoder)
         else:
             self.backbone.encoder = encoder
-            if hasattr(self.backbone, "roformer"):
-                self.backbone.roformer = encoder
 
     def _set_active_adapter(self, adapter_name: str):
         """Switch adapters if the encoder exposes adapter APIs."""

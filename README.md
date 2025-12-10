@@ -80,15 +80,16 @@ python -m sleep2vec.pretrain \
 
 **Tokenizers**  
 - Implement and register in `sleep2vec/pretrain/tokenizers.py` using `@register_tokenizer("my_tokenizer")`.
-- Set per-channel:
+- Set per-channel (tokenizer block must supply `name` and `out_dim`):
   ```yaml
   model:
     channels:
       - name: eeg_original
         input_dim: 3840
-        out_dim: 768        # must match across channels
-        tokenizer: my_tokenizer
-        tokenizer_kwargs: {}
+        tokenizer:
+          name: my_tokenizer
+          out_dim: 768        # must match across channels
+          kwargs: {}
   ```
 
 **Projection Head**  
@@ -128,7 +129,7 @@ python -m sleep2vec.pretrain \
 
 **Model Averaging**  
 - Strategies live in `sleep2vec/model_averaging.py` (EMA and running_mean included).
-- Configure:
+- Configure (omit the block entirely to disable):
   ```yaml
   model_averaging:
     name: ema               # or running_mean

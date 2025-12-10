@@ -13,40 +13,49 @@ model:
   channels:
     - name: heartbeat
       input_dim: 120
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
     - name: breath
       input_dim: 120
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
     - name: eeg_original
       input_dim: 3840
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
     - name: ecg_original
       input_dim: 3840
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
     - name: eog_original
       input_dim: 3840
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
     - name: emg_original
       input_dim: 3840
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
     - name: spo2
       input_dim: 120
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
     - name: resp_original
       input_dim: 120
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
     - name: resp_nasal_original
       input_dim: 120
-      out_dim: 768
-      tokenizer: sundial
+      tokenizer:
+        name: sundial
+        out_dim: 768
   head:
     name: regression
     agg: mean

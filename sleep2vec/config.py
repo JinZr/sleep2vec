@@ -8,12 +8,17 @@ import yaml
 
 
 @dataclass
+class TokenizerConfig:
+    name: str = "linear"
+    out_dim: int | None = None
+    kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass
 class ChannelConfig:
     name: str
     input_dim: int
-    out_dim: int
-    tokenizer: str = "linear"
-    tokenizer_kwargs: dict[str, t.Any] = field(default_factory=dict)
+    tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
 
 
 @dataclass
@@ -111,7 +116,27 @@ def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
         raise ValueError("YAML config must supply model.channels list.")
     if not isinstance(channels_raw, list):
         raise ValueError("model.channels must be a list of channel specs.")
-    return [ChannelConfig(**item) for item in channels_raw]
+    channels: list[ChannelConfig] = []
+    for item in channels_raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each channel must be a mapping.")
+
+        item = dict(item)  # shallow copy
+        tok_raw = item.pop("tokenizer", None)
+        if not isinstance(tok_raw, dict):
+            raise ValueError("channel.tokenizer must be a mapping with keys: name, out_dim[, kwargs].")
+
+        tok_cfg = TokenizerConfig(
+            name=tok_raw.get("name") or tok_raw.get("type") or "linear",
+            out_dim=tok_raw.get("out_dim"),
+            kwargs=tok_raw.get("kwargs") or {},
+        )
+
+        if tok_cfg.out_dim is None:
+            raise ValueError(f"channel '{item.get('name', '?')}' must set tokenizer.out_dim.")
+
+        channels.append(ChannelConfig(tokenizer=tok_cfg, **item))
+    return channels
 
 
 def _build_head_config(model_block: dict[str, t.Any]) -> HeadConfig | None:
@@ -131,29 +156,23 @@ def _build_loss(loss_block: dict[str, t.Any]) -> LossConfig:
 
 def validate_model_config(model_cfg: ModelConfig) -> int:
     """Checks model config sanity and returns the shared channel feature dim."""
-    out_dims = {ch.out_dim for ch in model_cfg.channels}
+    out_dims = {ch.tokenizer.out_dim for ch in model_cfg.channels}
+    if None in out_dims:
+        raise ValueError("All channels must specify tokenizer.out_dim.")
     if len(out_dims) != 1:
-        raise ValueError("All channels must share the same out_dim for now. " f"Got: {sorted(out_dims)}")
+        raise ValueError("All channels must share the same tokenizer.out_dim for now. " f"Got: {sorted(out_dims)}")
     return next(iter(out_dims))
 
 
 def _build_model_averaging_config(data: dict[str, t.Any]) -> ModelAveragingConfig | None:
-    """
-    Supports both the new `model_averaging:` block and the legacy `ema:` block.
-    """
-    averaging_block = data.get("model_averaging") or data.get("averaging")
-    fallback_name = None
-
+    """Parses the model_averaging block; returns None when absent."""
+    averaging_block = data.get("model_averaging")
     if averaging_block is None:
-        ema_block = data.get("ema", {}) or {}
-        if ema_block:
-            averaging_block = ema_block
-            fallback_name = "ema"
-
-    if averaging_block is None or (isinstance(averaging_block, dict) and not averaging_block and fallback_name is None):
         return None
     if not isinstance(averaging_block, dict):
-        raise ValueError("model_averaging/ema block must be a mapping when provided.")
+        raise ValueError("model_averaging block must be a mapping when provided.")
+    if not averaging_block:
+        return None
 
     params = dict(averaging_block.get("params") or {})
     for key, value in averaging_block.items():
@@ -161,12 +180,9 @@ def _build_model_averaging_config(data: dict[str, t.Any]) -> ModelAveragingConfi
             continue
         params.setdefault(key, value)
 
-    name = averaging_block.get("name") or fallback_name
-    if name is None and averaging_block:
-        name = "ema"  # default legacy behavior
-
+    name = averaging_block.get("name")
     if name is None:
-        return None
+        raise ValueError("model_averaging.name is required when model_averaging block is provided.")
 
     return ModelAveragingConfig(name=name, params=params)
 
