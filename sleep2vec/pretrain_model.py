@@ -136,7 +136,6 @@ class Sleep2vecPretrainModel(nn.Module):
 
         self.encoder_factory = encoder_factory
         self.encoder, inferred_hidden_size = encoder_factory.build()
-        self.roformer = self.encoder  # backward compatibility for existing code
         self.transformer_hidden_size = inferred_hidden_size
         self.encoder_name = encoder_factory.name
 
@@ -151,15 +150,6 @@ class Sleep2vecPretrainModel(nn.Module):
             in_dim=self.transformer_hidden_size,
         )
         self.projection = bool(self.proj_head)
-
-        # backward compatibility: keep a SimCLR head when no registry is involved
-        if self.proj_head is None and (projection if projection is not None else True):
-            self.proj_head = SimCLRProjectionHead(
-                in_dim=self.transformer_hidden_size,
-                hidden_dim=self.transformer_hidden_size,
-                out_dim=128,
-            )
-            self.projection = True
 
         self.total_params = sum(p.numel() for p in self.parameters())
         logging.info(f"Total parameters: {self.total_params}")
@@ -284,8 +274,6 @@ class Sleep2vecPretrainModel(nn.Module):
     def replace_encoder(self, encoder: nn.Module):
         """Swap the underlying encoder (e.g., to wrap with PEFT)."""
         self.encoder = encoder
-        # keep backward compatibility for legacy references
-        self.roformer = encoder
 
     def forward(self, batch, apply_mask):
 
