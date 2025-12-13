@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import logging
 
 import matplotlib.pyplot as plt
@@ -7,6 +8,7 @@ import seaborn as sns
 from sklearn.metrics import confusion_matrix
 import torch
 import wandb
+import yaml
 
 from sleep2vec import diagnostics
 from sleep2vec.metrics import compute_downstream_metrics
@@ -19,6 +21,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def __init__(self, args, model_config):
         super().__init__()
         self.args = args
+        self.model_config = model_config
 
         self.backbone = Sleep2vecPretrainModel(
             channel_feature_dim=None,
@@ -68,6 +71,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if getattr(args, "print_diagnostics", False):
             opts = diagnostics.TensorDiagnosticOptions(max_eig_dim=512)
             self._diagnostic = diagnostics.attach_diagnostics(self.model, opts)
+
+    def on_save_checkpoint(self, checkpoint):
+        super().on_save_checkpoint(checkpoint)
+        checkpoint["model_config"] = asdict(self.model_config)
+        checkpoint["model_config_yaml"] = yaml.safe_dump(checkpoint["model_config"], sort_keys=True)
 
     # ---------- Lightning hooks ----------
     def training_step(self, batch, batch_idx):

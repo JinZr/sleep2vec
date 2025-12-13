@@ -1,7 +1,9 @@
+from dataclasses import asdict
 import math
 
 import pytorch_lightning as pl
 import torch
+import yaml
 
 from sleep2vec import diagnostics
 from sleep2vec.averaging.base import BaseModelAverager, build_model_averager
@@ -45,6 +47,12 @@ class Sleep2vecPretraining(pl.LightningModule):
         self.model_averager: BaseModelAverager | None = build_model_averager(averaging_config, self.model)
         if self.model_averager is not None:
             self.model_averager.attach_to_module(self)
+
+    def on_save_checkpoint(self, checkpoint):
+        super().on_save_checkpoint(checkpoint)
+        # Stash the full model config for later inspection/reproduction.
+        checkpoint["model_config"] = asdict(self.model_config)
+        checkpoint["model_config_yaml"] = yaml.safe_dump(checkpoint["model_config"], sort_keys=True)
 
     # ---------- Train ----------
     def training_step(self, batch, batch_idx):

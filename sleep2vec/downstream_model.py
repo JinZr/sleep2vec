@@ -4,6 +4,7 @@ import typing as t
 from peft import LoraConfig, TaskType, get_peft_model
 import torch
 import torch.nn as nn
+import yaml
 
 from sleep2vec.config import HeadConfig, ModelConfig
 
@@ -44,6 +45,7 @@ class Sleep2vecDownstreamModel(nn.Module):
     ):
         super().__init__()
         # core attributes
+        self.model_config = model_config
         self.backbone = backbone
         self.channel_names = [c.name for c in model_config.channels] if model_config else channel_names
         self.device = device
@@ -202,6 +204,9 @@ class Sleep2vecDownstreamModel(nn.Module):
             prefix = "model."
             filtered_state_dict = {k.replace(prefix, ""): v for k, v in state_dict.items() if k.startswith(prefix)}
 
+        # Sanity check CLS settings against serialized config in checkpoint (assumes YAML is present)
+        self._warn_on_cls_mismatch(ckpt)
+
         # 加载到 self.backbone
         load_info = self.backbone.load_state_dict(filtered_state_dict, strict=False)
 
@@ -219,6 +224,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             logging.warning(f"Unexpected keys ({len(unexpected_keys)}):")
             for k in unexpected_keys:
                 logging.warning(f"    {k}")
+            self._warn_on_dropped_cls_weights(unexpected_keys)
 
     def freeze_backbone_and_insert_lora(
         self,
@@ -296,6 +302,50 @@ class Sleep2vecDownstreamModel(nn.Module):
                     for adp in self.channel_adapters
                 ):
                     p.requires_grad = True
+
+    # ---- helpers ----
+    @staticmethod
+    def _normalize_cls_cfg(cfg_obj):
+        if cfg_obj is None:
+            return None, None
+        if isinstance(cfg_obj, dict):
+            emb = cfg_obj.get("embedding_type")
+            down = cfg_obj.get("downstream")
+        else:  # dataclass instance
+            emb = getattr(cfg_obj, "embedding_type", None)
+            down = getattr(cfg_obj, "downstream", None)
+        emb_norm = None if emb is None or str(emb).lower() in {"none", "null"} else str(emb).lower()
+        return emb_norm, down
+
+    def _warn_on_cls_mismatch(self, ckpt: dict):
+        """Assumes serialized YAML config exists in checkpoint; warn if CLS settings differ."""
+        ckpt_model_cfg = yaml.safe_load(ckpt["model_config_yaml"])
+        ckpt_cls_block = ckpt_model_cfg.get("cls")
+        ckpt_emb, ckpt_down = self._normalize_cls_cfg(ckpt_cls_block)
+        curr_emb, curr_down = self._normalize_cls_cfg(self.model_config.cls if self.model_config else None)
+
+        if ckpt_emb != curr_emb:
+            logging.warning(
+                "CLS embedding_type mismatch: checkpoint=%s, current=%s. CLS weights may be ignored or missing.",
+                ckpt_emb or "none",
+                curr_emb or "none",
+            )
+        if ckpt_down != curr_down:
+            logging.warning(
+                "CLS downstream mismatch: checkpoint=%s, current=%s. Feature pooling behavior may differ.",
+                ckpt_down or "tokens",
+                curr_down or "tokens",
+            )
+
+    def _warn_on_dropped_cls_weights(self, unexpected_keys: list[str]):
+        cls_unexpected = [k for k in unexpected_keys if k.startswith("cls_embedding")]
+        if cls_unexpected and (not self.model_config or not self.model_config.cls):
+            logging.warning(
+                "Checkpoint contained CLS embedding weights (e.g., %s) but current finetune config disables CLS "
+                "(model.cls is null/none). The CLS token has been dropped. If this is unintended, set "
+                "model.cls.embedding_type='bert' (and optionally downstream='cls').",
+                cls_unexpected[0],
+            )
 
     def print_backbone_param_names(self):
         logging.info("== All parameters (name, shape, dtype, device) ==")
