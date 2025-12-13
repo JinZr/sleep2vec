@@ -219,6 +219,14 @@ class Sleep2vecDownstreamModel(nn.Module):
             logging.warning(f"Unexpected keys ({len(unexpected_keys)}):")
             for k in unexpected_keys:
                 logging.warning(f"    {k}")
+            cls_unexpected = [k for k in unexpected_keys if k.startswith("cls_embedding")]
+            if cls_unexpected:
+                logging.warning(
+                    "Checkpoint contained CLS embedding weights (e.g., %s) but current finetune config disables CLS "
+                    "(model.cls is null/none). The CLS token has been dropped. If this is unintended, set "
+                    "model.cls.embedding_type='bert' (and optionally downstream='cls').",
+                    cls_unexpected[0],
+                )
 
     def freeze_backbone_and_insert_lora(
         self,
