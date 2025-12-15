@@ -8,12 +8,17 @@ import yaml
 
 
 @dataclass
+class TokenizerConfig:
+    name: str = "linear"
+    out_dim: int | None = None
+    kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass
 class ChannelConfig:
     name: str
     input_dim: int
-    out_dim: int
-    tokenizer: str = "linear"
-    tokenizer_kwargs: dict[str, t.Any] = field(default_factory=dict)
+    tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
 
 
 @dataclass
@@ -138,7 +143,27 @@ def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
         raise ValueError("YAML config must supply model.channels list.")
     if not isinstance(channels_raw, list):
         raise ValueError("model.channels must be a list of channel specs.")
-    return [ChannelConfig(**item) for item in channels_raw]
+    channels: list[ChannelConfig] = []
+    for item in channels_raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each channel must be a mapping.")
+
+        item = dict(item)  # shallow copy
+        tok_raw = item.pop("tokenizer", None)
+        if not isinstance(tok_raw, dict):
+            raise ValueError("channel.tokenizer must be a mapping with keys: name, out_dim[, kwargs].")
+
+        tok_cfg = TokenizerConfig(
+            name=tok_raw.get("name") or tok_raw.get("type") or "linear",
+            out_dim=tok_raw.get("out_dim"),
+            kwargs=tok_raw.get("kwargs") or {},
+        )
+
+        if tok_cfg.out_dim is None:
+            raise ValueError(f"channel '{item.get('name', '?')}' must set tokenizer.out_dim.")
+
+        channels.append(ChannelConfig(tokenizer=tok_cfg, **item))
+    return channels
 
 
 def _build_cls_config(model_block: dict[str, t.Any]) -> ClsConfig | None:
@@ -189,7 +214,9 @@ def _build_loss(loss_block: dict[str, t.Any]) -> LossConfig:
 
 def validate_model_config(model_cfg: ModelConfig) -> int:
     """Checks model config sanity and returns the shared channel feature dim."""
-    out_dims = {ch.out_dim for ch in model_cfg.channels}
+    out_dims = {ch.tokenizer.out_dim for ch in model_cfg.channels}
+    if None in out_dims:
+        raise ValueError("All channels must specify tokenizer.out_dim.")
     if len(out_dims) != 1:
         raise ValueError("All channels must share the same out_dim for now. " f"Got: {sorted(out_dims)}")
 
@@ -206,24 +233,29 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
             raise ValueError("model.head.temporal_agg.name must be 'mean' or 'attn'.")
         if model_cfg.head.channel_agg.name not in {"mean", "concat", "gated_scalar"}:
             raise ValueError("model.head.channel_agg.name must be 'mean', 'concat', or 'gated_scalar'.")
-
     return next(iter(out_dims))
 
 
 def _build_model_averaging_config(data: dict[str, t.Any]) -> ModelAveragingConfig | None:
-    block = data.get("model_averaging")
-    if block is None:
+    """Parses the model_averaging block; returns None when absent."""
+    averaging_block = data.get("model_averaging")
+    if averaging_block is None:
         return None
-    if not isinstance(block, dict):
-        raise ValueError("model_averaging must be a mapping when provided.")
-    params = dict(block.get("params") or {})
-    for k, v in block.items():
-        if k in {"name", "params"}:
+    if not isinstance(averaging_block, dict):
+        raise ValueError("model_averaging block must be a mapping when provided.")
+    if not averaging_block:
+        return None
+
+    params = dict(averaging_block.get("params") or {})
+    for key, value in averaging_block.items():
+        if key in {"name", "params"}:
             continue
-        params.setdefault(k, v)
-    name = block.get("name")
+        params.setdefault(key, value)
+
+    name = averaging_block.get("name")
     if name is None:
-        raise ValueError("model_averaging.name is required when model_averaging is provided.")
+        raise ValueError("model_averaging.name is required when model_averaging block is provided.")
+
     return ModelAveragingConfig(name=name, params=params)
 
 

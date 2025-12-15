@@ -13,15 +13,20 @@
 ---
 
 ## Table of Contents
-- [Overview](#overview)
-- [Setup](#setup)
-- [Data Format & Caches](#data-format--caches)
-- [Quick Start](#quick-start)
-- [Inference Only](#inference-only)
-- [Configuration Knobs](#configuration-knobs)
-- [Diagnostics Mode](#diagnostics-mode)
-- [Working Tips](#working-tips)
-- [Repository Layout](#repository-layout)
+- [sleep2vec](#sleep2vec)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Setup](#setup)
+  - [Data Format \& Caches](#data-format--caches)
+  - [Quick Start](#quick-start)
+    - [Pretrain (contrastive)](#pretrain-contrastive)
+    - [Finetune — classification](#finetune--classification)
+    - [Finetune — regression](#finetune--regression)
+  - [Inference Only](#inference-only)
+  - [Configuration Knobs](#configuration-knobs)
+  - [Diagnostics Mode](#diagnostics-mode)
+  - [Working Tips](#working-tips)
+  - [Repository Layout](#repository-layout)
 
 ---
 
@@ -121,16 +126,17 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
   ```
 
 **Tokenizers**  
-- Implement and register in `sleep2vec/modules/tokenizers.py` using `@register_tokenizer("my_tokenizer")`.
-- Set per-channel:
+- Implement and register in `sleep2vec/pretrain/tokenizers.py` using `@register_tokenizer("my_tokenizer")`.
+- Set per-channel (tokenizer block must supply `name` and `out_dim`):
   ```yaml
   model:
     channels:
       - name: eeg_original
         input_dim: 3840
-        out_dim: 768        # must match across channels
-        tokenizer: my_tokenizer
-        tokenizer_kwargs: {}
+        tokenizer:
+          name: my_tokenizer
+          out_dim: 768        # must match across channels
+          kwargs: {}
   ```
 
 **Projection Head**  
@@ -172,6 +178,7 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
   ```
 - Temporal aggregation modules are in `sleep2vec/downstream/temporal_aggregation/`.
 
+
 **CLS vs Tokens (downstream representation)**  
 `model.cls` controls (1) whether a learnable CLS token is added, and (2) what representation downstream heads consume:
 ```yaml
@@ -186,8 +193,9 @@ model:
 - For `--label-name stage5` (`is_seq=True`), downstream is always token-level; if you set `downstream: cls` it will be ignored (a warning is logged).
 - If `model.cls` is omitted, the default is “no CLS token + token/pooled downstream”.
 
-**Model Averaging (EMA / running mean)**  
-- Implemented in `sleep2vec/averaging/`; configure at top level in YAML:
+**Model Averaging**  
+- Strategies live in `sleep2vec/model_averaging.py` (EMA and running_mean included).
+- Configure (omit the block entirely to disable):
   ```yaml
   model_averaging:
     name: ema
