@@ -10,6 +10,9 @@ model:
     enabled: true
     hidden_dim: 768
     out_dim: 128
+  cls:
+    embedding_type: null    # null -> no CLS, "bert" -> prepend learnable CLS token
+    downstream: tokens      # "tokens" or "cls" (required)
   channels:
     - name: heartbeat
       input_dim: 120
@@ -49,12 +52,18 @@ model:
       tokenizer: sundial
   head:
     name: classification
-    agg: gated_scalar
     dropout: 0.1
     hidden_dim: null
+    channel_agg:
+      name: gated_scalar
+      kwargs: {}
+    temporal_agg:
+      # unused for cls embedding downstream
+      name: mean
+      kwargs: {}
 data:
   max_tokens: 120
-  data_channel_names: null    # optional override for dataset channel names
+  data_channel_names: null
   finetune_data_index: index/hsp_psg_pretrain.csv
   finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
   train_dataset_names: [shhs]

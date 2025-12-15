@@ -57,6 +57,13 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.separate_adapters = lora_cfg.separate_adapters
     args.head_kwargs = {}
 
+    # Fail fast if requested dataloader channels differ from model/backbone channels.
+    if set(args.data_channel_names) != set(args.channel_names):
+        raise ValueError(
+            "data.data_channel_names in YAML must match model.channels. "
+            f"Model channels: {args.channel_names}; data channels: {args.data_channel_names}."
+        )
+
     apply_task_flags(args)
     return config_bundle, model_cfg
 
