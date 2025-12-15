@@ -4,11 +4,12 @@ import typing as t
 from peft import LoraConfig, TaskType, get_peft_model
 import torch
 import torch.nn as nn
+import yaml
 
 from sleep2vec.config import HeadConfig, ModelConfig
 
 from .downstream.head_registry import create_head
-from .downstream.heads import AttnPooling
+from .downstream.temporal_aggregation import build_temporal_aggregator
 from .pretrain_model import Sleep2vecPretrainModel
 
 
@@ -43,8 +44,10 @@ class Sleep2vecDownstreamModel(nn.Module):
         head_config: HeadConfig | None = None,
     ):
         super().__init__()
+        # core attributes
+        self.model_config = model_config
         self.backbone = backbone
-        self.channel_names = [c.name for c in model_config.channels] if model_config is not None else channel_names
+        self.channel_names = [c.name for c in model_config.channels] if model_config else channel_names
         self.device = device
         self.output_dim = output_dim
         self.is_classification = is_classification
@@ -52,18 +55,29 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.target = target
 
         self.n_channels = len(self.channel_names)
+        self.cls_embedding = getattr(self.backbone, "cls_embedding", None)
+        cls_cfg = model_config.cls if model_config else None
+        self.cls_usage = cls_cfg.downstream if cls_cfg else None
+
+        if self.cls_usage == "cls" and self.cls_embedding is None:
+            raise ValueError(
+                "Backbone provides no CLS embedding; set model.cls.embedding_type to 'bert' when "
+                "model.cls.downstream is 'cls'."
+            )
 
         head_kwargs = head_kwargs or {}
-        if head_config is not None:
-            inferred_head = head_config.name
-            if head_config.act:
-                head_kwargs.setdefault("act", _resolve_act(head_config.act))
-            head_kwargs.setdefault("agg", head_config.agg)
-            head_kwargs.setdefault("hidden_dim", head_config.hidden_dim)
-            head_kwargs.setdefault("dropout", head_config.dropout)
-            head_kwargs.update(head_config.kwargs or {})
-        else:
-            inferred_head = head_name or ("classification" if self.is_classification else "regression")
+        if head_config is None:
+            raise ValueError("head_config must be provided for downstream model construction.")
+
+        inferred_head = head_config.name
+        if head_config.act:
+            head_kwargs.setdefault("act", _resolve_act(head_config.act))
+        channel_cfg = head_config.channel_agg
+        head_kwargs.setdefault("agg", channel_cfg.name)
+        head_kwargs.setdefault("hidden_dim", head_config.hidden_dim)
+        head_kwargs.setdefault("dropout", head_config.dropout)
+        head_kwargs.update(head_config.kwargs or {})
+        temporal_cfg = head_config.temporal_agg
 
         self.head = create_head(
             inferred_head,
@@ -76,12 +90,16 @@ class Sleep2vecDownstreamModel(nn.Module):
             **head_kwargs,
         )
 
-        self.use_temporal_attn = False  # control flag
         self.separate_adapters = False  # default
         self._adapter_warning_logged = False
+        self._seq_cls_warning_logged = False
 
-        if (not self.is_seq) and self.use_temporal_attn:
-            self.temporal_agg = AttnPooling(self.backbone.transformer_hidden_size, heads=1, temp=1.0, dropout=0.0)
+        # configure temporal aggregation (required)
+        self.temporal_agg = build_temporal_aggregator(
+            temporal_cfg.name,
+            hidden_size=self.backbone.transformer_hidden_size,
+            **dict(temporal_cfg.kwargs or {}),
+        )
 
     def _backbone_encoder(self) -> nn.Module:
         """Returns the encoder module inside the backbone."""
@@ -124,28 +142,50 @@ class Sleep2vecDownstreamModel(nn.Module):
             if getattr(self, "separate_adapters", False):
                 self._set_active_adapter(f"ch_{token_name}")
 
-            hidden = self.backbone._token_embeddings_to_hidden(single_mod_token_embeddings, batch)
+            hidden, attn_mask = self.backbone._token_embeddings_to_hidden(
+                single_mod_token_embeddings, batch, return_mask=True
+            )
+
+            strategy = self.cls_embedding
+            if strategy is None:
+                token_hidden, cls_hidden, token_mask = hidden, None, attn_mask
+            else:
+                token_hidden, cls_hidden, token_mask = strategy.split_hidden(hidden, attn_mask)
 
             if self.is_seq:
-                seq_hidden = hidden
-                feature_of_different_mods.append(seq_hidden)
+                feature = self._forward_seq(token_hidden, cls_hidden)
             else:
-                seq_hidden = hidden
-                B, L, _ = seq_hidden.shape
-                mask = torch.zeros(B, L, dtype=torch.bool, device=seq_hidden.device)
-                for i in range(B):
-                    mask[i, : batch["length"][i].item()] = True
-
-                if self.use_temporal_attn:
-                    pooled, _ = self.temporal_agg(seq_hidden, mask)
-                else:
-                    seq_hidden_masked = seq_hidden * mask.unsqueeze(-1)
-                    denom = mask.sum(dim=1).clamp(min=1).unsqueeze(-1).float()
-                    pooled = seq_hidden_masked.sum(dim=1) / denom
-                feature_of_different_mods.append(pooled)
+                feature = self._forward_nonseq(token_hidden, cls_hidden, token_mask, batch)
+            feature_of_different_mods.append(feature)
 
         output = self.head(feature_of_different_mods)
         return output
+
+    def _forward_seq(self, token_hidden, cls_hidden):
+        if self.cls_usage == "cls":
+            # Sequence labeling expects per-token logits; using a single CLS embedding would
+            # collapse the time dimension and later break loss shapes (targets are [B,L]).
+            if not self._seq_cls_warning_logged:
+                logging.warning(
+                    "model.cls.downstream='cls' is incompatible with is_seq=True; "
+                    "ignoring CLS and using token embeddings for sequence prediction."
+                )
+                self._seq_cls_warning_logged = True
+        return token_hidden
+
+    def _forward_nonseq(self, token_hidden, cls_hidden, token_mask, batch):
+        if self.cls_usage == "cls":
+            if cls_hidden is None:
+                raise RuntimeError("cls_usage='cls' requested but backbone provides no CLS embedding.")
+            return cls_hidden
+
+        if token_mask is None:
+            B, L, _ = token_hidden.shape
+            token_mask = torch.zeros(B, L, dtype=torch.bool, device=token_hidden.device)
+            for i in range(B):
+                token_mask[i, : batch["length"][i].item()] = True
+
+        return self.temporal_agg(token_hidden, token_mask)
 
     def load_pretrained_backbone(self, ckpt_path, use_ema: bool | str | None = True):
         logging.info(f"Loading backbone from {ckpt_path}")
@@ -166,6 +206,9 @@ class Sleep2vecDownstreamModel(nn.Module):
             prefix = "model."
             filtered_state_dict = {k.replace(prefix, ""): v for k, v in state_dict.items() if k.startswith(prefix)}
 
+        # Sanity check CLS settings against serialized config in checkpoint (assumes YAML is present)
+        self._warn_on_cls_mismatch(ckpt)
+
         # 加载到 self.backbone
         load_info = self.backbone.load_state_dict(filtered_state_dict, strict=False)
 
@@ -183,6 +226,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             logging.warning(f"Unexpected keys ({len(unexpected_keys)}):")
             for k in unexpected_keys:
                 logging.warning(f"    {k}")
+            self._warn_on_dropped_cls_weights(unexpected_keys)
 
     def freeze_backbone_and_insert_lora(
         self,
@@ -260,6 +304,50 @@ class Sleep2vecDownstreamModel(nn.Module):
                     for adp in self.channel_adapters
                 ):
                     p.requires_grad = True
+
+    # ---- helpers ----
+    @staticmethod
+    def _normalize_cls_cfg(cfg_obj):
+        if cfg_obj is None:
+            return None, None
+        if isinstance(cfg_obj, dict):
+            emb = cfg_obj.get("embedding_type")
+            down = cfg_obj.get("downstream")
+        else:  # dataclass instance
+            emb = getattr(cfg_obj, "embedding_type", None)
+            down = getattr(cfg_obj, "downstream", None)
+        emb_norm = None if emb is None or str(emb).lower() in {"none", "null"} else str(emb).lower()
+        return emb_norm, down
+
+    def _warn_on_cls_mismatch(self, ckpt: dict):
+        """Assumes serialized YAML config exists in checkpoint; warn if CLS settings differ."""
+        ckpt_model_cfg = yaml.safe_load(ckpt["model_config_yaml"])
+        ckpt_cls_block = ckpt_model_cfg.get("cls")
+        ckpt_emb, ckpt_down = self._normalize_cls_cfg(ckpt_cls_block)
+        curr_emb, curr_down = self._normalize_cls_cfg(self.model_config.cls if self.model_config else None)
+
+        if ckpt_emb != curr_emb:
+            logging.warning(
+                "CLS embedding_type mismatch: checkpoint=%s, current=%s. CLS weights may be ignored or missing.",
+                ckpt_emb or "none",
+                curr_emb or "none",
+            )
+        if ckpt_down != curr_down:
+            logging.warning(
+                "CLS downstream mismatch: checkpoint=%s, current=%s. Feature pooling behavior may differ.",
+                ckpt_down or "tokens",
+                curr_down or "tokens",
+            )
+
+    def _warn_on_dropped_cls_weights(self, unexpected_keys: list[str]):
+        cls_unexpected = [k for k in unexpected_keys if k.startswith("cls_embedding")]
+        if cls_unexpected and (not self.model_config or not self.model_config.cls):
+            logging.warning(
+                "Checkpoint contained CLS embedding weights (e.g., %s) but current finetune config disables CLS "
+                "(model.cls is null/none). The CLS token has been dropped. If this is unintended, set "
+                "model.cls.embedding_type='bert' (and optionally downstream='cls').",
+                cls_unexpected[0],
+            )
 
     def print_backbone_param_names(self):
         logging.info("== All parameters (name, shape, dtype, device) ==")

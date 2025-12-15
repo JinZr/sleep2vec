@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from sleep2vec.backbone.encoder_factory import TransformerEncoderFactory
 from sleep2vec.builders import build_encoder_factory, build_projection, build_tokenizers_and_dim
+from sleep2vec.cls import build_cls_embedding
 from sleep2vec.config import ModelConfig, ProjectionConfig
 from sleep2vec.modules.tokenizers import LinearTokenizer, SundialTokenizer
 
@@ -35,6 +36,7 @@ class Sleep2vecPretrainModel(nn.Module):
         self.high_sr, self.low_sr = 3840, 120
         self._custom_encoder_forward = encoder_forward
         overrides = dict(encoder_config_overrides or {})
+        self.cls_cfg = None
 
         if model_config is not None:
             self.channel_names = [c.name for c in model_config.channels]
@@ -44,6 +46,7 @@ class Sleep2vecPretrainModel(nn.Module):
             projection = projection_config.enabled
             encoder_factory = encoder_factory or build_encoder_factory(model_config.backbone)
             transformer_hidden_size = transformer_hidden_size or model_config.backbone.hidden_size
+            self.cls_cfg = model_config.cls
         else:
             if channel_feature_dim is None or channel_names is None:
                 raise ValueError("channel_feature_dim and channel_names are required when model_config is absent.")
@@ -138,6 +141,12 @@ class Sleep2vecPretrainModel(nn.Module):
         self.encoder, inferred_hidden_size = encoder_factory.build()
         self.transformer_hidden_size = inferred_hidden_size
         self.encoder_name = encoder_factory.name
+        self.cls_embedding = build_cls_embedding(
+            strategy=self.cls_cfg.embedding_type if self.cls_cfg else None,
+            hidden_size=self.transformer_hidden_size,
+        )
+        # downstream preference (cls/tokens/None) stored for heads to read
+        self.cls_downstream = self.cls_cfg.downstream if self.cls_cfg else None
 
         self.mask_embed = nn.ParameterDict(
             {channel_name: nn.Parameter(torch.ones(channel_feature_dim)) for channel_name in self.channel_names}
@@ -222,31 +231,24 @@ class Sleep2vecPretrainModel(nn.Module):
 
     def apply_padding_mask(self, tokens: torch.Tensor, lengths: torch.Tensor):
         """
-        tokens:   Tensor [B, L, D]
-        lengths:  Tensor [B]，每个样本原始有效长度
+        Legacy wrapper: delegates to the configured CLS strategy to (optionally) prepend CLS
+        and build an attention mask.
         """
-        B, L, D = tokens.shape
-        device = tokens.device
+        return self.cls_embedding.add_cls_and_mask(tokens, lengths)
 
-        # 构造 padding mask：1 表示有效，0 表示 padding
-        padding_mask = torch.zeros(B, L, dtype=torch.bool, device=device)
-        for i in range(B):
-            valid_len = int(lengths[i].item())
-            padding_mask[i, :valid_len] = True  # 有效位置设为 1
-
-        return tokens.float(), padding_mask
-
-    def _token_embeddings_to_hidden(self, token_embeddings, batch):
+    def _token_embeddings_to_hidden(self, token_embeddings, batch, *, return_mask: bool = False):
 
         # 3. 调整 token_embedding 维度为 transformer hidden_size
         token_embeddings = self.embedding_projection(token_embeddings)
 
-        # 4. 添加 padding mask
-        token_embeddings, first_padding_mask = self.apply_padding_mask(token_embeddings, batch["length"])
+        # 4. 通过策略添加 CLS & 构造 padding mask
+        token_embeddings, attention_mask = self.apply_padding_mask(token_embeddings, batch["length"])
 
         # 5. Transformer encoder
-        hidden = self._run_encoder(token_embeddings, first_padding_mask)
+        hidden = self._run_encoder(token_embeddings, attention_mask)
 
+        if return_mask:
+            return hidden, attention_mask
         return hidden
 
     def _run_encoder(self, token_embeddings, attention_mask):

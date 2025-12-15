@@ -27,7 +27,12 @@ from sleep2vec.utils import get_finetune_dataloaders
 def prepare_dataloader(args):
     train_loader, val_loader, test_loader = get_finetune_dataloaders(args)
 
-    logging.info(len(train_loader), len(val_loader), len(test_loader))
+    logging.info(
+        "Prepared dataloaders: train=%d val=%d test=%d",
+        len(train_loader),
+        len(val_loader),
+        len(test_loader),
+    )
     return train_loader, val_loader, test_loader
 
 

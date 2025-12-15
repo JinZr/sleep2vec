@@ -11,59 +11,45 @@ model:
     hidden_dim: 768
     out_dim: 128
   cls:
-    embedding_type: null    # null -> no CLS, "bert" -> prepend learnable CLS token
+    embedding_type: bert    # null -> no CLS, "bert" -> prepend learnable CLS token
     downstream: tokens      # "tokens" or "cls" (required)
   channels:
     - name: heartbeat
       input_dim: 120
-      tokenizer:
-        name: sundial
-        out_dim: 768
+      out_dim: 768
+      tokenizer: sundial
     - name: breath
       input_dim: 120
-      tokenizer:
-        name: sundial
-        out_dim: 768
+      out_dim: 768
+      tokenizer: sundial
     - name: eeg_original
       input_dim: 3840
-      tokenizer:
-        name: sundial
-        out_dim: 768
+      out_dim: 768
+      tokenizer: sundial
     - name: ecg_original
       input_dim: 3840
-      tokenizer:
-        name: sundial
-        out_dim: 768
+      out_dim: 768
+      tokenizer: sundial
     - name: eog_original
       input_dim: 3840
-      tokenizer:
-        name: sundial
-        out_dim: 768
+      out_dim: 768
+      tokenizer: sundial
     - name: emg_original
       input_dim: 3840
-      tokenizer:
-        name: sundial
-        out_dim: 768
+      out_dim: 768
+      tokenizer: sundial
     - name: spo2
       input_dim: 120
-      tokenizer:
-        name: sundial
-        out_dim: 768
+      out_dim: 768
+      tokenizer: sundial
     - name: resp_original
       input_dim: 120
-      tokenizer:
-        name: sundial
-        out_dim: 768
+      out_dim: 768
+      tokenizer: sundial
     - name: resp_nasal_original
       input_dim: 120
-      tokenizer:
-        name: sundial
-        out_dim: 768
-  head:
-    name: classification
-    agg: gated_scalar
-    dropout: 0.1
-    hidden_dim: null
+      out_dim: 768
+      tokenizer: sundial
 loss:
   name: weighted_info_nce
   temperature: 0.2

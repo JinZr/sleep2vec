@@ -41,12 +41,38 @@ class ProjectionConfig:
 
 
 @dataclass
+class ClsConfig:
+    """
+    CLS handling strategy
+      embedding_type: null / "bert"
+      downstream: "cls" / "tokens"
+    """
+
+    downstream: str
+    embedding_type: str | None = None
+    kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass
 class HeadConfig:
+    channel_agg: "ChannelAggConfig"
+    temporal_agg: "TemporalAggConfig"
     name: str = "classification"
-    agg: str = "gated_scalar"
     hidden_dim: int | None = None
     dropout: float = 0.1
     act: str | None = None
+    kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass
+class TemporalAggConfig:
+    name: str = "mean"  # "mean" or "attn"
+    kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass
+class ChannelAggConfig:
+    name: str = "gated_scalar"  # "mean" | "concat" | "gated_scalar"
     kwargs: dict[str, t.Any] = field(default_factory=dict)
 
 
@@ -55,6 +81,7 @@ class ModelConfig:
     channels: t.List[ChannelConfig]
     backbone: BackboneConfig = field(default_factory=BackboneConfig)
     projection: ProjectionConfig = field(default_factory=ProjectionConfig)
+    cls: ClsConfig | None = None
     head: HeadConfig | None = None
 
 
@@ -139,13 +166,44 @@ def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
     return channels
 
 
-def _build_head_config(model_block: dict[str, t.Any]) -> HeadConfig | None:
+def _build_cls_config(model_block: dict[str, t.Any]) -> ClsConfig | None:
+    raw = model_block.get("cls")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("model.cls must be a mapping when provided.")
+    downstream = raw.get("downstream")
+    if downstream not in {"cls", "tokens"}:
+        raise ValueError("model.cls.downstream is required and must be 'cls' or 'tokens'.")
+    return ClsConfig(**raw)
+
+
+def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> HeadConfig | None:
     head_raw = model_block.get("head")
     if head_raw is None:
+        if required:
+            raise ValueError("model.head must be a mapping and is required.")
         return None
     if not isinstance(head_raw, dict):
-        raise ValueError("model.head must be a mapping if provided.")
-    return HeadConfig(**head_raw)
+        raise ValueError("model.head must be a mapping when provided.")
+
+    temporal_block = head_raw.pop("temporal_agg", None)
+    channel_block = head_raw.pop("channel_agg", None)
+    if temporal_block is None:
+        raise ValueError("model.head.temporal_agg is required; specify name: mean|attn.")
+    if channel_block is None:
+        raise ValueError("model.head.channel_agg is required; specify name: mean|concat|gated_scalar.")
+
+    temporal_cfg = (
+        TemporalAggConfig(**temporal_block)
+        if isinstance(temporal_block, dict)
+        else TemporalAggConfig(name=temporal_block)
+    )
+    channel_cfg = (
+        ChannelAggConfig(**channel_block) if isinstance(channel_block, dict) else ChannelAggConfig(name=channel_block)
+    )
+
+    return HeadConfig(temporal_agg=temporal_cfg, channel_agg=channel_cfg, **head_raw)
 
 
 def _build_loss(loss_block: dict[str, t.Any]) -> LossConfig:
@@ -160,7 +218,21 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
     if None in out_dims:
         raise ValueError("All channels must specify tokenizer.out_dim.")
     if len(out_dims) != 1:
-        raise ValueError("All channels must share the same tokenizer.out_dim for now. " f"Got: {sorted(out_dims)}")
+        raise ValueError("All channels must share the same out_dim for now. " f"Got: {sorted(out_dims)}")
+
+    if model_cfg.cls:
+        if model_cfg.cls.embedding_type not in {None, "bert", "null", "none"}:
+            raise ValueError("model.cls.embedding_type must be null/none or 'bert'.")
+        if model_cfg.cls.downstream not in {"cls", "tokens"}:
+            raise ValueError("model.cls.downstream must be 'cls' or 'tokens'.")
+        if model_cfg.cls.downstream == "cls" and model_cfg.cls.embedding_type in {None, "null", "none"}:
+            raise ValueError("model.cls.embedding_type must be set when model.cls.downstream is 'cls'.")
+
+    if model_cfg.head is not None:
+        if model_cfg.head.temporal_agg.name not in {"mean", "attn"}:
+            raise ValueError("model.head.temporal_agg.name must be 'mean' or 'attn'.")
+        if model_cfg.head.channel_agg.name not in {"mean", "concat", "gated_scalar"}:
+            raise ValueError("model.head.channel_agg.name must be 'mean', 'concat', or 'gated_scalar'.")
     return next(iter(out_dims))
 
 
@@ -199,11 +271,13 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
     projection = ProjectionConfig(**(model_block.get("projection") or {}))
-    head = _build_head_config(model_block)
+    cls_cfg = _build_cls_config(model_block)
+    head = _build_head_config(model_block, required=False)
     model_cfg = ModelConfig(
         channels=channels,
         backbone=backbone,
         projection=projection,
+        cls=cls_cfg,
         head=head,
     )
 
@@ -223,11 +297,13 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
     projection = ProjectionConfig(**(model_block.get("projection") or {}))
-    head = _build_head_config(model_block)
+    cls_cfg = _build_cls_config(model_block)
+    head = _build_head_config(model_block, required=True)
     model_cfg = ModelConfig(
         channels=channels,
         backbone=backbone,
         projection=projection,
+        cls=cls_cfg,
         head=head,
     )
     data_cfg = FinetuneDataConfig(**data_block)
@@ -245,6 +321,8 @@ __all__ = [
     "HeadConfig",
     "LossConfig",
     "ModelConfig",
+    "ClsConfig",
+    "TemporalAggConfig",
     "ModelAveragingConfig",
     "ProjectionConfig",
     "LoraConfig",
