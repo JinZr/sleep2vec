@@ -72,6 +72,9 @@ python -m sleep2vec.finetune \
   --version-name exp001-stage5 \
   --epochs 50 --lr 1e-5 --devices 0 1
 ```
+Notes:
+- `stage5` is a **per-token sequence labeling** task (`is_seq=True`). Use token-level downstream (`model.cls.downstream: tokens`).
+- Do **not** add `stage5` to `data.data_channel_names`; it is loaded as a label into `batch["tokens"]["stage5"]` automatically when `--label-name stage5`.
 
 ### Finetune — regression
 ```bash
@@ -169,6 +172,20 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
   ```
 - Temporal aggregation modules are in `sleep2vec/downstream/temporal_aggregation/`.
 
+**CLS vs Tokens (downstream representation)**  
+`model.cls` controls (1) whether a learnable CLS token is added, and (2) what representation downstream heads consume:
+```yaml
+model:
+  cls:
+    embedding_type: null    # null/none -> no CLS token; "bert" -> prepend learnable CLS token
+    downstream: tokens      # "tokens" (token-level) or "cls" (sequence-level, non-seq tasks only)
+```
+- `embedding_type: bert` adds a BERT-style CLS token and exposes both `cls_hidden` and `token_hidden`.
+- `downstream: tokens` uses token-level features (sequence tasks) or token pooling (non-seq tasks via `model.head.temporal_agg`).
+- `downstream: cls` uses the CLS embedding for **non-seq** tasks and requires `embedding_type: bert`.
+- For `--label-name stage5` (`is_seq=True`), downstream is always token-level; if you set `downstream: cls` it will be ignored (a warning is logged).
+- If `model.cls` is omitted, the default is “no CLS token + token/pooled downstream”.
+
 **Model Averaging (EMA / running mean)**  
 - Implemented in `sleep2vec/averaging/`; configure at top level in YAML:
   ```yaml
@@ -216,7 +233,7 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
 ## Working Tips
 - Maintain separate YAML per stage (`*_pretrain.yaml`, `*_finetune_*.yaml`); only pretrain YAML defines `loss`.
 - All channels must share the same `out_dim`; the builder enforces this.
-- `data.data_channel_names` in finetune YAML must match `model.channels`; mismatch raises early.
+- `data.data_channel_names` in finetune YAML must match `model.channels` (input modalities only); per-token labels like `stage5` are loaded automatically when used as `--label-name`.
 - When experimenting, adjust CLI flags for training schedules and keep structural changes in YAML for reproducibility.
 
 ---
