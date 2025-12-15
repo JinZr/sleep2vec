@@ -59,11 +59,6 @@ model:
       tokenizer:
         name: sundial
         out_dim: 768
-  head:
-    name: classification
-    agg: gated_scalar
-    dropout: 0.1
-    hidden_dim: null
 loss:
   name: weighted_info_nce
   temperature: 0.2
