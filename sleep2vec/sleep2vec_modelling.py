@@ -38,9 +38,7 @@ class Sleep2vecPretraining(pl.LightningModule):
             opts = diagnostics.TensorDiagnosticOptions(max_eig_dim=512)
             self._diagnostic = diagnostics.attach_diagnostics(self.model, opts)
 
-        # 缓存 val 损失（每 step append，epoch 末取均值）
-        self.val_losses = []
-        self.val_contrastive_laccs = []
+        # Cache per-step validation metrics that are summarized at epoch end.
         self.val_contrastive_loss = []
         self.val_contrastive_sample = []
 
@@ -65,13 +63,8 @@ class Sleep2vecPretraining(pl.LightningModule):
         eval_model = self._get_eval_backbone()
         loss, acc = self._contrastive_step(batch, log_prefix="val", model=eval_model)
 
-        if dataloader_idx == 0:
-            self.val_losses.append(loss.detach())
-        elif dataloader_idx == 1:
+        if dataloader_idx == 1:
             self.log("extra_val_loss", loss, prog_bar=True, sync_dist=True)
-
-        if acc is not None:
-            self.val_contrastive_laccs.append(acc.detach())
         return loss
 
     def on_validation_epoch_end(self):

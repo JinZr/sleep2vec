@@ -92,6 +92,7 @@ class Sleep2vecDownstreamModel(nn.Module):
 
         self.separate_adapters = False  # default
         self._adapter_warning_logged = False
+        self._seq_cls_warning_logged = False
 
         # configure temporal aggregation (required)
         self.temporal_agg = build_temporal_aggregator(
@@ -166,9 +167,14 @@ class Sleep2vecDownstreamModel(nn.Module):
 
     def _forward_seq(self, token_hidden, cls_hidden):
         if self.cls_usage == "cls":
-            if cls_hidden is None:
-                raise RuntimeError("cls_usage='cls' requested but backbone provides no CLS embedding.")
-            return cls_hidden.unsqueeze(1)  # [B,1,D]
+            # Sequence labeling expects per-token logits; using a single CLS embedding would
+            # collapse the time dimension and later break loss shapes (targets are [B,L]).
+            if not self._seq_cls_warning_logged:
+                logging.warning(
+                    "model.cls.downstream='cls' is incompatible with is_seq=True; "
+                    "ignoring CLS and using token embeddings for sequence prediction."
+                )
+                self._seq_cls_warning_logged = True
         return token_hidden
 
     def _forward_nonseq(self, token_hidden, cls_hidden, token_mask, batch):

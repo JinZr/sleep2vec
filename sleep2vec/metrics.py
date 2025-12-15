@@ -68,7 +68,9 @@ def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: A
         df_old = pd.read_csv(csv_path)
         df_merged = pd.concat([df_old, df_new], axis=0, join="outer", ignore_index=True)
     else:
-        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        dir_name = os.path.dirname(csv_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
         df_merged = df_new
 
     df_merged.to_csv(csv_path, index=False)
