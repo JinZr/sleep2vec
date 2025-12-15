@@ -77,9 +77,14 @@ def _build_finetune_loader(
     few_shot=None,
 ):
     meta_data_names = [] if args.label_name in {"age", "sex", "stage5"} else [args.label_name]
+    dataset_channel_names = list(args.data_channel_names)
+    if args.label_name == "stage5" and "stage5" not in dataset_channel_names:
+        # stage5 is a per-token label; include it in the batch tokens so downstream loss can
+        # read batch["tokens"]["stage5"] without treating it as an input modality.
+        dataset_channel_names.append("stage5")
 
     dataset_kwargs = dict(
-        channel_names=args.data_channel_names,
+        channel_names=dataset_channel_names,
         save_preset_path=None,
         load_preset_path=args.finetune_preset_path,
         index=args.finetune_data_index,
