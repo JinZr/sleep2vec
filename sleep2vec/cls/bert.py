@@ -23,7 +23,7 @@ class BertClsEmbedding(ClsEmbedding):
         B, L, D = tokens.shape
         device = tokens.device
 
-        cls_token_expanded = self.cls_token.view(1, 1, D).expand(B, 1, D)
+        cls_token_expanded = self.cls_token.to(device=device, dtype=tokens.dtype).view(1, 1, D).expand(B, 1, D)
         tokens_with_cls = torch.cat([cls_token_expanded, tokens], dim=1)  # [B, L+1, D]
 
         padding_mask = torch.zeros(B, L + 1, dtype=torch.bool, device=device)
@@ -31,7 +31,7 @@ class BertClsEmbedding(ClsEmbedding):
             valid_len = int(lengths[i].item())
             padding_mask[i, : valid_len + 1] = True  # +1 for CLS
 
-        return tokens_with_cls.float(), padding_mask
+        return tokens_with_cls, padding_mask
 
     def split_hidden(
         self, hidden: torch.Tensor, attention_mask: torch.Tensor | None = None

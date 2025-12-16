@@ -1,6 +1,6 @@
 import torch
 
-from sleep2vec.downstream.heads import AttnPooling
+from sleep2vec.downstreams.heads import AttnPooling
 
 from .base import TemporalAggregator
 

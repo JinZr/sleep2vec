@@ -15,7 +15,7 @@ class NoClsEmbedding(ClsEmbedding):
         for i in range(B):
             valid_len = int(lengths[i].item())
             padding_mask[i, :valid_len] = True
-        return tokens.float(), padding_mask
+        return tokens, padding_mask
 
     def split_hidden(
         self, hidden: torch.Tensor, attention_mask: torch.Tensor | None = None

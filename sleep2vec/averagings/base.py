@@ -60,6 +60,3 @@ class BaseModelAverager:
 
     def on_train_batch_end(self, *, trainer, global_step: int) -> None:
         return None
-        return None
-        return None
-        return None

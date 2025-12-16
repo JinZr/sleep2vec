@@ -112,7 +112,7 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
 ## Configuration Knobs
 
 **Backbone**  
-- Register builders in `sleep2vec/backbone/encoder_factory.py` with `@register_backbone`.
+- Register builders in `sleep2vec/backbones/encoder_factory.py` with `@register_backbone`.
 - Select via YAML:
   ```yaml
   model:
@@ -126,7 +126,7 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
   ```
 
 **Tokenizers**  
-- Implement and register in `sleep2vec/pretrain/tokenizers.py` using `@register_tokenizer("my_tokenizer")`.
+- Implement and register in `sleep2vec/modules/tokenizers.py` using `@register_tokenizer("my_tokenizer")`.
 - Set per-channel (tokenizer block must supply `name` and `out_dim`):
   ```yaml
   model:
@@ -163,7 +163,7 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
   ```
 
 **Downstream Head**  
-- Heads live in `sleep2vec/downstream/heads.py` and register via `sleep2vec/downstream/head_registry.py`.
+- Heads live in `sleep2vec/downstreams/heads.py` and register via `sleep2vec/downstreams/head_registry.py`.
 - YAML separates channel and temporal aggregation:
   ```yaml
   model:
@@ -176,7 +176,7 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
       temporal_agg:
         name: mean           # mean | attn
   ```
-- Temporal aggregation modules are in `sleep2vec/downstream/temporal_aggregation/`.
+- Temporal aggregation modules are in `sleep2vec/downstreams/temporal_aggregation/`.
 
 
 **CLS vs Tokens (downstream representation)**  
@@ -194,7 +194,7 @@ model:
 - If `model.cls` is omitted, the default is “no CLS token + token/pooled downstream”.
 
 **Model Averaging**  
-- Strategies live in `sleep2vec/model_averaging.py` (EMA and running_mean included).
+- Strategies live in `sleep2vec/averagings/` (`ema.py` and `running_mean.py` included).
 - Configure (omit the block entirely to disable):
   ```yaml
   model_averaging:
