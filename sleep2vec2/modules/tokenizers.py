@@ -232,7 +232,7 @@ class SundialTokenizer2SpO2(BaseTokenizer):
             prob=1.00,
             grad_scale=0.10,
         )
-       
+
         # Residual projection branch
         self.residual_layer = nn.Linear(in_feature_dim, out_feature_dim, bias=True)
 
@@ -286,6 +286,7 @@ class SundialTokenizer2SpO2(BaseTokenizer):
         out = self.norm(out)
         out = out * self.modality_scale
         return out
+
 
 def build_tokenizer_from_channel(channel: ChannelConfig, *, device: str = "cuda") -> nn.Module:
     """Instantiate a tokenizer for a specific channel config."""
