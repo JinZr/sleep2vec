@@ -6,7 +6,7 @@ import torch
 import yaml
 
 from sleep2vec import diagnostics
-from sleep2vec.averaging.base import BaseModelAverager, build_model_averager
+from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.losses import create_loss
 from sleep2vec.pretrain_model import Sleep2vecPretrainModel
 
