@@ -1,4 +1,5 @@
 import logging
+import random
 
 import numpy as np
 import torch
@@ -22,6 +23,7 @@ def move_to_device(data, device="cuda"):
 def get_pretrain_dataloader(args):
     # set random seed
     seed = 12345
+    random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -111,6 +113,7 @@ def _build_finetune_loader(
 def get_finetune_dataloaders(args):
     """Construct PSG finetune train/val/test loaders for downstream tasks."""
     seed = 4523
+    random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)

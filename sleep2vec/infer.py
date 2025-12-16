@@ -1,6 +1,7 @@
 import argparse
 import logging
 from pathlib import Path
+import random
 import sys
 
 import numpy as np
@@ -25,6 +26,7 @@ def _build_inference_loader(args):
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     np.random.seed(args.seed)
+    random.seed(args.seed)
 
     if args.eval_split == "test":
         sources = args.override_dataset_names or args.test_dataset_names
