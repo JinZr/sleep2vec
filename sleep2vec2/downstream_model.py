@@ -1,0 +1,367 @@
+import logging
+import typing as t
+
+try:
+    from peft import LoraConfig, TaskType, get_peft_model
+except ModuleNotFoundError:  # pragma: no cover
+    # LoRA is an optional dependency.
+    LoraConfig = None  # type: ignore[assignment]
+    TaskType = None  # type: ignore[assignment]
+    get_peft_model = None  # type: ignore[assignment]
+import torch
+import torch.nn as nn
+import yaml
+
+from sleep2vec2.config import HeadConfig, ModelConfig
+
+from .downstreams.head_registry import create_head
+from .downstreams.temporal_aggregation import build_temporal_aggregator
+from .pretrain_model import Sleep2vecPretrainModel
+
+
+def _resolve_act(name: str | None):
+    if not name:
+        return None
+    mapping = {
+        "elu": nn.ELU,
+        "relu": nn.ReLU,
+        "gelu": nn.GELU,
+        "silu": nn.SiLU,
+    }
+    key = name.lower()
+    if key not in mapping:
+        raise ValueError(f"Unsupported activation '{name}'.")
+    return mapping[key]
+
+
+class Sleep2vecDownstreamModel(nn.Module):
+    def __init__(
+        self,
+        target: str,
+        backbone: Sleep2vecPretrainModel,
+        channel_names: t.List[str],
+        output_dim: int,
+        is_classification: bool,
+        is_seq: bool,
+        device: str = "cuda",
+        head_name: str | None = None,
+        head_kwargs: t.Optional[dict] = None,
+        model_config: ModelConfig | None = None,
+        head_config: HeadConfig | None = None,
+    ):
+        super().__init__()
+        # core attributes
+        self.model_config = model_config
+        self.backbone = backbone
+        self.channel_names = [c.name for c in model_config.channels] if model_config else channel_names
+        self.device = device
+        self.output_dim = output_dim
+        self.is_classification = is_classification
+        self.is_seq = is_seq
+        self.target = target
+
+        self.n_channels = len(self.channel_names)
+        self.cls_embedding = getattr(self.backbone, "cls_embedding", None)
+        cls_cfg = model_config.cls if model_config else None
+        self.cls_usage = cls_cfg.downstream if cls_cfg else None
+
+        if self.cls_usage == "cls" and self.cls_embedding is None:
+            raise ValueError(
+                "Backbone provides no CLS embedding; set model.cls.embedding_type to 'bert' when "
+                "model.cls.downstream is 'cls'."
+            )
+
+        head_kwargs = head_kwargs or {}
+        if head_config is None:
+            raise ValueError("head_config must be provided for downstream model construction.")
+
+        inferred_head = head_config.name
+        if head_config.act:
+            head_kwargs.setdefault("act", _resolve_act(head_config.act))
+        channel_cfg = head_config.channel_agg
+        head_kwargs.setdefault("agg", channel_cfg.name)
+        head_kwargs.setdefault("hidden_dim", head_config.hidden_dim)
+        head_kwargs.setdefault("dropout", head_config.dropout)
+        head_kwargs.update(head_config.kwargs or {})
+        temporal_cfg = head_config.temporal_agg
+
+        self.head = create_head(
+            inferred_head,
+            target=target,
+            feature_dim=self.backbone.transformer_hidden_size,
+            n_mods=self.n_channels,
+            output_dim=self.output_dim,
+            is_classification=self.is_classification,
+            is_seq=self.is_seq,
+            **head_kwargs,
+        )
+
+        self.separate_adapters = False  # default
+        self._adapter_warning_logged = False
+        self._seq_cls_warning_logged = False
+
+        # configure temporal aggregation (required)
+        self.temporal_agg = build_temporal_aggregator(
+            temporal_cfg.name,
+            hidden_size=self.backbone.transformer_hidden_size,
+            **dict(temporal_cfg.kwargs or {}),
+        )
+
+    def _backbone_encoder(self) -> nn.Module:
+        """Returns the encoder module inside the backbone."""
+        if hasattr(self.backbone, "get_encoder"):
+            return self.backbone.get_encoder()
+
+        encoder = getattr(self.backbone, "encoder", None)
+        if encoder is None:
+            raise AttributeError(
+                "Provided backbone does not expose an encoder. If you pass a custom "
+                "backbone ensure it implements get_encoder()."
+            )
+        return encoder
+
+    def _replace_backbone_encoder(self, encoder: nn.Module):
+        """Swap the current encoder inside the backbone."""
+        if hasattr(self.backbone, "replace_encoder"):
+            self.backbone.replace_encoder(encoder)
+        else:
+            self.backbone.encoder = encoder
+
+    def _set_active_adapter(self, adapter_name: str):
+        """Switch adapters if the encoder exposes adapter APIs."""
+        encoder = self._backbone_encoder()
+        if hasattr(encoder, "set_adapter"):
+            encoder.set_adapter(adapter_name)
+        elif not self._adapter_warning_logged:
+            logging.warning("Encoder lacks 'set_adapter'; separate adapters are ignored.")
+            self._adapter_warning_logged = True
+
+    def forward(self, batch):
+        tokens = batch["tokens"]
+
+        token_embeddings = self.backbone._tokenize_all(tokens)
+        token_names, token_embeddings = list(token_embeddings.keys()), list(token_embeddings.values())
+
+        feature_of_different_mods = []
+        for token_name, single_mod_token_embeddings in zip(token_names, token_embeddings):
+
+            if getattr(self, "separate_adapters", False):
+                self._set_active_adapter(f"ch_{token_name}")
+
+            hidden, attn_mask = self.backbone._token_embeddings_to_hidden(
+                single_mod_token_embeddings, batch, return_mask=True
+            )
+
+            strategy = self.cls_embedding
+            if strategy is None:
+                token_hidden, cls_hidden, token_mask = hidden, None, attn_mask
+            else:
+                token_hidden, cls_hidden, token_mask = strategy.split_hidden(hidden, attn_mask)
+
+            if self.is_seq:
+                feature = self._forward_seq(token_hidden, cls_hidden)
+            else:
+                feature = self._forward_nonseq(token_hidden, cls_hidden, token_mask, batch)
+            feature_of_different_mods.append(feature)
+
+        output = self.head(feature_of_different_mods)
+        return output
+
+    def _forward_seq(self, token_hidden, cls_hidden):
+        if self.cls_usage == "cls":
+            # Sequence labeling expects per-token logits; using a single CLS embedding would
+            # collapse the time dimension and later break loss shapes (targets are [B,L]).
+            if not self._seq_cls_warning_logged:
+                logging.warning(
+                    "model.cls.downstream='cls' is incompatible with is_seq=True; "
+                    "ignoring CLS and using token embeddings for sequence prediction."
+                )
+                self._seq_cls_warning_logged = True
+        return token_hidden
+
+    def _forward_nonseq(self, token_hidden, cls_hidden, token_mask, batch):
+        if self.cls_usage == "cls":
+            if cls_hidden is None:
+                raise RuntimeError("cls_usage='cls' requested but backbone provides no CLS embedding.")
+            return cls_hidden
+
+        if token_mask is None:
+            B, L, _ = token_hidden.shape
+            token_mask = torch.zeros(B, L, dtype=torch.bool, device=token_hidden.device)
+            for i in range(B):
+                token_mask[i, : batch["length"][i].item()] = True
+
+        return self.temporal_agg(token_hidden, token_mask)
+
+    def load_pretrained_backbone(self, ckpt_path, use_ema: bool | str | None = True):
+        logging.info(f"Loading backbone from {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        state_dict = ckpt["state_dict"]
+
+        averaging_name = None
+        if isinstance(use_ema, str):
+            averaging_name = use_ema
+        elif use_ema:
+            averaging_name = "ema"
+
+        prefix = f"{averaging_name}_model." if averaging_name else "model."
+        filtered_state_dict = {k.replace(prefix, ""): v for k, v in state_dict.items() if k.startswith(prefix)}
+
+        if averaging_name and not filtered_state_dict:
+            logging.warning(f"{averaging_name} weights not found in checkpoint; falling back to student weights.")
+            prefix = "model."
+            filtered_state_dict = {k.replace(prefix, ""): v for k, v in state_dict.items() if k.startswith(prefix)}
+
+        # Sanity check CLS settings against serialized config in checkpoint (assumes YAML is present)
+        self._warn_on_cls_mismatch(ckpt)
+
+        # 加载到 self.backbone
+        load_info = self.backbone.load_state_dict(filtered_state_dict, strict=False)
+
+        # 打印加载结果
+        total_keys = len(filtered_state_dict)
+        missing_keys = load_info.missing_keys
+        unexpected_keys = load_info.unexpected_keys
+
+        logging.info(f"✅ Loaded {total_keys - len(missing_keys)} / {total_keys} keys into backbone.")
+        if missing_keys:
+            logging.warning(f"Missing keys ({len(missing_keys)}):")
+            for k in missing_keys:
+                logging.warning(f"    {k}")
+        if unexpected_keys:
+            logging.warning(f"Unexpected keys ({len(unexpected_keys)}):")
+            for k in unexpected_keys:
+                logging.warning(f"    {k}")
+            self._warn_on_dropped_cls_weights(unexpected_keys)
+
+    def freeze_backbone_and_insert_lora(
+        self,
+        insert_lora: bool = True,
+        r: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.05,
+        target_modules=("query", "key", "value"),  # 只打注意力；若也想打FFN，加 "dense"
+        separate_adapters: bool = False,
+    ):
+        # 0) 先冻结 backbone 全部参数
+        self.separate_adapters = False
+        for _, p in self.backbone.named_parameters():
+            p.requires_grad = False
+
+        if insert_lora:
+
+            if get_peft_model is None or LoraConfig is None or TaskType is None:
+                raise ModuleNotFoundError(
+                    "LoRA fine-tuning requested but the 'peft' package is not installed. "
+                    "Install it with: pip install peft"
+                )
+
+            # 1) 注入 LoRA 到 encoder
+            cfg = LoraConfig(
+                r=r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                bias="none",
+                # layers_to_transform=[6, 7],      # 想只打高层就改成 [4,5,6,7] 之类
+                task_type=TaskType.FEATURE_EXTRACTION,
+                target_modules=list(target_modules),
+            )
+            encoder_with_lora = get_peft_model(self._backbone_encoder(), cfg)
+            self._replace_backbone_encoder(encoder_with_lora)
+
+            # 3) 为每个通道创建独立 adapter
+            self.separate_adapters = separate_adapters
+            if separate_adapters:
+                self.channel_adapters = []
+                for ch in self.channel_names:
+                    name = f"ch_{ch}"
+                    encoder = self._backbone_encoder()
+                    if name not in encoder.peft_config:  # 避免重复添加
+                        encoder.add_adapter(name, cfg)
+                    self.channel_adapters.append(name)
+                self._enable_all_adapters_trainable()
+
+        # —— 全模型统计 ——
+        total_all = sum(p.numel() for _, p in self.named_parameters())
+        train_all = sum(p.numel() for _, p in self.named_parameters() if p.requires_grad)
+        logging.info(
+            "[insert_lora] model trainable params: %s/%s (%s)",
+            train_all,
+            total_all,
+            f"{train_all/total_all:.4%}",
+        )
+
+        # —— 只看 backbone 统计 ——
+        b_total = sum(p.numel() for _, p in self.backbone.named_parameters())
+        b_train = sum(p.numel() for _, p in self.backbone.named_parameters() if p.requires_grad)
+        b_ratio = b_train / b_total if b_total > 0 else 0.0
+        lora_train = sum(p.numel() for n, p in self.backbone.named_parameters() if p.requires_grad and "lora_" in n)
+        logging.info(
+            "[insert_lora] backbone trainable params: %s/%s (%s); LoRA-only trainable: %s",
+            b_train,
+            b_total,
+            f"{b_ratio:.4%}",
+            lora_train,
+        )
+
+    # 在所有 adapter 都 add 完之后调用
+    def _enable_all_adapters_trainable(self):
+        encoder = self._backbone_encoder()
+        for n, p in encoder.named_parameters():
+            # 只放开 LoRA 权重；底座仍然冻结
+            if "lora_" in n:
+                # 仅放开这些 adapter 的参数（避免误放开 default）
+                if any(
+                    (f".{adp}." in n or f"_{adp}." in n or n.endswith(f".{adp}.weight"))
+                    for adp in self.channel_adapters
+                ):
+                    p.requires_grad = True
+
+    # ---- helpers ----
+    @staticmethod
+    def _normalize_cls_cfg(cfg_obj):
+        if cfg_obj is None:
+            return None, None
+        if isinstance(cfg_obj, dict):
+            emb = cfg_obj.get("embedding_type")
+            down = cfg_obj.get("downstream")
+        else:  # dataclass instance
+            emb = getattr(cfg_obj, "embedding_type", None)
+            down = getattr(cfg_obj, "downstream", None)
+        emb_norm = None if emb is None or str(emb).lower() in {"none", "null"} else str(emb).lower()
+        return emb_norm, down
+
+    def _warn_on_cls_mismatch(self, ckpt: dict):
+        """Assumes serialized YAML config exists in checkpoint; warn if CLS settings differ."""
+        ckpt_model_cfg = yaml.safe_load(ckpt["model_config_yaml"])
+        ckpt_cls_block = ckpt_model_cfg.get("cls")
+        ckpt_emb, ckpt_down = self._normalize_cls_cfg(ckpt_cls_block)
+        curr_emb, curr_down = self._normalize_cls_cfg(self.model_config.cls if self.model_config else None)
+
+        if ckpt_emb != curr_emb:
+            logging.warning(
+                "CLS embedding_type mismatch: checkpoint=%s, current=%s. CLS weights may be ignored or missing.",
+                ckpt_emb or "none",
+                curr_emb or "none",
+            )
+        if ckpt_down != curr_down:
+            logging.warning(
+                "CLS downstream mismatch: checkpoint=%s, current=%s. Feature pooling behavior may differ.",
+                ckpt_down or "tokens",
+                curr_down or "tokens",
+            )
+
+    def _warn_on_dropped_cls_weights(self, unexpected_keys: list[str]):
+        cls_unexpected = [k for k in unexpected_keys if k.startswith("cls_embedding")]
+        if cls_unexpected and (not self.model_config or not self.model_config.cls):
+            logging.warning(
+                "Checkpoint contained CLS embedding weights (e.g., %s) but current finetune config disables CLS "
+                "(model.cls is null/none). The CLS token has been dropped. If this is unintended, set "
+                "model.cls.embedding_type='bert' (and optionally downstream='cls').",
+                cls_unexpected[0],
+            )
+
+    def print_backbone_param_names(self):
+        logging.info("== All parameters (name, shape, dtype, device) ==")
+        for n, p in self._backbone_encoder().named_parameters():
+            logging.info(f"{n:80s} {tuple(p.shape)} {p.dtype} {p.device}")
