@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import typing as t
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -21,6 +22,46 @@ from sleep2vec2.common import dump_cli_args_yaml
 from sleep2vec2.config import load_pretrain_config
 from sleep2vec2.sleep2vec_modelling import Sleep2vecPretraining
 from sleep2vec2.utils import get_pretrain_dataloader
+
+
+def _build_wandb_logger(*, args, run_name: str, save_dir: str, wandb_id: str | None):
+    if args.wandb_mode == "disabled":
+        return False
+
+    settings_kwargs: dict[str, t.Any] = {}
+    if getattr(args, "wandb_init_timeout", None):
+        settings_kwargs["init_timeout"] = args.wandb_init_timeout
+    if getattr(args, "wandb_start_method", None):
+        settings_kwargs["start_method"] = args.wandb_start_method
+
+    wandb_settings = None
+    if settings_kwargs:
+        try:
+            wandb_settings = wandb.Settings(**settings_kwargs)
+        except TypeError:
+            # Older wandb versions may not accept newer settings fields.
+            wandb_settings = wandb.Settings(init_timeout=settings_kwargs.get("init_timeout", 90))
+
+    logger_kwargs: dict[str, t.Any] = dict(
+        project=args.wandb_project,
+        name=f"s2v-pretrain-{run_name}",
+        save_dir=save_dir,
+        id=wandb_id,
+        resume="allow" if wandb_id else None,
+    )
+
+    if args.wandb_mode == "offline":
+        logger_kwargs["offline"] = True
+    if wandb_settings is not None:
+        logger_kwargs["settings"] = wandb_settings
+
+    try:
+        return WandbLogger(**logger_kwargs)
+    except TypeError:
+        # Backward-compat: drop optional args if Lightning/W&B APIs differ.
+        logger_kwargs.pop("offline", None)
+        logger_kwargs.pop("settings", None)
+        return WandbLogger(**logger_kwargs)
 
 
 def sleep2vec_pretrain(args):
@@ -77,12 +118,11 @@ def sleep2vec_pretrain(args):
 
     model = Sleep2vecPretraining(args, model_config, loss_config, averaging_config=averaging_config)
 
-    logger = WandbLogger(
-        project="sleep2vec2-pretrain",
-        name=f"s2v-pretrain-{run_name}",
+    logger = _build_wandb_logger(
+        args=args,
+        run_name=run_name,
         save_dir=os.path.dirname(save_path),
-        id=wandb_id,  # NEW：保持同一个 run
-        resume="allow" if wandb_id else None,  # NEW：若 id 存在则追加
+        wandb_id=wandb_id,
     )
 
     monitor = "val_contrastive_acc"
@@ -127,7 +167,7 @@ def sleep2vec_pretrain(args):
         benchmark=True,
         logger=logger,
         max_epochs=args.epochs,
-        log_every_n_steps=5,
+        log_every_n_steps=args.log_every_n_steps,
         num_sanity_val_steps=0,
         precision=args.precision,
         gradient_clip_val=args.gradient_clip_val,
@@ -141,6 +181,7 @@ def sleep2vec_pretrain(args):
                 enable_progress_bar=False,
                 max_steps=args.diagnostics_steps,
                 limit_val_batches=0,
+                log_every_n_steps=1,
             )
         )
 
@@ -160,8 +201,6 @@ def sleep2vec_pretrain(args):
 
 
 if __name__ == "__main__":
-    wandb.login()
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -245,6 +284,40 @@ if __name__ == "__main__":
     )
     parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
     parser.add_argument(
+        "--log-every-n-steps",
+        dest="log_every_n_steps",
+        type=int,
+        default=5,
+        help="emit logger metrics every N training steps (W&B/TensorBoard); useful for short runs/diagnostics",
+    )
+    parser.add_argument(
+        "--wandb-mode",
+        type=str,
+        default=os.environ.get("WANDB_MODE", "online"),
+        choices=["online", "offline", "disabled"],
+        help="W&B mode: 'online' (default), 'offline' (no network, later `wandb sync`), or 'disabled'",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default=os.environ.get("WANDB_PROJECT", "sleep2vec2-pretrain"),
+        help="W&B project name (overrides WANDB_PROJECT)",
+    )
+    parser.add_argument(
+        "--wandb-init-timeout",
+        dest="wandb_init_timeout",
+        type=int,
+        default=int(os.environ.get("WANDB_INIT_TIMEOUT", "90")),
+        help="Seconds to wait for `wandb.init()` before timing out (default: 90).",
+    )
+    parser.add_argument(
+        "--wandb-start-method",
+        dest="wandb_start_method",
+        type=str,
+        default=os.environ.get("WANDB_START_METHOD", ""),
+        help="Optional W&B start method (e.g., 'thread') for constrained HPC environments.",
+    )
+    parser.add_argument(
         "--strategy",
         type=str,
         default="ddp",
@@ -259,5 +332,12 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    if not getattr(args, "wandb_start_method", ""):
+        args.wandb_start_method = None
     logging.info(args)
+    if args.wandb_mode == "online" and int(os.environ.get("RANK", "0")) == 0:
+        try:
+            wandb.login()
+        except Exception as exc:  # pragma: no cover
+            logging.warning("wandb.login() failed; relying on wandb.init(): %s", exc)
     sleep2vec_pretrain(args)

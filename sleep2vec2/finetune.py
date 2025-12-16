@@ -1,8 +1,10 @@
 import argparse
 import logging
+import os
 from pathlib import Path
 import shutil
 import sys
+import typing as t
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -22,6 +24,43 @@ from sleep2vec2.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec2.utils import get_finetune_dataloaders
 
 # from model.ahi_metric import AHIMetricsCollection
+
+
+def _build_wandb_logger(*, args):
+    if args.wandb_mode == "disabled":
+        return False
+
+    settings_kwargs: dict[str, t.Any] = {}
+    if getattr(args, "wandb_init_timeout", None):
+        settings_kwargs["init_timeout"] = args.wandb_init_timeout
+    if getattr(args, "wandb_start_method", None):
+        settings_kwargs["start_method"] = args.wandb_start_method
+
+    wandb_settings = None
+    if settings_kwargs:
+        try:
+            wandb_settings = wandb.Settings(**settings_kwargs)
+        except TypeError:
+            wandb_settings = wandb.Settings(init_timeout=settings_kwargs.get("init_timeout", 90))
+
+    logger_kwargs: dict[str, t.Any] = dict(
+        project=args.wandb_project,
+        name=f"s2v-finetune-{args.version}",
+        save_dir=args.wandb_save_dir,
+        log_model=True,
+    )
+
+    if args.wandb_mode == "offline":
+        logger_kwargs["offline"] = True
+    if wandb_settings is not None:
+        logger_kwargs["settings"] = wandb_settings
+
+    try:
+        return WandbLogger(**logger_kwargs)
+    except TypeError:
+        logger_kwargs.pop("offline", None)
+        logger_kwargs.pop("settings", None)
+        return WandbLogger(**logger_kwargs)
 
 
 def prepare_dataloader(args):
@@ -64,12 +103,7 @@ def supervised(args, config_bundle):
 
     # logger and callbacks
     version = args.version
-    logger = WandbLogger(
-        project="sleep2vec2-finetune",  # 相当于 TensorBoard 的 log dir
-        name=f"s2v-finetune-{version}",  # run 名称
-        save_dir="./wandb_logs",  # 本地缓存目录，可选
-        log_model=True,  # 训练结束自动保存 ckpt
-    )
+    logger = _build_wandb_logger(args=args)
 
     early_stop_callback = EarlyStopping(
         monitor=args.monitor,
@@ -96,6 +130,7 @@ def supervised(args, config_bundle):
         benchmark=True,
         logger=logger,
         max_epochs=args.epochs,
+        log_every_n_steps=args.log_every_n_steps,
         gradient_clip_val=1.0,
         precision="bf16-mixed",  # <---- 开启 BF16
         check_val_every_n_epoch=args.check_val_every_n_epoch,
@@ -108,6 +143,7 @@ def supervised(args, config_bundle):
                 enable_progress_bar=False,
                 max_steps=args.diagnostics_steps,
                 limit_val_batches=0,
+                log_every_n_steps=1,
             )
         )
 
@@ -176,9 +212,6 @@ def build_version_name(args) -> str:
 
 
 if __name__ == "__main__":
-    # Login to WandB only when running as a script
-    wandb.login()
-
     parser = argparse.ArgumentParser(description="Fine-tune sleep2vec downstream models on PSG data.")
 
     parser.add_argument(
@@ -286,8 +319,50 @@ if __name__ == "__main__":
         default=1,
         help="run validation every N epochs",
     )
+    parser.add_argument(
+        "--log-every-n-steps",
+        dest="log_every_n_steps",
+        type=int,
+        default=5,
+        help="emit logger metrics every N training steps (W&B/TensorBoard); useful for short runs/diagnostics",
+    )
+    parser.add_argument(
+        "--wandb-mode",
+        type=str,
+        default=os.environ.get("WANDB_MODE", "online"),
+        choices=["online", "offline", "disabled"],
+        help="W&B mode: 'online' (default), 'offline' (no network, later `wandb sync`), or 'disabled'",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default=os.environ.get("WANDB_PROJECT", "sleep2vec2-finetune"),
+        help="W&B project name (overrides WANDB_PROJECT)",
+    )
+    parser.add_argument(
+        "--wandb-save-dir",
+        type=str,
+        default=os.environ.get("WANDB_DIR", "./wandb_logs"),
+        help="Local W&B directory for run files (overrides WANDB_DIR).",
+    )
+    parser.add_argument(
+        "--wandb-init-timeout",
+        dest="wandb_init_timeout",
+        type=int,
+        default=int(os.environ.get("WANDB_INIT_TIMEOUT", "90")),
+        help="Seconds to wait for `wandb.init()` before timing out (default: 90).",
+    )
+    parser.add_argument(
+        "--wandb-start-method",
+        dest="wandb_start_method",
+        type=str,
+        default=os.environ.get("WANDB_START_METHOD", ""),
+        help="Optional W&B start method (e.g., 'thread') for constrained HPC environments.",
+    )
 
     args = parser.parse_args()
+    if not getattr(args, "wandb_start_method", ""):
+        args.wandb_start_method = None
 
     config_bundle, _ = apply_finetune_config(args)
 
@@ -295,6 +370,11 @@ if __name__ == "__main__":
     args.version = build_version_name(args)
 
     logging.info(args)
+    if args.wandb_mode == "online" and int(os.environ.get("RANK", "0")) == 0:
+        try:
+            wandb.login()
+        except Exception as exc:  # pragma: no cover
+            logging.warning("wandb.login() failed; relying on wandb.init(): %s", exc)
 
     # Run fine-tuning
     supervised(args, config_bundle)

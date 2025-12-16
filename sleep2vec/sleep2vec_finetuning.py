@@ -226,6 +226,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self._diagnostic.print_diagnostics()
 
     def _log_confusion_matrix(self, preds: np.ndarray, gts: np.ndarray):
+        if wandb.run is None:
+            return
         pred_labels = preds.argmax(axis=1)
         cm = confusion_matrix(gts, pred_labels)
 
