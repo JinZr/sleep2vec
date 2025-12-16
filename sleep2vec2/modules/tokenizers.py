@@ -261,7 +261,6 @@ class SundialTokenizer2SpO2(BaseTokenizer):
         y = self.hidden_layer(x_norm)
         y = self.balancer1(y)
         y = self.act(y)
-        y = self.balancer2(y)
         y = self.output_layer(y)
 
         # Optional soft clamp to avoid extreme tails
