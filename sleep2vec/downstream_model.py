@@ -8,8 +8,8 @@ import yaml
 
 from sleep2vec.config import HeadConfig, ModelConfig
 
-from .downstream.head_registry import create_head
-from .downstream.temporal_aggregation import build_temporal_aggregator
+from .downstreams.head_registry import create_head
+from .downstreams.temporal_aggregation import build_temporal_aggregator
 from .pretrain_model import Sleep2vecPretrainModel
 
 
