@@ -4,7 +4,7 @@ import typing as t
 import torch
 import torch.nn as nn
 
-from sleep2vec.downstream.channel_aggregation import build_channel_aggregator
+from sleep2vec.downstreams.channel_aggregation import build_channel_aggregator
 
 from .head_registry import register_head
 
