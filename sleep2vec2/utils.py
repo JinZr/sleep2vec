@@ -1,8 +1,13 @@
+from contextlib import contextmanager
 import logging
 import random
+import warnings
 
 import numpy as np
+from packaging import version
 import torch
+
+TORCH_VERSION = version.parse(torch.__version__)
 
 from data.psg_pretrain_dataset import PSGPretrainDataset
 
@@ -148,3 +153,24 @@ def get_finetune_dataloaders(args):
     )
 
     return train_loader, val_loader, test_loader
+
+
+@contextmanager
+def torch_autocast(device_type="cuda", **kwargs):
+    """
+    To fix the following warnings:
+    /icefall/egs/librispeech/ASR/zipformer/model.py:323:
+    FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated.
+    Please use `torch.amp.autocast('cuda', args...)` instead.
+      with torch.cuda.amp.autocast(enabled=False):
+    """
+    if TORCH_VERSION >= version.parse("2.3.0"):
+        # Use new unified API
+        with torch.amp.autocast(device_type=device_type, **kwargs):
+            yield
+    else:
+        # Suppress deprecation warning and use old CUDA-specific autocast
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=FutureWarning)
+            with torch.cuda.amp.autocast(**kwargs):
+                yield

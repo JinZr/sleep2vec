@@ -8,6 +8,7 @@ import torch.nn as nn
 
 from sleep2vec2.config import ChannelConfig
 from sleep2vec2.registry import get_tokenizer_builder, register_tokenizer
+from sleep2vec2.scaling import Balancer, BiasNorm, Whiten
 
 
 class BaseTokenizer(nn.Module, metaclass=abc.ABCMeta):
@@ -130,6 +131,17 @@ class SundialTokenizer2(BaseTokenizer):
         self.hidden_layer = nn.Linear(in_feature_dim, inter, bias=True)
         self.output_layer = nn.Linear(inter, out_feature_dim, bias=True)
 
+        self.balancer1 = Balancer(
+            inter,
+            channel_dim=-1,
+            min_positive=0.10,
+            max_positive=0.90,
+            min_abs=0.20,
+            max_abs=1.00,
+            prob=0.25,
+            grad_scale=0.04,
+        )
+
         # Residual projection branch
         self.residual_layer = nn.Linear(in_feature_dim, out_feature_dim, bias=True)
 
@@ -137,7 +149,7 @@ class SundialTokenizer2(BaseTokenizer):
         self.pre_norm = nn.LayerNorm(in_feature_dim) if pre_norm else nn.Identity()
 
         # Post-norm stays conceptually the same as before
-        self.norm = self._make_norm(out_feature_dim, norm_layer)
+        self.norm = BiasNorm(out_feature_dim) if norm_layer else nn.Identity()
 
         # New scaling factors
         self.residual_scale = residual_scale
@@ -156,6 +168,7 @@ class SundialTokenizer2(BaseTokenizer):
 
         # FFN branch (the potentially ''spiky'' path in diagnostics)
         y = self.hidden_layer(x_norm)
+        y = self.balancer1(y)
         y = self.act(y)
         y = self.output_layer(y)
 
@@ -182,6 +195,97 @@ class SundialTokenizer2(BaseTokenizer):
         out = out * self.modality_scale
         return out
 
+
+@register_tokenizer("sundial2_spo2")
+class SundialTokenizer2SpO2(BaseTokenizer):
+    def __init__(
+        self,
+        in_feature_dim: int,
+        out_feature_dim: int,
+        device: str = "cuda",
+        norm_layer: bool = True,
+        # here we try to solve the spikiness problem
+        pre_norm: bool = True,
+        residual_scale: float = 0.5,
+        ff_scale: float = 1.0,
+        clamp_value: float | None = None,
+        modality_scale: float = 1.0,
+    ):
+        super().__init__(out_feature_dim=out_feature_dim, device=device)
+
+        inter = 2 * out_feature_dim  # keep the same expansion factor
+
+        self.act = nn.SiLU()
+        self.dropout = nn.Dropout(0.1)
+
+        # FFN branch
+        self.hidden_layer = nn.Linear(in_feature_dim, inter, bias=True)
+        self.output_layer = nn.Linear(inter, out_feature_dim, bias=True)
+
+        self.balancer1 = Balancer(
+            inter,
+            channel_dim=-1,
+            min_positive=0.10,
+            max_positive=0.90,
+            min_abs=0.20,
+            max_abs=0.64,
+            prob=1.00,
+            grad_scale=0.10,
+        )
+       
+        # Residual projection branch
+        self.residual_layer = nn.Linear(in_feature_dim, out_feature_dim, bias=True)
+
+        # Pre-norm to control the scale of everything entering the tokenizer
+        self.pre_norm = nn.LayerNorm(in_feature_dim) if pre_norm else nn.Identity()
+
+        # Post-norm stays conceptually the same as before
+        self.norm = BiasNorm(out_feature_dim) if norm_layer else nn.Identity()
+
+        # New scaling factors
+        self.residual_scale = residual_scale
+        self.ff_scale = ff_scale
+        self.clamp_value = clamp_value
+
+        # Per-modality global scale. This does not change dim, only scales output & gradients.
+        self.modality_scale = nn.Parameter(torch.tensor(modality_scale, dtype=torch.float32))
+
+        self._record_parameter_stats(verbose=False)
+
+    def forward(self, x):
+        # we use pre-norm setup to bring problematic modalities onto
+        # a similar scale before FFN and residual
+        x_norm = self.pre_norm(x)
+
+        # FFN branch (the potentially ''spiky'' path in diagnostics)
+        y = self.hidden_layer(x_norm)
+        y = self.balancer1(y)
+        y = self.act(y)
+        y = self.balancer2(y)
+        y = self.output_layer(y)
+
+        # Optional soft clamp to avoid extreme tails
+        # for SpO2 and nasal etc.
+        if self.clamp_value is not None:
+            # soft saturation instead of hard clip, which should
+            # preserve gradients but limits magnitude
+            c = self.clamp_value
+            y = c * torch.tanh(y / c)
+
+        y = self.dropout(y)
+        y = y * self.ff_scale
+
+        # Residual branch stays linear but now shares the
+        # same normalized input
+        res = self.residual_layer(x_norm)
+
+        # Residual mixing with explicit scale on FFN branch
+        out = res + self.residual_scale * y
+
+        # Post-norm as before, then apply a per-modality scale
+        out = self.norm(out)
+        out = out * self.modality_scale
+        return out
 
 def build_tokenizer_from_channel(channel: ChannelConfig, *, device: str = "cuda") -> nn.Module:
     """Instantiate a tokenizer for a specific channel config."""
