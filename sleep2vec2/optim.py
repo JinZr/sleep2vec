@@ -108,7 +108,7 @@ class BatchedOptimizer(Optimizer):
 
         yield tuples  # <-- calling code will do the actual optimization here!
 
-        for ((stacked_params, _state, _names), batch) in zip(tuples, batches):
+        for (stacked_params, _state, _names), batch in zip(tuples, batches):
             for i, p in enumerate(batch):  # batch is list of Parameter
                 p.copy_(stacked_params[i])
 
@@ -507,7 +507,7 @@ class ScaledAdam(BatchedOptimizer):
         scalar_lr_scale = group["scalar_lr_scale"]
 
         tot_sumsq = torch.tensor(0.0, device=first_p.device)
-        for (p, state, param_names) in tuples:
+        for p, state, param_names in tuples:
             grad = p.grad
             if grad.is_sparse:
                 raise RuntimeError("ScaledAdam optimizer does not support sparse gradients")
@@ -570,7 +570,7 @@ class ScaledAdam(BatchedOptimizer):
                 self._show_param_with_unusual_grad(tuples)
 
         if ans == 0.0:
-            for (p, state, param_names) in tuples:
+            for p, state, param_names in tuples:
                 p.grad.zero_()  # get rid of infinity()
 
         return ans
@@ -593,7 +593,7 @@ class ScaledAdam(BatchedOptimizer):
         largest_name = ""
         # ratios_names is a list of 3-tuples: (grad_ratio, param_name, tensor)
         ratios_names = []
-        for (p, state, batch_param_names) in tuples:
+        for p, state, batch_param_names in tuples:
             dims = list(range(1, p.ndim))
 
             def mean(x):
@@ -633,7 +633,7 @@ class ScaledAdam(BatchedOptimizer):
                 from tuples, we still pass it to save some time.
         """
         all_sumsq_orig = {}
-        for (p, state, batch_param_names) in tuples:
+        for p, state, batch_param_names in tuples:
             # p is a stacked batch parameters.
             batch_grad = p.grad
             if p.numel() == p.shape[0]:  # a batch of scalars

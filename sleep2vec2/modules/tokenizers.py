@@ -131,17 +131,6 @@ class SundialTokenizer2(BaseTokenizer):
         self.hidden_layer = nn.Linear(in_feature_dim, inter, bias=True)
         self.output_layer = nn.Linear(inter, out_feature_dim, bias=True)
 
-        self.balancer1 = Balancer(
-            inter,
-            channel_dim=-1,
-            min_positive=0.10,
-            max_positive=0.90,
-            min_abs=0.20,
-            max_abs=1.00,
-            prob=0.25,
-            grad_scale=0.04,
-        )
-
         # Residual projection branch
         self.residual_layer = nn.Linear(in_feature_dim, out_feature_dim, bias=True)
 
@@ -149,7 +138,7 @@ class SundialTokenizer2(BaseTokenizer):
         self.pre_norm = nn.LayerNorm(in_feature_dim) if pre_norm else nn.Identity()
 
         # Post-norm stays conceptually the same as before
-        self.norm = BiasNorm(out_feature_dim) if norm_layer else nn.Identity()
+        self.norm = BiasNorm(out_feature_dim, log_scale=0.0) if norm_layer else nn.Identity()
 
         # New scaling factors
         self.residual_scale = residual_scale
@@ -168,7 +157,6 @@ class SundialTokenizer2(BaseTokenizer):
 
         # FFN branch (the potentially ''spiky'' path in diagnostics)
         y = self.hidden_layer(x_norm)
-        y = self.balancer1(y)
         y = self.act(y)
         y = self.output_layer(y)
 
