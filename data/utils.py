@@ -107,25 +107,56 @@ def filter_valid_sample_indices(
     data: t.Sequence[t.Any],
     extractors: t.Mapping[str, t.Callable],
     tokenizers: t.Mapping[str, t.Callable],
+    *,
+    allow_missing_channels: bool,
+    channel_names: t.Sequence[str] | None = None,
+    min_channels: int = 2,
     tolerance: int = 1,
     max_workers: int | None = None,
 ) -> list[t.Any]:
     """
-    Filter out samples whose tokenized channel lengths differ beyond tolerance.
-    Uses a thread pool with conservative worker count to limit memory spikes.
+    Filter out samples with tokenized channel-length mismatches.
+    - allow_missing_channels=True: keep samples with >= min_channels available channels
+      and record available channels in SampleIndex.payload.
+    - allow_missing_channels=False: require all configured channels to exist.
     """
 
     worker_count = max_workers or _default_worker_count()
+    channel_names = list(channel_names or [])
+
+    def _available_from_npz(npz):
+        return [ch for ch in channel_names if ch in npz]
 
     def process_sample(sample_index):
         try:
             with load_npz(sample_index.path) as npz:
-                payload = {key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()}
-                tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
+                if allow_missing_channels:
+                    available = _available_from_npz(npz)
+                    if len(available) < min_channels:
+                        logging.info(
+                            "[Skip] Not enough channels at %s: have=%d need>=%d. Meta: %s",
+                            sample_index.id,
+                            len(available),
+                            min_channels,
+                            getattr(sample_index, "metadata", {}),
+                        )
+                        return None
+                    payload = {key: extractors[key](npz, sample_index.start, sample_index.end) for key in available}
+                    tokens = {key: tokenizers[key](payload[key]) for key in available}
+                else:
+                    payload = {
+                        key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()
+                    }
+                    tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
+
                 lengths = [v.shape[0] for v in tokens.values()]
                 max_len, min_len = max(lengths), min(lengths)
 
                 if max_len - min_len <= tolerance:
+                    if allow_missing_channels:
+                        payload_dict = getattr(sample_index, "payload", None)
+                        if isinstance(payload_dict, dict):
+                            payload_dict["available_channels"] = list(tokens.keys())
                     return sample_index
                 logging.info(
                     "[Skip] Token length mismatch at %s: %s. Meta: %s",

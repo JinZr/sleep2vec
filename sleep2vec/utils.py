@@ -45,6 +45,8 @@ def get_pretrain_dataloader(args):
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
         generative=False,
+        allow_missing_channels=True,
+        min_channels=2,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
@@ -62,6 +64,8 @@ def get_pretrain_dataloader(args):
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
         generative=False,
+        allow_missing_channels=True,
+        min_channels=2,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Valid DataLoader created successfully!")
@@ -98,6 +102,8 @@ def _build_finetune_loader(
         meta_data_names=meta_data_names,
         sources=sources,
         randomly_select_channels=False,
+        allow_missing_channels=False,
+        min_channels=len(dataset_channel_names),
         is_train_set=is_train_set,
         batch_size=args.batch_size,
         shuffle=shuffle,

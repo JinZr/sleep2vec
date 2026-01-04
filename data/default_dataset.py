@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import itertools
 import logging
 import math
 import pickle
@@ -90,7 +91,20 @@ class DefaultDataset(BaseDataset):
                 self.data = pickle.load(f)
         elif data is not None:
             # ✅ 初始化时检查并过滤掉 token 长度不一致的样本
-            self.data = filter_valid_sample_indices(data, extractors, tokenizers, tolerance=1)
+            allow_missing_channels = bool(getattr(self, "allow_missing_channels", False))
+            channel_names = getattr(self, "channel_names", None)
+            if allow_missing_channels and channel_names is None:
+                raise ValueError("DefaultDataset requires channel_names when allow_missing_channels is enabled.")
+            min_channels = getattr(self, "min_channels", 2)
+            self.data = filter_valid_sample_indices(
+                data,
+                extractors,
+                tokenizers,
+                allow_missing_channels=allow_missing_channels,
+                channel_names=channel_names,
+                min_channels=min_channels,
+                tolerance=1,
+            )
             if save_preset_path:
                 with open(save_preset_path, "wb") as f:
                     pickle.dump(self.data, f)
@@ -209,19 +223,64 @@ class DefaultDataset(BaseDataset):
         randomly_select_channels = self.randomly_select_channels
         generative = self.generative
         disease_names = self.meta_data_names
+        allow_missing_channels = bool(getattr(self, "allow_missing_channels", False))
+        min_channels = getattr(self, "min_channels", 2)
+        channel_name_set = set(channel_names)
 
         def collate_fn(indices, tolerance=1):
 
-            # ① 先为本 batch 统一抽两个通道
-            if randomly_select_channels:
-                chosen = random.sample(channel_names, k=2)
-                if generative:
-                    chosen[0] = "eeg_original"
+            if allow_missing_channels:
+                def _available_for_src(src):
+                    payload = getattr(src, "payload", None)
+                    if isinstance(payload, dict) and payload.get("available_channels"):
+                        avail = payload["available_channels"]
+                    else:
+                        with load_npz(src.path) as npz:
+                            avail = [k for k in channel_names if k in npz]
+                    return set([k for k in avail if k in channel_name_set])
+
+                avail_map = []
+                for src in indices:
+                    avail = _available_for_src(src)
+                    if len(avail) >= min_channels:
+                        avail_map.append((src, avail))
+
+                if not avail_map:
+                    raise ValueError("No samples have enough available channels in this batch.")
+
+                batch_available = set.intersection(*(avail for _, avail in avail_map))
+
+                if len(batch_available) >= 2:
+                    if randomly_select_channels:
+                        chosen = random.sample(sorted(batch_available), k=2)
+                        if generative and "eeg_original" in batch_available:
+                            chosen[0] = "eeg_original"
+                    else:
+                        chosen = sorted(batch_available)
+                    selected_sources = [src for src, _ in avail_map]
+                else:
+                    pair_counts: dict[tuple[str, str], int] = {}
+                    for _, avail in avail_map:
+                        for pair in itertools.combinations(sorted(avail), 2):
+                            pair_counts[pair] = pair_counts.get(pair, 0) + 1
+                    if not pair_counts:
+                        raise ValueError("No valid channel pairs found for this batch.")
+                    best_pair = max(pair_counts, key=pair_counts.get)
+                    chosen = list(best_pair)
+                    selected_sources = [
+                        src for src, avail in avail_map if best_pair[0] in avail and best_pair[1] in avail
+                    ]
             else:
-                chosen = channel_names
+                if randomly_select_channels:
+                    chosen = random.sample(channel_names, k=2)
+                    if generative:
+                        chosen[0] = "eeg_original"
+                else:
+                    chosen = channel_names
+                selected_sources = indices
 
             samples = []
-            for src in indices:
+            for src in selected_sources:
 
                 with load_npz(src.path) as npz:
                     payload = {k: self.extractors[k](npz, src.start, src.end) for k in chosen}
