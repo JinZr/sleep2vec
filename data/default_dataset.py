@@ -230,6 +230,7 @@ class DefaultDataset(BaseDataset):
         def collate_fn(indices, tolerance=1):
 
             if allow_missing_channels:
+
                 def _available_for_src(src):
                     payload = getattr(src, "payload", None)
                     if isinstance(payload, dict) and payload.get("available_channels"):

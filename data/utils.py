@@ -144,9 +144,7 @@ def filter_valid_sample_indices(
                     payload = {key: extractors[key](npz, sample_index.start, sample_index.end) for key in available}
                     tokens = {key: tokenizers[key](payload[key]) for key in available}
                 else:
-                    payload = {
-                        key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()
-                    }
+                    payload = {key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()}
                     tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
 
                 lengths = [v.shape[0] for v in tokens.values()]
