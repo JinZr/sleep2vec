@@ -47,7 +47,7 @@ model:
     - name: spo2
       input_dim: 120
       tokenizer:
-        name: sundial2_spo2
+        name: sundial2
         out_dim: 768
     - name: resp_original
       input_dim: 120
