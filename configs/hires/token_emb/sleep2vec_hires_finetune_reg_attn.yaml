@@ -1,0 +1,86 @@
+model:
+  backbone:
+    name: roformer
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 16
+    vocab_size: 1
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  cls:
+    embedding_type: null    # null -> no CLS token, operate on per-token embeddings
+    downstream: tokens      # use token sequence for downstream pooling
+  channels:
+    - name: heartbeat
+      input_dim: 12
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: breath
+      input_dim: 12
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eeg_original
+      input_dim: 384
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: ecg_original
+      input_dim: 384
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eog_original
+      input_dim: 384
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: emg_original
+      input_dim: 384
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: spo2
+      input_dim: 12
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_original
+      input_dim: 12
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_nasal_original
+      input_dim: 12
+      tokenizer:
+        name: sundial
+        out_dim: 768
+  head:
+    name: regression
+    dropout: 0.1
+    hidden_dim: null
+    channel_agg:
+      name: gated_scalar
+      kwargs: {}
+    temporal_agg:
+      name: attn
+      kwargs:
+        heads: 1
+        temp: 1.0
+        dropout: 0.0
+data:
+  max_tokens: 1200
+  data_channel_names: null
+  finetune_data_index: index/hsp_psg_pretrain.csv
+  finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
+  train_dataset_names: [shhs]
+  test_dataset_names: [shhs]
+  n_few_shot: 1280
+lora:
+  freeze_backbone_and_insert_lora: false
+  insert_lora: true
+  separate_adapters: false
