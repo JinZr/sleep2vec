@@ -72,6 +72,7 @@ model:
       kwargs: {}
 data:
   max_tokens: 120
+  token_sec: 30
   data_channel_names: null
   finetune_data_index: index/hsp_psg_pretrain.csv
   finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle

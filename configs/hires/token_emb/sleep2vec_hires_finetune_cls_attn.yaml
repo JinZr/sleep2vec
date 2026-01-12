@@ -73,7 +73,8 @@ model:
         temp: 1.0
         dropout: 0.0
 data:
-  max_tokens: 1200
+  max_tokens: 600
+  token_sec: 3
   data_channel_names: null
   finetune_data_index: index/hsp_psg_pretrain.csv
   finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle

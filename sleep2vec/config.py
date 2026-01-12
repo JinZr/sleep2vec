@@ -122,6 +122,7 @@ class FinetuneDataConfig:
     train_dataset_names: t.List[str] | None = None
     test_dataset_names: t.List[str] | None = None
     n_few_shot: int = 1280
+    token_sec: int = 30
 
 
 @dataclass
@@ -135,6 +136,20 @@ class LoraConfig:
 class PretrainDataConfig:
     mask_rate: float = 0.15
     max_tokens: int = 120
+    token_sec: int = 30
+
+
+_PSG_SAMPLE_RATES: dict[str, int] = {
+    "eeg_original": 128,
+    "ecg_original": 128,
+    "eog_original": 128,
+    "emg_original": 128,
+    "heartbeat": 4,
+    "breath": 4,
+    "spo2": 4,
+    "resp_original": 4,
+    "resp_nasal_original": 4,
+}
 
 
 def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
@@ -236,6 +251,27 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
     return next(iter(out_dims))
 
 
+def validate_token_sec_config(model_cfg: ModelConfig, token_sec: int, *, context: str) -> None:
+    if token_sec <= 0:
+        raise ValueError(f"{context}: data.token_sec must be a positive integer. Got: {token_sec}")
+
+    mismatches: list[str] = []
+    for ch in model_cfg.channels:
+        rate = _PSG_SAMPLE_RATES.get(ch.name)
+        if rate is None:
+            continue
+        expected = rate * token_sec
+        if ch.input_dim != expected:
+            mismatches.append(
+                f"{ch.name}: input_dim={ch.input_dim}, expected={expected} "
+                f"(rate={rate}Hz, token_sec={token_sec})"
+            )
+
+    if mismatches:
+        msg = "\n".join(mismatches)
+        raise ValueError(f"{context}: token_sec/input_dim mismatch:\n{msg}")
+
+
 def _build_model_averaging_config(data: dict[str, t.Any]) -> ModelAveragingConfig | None:
     """Parses the model_averaging block; returns None when absent."""
     averaging_block = data.get("model_averaging")
@@ -283,6 +319,7 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
 
     loss_cfg = _build_loss(loss_block)
     data_cfg = PretrainDataConfig(**data_block)
+    validate_token_sec_config(model_cfg, data_cfg.token_sec, context="pretrain")
     averaging_cfg = _build_model_averaging_config(data)
     return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg, averaging=averaging_cfg)
 
@@ -307,6 +344,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         head=head,
     )
     data_cfg = FinetuneDataConfig(**data_block)
+    validate_token_sec_config(model_cfg, data_cfg.token_sec, context="finetune")
     lora_cfg = LoraConfig(**lora_block)
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, lora=lora_cfg)
 

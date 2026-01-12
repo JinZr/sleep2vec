@@ -68,6 +68,7 @@ loss:
 data:
   mask_rate: 0.15
   max_tokens: 120
+  token_sec: 30
 model_averaging:
   name: ema
   params:

@@ -46,6 +46,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.channel_names = [c.name for c in model_cfg.channels]
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
     args.max_tokens = data_cfg.max_tokens
+    args.token_sec = data_cfg.token_sec
     args.finetune_data_index = Path(data_cfg.finetune_data_index) if data_cfg.finetune_data_index else None
     args.finetune_preset_path = Path(data_cfg.finetune_preset_path) if data_cfg.finetune_preset_path else None
     args.train_dataset_names = data_cfg.train_dataset_names or []

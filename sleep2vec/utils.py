@@ -41,6 +41,7 @@ def get_pretrain_dataloader(args):
         index=args.pretrain_data_index,
         split=["train"],
         max_tokens=args.max_tokens,
+        token_sec=args.token_sec,
         stride_tokens=args.max_tokens,  # 0 for truncation
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
@@ -58,6 +59,7 @@ def get_pretrain_dataloader(args):
         index=args.pretrain_data_index,
         split=["val"],
         max_tokens=args.max_tokens,
+        token_sec=args.token_sec,
         stride_tokens=args.max_tokens,  # 0 for truncation
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
@@ -92,6 +94,7 @@ def _build_finetune_loader(
         index=args.finetune_data_index,
         split=split,
         max_tokens=args.max_tokens,
+        token_sec=args.token_sec,
         stride_tokens=args.max_tokens,
         mask_rate=0.0,
         use_legacy_body_movement=False,
