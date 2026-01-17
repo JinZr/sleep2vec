@@ -44,6 +44,8 @@ class PSGPretrainDataset(DefaultDataset):
         meta_data_names = meta_data_names or []
         sources = sources or []
 
+        split_list = [split] if isinstance(split, str) else list(split or [])
+
         if not load_preset_path:
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
@@ -67,10 +69,10 @@ class PSGPretrainDataset(DefaultDataset):
                     return pd.concat(dfs, ignore_index=True)
 
             csv = _load_index_df(index)
-            if split:
+            if split_list:
                 if "split" not in csv.columns:
                     raise KeyError("Expected 'split' column in index CSV for split filtering.")
-                csv = csv[csv["split"].isin(split)].reset_index(drop=True)
+                csv = csv[csv["split"].isin(split_list)].reset_index(drop=True)
 
             data: t.List[SampleIndex] = []
 
@@ -170,7 +172,7 @@ class PSGPretrainDataset(DefaultDataset):
             save_preset_path,
             load_preset_path,
             data,
-            split,
+            split_list,
             extractors=extractors,
             tokenizers=tokenizers,
             mask_generators=mask_generators,
