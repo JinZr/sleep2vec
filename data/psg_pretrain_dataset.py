@@ -51,7 +51,7 @@ class PSGPretrainDataset(DefaultDataset):
             ) -> pd.DataFrame:
                 # 单个路径
                 if isinstance(idx, (str, os.PathLike, Path)):
-                    df = pd.read_csv(idx)
+                    df = pd.read_csv(idx, low_memory=False)
                     df["source"] = str(idx)  # 可选：标注来源文件
                     return df
 
@@ -59,7 +59,7 @@ class PSGPretrainDataset(DefaultDataset):
                 if isinstance(idx, (list, tuple)):
                     dfs = []
                     for p in idx:
-                        dfi = pd.read_csv(p)
+                        dfi = pd.read_csv(p, low_memory=False)
                         dfi["source"] = str(p)  # 可选：标注来源文件
                         dfs.append(dfi)
                     if not dfs:
