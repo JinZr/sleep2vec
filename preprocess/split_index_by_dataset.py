@@ -28,8 +28,8 @@ def assign_splits(
             rng.shuffle(idx)
 
         n = len(idx)
-        n_val = min(n // 10, 1000)
-        n_test = min(n // 10, 1000)
+        n_val = min(n // 10, 500)
+        n_test = min(n // 10, 500)
         if n_val + n_test > n:
             n_test = max(0, n - n_val)
 
