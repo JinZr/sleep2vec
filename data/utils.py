@@ -101,7 +101,7 @@ def pad_batch(
 
 def _default_worker_count() -> int:
     cpu = os.cpu_count() or 8
-    return min(32, cpu * 2)
+    return min(64, cpu * 2)
 
 
 def filter_valid_sample_indices(
