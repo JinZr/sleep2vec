@@ -5,6 +5,7 @@ import typing as t
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 
 def load_npz(path: str, mmap_mode: str | None = "r"):
@@ -170,7 +171,9 @@ def filter_valid_sample_indices(
     filtered_data: list[t.Any] = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [executor.submit(process_sample, s) for s in data]
-        for f in as_completed(futures):
+        iterator = as_completed(futures)
+        iterator = tqdm(iterator, total=len(futures), desc="Validating samples", leave=False)
+        for f in iterator:
             result = f.result()
             if result is not None:
                 filtered_data.append(result)
