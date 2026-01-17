@@ -67,6 +67,10 @@ class PSGPretrainDataset(DefaultDataset):
                     return pd.concat(dfs, ignore_index=True)
 
             csv = _load_index_df(index)
+            if split:
+                if "split" not in csv.columns:
+                    raise KeyError("Expected 'split' column in index CSV for split filtering.")
+                csv = csv[csv["split"].isin(split)].reset_index(drop=True)
 
             data: t.List[SampleIndex] = []
 
