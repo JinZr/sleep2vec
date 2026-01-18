@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--chunksize", type=int, default=200_000, help="Rows per chunk for streaming (default: 200000)")
     p.add_argument(
         "--out-prefix",
-        default="missing_stats",
+        default="./index/missing_stats",
         help=(
             "Output prefix (default: missing_stats). Writes <prefix>_overall.csv, <prefix>_by_dataset.csv, "
             "<prefix>_row_missing_hist_overall.csv, and <prefix>_row_missing_hist_by_dataset.csv"
