@@ -9,7 +9,18 @@ import pandas as pd
 def compute_group_key(dataset_col: pd.Series) -> pd.Series:
     dataset_str = dataset_col.astype("string")
     is_hsp = dataset_str.str.startswith("hsp", na=False)
-    return dataset_str.where(~is_hsp, "hsp").fillna("")
+    is_hsp_s = dataset_str.str.startswith("hspS", na=False)
+    is_hsp_i = dataset_str.str.startswith("hspI", na=False)
+
+    group_key = dataset_str.where(~is_hsp, "hsp")
+    group_key = group_key.where(~is_hsp_s, "hspS")
+    group_key = group_key.where(~is_hsp_i, "hspI")
+    return group_key.fillna("")
+
+
+def compute_external_mask(dataset_col: pd.Series) -> pd.Series:
+    dataset_str = dataset_col.astype("string")
+    return dataset_str.str.contains(r"(mros|mesa|shhs|hspS0001)", case=False, na=False)
 
 
 def assign_splits(
@@ -50,7 +61,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Split a CSV by dataset groups, with hsp* datasets grouped together, "
-            "and write a new CSV with a split column."
+            "and write a new CSV with a split column. Rows matching external "
+            "datasets are labeled as external."
         )
     )
     parser.add_argument("--input", required=True, help="Path to input CSV file.")
@@ -72,9 +84,17 @@ def main() -> None:
     if "dataset" not in df.columns:
         raise ValueError("Missing required column: dataset")
 
-    group_key = compute_group_key(df["dataset"])
-    split, stats = assign_splits(df, group_key, seed=args.seed, shuffle=args.shuffle)
-    df["split"] = split
+    external_mask = compute_external_mask(df["dataset"])
+    df["split"] = pd.Series(index=df.index, dtype="object")
+    df.loc[external_mask, "split"] = "external"
+
+    internal_df = df.loc[~external_mask]
+    if not internal_df.empty:
+        group_key = compute_group_key(internal_df["dataset"])
+        split, stats = assign_splits(internal_df, group_key, seed=args.seed, shuffle=args.shuffle)
+        df.loc[internal_df.index, "split"] = split
+    else:
+        stats = {}
 
     df.to_csv(args.output, index=False)
 
