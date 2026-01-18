@@ -70,9 +70,7 @@ def main() -> None:
     cols = list(header.columns)
 
     if args.dataset_col not in cols:
-        raise SystemExit(
-            f"ERROR: dataset column '{args.dataset_col}' not found. Available columns: {', '.join(cols)}"
-        )
+        raise SystemExit(f"ERROR: dataset column '{args.dataset_col}' not found. Available columns: {', '.join(cols)}")
 
     mask_cols = [c for c in cols if c.endswith("_mask")]
     if not mask_cols:
