@@ -23,6 +23,14 @@ def compute_external_mask(dataset_col: pd.Series) -> pd.Series:
     return dataset_str.str.contains(r"(mros|mesa|shhs|hspS0001)", case=False, na=False)
 
 
+def get_channel_mask_columns(df: pd.DataFrame) -> list[str]:
+    return [col for col in df.columns if col.endswith("_mask") and col != "stage_mask"]
+
+
+def compute_available_channels(df: pd.DataFrame, mask_cols: list[str]) -> pd.Series:
+    return df[mask_cols].eq(1).sum(axis=1)
+
+
 def assign_splits(
     df: pd.DataFrame,
     group_key: pd.Series,
@@ -69,6 +77,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, help="Path to output CSV file.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for shuffling.")
     parser.add_argument(
+        "--min-channels",
+        type=int,
+        default=0,
+        help="Minimum number of available channels required to keep a row (default: 0).",
+    )
+    parser.add_argument(
         "--shuffle",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -83,6 +97,16 @@ def main() -> None:
     df = pd.read_csv(args.input, low_memory=False)
     if "dataset" not in df.columns:
         raise ValueError("Missing required column: dataset")
+
+    mask_cols = get_channel_mask_columns(df)
+    if args.min_channels > 0:
+        if not mask_cols:
+            raise ValueError("No *_mask columns found (excluding stage_mask); cannot apply --min-channels filter.")
+        available_channels = compute_available_channels(df, mask_cols)
+        before_count = len(df)
+        df = df.loc[available_channels >= args.min_channels].copy()
+        filtered_out = before_count - len(df)
+        print(f"Filtered out {filtered_out} rows with < {args.min_channels} available channels.")
 
     external_mask = compute_external_mask(df["dataset"])
     df["split"] = pd.Series(index=df.index, dtype="object")
