@@ -8,14 +8,7 @@ import pandas as pd
 
 def compute_group_key(dataset_col: pd.Series) -> pd.Series:
     dataset_str = dataset_col.astype("string")
-    is_hsp = dataset_str.str.startswith("hsp", na=False)
-    is_hsp_s = dataset_str.str.startswith("hspS", na=False)
-    is_hsp_i = dataset_str.str.startswith("hspI", na=False)
-
-    group_key = dataset_str.where(~is_hsp, "hsp")
-    group_key = group_key.where(~is_hsp_s, "hspS")
-    group_key = group_key.where(~is_hsp_i, "hspI")
-    return group_key.fillna("")
+    return dataset_str.fillna("")
 
 
 def compute_external_mask(dataset_col: pd.Series) -> pd.Series:
@@ -47,8 +40,8 @@ def assign_splits(
             rng.shuffle(idx)
 
         n = len(idx)
-        n_val = min(n // 10, 500)
-        n_test = min(n // 10, 500)
+        n_val = min(n // 10, 200)
+        n_test = min(n // 10, 200)
         if n_val + n_test > n:
             n_test = max(0, n - n_val)
 
