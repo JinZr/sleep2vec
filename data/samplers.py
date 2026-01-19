@@ -71,8 +71,6 @@ class AvailableChannelsBucketBatchSampler(Sampler[list[int]]):
         self._seed = int(seed)
         self._epoch = 0
 
-        self._rank, self._world_size = _get_dist_info()
-
         buckets: dict[tuple[str, ...], list[int]] = defaultdict(list)
         for i, src in enumerate(data):
             payload = getattr(src, "payload", None)
@@ -94,6 +92,7 @@ class AvailableChannelsBucketBatchSampler(Sampler[list[int]]):
 
         self._buckets = dict(buckets)
 
+    def _compute_total_batches(self, world_size: int) -> int:
         total_batches = 0
         for idxs in self._buckets.values():
             n = len(idxs)
@@ -102,21 +101,23 @@ class AvailableChannelsBucketBatchSampler(Sampler[list[int]]):
             else:
                 total_batches += math.ceil(n / self._batch_size)
 
-        total_batches = (total_batches // self._world_size) * self._world_size
+        total_batches = (total_batches // world_size) * world_size
         if total_batches == 0:
             raise ValueError(
                 "Bucketed sampler produced 0 batches after truncation. "
                 "Try lowering batch_size or disabling drop_last."
             )
-
-        self._total_batches = total_batches
-        self._batches_per_rank = total_batches // self._world_size
+        return total_batches
 
     def __len__(self) -> int:
-        return self._batches_per_rank
+        _, world_size = _get_dist_info()
+        total_batches = self._compute_total_batches(world_size)
+        return total_batches // world_size
 
     def __iter__(self):
-        rng = random.Random(self._seed + 1000 * self._epoch + self._rank)
+        rank, world_size = _get_dist_info()
+        total_batches = self._compute_total_batches(world_size)
+        rng = random.Random(self._seed + 1000 * self._epoch + rank)
         self._epoch += 1
 
         bucket_items = list(self._buckets.items())
@@ -133,13 +134,13 @@ class AvailableChannelsBucketBatchSampler(Sampler[list[int]]):
             n = len(idxs_local)
             end = n - (n % self._batch_size) if self._drop_last else n
             for start in range(0, end, self._batch_size):
-                if global_batch_idx >= self._total_batches:
+                if global_batch_idx >= total_batches:
                     return
                 batch = idxs_local[start : start + self._batch_size]
                 if len(batch) < self._batch_size and self._drop_last:
                     continue
 
-                if global_batch_idx % self._world_size == self._rank:
+                if global_batch_idx % world_size == rank:
                     yield batch
                 global_batch_idx += 1
 

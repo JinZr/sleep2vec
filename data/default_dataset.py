@@ -383,7 +383,7 @@ class DefaultDataset(BaseDataset):
         dl_kwargs = dict(self.dataloader_config)
         if sampler is not None:
             dl_kwargs.pop("shuffle", None)  # sampler 与 shuffle 互斥
-        
+
         # When pretraining with missing channels, random shuffling can mix different
         # channel-availability signatures within one batch. That makes the
         # intersection of available channels tiny and triggers the legacy fallback
@@ -398,6 +398,7 @@ class DefaultDataset(BaseDataset):
 
         if allow_missing_channels and bucket_by_available_channels and sampler is None:
             from data.samplers import AvailableChannelsBucketBatchSampler
+
             batch_size = int(dl_kwargs.pop("batch_size"))
             shuffle = bool(dl_kwargs.pop("shuffle", False))
             batch_sampler = AvailableChannelsBucketBatchSampler(
