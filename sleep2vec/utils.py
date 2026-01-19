@@ -28,6 +28,7 @@ def get_pretrain_dataloader(args):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
+    logging.info(f"args: {args}")
 
     kwargs = {
         "batch_size": args.batch_size,
