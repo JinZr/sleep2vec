@@ -125,6 +125,9 @@ def sleep2vec_pretrain(args):
         accelerator="gpu",
         strategy=strategy,
         benchmark=True,
+        # Custom bucketed batch sampler handles distributed sharding itself.
+        # Disable Lightning's distributed sampler injection to avoid errors.
+        use_distributed_sampler=False,
         logger=logger,
         max_epochs=args.epochs,
         log_every_n_steps=5,
