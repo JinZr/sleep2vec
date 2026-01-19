@@ -14,21 +14,59 @@ class PairBatchSampler(torch.utils.data.Sampler[list[int]]):
     when allow_missing_channels=True.
     """
 
-    def __init__(
-        self,
-        dataset,
-        *,
-        batch_size: int,
-        channel_names: t.Sequence[str],
-        min_channels: int,
-        shuffle: bool,
-        drop_last: bool,
-        seed: int = 42,
-        replacement: bool = True,
-    ) -> None:
+    def __init__(self, *args, **kwargs) -> None:
+        dataset = None
+        sampler = None
+        batch_size = kwargs.pop("batch_size", None)
+        drop_last = kwargs.pop("drop_last", None)
+        channel_names = kwargs.pop("channel_names", None)
+        min_channels = kwargs.pop("min_channels", None)
+        shuffle = kwargs.pop("shuffle", None)
+        seed = kwargs.pop("seed", 42)
+        replacement = kwargs.pop("replacement", True)
+
+        if args:
+            if len(args) == 1:
+                dataset = args[0]
+            elif len(args) == 3:
+                sampler, batch_size, drop_last = args
+            else:
+                raise TypeError("PairBatchSampler expects (dataset, ...) or (sampler, batch_size, drop_last).")
+
+        sampler = kwargs.pop("sampler", sampler)
+        if kwargs:
+            unknown = ", ".join(sorted(kwargs.keys()))
+            raise TypeError(f"Unexpected arguments: {unknown}")
+
+        if dataset is None and sampler is not None and hasattr(sampler, "dataset"):
+            dataset = sampler.dataset
+        if dataset is None:
+            raise ValueError("dataset must be provided for PairBatchSampler.")
+
+        if batch_size is None:
+            raise ValueError("batch_size must be provided for PairBatchSampler.")
+        if drop_last is None:
+            drop_last = False
+
+        if channel_names is None:
+            channel_names = getattr(dataset, "channel_names", None)
+        if channel_names is None:
+            raise ValueError("channel_names must be provided or present on dataset.")
+
+        if min_channels is None:
+            min_channels = getattr(dataset, "min_channels", 2)
+
+        if shuffle is None:
+            shuffle = bool(getattr(sampler, "shuffle", False))
+
+        if hasattr(sampler, "seed"):
+            seed = getattr(sampler, "seed")
+
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
+
         self.dataset = dataset
+        self.sampler = sampler
         self.batch_size = int(batch_size)
         self.channel_names = list(channel_names)
         self.channel_name_set = set(self.channel_names)
@@ -39,7 +77,7 @@ class PairBatchSampler(torch.utils.data.Sampler[list[int]]):
         self.replacement = bool(replacement)
         self.epoch = 0
 
-        self._num_replicas, self._rank = self._get_dist()
+        self._num_replicas, self._rank = self._get_dist(sampler)
         self._pair_to_indices = self._build_pair_index()
         self._pair_list = list(self._pair_to_indices.keys())
         self._pair_weights = [len(self._pair_to_indices[p]) for p in self._pair_list]
@@ -48,7 +86,12 @@ class PairBatchSampler(torch.utils.data.Sampler[list[int]]):
 
         self._num_batches_total = self._compute_num_batches_total()
 
-    def _get_dist(self) -> tuple[int, int]:
+    def _get_dist(self, sampler) -> tuple[int, int]:
+        if sampler is not None:
+            num_replicas = getattr(sampler, "num_replicas", None)
+            rank = getattr(sampler, "rank", None)
+            if num_replicas is not None and rank is not None:
+                return int(num_replicas), int(rank)
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             return torch.distributed.get_world_size(), torch.distributed.get_rank()
         return 1, 0
@@ -76,7 +119,7 @@ class PairBatchSampler(torch.utils.data.Sampler[list[int]]):
         return pair_to_indices
 
     def _compute_num_batches_total(self) -> int:
-        valid_count = len({idx for idxs in self._pair_to_indices.values() for idx in idxs})
+        valid_count = len(self.dataset.data)
         if valid_count == 0:
             return 0
         if self.drop_last:
