@@ -243,6 +243,8 @@ __marimo__/
 *.tmp
 *.bak
 .DS_Store
+log-*/
+wandb_logs/
 
 # VSCode settings folder
 .vscode/
