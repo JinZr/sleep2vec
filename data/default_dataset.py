@@ -16,7 +16,6 @@ from data.metadata import (
     make_weighted_sampler_from_labels,
     process_metadata,
 )
-from data.samplers import PairBatchSampler
 from data.utils import filter_valid_sample_indices, load_npz
 
 
@@ -383,30 +382,6 @@ class DefaultDataset(BaseDataset):
         dl_kwargs = dict(self.dataloader_config)
         if sampler is not None:
             dl_kwargs.pop("shuffle", None)  # sampler 与 shuffle 互斥
-
-        batch_sampler = None
-        if allow_missing_channels:
-            batch_size = dl_kwargs.pop("batch_size", None)
-            shuffle = dl_kwargs.pop("shuffle", False)
-            if batch_size is None:
-                raise ValueError("batch_size must be set when allow_missing_channels is enabled.")
-            batch_sampler = PairBatchSampler(
-                self,
-                batch_size=batch_size,
-                channel_names=channel_names,
-                min_channels=min_channels,
-                shuffle=shuffle,
-                drop_last=self.is_train_set,
-                seed=self.seed,
-            )
-
-        if batch_sampler is not None:
-            return DataLoader(
-                self,
-                **dl_kwargs,
-                collate_fn=collate_fn,
-                batch_sampler=batch_sampler,
-            )
 
         return DataLoader(
             self,

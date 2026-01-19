@@ -47,7 +47,7 @@ def get_pretrain_dataloader(args):
         use_legacy_body_movement=False,
         generative=False,
         allow_missing_channels=True,
-        min_channels=6,
+        min_channels=2,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
@@ -66,7 +66,7 @@ def get_pretrain_dataloader(args):
         use_legacy_body_movement=False,
         generative=False,
         allow_missing_channels=True,
-        min_channels=6,
+        min_channels=2,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Valid DataLoader created successfully!")

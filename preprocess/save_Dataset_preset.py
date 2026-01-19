@@ -61,7 +61,7 @@ for meta_data_name in meta_data_names:
             mask_rate=0.0,
             use_legacy_body_movement=False,
             allow_missing_channels=True,
-            min_channels=6,
+            min_channels=2,
             **kwargs,
         )
 
