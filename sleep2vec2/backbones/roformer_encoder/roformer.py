@@ -33,6 +33,7 @@ import torch
 from torch import Tensor, nn
 
 from .config import RoFormerEncoderConfig
+from .moe import MoEFeedForward
 from .rotary import RoFormerSinusoidalPositionalEmbedding, apply_rotary_position_embeddings
 from .utils import apply_chunking_to_forward, get_activation_fn, make_extended_attention_mask
 
@@ -46,6 +47,9 @@ class RoFormerEncoderOutput:
     last_hidden_state: Tensor
     hidden_states: Optional[Tuple[Tensor, ...]] = None
     attentions: Optional[Tuple[Tensor, ...]] = None
+    moe_aux_loss: Optional[Tensor] = None
+    moe_z_loss: Optional[Tensor] = None
+    moe_route_mean: Optional[Tuple[Tensor, ...]] = None
 
 
 @dataclass
@@ -53,6 +57,9 @@ class RoFormerModelOutput:
     last_hidden_state: Tensor
     hidden_states: Optional[Tuple[Tensor, ...]] = None
     attentions: Optional[Tuple[Tensor, ...]] = None
+    moe_aux_loss: Optional[Tensor] = None
+    moe_z_loss: Optional[Tensor] = None
+    moe_route_mean: Optional[Tuple[Tensor, ...]] = None
 
 
 # -------------------------
@@ -240,13 +247,63 @@ class RoFormerOutput(nn.Module):
         return hidden_states
 
 
+def _resolve_moe_layers(spec: object, num_layers: int) -> set[int]:
+    if spec is None:
+        return set()
+    if isinstance(spec, (list, tuple, set)):
+        return {int(x) for x in spec if 0 <= int(x) < num_layers}
+
+    text = str(spec).strip().lower()
+    if not text or text == "none":
+        return set()
+    if text == "all":
+        return set(range(num_layers))
+
+    indices: set[int] = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_s, end_s = part.split("-", 1)
+            start, end = int(start_s), int(end_s)
+            if end < start:
+                start, end = end, start
+            for i in range(start, end + 1):
+                if 0 <= i < num_layers:
+                    indices.add(i)
+        else:
+            idx = int(part)
+            if 0 <= idx < num_layers:
+                indices.add(idx)
+    return indices
+
+
 class RoFormerLayer(nn.Module):
-    def __init__(self, config: RoFormerEncoderConfig):
+    def __init__(self, config: RoFormerEncoderConfig, layer_idx: int, *, use_moe: bool = False):
         super().__init__()
         self.config = config
         self.attention = RoFormerAttention(config)
         self.intermediate = RoFormerIntermediate(config)
         self.output = RoFormerOutput(config)
+        self.moe_ffn: Optional[MoEFeedForward] = None
+
+        if use_moe:
+            self.moe_ffn = MoEFeedForward(
+                hidden_size=config.hidden_size,
+                intermediate_size=config.intermediate_size,
+                activation=config.hidden_act,
+                dropout=config.hidden_dropout_prob,
+                layer_norm_eps=config.layer_norm_eps,
+                num_experts=config.moe_num_experts,
+                top_k=config.moe_top_k,
+                context_dim=config.moe_router_context_dim,
+                router_type=config.moe_router_type,
+                router_hidden_dim=config.moe_router_hidden_dim,
+                router_dropout=config.moe_router_dropout,
+                use_z_loss=config.moe_use_z_loss,
+                return_routing=config.moe_return_routing,
+            )
 
         # HF-style knob; 0 disables
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
@@ -258,7 +315,9 @@ class RoFormerLayer(nn.Module):
         attention_mask: Optional[Tensor] = None,
         sinusoidal_pos: Optional[Tensor] = None,
         output_attentions: bool = False,
-    ) -> Tuple[Tensor, Optional[Tensor]]:
+        router_context: Optional[Tensor] = None,
+        token_mask: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Optional[Tensor], Optional[dict]]:
         attention_output, attn = self.attention(
             hidden_states,
             attention_mask=attention_mask,
@@ -266,13 +325,21 @@ class RoFormerLayer(nn.Module):
             output_attentions=output_attentions,
         )
 
-        layer_output = apply_chunking_to_forward(
-            self.feed_forward_chunk,
-            self.chunk_size_feed_forward,
-            self.seq_len_dim,
-            attention_output,
-        )
-        return layer_output, attn
+        moe_stats = None
+        if self.moe_ffn is not None:
+            layer_output, moe_stats = self.moe_ffn(
+                attention_output,
+                context=router_context,
+                token_mask=token_mask,
+            )
+        else:
+            layer_output = apply_chunking_to_forward(
+                self.feed_forward_chunk,
+                self.chunk_size_feed_forward,
+                self.seq_len_dim,
+                attention_output,
+            )
+        return layer_output, attn, moe_stats
 
     def feed_forward_chunk(self, attention_output: Tensor) -> Tensor:
         intermediate_output = self.intermediate(attention_output)
@@ -288,18 +355,32 @@ class RoFormerEncoder(nn.Module):
         head_dim = config.hidden_size // config.num_attention_heads
         self.embed_positions = RoFormerSinusoidalPositionalEmbedding(config.max_position_embeddings, head_dim)
 
-        self.layer = nn.ModuleList([RoFormerLayer(config) for _ in range(config.num_hidden_layers)])
+        use_moe = bool(config.use_moe and config.moe_num_experts > 0)
+        self._moe_layer_ids = _resolve_moe_layers(config.moe_layers, config.num_hidden_layers) if use_moe else set()
+        self._has_moe = bool(self._moe_layer_ids)
+
+        self.layer = nn.ModuleList(
+            [
+                RoFormerLayer(config, layer_idx=i, use_moe=(i in self._moe_layer_ids))
+                for i in range(config.num_hidden_layers)
+            ]
+        )
 
     def forward(
         self,
         hidden_states: Tensor,
         attention_mask: Optional[Tensor] = None,
+        router_context: Optional[Tensor] = None,
+        token_mask: Optional[Tensor] = None,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True,
     ) -> Union[RoFormerEncoderOutput, Tuple[Tensor, ...]]:
         all_hidden_states: Optional[Tuple[Tensor, ...]] = () if output_hidden_states else None
         all_attentions: Optional[Tuple[Tensor, ...]] = () if output_attentions else None
+        moe_aux_losses: list[Tensor] = []
+        moe_z_losses: list[Tensor] = []
+        moe_route_means: list[Tensor] = []
 
         # (seq, head_dim) -> (1, 1, seq, head_dim)
         sinusoidal_pos = self.embed_positions(hidden_states.shape[:-1])[None, None, :, :]
@@ -309,16 +390,29 @@ class RoFormerEncoder(nn.Module):
                 assert all_hidden_states is not None
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-            hidden_states, attn = layer_module(
+            hidden_states, attn, moe_stats = layer_module(
                 hidden_states,
                 attention_mask=attention_mask,
                 sinusoidal_pos=sinusoidal_pos,
                 output_attentions=output_attentions,
+                router_context=router_context,
+                token_mask=token_mask,
             )
 
             if output_attentions:
                 assert all_attentions is not None
                 all_attentions = all_attentions + (attn,)
+
+            if moe_stats is not None:
+                aux = moe_stats.get("aux_loss")
+                z = moe_stats.get("z_loss")
+                route = moe_stats.get("route_mean")
+                if aux is not None:
+                    moe_aux_losses.append(aux)
+                if z is not None:
+                    moe_z_losses.append(z)
+                if route is not None:
+                    moe_route_means.append(route)
 
         if output_hidden_states:
             assert all_hidden_states is not None
@@ -332,10 +426,17 @@ class RoFormerEncoder(nn.Module):
                 out = out + (all_attentions,)
             return out
 
+        moe_aux_loss = torch.stack(moe_aux_losses).sum() if moe_aux_losses else None
+        moe_z_loss = torch.stack(moe_z_losses).sum() if moe_z_losses else None
+        moe_route_mean = tuple(moe_route_means) if moe_route_means else None
+
         return RoFormerEncoderOutput(
             last_hidden_state=hidden_states,
             hidden_states=all_hidden_states,
             attentions=all_attentions,
+            moe_aux_loss=moe_aux_loss,
+            moe_z_loss=moe_z_loss,
+            moe_route_mean=moe_route_mean,
         )
 
 
@@ -379,6 +480,20 @@ class RoFormerEncoderModel(nn.Module):
         layer_norm_eps: float = 1e-12,
         rotary_value: bool = False,
         chunk_size_feed_forward: int = 0,
+        use_moe: bool = False,
+        moe_num_experts: int = 0,
+        moe_top_k: int = 1,
+        moe_layers: str = "all",
+        moe_router_context_dim: int = 0,
+        moe_router_type: str = "linear",
+        moe_router_hidden_dim: int = 256,
+        moe_router_dropout: float = 0.0,
+        moe_capacity_factor_train: float = 1.25,
+        moe_capacity_factor_eval: float = 2.0,
+        moe_use_z_loss: bool = True,
+        moe_z_loss_coef: float = 1e-3,
+        moe_aux_loss_coef: float = 1e-2,
+        moe_return_routing: bool = True,
         use_return_dict: bool = True,
     ):
         super().__init__()
@@ -398,6 +513,20 @@ class RoFormerEncoderModel(nn.Module):
             layer_norm_eps=layer_norm_eps,
             rotary_value=rotary_value,
             chunk_size_feed_forward=chunk_size_feed_forward,
+            use_moe=use_moe,
+            moe_num_experts=moe_num_experts,
+            moe_top_k=moe_top_k,
+            moe_layers=moe_layers,
+            moe_router_context_dim=moe_router_context_dim,
+            moe_router_type=moe_router_type,
+            moe_router_hidden_dim=moe_router_hidden_dim,
+            moe_router_dropout=moe_router_dropout,
+            moe_capacity_factor_train=moe_capacity_factor_train,
+            moe_capacity_factor_eval=moe_capacity_factor_eval,
+            moe_use_z_loss=moe_use_z_loss,
+            moe_z_loss_coef=moe_z_loss_coef,
+            moe_aux_loss_coef=moe_aux_loss_coef,
+            moe_return_routing=moe_return_routing,
             use_return_dict=use_return_dict,
         )
 
@@ -431,6 +560,8 @@ class RoFormerEncoderModel(nn.Module):
         attention_mask: Optional[Tensor] = None,
         token_type_ids: Optional[Tensor] = None,
         inputs_embeds: Optional[Tensor] = None,
+        router_context: Optional[Tensor] = None,
+        token_mask: Optional[Tensor] = None,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: Optional[bool] = None,
@@ -450,6 +581,8 @@ class RoFormerEncoderModel(nn.Module):
             attention_mask = torch.ones((batch_size, seq_len), device=device)
         if token_type_ids is None:
             token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
+        if token_mask is None and attention_mask is not None and attention_mask.dim() == 2:
+            token_mask = attention_mask
 
         extended_attention_mask = make_extended_attention_mask(attention_mask, dtype=torch.float32)
 
@@ -466,6 +599,8 @@ class RoFormerEncoderModel(nn.Module):
         encoder_outputs = self.encoder(
             embedding_output,
             attention_mask=extended_attention_mask,
+            router_context=router_context,
+            token_mask=token_mask,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
@@ -482,6 +617,9 @@ class RoFormerEncoderModel(nn.Module):
             last_hidden_state=encoder_outputs.last_hidden_state,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
+            moe_aux_loss=encoder_outputs.moe_aux_loss,
+            moe_z_loss=encoder_outputs.moe_z_loss,
+            moe_route_mean=encoder_outputs.moe_route_mean,
         )
 
 

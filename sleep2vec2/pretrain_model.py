@@ -8,6 +8,7 @@ import torch.nn as nn
 from sleep2vec2.builders import build_encoder, build_projection, build_tokenizers_and_dim
 from sleep2vec2.cls import build_cls_embedding
 from sleep2vec2.config import BackboneConfig, ModelConfig, ProjectionConfig
+from sleep2vec2.modules.metadata_context import MetadataContextEncoder, stable_hash_to_bucket
 from sleep2vec2.modules.tokenizers import LinearTokenizer, SundialTokenizer
 
 
@@ -167,6 +168,7 @@ class Sleep2vecPretrainModel(nn.Module):
         self.transformer_hidden_size = int(inferred_hidden_size)
         # Input embedding dim expected by encoder(inputs_embeds=...).
         self.encoder_embedding_size = int(inferred_embedding_size)
+        self.modality_to_id = {name: idx for idx, name in enumerate(self.channel_names)}
         self.encoder_name = (
             (getattr(model_config.backbone, "name", None) if model_config is not None else None)
             or getattr(enc_cfg, "model_type", None)
@@ -190,6 +192,25 @@ class Sleep2vecPretrainModel(nn.Module):
             in_dim=self.transformer_hidden_size,
         )
         self.projection = bool(self.proj_head)
+
+        self._token_type_count = int(getattr(enc_cfg, "num_token_types", 0) or 0)
+        self._token_type_enabled = self._token_type_count > 0
+        self._token_type_warned = False
+
+        self._router_context_dim = int(getattr(enc_cfg, "moe_router_context_dim", 0) or 0)
+        self._use_router_context = self._router_context_dim > 0
+        if self._use_router_context:
+            self.modality_embed = nn.Embedding(len(self.channel_names), self._router_context_dim)
+            self.meta_encoder = MetadataContextEncoder(meta_dim=self._router_context_dim)
+            self.context_proj = nn.Sequential(
+                nn.Linear(self._router_context_dim * 3, self._router_context_dim),
+                nn.GELU(),
+                nn.Linear(self._router_context_dim, self._router_context_dim),
+            )
+        else:
+            self.modality_embed = None
+            self.meta_encoder = None
+            self.context_proj = None
 
         self.total_params = sum(p.numel() for p in self.parameters())
         logging.info(f"Total parameters: {self.total_params}")
@@ -267,7 +288,88 @@ class Sleep2vecPretrainModel(nn.Module):
         """
         return self.cls_embedding.add_cls_and_mask(tokens, lengths)
 
-    def _token_embeddings_to_hidden(self, token_embeddings, batch, *, return_mask: bool = False):
+    def _stable_hash_to_bucket(self, values: t.Sequence[str], num_buckets: int, device: torch.device) -> torch.Tensor:
+        return stable_hash_to_bucket(values, num_buckets).to(device=device)
+
+    def _build_meta_context(self, batch: dict, device: torch.device) -> torch.Tensor | None:
+        if self.meta_encoder is None:
+            return None
+        metadata = batch.get("metadata")
+        if metadata is None:
+            return None
+
+        age = metadata.get("age")
+        sex = metadata.get("sex")
+        if age is None or sex is None:
+            return None
+
+        source = metadata.get("source") or ["nan"] * len(age)
+        path = metadata.get("path") or ["nan"] * len(age)
+
+        source_ids = self._stable_hash_to_bucket(source, self.meta_encoder.num_source_buckets, device)
+        subject_ids = self._stable_hash_to_bucket(path, self.meta_encoder.num_subject_buckets, device)
+
+        return self.meta_encoder(
+            age=age,
+            sex=sex,
+            source_ids=source_ids,
+            subject_ids=subject_ids,
+        )
+
+    def _build_set_embedding(self, available_modalities: t.Sequence[str], device: torch.device) -> torch.Tensor | None:
+        if self.modality_embed is None:
+            return None
+        ids = [self.modality_to_id[m] for m in available_modalities if m in self.modality_to_id]
+        if not ids:
+            return None
+        id_tensor = torch.tensor(ids, dtype=torch.long, device=device)
+        return self.modality_embed(id_tensor).mean(dim=0)
+
+    def _build_router_context(
+        self,
+        batch: dict,
+        *,
+        modality_name: str | None,
+        available_modalities: t.Sequence[str] | None,
+        device: torch.device,
+        batch_size: int,
+    ) -> torch.Tensor | None:
+        if not self._use_router_context or self.context_proj is None:
+            return None
+
+        meta = self._build_meta_context(batch, device)
+        if meta is None:
+            meta = torch.zeros(batch_size, self._router_context_dim, device=device)
+
+        if modality_name is None or self.modality_embed is None:
+            return None
+        mod_id = self.modality_to_id.get(modality_name)
+        if mod_id is None:
+            return None
+        mod_emb = self.modality_embed(
+            torch.tensor([mod_id], dtype=torch.long, device=device)
+        ).expand(batch_size, -1)
+
+        set_emb = None
+        if available_modalities is not None:
+            set_emb = self._build_set_embedding(available_modalities, device)
+        if set_emb is None:
+            set_emb = mod_emb[0]
+        set_emb = set_emb.expand(batch_size, -1)
+
+        context = torch.cat([meta, mod_emb, set_emb], dim=-1)
+        return self.context_proj(context)
+
+    def _token_embeddings_to_hidden(
+        self,
+        token_embeddings,
+        batch,
+        *,
+        modality_name: str | None = None,
+        available_modalities: t.Sequence[str] | None = None,
+        return_mask: bool = False,
+        return_extras: bool = False,
+    ):
 
         # 3. 调整 token_embedding 维度为 transformer hidden_size
         token_embeddings = self.embedding_projection(token_embeddings)
@@ -276,24 +378,116 @@ class Sleep2vecPretrainModel(nn.Module):
         token_embeddings, attention_mask = self.apply_padding_mask(token_embeddings, batch["length"])
 
         # 5. Transformer encoder
-        hidden = self._run_encoder(token_embeddings, attention_mask)
+        token_type_ids = None
+        if self._token_type_enabled and modality_name is not None:
+            mod_id = self.modality_to_id.get(modality_name)
+            if mod_id is not None and mod_id < self._token_type_count:
+                token_type_ids = torch.full(
+                    attention_mask.shape,
+                    int(mod_id),
+                    dtype=torch.long,
+                    device=token_embeddings.device,
+                )
+            elif mod_id is not None and not self._token_type_warned:
+                logging.warning(
+                    "modality id %s exceeds num_token_types=%s; "
+                    "set model.backbone.num_token_types to >= %s to enable token type ids.",
+                    mod_id,
+                    self._token_type_count,
+                    max(self.modality_to_id.values()) + 1,
+                )
+                self._token_type_warned = True
 
+        router_context = self._build_router_context(
+            batch,
+            modality_name=modality_name,
+            available_modalities=available_modalities,
+            device=token_embeddings.device,
+            batch_size=token_embeddings.shape[0],
+        )
+
+        extras = None
+        if return_extras:
+            hidden, extras = self._run_encoder(
+                token_embeddings,
+                attention_mask,
+                token_type_ids=token_type_ids,
+                router_context=router_context,
+                token_mask=attention_mask,
+                return_extras=True,
+            )
+        else:
+            hidden = self._run_encoder(
+                token_embeddings,
+                attention_mask,
+                token_type_ids=token_type_ids,
+                router_context=router_context,
+                token_mask=attention_mask,
+                return_extras=False,
+            )
+
+        if return_mask and return_extras:
+            return hidden, attention_mask, extras
         if return_mask:
             return hidden, attention_mask
+        if return_extras:
+            return hidden, extras
         return hidden
 
-    def _run_encoder(self, token_embeddings, attention_mask):
+    def _run_encoder(
+        self,
+        token_embeddings,
+        attention_mask,
+        *,
+        token_type_ids: torch.Tensor | None = None,
+        router_context: torch.Tensor | None = None,
+        token_mask: torch.Tensor | None = None,
+        return_extras: bool = False,
+    ):
         """Routes embeddings through the selected encoder."""
         if self._custom_encoder_forward is not None:
-            return self._custom_encoder_forward(self.encoder, token_embeddings, attention_mask)
+            hidden = self._custom_encoder_forward(self.encoder, token_embeddings, attention_mask)
+            if return_extras:
+                return hidden, {}
+            return hidden
 
-        encoder_output = self.encoder(inputs_embeds=token_embeddings, attention_mask=attention_mask)
+        try:
+            encoder_output = self.encoder(
+                inputs_embeds=token_embeddings,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                router_context=router_context,
+                token_mask=token_mask,
+            )
+        except TypeError as exc:
+            msg = str(exc)
+            if "unexpected keyword argument" not in msg:
+                raise
+            encoder_output = self.encoder(
+                inputs_embeds=token_embeddings,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+            )
+
         if isinstance(encoder_output, torch.Tensor):
+            if return_extras:
+                return encoder_output, {}
             return encoder_output
         if hasattr(encoder_output, "last_hidden_state"):
-            return encoder_output.last_hidden_state
+            hidden = encoder_output.last_hidden_state
+            if return_extras:
+                extras = {
+                    "moe_aux_loss": getattr(encoder_output, "moe_aux_loss", None),
+                    "moe_z_loss": getattr(encoder_output, "moe_z_loss", None),
+                    "moe_route_mean": getattr(encoder_output, "moe_route_mean", None),
+                }
+                return hidden, extras
+            return hidden
         if isinstance(encoder_output, (list, tuple)):
-            return encoder_output[0]
+            hidden = encoder_output[0]
+            if return_extras:
+                return hidden, {}
+            return hidden
         raise ValueError(
             f"Encoder '{self.encoder_name}' returned unsupported output type "
             f"{type(encoder_output)}. Provide encoder_forward to customize the "
@@ -316,27 +510,49 @@ class Sleep2vecPretrainModel(nn.Module):
 
         # 1. 随机选择两个通道并 tokenize
         token_embeddings = self._tokenize_two_random_channels(tokens)
+        modality_names = list(token_embeddings.keys())
 
         # 2. mask 选择的两个通道
         if apply_mask:
             token_embeddings = self._mask_modalities(token_embeddings, batch["mlm_mask"])
 
-        # modality_names = list(token_embeddings.keys())
-        token_embeddings = list(token_embeddings.values())
-        first_mod_token_embeddings, second_mod_token_embeddings = (
-            token_embeddings[0],
-            token_embeddings[1],
-        )
+        token_embeddings_list = list(token_embeddings.values())
+        first_mod_token_embeddings, second_mod_token_embeddings = token_embeddings_list[0], token_embeddings_list[1]
+        first_name, second_name = modality_names[0], modality_names[1]
 
         # 3/4/5
-        first_hidden = self._token_embeddings_to_hidden(first_mod_token_embeddings, batch)
-        second_hidden = self._token_embeddings_to_hidden(second_mod_token_embeddings, batch)
+        first_hidden, first_extras = self._token_embeddings_to_hidden(
+            first_mod_token_embeddings,
+            batch,
+            modality_name=first_name,
+            available_modalities=modality_names,
+            return_extras=True,
+        )
+        second_hidden, second_extras = self._token_embeddings_to_hidden(
+            second_mod_token_embeddings,
+            batch,
+            modality_name=second_name,
+            available_modalities=modality_names,
+            return_extras=True,
+        )
 
         # ★ 对所有 token 逐个投影：得到 [B, L, 128]
         if self.projection:
             first_hidden = self.proj_head(first_hidden)
             second_hidden = self.proj_head(second_hidden)
 
+        extras = {}
+        if first_extras:
+            extras["moe_aux_loss_first"] = first_extras.get("moe_aux_loss")
+            extras["moe_z_loss_first"] = first_extras.get("moe_z_loss")
+            extras["moe_route_mean_first"] = first_extras.get("moe_route_mean")
+        if second_extras:
+            extras["moe_aux_loss_second"] = second_extras.get("moe_aux_loss")
+            extras["moe_z_loss_second"] = second_extras.get("moe_z_loss")
+            extras["moe_route_mean_second"] = second_extras.get("moe_route_mean")
+
+        if any(v is not None for v in extras.values()):
+            return first_hidden, second_hidden, extras
         return first_hidden, second_hidden
 
     def encode(self, batch, channel_name):
@@ -346,7 +562,12 @@ class Sleep2vecPretrainModel(nn.Module):
         token_embeddings = self.tokenizer_mapping[channel_name](tokens[channel_name])
 
         # 3/4/5
-        hidden = self._token_embeddings_to_hidden(token_embeddings, batch)
+        hidden = self._token_embeddings_to_hidden(
+            token_embeddings,
+            batch,
+            modality_name=channel_name,
+            available_modalities=[channel_name],
+        )
 
         # 对所有 token 逐个投影：得到 [B, L, 128]
         if self.projection:

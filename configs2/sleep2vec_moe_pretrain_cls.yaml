@@ -1,0 +1,92 @@
+model:
+  backbone:
+    name: roformer_moe
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 16
+    num_token_types: 16
+    vocab_size: 1
+    config_overrides:
+      use_moe: true
+      moe_num_experts: 8
+      moe_top_k: 2
+      moe_layers: "all"
+      moe_router_type: "linear"
+      moe_router_context_dim: 128
+      moe_aux_loss_coef: 0.01
+      moe_z_loss_coef: 0.001
+      moe_return_routing: true
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  cls:
+    embedding_type: bert
+    downstream: tokens
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+    - name: breath
+      input_dim: 120
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+    - name: eeg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+    - name: ecg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+    - name: eog_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+    - name: emg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+    - name: spo2
+      input_dim: 120
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+    - name: resp_original
+      input_dim: 120
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+    - name: resp_nasal_original
+      input_dim: 120
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+loss:
+  name: dash_moe_info_nce
+  temperature: 0.2
+  params:
+    hard_scale: 0.10
+    pos_margin: 0.0
+    lambda_align: 0.05
+    lambda_aux: 0.01
+    lambda_z: 0.001
+    align_type: sym_kl
+data:
+  mask_rate: 0.15
+  max_tokens: 120
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

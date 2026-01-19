@@ -65,6 +65,23 @@ class RoFormerEncoderConfig:
     # Feed-forward chunking (0 disables)
     chunk_size_feed_forward: int = 0
 
+    # MoE (optional)
+    use_moe: bool = False
+    moe_num_experts: int = 0
+    moe_top_k: int = 1
+    # "all" or comma-separated layer indices (0-based)
+    moe_layers: str = "all"
+    moe_router_context_dim: int = 0
+    moe_router_type: str = "linear"
+    moe_router_hidden_dim: int = 256
+    moe_router_dropout: float = 0.0
+    moe_capacity_factor_train: float = 1.25
+    moe_capacity_factor_eval: float = 2.0
+    moe_use_z_loss: bool = True
+    moe_z_loss_coef: float = 1e-3
+    moe_aux_loss_coef: float = 1e-2
+    moe_return_routing: bool = True
+
     # Output style
     use_return_dict: bool = True
 

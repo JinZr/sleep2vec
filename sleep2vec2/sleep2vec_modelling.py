@@ -116,13 +116,26 @@ class Sleep2vecPretraining(pl.LightningModule):
     # ---------- 公共计算逻辑 ----------
     def _contrastive_step(self, batch, log_prefix=None, model=None):
         model = model or self.model
-        first_hidden, second_hidden = model(batch, apply_mask=True)
+        outputs = model(batch, apply_mask=True)
+        extras = None
+        if isinstance(outputs, (list, tuple)) and len(outputs) == 3:
+            first_hidden, second_hidden, extras = outputs
+        else:
+            first_hidden, second_hidden = outputs
 
-        loss_out = self.loss_fn(first_hidden, second_hidden, batch)
+        loss_batch = batch
+        if extras:
+            loss_batch = dict(batch)
+            loss_batch.update({k: v for k, v in extras.items() if v is not None})
+
+        loss_out = self.loss_fn(first_hidden, second_hidden, loss_batch)
         total_loss = loss_out.loss
         metrics = loss_out.metrics or {}
         contrastive_loss = metrics.get("contrastive_loss", total_loss.detach())
         acc_contrastive = metrics.get("contrastive_acc")
+        moe_aux = metrics.get("moe_aux")
+        moe_z = metrics.get("moe_z")
+        route_align = metrics.get("route_align")
 
         # # ---- logging ----
         # if log_prefix is not None:
@@ -159,6 +172,36 @@ class Sleep2vecPretraining(pl.LightningModule):
                     f"{log_prefix}_contrastive_acc",
                     acc_contrastive,
                     prog_bar=True,
+                    sync_dist=True,
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=B,
+                )
+            if moe_aux is not None:
+                self.log(
+                    f"{log_prefix}_moe_aux",
+                    moe_aux,
+                    prog_bar=False,
+                    sync_dist=True,
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=B,
+                )
+            if moe_z is not None:
+                self.log(
+                    f"{log_prefix}_moe_z",
+                    moe_z,
+                    prog_bar=False,
+                    sync_dist=True,
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=B,
+                )
+            if route_align is not None:
+                self.log(
+                    f"{log_prefix}_route_align",
+                    route_align,
+                    prog_bar=False,
                     sync_dist=True,
                     on_step=True,
                     on_epoch=True,

@@ -141,6 +141,7 @@ class Sleep2vecDownstreamModel(nn.Module):
 
         token_embeddings = self.backbone._tokenize_all(tokens)
         token_names, token_embeddings = list(token_embeddings.keys()), list(token_embeddings.values())
+        available_modalities = token_names
 
         feature_of_different_mods = []
         for token_name, single_mod_token_embeddings in zip(token_names, token_embeddings):
@@ -149,7 +150,11 @@ class Sleep2vecDownstreamModel(nn.Module):
                 self._set_active_adapter(f"ch_{token_name}")
 
             hidden, attn_mask = self.backbone._token_embeddings_to_hidden(
-                single_mod_token_embeddings, batch, return_mask=True
+                single_mod_token_embeddings,
+                batch,
+                modality_name=token_name,
+                available_modalities=available_modalities,
+                return_mask=True,
             )
 
             strategy = self.cls_embedding
