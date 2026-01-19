@@ -19,26 +19,15 @@ class PairBatchSampler(torch.utils.data.Sampler[list[int]]):
         dataset,
         *,
         batch_size: int,
-        channel_names: t.Sequence[str] | None = None,
-        min_channels: int | None = None,
-        shuffle: bool | None = None,
+        channel_names: t.Sequence[str],
+        min_channels: int,
+        shuffle: bool,
         drop_last: bool,
         seed: int = 42,
         replacement: bool = True,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        if channel_names is None:
-            channel_names = getattr(dataset, "channel_names", None)
-        if channel_names is None:
-            raise ValueError("channel_names must be provided or available on the dataset.")
-        if min_channels is None:
-            min_channels = getattr(dataset, "min_channels", None)
-        if min_channels is None:
-            raise ValueError("min_channels must be provided or available on the dataset.")
-        if shuffle is None:
-            dataloader_cfg = getattr(dataset, "dataloader_config", {}) or {}
-            shuffle = dataloader_cfg.get("shuffle", False)
         self.dataset = dataset
         self.batch_size = int(batch_size)
         self.channel_names = list(channel_names)
