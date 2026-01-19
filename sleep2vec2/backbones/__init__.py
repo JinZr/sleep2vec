@@ -8,7 +8,6 @@ Importing this package registers all available backbones in
 """
 
 # Import backbones for registration side-effects.
-from . import roformer as _roformer  # noqa: F401
-from . import roformer_moe as _roformer_moe  # noqa: F401
+from . import roformer as _roformer, roformer_moe as _roformer_moe  # noqa: F401
 
 __all__ = []

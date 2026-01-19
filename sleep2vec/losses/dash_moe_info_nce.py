@@ -121,9 +121,7 @@ class DashMoeInfoNCELoss(ContrastiveLoss):
 
         aux_loss = batch.get("moe_aux_loss")
         if aux_loss is None:
-            aux_loss = _sum_optional(
-                [batch.get("moe_aux_loss_first"), batch.get("moe_aux_loss_second")]
-            )
+            aux_loss = _sum_optional([batch.get("moe_aux_loss_first"), batch.get("moe_aux_loss_second")])
         z_loss = batch.get("moe_z_loss")
         if z_loss is None:
             z_loss = _sum_optional([batch.get("moe_z_loss_first"), batch.get("moe_z_loss_second")])

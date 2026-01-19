@@ -7,6 +7,7 @@ import yaml
 
 from sleep2vec2 import diagnostics
 from sleep2vec2.averagings.base import BaseModelAverager, build_model_averager
+from sleep2vec2.loggers import WandbMoELogger
 from sleep2vec2.losses import create_loss
 from sleep2vec2.pretrain_model import Sleep2vecPretrainModel
 
@@ -24,6 +25,7 @@ class Sleep2vecPretraining(pl.LightningModule):
             projection_config=model_config.projection,
             device=getattr(args, "device", "cuda"),
         )
+        self.moe_logger = WandbMoELogger(hist_every_n_steps=getattr(args, "wandb_hist_steps", 200))
 
         # Optional tensor diagnostics (borrowed from icefall)
         self._diagnostic = None
@@ -146,67 +148,19 @@ class Sleep2vecPretraining(pl.LightningModule):
 
         # ---- logging ----
         if log_prefix is not None:
-            B = first_hidden.size(0)  # 用于正确做加权平均
-            self.log(
-                f"{log_prefix}_loss",
-                total_loss,
-                prog_bar=True,
-                sync_dist=True,
-                on_step=True,  # 仍然保留每 step
-                on_epoch=True,  # ✅ 新增：按 epoch 聚合
+            B = first_hidden.size(0)
+            self.moe_logger.log_step(
+                self,
+                log_prefix=log_prefix,
                 batch_size=B,
-            )  # ✅ 新增：正确做加权平均
-
-            self.log(
-                f"{log_prefix}_contrastive_loss",
-                contrastive_loss,
-                prog_bar=False,
-                sync_dist=True,
-                on_step=True,
-                on_epoch=True,
-                batch_size=B,
+                loss=total_loss,
+                contrastive_loss=contrastive_loss,
+                contrastive_acc=acc_contrastive,
+                moe_aux=moe_aux,
+                moe_z=moe_z,
+                route_align=route_align,
+                extras=extras,
             )
-
-            if acc_contrastive is not None:
-                self.log(
-                    f"{log_prefix}_contrastive_acc",
-                    acc_contrastive,
-                    prog_bar=True,
-                    sync_dist=True,
-                    on_step=True,
-                    on_epoch=True,
-                    batch_size=B,
-                )
-            if moe_aux is not None:
-                self.log(
-                    f"{log_prefix}_moe_aux",
-                    moe_aux,
-                    prog_bar=False,
-                    sync_dist=True,
-                    on_step=True,
-                    on_epoch=True,
-                    batch_size=B,
-                )
-            if moe_z is not None:
-                self.log(
-                    f"{log_prefix}_moe_z",
-                    moe_z,
-                    prog_bar=False,
-                    sync_dist=True,
-                    on_step=True,
-                    on_epoch=True,
-                    batch_size=B,
-                )
-            if route_align is not None:
-                self.log(
-                    f"{log_prefix}_route_align",
-                    route_align,
-                    prog_bar=False,
-                    sync_dist=True,
-                    on_step=True,
-                    on_epoch=True,
-                    batch_size=B,
-                )
 
         # 验证集：缓存到 epoch 末求均值
         if log_prefix == "val":

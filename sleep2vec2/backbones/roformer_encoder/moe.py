@@ -52,9 +52,7 @@ class TopKRouter(nn.Module):
 
         if router_type == "linear":
             self.router = nn.Linear(hidden_size, num_experts, bias=False)
-            self.context_router = (
-                nn.Linear(self.context_dim, num_experts, bias=True) if self.context_dim > 0 else None
-            )
+            self.context_router = nn.Linear(self.context_dim, num_experts, bias=True) if self.context_dim > 0 else None
         elif router_type == "mlp":
             input_dim = hidden_size + self.context_dim
             self.router = nn.Sequential(
@@ -85,9 +83,7 @@ class TopKRouter(nn.Module):
             if context is None:
                 context = torch.zeros(bsz, self.context_dim, device=x.device, dtype=x.dtype)
             if context.dim() != 2 or context.shape[0] != bsz or context.shape[1] != self.context_dim:
-                raise ValueError(
-                    f"router_context must have shape [B, {self.context_dim}], got {tuple(context.shape)}"
-                )
+                raise ValueError(f"router_context must have shape [B, {self.context_dim}], got {tuple(context.shape)}")
             context_exp = context[:, None, :].expand(bsz, seq_len, self.context_dim).reshape(-1, self.context_dim)
         else:
             context_exp = None
@@ -218,9 +214,14 @@ class MoEFeedForward(nn.Module):
             "aux_loss": None,
             "z_loss": None,
             "route_mean": None,
+            "importance": None,
+            "load": None,
+            "route_entropy": None,
         }
 
         active_count = None
+        importance_norm = None
+        load_norm = None
         if active is not None:
             active_count = int(active.sum().item())
 
@@ -240,9 +241,9 @@ class MoEFeedForward(nn.Module):
 
             denom = float(active_count if active_count is not None else probs.shape[0])
             if denom > 0:
-                importance = importance / denom
-                load = load / denom
-                stats["aux_loss"] = self.num_experts * (importance * load).sum()
+                importance_norm = importance / denom
+                load_norm = load / denom
+                stats["aux_loss"] = self.num_experts * (importance_norm * load_norm).sum()
 
             if self.use_z_loss:
                 z = torch.logsumexp(logits, dim=-1)
@@ -259,6 +260,16 @@ class MoEFeedForward(nn.Module):
                 stats["route_mean"] = (probs_reshaped * mask).sum(dim=1) / denom
             else:
                 stats["route_mean"] = probs_reshaped.mean(dim=1)
+
+            if importance_norm is not None:
+                stats["importance"] = importance_norm
+            if load_norm is not None:
+                stats["load"] = load_norm
+
+            probs_active = probs[active] if active is not None else probs
+            if probs_active.numel() > 0:
+                entropy = -(probs_active * probs_active.clamp_min(1e-6).log()).sum(dim=-1).mean()
+                stats["route_entropy"] = entropy
 
         return output, stats
 

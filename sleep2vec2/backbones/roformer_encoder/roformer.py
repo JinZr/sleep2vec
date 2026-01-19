@@ -50,6 +50,9 @@ class RoFormerEncoderOutput:
     moe_aux_loss: Optional[Tensor] = None
     moe_z_loss: Optional[Tensor] = None
     moe_route_mean: Optional[Tuple[Tensor, ...]] = None
+    moe_importance: Optional[Tuple[Tensor, ...]] = None
+    moe_load: Optional[Tuple[Tensor, ...]] = None
+    moe_entropy: Optional[Tuple[Tensor, ...]] = None
 
 
 @dataclass
@@ -60,6 +63,9 @@ class RoFormerModelOutput:
     moe_aux_loss: Optional[Tensor] = None
     moe_z_loss: Optional[Tensor] = None
     moe_route_mean: Optional[Tuple[Tensor, ...]] = None
+    moe_importance: Optional[Tuple[Tensor, ...]] = None
+    moe_load: Optional[Tuple[Tensor, ...]] = None
+    moe_entropy: Optional[Tuple[Tensor, ...]] = None
 
 
 # -------------------------
@@ -381,6 +387,9 @@ class RoFormerEncoder(nn.Module):
         moe_aux_losses: list[Tensor] = []
         moe_z_losses: list[Tensor] = []
         moe_route_means: list[Tensor] = []
+        moe_importance: list[Tensor] = []
+        moe_load: list[Tensor] = []
+        moe_entropy: list[Tensor] = []
 
         # (seq, head_dim) -> (1, 1, seq, head_dim)
         sinusoidal_pos = self.embed_positions(hidden_states.shape[:-1])[None, None, :, :]
@@ -407,12 +416,21 @@ class RoFormerEncoder(nn.Module):
                 aux = moe_stats.get("aux_loss")
                 z = moe_stats.get("z_loss")
                 route = moe_stats.get("route_mean")
+                importance = moe_stats.get("importance")
+                load = moe_stats.get("load")
+                entropy = moe_stats.get("route_entropy")
                 if aux is not None:
                     moe_aux_losses.append(aux)
                 if z is not None:
                     moe_z_losses.append(z)
                 if route is not None:
                     moe_route_means.append(route)
+                if importance is not None:
+                    moe_importance.append(importance)
+                if load is not None:
+                    moe_load.append(load)
+                if entropy is not None:
+                    moe_entropy.append(entropy)
 
         if output_hidden_states:
             assert all_hidden_states is not None
@@ -429,6 +447,9 @@ class RoFormerEncoder(nn.Module):
         moe_aux_loss = torch.stack(moe_aux_losses).sum() if moe_aux_losses else None
         moe_z_loss = torch.stack(moe_z_losses).sum() if moe_z_losses else None
         moe_route_mean = tuple(moe_route_means) if moe_route_means else None
+        moe_importance_out = tuple(moe_importance) if moe_importance else None
+        moe_load_out = tuple(moe_load) if moe_load else None
+        moe_entropy_out = tuple(moe_entropy) if moe_entropy else None
 
         return RoFormerEncoderOutput(
             last_hidden_state=hidden_states,
@@ -437,6 +458,9 @@ class RoFormerEncoder(nn.Module):
             moe_aux_loss=moe_aux_loss,
             moe_z_loss=moe_z_loss,
             moe_route_mean=moe_route_mean,
+            moe_importance=moe_importance_out,
+            moe_load=moe_load_out,
+            moe_entropy=moe_entropy_out,
         )
 
 
@@ -620,6 +644,9 @@ class RoFormerEncoderModel(nn.Module):
             moe_aux_loss=encoder_outputs.moe_aux_loss,
             moe_z_loss=encoder_outputs.moe_z_loss,
             moe_route_mean=encoder_outputs.moe_route_mean,
+            moe_importance=encoder_outputs.moe_importance,
+            moe_load=encoder_outputs.moe_load,
+            moe_entropy=encoder_outputs.moe_entropy,
         )
 
 

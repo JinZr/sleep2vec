@@ -346,9 +346,7 @@ class Sleep2vecPretrainModel(nn.Module):
         mod_id = self.modality_to_id.get(modality_name)
         if mod_id is None:
             return None
-        mod_emb = self.modality_embed(
-            torch.tensor([mod_id], dtype=torch.long, device=device)
-        ).expand(batch_size, -1)
+        mod_emb = self.modality_embed(torch.tensor([mod_id], dtype=torch.long, device=device)).expand(batch_size, -1)
 
         set_emb = None
         if available_modalities is not None:
@@ -480,6 +478,9 @@ class Sleep2vecPretrainModel(nn.Module):
                     "moe_aux_loss": getattr(encoder_output, "moe_aux_loss", None),
                     "moe_z_loss": getattr(encoder_output, "moe_z_loss", None),
                     "moe_route_mean": getattr(encoder_output, "moe_route_mean", None),
+                    "moe_importance": getattr(encoder_output, "moe_importance", None),
+                    "moe_load": getattr(encoder_output, "moe_load", None),
+                    "moe_entropy": getattr(encoder_output, "moe_entropy", None),
                 }
                 return hidden, extras
             return hidden
@@ -546,10 +547,16 @@ class Sleep2vecPretrainModel(nn.Module):
             extras["moe_aux_loss_first"] = first_extras.get("moe_aux_loss")
             extras["moe_z_loss_first"] = first_extras.get("moe_z_loss")
             extras["moe_route_mean_first"] = first_extras.get("moe_route_mean")
+            extras["moe_importance_first"] = first_extras.get("moe_importance")
+            extras["moe_load_first"] = first_extras.get("moe_load")
+            extras["moe_entropy_first"] = first_extras.get("moe_entropy")
         if second_extras:
             extras["moe_aux_loss_second"] = second_extras.get("moe_aux_loss")
             extras["moe_z_loss_second"] = second_extras.get("moe_z_loss")
             extras["moe_route_mean_second"] = second_extras.get("moe_route_mean")
+            extras["moe_importance_second"] = second_extras.get("moe_importance")
+            extras["moe_load_second"] = second_extras.get("moe_load")
+            extras["moe_entropy_second"] = second_extras.get("moe_entropy")
 
         if any(v is not None for v in extras.values()):
             return first_hidden, second_hidden, extras
