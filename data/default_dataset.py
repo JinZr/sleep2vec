@@ -226,6 +226,7 @@ class DefaultDataset(BaseDataset):
         allow_missing_channels = bool(getattr(self, "allow_missing_channels", False))
         min_channels = getattr(self, "min_channels", 2)
         channel_name_set = set(channel_names)
+        bucket_by_available_channels = bool(getattr(self, "bucket_by_available_channels", False))
 
         def collate_fn(indices, tolerance=1):
 
@@ -382,6 +383,38 @@ class DefaultDataset(BaseDataset):
         dl_kwargs = dict(self.dataloader_config)
         if sampler is not None:
             dl_kwargs.pop("shuffle", None)  # sampler 与 shuffle 互斥
+        
+        # When pretraining with missing channels, random shuffling can mix different
+        # channel-availability signatures within one batch. That makes the
+        # intersection of available channels tiny and triggers the legacy fallback
+        # to a single "best_pair", collapsing training.
+        # When pretraining with missing channels, random shuffling can mix different
+        # channel-availability signatures within one batch. That makes the
+        # intersection of available channels tiny and triggers the legacy fallback
+        # to a single "best_pair", collapsing training.
+        #
+        # If enabled, bucket batches by available-channel signature to keep each
+        # batch homogeneous.
+
+        if allow_missing_channels and bucket_by_available_channels and sampler is None:
+            from data.samplers import AvailableChannelsBucketBatchSampler
+            batch_size = int(dl_kwargs.pop("batch_size"))
+            shuffle = bool(dl_kwargs.pop("shuffle", False))
+            batch_sampler = AvailableChannelsBucketBatchSampler(
+                self.data,
+                batch_size=batch_size,
+                min_channels=min_channels,
+                shuffle=shuffle,
+                drop_last=self.is_train_set,
+                seed=self.seed,
+            )
+
+            return DataLoader(
+                self,
+                batch_sampler=batch_sampler,
+                collate_fn=collate_fn,
+                **dl_kwargs,
+            )
 
         return DataLoader(
             self,

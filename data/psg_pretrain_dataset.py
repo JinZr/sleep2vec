@@ -29,6 +29,7 @@ class PSGPretrainDataset(DefaultDataset):
         randomly_select_channels: bool = True,
         min_channels: int = 2,
         allow_missing_channels: bool = False,
+        bucket_by_available_channels: bool = False,
         generative: bool = False,
         is_train_set: bool = True,
         **kwargs: t.Any,
@@ -38,6 +39,7 @@ class PSGPretrainDataset(DefaultDataset):
         self.randomly_select_channels = randomly_select_channels
         self.min_channels = min_channels
         self.allow_missing_channels = allow_missing_channels
+        self.bucket_by_available_channels = bucket_by_available_channels
         self.token_sec = token_sec
         self.generative = generative
         self.is_train_set = is_train_set
