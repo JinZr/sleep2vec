@@ -30,10 +30,16 @@ def get_pretrain_dataloader(args):
     np.random.seed(seed)
     logging.info(f"args: {args}")
 
+    def _seed_worker(worker_id: int):
+        worker_seed = torch.initial_seed() % (2**32)
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
     kwargs = {
         "batch_size": args.batch_size,
         "shuffle": True,
         "num_workers": args.num_workers,
+        "worker_init_fn": _seed_worker,
     }
     train_loader = PSGPretrainDataset(
         channel_names=args.channel_names,
@@ -47,7 +53,9 @@ def get_pretrain_dataloader(args):
         use_legacy_body_movement=False,
         generative=False,
         allow_missing_channels=True,
-        min_channels=2,
+        min_channels=6,
+        bucket_by_available_channels=True,
+        is_train_set=True,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
@@ -66,7 +74,9 @@ def get_pretrain_dataloader(args):
         use_legacy_body_movement=False,
         generative=False,
         allow_missing_channels=True,
-        min_channels=2,
+        min_channels=6,
+        bucket_by_available_channels=True,
+        is_train_set=False,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Valid DataLoader created successfully!")
