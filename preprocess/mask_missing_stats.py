@@ -72,9 +72,9 @@ def main() -> None:
     if args.dataset_col not in cols:
         raise SystemExit(f"ERROR: dataset column '{args.dataset_col}' not found. Available columns: {', '.join(cols)}")
 
-    mask_cols = [c for c in cols if c.endswith("_mask")]
+    mask_cols = [c for c in cols if c.endswith("_mask") and c != "stage_mask"]
     if not mask_cols:
-        raise SystemExit("ERROR: no columns ending with '_mask' were found")
+        raise SystemExit("ERROR: no columns ending with '_mask' were found (excluding 'stage_mask')")
 
     num_masks = len(mask_cols)
 
