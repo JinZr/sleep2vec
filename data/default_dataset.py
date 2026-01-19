@@ -401,17 +401,21 @@ class DefaultDataset(BaseDataset):
             )
 
         if batch_sampler is not None:
-            return DataLoader(
+            dl = DataLoader(
                 self,
                 **dl_kwargs,
                 collate_fn=collate_fn,
                 batch_sampler=batch_sampler,
             )
+            logging.info("dataloader.dataset type=%s", type(dl.dataset))
+            return dl
 
-        return DataLoader(
+        dl = DataLoader(
             self,
             **dl_kwargs,
             collate_fn=collate_fn,
             sampler=sampler,
             drop_last=self.is_train_set,  # only drop last batch for training
         )
+        logging.info("dataloader.dataset type=%s", type(dl.dataset))
+        return dl
