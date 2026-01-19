@@ -206,6 +206,30 @@ if __name__ == "__main__":
         help="path to precomputed preset pickle for PSG dataset",
     )
     parser.add_argument(
+        "--allow-missing-channels",
+        action="store_true",
+        help="Allow samples with missing channels (default: require all configured channels).",
+    )
+    parser.add_argument(
+        "--min-channels",
+        type=int,
+        default=6,
+        help="Minimum available channels required when --allow-missing-channels is enabled.",
+    )
+    parser.add_argument(
+        "--bucket-by-available-channels",
+        dest="bucket_by_available_channels",
+        action="store_true",
+        default=True,
+        help="Bucket batches by available-channel signature (default: enabled when allowing missing channels).",
+    )
+    parser.add_argument(
+        "--no-bucket-by-available-channels",
+        dest="bucket_by_available_channels",
+        action="store_false",
+        help="Disable available-channel bucketing even when allowing missing channels.",
+    )
+    parser.add_argument(
         "--exp-info",
         type=str,
         default="",

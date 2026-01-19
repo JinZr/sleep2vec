@@ -35,6 +35,26 @@ def get_pretrain_dataloader(args):
         np.random.seed(worker_seed)
         random.seed(worker_seed)
 
+    allow_missing_channels = bool(getattr(args, "allow_missing_channels", False))
+    min_channels = int(getattr(args, "min_channels", 6))
+    bucket_by_available_channels = bool(getattr(args, "bucket_by_available_channels", True))
+
+    if allow_missing_channels:
+        logging.warning(
+            "allow_missing_channels enabled: accepting samples with missing channels "
+            "(min_channels=%d, bucket_by_available_channels=%s).",
+            min_channels,
+            bucket_by_available_channels,
+        )
+        if min_channels < 2:
+            logging.warning("min_channels is < 2; contrastive pretraining may be unstable.")
+        if not bucket_by_available_channels:
+            logging.warning(
+                "bucket_by_available_channels is disabled; mixed montages may collapse to a single best_pair."
+            )
+    else:
+        logging.info("allow_missing_channels disabled: requiring all configured channels.")
+
     kwargs = {
         "batch_size": args.batch_size,
         "shuffle": True,
@@ -52,9 +72,9 @@ def get_pretrain_dataloader(args):
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
         generative=False,
-        allow_missing_channels=True,
-        min_channels=6,
-        bucket_by_available_channels=True,
+        allow_missing_channels=allow_missing_channels,
+        min_channels=min_channels,
+        bucket_by_available_channels=bucket_by_available_channels,
         is_train_set=True,
         **kwargs,
     ).dataloader(device=args.device)
@@ -73,9 +93,9 @@ def get_pretrain_dataloader(args):
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
         generative=False,
-        allow_missing_channels=True,
-        min_channels=6,
-        bucket_by_available_channels=True,
+        allow_missing_channels=allow_missing_channels,
+        min_channels=min_channels,
+        bucket_by_available_channels=bucket_by_available_channels,
         is_train_set=False,
         **kwargs,
     ).dataloader(device=args.device)

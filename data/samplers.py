@@ -3,8 +3,8 @@
 Why this exists
 
 
-The pretrain recipe enables ``allow_missing_channels=True`` to support datasets
-with heterogeneous montages.
+The pretrain recipe can enable ``allow_missing_channels=True`` (via CLI) to
+support datasets with heterogeneous montages.
 
 With the legacy setup (``shuffle=True``), a random batch often mixes samples
 with different available-channel sets. The intersection of channels across that
