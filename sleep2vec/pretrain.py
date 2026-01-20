@@ -182,6 +182,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--epochs", type=int, default=120, help="number of epochs")
     parser.add_argument("--lr", type=float, default=5e-5, help="learning rate")
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=None,
+        help="Override warmup steps for LR schedule (default: 3% of total steps).",
+    )
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
     parser.add_argument("--batch-size", type=int, default=320, help="batch size")
     parser.add_argument("--num-workers", type=int, default=8, help="number of dataloader workers")

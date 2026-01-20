@@ -68,6 +68,8 @@ python -m sleep2vec.pretrain \
   --epochs 120 --lr 5e-5 --batch-size 320 \
   --devices 0 1 --num-workers 8
 ```
+Optional:
+- `--warmup-steps N` to override the default LR warmup (3% of total steps).
 
 ### Finetune — classification
 ```bash

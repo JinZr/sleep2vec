@@ -201,7 +201,12 @@ class Sleep2vecPretraining(pl.LightningModule):
 
         # 线性 warmup + 余弦退火
         total_steps = self.trainer.estimated_stepping_batches
-        warmup = int(0.03 * total_steps)  # 3% 亦可 2%~5%
+        warmup_steps = getattr(self.args, "warmup_steps", None)
+        if warmup_steps is None:
+            warmup = int(0.03 * total_steps)  # 3% 亦可 2%~5%
+        else:
+            warmup = int(warmup_steps)
+        warmup = max(0, min(warmup, total_steps))
 
         def lr_lambda(step):
             if step < warmup:
