@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from data.samplers import handles_distributed_sharding
 from sleep2vec.common import dump_cli_args_yaml
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
@@ -36,6 +37,13 @@ def sleep2vec_pretrain(args):
 
     # get data loaders
     train_loader, val_loader_main = get_pretrain_dataloader(args)
+    # Disable Lightning's distributed sampler injection only when our custom
+    # batch sampler already shards across ranks.
+    train_batch_sampler = getattr(train_loader, "batch_sampler", None)
+    val_batch_sampler = getattr(val_loader_main, "batch_sampler", None)
+    use_distributed_sampler = not handles_distributed_sharding(
+        train_batch_sampler
+    ) and not handles_distributed_sharding(val_batch_sampler)
 
     # ========= 目录与 logger =========
     if args.ckpt_path is not None and os.path.isfile(args.ckpt_path):  # NEW
@@ -126,8 +134,8 @@ def sleep2vec_pretrain(args):
         strategy=strategy,
         benchmark=True,
         # Custom bucketed batch sampler handles distributed sharding itself.
-        # Disable Lightning's distributed sampler injection to avoid errors.
-        use_distributed_sampler=False,
+        # Disable Lightning's distributed sampler injection only in that case.
+        use_distributed_sampler=use_distributed_sampler,
         logger=logger,
         max_epochs=args.epochs,
         log_every_n_steps=5,

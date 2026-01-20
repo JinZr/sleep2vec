@@ -36,7 +36,22 @@ def _get_dist_info() -> tuple[int, int]:
     return 0, 1
 
 
-class AvailableChannelsBucketBatchSampler(Sampler[list[int]]):
+def handles_distributed_sharding(batch_sampler: t.Any) -> bool:
+    """Return True when a batch sampler already shards across ranks."""
+    if batch_sampler is None:
+        return False
+    return isinstance(batch_sampler, DistributedShardedBatchSampler) or bool(
+        getattr(batch_sampler, "handles_distributed_sharding", False)
+    )
+
+
+class DistributedShardedBatchSampler(Sampler[list[int]]):
+    """Marker base class for batch samplers that already shard by rank."""
+
+    handles_distributed_sharding = True
+
+
+class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
     """Batch-sampler that buckets indices by available-channel signature.
 
     The dataset elements are expected to be SampleIndex objects that may carry
@@ -70,6 +85,7 @@ class AvailableChannelsBucketBatchSampler(Sampler[list[int]]):
         self._drop_last = bool(drop_last)
         self._seed = int(seed)
         self._epoch = 0
+        self._manual_epoch = False
 
         buckets: dict[tuple[str, ...], list[int]] = defaultdict(list)
         for i, src in enumerate(data):
@@ -117,8 +133,10 @@ class AvailableChannelsBucketBatchSampler(Sampler[list[int]]):
     def __iter__(self):
         rank, world_size = _get_dist_info()
         total_batches = self._compute_total_batches(world_size)
-        rng = random.Random(self._seed + 1000 * self._epoch + rank)
-        self._epoch += 1
+        # Keep shuffle order identical across ranks; sharding happens via modulo.
+        rng = random.Random(self._seed + 1000 * self._epoch)
+        if not self._manual_epoch:
+            self._epoch += 1
 
         bucket_items = list(self._buckets.items())
         if self._shuffle:
@@ -145,3 +163,8 @@ class AvailableChannelsBucketBatchSampler(Sampler[list[int]]):
                 global_batch_idx += 1
 
         return
+
+    def set_epoch(self, epoch: int) -> None:
+        """Optionally set epoch for deterministic shuffling across ranks."""
+        self._epoch = int(epoch)
+        self._manual_epoch = True
