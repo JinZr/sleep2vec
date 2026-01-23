@@ -11,7 +11,7 @@ from data.psg_pretrain_dataset import PSGPretrainDataset
 def move_to_device(data, device="cuda"):
     """递归地将输入数据中的所有 torch.Tensor 转移到指定 device 上。"""
     if torch.is_tensor(data):
-        return data.to(device)
+        return data.to(device, non_blocking=True)
     if isinstance(data, dict):
         return {k: move_to_device(v, device) for k, v in data.items()}
     if isinstance(data, list):
@@ -56,12 +56,20 @@ def get_pretrain_dataloader(args):
     else:
         logging.info("allow_missing_channels disabled: requiring all configured channels.")
 
-    kwargs = {
+    use_workers = args.num_workers > 0
+    loader_kwargs = {
         "batch_size": args.batch_size,
-        "shuffle": True,
         "num_workers": args.num_workers,
         "worker_init_fn": _seed_worker,
+        "pin_memory": True,
     }
+    if use_workers:
+        loader_kwargs["prefetch_factor"] = 4
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["in_order"] = False
+
+    train_kwargs = dict(loader_kwargs)
+    train_kwargs["shuffle"] = True
     train_loader = PSGPretrainDataset(
         channel_names=args.channel_names,
         save_preset_path=None,
@@ -77,12 +85,15 @@ def get_pretrain_dataloader(args):
         min_channels=min_channels,
         bucket_by_available_channels=bucket_by_available_channels,
         is_train_set=True,
-        **kwargs,
+        **train_kwargs,
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
 
-    kwargs["shuffle"] = False
     val_pairs = build_all_pairs(args.channel_names)
+    val_kwargs = dict(loader_kwargs)
+    val_kwargs["shuffle"] = False
+    if use_workers and len(val_pairs) > 1:
+        val_kwargs["persistent_workers"] = False
     val_loaders = []
     for pair in val_pairs:
         pair_selector = RoundRobinPairSelector([pair])
@@ -102,7 +113,7 @@ def get_pretrain_dataloader(args):
             bucket_by_available_channels=bucket_by_available_channels,
             is_train_set=False,
             pair_selector=pair_selector,
-            **kwargs,
+            **val_kwargs,
         )
         val_dataset.pair = pair
         val_loaders.append(val_dataset.dataloader(device=args.device))
