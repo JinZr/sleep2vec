@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import typing as t
 
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from matplotlib.colors import PowerNorm
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 
 
 def render_pair_acc_heatmap(

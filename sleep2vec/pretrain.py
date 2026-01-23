@@ -18,9 +18,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data.samplers import handles_distributed_sharding
+from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2vec.common import dump_cli_args_yaml
 from sleep2vec.config import load_pretrain_config
-from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
 from sleep2vec.utils import get_pretrain_dataloader
 

@@ -2,7 +2,6 @@ import itertools
 import random
 import typing as t
 
-
 Pair = tuple[str, str]
 
 

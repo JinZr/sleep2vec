@@ -106,7 +106,6 @@ class Sleep2vecPretraining(pl.LightningModule):
             return self.model_averager.eval_model()
         return self.model
 
-
     def on_train_batch_end(self, outputs, batch, batch_idx):
         super().on_train_batch_end(outputs, batch, batch_idx)
         if self.model_averager is not None:
