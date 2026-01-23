@@ -62,6 +62,7 @@ class DefaultDataset(BaseDataset):
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names=None,  # ← 新增参数
         sources=None,  # ← 新增参数
+        pair_selector: t.Any | None = None,
         seed: int = 42,
     ) -> None:
         """
@@ -81,6 +82,7 @@ class DefaultDataset(BaseDataset):
         self.extractors = extractors
         self.tokenizers = tokenizers
         self.mask_generators = mask_generators
+        self.pair_selector = pair_selector
         # self.collators = collators
         self.dataloader_config = dataloader_config
 
@@ -189,6 +191,11 @@ class DefaultDataset(BaseDataset):
     def __len__(self) -> int:
         return len(self.data)
 
+    def reset_pair_selector(self) -> None:
+        selector = getattr(self, "pair_selector", None)
+        if selector is not None and hasattr(selector, "reset"):
+            selector.reset()
+
     def __getitem__(self, idx: int) -> Sample:
 
         src = self.data[idx]
@@ -227,6 +234,7 @@ class DefaultDataset(BaseDataset):
         min_channels = getattr(self, "min_channels", 2)
         channel_name_set = set(channel_names)
         bucket_by_available_channels = bool(getattr(self, "bucket_by_available_channels", False))
+        pair_selector = getattr(self, "pair_selector", None)
 
         def collate_fn(indices, tolerance=1):
 
@@ -253,7 +261,9 @@ class DefaultDataset(BaseDataset):
                 batch_available = set.intersection(*(avail for _, avail in avail_map))
 
                 if len(batch_available) >= 2:
-                    if randomly_select_channels:
+                    if pair_selector is not None:
+                        chosen = pair_selector.select(sorted(batch_available))
+                    elif randomly_select_channels:
                         chosen = random.sample(sorted(batch_available), k=2)
                         if generative and "eeg_original" in batch_available:
                             chosen[0] = "eeg_original"
@@ -273,7 +283,9 @@ class DefaultDataset(BaseDataset):
                         src for src, avail in avail_map if best_pair[0] in avail and best_pair[1] in avail
                     ]
             else:
-                if randomly_select_channels:
+                if pair_selector is not None:
+                    chosen = pair_selector.select(channel_names)
+                elif randomly_select_channels:
                     chosen = random.sample(channel_names, k=2)
                     if generative:
                         chosen[0] = "eeg_original"

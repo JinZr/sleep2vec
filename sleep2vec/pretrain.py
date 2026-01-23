@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 from data.samplers import handles_distributed_sharding
 from sleep2vec.common import dump_cli_args_yaml
 from sleep2vec.config import load_pretrain_config
+from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
 from sleep2vec.utils import get_pretrain_dataloader
 
@@ -36,11 +37,12 @@ def sleep2vec_pretrain(args):
     args.backbone_arch = model_config.backbone.name
 
     # get data loaders
-    train_loader, val_loader_main = get_pretrain_dataloader(args)
+    train_loader, val_loaders = get_pretrain_dataloader(args)
     # Disable Lightning's distributed sampler injection only when our custom
     # batch sampler already shards across ranks.
     train_batch_sampler = getattr(train_loader, "batch_sampler", None)
-    val_batch_sampler = getattr(val_loader_main, "batch_sampler", None)
+    main_val_loader = val_loaders[0] if val_loaders else None
+    val_batch_sampler = getattr(main_val_loader, "batch_sampler", None)
     use_distributed_sampler = not handles_distributed_sharding(
         train_batch_sampler
     ) and not handles_distributed_sharding(val_batch_sampler)
@@ -126,7 +128,8 @@ def sleep2vec_pretrain(args):
         # fall back to Lightning's default strategy selection
         strategy = "auto"
 
-    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor]
+    pair_acc_cb = PairAccLoggerCallback(args.channel_names)
+    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb]
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
@@ -165,7 +168,7 @@ def sleep2vec_pretrain(args):
     trainer.fit(
         model,
         train_dataloaders=train_loader,
-        val_dataloaders=[val_loader_main] if not args.print_diagnostics else None,
+        val_dataloaders=val_loaders if not args.print_diagnostics else None,
         ckpt_path=args.ckpt_path,
     )
 

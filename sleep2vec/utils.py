@@ -4,6 +4,7 @@ import random
 import numpy as np
 import torch
 
+from data.channel_selection import RoundRobinPairSelector, build_all_pairs
 from data.psg_pretrain_dataset import PSGPretrainDataset
 
 
@@ -81,27 +82,33 @@ def get_pretrain_dataloader(args):
     logging.info("Train DataLoader created successfully!")
 
     kwargs["shuffle"] = False
+    val_pairs = build_all_pairs(args.channel_names)
+    val_loaders = []
+    for pair in val_pairs:
+        pair_selector = RoundRobinPairSelector([pair])
+        val_dataset = PSGPretrainDataset(
+            channel_names=args.channel_names,
+            save_preset_path=None,
+            load_preset_path=args.pretrain_preset_path,
+            index=args.pretrain_data_index,
+            split=["val"],
+            max_tokens=args.max_tokens,
+            stride_tokens=args.max_tokens,  # 0 for truncation
+            mask_rate=args.mask_rate,
+            use_legacy_body_movement=False,
+            generative=False,
+            allow_missing_channels=allow_missing_channels,
+            min_channels=min_channels,
+            bucket_by_available_channels=bucket_by_available_channels,
+            is_train_set=False,
+            pair_selector=pair_selector,
+            **kwargs,
+        )
+        val_dataset.pair = pair
+        val_loaders.append(val_dataset.dataloader(device=args.device))
+    logging.info("Valid DataLoaders created successfully! (pairs=%d)", len(val_loaders))
 
-    main_val_loader = PSGPretrainDataset(
-        channel_names=args.channel_names,
-        save_preset_path=None,
-        load_preset_path=args.pretrain_preset_path,
-        index=args.pretrain_data_index,
-        split=["val"],
-        max_tokens=args.max_tokens,
-        stride_tokens=args.max_tokens,  # 0 for truncation
-        mask_rate=args.mask_rate,
-        use_legacy_body_movement=False,
-        generative=False,
-        allow_missing_channels=allow_missing_channels,
-        min_channels=min_channels,
-        bucket_by_available_channels=bucket_by_available_channels,
-        is_train_set=False,
-        **kwargs,
-    ).dataloader(device=args.device)
-    logging.info("Valid DataLoader created successfully!")
-
-    return train_loader, main_val_loader
+    return train_loader, val_loaders
 
 
 def _build_finetune_loader(
