@@ -82,7 +82,7 @@ def _init_wandb(args):
 
 
 def run_inference(args):
-    _, model_cfg = apply_finetune_config(args)
+    config_bundle, model_cfg = apply_finetune_config(args)
 
     trainer_precision = args.precision
     if args.accelerator == "cpu" and isinstance(trainer_precision, str) and "bf16" in trainer_precision:
@@ -102,7 +102,7 @@ def run_inference(args):
     )
 
     dataloader = _build_inference_loader(args)
-    model = Sleep2vecFinetuning(args, model_cfg)
+    model = Sleep2vecFinetuning(args, model_cfg, averaging_config=config_bundle.averaging)
 
     logging.info("Running inference on split=%s with %s samples/batch", args.eval_split, args.batch_size)
     wandb_run = _init_wandb(args)

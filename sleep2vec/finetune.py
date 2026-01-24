@@ -38,6 +38,7 @@ def prepare_dataloader(args):
 
 def supervised(args, config_bundle):
     model_config = config_bundle.model
+    averaging_config = config_bundle.averaging
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
@@ -60,7 +61,7 @@ def supervised(args, config_bundle):
     train_loader, val_loader, test_loader = prepare_dataloader(args)
 
     # define the model/lightning module
-    model = Sleep2vecFinetuning(args, model_config)
+    model = Sleep2vecFinetuning(args, model_config, averaging_config=averaging_config)
 
     # logger and callbacks
     version = args.version
@@ -96,8 +97,8 @@ def supervised(args, config_bundle):
         benchmark=True,
         logger=logger,
         max_epochs=args.epochs,
-        gradient_clip_val=1.0,
-        precision="bf16-mixed",  # <---- 开启 BF16
+        gradient_clip_val=args.gradient_clip_val,
+        precision=args.precision,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
     )
     if args.print_diagnostics:
@@ -191,6 +192,12 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=200, help="number of fine-tuning epochs")
     parser.add_argument("--lr", type=float, default=1e-6, help="learning rate for AdamW")
     parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=None,
+        help="Override warmup steps for LR schedule (default: 3% of total steps).",
+    )
+    parser.add_argument(
         "--weight-decay",
         dest="weight_decay",
         type=float,
@@ -204,6 +211,27 @@ if __name__ == "__main__":
         type=int,
         default=100,
         help="early stopping patience in epochs (no improvement)",
+    )
+    parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="bf16",
+        choices=[
+            "transformer-engine",
+            "transformer-engine-float16",
+            "16-true",
+            "16-mixed",
+            "bf16-true",
+            "bf16-mixed",
+            "32-true",
+            "64-true",
+            "64",
+            "32",
+            "16",
+            "bf16",
+        ],
+        help="mixed precision setting passed to Lightning Trainer",
     )
 
     # ---------------- Hardware / device configuration ----------------
