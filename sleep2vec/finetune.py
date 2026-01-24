@@ -88,16 +88,9 @@ def supervised(args, config_bundle):
         every_n_epochs=args.ckpt_every_n_epochs,  # 控制保存频率
         filename="{epoch:02d}",
     )
-    best_checkpoint_callback = ModelCheckpoint(
-        dirpath=f"log-finetune/{version}/checkpoints",
-        monitor=args.monitor,
-        mode=args.monitor_mod,
-        save_top_k=1,
-        filename="best",
-    )
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
-    callbacks = [early_stop_callback, checkpoint_callback, best_checkpoint_callback, lr_monitor]
+    callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
@@ -136,15 +129,29 @@ def supervised(args, config_bundle):
             val_dataloaders=val_loader,
             ckpt_path=args.ckpt_path if args.ckpt_path != "" else None,
         )
+        # Persist a stable best.ckpt for downstream convenience.
+        if enable_checkpointing and trainer.is_global_zero:
+            best_path = checkpoint_callback.best_model_path
+            if best_path:
+                best_dest = Path(checkpoint_callback.dirpath) / "best.ckpt"
+                try:
+                    if Path(best_path).resolve() != best_dest.resolve():
+                        shutil.copy2(best_path, best_dest)
+                except Exception as exc:  # pragma: no cover - best-effort
+                    logging.warning(f"Failed to copy best checkpoint to {best_dest}: {exc}")
 
     if args.print_diagnostics:
         # only collect diagnostics, skip evaluation
         return
 
     # test the model
+    if args.epochs > 0:
+        ckpt_path = checkpoint_callback.best_model_path or "last"
+    else:
+        ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
     pretrain_result = trainer.test(
         model=model,
-        ckpt_path="best" if args.epochs > 0 else args.ckpt_path,
+        ckpt_path=ckpt_path,
         dataloaders=test_loader,
     )[0]
     logging.info(pretrain_result)
