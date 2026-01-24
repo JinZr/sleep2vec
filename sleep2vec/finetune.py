@@ -83,12 +83,21 @@ def supervised(args, config_bundle):
         dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
         monitor=args.monitor,  # 监控验证集 Cohen κ
         mode=args.monitor_mod,  # 越大越好
-        save_top_k=1,  # 只保留最优一个
+        save_top_k=-1,  # 保留全部 checkpoint
+        save_last=True,  # 额外保存 last.ckpt
+        every_n_epochs=args.ckpt_every_n_epochs,  # 控制保存频率
         filename="{epoch:02d}",
+    )
+    best_checkpoint_callback = ModelCheckpoint(
+        dirpath=f"log-finetune/{version}/checkpoints",
+        monitor=args.monitor,
+        mode=args.monitor_mod,
+        save_top_k=1,
+        filename="best",
     )
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
-    callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
+    callbacks = [early_stop_callback, checkpoint_callback, best_checkpoint_callback, lr_monitor]
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
@@ -314,6 +323,13 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="run validation every N epochs",
+    )
+    parser.add_argument(
+        "--ckpt-every-n-epochs",
+        dest="ckpt_every_n_epochs",
+        type=int,
+        default=1,
+        help="save checkpoints every N epochs",
     )
 
     args = parser.parse_args()
