@@ -83,7 +83,9 @@ class TemporalTransformerHead(nn.Module):
             return self.pos_emb(positions).to(dtype)
         return _sinusoidal_position_embedding(length, dim, device, dtype)
 
-    def forward(self, feature_of_different_mods: t.List[torch.Tensor], *, token_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, feature_of_different_mods: t.List[torch.Tensor], *, token_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         fused, has_L = self.fusion.aggregator(feature_of_different_mods)
         if not has_L:
             fused = fused.unsqueeze(1)
