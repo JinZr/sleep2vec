@@ -93,6 +93,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.separate_adapters = False  # default
         self._adapter_warning_logged = False
         self._seq_cls_warning_logged = False
+        self._head_accepts_token_mask: bool | None = None
 
         # configure temporal aggregation (required)
         self.temporal_agg = build_temporal_aggregator(
@@ -137,6 +138,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         token_names, token_embeddings = list(token_embeddings.keys()), list(token_embeddings.values())
 
         feature_of_different_mods = []
+        token_masks: list[torch.Tensor | None] = []
         for token_name, single_mod_token_embeddings in zip(token_names, token_embeddings):
 
             if getattr(self, "separate_adapters", False):
@@ -157,8 +159,26 @@ class Sleep2vecDownstreamModel(nn.Module):
             else:
                 feature = self._forward_nonseq(token_hidden, cls_hidden, token_mask, batch)
             feature_of_different_mods.append(feature)
+            if self.is_seq:
+                if token_mask is None:
+                    token_mask = self._build_token_mask(batch["length"], token_hidden.size(1), token_hidden.device)
+                elif token_mask.dim() == 3 and token_mask.size(1) == 1:
+                    token_mask = token_mask.squeeze(1)
+                if token_mask is not None:
+                    token_mask = token_mask.to(torch.bool)
+                token_masks.append(token_mask)
 
-        output = self.head(feature_of_different_mods)
+        if self.is_seq and token_masks:
+            merged_mask = token_masks[0]
+            for mask in token_masks[1:]:
+                if mask is None:
+                    continue
+                if mask.shape != merged_mask.shape:
+                    raise ValueError("Token masks must share the same shape for sequence heads.")
+                merged_mask = merged_mask & mask
+            output = self._call_head(feature_of_different_mods, merged_mask)
+        else:
+            output = self._call_head(feature_of_different_mods, None)
         return output
 
     def _forward_seq(self, token_hidden, cls_hidden):
@@ -186,6 +206,24 @@ class Sleep2vecDownstreamModel(nn.Module):
                 token_mask[i, : batch["length"][i].item()] = True
 
         return self.temporal_agg(token_hidden, token_mask)
+
+    @staticmethod
+    def _build_token_mask(lengths: torch.Tensor, max_len: int, device) -> torch.Tensor:
+        mask = torch.zeros(int(lengths.shape[0]), max_len, dtype=torch.bool, device=device)
+        for i in range(mask.size(0)):
+            valid_len = int(lengths[i].item())
+            mask[i, :valid_len] = True
+        return mask
+
+    def _head_supports_token_mask(self) -> bool:
+        if self._head_accepts_token_mask is None:
+            self._head_accepts_token_mask = bool(getattr(self.head, "supports_token_mask", False))
+        return self._head_accepts_token_mask
+
+    def _call_head(self, features: t.List[torch.Tensor], token_mask: torch.Tensor | None):
+        if token_mask is not None and self._head_supports_token_mask():
+            return self.head(features, token_mask=token_mask)
+        return self.head(features)
 
     def load_pretrained_backbone(self, ckpt_path, use_ema: bool | str | None = True):
         logging.info(f"Loading backbone from {ckpt_path}")
