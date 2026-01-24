@@ -5,7 +5,7 @@ import shutil
 import sys
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
@@ -87,7 +87,8 @@ def supervised(args, config_bundle):
         filename="{epoch:02d}",
     )
 
-    callbacks = [early_stop_callback, checkpoint_callback]
+    lr_monitor = LearningRateMonitor(logging_interval="step")
+    callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
