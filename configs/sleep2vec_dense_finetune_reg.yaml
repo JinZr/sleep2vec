@@ -81,3 +81,11 @@ lora:
   freeze_backbone_and_insert_lora: false
   insert_lora: true
   separate_adapters: false
+
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

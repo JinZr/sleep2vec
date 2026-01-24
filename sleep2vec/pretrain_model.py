@@ -171,7 +171,12 @@ class Sleep2vecPretrainModel(nn.Module):
         """
 
         if self.specified_two_mods:
-            chosen_channels = self.specified_two_mods
+            chosen_channels = [ch for ch in self.specified_two_mods if ch in tokens]
+            if len(chosen_channels) < 2:
+                available = [ch for ch in self.channel_names if ch in tokens]
+                if len(available) < 2:
+                    raise ValueError(f"可用通道不足 2 个：{available}")
+                chosen_channels = random.sample(available, 2)
         else:
             # 交集：只保留 tokens 里确实存在的通道（并保持原有顺序）
             available = [ch for ch in self.channel_names if ch in tokens]

@@ -111,6 +111,7 @@ class FinetuneConfigBundle:
     model: ModelConfig
     data: "FinetuneDataConfig"
     lora: "LoraConfig"
+    averaging: "ModelAveragingConfig | None" = None
 
 
 @dataclass
@@ -294,6 +295,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     model_block = data.get("model", {})
     data_block = data.get("data", {})
     lora_block = data.get("lora", {})
+    averaging_cfg = _build_model_averaging_config(data)
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
     projection = ProjectionConfig(**(model_block.get("projection") or {}))
@@ -308,7 +310,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     )
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
-    return FinetuneConfigBundle(model=model_cfg, data=data_cfg, lora=lora_cfg)
+    return FinetuneConfigBundle(model=model_cfg, data=data_cfg, lora=lora_cfg, averaging=averaging_cfg)
 
 
 __all__ = [

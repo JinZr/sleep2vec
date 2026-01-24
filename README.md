@@ -41,6 +41,7 @@
 ## Setup
 - Python 3.10+ with CUDA GPUs recommended; PyTorch/Lightning versions are pinned in `requirements.txt` (`torch==2.5.1`, `pytorch-lightning==2.5.5`).
 - Install: `pip install -r requirements.txt` (choose the correct PyTorch wheel for your CUDA version).
+- Pair-accuracy heatmap logging uses `matplotlib` + `seaborn` (already included in `requirements.txt`).
 - Authenticate to Weights & Biases before running (`WANDB_API_KEY=...` or `WANDB_MODE=offline`) because entrypoints call `wandb.login()`.
 - Default precision is bf16/bf16-mixed; pass `--precision 32` if your GPUs do not support bf16.
 
@@ -51,6 +52,7 @@
 - **NPZ contents per row**: keys `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, `resp_nasal_original`, `stage5`. Each NPZ stores contiguous 30 s windows. 128 Hz channels expect 3840 frames/token; 4 Hz channels expect 120 frames/token; `stage5` is one label per token.
 - **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_Dataset_preset.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided.
 - To build a preset, edit `preprocess/save_Dataset_preset.py` (set `index=[...]`, `save_preset_path`, `split`, `n_tokens`) and run it. Reuse the produced pickle paths in your YAML/CLI flags.
+- **Missing-channel pretrain**: if you enable `--allow-missing-channels`, presets must carry `payload["available_channels"]` (auto-populated during preset creation) so the bucketed sampler can group by montage.
 
 ---
 
@@ -67,6 +69,21 @@ python -m sleep2vec.pretrain \
   --version-name exp001 \
   --epochs 120 --lr 5e-5 --batch-size 320 \
   --devices 0 1 --num-workers 8
+```
+Optional:
+- `--warmup-steps N` to override the default LR warmup (3% of total steps).
+- `--allow-missing-channels` to accept samples with missing channels; pair with `--min-channels` and (recommended) `--bucket-by-available-channels`.
+
+Example (missing-channel pretrain):
+```bash
+python -m sleep2vec.pretrain \
+  --config configs/sleep2vec_dense_pretrain.yaml \
+  --pretrain-data-index /path/to/index.csv \
+  --pretrain-preset-path /path/to/pretrain_cache.pkl \
+  --version-name exp001-missing-chn \
+  --epochs 120 --lr 5e-5 --batch-size 320 \
+  --devices 0 1 --num-workers 8 \
+  --allow-missing-channels --min-channels 6 --bucket-by-available-channels
 ```
 
 ### Finetune — classification
@@ -106,6 +123,8 @@ python -m sleep2vec.infer \
   --eval-split test --results-csv-path outputs.csv
 ```
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
+To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
+Use `--wandb` to enable W&B logging during inference (needed for confusion matrix logging).
 
 ---
 
@@ -163,12 +182,12 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
   ```
 
 **Downstream Head**  
-- Heads live in `sleep2vec/downstreams/heads.py` and register via `sleep2vec/downstreams/head_registry.py`.
+- Heads live in `sleep2vec/downstreams/heads/` and register via `sleep2vec/downstreams/head_registry.py`.
 - YAML separates channel and temporal aggregation:
   ```yaml
   model:
     head:
-      name: classification   # or regression
+      name: classification   # regression | temporal_conv | temporal_transformer
       dropout: 0.1
       hidden_dim: null
       channel_agg:
@@ -177,6 +196,7 @@ Use `--override-dataset-names` to test on a different dataset list than the YAML
         name: mean           # mean | attn
   ```
 - Temporal aggregation modules are in `sleep2vec/downstreams/temporal_aggregation/`.
+- Sequence heads like `temporal_transformer` accept a padding mask from the backbone to ignore padded tokens.
 
 
 **CLS vs Tokens (downstream representation)**  
@@ -205,7 +225,17 @@ model:
       final_momentum: 1.0
       use_for_eval: true
   ```
+- When `use_for_eval: true`, finetune/infer will evaluate with the averaged weights if present.
 - Downstream loading can request averaged weights with `use_ema="ema"` when calling `load_pretrained_backbone`.
+
+**Optimization & Checkpointing**  
+- Pretrain/finetune use linear warmup + cosine LR decay; override warmup with `--warmup-steps`.
+- Finetune saves `best.ckpt` and `last.ckpt` plus periodic checkpoints; set `--ckpt-every-n-epochs` to control frequency.
+- `--precision` and `--gradient-clip-val` are supported by both pretrain and finetune CLIs.
+
+**Pair-accuracy heatmap (pretrain)**  
+- Validation uses per-pair dataloaders to log contrastive accuracy per modality pair.
+- W&B logs a heatmap image (`val_pair_acc_matrix`) plus scalar metrics under `val_pair_acc/<pair>`.
 
 **LoRA fine-tuning**  
 - Controlled by YAML `lora` block (parsed by `apply_finetune_config`):
@@ -249,6 +279,6 @@ model:
 ## Repository Layout
 - `configs/` — training recipes for pretrain/finetune.
 - `sleep2vec/` — core library: registries, encoders, tokenizers, projection, losses, averaging, downstream heads, Lightning entrypoints.
-- `data/` — dataset/index definitions, metadata helpers, NPZ loaders.
-- `preprocess/` — scripts/notebooks to build index CSVs and preset pickles.
+- `data/` — dataset/index definitions, metadata helpers, NPZ loaders, channel-selection & samplers.
+- `preprocess/` — scripts to build index CSVs/presets, split/merge dataset indices, and inspect missing-channel stats.
 - `utils/` — misc helpers.

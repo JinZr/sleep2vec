@@ -17,6 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from data.samplers import handles_distributed_sharding
+from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2vec.common import dump_cli_args_yaml
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
@@ -35,7 +37,15 @@ def sleep2vec_pretrain(args):
     args.backbone_arch = model_config.backbone.name
 
     # get data loaders
-    train_loader, val_loader_main = get_pretrain_dataloader(args)
+    train_loader, val_loaders = get_pretrain_dataloader(args)
+    # Disable Lightning's distributed sampler injection only when our custom
+    # batch sampler already shards across ranks.
+    train_batch_sampler = getattr(train_loader, "batch_sampler", None)
+    main_val_loader = val_loaders[0] if val_loaders else None
+    val_batch_sampler = getattr(main_val_loader, "batch_sampler", None)
+    use_distributed_sampler = not handles_distributed_sharding(
+        train_batch_sampler
+    ) and not handles_distributed_sharding(val_batch_sampler)
 
     # ========= 目录与 logger =========
     if args.ckpt_path is not None and os.path.isfile(args.ckpt_path):  # NEW
@@ -118,13 +128,17 @@ def sleep2vec_pretrain(args):
         # fall back to Lightning's default strategy selection
         strategy = "auto"
 
-    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor]
+    pair_acc_cb = PairAccLoggerCallback(args.channel_names)
+    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb]
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
         accelerator="gpu",
         strategy=strategy,
         benchmark=True,
+        # Custom bucketed batch sampler handles distributed sharding itself.
+        # Disable Lightning's distributed sampler injection only in that case.
+        use_distributed_sampler=use_distributed_sampler,
         logger=logger,
         max_epochs=args.epochs,
         log_every_n_steps=5,
@@ -154,7 +168,7 @@ def sleep2vec_pretrain(args):
     trainer.fit(
         model,
         train_dataloaders=train_loader,
-        val_dataloaders=[val_loader_main] if not args.print_diagnostics else None,
+        val_dataloaders=val_loaders if not args.print_diagnostics else None,
         ckpt_path=args.ckpt_path,
     )
 
@@ -171,6 +185,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--epochs", type=int, default=120, help="number of epochs")
     parser.add_argument("--lr", type=float, default=5e-5, help="learning rate")
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=None,
+        help="Override warmup steps for LR schedule (default: 3% of total steps).",
+    )
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
     parser.add_argument("--batch-size", type=int, default=320, help="batch size")
     parser.add_argument("--num-workers", type=int, default=8, help="number of dataloader workers")
@@ -201,6 +221,30 @@ if __name__ == "__main__":
         type=Path,
         default="/data/ywx/BIOT/data/5dataset_preset_120.pickle",
         help="path to precomputed preset pickle for PSG dataset",
+    )
+    parser.add_argument(
+        "--allow-missing-channels",
+        action="store_true",
+        help="Allow samples with missing channels (default: require all configured channels).",
+    )
+    parser.add_argument(
+        "--min-channels",
+        type=int,
+        default=6,
+        help="Minimum available channels required when --allow-missing-channels is enabled.",
+    )
+    parser.add_argument(
+        "--bucket-by-available-channels",
+        dest="bucket_by_available_channels",
+        action="store_true",
+        default=True,
+        help="Bucket batches by available-channel signature (default: enabled when allowing missing channels).",
+    )
+    parser.add_argument(
+        "--no-bucket-by-available-channels",
+        dest="bucket_by_available_channels",
+        action="store_false",
+        help="Disable available-channel bucketing even when allowing missing channels.",
     )
     parser.add_argument(
         "--exp-info",

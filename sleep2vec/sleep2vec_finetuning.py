@@ -1,5 +1,6 @@
 from dataclasses import asdict
 import logging
+import math
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,6 +12,7 @@ import wandb
 import yaml
 
 from sleep2vec import diagnostics
+from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.metrics import compute_downstream_metrics
 
 from .downstream_model import Sleep2vecDownstreamModel
@@ -18,10 +20,11 @@ from .pretrain_model import Sleep2vecPretrainModel
 
 
 class Sleep2vecFinetuning(pl.LightningModule):
-    def __init__(self, args, model_config):
+    def __init__(self, args, model_config, averaging_config=None):
         super().__init__()
         self.args = args
         self.model_config = model_config
+        self.averaging_config = averaging_config
 
         self.backbone = Sleep2vecPretrainModel(
             channel_feature_dim=None,
@@ -72,6 +75,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             opts = diagnostics.TensorDiagnosticOptions(max_eig_dim=512)
             self._diagnostic = diagnostics.attach_diagnostics(self.model, opts)
 
+        self.model_averager: BaseModelAverager | None = build_model_averager(averaging_config, self.model)
+        if self.model_averager is not None:
+            self.model_averager.attach_to_module(self)
+
     def on_save_checkpoint(self, checkpoint):
         super().on_save_checkpoint(checkpoint)
         checkpoint["model_config"] = asdict(self.model_config)
@@ -82,10 +89,12 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return self._shared_step(batch, stage="train")
 
     def validation_step(self, batch, batch_idx):
-        self._shared_step(batch, stage="val")
+        eval_model = self._get_eval_model()
+        self._shared_step(batch, stage="val", model=eval_model)
 
     def test_step(self, batch, batch_idx):
-        self._shared_step(batch, stage="test")
+        eval_model = self._get_eval_model()
+        self._shared_step(batch, stage="test", model=eval_model)
 
     def on_train_epoch_end(self):
         self._finalize_epoch(stage="train")
@@ -102,9 +111,20 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if self.args.is_classification and trainer is not None and trainer.is_global_zero:
             self._log_confusion_matrix(preds, gts)
 
+    def on_fit_start(self):
+        super().on_fit_start()
+        if self.model_averager is not None:
+            self.model_averager.on_fit_start(self.trainer)
+
+    def on_load_checkpoint(self, checkpoint):
+        super().on_load_checkpoint(checkpoint)
+        if self.model_averager is not None:
+            self.model_averager.on_load_checkpoint(checkpoint)
+
     # ---------- Internal helpers ----------
-    def _shared_step(self, batch, stage: str):
-        logits = self.model(batch)
+    def _shared_step(self, batch, stage: str, model=None):
+        model = model or self.model
+        logits = model(batch)
         loss_info = self._compute_loss(logits, batch)
         if loss_info is None:
             if stage == "train":
@@ -216,6 +236,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
         super().on_train_batch_end(outputs, batch, batch_idx)
+        if self.model_averager is not None:
+            self.model_averager.on_train_batch_end(trainer=self.trainer, global_step=self.global_step)
         if self._diagnostic is not None and self.global_step >= self._diag_steps:
             if self.trainer is not None:
                 self.trainer.should_stop = True
@@ -225,7 +247,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if self._diagnostic is not None:
             self._diagnostic.print_diagnostics()
 
+    def _get_eval_model(self):
+        if self.model_averager is not None:
+            return self.model_averager.eval_model()
+        return self.model
+
     def _log_confusion_matrix(self, preds: np.ndarray, gts: np.ndarray):
+        if getattr(wandb, "run", None) is None:
+            return
         pred_labels = preds.argmax(axis=1)
         cm = confusion_matrix(gts, pred_labels)
 
@@ -238,8 +267,38 @@ class Sleep2vecFinetuning(pl.LightningModule):
         plt.close(fig)
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(
-            self.model.parameters(),
+        decay, no_decay = [], []
+        for n, p in self.model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim >= 2 and ("norm" not in n.lower()) and ("bias" not in n.lower()):
+                decay.append(p)
+            else:
+                no_decay.append(p)
+
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": decay, "weight_decay": self.args.weight_decay},
+                {"params": no_decay, "weight_decay": 0.0},
+            ],
             lr=self.args.lr,
-            weight_decay=self.args.weight_decay,
+            betas=(0.9, 0.95),
+            eps=1e-8,
         )
+
+        total_steps = self.trainer.estimated_stepping_batches
+        warmup_steps = getattr(self.args, "warmup_steps", None)
+        if warmup_steps is None:
+            warmup = int(0.03 * total_steps)
+        else:
+            warmup = int(warmup_steps)
+        warmup = max(0, min(warmup, total_steps))
+
+        def lr_lambda(step):
+            if step < warmup:
+                return float(step) / float(max(1, warmup))
+            progress = (step - warmup) / float(max(1, total_steps - warmup))
+            return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress))
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
