@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2vec.checkpoints import average_checkpoints, select_checkpoints
 from sleep2vec.common import apply_finetune_config
 from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
@@ -75,6 +76,7 @@ def _init_wandb(args):
             "devices": args.devices,
             "accelerator": args.accelerator,
             "precision": args.precision,
+            "avg_ckpts": args.avg_ckpts,
         },
     }
     init_kwargs = {k: v for k, v in init_kwargs.items() if v is not None}
@@ -104,10 +106,28 @@ def run_inference(args):
     dataloader = _build_inference_loader(args)
     model = Sleep2vecFinetuning(args, model_cfg, averaging_config=config_bundle.averaging)
 
+    ckpt_path = args.ckpt_path
+    if args.avg_ckpts > 1:
+        ckpt_dir = args.avg_ckpt_dir
+        end_ckpt = None if args.ckpt_path in {"best", "last"} else Path(args.ckpt_path)
+        if ckpt_dir is None:
+            if end_ckpt is None:
+                raise ValueError("Use --avg-ckpt-dir when averaging with ckpt-path=best/last.")
+            ckpt_dir = end_ckpt.parent
+        ckpt_paths = select_checkpoints(Path(ckpt_dir), end_ckpt=end_ckpt, num_ckpts=args.avg_ckpts)
+        logging.info("Averaging checkpoints: %s", ", ".join(str(p) for p in ckpt_paths))
+        avg_state = average_checkpoints(ckpt_paths, device=torch.device("cpu"))
+        missing_keys, unexpected_keys = model.load_state_dict(avg_state, strict=False)
+        if missing_keys:
+            logging.warning("Missing keys when loading averaged checkpoint: %s", missing_keys)
+        if unexpected_keys:
+            logging.warning("Unexpected keys when loading averaged checkpoint: %s", unexpected_keys)
+        ckpt_path = None
+
     logging.info("Running inference on split=%s with %s samples/batch", args.eval_split, args.batch_size)
     wandb_run = _init_wandb(args)
     try:
-        test_results = trainer.test(model=model, ckpt_path=args.ckpt_path, dataloaders=dataloader)
+        test_results = trainer.test(model=model, ckpt_path=ckpt_path, dataloaders=dataloader)
         metrics = test_results[0] if test_results else {}
         logging.info("Inference metrics: %s", metrics)
     finally:
@@ -183,6 +203,18 @@ def parse_args():
         type=str,
         default="bf16-mixed",
         help="Precision flag forwarded to Lightning Trainer.",
+    )
+    parser.add_argument(
+        "--avg-ckpts",
+        type=int,
+        default=1,
+        help="Average this many checkpoints before inference (1 disables averaging).",
+    )
+    parser.add_argument(
+        "--avg-ckpt-dir",
+        type=Path,
+        default=None,
+        help="Optional checkpoint directory for averaging (defaults to ckpt_path parent).",
     )
     parser.add_argument("--seed", type=int, default=4523, help="Random seed for dataloader shuffling.")
     parser.add_argument(
