@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 from pathlib import Path
 import random
 import sys
@@ -8,6 +9,7 @@ import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.strategies import DDPStrategy
 import torch
+import wandb
 
 # Make sure the repository root is importable when running this file directly
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +44,43 @@ def _build_inference_loader(args):
     )
 
 
+def _is_rank_zero() -> bool:
+    rank = os.environ.get("RANK") or os.environ.get("LOCAL_RANK") or "0"
+    try:
+        return int(rank) == 0
+    except ValueError:
+        return True
+
+
+def _init_wandb(args):
+    if not args.wandb:
+        return None
+    if not _is_rank_zero():
+        return None
+
+    init_kwargs = {
+        "project": args.wandb_project,
+        "name": args.wandb_name,
+        "entity": args.wandb_entity,
+        "group": args.wandb_group,
+        "id": args.wandb_id,
+        "resume": "allow" if args.wandb_id else None,
+        "mode": args.wandb_mode,
+        "config": {
+            "config": str(args.config),
+            "ckpt_path": args.ckpt_path,
+            "label_name": args.label_name,
+            "eval_split": args.eval_split,
+            "batch_size": args.batch_size,
+            "devices": args.devices,
+            "accelerator": args.accelerator,
+            "precision": args.precision,
+        },
+    }
+    init_kwargs = {k: v for k, v in init_kwargs.items() if v is not None}
+    return wandb.init(**init_kwargs)
+
+
 def run_inference(args):
     _, model_cfg = apply_finetune_config(args)
 
@@ -66,9 +105,14 @@ def run_inference(args):
     model = Sleep2vecFinetuning(args, model_cfg)
 
     logging.info("Running inference on split=%s with %s samples/batch", args.eval_split, args.batch_size)
-    test_results = trainer.test(model=model, ckpt_path=args.ckpt_path, dataloaders=dataloader)
-    metrics = test_results[0] if test_results else {}
-    logging.info("Inference metrics: %s", metrics)
+    wandb_run = _init_wandb(args)
+    try:
+        test_results = trainer.test(model=model, ckpt_path=args.ckpt_path, dataloaders=dataloader)
+        metrics = test_results[0] if test_results else {}
+        logging.info("Inference metrics: %s", metrics)
+    finally:
+        if wandb_run is not None:
+            wandb.finish()
 
     if args.results_csv_path and metrics:
         save_result_csv(metrics, str(args.results_csv_path), args)
@@ -146,6 +190,23 @@ def parse_args():
         type=str,
         default=None,
         help="Optional backbone checkpoint to load before downstream weights.",
+    )
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging (needed for confusion matrix logging).",
+    )
+    parser.add_argument("--wandb-project", type=str, default=None, help="W&B project name.")
+    parser.add_argument("--wandb-name", type=str, default=None, help="W&B run name.")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="W&B entity/team.")
+    parser.add_argument("--wandb-group", type=str, default=None, help="W&B group name.")
+    parser.add_argument("--wandb-id", type=str, default=None, help="W&B run id (for resume).")
+    parser.add_argument(
+        "--wandb-mode",
+        type=str,
+        default=None,
+        choices=["online", "offline", "disabled"],
+        help="W&B mode override (online/offline/disabled).",
     )
     return parser.parse_args()
 

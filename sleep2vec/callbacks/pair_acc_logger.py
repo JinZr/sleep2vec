@@ -117,9 +117,10 @@ class PairAccLoggerCallback(pl.Callback):
                     on_epoch=True,
                 )
             matrix = self._build_matrix(mean_acc_cpu)
-            fig = render_pair_acc_heatmap(matrix, self._modality_names)
-            wandb.log({self._matrix_key: wandb.Image(fig)}, commit=False)
-            plt.close(fig)
+            if getattr(wandb, "run", None) is not None:
+                fig = render_pair_acc_heatmap(matrix, self._modality_names)
+                wandb.log({self._matrix_key: wandb.Image(fig)}, commit=False)
+                plt.close(fig)
 
         self._pair_sums = None
         self._pair_counts = None
