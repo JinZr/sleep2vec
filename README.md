@@ -8,7 +8,7 @@
 
 ---
 
-**Quick links** · `configs/` recipes · `sleep2vec/` source · `data/` datasets & loaders · `preprocess/` caching scripts · `utils/` helpers
+**Quick links** · `configs/` recipes · `configs2/` sleep2vec2 recipes · `sleep2vec/` source · `sleep2vec2/` recipe README · `data/` datasets & loaders · `preprocess/` caching scripts · `utils/` helpers
 
 ---
 

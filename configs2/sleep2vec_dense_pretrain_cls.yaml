@@ -4,6 +4,7 @@ model:
     hidden_size: 768
     num_hidden_layers: 12
     num_attention_heads: 16
+    num_token_types: 16
     vocab_size: 1
   projection:
     name: simclr
@@ -17,47 +18,47 @@ model:
     - name: heartbeat
       input_dim: 120
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
     - name: breath
       input_dim: 120
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
     - name: eeg_original
       input_dim: 3840
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
     - name: ecg_original
       input_dim: 3840
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
     - name: eog_original
       input_dim: 3840
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
     - name: emg_original
       input_dim: 3840
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
     - name: spo2
       input_dim: 120
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
     - name: resp_original
       input_dim: 120
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
     - name: resp_nasal_original
       input_dim: 120
       tokenizer:
-        name: sundial2
+        name: sundial
         out_dim: 768
 loss:
   name: weighted_info_nce
