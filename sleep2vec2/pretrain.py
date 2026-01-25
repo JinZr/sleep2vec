@@ -19,11 +19,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data.samplers import handles_distributed_sharding
-from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2vec2.common import dump_cli_args_yaml
 from sleep2vec2.config import load_pretrain_config
 from sleep2vec2.sleep2vec_modelling import Sleep2vecPretraining
 from sleep2vec2.utils import get_pretrain_dataloader
+from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 
 
 def _build_wandb_logger(*, args, run_name: str, save_dir: str, wandb_id: str | None):
