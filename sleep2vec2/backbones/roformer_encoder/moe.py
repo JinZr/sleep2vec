@@ -188,7 +188,7 @@ class MoEFeedForward(nn.Module):
         )
 
         flat_x = x.reshape(-1, hidden)
-        output = torch.zeros_like(flat_x)
+        output: Tensor | None = None
 
         # Dispatch tokens to experts.
         for expert_idx, expert in enumerate(self.experts):
@@ -201,10 +201,19 @@ class MoEFeedForward(nn.Module):
                 continue
             expert_in = flat_x.index_select(0, token_indices)
             expert_out = expert(expert_in)
+            if output is None:
+                output = torch.zeros(flat_x.shape, device=flat_x.device, dtype=expert_out.dtype)
 
             weight = (mask.float() * topk_weight).sum(dim=-1)
             weight = weight.index_select(0, token_indices).unsqueeze(-1)
-            output.index_add_(0, token_indices, expert_out * weight.to(dtype=expert_out.dtype))
+            if weight.dtype != expert_out.dtype:
+                weight = weight.to(dtype=expert_out.dtype)
+            output.index_add_(0, token_indices, expert_out * weight)
+
+        if output is None:
+            output = torch.zeros_like(flat_x)
+        elif output.dtype != x.dtype:
+            output = output.to(dtype=x.dtype)
 
         output = output.view(bsz, seq_len, hidden)
         output = self.dropout(output)
