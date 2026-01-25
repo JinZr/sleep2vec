@@ -64,7 +64,7 @@ class MetadataContextEncoder(nn.Module):
         age_feat = self.age_proj(age_norm.unsqueeze(-1))
         if age_missing.any():
             age_feat = age_feat.clone()
-            age_feat[age_missing] = self.age_missing
+            age_feat[age_missing] = self.age_missing.to(dtype=age_feat.dtype, device=age_feat.device)
 
         sex_idx = sex.clone()
         sex_idx[sex_idx < 0] = 2
