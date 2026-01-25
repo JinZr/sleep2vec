@@ -9,6 +9,7 @@ import torch
 
 TORCH_VERSION = version.parse(torch.__version__)
 
+from data.channel_selection import RoundRobinPairSelector, build_all_pairs
 from data.psg_pretrain_dataset import PSGPretrainDataset
 
 
@@ -33,11 +34,38 @@ def get_pretrain_dataloader(args):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
+    logging.info(f"args: {args}")
+
+    def _seed_worker(worker_id: int):
+        worker_seed = torch.initial_seed() % (2**32)
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    allow_missing_channels = bool(getattr(args, "allow_missing_channels", False))
+    min_channels = int(getattr(args, "min_channels", 6))
+    bucket_by_available_channels = bool(getattr(args, "bucket_by_available_channels", True))
+
+    if allow_missing_channels:
+        logging.warning(
+            "allow_missing_channels enabled: accepting samples with missing channels "
+            "(min_channels=%d, bucket_by_available_channels=%s).",
+            min_channels,
+            bucket_by_available_channels,
+        )
+        if min_channels < 2:
+            logging.warning("min_channels is < 2; contrastive pretraining may be unstable.")
+        if not bucket_by_available_channels:
+            logging.warning(
+                "bucket_by_available_channels is disabled; mixed montages may collapse to a single best_pair."
+            )
+    else:
+        logging.info("allow_missing_channels disabled: requiring all configured channels.")
 
     kwargs = {
         "batch_size": args.batch_size,
         "shuffle": True,
         "num_workers": args.num_workers,
+        "worker_init_fn": _seed_worker,
     }
     train_loader = PSGPretrainDataset(
         channel_names=args.channel_names,
@@ -50,6 +78,9 @@ def get_pretrain_dataloader(args):
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
         generative=False,
+        allow_missing_channels=allow_missing_channels,
+        min_channels=min_channels,
+        bucket_by_available_channels=bucket_by_available_channels,
         is_train_set=True,
         **kwargs,
     ).dataloader(device=args.device)
@@ -57,23 +88,33 @@ def get_pretrain_dataloader(args):
 
     kwargs["shuffle"] = False
 
-    main_val_loader = PSGPretrainDataset(
-        channel_names=args.channel_names,
-        save_preset_path=None,
-        load_preset_path=args.pretrain_preset_path,
-        index=args.pretrain_data_index,
-        split=["val"],
-        max_tokens=args.max_tokens,
-        stride_tokens=args.max_tokens,  # 0 for truncation
-        mask_rate=args.mask_rate,
-        use_legacy_body_movement=False,
-        generative=False,
-        is_train_set=False,
-        **kwargs,
-    ).dataloader(device=args.device)
-    logging.info("Valid DataLoader created successfully!")
+    val_pairs = build_all_pairs(args.channel_names)
+    val_loaders = []
+    for pair in val_pairs:
+        pair_selector = RoundRobinPairSelector([pair])
+        val_dataset = PSGPretrainDataset(
+            channel_names=args.channel_names,
+            save_preset_path=None,
+            load_preset_path=args.pretrain_preset_path,
+            index=args.pretrain_data_index,
+            split=["val"],
+            max_tokens=args.max_tokens,
+            stride_tokens=args.max_tokens,  # 0 for truncation
+            mask_rate=args.mask_rate,
+            use_legacy_body_movement=False,
+            generative=False,
+            allow_missing_channels=allow_missing_channels,
+            min_channels=min_channels,
+            bucket_by_available_channels=bucket_by_available_channels,
+            is_train_set=False,
+            pair_selector=pair_selector,
+            **kwargs,
+        )
+        val_dataset.pair = pair
+        val_loaders.append(val_dataset.dataloader(device=args.device))
+    logging.info("Valid DataLoaders created successfully! (pairs=%d)", len(val_loaders))
 
-    return train_loader, main_val_loader
+    return train_loader, val_loaders
 
 
 def _build_finetune_loader(
