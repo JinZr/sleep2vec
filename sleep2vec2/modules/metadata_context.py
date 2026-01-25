@@ -59,7 +59,11 @@ class MetadataContextEncoder(nn.Module):
         source_ids = source_ids.to(device=device, dtype=torch.long)
         subject_ids = subject_ids.to(device=device, dtype=torch.long)
 
-        age_missing = age < 0
+        age_finite = torch.isfinite(age)
+        age_missing = (~age_finite) | (age < 0)
+        if not age_finite.all():
+            age = age.clone()
+            age[~age_finite] = 0.0
         age_norm = age / 100.0
         age_feat = self.age_proj(age_norm.unsqueeze(-1))
         if age_missing.any():

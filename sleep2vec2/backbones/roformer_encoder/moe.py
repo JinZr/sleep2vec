@@ -90,15 +90,23 @@ class TopKRouter(nn.Module):
 
         # Route logits in float32 for stability.
         flat_x_float = flat_x.float()
+        if not torch.isfinite(flat_x_float).all():
+            raise RuntimeError("MoE router input contains NaN/Inf values.")
         if self.router_type == "linear":
             logits = self.router(flat_x_float)
             if self.context_router is not None:
-                logits = logits + self.context_router(context_exp.float())
+                context_float = context_exp.float()
+                if not torch.isfinite(context_float).all():
+                    raise RuntimeError("MoE router context contains NaN/Inf values.")
+                logits = logits + self.context_router(context_float)
         else:
             if context_exp is None:
                 router_in = flat_x_float
             else:
-                router_in = torch.cat([flat_x_float, context_exp.float()], dim=-1)
+                context_float = context_exp.float()
+                if not torch.isfinite(context_float).all():
+                    raise RuntimeError("MoE router context contains NaN/Inf values.")
+                router_in = torch.cat([flat_x_float, context_float], dim=-1)
             logits = self.router(router_in)
 
         if self.logits_dropout is not None:
