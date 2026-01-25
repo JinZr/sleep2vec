@@ -62,10 +62,11 @@ class Sleep2vecPretraining(pl.LightningModule):
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         eval_model = self._get_eval_backbone()
         loss, acc = self._contrastive_step(batch, log_prefix="val", model=eval_model)
-
-        if dataloader_idx == 1:
-            self.log("extra_val_loss", loss, prog_bar=True, sync_dist=True)
-        return loss
+        batch_size = 1
+        length = batch.get("length") if isinstance(batch, dict) else None
+        if length is not None:
+            batch_size = int(length.shape[0])
+        return {"loss": loss, "acc": acc, "batch_size": batch_size}
 
     def on_validation_epoch_end(self):
 
@@ -201,7 +202,12 @@ class Sleep2vecPretraining(pl.LightningModule):
 
         # 线性 warmup + 余弦退火
         total_steps = self.trainer.estimated_stepping_batches
-        warmup = int(0.03 * total_steps)  # 3% 亦可 2%~5%
+        warmup_steps = getattr(self.args, "warmup_steps", None)
+        if warmup_steps is None:
+            warmup = int(0.03 * total_steps)  # 3% 亦可 2%~5%
+        else:
+            warmup = int(warmup_steps)
+        warmup = max(0, min(warmup, total_steps))
 
         def lr_lambda(step):
             if step < warmup:
