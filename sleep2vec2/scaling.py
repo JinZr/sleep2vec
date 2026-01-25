@@ -20,7 +20,13 @@ import math
 import random
 from typing import Optional, Tuple, Union
 
-import k2
+try:
+    import k2
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "k2 is required for sleep2vec2 scaling utilities. "
+        "Install it manually from pre-compiled wheels (see https://k2-fsa.github.io/k2/)."
+    ) from exc
 import torch
 from torch import Tensor
 from torch.cuda.amp import custom_bwd, custom_fwd

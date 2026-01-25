@@ -50,6 +50,7 @@ def get_pretrain_dataloader(args):
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
         generative=False,
+        is_train_set=True,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
@@ -67,6 +68,7 @@ def get_pretrain_dataloader(args):
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
         generative=False,
+        is_train_set=False,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Valid DataLoader created successfully!")
