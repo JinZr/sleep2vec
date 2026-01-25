@@ -33,7 +33,10 @@ def default_extractor(name: str, frames_per_token: int, dtype: torch.dtype = tor
         if segment.ndim == 2 and segment.shape[1] == 1:
             segment = segment[:, 0]
 
-        return torch.as_tensor(segment, dtype=dtype)
+        tensor = torch.as_tensor(segment, dtype=dtype)
+        if not torch.isfinite(tensor).all():
+            tensor = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        return tensor
 
     return extract
 
