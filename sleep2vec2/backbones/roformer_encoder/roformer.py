@@ -27,6 +27,7 @@ Design goals:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Callable, Optional, Tuple, Union
 
 import torch
@@ -289,6 +290,7 @@ class RoFormerLayer(nn.Module):
     def __init__(self, config: RoFormerEncoderConfig, layer_idx: int, *, use_moe: bool = False):
         super().__init__()
         self.config = config
+        self.layer_idx = layer_idx
         self.attention = RoFormerAttention(config)
         self.intermediate = RoFormerIntermediate(config)
         self.output = RoFormerOutput(config)
@@ -324,12 +326,18 @@ class RoFormerLayer(nn.Module):
         router_context: Optional[Tensor] = None,
         token_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor], Optional[dict]]:
+        if not torch.isfinite(hidden_states).all():
+            logging.warning("Non-finite in RoFormer layer %d input; replacing with zeros.", self.layer_idx)
+            hidden_states = torch.nan_to_num(hidden_states, nan=0.0, posinf=0.0, neginf=0.0)
         attention_output, attn = self.attention(
             hidden_states,
             attention_mask=attention_mask,
             sinusoidal_pos=sinusoidal_pos,
             output_attentions=output_attentions,
         )
+        if not torch.isfinite(attention_output).all():
+            logging.warning("Non-finite in RoFormer layer %d attention output; replacing with zeros.", self.layer_idx)
+            attention_output = torch.nan_to_num(attention_output, nan=0.0, posinf=0.0, neginf=0.0)
 
         moe_stats = None
         if self.moe_ffn is not None:

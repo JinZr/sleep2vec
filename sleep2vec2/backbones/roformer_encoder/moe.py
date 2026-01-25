@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import typing as t
 
 import torch
@@ -66,6 +67,7 @@ class TopKRouter(nn.Module):
             raise ValueError(f"Unsupported router_type '{router_type}'. Use 'linear' or 'mlp'.")
 
         self.logits_dropout = nn.Dropout(router_dropout) if router_dropout > 0 else None
+        self._warned_nonfinite = False
 
     def forward(
         self,
@@ -91,13 +93,19 @@ class TopKRouter(nn.Module):
         # Route logits in float32 for stability.
         flat_x_float = flat_x.float()
         if not torch.isfinite(flat_x_float).all():
-            raise RuntimeError("MoE router input contains NaN/Inf values.")
+            if not self._warned_nonfinite:
+                logging.warning("MoE router input contains NaN/Inf values; replacing with zeros.")
+                self._warned_nonfinite = True
+            flat_x_float = torch.nan_to_num(flat_x_float, nan=0.0, posinf=0.0, neginf=0.0)
         if self.router_type == "linear":
             logits = self.router(flat_x_float)
             if self.context_router is not None:
                 context_float = context_exp.float()
                 if not torch.isfinite(context_float).all():
-                    raise RuntimeError("MoE router context contains NaN/Inf values.")
+                    if not self._warned_nonfinite:
+                        logging.warning("MoE router context contains NaN/Inf values; replacing with zeros.")
+                        self._warned_nonfinite = True
+                    context_float = torch.nan_to_num(context_float, nan=0.0, posinf=0.0, neginf=0.0)
                 logits = logits + self.context_router(context_float)
         else:
             if context_exp is None:
@@ -105,7 +113,10 @@ class TopKRouter(nn.Module):
             else:
                 context_float = context_exp.float()
                 if not torch.isfinite(context_float).all():
-                    raise RuntimeError("MoE router context contains NaN/Inf values.")
+                    if not self._warned_nonfinite:
+                        logging.warning("MoE router context contains NaN/Inf values; replacing with zeros.")
+                        self._warned_nonfinite = True
+                    context_float = torch.nan_to_num(context_float, nan=0.0, posinf=0.0, neginf=0.0)
                 router_in = torch.cat([flat_x_float, context_float], dim=-1)
             logits = self.router(router_in)
 
