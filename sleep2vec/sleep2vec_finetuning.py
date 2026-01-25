@@ -302,4 +302,3 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
-    
