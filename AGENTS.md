@@ -49,3 +49,8 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 ## Configuration & Secrets
 - W&B login is required by default; set `WANDB_API_KEY` or use `WANDB_MODE=offline`.
 - Keep dataset paths and preset pickles in config/CLI (not hardcoded); document any new index CSV columns.
+
+## Config Strictness Policy
+- Follow “let it crash” for model/data semantics: missing or inconsistent YAML fields that affect model shape, task semantics, or evaluation should raise immediately.
+- Defaults are acceptable only for optimization/logging/runtime convenience (e.g., epochs, lr, batch size, W&B metadata).
+- When adding new config fields, mark explicitly whether they are required or optional and enforce it in config parsing.
