@@ -107,6 +107,11 @@ python -m sleep2vec.finetune \
   --epochs 50 --lr 1e-5 --devices 0 1
 ```
 
+Custom metadata labels:
+- Set `--label-name` to the CSV column name (e.g., `ahi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
+- Token-level labels (`is_seq: true`) are only supported for `stage5` unless you extend the dataloader.
+- Example YAMLs: `configs/sleep2vec_dense_finetune_custom_reg.yaml`, `configs/sleep2vec_dense_finetune_custom_cls.yaml`.
+
 > [!Note]
 > `--version-name` is required for pretraining run naming; downstream runs auto-generate a version when omitted. Ensure your YAML `data.*` paths point to real preset pickles.
 

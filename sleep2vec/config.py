@@ -142,10 +142,20 @@ class LoraConfig:
 
 
 @dataclass
+class TaskConfig:
+    type: str
+    output_dim: int
+    is_seq: bool
+    monitor: str
+    monitor_mod: str
+
+
+@dataclass
 class FinetuneConfig:
     freeze_tokenizer: bool = True
     lora: LoraConfig = field(default_factory=LoraConfig)
     layer_mix: LayerMixConfig | None = None
+    task: TaskConfig | None = None
 
 
 @dataclass
@@ -247,6 +257,55 @@ def _build_layer_mix_config(raw: t.Any) -> LayerMixConfig | None:
         raw["layer_indices"] = layer_indices
 
     return LayerMixConfig(**raw)
+
+
+def _build_task_config(raw: t.Any) -> TaskConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.task must be a mapping when provided.")
+
+    required = {"type", "output_dim", "is_seq", "monitor", "monitor_mod"}
+    missing = sorted(required - set(raw.keys()))
+    if missing:
+        raise ValueError(f"finetune.task missing required fields: {missing}")
+
+    task_type = raw.get("type")
+    if task_type not in {"classification", "regression"}:
+        raise ValueError("finetune.task.type must be 'classification' or 'regression'.")
+
+    output_dim = raw.get("output_dim")
+    if not isinstance(output_dim, int) or output_dim < 1:
+        raise ValueError("finetune.task.output_dim must be a positive integer.")
+
+    is_seq = raw.get("is_seq")
+    if not isinstance(is_seq, bool):
+        raise ValueError("finetune.task.is_seq must be a boolean.")
+
+    monitor = raw.get("monitor")
+    if not isinstance(monitor, str) or not monitor:
+        raise ValueError("finetune.task.monitor must be a non-empty string.")
+
+    monitor_mod = raw.get("monitor_mod")
+    if monitor_mod not in {"min", "max"}:
+        raise ValueError("finetune.task.monitor_mod must be 'min' or 'max'.")
+
+    extra = sorted(set(raw.keys()) - required)
+    if extra:
+        raise ValueError(f"finetune.task has unsupported fields: {extra}")
+
+    if task_type == "classification" and output_dim < 2:
+        raise ValueError("finetune.task.output_dim must be >= 2 for classification tasks.")
+    if task_type == "regression" and output_dim != 1:
+        raise ValueError("finetune.task.output_dim must be 1 for regression tasks.")
+
+    return TaskConfig(
+        type=task_type,
+        output_dim=output_dim,
+        is_seq=is_seq,
+        monitor=monitor,
+        monitor_mod=monitor_mod,
+    )
 
 
 def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cfg: BackboneConfig) -> None:
@@ -373,6 +432,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     projection = ProjectionConfig(**model_block.get("projection"))
     cls_cfg = _build_cls_config(model_block)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
+    task_cfg = _build_task_config(finetune_block.get("task"))
     head = _build_head_config(model_block, required=True)
     model_cfg = ModelConfig(
         channels=channels,
@@ -388,6 +448,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
         lora=lora_cfg,
         layer_mix=layer_mix_cfg,
+        task=task_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
@@ -409,6 +470,7 @@ __all__ = [
     "ModelAveragingConfig",
     "ProjectionConfig",
     "LoraConfig",
+    "TaskConfig",
     "load_finetune_config",
     "load_pretrain_config",
     "validate_model_config",

@@ -6,34 +6,52 @@ import typing as t
 
 import yaml
 
-from sleep2vec.config import load_finetune_config
+from sleep2vec.config import TaskConfig, load_finetune_config
 
 
-def apply_task_flags(args) -> None:
-    """Infer downstream task attributes from label_name."""
+def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
+    """Infer downstream task attributes from label_name or finetune.task."""
+    if task_cfg is not None:
+        args.output_dim = task_cfg.output_dim
+        args.is_classification = task_cfg.type == "classification"
+        args.is_seq = task_cfg.is_seq
+        args.monitor = task_cfg.monitor
+        args.monitor_mod = task_cfg.monitor_mod
+        if args.label_name == "stage5" and not args.is_seq:
+            raise ValueError("finetune.task.is_seq must be true when --label-name is 'stage5'.")
+        if args.is_seq and args.label_name != "stage5":
+            raise ValueError(
+                "finetune.task.is_seq is only supported for --label-name stage5. "
+                "Extend the dataloader if you need token-level labels for other targets."
+            )
+        return
+
     if args.label_name == "stage5":
         args.output_dim = 5
         args.is_classification = True
         args.is_seq = True
         args.monitor = "val_accuracy"
         args.monitor_mod = "max"
-    elif args.label_name == "sex":
+        return
+    if args.label_name == "sex":
         args.output_dim = 2
         args.is_classification = True
         args.is_seq = False
         args.monitor = "val_accuracy"
         args.monitor_mod = "max"
-    elif args.label_name == "age":
+        return
+    if args.label_name == "age":
         args.output_dim = 1
         args.is_classification = False
         args.is_seq = False
         args.monitor = "val_mae"
         args.monitor_mod = "min"
-    else:
-        raise ValueError(
-            f"Unknown label_name '{args.label_name}'. "
-            "Add an explicit mapping in apply_task_flags for this downstream task."
-        )
+        return
+
+    raise ValueError(
+        f"Unknown label_name '{args.label_name}'. "
+        "Define finetune.task in the YAML to specify task semantics for custom labels."
+    )
 
 
 def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
@@ -71,7 +89,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
             f"Model channels: {args.channel_names}; data channels: {args.data_channel_names}."
         )
 
-    apply_task_flags(args)
+    apply_task_flags(args, config_bundle.finetune.task)
     return config_bundle, model_cfg
 
 
