@@ -251,9 +251,7 @@ class Sleep2vecDownstreamModel(nn.Module):
                     token_masks.append(token_mask)
                 continue
 
-            hidden, attn_mask, _ = self.backbone._token_embeddings_to_hidden(
-                single_mod_token_embeddings, batch
-            )
+            hidden, attn_mask, _ = self.backbone._token_embeddings_to_hidden(single_mod_token_embeddings, batch)
 
             strategy = self.cls_embedding
             if strategy is None:
