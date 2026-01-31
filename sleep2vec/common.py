@@ -41,7 +41,8 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     config_bundle = load_finetune_config(args.config)
     model_cfg = config_bundle.model
     data_cfg = config_bundle.data
-    lora_cfg = config_bundle.lora
+    finetune_cfg = config_bundle.finetune
+    lora_cfg = finetune_cfg.lora
 
     args.channel_names = [c.name for c in model_cfg.channels]
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
@@ -55,6 +56,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.freeze_backbone_and_insert_lora = lora_cfg.freeze_backbone_and_insert_lora
     args.insert_lora = lora_cfg.insert_lora
     args.separate_adapters = lora_cfg.separate_adapters
+    args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
     args.head_kwargs = {}
 
     # Fail fast if requested dataloader channels differ from model/backbone channels.

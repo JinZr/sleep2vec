@@ -328,6 +328,17 @@ class Sleep2vecPretrainModel(nn.Module):
 
         return hidden
 
+    def set_tokenizers_trainable(self, trainable: bool) -> None:
+        """Freeze/unfreeze tokenizer parameters without altering module train/eval mode."""
+        if hasattr(self, "tokenizer_mapping"):
+            for param in self.tokenizer_mapping.parameters():
+                param.requires_grad = trainable
+        else:
+            for name, module in self.named_children():
+                if "tokenizer" in name:
+                    for param in module.parameters():
+                        param.requires_grad = trainable
+
     def freeze_backbone_groups(
         self,
         train_projection: bool = False,

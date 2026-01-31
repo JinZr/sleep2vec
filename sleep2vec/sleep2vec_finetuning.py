@@ -64,6 +64,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 separate_adapters=args.separate_adapters,
             )
 
+        if getattr(args, "freeze_tokenizer", True):
+            self.backbone.set_tokenizers_trainable(False)
+        else:
+            self.backbone.set_tokenizers_trainable(True)
+
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
         self._regression_loss = torch.nn.MSELoss()

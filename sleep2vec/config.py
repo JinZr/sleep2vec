@@ -110,7 +110,7 @@ class PretrainConfigBundle:
 class FinetuneConfigBundle:
     model: ModelConfig
     data: "FinetuneDataConfig"
-    lora: "LoraConfig"
+    finetune: "FinetuneConfig"
     averaging: "ModelAveragingConfig | None" = None
 
 
@@ -130,6 +130,12 @@ class LoraConfig:
     freeze_backbone_and_insert_lora: bool = False
     insert_lora: bool = True
     separate_adapters: bool = False
+
+
+@dataclass
+class FinetuneConfig:
+    freeze_tokenizer: bool = True
+    lora: LoraConfig = field(default_factory=LoraConfig)
 
 
 @dataclass
@@ -294,7 +300,12 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         raise ValueError("Top-level YAML must be a mapping with a model block.")
     model_block = data.get("model", {})
     data_block = data.get("data", {})
-    lora_block = data.get("lora", {})
+    finetune_block = data.get("finetune")
+    if finetune_block is None:
+        raise ValueError("Finetune YAML must include a top-level 'finetune' block.")
+    if not isinstance(finetune_block, dict):
+        raise ValueError("finetune block must be a mapping.")
+    lora_block = finetune_block.get("lora", {})
     averaging_cfg = _build_model_averaging_config(data)
     channels = _require_channels(model_block)
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
@@ -310,11 +321,16 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     )
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
-    return FinetuneConfigBundle(model=model_cfg, data=data_cfg, lora=lora_cfg, averaging=averaging_cfg)
+    finetune_cfg = FinetuneConfig(
+        freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
+        lora=lora_cfg,
+    )
+    return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
 
 __all__ = [
     "FinetuneConfigBundle",
+    "FinetuneConfig",
     "PretrainConfigBundle",
     "FinetuneDataConfig",
     "PretrainDataConfig",

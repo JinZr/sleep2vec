@@ -238,13 +238,16 @@ model:
 - W&B logs a heatmap image (`val_pair_acc_matrix`) plus scalar metrics under `val_pair_acc/<pair>`.
 
 **LoRA fine-tuning**  
-- Controlled by YAML `lora` block (parsed by `apply_finetune_config`):
+- Controlled by YAML `finetune` block (parsed by `apply_finetune_config`):
   ```yaml
-  lora:
-    freeze_backbone_and_insert_lora: true
-    insert_lora: true
-    separate_adapters: false
+  finetune:
+    freeze_tokenizer: true
+    lora:
+      freeze_backbone_and_insert_lora: true
+      insert_lora: true
+      separate_adapters: false
   ```
+- `freeze_tokenizer: true` freezes tokenizer parameters during downstream finetuning (default).
 - When enabled, `finetune.py` injects PEFT LoRA adapters into the transformer backbone and freezes base weights.
 
 ---
