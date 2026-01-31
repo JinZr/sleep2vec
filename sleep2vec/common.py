@@ -23,12 +23,17 @@ def apply_task_flags(args) -> None:
         args.is_seq = False
         args.monitor = "val_accuracy"
         args.monitor_mod = "max"
-    else:
+    elif args.label_name == "age":
         args.output_dim = 1
         args.is_classification = False
         args.is_seq = False
         args.monitor = "val_mae"
         args.monitor_mod = "min"
+    else:
+        raise ValueError(
+            f"Unknown label_name '{args.label_name}'. "
+            "Add an explicit mapping in apply_task_flags for this downstream task."
+        )
 
 
 def apply_finetune_config(args) -> tuple[t.Any, t.Any]:

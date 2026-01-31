@@ -214,7 +214,7 @@ model:
 - If `model.cls` is omitted, the default is “no CLS token + token/pooled downstream”.
 
 **Layer Mix (downstream)**  
-Optional learned scalar mix across transformer blocks (1..L). For sequence tasks, mixing is applied to token-level states; for non-seq tasks, each layer is pooled first and then mixed. Configure under the finetune block:
+Learned scalar mix across transformer blocks (1..L). For sequence tasks, mixing is applied to token-level states; for non-seq tasks, each layer is pooled first and then mixed. Omit the block to disable, or set `enabled: false`.
 ```yaml
 finetune:
   layer_mix:
