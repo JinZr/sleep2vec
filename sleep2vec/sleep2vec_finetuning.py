@@ -20,10 +20,11 @@ from .pretrain_model import Sleep2vecPretrainModel
 
 
 class Sleep2vecFinetuning(pl.LightningModule):
-    def __init__(self, args, model_config, averaging_config=None):
+    def __init__(self, args, model_config, finetune_config=None, averaging_config=None):
         super().__init__()
         self.args = args
         self.model_config = model_config
+        self.finetune_config = finetune_config
         self.averaging_config = averaging_config
 
         self.backbone = Sleep2vecPretrainModel(
@@ -50,6 +51,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             head_name=getattr(args, "head_name", None),
             head_kwargs=head_kwargs,
             model_config=model_config,
+            layer_mix_cfg=getattr(finetune_config, "layer_mix", None) if finetune_config else None,
             head_config=model_config.head,
         ).to(args.device)
 
@@ -88,6 +90,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         super().on_save_checkpoint(checkpoint)
         checkpoint["model_config"] = asdict(self.model_config)
         checkpoint["model_config_yaml"] = yaml.safe_dump(checkpoint["model_config"], sort_keys=True)
+        if self.finetune_config is not None:
+            checkpoint["finetune_config"] = asdict(self.finetune_config)
+            checkpoint["finetune_config_yaml"] = yaml.safe_dump(checkpoint["finetune_config"], sort_keys=True)
 
     # ---------- Lightning hooks ----------
     def training_step(self, batch, batch_idx):
@@ -125,6 +130,28 @@ class Sleep2vecFinetuning(pl.LightningModule):
         super().on_load_checkpoint(checkpoint)
         if self.model_averager is not None:
             self.model_averager.on_load_checkpoint(checkpoint)
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        # Allow missing/extra layer-mix weights when loading older checkpoints.
+        result = super().load_state_dict(state_dict, strict=False)
+        if not strict:
+            return result
+
+        allowed_prefixes = ("model.layer_mix.",)
+        missing = [k for k in result.missing_keys if not k.startswith(allowed_prefixes)]
+        unexpected = [k for k in result.unexpected_keys if not k.startswith(allowed_prefixes)]
+
+        if missing or unexpected:
+            raise RuntimeError(
+                "Error(s) in loading state_dict: " f"missing keys={missing}, unexpected keys={unexpected}"
+            )
+
+        if result.missing_keys:
+            logging.warning("Missing layer-mix keys while loading checkpoint: %s", result.missing_keys)
+        if result.unexpected_keys:
+            logging.warning("Unexpected layer-mix keys while loading checkpoint: %s", result.unexpected_keys)
+
+        return result
 
     # ---------- Internal helpers ----------
     def _shared_step(self, batch, stage: str, model=None):

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import typing as t
+import warnings
 
 import yaml
 
@@ -51,6 +52,15 @@ class ClsConfig:
     downstream: str
     embedding_type: str | None = None
     kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass
+class LayerMixConfig:
+    """Learned scalar mix across transformer layers (blocks 1..L)."""
+
+    enabled: bool = False
+    shared_across_modalities: bool = False
+    layer_indices: t.List[int] | None = None
 
 
 @dataclass
@@ -136,6 +146,7 @@ class LoraConfig:
 class FinetuneConfig:
     freeze_tokenizer: bool = True
     lora: LoraConfig = field(default_factory=LoraConfig)
+    layer_mix: LayerMixConfig | None = None
 
 
 @dataclass
@@ -211,6 +222,39 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     )
 
     return HeadConfig(temporal_agg=temporal_cfg, channel_agg=channel_cfg, **head_raw)
+
+
+def _build_layer_mix_config(raw: t.Any) -> LayerMixConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("layer_mix must be a mapping when provided.")
+
+    layer_indices = raw.get("layer_indices")
+    if layer_indices is not None:
+        if not isinstance(layer_indices, list) or not layer_indices:
+            raise ValueError("layer_mix.layer_indices must be a non-empty list when provided.")
+        if not all(isinstance(idx, int) for idx in layer_indices):
+            raise ValueError("layer_mix.layer_indices must be a list of integers.")
+        if any(idx < 1 for idx in layer_indices):
+            raise ValueError("layer_mix.layer_indices values must be >= 1 (transformer blocks are 1-indexed).")
+        if len(set(layer_indices)) != len(layer_indices):
+            raise ValueError("layer_mix.layer_indices must not contain duplicates.")
+        raw = dict(raw)
+        raw["layer_indices"] = layer_indices
+
+    return LayerMixConfig(**raw)
+
+
+def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cfg: BackboneConfig) -> None:
+    if layer_mix_cfg is None or not layer_mix_cfg.layer_indices:
+        return
+    max_layers = backbone_cfg.num_hidden_layers
+    if any(idx > max_layers for idx in layer_mix_cfg.layer_indices):
+        raise ValueError(
+            f"layer_mix.layer_indices must be <= num_hidden_layers ({max_layers}); "
+            f"got {layer_mix_cfg.layer_indices}."
+        )
 
 
 def _build_loss(loss_block: dict[str, t.Any]) -> LossConfig:
@@ -311,6 +355,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     backbone = BackboneConfig(**(model_block.get("backbone") or {}))
     projection = ProjectionConfig(**(model_block.get("projection") or {}))
     cls_cfg = _build_cls_config(model_block)
+    layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
     head = _build_head_config(model_block, required=True)
     model_cfg = ModelConfig(
         channels=channels,
@@ -319,11 +364,13 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         cls=cls_cfg,
         head=head,
     )
+    _validate_layer_mix_config(layer_mix_cfg, backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
     finetune_cfg = FinetuneConfig(
         freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
         lora=lora_cfg,
+        layer_mix=layer_mix_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
@@ -340,6 +387,7 @@ __all__ = [
     "LossConfig",
     "ModelConfig",
     "ClsConfig",
+    "LayerMixConfig",
     "TemporalAggConfig",
     "ModelAveragingConfig",
     "ProjectionConfig",

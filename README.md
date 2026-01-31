@@ -213,6 +213,16 @@ model:
 - For `--label-name stage5` (`is_seq=True`), downstream is always token-level; if you set `downstream: cls` it will be ignored (a warning is logged).
 - If `model.cls` is omitted, the default is “no CLS token + token/pooled downstream”.
 
+**Layer Mix (downstream)**  
+Optional learned scalar mix across transformer blocks (1..L). For sequence tasks, mixing is applied to token-level states; for non-seq tasks, each layer is pooled first and then mixed. Configure under the finetune block:
+```yaml
+finetune:
+  layer_mix:
+    enabled: true
+    shared_across_modalities: false   # false -> per-modality weights
+    layer_indices: [1, 6, 12]         # 1-based block indices; null -> all
+```
+
 **Model Averaging**  
 - Strategies live in `sleep2vec/averagings/` (`ema.py` and `running_mean.py` included).
 - Configure (omit the block entirely to disable):

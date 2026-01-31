@@ -104,7 +104,12 @@ def run_inference(args):
     )
 
     dataloader = _build_inference_loader(args)
-    model = Sleep2vecFinetuning(args, model_cfg, averaging_config=config_bundle.averaging)
+    model = Sleep2vecFinetuning(
+        args,
+        model_cfg,
+        finetune_config=config_bundle.finetune,
+        averaging_config=config_bundle.averaging,
+    )
 
     ckpt_path = args.ckpt_path
     if args.avg_ckpts > 1:

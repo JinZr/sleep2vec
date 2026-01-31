@@ -61,7 +61,12 @@ def supervised(args, config_bundle):
     train_loader, val_loader, test_loader = prepare_dataloader(args)
 
     # define the model/lightning module
-    model = Sleep2vecFinetuning(args, model_config, averaging_config=averaging_config)
+    model = Sleep2vecFinetuning(
+        args,
+        model_config,
+        finetune_config=config_bundle.finetune,
+        averaging_config=averaging_config,
+    )
 
     # logger and callbacks
     version = args.version
