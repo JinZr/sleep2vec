@@ -287,8 +287,10 @@ if __name__ == "__main__":
         "--label-name",
         type=str,
         required=True,
-        choices=["age", "sex", "stage5"],
-        help="downstream label to predict (e.g. age, sex, stage5)",
+        help=(
+            "downstream label to predict (built-ins: age, sex, stage5; "
+            "custom labels require finetune.task in the YAML config)"
+        ),
     )
     # ---------------- Data/configuration now YAML-driven; keep CLI for ckpt paths only ----------------
     parser.add_argument(

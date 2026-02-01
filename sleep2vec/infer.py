@@ -157,7 +157,15 @@ def parse_args():
         required=True,
         help="Checkpoint (.ckpt) path or Lightning alias such as 'best'/'last'.",
     )
-    parser.add_argument("--label-name", type=str, default="age", help="Downstream target name.")
+    parser.add_argument(
+        "--label-name",
+        type=str,
+        required=True,
+        help=(
+            "downstream label to predict (built-ins: age, sex, stage5; "
+            "custom labels require finetune.task in the YAML config)"
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=12, help="Batch size for inference dataloader.")
     parser.add_argument("--num-workers", type=int, default=8, help="Number of dataloader workers.")
     parser.add_argument(

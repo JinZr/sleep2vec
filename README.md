@@ -109,6 +109,7 @@ python -m sleep2vec.finetune \
 
 Custom metadata labels:
 - Set `--label-name` to the CSV column name (e.g., `ahi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
+- Use the same `--label-name` for `sleep2vec.infer` (required) when evaluating custom tasks.
 - Token-level labels (`is_seq: true`) are only supported for `stage5` unless you extend the dataloader.
 - Example YAMLs: `configs/sleep2vec_dense_finetune_custom_reg.yaml`, `configs/sleep2vec_dense_finetune_custom_cls.yaml`.
 
@@ -128,6 +129,7 @@ python -m sleep2vec.infer \
   --eval-split test --results-csv-path outputs.csv
 ```
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
+Use the same `--label-name` that was used for fine-tuning; it is required.
 To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
 Use `--wandb` to enable W&B logging during inference (needed for confusion matrix logging).
 
