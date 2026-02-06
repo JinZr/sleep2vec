@@ -50,8 +50,16 @@
 ## Data Format & Caches
 - **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set.
 - **NPZ contents per row**: keys `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, `resp_nasal_original`, `stage5`. Each NPZ stores contiguous 30 s windows. 128 Hz channels expect 3840 frames/token; 4 Hz channels expect 120 frames/token; `stage5` is one label per token.
-- **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_Dataset_preset.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided.
-- To build a preset, edit `preprocess/save_Dataset_preset.py` (set `index=[...]`, `save_preset_path`, `split`, `n_tokens`) and run it. Reuse the produced pickle paths in your YAML/CLI flags.
+- **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided.
+- To build presets, run:
+  ```bash
+  python preprocess/save_dataset_presets.py \
+    --index /path/to/index.csv \
+    --dataset-name shhs \
+    --n-tokens 1535 \
+    --split train val test
+  ```
+  Optional flags: `--meta-data-names hypertension diabetes`, `--include-no-metadata`, `--output-template 'data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle'`, `--dry-run`, `--overwrite`.
 - **Missing-channel pretrain**: if you enable `--allow-missing-channels`, presets must carry `payload["available_channels"]` (auto-populated during preset creation) so the bucketed sampler can group by montage.
 
 ---
