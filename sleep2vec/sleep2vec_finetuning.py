@@ -94,6 +94,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
             checkpoint["finetune_config"] = asdict(self.finetune_config)
             checkpoint["finetune_config_yaml"] = yaml.safe_dump(checkpoint["finetune_config"], sort_keys=True)
 
+        student_layer_mix = self._layer_mix_snapshot(self.model)
+        if student_layer_mix is not None:
+            checkpoint["layer_mix_weights_student"] = student_layer_mix
+
+        eval_model = self._get_eval_model()
+        if eval_model is not self.model:
+            eval_layer_mix = self._layer_mix_snapshot(eval_model)
+            if eval_layer_mix is not None:
+                checkpoint["layer_mix_weights_eval"] = eval_layer_mix
+
     # ---------- Lightning hooks ----------
     def training_step(self, batch, batch_idx):
         return self._shared_step(batch, stage="train")
@@ -107,12 +117,15 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._shared_step(batch, stage="test", model=eval_model)
 
     def on_train_epoch_end(self):
+        self._log_layer_mix_weights(stage="train", model=self.model)
         self._finalize_epoch(stage="train")
 
     def on_validation_epoch_end(self):
+        self._log_layer_mix_weights(stage="val", model=self._get_eval_model())
         self._finalize_epoch(stage="val")
 
     def on_test_epoch_end(self):
+        self._log_layer_mix_weights(stage="test", model=self._get_eval_model())
         result = self._finalize_epoch(stage="test")
         if result is None:
             return
@@ -236,6 +249,47 @@ class Sleep2vecFinetuning(pl.LightningModule):
         preds = logits[mask].to(torch.float32).detach().cpu().numpy()
         labels_np = labels[mask].to(torch.float32).detach().cpu().numpy()
         return preds, labels_np
+
+    @staticmethod
+    def _layer_mix_snapshot(model: torch.nn.Module):
+        getter = getattr(model, "layer_mix_snapshot", None)
+        if not callable(getter):
+            return None
+        return getter()
+
+    def _log_layer_mix_weights(self, stage: str, model: torch.nn.Module) -> None:
+        snapshot = self._layer_mix_snapshot(model)
+        if snapshot is None:
+            return
+
+        layer_ids = snapshot.get("layer_indices", [])
+        effective = snapshot.get("effective_by_modality", {})
+        shared = bool(snapshot.get("shared_across_modalities", False))
+
+        self.log(
+            f"{stage}_layer_mix_shared",
+            float(shared),
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        for mod_name, mod_info in effective.items():
+            weights = mod_info.get("layer_weights", [])
+            for idx, layer_id in enumerate(layer_ids):
+                if idx >= len(weights):
+                    break
+                self.log(
+                    f"{stage}_layer_mix/{mod_name}/layer_{layer_id}",
+                    float(weights[idx]),
+                    prog_bar=False,
+                    logger=True,
+                    sync_dist=True,
+                    on_step=False,
+                    on_epoch=True,
+                )
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]

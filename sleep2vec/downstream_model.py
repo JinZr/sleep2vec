@@ -151,6 +151,52 @@ class Sleep2vecDownstreamModel(nn.Module):
     def _layer_mix_enabled(self) -> bool:
         return self.layer_mix is not None
 
+    def layer_mix_snapshot(self) -> dict[str, t.Any] | None:
+        """Returns raw and normalized layer-mix weights in a serialization-friendly format."""
+        if not self._layer_mix_enabled():
+            return None
+
+        if self.layer_mix is None:
+            return None
+
+        layer_ids = list(self.layer_indices) if self.layer_indices else list(range(1, self.layer_mix.num_layers + 1))
+        raw = self.layer_mix.weight.detach().cpu()
+        normalized = self.layer_mix.normalized_weight_matrix().detach().cpu()
+        shared = bool(self.layer_mix.shared_across_modalities)
+
+        if shared:
+            row_names = ["shared"]
+        else:
+            row_names = list(self.channel_names)
+
+        if len(row_names) != int(raw.size(0)):
+            row_names = [f"row_{idx}" for idx in range(int(raw.size(0)))]
+
+        rows: dict[str, dict[str, t.Any]] = {}
+        for row_idx, row_name in enumerate(row_names):
+            rows[row_name] = {
+                "row_index": int(row_idx),
+                "raw_logits": [float(v) for v in raw[row_idx].tolist()],
+                "layer_weights": [float(v) for v in normalized[row_idx].tolist()],
+            }
+
+        effective_by_modality: dict[str, dict[str, t.Any]] = {}
+        for mod_idx, mod_name in enumerate(self.channel_names):
+            row_idx = 0 if shared else mod_idx
+            row_name = row_names[row_idx]
+            effective_by_modality[mod_name] = {
+                "row_name": row_name,
+                "row_index": int(row_idx),
+                "layer_weights": [float(v) for v in normalized[row_idx].tolist()],
+            }
+
+        return {
+            "shared_across_modalities": shared,
+            "layer_indices": layer_ids,
+            "rows": rows,
+            "effective_by_modality": effective_by_modality,
+        }
+
     def _select_layer_states(self, hidden_states: t.Any) -> t.List[torch.Tensor]:
         if hidden_states is None:
             raise ValueError("Layer mix requested but encoder returned no hidden states.")

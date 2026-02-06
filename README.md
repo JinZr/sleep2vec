@@ -226,7 +226,7 @@ model:
 - `downstream: tokens` uses token-level features (sequence tasks) or token pooling (non-seq tasks via `model.head.temporal_agg`).
 - `downstream: cls` uses the CLS embedding for **non-seq** tasks and requires `embedding_type: bert`.
 - For `--label-name stage5` (`is_seq=True`), downstream is always token-level; if you set `downstream: cls` it will be ignored (a warning is logged).
-- If `model.cls` is omitted, the default is “no CLS token + token/pooled downstream”.
+- `model.cls` is currently required by the config parser. To disable CLS token usage, set `embedding_type: null` with `downstream: tokens`.
 
 **Layer Mix (downstream)**  
 Learned scalar mix across transformer blocks (1..L). For sequence tasks, mixing is applied to token-level states; for non-seq tasks, each layer is pooled first and then mixed. Omit the block to disable, or set `enabled: false`.

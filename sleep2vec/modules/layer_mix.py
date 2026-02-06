@@ -25,6 +25,14 @@ class LayerMix(nn.Module):
             idx = mod_idx
         return torch.softmax(self.weight[idx], dim=0)
 
+    def normalized_weights(self, mod_idx: int = 0) -> torch.Tensor:
+        """Returns softmax-normalized layer weights for the requested modality index."""
+        return self._weights(mod_idx)
+
+    def normalized_weight_matrix(self) -> torch.Tensor:
+        """Returns softmax-normalized weights for all learned parameter rows."""
+        return torch.softmax(self.weight, dim=1)
+
     def mix(self, layer_stack: torch.Tensor, mod_idx: int = 0) -> torch.Tensor:
         if layer_stack.size(0) != self.num_layers:
             raise ValueError(f"Expected {self.num_layers} layers for mixing, got {layer_stack.size(0)}.")
