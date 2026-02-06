@@ -14,6 +14,7 @@ import yaml
 from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.metrics import compute_downstream_metrics
+from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
 
 from .downstream_model import Sleep2vecDownstreamModel
 from .pretrain_model import Sleep2vecPretrainModel
@@ -125,7 +126,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._finalize_epoch(stage="val")
 
     def on_test_epoch_end(self):
-        self._log_layer_mix_weights(stage="test", model=self._get_eval_model())
         result = self._finalize_epoch(stage="test")
         if result is None:
             return
@@ -262,34 +262,65 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if snapshot is None:
             return
 
-        layer_ids = snapshot.get("layer_indices", [])
+        trainer = getattr(self, "trainer", None)
+        if trainer is not None and not trainer.is_global_zero:
+            return
+        if getattr(wandb, "run", None) is None:
+            return
+
+        layer_ids = [int(v) for v in snapshot.get("layer_indices", [])]
         effective = snapshot.get("effective_by_modality", {})
         shared = bool(snapshot.get("shared_across_modalities", False))
+        if not layer_ids or not isinstance(effective, dict) or not effective:
+            return
 
-        self.log(
-            f"{stage}_layer_mix_shared",
-            float(shared),
-            prog_bar=False,
-            logger=True,
-            sync_dist=True,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        for mod_name, mod_info in effective.items():
-            weights = mod_info.get("layer_weights", [])
-            for idx, layer_id in enumerate(layer_ids):
-                if idx >= len(weights):
-                    break
-                self.log(
-                    f"{stage}_layer_mix/{mod_name}/layer_{layer_id}",
-                    float(weights[idx]),
-                    prog_bar=False,
-                    logger=True,
-                    sync_dist=True,
-                    on_step=False,
-                    on_epoch=True,
+        modality_names = list(effective.keys())
+        matrix_rows: list[list[float]] = []
+        for modality in modality_names:
+            mod_info = effective.get(modality, {})
+            weights = mod_info.get("layer_weights", []) if isinstance(mod_info, dict) else []
+            if len(weights) < len(layer_ids):
+                logging.warning(
+                    "Skipping layer-mix visualization for stage=%s due to malformed weights for modality=%s.",
+                    stage,
+                    modality,
                 )
+                return
+            matrix_rows.append([float(weights[idx]) for idx in range(len(layer_ids))])
+
+        matrix = np.array(matrix_rows, dtype=np.float32)
+        title = (
+            f"{stage.title()} Layer-Mix Weights (epoch {self.current_epoch}, "
+            f"{'shared' if shared else 'per-modality'})"
+        )
+        fig = render_layer_mix_heatmap(matrix, modality_names, layer_ids, title=title)
+        rows = build_layer_mix_rows(
+            stage=stage,
+            epoch=int(self.current_epoch),
+            shared=shared,
+            layer_ids=layer_ids,
+            effective_by_modality=effective,
+        )
+        columns = [
+            "stage",
+            "epoch",
+            "modality",
+            "layer_id",
+            "weight",
+            "shared_across_modalities",
+            "row_name",
+            "row_index",
+        ]
+        table = wandb.Table(columns=columns, data=[[row[col] for col in columns] for row in rows])
+
+        wandb.log(
+            {
+                f"{stage}_layer_mix/heatmap": wandb.Image(fig),
+                f"{stage}_layer_mix/table": table,
+            },
+            commit=False,
+        )
+        plt.close(fig)
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]
