@@ -33,6 +33,20 @@ _BUILTIN_TASK_SPECS = {
 }
 
 
+def _validate_metadata_label_support(args) -> None:
+    """Fail fast for unsupported metadata task semantics."""
+    if (
+        getattr(args, "is_classification", False)
+        and int(getattr(args, "output_dim", 0)) > 2
+        and getattr(args, "label_name", None) != "stage5"
+    ):
+        raise ValueError(
+            "Metadata classification currently supports only binary labels (output_dim=2) for non-stage5 tasks. "
+            f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
+            "Extend metadata label encoding before using multiclass metadata targets."
+        )
+
+
 def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict[str, t.Any]) -> None:
     if task_cfg.output_dim != spec["output_dim"]:
         raise ValueError(f"finetune.task.output_dim must be {spec['output_dim']} when --label-name is '{label_name}'.")
@@ -60,6 +74,7 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
                 "finetune.task.is_seq is only supported for --label-name stage5. "
                 "Extend the dataloader if you need token-level labels for other targets."
             )
+        _validate_metadata_label_support(args)
         return
 
     if builtin_spec is not None:
@@ -68,6 +83,7 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
         args.is_seq = builtin_spec["is_seq"]
         args.monitor = builtin_spec["monitor"]
         args.monitor_mod = builtin_spec["monitor_mod"]
+        _validate_metadata_label_support(args)
         return
 
     raise ValueError(
