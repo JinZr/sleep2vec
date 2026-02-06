@@ -101,6 +101,22 @@ def safe_cast(v, default=-1):
         return default
 
 
+def safe_cast_float(v, default=-1.0):
+    try:
+        if isinstance(v, str) and v.lower() == "nan":
+            return default
+        if v is None:
+            return default
+        if isinstance(v, float) and math.isnan(v):
+            return default
+        f = float(v)
+        if math.isnan(f):
+            return default
+        return f
+    except Exception:
+        return default
+
+
 def _encode_binary_label(v):
     """Normalize various representations of binary labels to {0,1,-1}."""
     if isinstance(v, str):
@@ -122,7 +138,8 @@ def _encode_binary_label(v):
     return -1
 
 
-def process_metadata(samples, disease_names):
+def process_metadata(samples, disease_names, regression_names: t.Sequence[str] | None = None):
+    regression_names = set(regression_names or [])
     batch_metadata = {
         "age": [],
         "sex": [],
@@ -145,10 +162,17 @@ def process_metadata(samples, disease_names):
     processed["age"] = torch.tensor([safe_cast(v, -1) for v in batch_metadata["age"]], dtype=torch.float)
     processed["sex"] = torch.tensor([_encode_binary_label(v) for v in batch_metadata["sex"]], dtype=torch.long)
     for disease_name in disease_names:
-        processed[disease_name] = torch.tensor(
-            [_encode_binary_label(v) for v in batch_metadata[disease_name]],
-            dtype=torch.long,
-        )
+        values = batch_metadata[disease_name]
+        if disease_name in regression_names:
+            processed[disease_name] = torch.tensor(
+                [safe_cast_float(v, -1.0) for v in values],
+                dtype=torch.float,
+            )
+        else:
+            processed[disease_name] = torch.tensor(
+                [_encode_binary_label(v) for v in values],
+                dtype=torch.long,
+            )
 
     processed["source"] = [v for v in batch_metadata["source"]]
     processed["path"] = [v for v in batch_metadata["path"]]

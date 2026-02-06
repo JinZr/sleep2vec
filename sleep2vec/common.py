@@ -8,10 +8,48 @@ import yaml
 
 from sleep2vec.config import TaskConfig, load_finetune_config
 
+_BUILTIN_TASK_SPECS = {
+    "stage5": {
+        "type": "classification",
+        "output_dim": 5,
+        "is_seq": True,
+        "monitor": "val_accuracy",
+        "monitor_mod": "max",
+    },
+    "sex": {
+        "type": "classification",
+        "output_dim": 2,
+        "is_seq": False,
+        "monitor": "val_accuracy",
+        "monitor_mod": "max",
+    },
+    "age": {
+        "type": "regression",
+        "output_dim": 1,
+        "is_seq": False,
+        "monitor": "val_mae",
+        "monitor_mod": "min",
+    },
+}
+
+
+def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict[str, t.Any]) -> None:
+    if task_cfg.output_dim != spec["output_dim"]:
+        raise ValueError(
+            f"finetune.task.output_dim must be {spec['output_dim']} when --label-name is '{label_name}'."
+        )
+    if task_cfg.type != spec["type"]:
+        raise ValueError(f"finetune.task.type must be '{spec['type']}' when --label-name is '{label_name}'.")
+    if task_cfg.is_seq != spec["is_seq"]:
+        raise ValueError(f"finetune.task.is_seq must be {spec['is_seq']} when --label-name is '{label_name}'.")
+
 
 def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
     """Infer downstream task attributes from label_name or finetune.task."""
+    builtin_spec = _BUILTIN_TASK_SPECS.get(args.label_name)
     if task_cfg is not None:
+        if builtin_spec is not None:
+            _validate_builtin_task_cfg(args.label_name, task_cfg, builtin_spec)
         args.output_dim = task_cfg.output_dim
         args.is_classification = task_cfg.type == "classification"
         args.is_seq = task_cfg.is_seq
@@ -26,26 +64,12 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
             )
         return
 
-    if args.label_name == "stage5":
-        args.output_dim = 5
-        args.is_classification = True
-        args.is_seq = True
-        args.monitor = "val_accuracy"
-        args.monitor_mod = "max"
-        return
-    if args.label_name == "sex":
-        args.output_dim = 2
-        args.is_classification = True
-        args.is_seq = False
-        args.monitor = "val_accuracy"
-        args.monitor_mod = "max"
-        return
-    if args.label_name == "age":
-        args.output_dim = 1
-        args.is_classification = False
-        args.is_seq = False
-        args.monitor = "val_mae"
-        args.monitor_mod = "min"
+    if builtin_spec is not None:
+        args.output_dim = builtin_spec["output_dim"]
+        args.is_classification = builtin_spec["type"] == "classification"
+        args.is_seq = builtin_spec["is_seq"]
+        args.monitor = builtin_spec["monitor"]
+        args.monitor_mod = builtin_spec["monitor_mod"]
         return
 
     raise ValueError(

@@ -25,6 +25,7 @@ class PSGPretrainDataset(DefaultDataset):
         use_legacy_body_movement: bool = False,
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names: t.Optional[t.List[str]] = None,  # ← 新增参数
+        meta_data_regression_names: t.Optional[t.List[str]] = None,
         sources: t.Optional[t.List[str]] = None,  # ← 新增参数
         pair_selector: t.Any | None = None,
         randomly_select_channels: bool = True,
@@ -181,6 +182,7 @@ class PSGPretrainDataset(DefaultDataset):
             mask_generators=mask_generators,
             few_shot=few_shot,
             meta_data_names=meta_data_names,
+            meta_data_regression_names=meta_data_regression_names,
             sources=sources,
             pair_selector=pair_selector,
             dataloader_config=kwargs,
