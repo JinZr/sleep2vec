@@ -64,10 +64,9 @@ model:
     dropout: 0.1
     hidden_dim: null
     channel_agg:
-      name: gated_scalar
+      name: mean
       kwargs: {}
     temporal_agg:
-      # unused for cls embedding downstream
       name: mean
       kwargs: {}
 data:
@@ -80,6 +79,12 @@ data:
   n_few_shot: 1280
 finetune:
   freeze_tokenizer: true
+  task:
+    type: regression
+    output_dim: 1
+    is_seq: false
+    monitor: val_mae
+    monitor_mod: min
   layer_mix:
     enabled: false
     shared_across_modalities: false

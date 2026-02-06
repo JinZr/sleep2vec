@@ -115,6 +115,12 @@ python -m sleep2vec.finetune \
   --epochs 50 --lr 1e-5 --devices 0 1
 ```
 
+Custom metadata labels:
+- Set `--label-name` to the CSV column name (e.g., `ahi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
+- Use the same `--label-name` for `sleep2vec.infer` (required) when evaluating custom tasks.
+- Token-level labels (`is_seq: true`) are only supported for `stage5` unless you extend the dataloader.
+- Example YAMLs: `configs/sleep2vec_dense_finetune_custom_reg.yaml`, `configs/sleep2vec_dense_finetune_custom_cls.yaml`.
+
 > [!Note]
 > `--version-name` is required for pretraining run naming; downstream runs auto-generate a version when omitted. Ensure your YAML `data.*` paths point to real preset pickles.
 
@@ -131,6 +137,7 @@ python -m sleep2vec.infer \
   --eval-split test --results-csv-path outputs.csv
 ```
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
+Use the same `--label-name` that was used for fine-tuning; it is required.
 To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
 Use `--wandb` to enable W&B logging during inference (needed for confusion matrix logging).
 
@@ -219,7 +226,17 @@ model:
 - `downstream: tokens` uses token-level features (sequence tasks) or token pooling (non-seq tasks via `model.head.temporal_agg`).
 - `downstream: cls` uses the CLS embedding for **non-seq** tasks and requires `embedding_type: bert`.
 - For `--label-name stage5` (`is_seq=True`), downstream is always token-level; if you set `downstream: cls` it will be ignored (a warning is logged).
-- If `model.cls` is omitted, the default is “no CLS token + token/pooled downstream”.
+- `model.cls` is currently required by the config parser. To disable CLS token usage, set `embedding_type: null` with `downstream: tokens`.
+
+**Layer Mix (downstream)**  
+Learned scalar mix across transformer blocks (1..L). For sequence tasks, mixing is applied to token-level states; for non-seq tasks, each layer is pooled first and then mixed. Omit the block to disable, or set `enabled: false`.
+```yaml
+finetune:
+  layer_mix:
+    enabled: true
+    shared_across_modalities: false   # false -> per-modality weights
+    layer_indices: [1, 6, 12]         # 1-based block indices; null -> all
+```
 
 **Model Averaging**  
 - Strategies live in `sleep2vec/averagings/` (`ema.py` and `running_mean.py` included).
@@ -246,13 +263,16 @@ model:
 - W&B logs a heatmap image (`val_pair_acc_matrix`) plus scalar metrics under `val_pair_acc/<pair>`.
 
 **LoRA fine-tuning**  
-- Controlled by YAML `lora` block (parsed by `apply_finetune_config`):
+- Controlled by YAML `finetune` block (parsed by `apply_finetune_config`):
   ```yaml
-  lora:
-    freeze_backbone_and_insert_lora: true
-    insert_lora: true
-    separate_adapters: false
+  finetune:
+    freeze_tokenizer: true
+    lora:
+      freeze_backbone_and_insert_lora: true
+      insert_lora: true
+      separate_adapters: false
   ```
+- `freeze_tokenizer: true` freezes tokenizer parameters during downstream finetuning (default).
 - When enabled, `finetune.py` injects PEFT LoRA adapters into the transformer backbone and freezes base weights.
 
 ---

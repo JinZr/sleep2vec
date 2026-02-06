@@ -121,6 +121,13 @@ def _build_finetune_loader(
     few_shot=None,
 ):
     meta_data_names = [] if args.label_name in {"age", "sex", "stage5"} else [args.label_name]
+    meta_data_regression_names = [] if args.is_classification else list(meta_data_names)
+    if meta_data_names and args.is_classification and args.output_dim > 2:
+        raise ValueError(
+            "Metadata classification currently supports only binary labels (output_dim=2) for non-stage5 tasks. "
+            f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
+            "Extend metadata label encoding before using multiclass metadata targets."
+        )
     dataset_channel_names = list(args.data_channel_names)
     if args.label_name == "stage5" and "stage5" not in dataset_channel_names:
         # stage5 is a per-token label; include it in the batch tokens so downstream loss can
@@ -138,6 +145,7 @@ def _build_finetune_loader(
         mask_rate=0.0,
         use_legacy_body_movement=False,
         meta_data_names=meta_data_names,
+        meta_data_regression_names=meta_data_regression_names,
         sources=sources,
         randomly_select_channels=False,
         allow_missing_channels=False,

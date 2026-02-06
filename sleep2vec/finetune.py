@@ -61,7 +61,12 @@ def supervised(args, config_bundle):
     train_loader, val_loader, test_loader = prepare_dataloader(args)
 
     # define the model/lightning module
-    model = Sleep2vecFinetuning(args, model_config, averaging_config=averaging_config)
+    model = Sleep2vecFinetuning(
+        args,
+        model_config,
+        finetune_config=config_bundle.finetune,
+        averaging_config=averaging_config,
+    )
 
     # logger and callbacks
     version = args.version
@@ -282,8 +287,10 @@ if __name__ == "__main__":
         "--label-name",
         type=str,
         required=True,
-        choices=["age", "sex", "stage5"],
-        help="downstream label to predict (e.g. age, sex, stage5)",
+        help=(
+            "downstream label to predict (built-ins: age, sex, stage5; "
+            "custom labels require finetune.task in the YAML config)"
+        ),
     )
     # ---------------- Data/configuration now YAML-driven; keep CLI for ckpt paths only ----------------
     parser.add_argument(

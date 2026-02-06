@@ -14,16 +14,18 @@ import yaml
 from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.metrics import compute_downstream_metrics
+from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
 
 from .downstream_model import Sleep2vecDownstreamModel
 from .pretrain_model import Sleep2vecPretrainModel
 
 
 class Sleep2vecFinetuning(pl.LightningModule):
-    def __init__(self, args, model_config, averaging_config=None):
+    def __init__(self, args, model_config, finetune_config=None, averaging_config=None):
         super().__init__()
         self.args = args
         self.model_config = model_config
+        self.finetune_config = finetune_config
         self.averaging_config = averaging_config
 
         self.backbone = Sleep2vecPretrainModel(
@@ -50,6 +52,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             head_name=getattr(args, "head_name", None),
             head_kwargs=head_kwargs,
             model_config=model_config,
+            layer_mix_cfg=getattr(finetune_config, "layer_mix", None) if finetune_config else None,
             head_config=model_config.head,
         ).to(args.device)
 
@@ -63,6 +66,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 insert_lora=args.insert_lora,
                 separate_adapters=args.separate_adapters,
             )
+
+        if getattr(args, "freeze_tokenizer", True):
+            self.backbone.set_tokenizers_trainable(False)
+        else:
+            self.backbone.set_tokenizers_trainable(True)
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
@@ -83,6 +91,19 @@ class Sleep2vecFinetuning(pl.LightningModule):
         super().on_save_checkpoint(checkpoint)
         checkpoint["model_config"] = asdict(self.model_config)
         checkpoint["model_config_yaml"] = yaml.safe_dump(checkpoint["model_config"], sort_keys=True)
+        if self.finetune_config is not None:
+            checkpoint["finetune_config"] = asdict(self.finetune_config)
+            checkpoint["finetune_config_yaml"] = yaml.safe_dump(checkpoint["finetune_config"], sort_keys=True)
+
+        student_layer_mix = self._layer_mix_snapshot(self.model)
+        if student_layer_mix is not None:
+            checkpoint["layer_mix_weights_student"] = student_layer_mix
+
+        eval_model = self._get_eval_model()
+        if eval_model is not self.model:
+            eval_layer_mix = self._layer_mix_snapshot(eval_model)
+            if eval_layer_mix is not None:
+                checkpoint["layer_mix_weights_eval"] = eval_layer_mix
 
     # ---------- Lightning hooks ----------
     def training_step(self, batch, batch_idx):
@@ -97,9 +118,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._shared_step(batch, stage="test", model=eval_model)
 
     def on_train_epoch_end(self):
+        self._log_layer_mix_weights(stage="train", model=self.model)
         self._finalize_epoch(stage="train")
 
     def on_validation_epoch_end(self):
+        self._log_layer_mix_weights(stage="val", model=self._get_eval_model())
         self._finalize_epoch(stage="val")
 
     def on_test_epoch_end(self):
@@ -120,6 +143,28 @@ class Sleep2vecFinetuning(pl.LightningModule):
         super().on_load_checkpoint(checkpoint)
         if self.model_averager is not None:
             self.model_averager.on_load_checkpoint(checkpoint)
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        # Allow missing/extra layer-mix weights when loading older checkpoints.
+        result = super().load_state_dict(state_dict, strict=False)
+        if not strict:
+            return result
+
+        allowed_prefixes = ("model.layer_mix.",)
+        missing = [k for k in result.missing_keys if not k.startswith(allowed_prefixes)]
+        unexpected = [k for k in result.unexpected_keys if not k.startswith(allowed_prefixes)]
+
+        if missing or unexpected:
+            raise RuntimeError(
+                "Error(s) in loading state_dict: " f"missing keys={missing}, unexpected keys={unexpected}"
+            )
+
+        if result.missing_keys:
+            logging.warning("Missing layer-mix keys while loading checkpoint: %s", result.missing_keys)
+        if result.unexpected_keys:
+            logging.warning("Unexpected layer-mix keys while loading checkpoint: %s", result.unexpected_keys)
+
+        return result
 
     # ---------- Internal helpers ----------
     def _shared_step(self, batch, stage: str, model=None):
@@ -204,6 +249,78 @@ class Sleep2vecFinetuning(pl.LightningModule):
         preds = logits[mask].to(torch.float32).detach().cpu().numpy()
         labels_np = labels[mask].to(torch.float32).detach().cpu().numpy()
         return preds, labels_np
+
+    @staticmethod
+    def _layer_mix_snapshot(model: torch.nn.Module):
+        getter = getattr(model, "layer_mix_snapshot", None)
+        if not callable(getter):
+            return None
+        return getter()
+
+    def _log_layer_mix_weights(self, stage: str, model: torch.nn.Module) -> None:
+        snapshot = self._layer_mix_snapshot(model)
+        if snapshot is None:
+            return
+
+        trainer = getattr(self, "trainer", None)
+        if trainer is not None and not trainer.is_global_zero:
+            return
+        if getattr(wandb, "run", None) is None:
+            return
+
+        layer_ids = [int(v) for v in snapshot.get("layer_indices", [])]
+        effective = snapshot.get("effective_by_modality", {})
+        shared = bool(snapshot.get("shared_across_modalities", False))
+        if not layer_ids or not isinstance(effective, dict) or not effective:
+            return
+
+        modality_names = list(effective.keys())
+        matrix_rows: list[list[float]] = []
+        for modality in modality_names:
+            mod_info = effective.get(modality, {})
+            weights = mod_info.get("layer_weights", []) if isinstance(mod_info, dict) else []
+            if len(weights) < len(layer_ids):
+                logging.warning(
+                    "Skipping layer-mix visualization for stage=%s due to malformed weights for modality=%s.",
+                    stage,
+                    modality,
+                )
+                return
+            matrix_rows.append([float(weights[idx]) for idx in range(len(layer_ids))])
+
+        matrix = np.array(matrix_rows, dtype=np.float32)
+        title = (
+            f"{stage.title()} Layer-Mix Weights (epoch {self.current_epoch}, "
+            f"{'shared' if shared else 'per-modality'})"
+        )
+        fig = render_layer_mix_heatmap(matrix, modality_names, layer_ids, title=title)
+        rows = build_layer_mix_rows(
+            stage=stage,
+            epoch=int(self.current_epoch),
+            shared=shared,
+            layer_ids=layer_ids,
+            effective_by_modality=effective,
+        )
+        columns = [
+            "stage",
+            "epoch",
+            "modality",
+            "layer_id",
+            "weight",
+            "shared_across_modalities",
+            "row_name",
+            "row_index",
+        ]
+        table = wandb.Table(columns=columns, data=[[row[col] for col in columns] for row in rows])
+
+        wandb.log(
+            {
+                f"{stage}_layer_mix/heatmap": wandb.Image(fig),
+                f"{stage}_layer_mix/table": table,
+            },
+            commit=False,
+        )
+        plt.close(fig)
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]

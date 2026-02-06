@@ -6,29 +6,90 @@ import typing as t
 
 import yaml
 
-from sleep2vec.config import load_finetune_config
+from sleep2vec.config import TaskConfig, load_finetune_config
+
+_BUILTIN_TASK_SPECS = {
+    "stage5": {
+        "type": "classification",
+        "output_dim": 5,
+        "is_seq": True,
+        "monitor": "val_accuracy",
+        "monitor_mod": "max",
+    },
+    "sex": {
+        "type": "classification",
+        "output_dim": 2,
+        "is_seq": False,
+        "monitor": "val_accuracy",
+        "monitor_mod": "max",
+    },
+    "age": {
+        "type": "regression",
+        "output_dim": 1,
+        "is_seq": False,
+        "monitor": "val_mae",
+        "monitor_mod": "min",
+    },
+}
 
 
-def apply_task_flags(args) -> None:
-    """Infer downstream task attributes from label_name."""
-    if args.label_name == "stage5":
-        args.output_dim = 5
-        args.is_classification = True
-        args.is_seq = True
-        args.monitor = "val_accuracy"
-        args.monitor_mod = "max"
-    elif args.label_name == "sex":
-        args.output_dim = 2
-        args.is_classification = True
-        args.is_seq = False
-        args.monitor = "val_accuracy"
-        args.monitor_mod = "max"
-    else:
-        args.output_dim = 1
-        args.is_classification = False
-        args.is_seq = False
-        args.monitor = "val_mae"
-        args.monitor_mod = "min"
+def _validate_metadata_label_support(args) -> None:
+    """Fail fast for unsupported metadata task semantics."""
+    if (
+        getattr(args, "is_classification", False)
+        and int(getattr(args, "output_dim", 0)) > 2
+        and getattr(args, "label_name", None) != "stage5"
+    ):
+        raise ValueError(
+            "Metadata classification currently supports only binary labels (output_dim=2) for non-stage5 tasks. "
+            f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
+            "Extend metadata label encoding before using multiclass metadata targets."
+        )
+
+
+def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict[str, t.Any]) -> None:
+    if task_cfg.output_dim != spec["output_dim"]:
+        raise ValueError(f"finetune.task.output_dim must be {spec['output_dim']} when --label-name is '{label_name}'.")
+    if task_cfg.type != spec["type"]:
+        raise ValueError(f"finetune.task.type must be '{spec['type']}' when --label-name is '{label_name}'.")
+    if task_cfg.is_seq != spec["is_seq"]:
+        raise ValueError(f"finetune.task.is_seq must be {spec['is_seq']} when --label-name is '{label_name}'.")
+
+
+def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
+    """Infer downstream task attributes from label_name or finetune.task."""
+    builtin_spec = _BUILTIN_TASK_SPECS.get(args.label_name)
+    if task_cfg is not None:
+        if builtin_spec is not None:
+            _validate_builtin_task_cfg(args.label_name, task_cfg, builtin_spec)
+        args.output_dim = task_cfg.output_dim
+        args.is_classification = task_cfg.type == "classification"
+        args.is_seq = task_cfg.is_seq
+        args.monitor = task_cfg.monitor
+        args.monitor_mod = task_cfg.monitor_mod
+        if args.label_name == "stage5" and not args.is_seq:
+            raise ValueError("finetune.task.is_seq must be true when --label-name is 'stage5'.")
+        if args.is_seq and args.label_name != "stage5":
+            raise ValueError(
+                "finetune.task.is_seq is only supported for --label-name stage5. "
+                "Extend the dataloader if you need token-level labels for other targets."
+            )
+        _validate_metadata_label_support(args)
+        return
+
+    if builtin_spec is not None:
+        args.output_dim = builtin_spec["output_dim"]
+        args.is_classification = builtin_spec["type"] == "classification"
+        args.is_seq = builtin_spec["is_seq"]
+        args.monitor = builtin_spec["monitor"]
+        args.monitor_mod = builtin_spec["monitor_mod"]
+        _validate_metadata_label_support(args)
+        return
+
+    raise ValueError(
+        f"Unknown label_name '{args.label_name}'. "
+        "Define finetune.task in the YAML to specify task semantics for custom labels."
+    )
 
 
 def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
@@ -41,7 +102,8 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     config_bundle = load_finetune_config(args.config)
     model_cfg = config_bundle.model
     data_cfg = config_bundle.data
-    lora_cfg = config_bundle.lora
+    finetune_cfg = config_bundle.finetune
+    lora_cfg = finetune_cfg.lora
 
     args.channel_names = [c.name for c in model_cfg.channels]
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
@@ -55,6 +117,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.freeze_backbone_and_insert_lora = lora_cfg.freeze_backbone_and_insert_lora
     args.insert_lora = lora_cfg.insert_lora
     args.separate_adapters = lora_cfg.separate_adapters
+    args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
     args.head_kwargs = {}
 
     # Fail fast if requested dataloader channels differ from model/backbone channels.
@@ -64,7 +127,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
             f"Model channels: {args.channel_names}; data channels: {args.data_channel_names}."
         )
 
-    apply_task_flags(args)
+    apply_task_flags(args, config_bundle.finetune.task)
     return config_bundle, model_cfg
 
 

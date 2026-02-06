@@ -77,10 +77,16 @@ data:
   train_dataset_names: [shhs]
   test_dataset_names: [shhs]
   n_few_shot: 1280
-lora:
-  freeze_backbone_and_insert_lora: false
-  insert_lora: true
-  separate_adapters: false
+finetune:
+  freeze_tokenizer: true
+  layer_mix:
+    enabled: false
+    shared_across_modalities: false
+    layer_indices: null     # 1-based transformer block indices; null -> all
+  lora:
+    freeze_backbone_and_insert_lora: false
+    insert_lora: true
+    separate_adapters: false
 
 model_averaging:
   name: ema

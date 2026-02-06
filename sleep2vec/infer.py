@@ -104,7 +104,12 @@ def run_inference(args):
     )
 
     dataloader = _build_inference_loader(args)
-    model = Sleep2vecFinetuning(args, model_cfg, averaging_config=config_bundle.averaging)
+    model = Sleep2vecFinetuning(
+        args,
+        model_cfg,
+        finetune_config=config_bundle.finetune,
+        averaging_config=config_bundle.averaging,
+    )
 
     ckpt_path = args.ckpt_path
     if args.avg_ckpts > 1:
@@ -152,7 +157,15 @@ def parse_args():
         required=True,
         help="Checkpoint (.ckpt) path or Lightning alias such as 'best'/'last'.",
     )
-    parser.add_argument("--label-name", type=str, default="age", help="Downstream target name.")
+    parser.add_argument(
+        "--label-name",
+        type=str,
+        required=True,
+        help=(
+            "downstream label to predict (built-ins: age, sex, stage5; "
+            "custom labels require finetune.task in the YAML config)"
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=12, help="Batch size for inference dataloader.")
     parser.add_argument("--num-workers", type=int, default=8, help="Number of dataloader workers.")
     parser.add_argument(

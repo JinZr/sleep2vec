@@ -61,6 +61,7 @@ class DefaultDataset(BaseDataset):
         dataloader_config: t.Mapping[str, t.Any],
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names=None,  # ← 新增参数
+        meta_data_regression_names: t.Optional[t.List[str]] = None,
         sources=None,  # ← 新增参数
         pair_selector: t.Any | None = None,
         seed: int = 42,
@@ -77,6 +78,7 @@ class DefaultDataset(BaseDataset):
         self.data = data
         self.seed = seed
         self.meta_data_names = meta_data_names or []
+        self.meta_data_regression_names = meta_data_regression_names or []
         self.sources = sources or []
         self.few_shot = few_shot
         self.extractors = extractors
@@ -334,7 +336,7 @@ class DefaultDataset(BaseDataset):
                     [next(iter(s.tokens.values())).shape[0] for s in samples],
                     # device=device
                 ),
-                "metadata": process_metadata(samples, disease_names),
+                "metadata": process_metadata(samples, disease_names, self.meta_data_regression_names),
             }
 
             # === 在这里生成 weights 矩阵（CPU）===
