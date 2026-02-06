@@ -35,9 +35,7 @@ _BUILTIN_TASK_SPECS = {
 
 def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict[str, t.Any]) -> None:
     if task_cfg.output_dim != spec["output_dim"]:
-        raise ValueError(
-            f"finetune.task.output_dim must be {spec['output_dim']} when --label-name is '{label_name}'."
-        )
+        raise ValueError(f"finetune.task.output_dim must be {spec['output_dim']} when --label-name is '{label_name}'.")
     if task_cfg.type != spec["type"]:
         raise ValueError(f"finetune.task.type must be '{spec['type']}' when --label-name is '{label_name}'.")
     if task_cfg.is_seq != spec["is_seq"]:
