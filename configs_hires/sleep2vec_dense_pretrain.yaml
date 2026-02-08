@@ -1,15 +1,15 @@
 model:
   backbone:
     name: roformer
-    hidden_size: 768
-    num_hidden_layers: 12
-    num_attention_heads: 16
+    hidden_size: 384            # 768 -> 384 (4x fewer FFN params, ~2x lower activations)
+    num_hidden_layers: 6        # 12 -> 6
+    num_attention_heads: 8      # 16 -> 8 (384/8=48 dim per head)
     vocab_size: 1
   projection:
     name: simclr
     enabled: true
-    hidden_dim: 768
-    out_dim: 128
+    hidden_dim: 384             # match backbone.hidden_size
+    out_dim: 128                # keep; not the memory bottleneck
   cls:
     embedding_type: null    # null -> no CLS, "bert" -> prepend learnable CLS token
     downstream: tokens      # "tokens" or "cls" (required)
@@ -18,47 +18,47 @@ model:
       input_dim: 12
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
     - name: breath
       input_dim: 12
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
     - name: eeg_original
       input_dim: 384
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
     - name: ecg_original
       input_dim: 384
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
     - name: eog_original
       input_dim: 384
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
     - name: emg_original
       input_dim: 384
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
     - name: spo2
       input_dim: 12
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
     - name: resp_original
       input_dim: 12
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
     - name: resp_nasal_original
       input_dim: 12
       tokenizer:
         name: sundial
-        out_dim: 768
+        out_dim: 384
 loss:
   name: weighted_info_nce
   temperature: 0.2
