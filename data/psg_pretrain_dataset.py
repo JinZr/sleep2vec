@@ -25,8 +25,13 @@ class PSGPretrainDataset(DefaultDataset):
         use_legacy_body_movement: bool = False,
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names: t.Optional[t.List[str]] = None,  # ← 新增参数
+        meta_data_regression_names: t.Optional[t.List[str]] = None,
         sources: t.Optional[t.List[str]] = None,  # ← 新增参数
+        pair_selector: t.Any | None = None,
         randomly_select_channels: bool = True,
+        min_channels: int = 2,
+        allow_missing_channels: bool = False,
+        bucket_by_available_channels: bool = False,
         generative: bool = False,
         is_train_set: bool = True,
         **kwargs: t.Any,
@@ -34,11 +39,16 @@ class PSGPretrainDataset(DefaultDataset):
 
         self.channel_names = channel_names
         self.randomly_select_channels = randomly_select_channels
+        self.min_channels = min_channels
+        self.allow_missing_channels = allow_missing_channels
+        self.bucket_by_available_channels = bucket_by_available_channels
         self.token_sec = token_sec
         self.generative = generative
         self.is_train_set = is_train_set
         meta_data_names = meta_data_names or []
         sources = sources or []
+
+        split_list = [split] if isinstance(split, str) else list(split or [])
 
         if not load_preset_path:
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
@@ -47,7 +57,7 @@ class PSGPretrainDataset(DefaultDataset):
             ) -> pd.DataFrame:
                 # 单个路径
                 if isinstance(idx, (str, os.PathLike, Path)):
-                    df = pd.read_csv(idx)
+                    df = pd.read_csv(idx, low_memory=False)
                     df["source"] = str(idx)  # 可选：标注来源文件
                     return df
 
@@ -55,7 +65,7 @@ class PSGPretrainDataset(DefaultDataset):
                 if isinstance(idx, (list, tuple)):
                     dfs = []
                     for p in idx:
-                        dfi = pd.read_csv(p)
+                        dfi = pd.read_csv(p, low_memory=False)
                         dfi["source"] = str(p)  # 可选：标注来源文件
                         dfs.append(dfi)
                     if not dfs:
@@ -63,6 +73,10 @@ class PSGPretrainDataset(DefaultDataset):
                     return pd.concat(dfs, ignore_index=True)
 
             csv = _load_index_df(index)
+            if split_list:
+                if "split" not in csv.columns:
+                    raise KeyError("Expected 'split' column in index CSV for split filtering.")
+                csv = csv[csv["split"].isin(split_list)].reset_index(drop=True)
 
             data: t.List[SampleIndex] = []
 
@@ -97,53 +111,79 @@ class PSGPretrainDataset(DefaultDataset):
         else:
             data = None
 
+        registry = {
+            "heartbeat": (
+                default_extractor("heartbeat", self.token_sec * 4),
+                default_tokenizer(4 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "breath": (
+                default_extractor("breath", self.token_sec * 4),
+                default_tokenizer(4 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "eeg_original": (
+                default_extractor("eeg_original", self.token_sec * 128),
+                default_tokenizer(128 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "ecg_original": (
+                default_extractor("ecg_original", self.token_sec * 128),
+                default_tokenizer(128 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "eog_original": (
+                default_extractor("eog_original", self.token_sec * 128),
+                default_tokenizer(128 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "emg_original": (
+                default_extractor("emg_original", self.token_sec * 128),
+                default_tokenizer(128 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "spo2": (
+                default_extractor("spo2", self.token_sec * 4),
+                default_tokenizer(4 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "resp_original": (
+                default_extractor("resp_original", self.token_sec * 4),
+                default_tokenizer(4 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "resp_nasal_original": (
+                default_extractor("resp_nasal_original", self.token_sec * 4),
+                default_tokenizer(4 * self.token_sec),
+                default_mlm_mask_generator(mask_rate),
+            ),
+            "stage5": (
+                default_extractor("stage5", 1),
+                default_tokenizer(1),
+                default_mlm_mask_generator(0.0),
+            ),
+        }
+
+        unknown = [name for name in channel_names if name not in registry]
+        if unknown:
+            raise ValueError(f"Unknown channels requested: {unknown}")
+
+        extractors = {name: registry[name][0] for name in channel_names}
+        tokenizers = {name: registry[name][1] for name in channel_names}
+        mask_generators = {name: registry[name][2] for name in channel_names}
+
         super().__init__(
             save_preset_path,
             load_preset_path,
             data,
-            split,
-            extractors={
-                "heartbeat": default_extractor("heartbeat", self.token_sec * 4),
-                "breath": default_extractor("breath", self.token_sec * 4),
-                "eeg_original": default_extractor("eeg_original", self.token_sec * 128),
-                "ecg_original": default_extractor("ecg_original", self.token_sec * 128),
-                "eog_original": default_extractor("eog_original", self.token_sec * 128),
-                "emg_original": default_extractor("emg_original", self.token_sec * 128),
-                "spo2": default_extractor("spo2", self.token_sec * 4),
-                "resp_original": default_extractor("resp_original", self.token_sec * 4),
-                "resp_nasal_original": default_extractor("resp_nasal_original", self.token_sec * 4),
-                # "ah_event": default_extractor("ah_event", self.token_sec * 1),
-                "stage5": default_extractor("stage5", 1),
-            },
-            tokenizers={
-                "heartbeat": default_tokenizer(4 * self.token_sec),
-                "breath": default_tokenizer(4 * self.token_sec),
-                "eeg_original": default_tokenizer(128 * self.token_sec),
-                "ecg_original": default_tokenizer(128 * self.token_sec),
-                "eog_original": default_tokenizer(128 * self.token_sec),
-                "emg_original": default_tokenizer(128 * self.token_sec),
-                "spo2": default_tokenizer(4 * self.token_sec),
-                "resp_original": default_tokenizer(4 * self.token_sec),
-                "resp_nasal_original": default_tokenizer(4 * self.token_sec),
-                # "ah_event": default_tokenizer(1 * self.token_sec),
-                "stage5": default_tokenizer(1),
-            },
-            # TODO: 添加各种 mask
-            mask_generators={
-                "heartbeat": default_mlm_mask_generator(mask_rate),
-                "breath": default_mlm_mask_generator(mask_rate),
-                "eeg_original": default_mlm_mask_generator(mask_rate),
-                "ecg_original": default_mlm_mask_generator(mask_rate),
-                "eog_original": default_mlm_mask_generator(mask_rate),
-                "emg_original": default_mlm_mask_generator(mask_rate),
-                "spo2": default_mlm_mask_generator(mask_rate),
-                "resp_original": default_mlm_mask_generator(mask_rate),
-                "resp_nasal_original": default_mlm_mask_generator(mask_rate),
-                # "ah_event": default_mlm_mask_generator(0),
-                "stage5": default_mlm_mask_generator(0.0),
-            },
+            split_list,
+            extractors=extractors,
+            tokenizers=tokenizers,
+            mask_generators=mask_generators,
             few_shot=few_shot,
             meta_data_names=meta_data_names,
+            meta_data_regression_names=meta_data_regression_names,
             sources=sources,
+            pair_selector=pair_selector,
             dataloader_config=kwargs,
         )

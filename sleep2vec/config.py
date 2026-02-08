@@ -54,6 +54,15 @@ class ClsConfig:
 
 
 @dataclass
+class LayerMixConfig:
+    """Learned scalar mix across transformer layers (blocks 1..L)."""
+
+    enabled: bool = False
+    shared_across_modalities: bool = False
+    layer_indices: t.List[int] | None = None
+
+
+@dataclass
 class HeadConfig:
     channel_agg: "ChannelAggConfig"
     temporal_agg: "TemporalAggConfig"
@@ -110,7 +119,8 @@ class PretrainConfigBundle:
 class FinetuneConfigBundle:
     model: ModelConfig
     data: "FinetuneDataConfig"
-    lora: "LoraConfig"
+    finetune: "FinetuneConfig"
+    averaging: "ModelAveragingConfig | None" = None
 
 
 @dataclass
@@ -130,6 +140,23 @@ class LoraConfig:
     freeze_backbone_and_insert_lora: bool = False
     insert_lora: bool = True
     separate_adapters: bool = False
+
+
+@dataclass
+class TaskConfig:
+    type: str
+    output_dim: int
+    is_seq: bool
+    monitor: str
+    monitor_mod: str
+
+
+@dataclass
+class FinetuneConfig:
+    freeze_tokenizer: bool = True
+    lora: LoraConfig = field(default_factory=LoraConfig)
+    layer_mix: LayerMixConfig | None = None
+    task: TaskConfig | None = None
 
 
 @dataclass
@@ -168,8 +195,12 @@ def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
         if not isinstance(tok_raw, dict):
             raise ValueError("channel.tokenizer must be a mapping with keys: name, out_dim[, kwargs].")
 
+        tok_name = tok_raw.get("name")
+        if not tok_name:
+            raise ValueError(f"channel '{item.get('name', '?')}' must set tokenizer.name.")
+
         tok_cfg = TokenizerConfig(
-            name=tok_raw.get("name") or tok_raw.get("type") or "linear",
+            name=tok_name,
             out_dim=tok_raw.get("out_dim"),
             kwargs=tok_raw.get("kwargs") or {},
         )
@@ -219,6 +250,88 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     )
 
     return HeadConfig(temporal_agg=temporal_cfg, channel_agg=channel_cfg, **head_raw)
+
+
+def _build_layer_mix_config(raw: t.Any) -> LayerMixConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("layer_mix must be a mapping.")
+
+    layer_indices = raw.get("layer_indices")
+    if layer_indices is not None:
+        if not isinstance(layer_indices, list) or not layer_indices:
+            raise ValueError("layer_mix.layer_indices must be a non-empty list when provided.")
+        if not all(isinstance(idx, int) for idx in layer_indices):
+            raise ValueError("layer_mix.layer_indices must be a list of integers.")
+        if any(idx < 1 for idx in layer_indices):
+            raise ValueError("layer_mix.layer_indices values must be >= 1 (transformer blocks are 1-indexed).")
+        if len(set(layer_indices)) != len(layer_indices):
+            raise ValueError("layer_mix.layer_indices must not contain duplicates.")
+        raw = dict(raw)
+        raw["layer_indices"] = layer_indices
+
+    return LayerMixConfig(**raw)
+
+
+def _build_task_config(raw: t.Any) -> TaskConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.task must be a mapping when provided.")
+
+    required = {"type", "output_dim", "is_seq", "monitor", "monitor_mod"}
+    missing = sorted(required - set(raw.keys()))
+    if missing:
+        raise ValueError(f"finetune.task missing required fields: {missing}")
+
+    task_type = raw.get("type")
+    if task_type not in {"classification", "regression"}:
+        raise ValueError("finetune.task.type must be 'classification' or 'regression'.")
+
+    output_dim = raw.get("output_dim")
+    if not isinstance(output_dim, int) or output_dim < 1:
+        raise ValueError("finetune.task.output_dim must be a positive integer.")
+
+    is_seq = raw.get("is_seq")
+    if not isinstance(is_seq, bool):
+        raise ValueError("finetune.task.is_seq must be a boolean.")
+
+    monitor = raw.get("monitor")
+    if not isinstance(monitor, str) or not monitor:
+        raise ValueError("finetune.task.monitor must be a non-empty string.")
+
+    monitor_mod = raw.get("monitor_mod")
+    if monitor_mod not in {"min", "max"}:
+        raise ValueError("finetune.task.monitor_mod must be 'min' or 'max'.")
+
+    extra = sorted(set(raw.keys()) - required)
+    if extra:
+        raise ValueError(f"finetune.task has unsupported fields: {extra}")
+
+    if task_type == "classification" and output_dim < 2:
+        raise ValueError("finetune.task.output_dim must be >= 2 for classification tasks.")
+    if task_type == "regression" and output_dim != 1:
+        raise ValueError("finetune.task.output_dim must be 1 for regression tasks.")
+
+    return TaskConfig(
+        type=task_type,
+        output_dim=output_dim,
+        is_seq=is_seq,
+        monitor=monitor,
+        monitor_mod=monitor_mod,
+    )
+
+
+def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cfg: BackboneConfig) -> None:
+    if layer_mix_cfg is None or not layer_mix_cfg.layer_indices:
+        return
+    max_layers = backbone_cfg.num_hidden_layers
+    if any(idx > max_layers for idx in layer_mix_cfg.layer_indices):
+        raise ValueError(
+            f"layer_mix.layer_indices must be <= num_hidden_layers ({max_layers}); "
+            f"got {layer_mix_cfg.layer_indices}."
+        )
 
 
 def _build_loss(loss_block: dict[str, t.Any]) -> LossConfig:
@@ -304,9 +417,16 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     loss_block = data.get("loss", {})
     data_block = data.get("data", {})
 
+    if "backbone" not in model_block:
+        raise ValueError("model.backbone is required in YAML.")
+    if "projection" not in model_block:
+        raise ValueError("model.projection is required in YAML.")
+    if "cls" not in model_block:
+        raise ValueError("model.cls is required in YAML.")
+
     channels = _require_channels(model_block)
-    backbone = BackboneConfig(**(model_block.get("backbone") or {}))
-    projection = ProjectionConfig(**(model_block.get("projection") or {}))
+    backbone = BackboneConfig(**model_block.get("backbone"))
+    projection = ProjectionConfig(**model_block.get("projection"))
     cls_cfg = _build_cls_config(model_block)
     head = _build_head_config(model_block, required=False)
     model_cfg = ModelConfig(
@@ -330,11 +450,26 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         raise ValueError("Top-level YAML must be a mapping with a model block.")
     model_block = data.get("model", {})
     data_block = data.get("data", {})
-    lora_block = data.get("lora", {})
+    finetune_block = data.get("finetune")
+    if finetune_block is None:
+        raise ValueError("Finetune YAML must include a top-level 'finetune' block.")
+    if not isinstance(finetune_block, dict):
+        raise ValueError("finetune block must be a mapping.")
+    lora_block = finetune_block.get("lora", {})
+    averaging_cfg = _build_model_averaging_config(data)
+    if "backbone" not in model_block:
+        raise ValueError("model.backbone is required in YAML.")
+    if "projection" not in model_block:
+        raise ValueError("model.projection is required in YAML.")
+    if "cls" not in model_block:
+        raise ValueError("model.cls is required in YAML.")
+
     channels = _require_channels(model_block)
-    backbone = BackboneConfig(**(model_block.get("backbone") or {}))
-    projection = ProjectionConfig(**(model_block.get("projection") or {}))
+    backbone = BackboneConfig(**model_block.get("backbone"))
+    projection = ProjectionConfig(**model_block.get("projection"))
     cls_cfg = _build_cls_config(model_block)
+    layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
+    task_cfg = _build_task_config(finetune_block.get("task"))
     head = _build_head_config(model_block, required=True)
     model_cfg = ModelConfig(
         channels=channels,
@@ -343,14 +478,22 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         cls=cls_cfg,
         head=head,
     )
+    _validate_layer_mix_config(layer_mix_cfg, backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     validate_token_sec_config(model_cfg, data_cfg.token_sec, context="finetune")
     lora_cfg = LoraConfig(**lora_block)
-    return FinetuneConfigBundle(model=model_cfg, data=data_cfg, lora=lora_cfg)
+    finetune_cfg = FinetuneConfig(
+        freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
+        lora=lora_cfg,
+        layer_mix=layer_mix_cfg,
+        task=task_cfg,
+    )
+    return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
 
 __all__ = [
     "FinetuneConfigBundle",
+    "FinetuneConfig",
     "PretrainConfigBundle",
     "FinetuneDataConfig",
     "PretrainDataConfig",
@@ -360,10 +503,12 @@ __all__ = [
     "LossConfig",
     "ModelConfig",
     "ClsConfig",
+    "LayerMixConfig",
     "TemporalAggConfig",
     "ModelAveragingConfig",
     "ProjectionConfig",
     "LoraConfig",
+    "TaskConfig",
     "load_finetune_config",
     "load_pretrain_config",
     "validate_model_config",

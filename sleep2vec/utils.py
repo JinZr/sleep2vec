@@ -4,6 +4,7 @@ import random
 import numpy as np
 import torch
 
+from data.channel_selection import RoundRobinPairSelector, build_all_pairs
 from data.psg_pretrain_dataset import PSGPretrainDataset
 
 
@@ -28,11 +29,38 @@ def get_pretrain_dataloader(args):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
+    logging.info(f"args: {args}")
+
+    def _seed_worker(worker_id: int):
+        worker_seed = torch.initial_seed() % (2**32)
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    allow_missing_channels = bool(getattr(args, "allow_missing_channels", False))
+    min_channels = int(getattr(args, "min_channels", 6))
+    bucket_by_available_channels = bool(getattr(args, "bucket_by_available_channels", True))
+
+    if allow_missing_channels:
+        logging.warning(
+            "allow_missing_channels enabled: accepting samples with missing channels "
+            "(min_channels=%d, bucket_by_available_channels=%s).",
+            min_channels,
+            bucket_by_available_channels,
+        )
+        if min_channels < 2:
+            logging.warning("min_channels is < 2; contrastive pretraining may be unstable.")
+        if not bucket_by_available_channels:
+            logging.warning(
+                "bucket_by_available_channels is disabled; mixed montages may collapse to a single best_pair."
+            )
+    else:
+        logging.info("allow_missing_channels disabled: requiring all configured channels.")
 
     kwargs = {
         "batch_size": args.batch_size,
         "shuffle": True,
         "num_workers": args.num_workers,
+        "worker_init_fn": _seed_worker,
     }
     train_loader = PSGPretrainDataset(
         channel_names=args.channel_names,
@@ -41,34 +69,46 @@ def get_pretrain_dataloader(args):
         index=args.pretrain_data_index,
         split=["train"],
         max_tokens=args.max_tokens,
-        token_sec=args.token_sec,
         stride_tokens=args.max_tokens,  # 0 for truncation
         mask_rate=args.mask_rate,
         use_legacy_body_movement=False,
         generative=False,
+        allow_missing_channels=allow_missing_channels,
+        min_channels=min_channels,
+        bucket_by_available_channels=bucket_by_available_channels,
+        is_train_set=True,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
 
     kwargs["shuffle"] = False
+    val_pairs = build_all_pairs(args.channel_names)
+    val_loaders = []
+    for pair in val_pairs:
+        pair_selector = RoundRobinPairSelector([pair])
+        val_dataset = PSGPretrainDataset(
+            channel_names=args.channel_names,
+            save_preset_path=None,
+            load_preset_path=args.pretrain_preset_path,
+            index=args.pretrain_data_index,
+            split=["val"],
+            max_tokens=args.max_tokens,
+            stride_tokens=args.max_tokens,  # 0 for truncation
+            mask_rate=args.mask_rate,
+            use_legacy_body_movement=False,
+            generative=False,
+            allow_missing_channels=allow_missing_channels,
+            min_channels=min_channels,
+            bucket_by_available_channels=bucket_by_available_channels,
+            is_train_set=False,
+            pair_selector=pair_selector,
+            **kwargs,
+        )
+        val_dataset.pair = pair
+        val_loaders.append(val_dataset.dataloader(device=args.device))
+    logging.info("Valid DataLoaders created successfully! (pairs=%d)", len(val_loaders))
 
-    main_val_loader = PSGPretrainDataset(
-        channel_names=args.channel_names,
-        save_preset_path=None,
-        load_preset_path=args.pretrain_preset_path,
-        index=args.pretrain_data_index,
-        split=["val"],
-        max_tokens=args.max_tokens,
-        token_sec=args.token_sec,
-        stride_tokens=args.max_tokens,  # 0 for truncation
-        mask_rate=args.mask_rate,
-        use_legacy_body_movement=False,
-        generative=False,
-        **kwargs,
-    ).dataloader(device=args.device)
-    logging.info("Valid DataLoader created successfully!")
-
-    return train_loader, main_val_loader
+    return train_loader, val_loaders
 
 
 def _build_finetune_loader(
@@ -81,6 +121,13 @@ def _build_finetune_loader(
     few_shot=None,
 ):
     meta_data_names = [] if args.label_name in {"age", "sex", "stage5"} else [args.label_name]
+    meta_data_regression_names = [] if args.is_classification else list(meta_data_names)
+    if meta_data_names and args.is_classification and args.output_dim > 2:
+        raise ValueError(
+            "Metadata classification currently supports only binary labels (output_dim=2) for non-stage5 tasks. "
+            f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
+            "Extend metadata label encoding before using multiclass metadata targets."
+        )
     dataset_channel_names = list(args.data_channel_names)
     if args.label_name == "stage5" and "stage5" not in dataset_channel_names:
         # stage5 is a per-token label; include it in the batch tokens so downstream loss can
@@ -94,13 +141,15 @@ def _build_finetune_loader(
         index=args.finetune_data_index,
         split=split,
         max_tokens=args.max_tokens,
-        token_sec=args.token_sec,
         stride_tokens=args.max_tokens,
         mask_rate=0.0,
         use_legacy_body_movement=False,
         meta_data_names=meta_data_names,
+        meta_data_regression_names=meta_data_regression_names,
         sources=sources,
         randomly_select_channels=False,
+        allow_missing_channels=False,
+        min_channels=len(dataset_channel_names),
         is_train_set=is_train_set,
         batch_size=args.batch_size,
         shuffle=shuffle,

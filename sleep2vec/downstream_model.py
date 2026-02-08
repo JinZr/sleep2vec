@@ -6,7 +6,8 @@ import torch
 import torch.nn as nn
 import yaml
 
-from sleep2vec.config import HeadConfig, ModelConfig
+from sleep2vec.config import HeadConfig, LayerMixConfig, ModelConfig
+from sleep2vec.modules.layer_mix import LayerMix
 
 from .downstreams.head_registry import create_head
 from .downstreams.temporal_aggregation import build_temporal_aggregator
@@ -41,6 +42,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         head_name: str | None = None,
         head_kwargs: t.Optional[dict] = None,
         model_config: ModelConfig | None = None,
+        layer_mix_cfg: LayerMixConfig | None = None,
         head_config: HeadConfig | None = None,
     ):
         super().__init__()
@@ -93,6 +95,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.separate_adapters = False  # default
         self._adapter_warning_logged = False
         self._seq_cls_warning_logged = False
+        self._head_accepts_token_mask: bool | None = None
 
         # configure temporal aggregation (required)
         self.temporal_agg = build_temporal_aggregator(
@@ -100,6 +103,21 @@ class Sleep2vecDownstreamModel(nn.Module):
             hidden_size=self.backbone.transformer_hidden_size,
             **dict(temporal_cfg.kwargs or {}),
         )
+
+        self.layer_mix_cfg = layer_mix_cfg
+        self.layer_indices: t.List[int] | None = None
+        self.layer_mix: LayerMix | None = None
+        if self.layer_mix_cfg and getattr(self.layer_mix_cfg, "enabled", False):
+            if self.layer_mix_cfg.layer_indices:
+                self.layer_indices = list(self.layer_mix_cfg.layer_indices)
+                num_layers = len(self.layer_indices)
+            else:
+                num_layers = self.model_config.backbone.num_hidden_layers
+            self.layer_mix = LayerMix(
+                num_layers=num_layers,
+                n_mods=self.n_channels,
+                shared_across_modalities=self.layer_mix_cfg.shared_across_modalities,
+            )
 
     def _backbone_encoder(self) -> nn.Module:
         """Returns the encoder module inside the backbone."""
@@ -130,6 +148,98 @@ class Sleep2vecDownstreamModel(nn.Module):
             logging.warning("Encoder lacks 'set_adapter'; separate adapters are ignored.")
             self._adapter_warning_logged = True
 
+    def _layer_mix_enabled(self) -> bool:
+        return self.layer_mix is not None
+
+    def layer_mix_snapshot(self) -> dict[str, t.Any] | None:
+        """Returns raw and normalized layer-mix weights in a serialization-friendly format."""
+        if not self._layer_mix_enabled():
+            return None
+
+        if self.layer_mix is None:
+            return None
+
+        layer_ids = list(self.layer_indices) if self.layer_indices else list(range(1, self.layer_mix.num_layers + 1))
+        raw = self.layer_mix.weight.detach().cpu()
+        normalized = self.layer_mix.normalized_weight_matrix().detach().cpu()
+        shared = bool(self.layer_mix.shared_across_modalities)
+
+        if shared:
+            row_names = ["shared"]
+        else:
+            row_names = list(self.channel_names)
+
+        if len(row_names) != int(raw.size(0)):
+            row_names = [f"row_{idx}" for idx in range(int(raw.size(0)))]
+
+        rows: dict[str, dict[str, t.Any]] = {}
+        for row_idx, row_name in enumerate(row_names):
+            rows[row_name] = {
+                "row_index": int(row_idx),
+                "raw_logits": [float(v) for v in raw[row_idx].tolist()],
+                "layer_weights": [float(v) for v in normalized[row_idx].tolist()],
+            }
+
+        effective_by_modality: dict[str, dict[str, t.Any]] = {}
+        for mod_idx, mod_name in enumerate(self.channel_names):
+            row_idx = 0 if shared else mod_idx
+            row_name = row_names[row_idx]
+            effective_by_modality[mod_name] = {
+                "row_name": row_name,
+                "row_index": int(row_idx),
+                "layer_weights": [float(v) for v in normalized[row_idx].tolist()],
+            }
+
+        return {
+            "shared_across_modalities": shared,
+            "layer_indices": layer_ids,
+            "rows": rows,
+            "effective_by_modality": effective_by_modality,
+        }
+
+    def _select_layer_states(self, hidden_states: t.Any) -> t.List[torch.Tensor]:
+        if hidden_states is None:
+            raise ValueError("Layer mix requested but encoder returned no hidden states.")
+        if not isinstance(hidden_states, (list, tuple)):
+            raise ValueError(f"Hidden states must be a list/tuple, got {type(hidden_states)}.")
+
+        expected_layers = self.model_config.backbone.num_hidden_layers if self.model_config else len(hidden_states)
+        if len(hidden_states) == expected_layers + 1:
+            layer_states = list(hidden_states[1:])  # drop embedding output
+        elif len(hidden_states) == expected_layers:
+            layer_states = list(hidden_states)
+        else:
+            raise ValueError(
+                f"Unexpected hidden_states length {len(hidden_states)} "
+                f"(expected {expected_layers} or {expected_layers + 1})."
+            )
+
+        if self.layer_indices:
+            max_idx = max(self.layer_indices)
+            if max_idx > len(layer_states):
+                raise ValueError(f"layer_indices {self.layer_indices} exceed available layers ({len(layer_states)}).")
+            layer_states = [layer_states[idx - 1] for idx in self.layer_indices]
+        return layer_states
+
+    def _split_layer_states(
+        self,
+        layer_states: t.List[torch.Tensor],
+        attn_mask: torch.Tensor | None,
+    ) -> tuple[t.List[torch.Tensor], t.List[torch.Tensor] | None, torch.Tensor | None]:
+        if self.cls_embedding is None:
+            return list(layer_states), None, attn_mask
+
+        token_layers: t.List[torch.Tensor] = []
+        cls_layers: t.List[torch.Tensor] = []
+        token_mask = None
+        for layer_hidden in layer_states:
+            token_hidden, cls_hidden, layer_mask = self.cls_embedding.split_hidden(layer_hidden, attn_mask)
+            token_layers.append(token_hidden)
+            cls_layers.append(cls_hidden)
+            if token_mask is None:
+                token_mask = layer_mask
+        return token_layers, cls_layers, token_mask
+
     def forward(self, batch):
         tokens = batch["tokens"]
 
@@ -137,14 +247,57 @@ class Sleep2vecDownstreamModel(nn.Module):
         token_names, token_embeddings = list(token_embeddings.keys()), list(token_embeddings.values())
 
         feature_of_different_mods = []
-        for token_name, single_mod_token_embeddings in zip(token_names, token_embeddings):
+        token_masks: list[torch.Tensor | None] = []
+        layer_mix_enabled = self._layer_mix_enabled()
+        for mod_idx, (token_name, single_mod_token_embeddings) in enumerate(zip(token_names, token_embeddings)):
 
             if getattr(self, "separate_adapters", False):
                 self._set_active_adapter(f"ch_{token_name}")
 
-            hidden, attn_mask = self.backbone._token_embeddings_to_hidden(
-                single_mod_token_embeddings, batch, return_mask=True
-            )
+            if layer_mix_enabled:
+                _, attn_mask, hidden_states = self.backbone._token_embeddings_to_hidden(
+                    single_mod_token_embeddings, batch, return_hidden_states=True
+                )
+                layer_states = self._select_layer_states(hidden_states)
+                token_layers, cls_layers, token_mask = self._split_layer_states(layer_states, attn_mask)
+
+                if self.is_seq:
+                    token_stack = torch.stack(token_layers, dim=0)
+                    mixed_tokens = self.layer_mix.mix(token_stack, mod_idx=mod_idx)
+                    feature = self._forward_seq(mixed_tokens, None)
+                else:
+                    if self.cls_usage == "cls":
+                        if not cls_layers or cls_layers[0] is None:
+                            raise RuntimeError("cls_usage='cls' requested but backbone provides no CLS embedding.")
+                        cls_stack = torch.stack(cls_layers, dim=0)
+                        feature = self.layer_mix.mix(cls_stack, mod_idx=mod_idx)
+                    else:
+                        if token_mask is None:
+                            token_mask = self._build_token_mask(
+                                batch["length"], token_layers[0].size(1), token_layers[0].device
+                            )
+                        elif token_mask.dim() == 3 and token_mask.size(1) == 1:
+                            token_mask = token_mask.squeeze(1)
+                        if token_mask is not None:
+                            token_mask = token_mask.to(torch.bool)
+                        pooled_layers = [self.temporal_agg(layer_tokens, token_mask) for layer_tokens in token_layers]
+                        pooled_stack = torch.stack(pooled_layers, dim=0)
+                        feature = self.layer_mix.mix(pooled_stack, mod_idx=mod_idx)
+
+                feature_of_different_mods.append(feature)
+                if self.is_seq:
+                    if token_mask is None:
+                        token_mask = self._build_token_mask(
+                            batch["length"], token_layers[0].size(1), token_layers[0].device
+                        )
+                    elif token_mask.dim() == 3 and token_mask.size(1) == 1:
+                        token_mask = token_mask.squeeze(1)
+                    if token_mask is not None:
+                        token_mask = token_mask.to(torch.bool)
+                    token_masks.append(token_mask)
+                continue
+
+            hidden, attn_mask, _ = self.backbone._token_embeddings_to_hidden(single_mod_token_embeddings, batch)
 
             strategy = self.cls_embedding
             if strategy is None:
@@ -157,8 +310,26 @@ class Sleep2vecDownstreamModel(nn.Module):
             else:
                 feature = self._forward_nonseq(token_hidden, cls_hidden, token_mask, batch)
             feature_of_different_mods.append(feature)
+            if self.is_seq:
+                if token_mask is None:
+                    token_mask = self._build_token_mask(batch["length"], token_hidden.size(1), token_hidden.device)
+                elif token_mask.dim() == 3 and token_mask.size(1) == 1:
+                    token_mask = token_mask.squeeze(1)
+                if token_mask is not None:
+                    token_mask = token_mask.to(torch.bool)
+                token_masks.append(token_mask)
 
-        output = self.head(feature_of_different_mods)
+        if self.is_seq and token_masks:
+            merged_mask = token_masks[0]
+            for mask in token_masks[1:]:
+                if mask is None:
+                    continue
+                if mask.shape != merged_mask.shape:
+                    raise ValueError("Token masks must share the same shape for sequence heads.")
+                merged_mask = merged_mask & mask
+            output = self._call_head(feature_of_different_mods, merged_mask)
+        else:
+            output = self._call_head(feature_of_different_mods, None)
         return output
 
     def _forward_seq(self, token_hidden, cls_hidden):
@@ -186,6 +357,24 @@ class Sleep2vecDownstreamModel(nn.Module):
                 token_mask[i, : batch["length"][i].item()] = True
 
         return self.temporal_agg(token_hidden, token_mask)
+
+    @staticmethod
+    def _build_token_mask(lengths: torch.Tensor, max_len: int, device) -> torch.Tensor:
+        mask = torch.zeros(int(lengths.shape[0]), max_len, dtype=torch.bool, device=device)
+        for i in range(mask.size(0)):
+            valid_len = int(lengths[i].item())
+            mask[i, :valid_len] = True
+        return mask
+
+    def _head_supports_token_mask(self) -> bool:
+        if self._head_accepts_token_mask is None:
+            self._head_accepts_token_mask = bool(getattr(self.head, "supports_token_mask", False))
+        return self._head_accepts_token_mask
+
+    def _call_head(self, features: t.List[torch.Tensor], token_mask: torch.Tensor | None):
+        if token_mask is not None and self._head_supports_token_mask():
+            return self.head(features, token_mask=token_mask)
+        return self.head(features)
 
     def load_pretrained_backbone(self, ckpt_path, use_ema: bool | str | None = True):
         logging.info(f"Loading backbone from {ckpt_path}")

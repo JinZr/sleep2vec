@@ -171,7 +171,12 @@ class Sleep2vecPretrainModel(nn.Module):
         """
 
         if self.specified_two_mods:
-            chosen_channels = self.specified_two_mods
+            chosen_channels = [ch for ch in self.specified_two_mods if ch in tokens]
+            if len(chosen_channels) < 2:
+                available = [ch for ch in self.channel_names if ch in tokens]
+                if len(available) < 2:
+                    raise ValueError(f"可用通道不足 2 个：{available}")
+                chosen_channels = random.sample(available, 2)
         else:
             # 交集：只保留 tokens 里确实存在的通道（并保持原有顺序）
             available = [ch for ch in self.channel_names if ch in tokens]
@@ -236,7 +241,13 @@ class Sleep2vecPretrainModel(nn.Module):
         """
         return self.cls_embedding.add_cls_and_mask(tokens, lengths)
 
-    def _token_embeddings_to_hidden(self, token_embeddings, batch, *, return_mask: bool = False):
+    def _token_embeddings_to_hidden(
+        self,
+        token_embeddings,
+        batch,
+        *,
+        return_hidden_states: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...] | None]:
 
         # 3. 调整 token_embedding 维度为 transformer hidden_size
         token_embeddings = self.embedding_projection(token_embeddings)
@@ -245,29 +256,58 @@ class Sleep2vecPretrainModel(nn.Module):
         token_embeddings, attention_mask = self.apply_padding_mask(token_embeddings, batch["length"])
 
         # 5. Transformer encoder
-        hidden = self._run_encoder(token_embeddings, attention_mask)
+        if return_hidden_states:
+            hidden, hidden_states = self._run_encoder(token_embeddings, attention_mask, return_hidden_states=True)
+        else:
+            hidden = self._run_encoder(token_embeddings, attention_mask)
+            hidden_states = None
 
-        if return_mask:
-            return hidden, attention_mask
-        return hidden
+        return hidden, attention_mask, hidden_states
 
-    def _run_encoder(self, token_embeddings, attention_mask):
+    def _run_encoder(self, token_embeddings, attention_mask, *, return_hidden_states: bool = False):
         """Routes embeddings through the selected encoder."""
         if self._custom_encoder_forward is not None:
+            if return_hidden_states:
+                raise ValueError("Custom encoder forward does not support hidden states.")
             return self._custom_encoder_forward(self.encoder, token_embeddings, attention_mask)
 
-        encoder_output = self.encoder(inputs_embeds=token_embeddings, attention_mask=attention_mask)
-        if isinstance(encoder_output, torch.Tensor):
-            return encoder_output
-        if hasattr(encoder_output, "last_hidden_state"):
-            return encoder_output.last_hidden_state
-        if isinstance(encoder_output, (list, tuple)):
-            return encoder_output[0]
-        raise ValueError(
-            f"Encoder '{self.encoder_name}' returned unsupported output type "
-            f"{type(encoder_output)}. Provide encoder_forward to customize the "
-            "forward pass."
-        )
+        try:
+            encoder_output = self.encoder(
+                inputs_embeds=token_embeddings,
+                attention_mask=attention_mask,
+                output_hidden_states=return_hidden_states,
+            )
+        except TypeError as exc:
+            if return_hidden_states:
+                raise ValueError(f"Encoder '{self.encoder_name}' does not support output_hidden_states.") from exc
+            encoder_output = self.encoder(inputs_embeds=token_embeddings, attention_mask=attention_mask)
+
+        def _extract_last_hidden(output):
+            if isinstance(output, torch.Tensor):
+                return output
+            if hasattr(output, "last_hidden_state"):
+                return output.last_hidden_state
+            if isinstance(output, (list, tuple)):
+                return output[0]
+            raise ValueError(
+                f"Encoder '{self.encoder_name}' returned unsupported output type "
+                f"{type(output)}. Provide encoder_forward to customize the "
+                "forward pass."
+            )
+
+        last_hidden = _extract_last_hidden(encoder_output)
+        if not return_hidden_states:
+            return last_hidden
+
+        hidden_states = getattr(encoder_output, "hidden_states", None)
+        if hidden_states is None and isinstance(encoder_output, (list, tuple)) and len(encoder_output) > 2:
+            hidden_states = encoder_output[2]
+        if hidden_states is None:
+            raise ValueError(
+                f"Encoder '{self.encoder_name}' did not return hidden states. "
+                "Ensure output_hidden_states is supported by the backbone."
+            )
+        return last_hidden, hidden_states
 
     def get_encoder(self) -> nn.Module:
         """Returns the active encoder module."""
@@ -280,7 +320,6 @@ class Sleep2vecPretrainModel(nn.Module):
     def forward(self, batch, apply_mask):
 
         # 随机选择两个 channel 做 mask 对比学习
-        assert len(self.channel_names) >= 2, "At two channels are required for this method!"
         tokens = batch["tokens"]
 
         # 1. 随机选择两个通道并 tokenize
@@ -298,8 +337,8 @@ class Sleep2vecPretrainModel(nn.Module):
         )
 
         # 3/4/5
-        first_hidden = self._token_embeddings_to_hidden(first_mod_token_embeddings, batch)
-        second_hidden = self._token_embeddings_to_hidden(second_mod_token_embeddings, batch)
+        first_hidden, _, _ = self._token_embeddings_to_hidden(first_mod_token_embeddings, batch)
+        second_hidden, _, _ = self._token_embeddings_to_hidden(second_mod_token_embeddings, batch)
 
         # ★ 对所有 token 逐个投影：得到 [B, L, 128]
         if self.projection:
@@ -315,13 +354,24 @@ class Sleep2vecPretrainModel(nn.Module):
         token_embeddings = self.tokenizer_mapping[channel_name](tokens[channel_name])
 
         # 3/4/5
-        hidden = self._token_embeddings_to_hidden(token_embeddings, batch)
+        hidden, _, _ = self._token_embeddings_to_hidden(token_embeddings, batch)
 
         # 对所有 token 逐个投影：得到 [B, L, 128]
         if self.projection:
             hidden = self.proj_head(hidden)
 
         return hidden
+
+    def set_tokenizers_trainable(self, trainable: bool) -> None:
+        """Freeze/unfreeze tokenizer parameters without altering module train/eval mode."""
+        if hasattr(self, "tokenizer_mapping"):
+            for param in self.tokenizer_mapping.parameters():
+                param.requires_grad = trainable
+        else:
+            for name, module in self.named_children():
+                if "tokenizer" in name:
+                    for param in module.parameters():
+                        param.requires_grad = trainable
 
     def freeze_backbone_groups(
         self,

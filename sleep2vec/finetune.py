@@ -5,7 +5,7 @@ import shutil
 import sys
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
@@ -38,6 +38,7 @@ def prepare_dataloader(args):
 
 def supervised(args, config_bundle):
     model_config = config_bundle.model
+    averaging_config = config_bundle.averaging
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
@@ -60,7 +61,12 @@ def supervised(args, config_bundle):
     train_loader, val_loader, test_loader = prepare_dataloader(args)
 
     # define the model/lightning module
-    model = Sleep2vecFinetuning(args, model_config)
+    model = Sleep2vecFinetuning(
+        args,
+        model_config,
+        finetune_config=config_bundle.finetune,
+        averaging_config=averaging_config,
+    )
 
     # logger and callbacks
     version = args.version
@@ -82,11 +88,14 @@ def supervised(args, config_bundle):
         dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
         monitor=args.monitor,  # 监控验证集 Cohen κ
         mode=args.monitor_mod,  # 越大越好
-        save_top_k=1,  # 只保留最优一个
+        save_top_k=-1,  # 保留全部 checkpoint
+        save_last=True,  # 额外保存 last.ckpt
+        every_n_epochs=args.ckpt_every_n_epochs,  # 控制保存频率
         filename="{epoch:02d}",
     )
 
-    callbacks = [early_stop_callback, checkpoint_callback]
+    lr_monitor = LearningRateMonitor(logging_interval="step")
+    callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
@@ -96,8 +105,8 @@ def supervised(args, config_bundle):
         benchmark=True,
         logger=logger,
         max_epochs=args.epochs,
-        gradient_clip_val=1.0,
-        precision="bf16-mixed",  # <---- 开启 BF16
+        gradient_clip_val=args.gradient_clip_val,
+        precision=args.precision,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
     )
     if args.print_diagnostics:
@@ -125,15 +134,29 @@ def supervised(args, config_bundle):
             val_dataloaders=val_loader,
             ckpt_path=args.ckpt_path if args.ckpt_path != "" else None,
         )
+        # Persist a stable best.ckpt for downstream convenience.
+        if enable_checkpointing and trainer.is_global_zero:
+            best_path = checkpoint_callback.best_model_path
+            if best_path:
+                best_dest = Path(checkpoint_callback.dirpath) / "best.ckpt"
+                try:
+                    if Path(best_path).resolve() != best_dest.resolve():
+                        shutil.copy2(best_path, best_dest)
+                except Exception as exc:  # pragma: no cover - best-effort
+                    logging.warning(f"Failed to copy best checkpoint to {best_dest}: {exc}")
 
     if args.print_diagnostics:
         # only collect diagnostics, skip evaluation
         return
 
     # test the model
+    if args.epochs > 0:
+        ckpt_path = checkpoint_callback.best_model_path or "last"
+    else:
+        ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
     pretrain_result = trainer.test(
         model=model,
-        ckpt_path="best" if args.epochs > 0 else args.ckpt_path,
+        ckpt_path=ckpt_path,
         dataloaders=test_loader,
     )[0]
     logging.info(pretrain_result)
@@ -191,6 +214,12 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=200, help="number of fine-tuning epochs")
     parser.add_argument("--lr", type=float, default=1e-6, help="learning rate for AdamW")
     parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=None,
+        help="Override warmup steps for LR schedule (default: 3% of total steps).",
+    )
+    parser.add_argument(
         "--weight-decay",
         dest="weight_decay",
         type=float,
@@ -204,6 +233,27 @@ if __name__ == "__main__":
         type=int,
         default=100,
         help="early stopping patience in epochs (no improvement)",
+    )
+    parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="bf16",
+        choices=[
+            "transformer-engine",
+            "transformer-engine-float16",
+            "16-true",
+            "16-mixed",
+            "bf16-true",
+            "bf16-mixed",
+            "32-true",
+            "64-true",
+            "64",
+            "32",
+            "16",
+            "bf16",
+        ],
+        help="mixed precision setting passed to Lightning Trainer",
     )
 
     # ---------------- Hardware / device configuration ----------------
@@ -237,8 +287,10 @@ if __name__ == "__main__":
         "--label-name",
         type=str,
         required=True,
-        choices=["age", "sex", "stage5"],
-        help="downstream label to predict (e.g. age, sex, stage5)",
+        help=(
+            "downstream label to predict (built-ins: age, sex, stage5; "
+            "custom labels require finetune.task in the YAML config)"
+        ),
     )
     # ---------------- Data/configuration now YAML-driven; keep CLI for ckpt paths only ----------------
     parser.add_argument(
@@ -285,6 +337,13 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="run validation every N epochs",
+    )
+    parser.add_argument(
+        "--ckpt-every-n-epochs",
+        dest="ckpt_every_n_epochs",
+        type=int,
+        default=1,
+        help="save checkpoints every N epochs",
     )
 
     args = parser.parse_args()
