@@ -2,6 +2,7 @@ model:
   backbone:
     name: roformer
     hidden_size: 256
+    num_hidden_layers: 4
     num_attention_heads: 8      # 256/8=32 dim per head
     vocab_size: 1
   projection:
@@ -67,6 +68,7 @@ loss:
 data:
   mask_rate: 0.15
   max_tokens: 1200
+  token_sec: 3
 model_averaging:
   name: ema
   params:
