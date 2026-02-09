@@ -241,7 +241,7 @@ def parse_args():
         action="store_true",
         help="Enable Weights & Biases logging (needed for confusion matrix logging).",
     )
-    parser.add_argument("--wandb-project", type=str, default=None, help="W&B project name.")
+    parser.add_argument("--wandb-project", type=str, default="sleep2vec-hires-infer", help="W&B project name.")
     parser.add_argument("--wandb-name", type=str, default=None, help="W&B run name.")
     parser.add_argument("--wandb-entity", type=str, default=None, help="W&B entity/team.")
     parser.add_argument("--wandb-group", type=str, default=None, help="W&B group name.")
