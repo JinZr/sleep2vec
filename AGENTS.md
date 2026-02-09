@@ -50,6 +50,18 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 - W&B login is required by default; set `WANDB_API_KEY` or use `WANDB_MODE=offline`.
 - Keep dataset paths and preset pickles in config/CLI (not hardcoded); document any new index CSV columns.
 
+## W&B Naming (Recipe-Driven)
+- W&B naming must follow the active recipe definition, not a single global project name.
+- Derive a recipe tag from the config/entrypoint family (for example: `base`, `hires`, or another recipe namespace) and include it in both project and run names.
+- Recommended pattern:
+  - project: `sleep2vec-<recipe>-<stage>` where `<stage>` is `pretrain`, `finetune`, or `infer`
+  - run name prefix: `s2v-<recipe>-<stage>-`
+- Keep recipe namespaces separated so dashboards, sweeps, and reports never mix runs from different recipes.
+- Current hires mapping follows this policy:
+  - pretrain: `sleep2vec-hires-pretrain`, `s2v-hires-pretrain-*`
+  - finetune: `sleep2vec-hires-finetune`, `s2v-hires-finetune-*`
+  - infer: `sleep2vec-hires-infer` (or override still including `hires`)
+
 ## Config Strictness Policy
 - Follow “let it crash” for model/data semantics: missing or inconsistent YAML fields that affect model shape, task semantics, or evaluation should raise immediately.
 - Defaults are acceptable only for optimization/logging/runtime convenience (e.g., epochs, lr, batch size, W&B metadata).
