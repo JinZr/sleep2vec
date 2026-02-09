@@ -27,6 +27,7 @@ Formatting/linting:
 ```bash
 bash utils/style_check.sh
 ```
+- Agent workflow requirement: after every modification, run `bash utils/style_check.sh` before finishing.
 
 ## Coding Style & Naming Conventions
 - Python formatting is enforced by Black (line length 120), isort (Black profile), and Flake8.
