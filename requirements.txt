@@ -1,18 +1,24 @@
+# Core runtime dependencies
 torch==2.5.1
 pytorch-lightning==2.5.5
 deepspeed==0.15.4
 wandb==0.21.1
 numpy==1.26.4
-pandas==2.3.2
-scipy==1.16.1
-scikit-learn==1.7.1
-matplotlib==3.10.5
+pandas==1.5.3
+scipy==1.13.1
+scikit-learn==1.6.1
+matplotlib==3.9.4
 seaborn==0.13.2
 tqdm==4.67.1
 transformers==4.55.4
 peft==0.17.1
 pyhealth==1.1.6
 pyyaml==6.0.2
+
+# Testing dependencies
+pytest==8.3.5
+
+# Formatting and linting dependencies
 black==24.10.0
 flake8==7.1.1
 isort==5.13.2
