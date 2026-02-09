@@ -4,7 +4,7 @@ pytorch-lightning==2.5.5
 deepspeed==0.15.4
 wandb==0.21.1
 numpy==1.26.4
-pandas==2.3.2
+pandas==1.5.3
 scipy==1.13.1
 scikit-learn==1.6.1
 matplotlib==3.9.4
