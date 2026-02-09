@@ -100,13 +100,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-missing-channels",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        required=True,
         help="Allow samples missing some channels during preset filtering.",
     )
     parser.add_argument(
         "--min-channels",
         type=int,
-        default=2,
+        default=7,
         help="Minimum available channels required when --allow-missing-channels is enabled.",
     )
     parser.add_argument(
