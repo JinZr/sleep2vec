@@ -7,10 +7,10 @@ import torch.nn as nn
 import yaml
 
 from sleep2vec.config import HeadConfig, LayerMixConfig, ModelConfig
-from sleep2vec.modules.layer_mix import LayerMix
-
 from sleep2vec.downstreams.head_registry import create_head
 from sleep2vec.downstreams.temporal_aggregation import build_temporal_aggregator
+from sleep2vec.modules.layer_mix import LayerMix
+
 from .pretrain_model import Sleep2vecPretrainModel
 
 

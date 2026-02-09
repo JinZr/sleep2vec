@@ -376,8 +376,7 @@ def validate_token_sec_config(model_cfg: ModelConfig, token_sec: int, *, context
         expected = rate * token_sec
         if ch.input_dim != expected:
             mismatches.append(
-                f"{ch.name}: input_dim={ch.input_dim}, expected={expected} "
-                f"(rate={rate}Hz, token_sec={token_sec})"
+                f"{ch.name}: input_dim={ch.input_dim}, expected={expected} " f"(rate={rate}Hz, token_sec={token_sec})"
             )
 
     if mismatches:
