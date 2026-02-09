@@ -1,3 +1,4 @@
+# Core runtime dependencies
 torch==2.5.1
 pytorch-lightning==2.5.5
 deepspeed==0.15.4
@@ -13,6 +14,11 @@ transformers==4.55.4
 peft==0.17.1
 pyhealth==1.1.6
 pyyaml==6.0.2
+
+# Testing dependencies
+pytest==8.3.5
+
+# Formatting and linting dependencies
 black==24.10.0
 flake8==7.1.1
 isort==5.13.2

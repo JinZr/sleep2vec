@@ -6,7 +6,7 @@ from sleep2vec.config import BackboneConfig, ModelAveragingConfig, ProjectionCon
 
 BackboneBuilder = t.Callable[[BackboneConfig], t.Any]
 TokenizerBuilder = t.Callable[..., t.Any]
-ProjectionBuilder = t.Callable[[ProjectionConfig | None], t.Any]
+ProjectionBuilder = t.Callable[[t.Optional[ProjectionConfig]], t.Any]
 ModelAveragerBuilder = t.Callable[[ModelAveragingConfig, t.Any], t.Any]
 
 BACKBONE_REGISTRY: t.Dict[str, BackboneBuilder] = {}
