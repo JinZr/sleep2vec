@@ -67,7 +67,7 @@ loss:
     pos_margin: 0.0
 data:
   mask_rate: 0.15
-  max_tokens: 1200
+  max_tokens: 600
   token_sec: 3
 model_averaging:
   name: ema
