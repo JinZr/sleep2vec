@@ -286,7 +286,7 @@ if __name__ == "__main__":
         "--train-pair-monitor-enable",
         dest="train_pair_monitor_enable",
         action="store_true",
-        default=True,
+        default=False,
         help="Enable epoch-level train pair sampling distribution monitoring.",
     )
     parser.add_argument(

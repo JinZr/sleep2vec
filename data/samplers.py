@@ -20,6 +20,7 @@ per-batch channel intersection large, eliminating the "best_pair" collapse.
 
 from __future__ import annotations
 
+from array import array
 from collections import defaultdict
 import itertools
 import math
@@ -221,7 +222,10 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
         self._pair_pool_sizes: dict[Pair, int] = {}
 
         all_pairs: list[Pair] = list(itertools.combinations(self._channel_names, 2))
-        pair_to_indices: dict[Pair, list[int]] = {pair: [] for pair in all_pairs}
+        max_index = max(0, len(data) - 1)
+        index_typecode = "I" if max_index <= 0xFFFFFFFF else "Q"
+        self._index_typecode = index_typecode
+        pair_to_indices: dict[Pair, array] = {pair: array(index_typecode) for pair in all_pairs}
         eligible_indices: set[int] = set()
         allowed = set(self._channel_names)
 
@@ -338,21 +342,23 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
         for global_batch_idx in range(total_batches):
             pair = rng.choices(self._pairs, weights=self._pair_probs, k=1)[0]
             pool = self._pair_to_indices[pair]
+            pool_size = len(pool)
             current_bs = self._batch_size
             if global_batch_idx == remainder_idx:
                 current_bs = remainder
             if self._shuffle:
-                if len(pool) >= current_bs:
+                if pool_size >= current_bs:
                     # Prefer without-replacement sampling to avoid duplicate indices
                     # within one batch when the pair pool can satisfy batch_size.
-                    batch_indices = rng.sample(pool, k=current_bs)
+                    positions = rng.sample(range(pool_size), k=current_bs)
                 else:
                     # Fallback for undersized pools: keep replacement sampling so
                     # batches stay full-sized.
-                    batch_indices = rng.choices(pool, k=current_bs)
+                    positions = rng.choices(range(pool_size), k=current_bs)
+                batch_indices = [int(pool[pos]) for pos in positions]
             else:
-                start = (global_batch_idx * current_bs) % len(pool)
-                batch_indices = [pool[(start + j) % len(pool)] for j in range(current_bs)]
+                start = (global_batch_idx * current_bs) % pool_size
+                batch_indices = [int(pool[(start + j) % pool_size]) for j in range(current_bs)]
             batch = [(idx, pair) for idx in batch_indices]
 
             if global_batch_idx % world_size == rank:
