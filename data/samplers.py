@@ -336,7 +336,14 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
             if global_batch_idx == remainder_idx:
                 current_bs = remainder
             if self._shuffle:
-                batch_indices = rng.choices(pool, k=current_bs)
+                if len(pool) >= current_bs:
+                    # Prefer without-replacement sampling to avoid duplicate indices
+                    # within one batch when the pair pool can satisfy batch_size.
+                    batch_indices = rng.sample(pool, k=current_bs)
+                else:
+                    # Fallback for undersized pools: keep replacement sampling so
+                    # batches stay full-sized.
+                    batch_indices = rng.choices(pool, k=current_bs)
             else:
                 start = (global_batch_idx * current_bs) % len(pool)
                 batch_indices = [pool[(start + j) % len(pool)] for j in range(current_bs)]

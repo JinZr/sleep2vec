@@ -100,3 +100,48 @@ def test_pair_first_sampler_uniform_distribution_is_reasonable() -> None:
     for pair, expected in target.items():
         ratio = counts[pair] / total
         assert abs(ratio - expected) < 0.1
+
+
+def test_pair_first_sampler_shuffle_no_duplicates_when_pool_is_sufficient() -> None:
+    data = [_make_sample(i, ["a", "b", "c"]) for i in range(96)]
+    sampler = PairFirstBatchSampler(
+        data,
+        channel_names=["a", "b", "c"],
+        batch_size=8,
+        min_channels=2,
+        seed=23,
+        shuffle=True,
+    )
+
+    batches = list(iter(sampler))
+    assert batches
+    for batch in batches:
+        indices = [idx for idx, _ in batch]
+        assert len(indices) == 8
+        assert len(set(indices)) == len(indices)
+
+
+def test_pair_first_sampler_shuffle_fallback_allows_duplicates_when_pool_is_small() -> None:
+    data = [
+        _make_sample(0, ["a", "b"]),
+        _make_sample(1, ["a", "b"]),
+        _make_sample(2, ["a", "c"]),
+        _make_sample(3, ["a", "c"]),
+        _make_sample(4, ["b", "c"]),
+        _make_sample(5, ["b", "c"]),
+    ]
+    sampler = PairFirstBatchSampler(
+        data,
+        channel_names=["a", "b", "c"],
+        batch_size=4,
+        min_channels=2,
+        seed=29,
+        shuffle=True,
+    )
+
+    batches = list(iter(sampler))
+    assert batches
+    for batch in batches:
+        indices = [idx for idx, _ in batch]
+        assert len(indices) == 4
+        assert len(set(indices)) < len(indices)
