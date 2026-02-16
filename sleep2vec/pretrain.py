@@ -269,6 +269,14 @@ if __name__ == "__main__":
         help="Training pair-first sampling strategy when allowing missing channels.",
     )
     parser.add_argument(
+        "--train-pair-track-unique-samples",
+        action="store_true",
+        help=(
+            "Track per-pair unique sampled indices during training monitoring. "
+            "Disabled by default to reduce host memory usage."
+        ),
+    )
+    parser.add_argument(
         "--train-pair-skew-warn-threshold",
         type=float,
         default=0.05,

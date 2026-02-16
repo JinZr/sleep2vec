@@ -68,6 +68,7 @@ def test_pair_first_sampler_reports_unique_samples_not_exceeding_pool() -> None:
         batch_size=8,
         min_channels=2,
         seed=17,
+        track_unique_sample_counts=True,
     )
     _ = list(iter(sampler))
 
@@ -79,6 +80,21 @@ def test_pair_first_sampler_reports_unique_samples_not_exceeding_pool() -> None:
     for pair, pool_size in pools.items():
         assert pool_size > 0
         assert 0 <= uniques[pair] <= pool_size
+
+
+def test_pair_first_sampler_disables_unique_tracking_by_default() -> None:
+    data = [_make_sample(i, ["a", "b", "c"]) for i in range(32)]
+    sampler = PairFirstBatchSampler(
+        data,
+        channel_names=["a", "b", "c"],
+        batch_size=4,
+        min_channels=2,
+        seed=11,
+    )
+    _ = list(iter(sampler))
+
+    assert sampler.is_tracking_unique_sample_counts() is False
+    assert sampler.get_last_epoch_unique_sample_counts() == {}
 
 
 def test_pair_first_sampler_uniform_distribution_is_reasonable() -> None:

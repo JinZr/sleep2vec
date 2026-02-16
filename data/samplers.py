@@ -194,6 +194,7 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
         seed: int = 0,
         pair_sampling: str = "uniform",
         pair_probs: dict[Pair, float] | None = None,
+        track_unique_sample_counts: bool = False,
     ) -> None:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}")
@@ -212,6 +213,7 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
         self._drop_last = bool(drop_last)
         self._seed = int(seed)
         self._pair_sampling = pair_sampling
+        self._track_unique_sample_counts = bool(track_unique_sample_counts)
         self._epoch = 0
         self._manual_epoch = False
         self._last_epoch_pair_counter: dict[Pair, int] = {}
@@ -326,9 +328,13 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
             self._epoch += 1
 
         local_counts = {pair: 0 for pair in self._pairs}
-        local_unique: dict[Pair, set[int]] = {pair: set() for pair in self._pairs}
         self._last_epoch_pair_counter = {pair: 0 for pair in self._pairs}
-        self._last_epoch_unique_sample_counts = {pair: 0 for pair in self._pairs}
+        if self._track_unique_sample_counts:
+            local_unique: dict[Pair, set[int]] = {pair: set() for pair in self._pairs}
+            self._last_epoch_unique_sample_counts = {pair: 0 for pair in self._pairs}
+        else:
+            local_unique = {}
+            self._last_epoch_unique_sample_counts = {}
         for global_batch_idx in range(total_batches):
             pair = rng.choices(self._pairs, weights=self._pair_probs, k=1)[0]
             pool = self._pair_to_indices[pair]
@@ -351,13 +357,18 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
 
             if global_batch_idx % world_size == rank:
                 local_counts[pair] += 1
-                local_unique[pair].update(int(x) for x in batch_indices)
+                if self._track_unique_sample_counts:
+                    local_unique[pair].update(int(x) for x in batch_indices)
                 self._last_epoch_pair_counter[pair] = local_counts[pair]
-                self._last_epoch_unique_sample_counts[pair] = len(local_unique[pair])
+                if self._track_unique_sample_counts:
+                    self._last_epoch_unique_sample_counts[pair] = len(local_unique[pair])
                 yield batch
 
         self._last_epoch_pair_counter = local_counts
-        self._last_epoch_unique_sample_counts = {pair: len(local_unique[pair]) for pair in self._pairs}
+        if self._track_unique_sample_counts:
+            self._last_epoch_unique_sample_counts = {pair: len(local_unique[pair]) for pair in self._pairs}
+        else:
+            self._last_epoch_unique_sample_counts = {}
         return
 
     def set_epoch(self, epoch: int) -> None:
@@ -379,3 +390,6 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
 
     def get_pair_pool_sizes(self) -> dict[Pair, int]:
         return dict(self._pair_pool_sizes)
+
+    def is_tracking_unique_sample_counts(self) -> bool:
+        return self._track_unique_sample_counts

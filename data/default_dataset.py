@@ -245,6 +245,7 @@ class DefaultDataset(BaseDataset):
         channel_name_set = set(channel_names)
         bucket_by_available_channels = bool(getattr(self, "bucket_by_available_channels", False))
         train_pair_sampling = getattr(self, "train_pair_sampling", None)
+        train_pair_track_unique_samples = bool(getattr(self, "train_pair_track_unique_samples", False))
         pair_selector = getattr(self, "pair_selector", None)
 
         def collate_fn(indices, tolerance=1):
@@ -467,6 +468,7 @@ class DefaultDataset(BaseDataset):
                 drop_last=self.is_train_set,
                 seed=self.seed,
                 pair_sampling=str(train_pair_sampling),
+                track_unique_sample_counts=train_pair_track_unique_samples,
             )
 
             return DataLoader(

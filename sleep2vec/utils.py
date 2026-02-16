@@ -79,6 +79,7 @@ def get_pretrain_dataloader(args):
     min_channels = int(getattr(args, "min_channels", 6))
     bucket_by_available_channels = bool(getattr(args, "bucket_by_available_channels", True))
     train_pair_sampling = str(getattr(args, "train_pair_sampling", "uniform"))
+    train_pair_track_unique_samples = bool(getattr(args, "train_pair_track_unique_samples", False))
     val_num_workers = getattr(args, "val_num_workers", None)
     if val_num_workers is None:
         val_num_workers = 0 if allow_missing_channels else int(args.num_workers)
@@ -90,10 +91,12 @@ def get_pretrain_dataloader(args):
     if allow_missing_channels:
         logging.warning(
             "allow_missing_channels enabled: accepting samples with missing channels "
-            "(min_channels=%d, bucket_by_available_channels=%s, train_pair_sampling=%s).",
+            "(min_channels=%d, bucket_by_available_channels=%s, train_pair_sampling=%s, "
+            "train_pair_track_unique_samples=%s).",
             min_channels,
             bucket_by_available_channels,
             train_pair_sampling,
+            train_pair_track_unique_samples,
         )
         if min_channels < 2:
             logging.warning("min_channels is < 2; contrastive pretraining may be unstable.")
@@ -106,6 +109,7 @@ def get_pretrain_dataloader(args):
     else:
         logging.info("allow_missing_channels disabled: requiring all configured channels.")
         train_pair_sampling = None
+        train_pair_track_unique_samples = False
 
     kwargs = {
         "batch_size": args.batch_size,
@@ -128,6 +132,7 @@ def get_pretrain_dataloader(args):
         min_channels=min_channels,
         bucket_by_available_channels=bucket_by_available_channels,
         train_pair_sampling=train_pair_sampling,
+        train_pair_track_unique_samples=train_pair_track_unique_samples,
         is_train_set=True,
         **kwargs,
     ).dataloader(device=args.device)
@@ -156,6 +161,7 @@ def get_pretrain_dataloader(args):
             min_channels=min_channels,
             bucket_by_available_channels=bucket_by_available_channels,
             train_pair_sampling=None,
+            train_pair_track_unique_samples=False,
             is_train_set=False,
             pair_selector=pair_selector,
             **val_kwargs,
