@@ -79,6 +79,13 @@ def get_pretrain_dataloader(args):
     min_channels = int(getattr(args, "min_channels", 6))
     bucket_by_available_channels = bool(getattr(args, "bucket_by_available_channels", True))
     train_pair_sampling = str(getattr(args, "train_pair_sampling", "uniform"))
+    val_num_workers = getattr(args, "val_num_workers", None)
+    if val_num_workers is None:
+        val_num_workers = 0 if allow_missing_channels else int(args.num_workers)
+    else:
+        val_num_workers = int(val_num_workers)
+    if val_num_workers < 0:
+        raise ValueError(f"val_num_workers must be >= 0, got {val_num_workers}")
 
     if allow_missing_channels:
         logging.warning(
@@ -126,7 +133,10 @@ def get_pretrain_dataloader(args):
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
 
-    kwargs["shuffle"] = False
+    val_kwargs = dict(kwargs)
+    val_kwargs["shuffle"] = False
+    val_kwargs["num_workers"] = val_num_workers
+    logging.info("Validation DataLoader workers: %d", val_num_workers)
     val_pairs = build_all_pairs(args.channel_names)
     val_loaders = []
     for pair in val_pairs:
@@ -148,7 +158,7 @@ def get_pretrain_dataloader(args):
             train_pair_sampling=None,
             is_train_set=False,
             pair_selector=pair_selector,
-            **kwargs,
+            **val_kwargs,
         )
         if allow_missing_channels:
             _filter_dataset_for_pair_support(val_dataset, pair, list(args.channel_names))
