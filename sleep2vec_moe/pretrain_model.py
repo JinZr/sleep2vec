@@ -282,6 +282,7 @@ class Sleep2vecPretrainModel(nn.Module):
         *,
         batch_size: int,
         device: torch.device,
+        channel_name: str | None = None,
     ) -> dict[str, torch.Tensor] | None:
         encoder_cfg = getattr(self.encoder, "config", None)
         if encoder_cfg is None or not getattr(encoder_cfg, "moe_enabled", False):
@@ -343,7 +344,8 @@ class Sleep2vecPretrainModel(nn.Module):
                     bins[valid] = bin_ids
                 out["age_bin"] = bins
             elif key == "modality":
-                out["modality"] = torch.full((batch_size,), 0, dtype=torch.long, device=device)
+                modality_id = self.channel_to_id.get(channel_name, 0) if channel_name is not None else 0
+                out["modality"] = torch.full((batch_size,), modality_id, dtype=torch.long, device=device)
 
         return out or None
 
@@ -543,7 +545,18 @@ class Sleep2vecPretrainModel(nn.Module):
         metadata = batch.get("metadata")
         batch_size = int(first_mod_token_embeddings.shape[0])
         device = first_mod_token_embeddings.device
-        group_ids = self._build_router_group_ids(metadata, batch_size=batch_size, device=device)
+        first_group_ids = self._build_router_group_ids(
+            metadata,
+            batch_size=batch_size,
+            device=device,
+            channel_name=first_channel,
+        )
+        second_group_ids = self._build_router_group_ids(
+            metadata,
+            batch_size=batch_size,
+            device=device,
+            channel_name=second_channel,
+        )
         first_ctx = self._build_router_ctx(metadata, first_channel, batch_size=batch_size, device=device)
         second_ctx = self._build_router_ctx(metadata, second_channel, batch_size=batch_size, device=device)
 
@@ -551,14 +564,14 @@ class Sleep2vecPretrainModel(nn.Module):
             first_mod_token_embeddings,
             batch,
             router_ctx=first_ctx,
-            router_group_ids=group_ids,
+            router_group_ids=first_group_ids,
             return_aux=True,
         )
         second_hidden, _, _, second_aux = self._token_embeddings_to_hidden(
             second_mod_token_embeddings,
             batch,
             router_ctx=second_ctx,
-            router_group_ids=group_ids,
+            router_group_ids=second_group_ids,
             return_aux=True,
         )
 

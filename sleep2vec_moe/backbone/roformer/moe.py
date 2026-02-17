@@ -114,20 +114,25 @@ class SparseMoE(nn.Module):
 
     def _compute_group_balance_loss(
         self,
-        dispatch_token_ids: torch.Tensor,
-        dispatch_expert_ids: torch.Tensor,
+        router_probs: torch.Tensor,
         group_ids: dict[str, torch.Tensor] | None,
-        tokens_per_sample: int,
-        device: torch.device,
     ) -> torch.Tensor:
+        device = router_probs.device
         if self.group_balance_coef <= 0.0:
             return torch.zeros((), dtype=torch.float32, device=device)
         if not group_ids:
             return torch.zeros((), dtype=torch.float32, device=device)
-        if dispatch_token_ids.numel() == 0:
+        if router_probs.numel() == 0:
             return torch.zeros((), dtype=torch.float32, device=device)
 
-        batch_indices = torch.div(dispatch_token_ids, tokens_per_sample, rounding_mode="floor")
+        batch_size, seq_len, _ = router_probs.shape
+        router_probs_flat = router_probs.reshape(batch_size * seq_len, self.num_experts)
+        batch_indices = (
+            torch.arange(batch_size, dtype=torch.long, device=device)
+            .unsqueeze(1)
+            .expand(batch_size, seq_len)
+            .reshape(-1)
+        )
         key_losses: list[torch.Tensor] = []
         for key in self.group_keys:
             values = group_ids.get(key)
@@ -147,7 +152,7 @@ class SparseMoE(nn.Module):
             if not valid_mask.any():
                 continue
             groups = groups[valid_mask]
-            experts = dispatch_expert_ids[valid_mask]
+            probs_valid = router_probs_flat[valid_mask]
             unique_groups = groups.unique()
             if unique_groups.numel() == 0:
                 continue
@@ -157,11 +162,7 @@ class SparseMoE(nn.Module):
                 group_mask = groups == int(group_value)
                 if not group_mask.any():
                     continue
-                counts = torch.bincount(experts[group_mask], minlength=self.num_experts).to(dtype=torch.float32)
-                total = counts.sum()
-                if total.item() <= 0:
-                    continue
-                q = counts / total
+                q = probs_valid[group_mask].mean(dim=0)
                 per_group_losses.append(self.num_experts * torch.sum(q.square()))
 
             if per_group_losses:
@@ -223,16 +224,9 @@ class SparseMoE(nn.Module):
 
         z_loss_raw = torch.logsumexp(router_logits, dim=-1).square().mean()
 
-        dispatch_positions = dispatched.nonzero(as_tuple=False)
-        dispatch_token_ids = dispatch_positions[:, 0] if dispatch_positions.numel() > 0 else torch.zeros(
-            0, dtype=torch.long, device=x.device
-        )
         group_loss_raw = self._compute_group_balance_loss(
-            dispatch_token_ids=dispatch_token_ids,
-            dispatch_expert_ids=dispatch_expert_ids,
+            router_probs=router_probs,
             group_ids=group_ids,
-            tokens_per_sample=seq_len,
-            device=x.device,
         )
 
         aux_loss = self.aux_loss_coef * lb_loss_raw
