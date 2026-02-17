@@ -22,11 +22,11 @@ Goal: add an MoE backbone and any MoE-specific components under a new `sleep2vec
    - For downstream, add heads/fusion in `downstream/heads.py` and register (or reuse existing ones).
 
 5) YAML recipes
-   - Add `configs/sleep2vec_moe_pretrain.yaml` plus finetune YAMLs (cls/reg) pointing to the MoE backbone and tokenizers.
+   - Add MoE YAMLs under a dedicated folder `configs_moe/` (e.g., `configs_moe/sleep2vec_moe_pretrain.yaml`) plus finetune YAMLs (cls/reg) pointing to the MoE backbone and tokenizers.
    - Keep training hyperparameters on the CLI; model/loss selections live in YAML.
 
 6) Running
-   - Pretrain: `python pretrain.py --config configs/sleep2vec_moe_pretrain.yaml ...`
+   - Pretrain: `python pretrain.py --config configs_moe/sleep2vec_moe_pretrain.yaml ...`
    - Finetune: `python finetune.py --config configs/sleep2vec_moe_finetune_cls.yaml --label-name ... --results-csv-path ...`
 
 7) Validation checklist
