@@ -177,6 +177,7 @@ class SparseMoE(nn.Module):
         x: torch.Tensor,
         ctx: torch.Tensor | None = None,
         group_ids: dict[str, torch.Tensor] | None = None,
+        collect_stats: bool = False,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         batch_size, seq_len, hidden_size = x.shape
         num_tokens = batch_size * seq_len
@@ -253,4 +254,13 @@ class SparseMoE(nn.Module):
             "load_cv2": load_cv2.detach(),
             "importance_cv2": importance_cv2.detach(),
         }
+        if collect_stats:
+            token_dispatched = dispatched.any(dim=1).reshape(batch_size, seq_len)
+            aux["router_logits"] = router_logits
+            aux["router_probs"] = router_probs
+            aux["expert_indices"] = topk_idx
+            aux["dispatch_mask"] = dispatched.reshape(batch_size, seq_len, self.top_k)
+            aux["dropped_mask"] = ~token_dispatched
+            aux["capacity"] = int(capacity)
+            aux["num_experts"] = int(self.num_experts)
         return y_flat.reshape(batch_size, seq_len, hidden_size), aux

@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sleep2vec.common import apply_finetune_config, dump_cli_args_yaml
+from sleep2vec.callbacks import MoEStatsCallback
 from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import get_finetune_dataloaders
@@ -96,6 +97,9 @@ def supervised(args, config_bundle):
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
+    moe_cfg = getattr(config_bundle.finetune, "moe", None)
+    if moe_cfg is not None:
+        callbacks.append(MoEStatsCallback(every_n_steps=moe_cfg.log_every_n_steps))
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,

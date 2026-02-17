@@ -151,11 +151,36 @@ class TaskConfig:
 
 
 @dataclass
+class GroupBalanceConfig:
+    enabled: bool = False
+    group_key: str = "source"
+    loss_type: str = "per_group_switch"
+    weight: float = 0.0
+    min_group_size: int = 4
+
+
+@dataclass
+class MoEFineTuneConfig:
+    enable_aux_losses: bool = False
+    aux_loss_weight: float = 0.0
+    router_z_loss_weight: float = 0.0
+    capacity_factor_train: float | None = None
+    capacity_factor_eval: float | None = None
+    train_router: bool = False
+    train_experts: bool = False
+    router_lr_mult: float = 1.0
+    experts_lr_mult: float = 1.0
+    log_every_n_steps: int = 50
+    group_balance: GroupBalanceConfig | None = None
+
+
+@dataclass
 class FinetuneConfig:
     freeze_tokenizer: bool = True
     lora: LoraConfig = field(default_factory=LoraConfig)
     layer_mix: LayerMixConfig | None = None
     task: TaskConfig | None = None
+    moe: MoEFineTuneConfig | None = None
 
 
 @dataclass
@@ -308,6 +333,50 @@ def _build_task_config(raw: t.Any) -> TaskConfig | None:
     )
 
 
+def _build_group_balance_config(raw: t.Any) -> GroupBalanceConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.moe.group_balance must be a mapping when provided.")
+    cfg = GroupBalanceConfig(**raw)
+    if cfg.min_group_size < 1:
+        raise ValueError("finetune.moe.group_balance.min_group_size must be >= 1.")
+    if cfg.weight < 0:
+        raise ValueError("finetune.moe.group_balance.weight must be >= 0.")
+    if cfg.loss_type not in {"per_group_switch", "group_to_global_l2", "group_to_global_kl"}:
+        raise ValueError(
+            "finetune.moe.group_balance.loss_type must be one of "
+            "{'per_group_switch', 'group_to_global_l2', 'group_to_global_kl'}."
+        )
+    return cfg
+
+
+def _build_moe_finetune_config(raw: t.Any) -> MoEFineTuneConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.moe must be a mapping when provided.")
+    block = dict(raw)
+    group_balance_raw = block.pop("group_balance", None)
+    cfg = MoEFineTuneConfig(group_balance=_build_group_balance_config(group_balance_raw), **block)
+
+    if cfg.aux_loss_weight < 0:
+        raise ValueError("finetune.moe.aux_loss_weight must be >= 0.")
+    if cfg.router_z_loss_weight < 0:
+        raise ValueError("finetune.moe.router_z_loss_weight must be >= 0.")
+    if cfg.capacity_factor_train is not None and cfg.capacity_factor_train <= 0:
+        raise ValueError("finetune.moe.capacity_factor_train must be > 0 when provided.")
+    if cfg.capacity_factor_eval is not None and cfg.capacity_factor_eval <= 0:
+        raise ValueError("finetune.moe.capacity_factor_eval must be > 0 when provided.")
+    if cfg.router_lr_mult <= 0:
+        raise ValueError("finetune.moe.router_lr_mult must be > 0.")
+    if cfg.experts_lr_mult <= 0:
+        raise ValueError("finetune.moe.experts_lr_mult must be > 0.")
+    if cfg.log_every_n_steps < 1:
+        raise ValueError("finetune.moe.log_every_n_steps must be >= 1.")
+    return cfg
+
+
 def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cfg: BackboneConfig) -> None:
     if layer_mix_cfg is None or not layer_mix_cfg.layer_indices:
         return
@@ -444,11 +513,13 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     _validate_layer_mix_config(layer_mix_cfg, backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
+    moe_cfg = _build_moe_finetune_config(finetune_block.get("moe"))
     finetune_cfg = FinetuneConfig(
         freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
         lora=lora_cfg,
         layer_mix=layer_mix_cfg,
         task=task_cfg,
+        moe=moe_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
@@ -471,6 +542,8 @@ __all__ = [
     "ProjectionConfig",
     "LoraConfig",
     "TaskConfig",
+    "GroupBalanceConfig",
+    "MoEFineTuneConfig",
     "load_finetune_config",
     "load_pretrain_config",
     "validate_model_config",

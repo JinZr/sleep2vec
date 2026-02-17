@@ -400,6 +400,7 @@ class Sleep2vecPretrainModel(nn.Module):
         router_ctx: torch.Tensor | None = None,
         router_group_ids: dict[str, torch.Tensor] | None = None,
         return_aux: bool = False,
+        collect_moe_stats: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...] | None] | tuple[
         torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...] | None, dict[str, t.Any]
     ]:
@@ -419,6 +420,7 @@ class Sleep2vecPretrainModel(nn.Module):
                 router_ctx=router_ctx,
                 router_group_ids=router_group_ids,
                 return_aux=return_aux,
+                collect_moe_stats=collect_moe_stats,
             )
         else:
             hidden, aux = self._run_encoder(
@@ -427,6 +429,7 @@ class Sleep2vecPretrainModel(nn.Module):
                 router_ctx=router_ctx,
                 router_group_ids=router_group_ids,
                 return_aux=return_aux,
+                collect_moe_stats=collect_moe_stats,
             )
             hidden_states = None
 
@@ -443,6 +446,7 @@ class Sleep2vecPretrainModel(nn.Module):
         router_ctx: torch.Tensor | None = None,
         router_group_ids: dict[str, torch.Tensor] | None = None,
         return_aux: bool = False,
+        collect_moe_stats: bool = False,
     ):
         """Routes embeddings through the selected encoder."""
         if self._custom_encoder_forward is not None:
@@ -458,12 +462,14 @@ class Sleep2vecPretrainModel(nn.Module):
             output_hidden_states=return_hidden_states,
             router_ctx=router_ctx,
             router_group_ids=router_group_ids,
+            collect_moe_stats=collect_moe_stats,
         )
         try:
             encoder_output = self.encoder(**call_kwargs)
         except TypeError:
             call_kwargs.pop("router_ctx", None)
             call_kwargs.pop("router_group_ids", None)
+            call_kwargs.pop("collect_moe_stats", None)
             try:
                 encoder_output = self.encoder(**call_kwargs)
             except TypeError as exc:

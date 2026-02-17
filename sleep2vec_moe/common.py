@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 import typing as t
 
@@ -104,6 +105,8 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     data_cfg = config_bundle.data
     finetune_cfg = config_bundle.finetune
     lora_cfg = finetune_cfg.lora
+    args.finetune = finetune_cfg
+    args.finetune_moe = finetune_cfg.moe
 
     args.channel_names = [c.name for c in model_cfg.channels]
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
@@ -136,6 +139,9 @@ def _to_yamlable(obj: t.Any) -> t.Any:
 
     if isinstance(obj, argparse.Namespace):
         obj = vars(obj)
+
+    if is_dataclass(obj):
+        return {k: _to_yamlable(v) for k, v in asdict(obj).items()}
 
     if isinstance(obj, Path):
         return str(obj)

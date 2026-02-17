@@ -1,12 +1,13 @@
 import logging
 import typing as t
+from dataclasses import asdict
 
 from peft import LoraConfig, TaskType, get_peft_model
 import torch
 import torch.nn as nn
 import yaml
 
-from sleep2vec.config import HeadConfig, LayerMixConfig, ModelConfig
+from sleep2vec.config import HeadConfig, LayerMixConfig, ModelConfig, MoEFineTuneConfig
 from sleep2vec.modules.layer_mix import LayerMix
 
 from .downstreams.head_registry import create_head
@@ -44,6 +45,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         model_config: ModelConfig | None = None,
         layer_mix_cfg: LayerMixConfig | None = None,
         head_config: HeadConfig | None = None,
+        moe_finetune_cfg: MoEFineTuneConfig | None = None,
     ):
         super().__init__()
         # core attributes
@@ -55,6 +57,8 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.is_classification = is_classification
         self.is_seq = is_seq
         self.target = target
+        self.moe_finetune_cfg = moe_finetune_cfg
+        self.last_moe_stats: dict[str, t.Any] | None = None
 
         self.n_channels = len(self.channel_names)
         self.cls_embedding = getattr(self.backbone, "cls_embedding", None)
@@ -119,6 +123,10 @@ class Sleep2vecDownstreamModel(nn.Module):
                 shared_across_modalities=self.layer_mix_cfg.shared_across_modalities,
             )
 
+        self._router_param_prefixes: set[str] = set()
+        self._expert_param_prefixes: set[str] = set()
+        self._refresh_moe_param_matchers()
+
     def _backbone_encoder(self) -> nn.Module:
         """Returns the encoder module inside the backbone."""
         if hasattr(self.backbone, "get_encoder"):
@@ -150,6 +158,37 @@ class Sleep2vecDownstreamModel(nn.Module):
 
     def _layer_mix_enabled(self) -> bool:
         return self.layer_mix is not None
+
+    def _refresh_moe_param_matchers(self) -> None:
+        self._router_param_prefixes = set()
+        self._expert_param_prefixes = set()
+        for module_name, module in self.backbone.named_modules():
+            cls_name = module.__class__.__name__.lower()
+            if "router" in cls_name or "gate" in cls_name:
+                self._router_param_prefixes.add(module_name)
+            if "expert" in cls_name:
+                self._expert_param_prefixes.add(module_name)
+
+    @staticmethod
+    def _prefix_match(param_name: str, prefixes: set[str]) -> bool:
+        for prefix in prefixes:
+            if not prefix:
+                continue
+            if param_name == prefix or param_name.startswith(prefix + "."):
+                return True
+        return False
+
+    def is_router_parameter_name(self, name: str) -> bool:
+        if self._prefix_match(name, self._router_param_prefixes):
+            return True
+        lowered = name.lower()
+        return ".router." in lowered or ".gate." in lowered or lowered.startswith("router.")
+
+    def is_expert_parameter_name(self, name: str) -> bool:
+        if self._prefix_match(name, self._expert_param_prefixes):
+            return True
+        lowered = name.lower()
+        return ".experts." in lowered or ".expert." in lowered or lowered.startswith("experts.")
 
     def layer_mix_snapshot(self) -> dict[str, t.Any] | None:
         """Returns raw and normalized layer-mix weights in a serialization-friendly format."""
@@ -246,17 +285,51 @@ class Sleep2vecDownstreamModel(nn.Module):
         token_embeddings = self.backbone._tokenize_all(tokens)
         token_names, token_embeddings = list(token_embeddings.keys()), list(token_embeddings.values())
 
+        metadata = batch.get("metadata")
+        moe_cfg = self.moe_finetune_cfg
+        collect_moe_stats = False
+        if moe_cfg is not None:
+            collect_moe_stats = bool(
+                moe_cfg.enable_aux_losses
+                or moe_cfg.train_router
+                or moe_cfg.train_experts
+                or (moe_cfg.group_balance is not None and moe_cfg.group_balance.enabled)
+            )
+
         feature_of_different_mods = []
         token_masks: list[torch.Tensor | None] = []
+        modality_moe_losses: list[torch.Tensor] = []
+        modality_moe_stats: dict[str, dict[str, t.Any]] = {}
         layer_mix_enabled = self._layer_mix_enabled()
         for mod_idx, (token_name, single_mod_token_embeddings) in enumerate(zip(token_names, token_embeddings)):
 
             if getattr(self, "separate_adapters", False):
                 self._set_active_adapter(f"ch_{token_name}")
 
+            batch_size = int(single_mod_token_embeddings.shape[0])
+            mod_device = single_mod_token_embeddings.device
+            router_ctx = self.backbone._build_router_ctx(
+                metadata,
+                token_name,
+                batch_size=batch_size,
+                device=mod_device,
+            )
+            router_group_ids = self.backbone._build_router_group_ids(
+                metadata,
+                batch_size=batch_size,
+                device=mod_device,
+                channel_name=token_name,
+            )
+
             if layer_mix_enabled:
-                _, attn_mask, hidden_states = self.backbone._token_embeddings_to_hidden(
-                    single_mod_token_embeddings, batch, return_hidden_states=True
+                _, attn_mask, hidden_states, aux = self.backbone._token_embeddings_to_hidden(
+                    single_mod_token_embeddings,
+                    batch,
+                    return_hidden_states=True,
+                    router_ctx=router_ctx,
+                    router_group_ids=router_group_ids,
+                    return_aux=True,
+                    collect_moe_stats=collect_moe_stats,
                 )
                 layer_states = self._select_layer_states(hidden_states)
                 token_layers, cls_layers, token_mask = self._split_layer_states(layer_states, attn_mask)
@@ -295,9 +368,23 @@ class Sleep2vecDownstreamModel(nn.Module):
                     if token_mask is not None:
                         token_mask = token_mask.to(torch.bool)
                     token_masks.append(token_mask)
+                if isinstance(aux, dict):
+                    moe_loss = aux.get("moe_loss")
+                    if torch.is_tensor(moe_loss):
+                        modality_moe_losses.append(moe_loss)
+                    moe_metrics = aux.get("moe_metrics")
+                    if isinstance(moe_metrics, dict):
+                        modality_moe_stats[token_name] = moe_metrics
                 continue
 
-            hidden, attn_mask, _ = self.backbone._token_embeddings_to_hidden(single_mod_token_embeddings, batch)
+            hidden, attn_mask, _, aux = self.backbone._token_embeddings_to_hidden(
+                single_mod_token_embeddings,
+                batch,
+                router_ctx=router_ctx,
+                router_group_ids=router_group_ids,
+                return_aux=True,
+                collect_moe_stats=collect_moe_stats,
+            )
 
             strategy = self.cls_embedding
             if strategy is None:
@@ -318,6 +405,13 @@ class Sleep2vecDownstreamModel(nn.Module):
                 if token_mask is not None:
                     token_mask = token_mask.to(torch.bool)
                 token_masks.append(token_mask)
+            if isinstance(aux, dict):
+                moe_loss = aux.get("moe_loss")
+                if torch.is_tensor(moe_loss):
+                    modality_moe_losses.append(moe_loss)
+                moe_metrics = aux.get("moe_metrics")
+                if isinstance(moe_metrics, dict):
+                    modality_moe_stats[token_name] = moe_metrics
 
         if self.is_seq and token_masks:
             merged_mask = token_masks[0]
@@ -330,6 +424,55 @@ class Sleep2vecDownstreamModel(nn.Module):
             output = self._call_head(feature_of_different_mods, merged_mask)
         else:
             output = self._call_head(feature_of_different_mods, None)
+
+        if modality_moe_stats:
+            merged: dict[str, t.Any] = {}
+            routed_lists: dict[str, list[t.Any]] = {
+                "router_logits": [],
+                "router_probs": [],
+                "expert_indices": [],
+                "dispatch_mask": [],
+                "dropped_mask": [],
+                "capacity": [],
+            }
+            for modality_name, stats in modality_moe_stats.items():
+                for key, value in stats.items():
+                    merged[f"modality/{modality_name}/{key}"] = value
+                for key in routed_lists:
+                    value = stats.get(key)
+                    if isinstance(value, (list, tuple)):
+                        routed_lists[key].extend(list(value))
+
+            if modality_moe_losses:
+                merged["moe_loss_backbone"] = torch.stack(
+                    [loss.to(dtype=torch.float32) for loss in modality_moe_losses], dim=0
+                ).mean()
+
+            candidate_avg_keys = sorted(
+                {
+                    key
+                    for stats in modality_moe_stats.values()
+                    for key in stats.keys()
+                    if key.startswith("mean/") or key.startswith("last/")
+                }
+            )
+            for key in candidate_avg_keys:
+                values = [stats[key] for stats in modality_moe_stats.values() if key in stats]
+                if len(values) != len(modality_moe_stats):
+                    continue
+                if not all(torch.is_tensor(value) for value in values):
+                    continue
+                if not all(values[0].shape == value.shape for value in values[1:]):
+                    continue
+                merged[key] = torch.stack([value.to(dtype=torch.float32) for value in values], dim=0).mean(dim=0)
+
+            self.last_moe_stats = {
+                "merged": merged,
+                "by_modality": modality_moe_stats,
+                **{key: value for key, value in routed_lists.items() if value},
+            }
+        else:
+            self.last_moe_stats = None
         return output
 
     def _forward_seq(self, token_hidden, cls_hidden):
@@ -397,6 +540,7 @@ class Sleep2vecDownstreamModel(nn.Module):
 
         # Sanity check CLS settings against serialized config in checkpoint (assumes YAML is present)
         self._warn_on_cls_mismatch(ckpt)
+        self._warn_on_moe_mismatch(ckpt)
 
         # 加载到 self.backbone
         load_info = self.backbone.load_state_dict(filtered_state_dict, strict=False)
@@ -445,6 +589,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             )
             encoder_with_lora = get_peft_model(self._backbone_encoder(), cfg)
             self._replace_backbone_encoder(encoder_with_lora)
+            self._refresh_moe_param_matchers()
 
             # 3) 为每个通道创建独立 adapter
             self.separate_adapters = separate_adapters
@@ -457,6 +602,18 @@ class Sleep2vecDownstreamModel(nn.Module):
                         encoder.add_adapter(name, cfg)
                     self.channel_adapters.append(name)
                 self._enable_all_adapters_trainable()
+
+        train_router = bool(getattr(self.moe_finetune_cfg, "train_router", False))
+        train_experts = bool(getattr(self.moe_finetune_cfg, "train_experts", False))
+        if train_router or train_experts:
+            self._refresh_moe_param_matchers()
+            for name, param in self.backbone.named_parameters():
+                if param.requires_grad:
+                    continue
+                if train_router and self.is_router_parameter_name(name):
+                    param.requires_grad = True
+                elif train_experts and self.is_expert_parameter_name(name):
+                    param.requires_grad = True
 
         # —— 全模型统计 ——
         total_all = sum(p.numel() for _, p in self.named_parameters())
@@ -473,12 +630,26 @@ class Sleep2vecDownstreamModel(nn.Module):
         b_train = sum(p.numel() for _, p in self.backbone.named_parameters() if p.requires_grad)
         b_ratio = b_train / b_total if b_total > 0 else 0.0
         lora_train = sum(p.numel() for n, p in self.backbone.named_parameters() if p.requires_grad and "lora_" in n)
+        router_train = sum(
+            p.numel() for n, p in self.backbone.named_parameters() if p.requires_grad and self.is_router_parameter_name(n)
+        )
+        experts_train = sum(
+            p.numel() for n, p in self.backbone.named_parameters() if p.requires_grad and self.is_expert_parameter_name(n)
+        )
+        head_train = sum(p.numel() for n, p in self.named_parameters() if p.requires_grad and n.startswith("head."))
         logging.info(
             "[insert_lora] backbone trainable params: %s/%s (%s); LoRA-only trainable: %s",
             b_train,
             b_total,
             f"{b_ratio:.4%}",
             lora_train,
+        )
+        logging.info(
+            "[insert_lora] trainable breakdown (params): head=%s lora=%s router=%s experts=%s",
+            head_train,
+            lora_train,
+            router_train,
+            experts_train,
         )
 
     # 在所有 adapter 都 add 完之后调用
@@ -508,9 +679,70 @@ class Sleep2vecDownstreamModel(nn.Module):
         emb_norm = None if emb is None or str(emb).lower() in {"none", "null"} else str(emb).lower()
         return emb_norm, down
 
+    @staticmethod
+    def _load_ckpt_model_cfg(ckpt: dict) -> dict[str, t.Any]:
+        model_cfg_yaml = ckpt.get("model_config_yaml")
+        if model_cfg_yaml is None:
+            return {}
+        cfg = yaml.safe_load(model_cfg_yaml)
+        if not isinstance(cfg, dict):
+            return {}
+        return cfg
+
+    def _warn_on_moe_mismatch(self, ckpt: dict):
+        ckpt_model_cfg = self._load_ckpt_model_cfg(ckpt)
+        if not ckpt_model_cfg or self.model_config is None:
+            return
+
+        ckpt_backbone = ckpt_model_cfg.get("backbone")
+        if not isinstance(ckpt_backbone, dict):
+            return
+
+        curr_backbone = asdict(self.model_config.backbone)
+
+        def _is_moe_key(key: str) -> bool:
+            lowered = key.lower()
+            return any(token in lowered for token in ("moe", "expert", "router", "capacity"))
+
+        def _collect(backbone_cfg: dict[str, t.Any]) -> dict[str, t.Any]:
+            moe_cfg: dict[str, t.Any] = {}
+            for key, value in backbone_cfg.items():
+                if key == "config_overrides":
+                    continue
+                if _is_moe_key(key):
+                    moe_cfg[key] = value
+            overrides = backbone_cfg.get("config_overrides")
+            if isinstance(overrides, dict):
+                for key, value in overrides.items():
+                    if _is_moe_key(key):
+                        moe_cfg[key] = value
+            return moe_cfg
+
+        ckpt_moe = _collect(ckpt_backbone)
+        curr_moe = _collect(curr_backbone)
+        all_keys = sorted(set(ckpt_moe.keys()) | set(curr_moe.keys()))
+        if not all_keys:
+            return
+
+        mismatches: list[tuple[str, t.Any, t.Any]] = []
+        for key in all_keys:
+            ckpt_value = ckpt_moe.get(key, "<missing>")
+            curr_value = curr_moe.get(key, "<missing>")
+            if ckpt_value != curr_value:
+                mismatches.append((key, ckpt_value, curr_value))
+
+        if not mismatches:
+            return
+
+        logging.warning("MoE backbone config mismatch between checkpoint and current recipe:")
+        for key, ckpt_value, curr_value in mismatches:
+            logging.warning("  %s: checkpoint=%r current=%r", key, ckpt_value, curr_value)
+
     def _warn_on_cls_mismatch(self, ckpt: dict):
         """Assumes serialized YAML config exists in checkpoint; warn if CLS settings differ."""
-        ckpt_model_cfg = yaml.safe_load(ckpt["model_config_yaml"])
+        ckpt_model_cfg = self._load_ckpt_model_cfg(ckpt)
+        if not ckpt_model_cfg:
+            return
         ckpt_cls_block = ckpt_model_cfg.get("cls")
         ckpt_emb, ckpt_down = self._normalize_cls_cfg(ckpt_cls_block)
         curr_emb, curr_down = self._normalize_cls_cfg(self.model_config.cls if self.model_config else None)

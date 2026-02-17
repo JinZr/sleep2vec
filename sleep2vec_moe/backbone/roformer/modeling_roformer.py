@@ -279,8 +279,14 @@ class RoFormerMoEBlock(nn.Module):
         hidden_states: torch.Tensor,
         router_ctx: torch.Tensor | None = None,
         router_group_ids: dict[str, torch.Tensor] | None = None,
+        collect_moe_stats: bool = False,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        moe_output, moe_aux = self.moe(hidden_states, ctx=router_ctx, group_ids=router_group_ids)
+        moe_output, moe_aux = self.moe(
+            hidden_states,
+            ctx=router_ctx,
+            group_ids=router_group_ids,
+            collect_stats=collect_moe_stats,
+        )
         moe_output = self.dropout(moe_output)
         layer_output = self.layer_norm(moe_output + hidden_states)
         return layer_output, moe_aux
@@ -307,6 +313,7 @@ class RoFormerLayer(nn.Module):
         rotary_components: tuple[torch.Tensor, torch.Tensor] | None = None,
         router_ctx: torch.Tensor | None = None,
         router_group_ids: dict[str, torch.Tensor] | None = None,
+        collect_moe_stats: bool = False,
         output_attentions: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, torch.Tensor] | None]:
         attention_output, attention_probs = self.attention(
@@ -320,6 +327,7 @@ class RoFormerLayer(nn.Module):
                 attention_output,
                 router_ctx=router_ctx,
                 router_group_ids=router_group_ids,
+                collect_moe_stats=collect_moe_stats,
             )
             return layer_output, attention_probs, moe_aux
 
@@ -351,6 +359,7 @@ class RoFormerEncoder(nn.Module):
         attention_mask: torch.Tensor | None = None,
         router_ctx: torch.Tensor | None = None,
         router_group_ids: dict[str, torch.Tensor] | None = None,
+        collect_moe_stats: bool = False,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True,
@@ -361,6 +370,7 @@ class RoFormerEncoder(nn.Module):
         moe_layer_count = 0
         moe_sums: dict[str, torch.Tensor] = {}
         moe_last: dict[str, torch.Tensor] = {}
+        moe_lists: dict[str, list[torch.Tensor | int]] = {}
 
         seq_len = hidden_states.size(1)
         sinusoidal_pos = self.embed_positions(
@@ -380,6 +390,7 @@ class RoFormerEncoder(nn.Module):
                 rotary_components=rotary_components,
                 router_ctx=router_ctx,
                 router_group_ids=router_group_ids,
+                collect_moe_stats=collect_moe_stats,
                 output_attentions=output_attentions,
             )
 
@@ -390,6 +401,21 @@ class RoFormerEncoder(nn.Module):
                 moe_layer_count += 1
                 for key, value in moe_aux.items():
                     if key == "aux_loss":
+                        continue
+                    if key in {
+                        "router_logits",
+                        "router_probs",
+                        "expert_indices",
+                        "dispatch_mask",
+                        "dropped_mask",
+                        "capacity",
+                    }:
+                        if collect_moe_stats:
+                            moe_lists.setdefault(key, []).append(value)
+                        continue
+                    if key == "num_experts":
+                        if collect_moe_stats:
+                            moe_lists.setdefault(key, []).append(value)
                         continue
                     value_detached = value.detach()
                     if key not in moe_sums:
@@ -405,6 +431,9 @@ class RoFormerEncoder(nn.Module):
             inv_layers = 1.0 / float(moe_layer_count)
             moe_metrics = {f"mean/{key}": value * inv_layers for key, value in moe_sums.items()}
             moe_metrics.update({f"last/{key}": value for key, value in moe_last.items()})
+            if collect_moe_stats:
+                for key, value in moe_lists.items():
+                    moe_metrics[key] = list(value)
             moe_loss = total_aux_loss
         else:
             moe_metrics = {}

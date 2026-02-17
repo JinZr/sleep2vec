@@ -1,0 +1,135 @@
+model:
+  backbone:
+    name: roformer
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 16
+    vocab_size: 1
+    config_overrides:
+      moe_enabled: true
+      moe_num_experts: 8
+      moe_top_k: 1
+      moe_layers: "every_2"
+      moe_capacity_factor_train: 1.25
+      moe_capacity_factor_eval: 2.0
+      moe_aux_loss_coef: 1.0e-2
+      moe_z_loss_coef: 0.0
+      moe_router_noise_std: 0.0
+      moe_router_use_context: true
+      moe_router_ctx_dim: 128
+      moe_source_vocab_size: 64
+      moe_ctx_use_age: true
+      moe_ctx_use_sex: true
+      moe_ctx_use_source: true
+      moe_ctx_use_modality: true
+      moe_group_balance_coef: 1.0e-3
+      moe_group_keys: ["source"]
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  cls:
+    embedding_type: null
+    downstream: tokens
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: breath
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eeg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: ecg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eog_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: emg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: spo2
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_nasal_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+  head:
+    name: classification
+    dropout: 0.1
+    hidden_dim: null
+    channel_agg:
+      name: gated_scalar
+      kwargs: {}
+    temporal_agg:
+      name: mean
+      kwargs: {}
+
+data:
+  max_tokens: 120
+  data_channel_names: null
+  finetune_data_index: index/hsp_psg_pretrain.csv
+  finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
+  train_dataset_names: [shhs]
+  test_dataset_names: [shhs]
+  n_few_shot: 1280
+
+finetune:
+  freeze_tokenizer: true
+  layer_mix:
+    enabled: false
+    shared_across_modalities: false
+    layer_indices: null
+  lora:
+    freeze_backbone_and_insert_lora: false
+    insert_lora: true
+    separate_adapters: false
+  moe:
+    enable_aux_losses: false
+    aux_loss_weight: 1.0e-2
+    router_z_loss_weight: 1.0e-3
+    capacity_factor_train: 1.25
+    capacity_factor_eval: 2.0
+    train_router: false
+    train_experts: false
+    router_lr_mult: 1.0
+    experts_lr_mult: 1.0
+    log_every_n_steps: 50
+    group_balance:
+      enabled: false
+      group_key: source
+      loss_type: per_group_switch
+      weight: 1.0e-3
+      min_group_size: 4
+
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

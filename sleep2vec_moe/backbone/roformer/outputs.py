@@ -3,6 +3,7 @@ from __future__ import annotations
 """Output containers for standalone RoFormer encoder."""
 
 from dataclasses import dataclass
+import typing as t
 
 import torch
 
@@ -15,4 +16,4 @@ class RoFormerModelOutput:
     hidden_states: tuple[torch.Tensor, ...] | None = None
     attentions: tuple[torch.Tensor, ...] | None = None
     moe_loss: torch.Tensor | None = None
-    moe_metrics: dict[str, torch.Tensor] | None = None
+    moe_metrics: dict[str, t.Any] | None = None
