@@ -2,7 +2,7 @@ import typing as t
 
 import torch.nn as nn
 
-from sleep2vec.backbone.roformer import RoFormerConfig, RoFormerEncoderModel
+from sleep2vec.backbones.roformer import RoFormerConfig, RoFormerEncoderModel
 from sleep2vec.config import BackboneConfig
 from sleep2vec.registry import register_backbone
 
