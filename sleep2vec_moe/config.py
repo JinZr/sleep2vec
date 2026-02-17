@@ -343,6 +343,11 @@ def _build_group_balance_config(raw: t.Any) -> GroupBalanceConfig | None:
         raise ValueError("finetune.moe.group_balance.min_group_size must be >= 1.")
     if cfg.weight < 0:
         raise ValueError("finetune.moe.group_balance.weight must be >= 0.")
+    if cfg.group_key not in {"source", "sex", "age_bin", "modality"}:
+        raise ValueError(
+            "finetune.moe.group_balance.group_key must be one of "
+            "{'source', 'sex', 'age_bin', 'modality'}."
+        )
     if cfg.loss_type not in {"per_group_switch", "group_to_global_l2", "group_to_global_kl"}:
         raise ValueError(
             "finetune.moe.group_balance.loss_type must be one of "

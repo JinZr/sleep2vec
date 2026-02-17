@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sleep2vec.common import apply_finetune_config, dump_cli_args_yaml
-from sleep2vec.callbacks import MoEStatsCallback
+from sleep2vec_moe.callbacks import MoEStatsCallback
 from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import get_finetune_dataloaders
