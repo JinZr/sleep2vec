@@ -88,8 +88,8 @@ def sleep2vec_pretrain(args):
     model = Sleep2vecPretraining(args, model_config, loss_config, averaging_config=averaging_config)
 
     logger = WandbLogger(
-        project="sleep2vec-pretrain",
-        name=f"s2v-pretrain-{run_name}",
+        project="sleep2vec2-pretrain",
+        name=f"s2v2-pretrain-{run_name}",
         save_dir=os.path.dirname(save_path),
         id=wandb_id,  # NEW：保持同一个 run
         resume="allow" if wandb_id else None,  # NEW：若 id 存在则追加

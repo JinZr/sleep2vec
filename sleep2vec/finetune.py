@@ -71,8 +71,8 @@ def supervised(args, config_bundle):
     # logger and callbacks
     version = args.version
     logger = WandbLogger(
-        project="sleep2vec-finetune",  # 相当于 TensorBoard 的 log dir
-        name=f"s2v-finetune-{version}",  # run 名称
+        project="sleep2vec2-finetune",  # 相当于 TensorBoard 的 log dir
+        name=f"s2v2-finetune-{version}",  # run 名称
         save_dir="./wandb_logs",  # 本地缓存目录，可选
         log_model=True,  # 训练结束自动保存 ckpt
     )
