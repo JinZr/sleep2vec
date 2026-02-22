@@ -128,7 +128,13 @@ def sleep2vec_pretrain(args):
         # fall back to Lightning's default strategy selection
         strategy = "auto"
 
-    pair_acc_cb = PairAccLoggerCallback(args.channel_names)
+    pair_acc_cb = PairAccLoggerCallback(
+        args.channel_names,
+        train_pair_monitor_enabled=args.train_pair_monitor_enable,
+        train_pair_log_prefix=args.train_pair_monitor_log_prefix,
+        train_pair_skew_warn_threshold=args.train_pair_skew_warn_threshold,
+        train_pair_min_unique_coverage_warn_threshold=args.train_pair_min_unique_coverage_warn_threshold,
+    )
     callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb]
     enable_checkpointing = True
     trainer_kwargs = dict(
@@ -194,6 +200,15 @@ if __name__ == "__main__":
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
     parser.add_argument("--batch-size", type=int, default=320, help="batch size")
     parser.add_argument("--num-workers", type=int, default=8, help="number of dataloader workers")
+    parser.add_argument(
+        "--val-num-workers",
+        type=int,
+        default=None,
+        help=(
+            "Validation dataloader workers. "
+            "Default: 0 when --allow-missing-channels is enabled, otherwise follows --num-workers."
+        ),
+    )
     parser.add_argument("--devices", type=int, nargs="+", default=[0, 1], help="GPU device ids")
     parser.add_argument(
         "--ckpt-path",
@@ -245,6 +260,52 @@ if __name__ == "__main__":
         dest="bucket_by_available_channels",
         action="store_false",
         help="Disable available-channel bucketing even when allowing missing channels.",
+    )
+    parser.add_argument(
+        "--train-pair-sampling",
+        type=str,
+        default="uniform",
+        choices=["uniform"],
+        help="Training pair-first sampling strategy when allowing missing channels.",
+    )
+    parser.add_argument(
+        "--train-pair-track-unique-samples",
+        action="store_true",
+        help=(
+            "Track per-pair unique sampled indices during training monitoring. "
+            "Disabled by default to reduce host memory usage."
+        ),
+    )
+    parser.add_argument(
+        "--train-pair-skew-warn-threshold",
+        type=float,
+        default=0.05,
+        help="Warn when |actual_pair_ratio - target_pair_ratio| exceeds this threshold in an epoch.",
+    )
+    parser.add_argument(
+        "--train-pair-monitor-enable",
+        dest="train_pair_monitor_enable",
+        action="store_true",
+        default=False,
+        help="Enable epoch-level train pair sampling distribution monitoring.",
+    )
+    parser.add_argument(
+        "--no-train-pair-monitor-enable",
+        dest="train_pair_monitor_enable",
+        action="store_false",
+        help="Disable train pair sampling distribution monitoring.",
+    )
+    parser.add_argument(
+        "--train-pair-monitor-log-prefix",
+        type=str,
+        default="train_pair_sampling",
+        help="Metric prefix for train pair sampling logs.",
+    )
+    parser.add_argument(
+        "--train-pair-min-unique-coverage-warn-threshold",
+        type=float,
+        default=0.1,
+        help="Warn when unique sampled indices / pair pool size falls below this threshold in an epoch.",
     )
     parser.add_argument(
         "--exp-info",
