@@ -500,7 +500,7 @@ class DefaultDataset(BaseDataset):
                 batch_size=batch_size,
                 min_channels=min_channels,
                 shuffle=shuffle,
-                drop_last=self.is_train_set,
+                drop_last=True,
                 seed=self.seed,
             )
 
@@ -516,5 +516,5 @@ class DefaultDataset(BaseDataset):
             **dl_kwargs,
             collate_fn=collate_fn,
             sampler=sampler,
-            drop_last=self.is_train_set,  # only drop last batch for training
+            drop_last=True,
         )
