@@ -23,7 +23,7 @@ model:
       moe_ctx_use_source: true
       moe_ctx_use_modality: true
       moe_group_balance_coef: 1.0e-3
-      moe_group_keys: ["source"]
+      moe_group_keys: ["modality"]
   projection:
     name: simclr
     enabled: true
