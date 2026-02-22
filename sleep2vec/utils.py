@@ -6,6 +6,7 @@ import torch
 
 from data.channel_selection import RoundRobinPairSelector, build_all_pairs
 from data.psg_pretrain_dataset import PSGPretrainDataset
+from data.utils import load_npz
 
 
 def move_to_device(data, device="cuda"):
@@ -19,6 +20,44 @@ def move_to_device(data, device="cuda"):
     if isinstance(data, tuple):
         return tuple(move_to_device(x, device) for x in data)
     return data
+
+
+def _resolve_available_channels(sample, channel_names: list[str]) -> set[str]:
+    payload = getattr(sample, "payload", None)
+    if isinstance(payload, dict):
+        avail = payload.get("available_channels")
+        if avail:
+            return {str(ch) for ch in avail}
+
+    sample_path = getattr(sample, "path", None)
+    if not sample_path:
+        return set()
+
+    try:
+        with load_npz(sample_path) as npz:
+            return {str(ch) for ch in channel_names if ch in npz}
+    except Exception:
+        return set()
+
+
+def _filter_dataset_for_pair_support(dataset, pair: tuple[str, str], channel_names: list[str]) -> None:
+    left, right = str(pair[0]), str(pair[1])
+    filtered = []
+    for sample in dataset.data:
+        avail = _resolve_available_channels(sample, channel_names)
+        if left in avail and right in avail:
+            filtered.append(sample)
+
+    before = len(dataset.data)
+    after = len(filtered)
+    if after == 0:
+        raise ValueError(
+            "No validation samples support scheduled pair "
+            f"{left}__{right}. Check allow_missing_channels/min_channels/index/preset consistency."
+        )
+    dataset.data = filtered
+    if after < before:
+        logging.info("Filtered val dataset for pair %s__%s: kept %d / %d samples", left, right, after, before)
 
 
 def get_pretrain_dataloader(args):
@@ -39,22 +78,38 @@ def get_pretrain_dataloader(args):
     allow_missing_channels = bool(getattr(args, "allow_missing_channels", False))
     min_channels = int(getattr(args, "min_channels", 6))
     bucket_by_available_channels = bool(getattr(args, "bucket_by_available_channels", True))
+    train_pair_sampling = str(getattr(args, "train_pair_sampling", "uniform"))
+    train_pair_track_unique_samples = bool(getattr(args, "train_pair_track_unique_samples", False))
+    val_num_workers = getattr(args, "val_num_workers", None)
+    if val_num_workers is None:
+        val_num_workers = 0 if allow_missing_channels else int(args.num_workers)
+    else:
+        val_num_workers = int(val_num_workers)
+    if val_num_workers < 0:
+        raise ValueError(f"val_num_workers must be >= 0, got {val_num_workers}")
 
     if allow_missing_channels:
         logging.warning(
             "allow_missing_channels enabled: accepting samples with missing channels "
-            "(min_channels=%d, bucket_by_available_channels=%s).",
+            "(min_channels=%d, bucket_by_available_channels=%s, train_pair_sampling=%s, "
+            "train_pair_track_unique_samples=%s).",
             min_channels,
             bucket_by_available_channels,
+            train_pair_sampling,
+            train_pair_track_unique_samples,
         )
         if min_channels < 2:
             logging.warning("min_channels is < 2; contrastive pretraining may be unstable.")
+        if train_pair_sampling != "uniform":
+            raise ValueError(f"Unsupported train_pair_sampling={train_pair_sampling!r}. Supported: 'uniform'.")
         if not bucket_by_available_channels:
             logging.warning(
-                "bucket_by_available_channels is disabled; mixed montages may collapse to a single best_pair."
+                "bucket_by_available_channels is disabled; this only affects legacy non-pair-first fallback."
             )
     else:
         logging.info("allow_missing_channels disabled: requiring all configured channels.")
+        train_pair_sampling = None
+        train_pair_track_unique_samples = False
 
     kwargs = {
         "batch_size": args.batch_size,
@@ -76,12 +131,17 @@ def get_pretrain_dataloader(args):
         allow_missing_channels=allow_missing_channels,
         min_channels=min_channels,
         bucket_by_available_channels=bucket_by_available_channels,
+        train_pair_sampling=train_pair_sampling,
+        train_pair_track_unique_samples=train_pair_track_unique_samples,
         is_train_set=True,
         **kwargs,
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
 
-    kwargs["shuffle"] = False
+    val_kwargs = dict(kwargs)
+    val_kwargs["shuffle"] = False
+    val_kwargs["num_workers"] = val_num_workers
+    logging.info("Validation DataLoader workers: %d", val_num_workers)
     val_pairs = build_all_pairs(args.channel_names)
     val_loaders = []
     for pair in val_pairs:
@@ -100,10 +160,14 @@ def get_pretrain_dataloader(args):
             allow_missing_channels=allow_missing_channels,
             min_channels=min_channels,
             bucket_by_available_channels=bucket_by_available_channels,
+            train_pair_sampling=None,
+            train_pair_track_unique_samples=False,
             is_train_set=False,
             pair_selector=pair_selector,
-            **kwargs,
+            **val_kwargs,
         )
+        if allow_missing_channels:
+            _filter_dataset_for_pair_support(val_dataset, pair, list(args.channel_names))
         val_dataset.pair = pair
         val_loaders.append(val_dataset.dataloader(device=args.device))
     logging.info("Valid DataLoaders created successfully! (pairs=%d)", len(val_loaders))
