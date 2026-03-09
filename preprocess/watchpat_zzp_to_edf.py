@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 import json
@@ -66,14 +67,23 @@ class SignalSpec:
 
 
 @dataclass
+class StreamLayout:
+    high_rate_order: Tuple[int, ...]
+    high_rate_hz: int
+    low_rate_hz: Dict[int, int]
+    description: str
+
+
+@dataclass
 class ChannelMapping:
     ppg_red: int
     ppg_ir: int
     pat: int
-    actigraphy: int
-    probe_pressure: int
-    confidence: Dict[str, str]
-    diagnostics: Dict[str, float]
+    actigraphy: Optional[int]
+    probe_pressure: Optional[int] = None
+    probe_pressure_aux_high: Optional[int] = None
+    confidence: Dict[str, str] = None  # type: ignore[assignment]
+    diagnostics: Dict[str, float] = None  # type: ignore[assignment]
 
 
 class ZzpDecodeError(RuntimeError):
@@ -212,7 +222,52 @@ def _estimate_pre_marker_frames(prefix: bytes) -> int:
     return n_tokens // 5
 
 
-def _parse_full_second_segment(seg: bytes, frames_out: np.ndarray) -> Tuple[int, int, int, int, int, int]:
+def infer_stream_layout(payload: bytes, marker_positions: Sequence[int], probe_seconds: int = 20) -> StreamLayout:
+    probe_n = min(max(1, probe_seconds), len(marker_positions) - 1)
+    counts_by_high: Dict[int, List[int]] = {h: [] for h in range(1, 6)}
+
+    for sec in range(probe_n):
+        seg = payload[marker_positions[sec] + 10 : marker_positions[sec + 1]]
+        highs = [seg[i] >> 4 for i in range(0, len(seg) - 1, 2)]
+        c = Counter(highs)
+        for h in range(1, 6):
+            counts_by_high[h].append(int(c.get(h, 0)))
+
+    med = {h: int(round(float(np.median(v)))) if v else 0 for h, v in counts_by_high.items()}
+
+    if med[1] >= 80 and med[2] >= 80 and med[3] >= 80 and med[4] >= 80 and med[5] >= 80:
+        return StreamLayout(high_rate_order=(2, 3, 1, 4, 5), high_rate_hz=100, low_rate_hz={}, description="5x100Hz")
+
+    if med[1] >= 80 and med[2] >= 80 and med[3] >= 80 and med[4] >= 80 and 1 <= med[5] < 80:
+        return StreamLayout(
+            high_rate_order=(2, 3, 1, 4),
+            high_rate_hz=100,
+            low_rate_hz={5: med[5]},
+            description=f"4x100Hz + ch5@{med[5]}Hz",
+        )
+
+    if med[1] >= 80 and med[2] >= 80 and med[3] >= 80 and med[4] >= 80:
+        return StreamLayout(high_rate_order=(2, 3, 1, 4), high_rate_hz=100, low_rate_hz={}, description="4x100Hz")
+
+    raise ZzpDecodeError(f"Unsupported Sleep.dat frame layout; median counts per second were {med}.")
+
+
+def _resample_small_vector(values: np.ndarray, target_n: int) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    if values.size == target_n:
+        return values.astype(np.int16)
+    if values.size == 0:
+        raise ZzpDecodeError("Cannot resample an empty auxiliary channel block.")
+    x_old = np.linspace(0.0, 1.0, num=values.size, endpoint=False) + 0.5 / values.size
+    x_new = np.linspace(0.0, 1.0, num=target_n, endpoint=False) + 0.5 / target_n
+    return np.rint(np.interp(x_new, x_old, values)).astype(np.int16)
+
+
+def _parse_full_second_segment(
+    seg: bytes,
+    layout: StreamLayout,
+    frames_out: np.ndarray,
+) -> Tuple[Dict[int, np.ndarray], int, int, int, int, int, int]:
     fi = 0
     slot = 0
     metric8 = -1
@@ -224,22 +279,25 @@ def _parse_full_second_segment(seg: bytes, frames_out: np.ndarray) -> Tuple[int,
     mv = memoryview(seg)
     i = 0
     n = len(mv)
+    aux_lists: Dict[int, List[int]] = {h: [] for h in layout.low_rate_hz}
 
     while i + 1 < n:
         idb = mv[i]
         val = mv[i + 1]
         high = idb >> 4
 
-        if high == FRAME_ORDER[slot]:
+        if fi < 100 and high == layout.high_rate_order[slot]:
             frames_out[fi, slot] = ((idb & 0x0F) << 8) | val
             slot += 1
-            if slot == 5:
+            if slot == len(layout.high_rate_order):
                 slot = 0
                 fi += 1
             i += 2
             continue
 
-        if high == 8 and metric8 < 0:
+        if high in aux_lists:
+            aux_lists[high].append(((idb & 0x0F) << 8) | val)
+        elif high == 8 and metric8 < 0:
             metric8 = ((idb & 0x0F) << 8) | val
         elif high == 9 and metric9 < 0:
             metric9 = ((idb & 0x0F) << 8) | val
@@ -254,10 +312,19 @@ def _parse_full_second_segment(seg: bytes, frames_out: np.ndarray) -> Tuple[int,
         i += 2
 
     if fi != 100:
-        raise ZzpDecodeError(f"Expected 100 complete 5-slot frames in a marker interval, found {fi}.")
+        raw_counts = Counter((mv[j] >> 4) for j in range(0, n - 1, 2))
+        raise ZzpDecodeError(
+            f"Expected 100 complete {'/'.join(hex(h) for h in layout.high_rate_order)} frames in a marker interval, "
+            f"found {fi}; high-nibble counts were {dict(sorted(raw_counts.items()))}."
+        )
     if min(metric8, metric9, metricA, b0, c0, d0) < 0:
         raise ZzpDecodeError("Missing one or more expected 1 Hz side metrics in a marker interval.")
-    return metric8, metric9, metricA, b0, c0, d0
+
+    aux_out: Dict[int, np.ndarray] = {}
+    for high, target_hz in layout.low_rate_hz.items():
+        aux_out[high] = _resample_small_vector(np.asarray(aux_lists[high], dtype=np.int16), target_hz)
+
+    return aux_out, metric8, metric9, metricA, b0, c0, d0
 
 
 def decode_sleep_dat(sleep_dat: bytes, metadata: StudyMetadata, verbose: bool = False) -> Dict[str, object]:
@@ -273,26 +340,32 @@ def decode_sleep_dat(sleep_dat: bytes, metadata: StudyMetadata, verbose: bool = 
             setattr(metadata, key, value)  # type: ignore[arg-type]
 
     marker_positions, counters_ms = _find_valid_markers(payload)
+    layout = infer_stream_layout(payload, marker_positions)
     n_full_seconds = len(marker_positions) - 1
     pre_frames = _estimate_pre_marker_frames(payload[: marker_positions[0]])
     metadata.export_offset_est_s = pre_frames / 100.0
     if metadata.recording_start is not None:
         metadata.export_start = metadata.recording_start + timedelta(seconds=int(round(metadata.export_offset_est_s)))
 
-    frames = np.empty((n_full_seconds, 100, 5), dtype=np.int16)
+    frames = np.empty((n_full_seconds, 100, len(layout.high_rate_order)), dtype=np.int16)
+    low_rate_channels: Dict[int, np.ndarray] = {
+        high: np.empty((n_full_seconds, hz), dtype=np.int16) for high, hz in layout.low_rate_hz.items()
+    }
     metric8 = np.empty(n_full_seconds, dtype=np.int16)
     metric9 = np.empty(n_full_seconds, dtype=np.int16)
     metricA = np.empty(n_full_seconds, dtype=np.int16)
     b0 = np.empty(n_full_seconds, dtype=np.int16)
     c0 = np.empty(n_full_seconds, dtype=np.int16)
     d0 = np.empty(n_full_seconds, dtype=np.int16)
-    scratch = np.empty((100, 5), dtype=np.int16)
+    scratch = np.empty((100, len(layout.high_rate_order)), dtype=np.int16)
 
     for sec in range(n_full_seconds):
         seg_start = marker_positions[sec] + 10
         seg_end = marker_positions[sec + 1]
-        m8, m9, mA, bb, cc, dd = _parse_full_second_segment(payload[seg_start:seg_end], scratch)
+        aux_out, m8, m9, mA, bb, cc, dd = _parse_full_second_segment(payload[seg_start:seg_end], layout, scratch)
         frames[sec] = scratch
+        for high, arr in aux_out.items():
+            low_rate_channels[high][sec] = arr
         metric8[sec] = m8
         metric9[sec] = m9
         metricA[sec] = mA
@@ -304,6 +377,13 @@ def decode_sleep_dat(sleep_dat: bytes, metadata: StudyMetadata, verbose: bool = 
 
     return {
         "frames": frames,
+        "layout": {
+            "description": layout.description,
+            "high_rate_order": list(layout.high_rate_order),
+            "high_rate_hz": layout.high_rate_hz,
+            "low_rate_hz": dict(layout.low_rate_hz),
+        },
+        "low_rate_channels": low_rate_channels,
         "counter_ms": np.asarray(counters_ms[:-1], dtype=np.int32),
         "metric8": metric8,
         "metric9": metric9,
@@ -315,22 +395,27 @@ def decode_sleep_dat(sleep_dat: bytes, metadata: StudyMetadata, verbose: bool = 
     }
 
 
-def infer_channel_mapping(frames: np.ndarray, spo2: np.ndarray) -> ChannelMapping:
-    if frames.ndim != 3 or frames.shape[2] != 5:
-        raise ValueError("frames must have shape (seconds, 100, 5)")
+def infer_channel_mapping(
+    frames: np.ndarray,
+    spo2: np.ndarray,
+    low_rate_channels: Optional[Dict[int, np.ndarray]] = None,
+) -> ChannelMapping:
+    if frames.ndim != 3 or frames.shape[1] != 100:
+        raise ValueError("frames must have shape (seconds, 100, channels)")
 
     n_seconds = frames.shape[0]
+    n_channels = frames.shape[2]
     warmup = min(600, max(120, n_seconds // 20))
     stable_len = min(3600, max(300, n_seconds - warmup))
     stable_start = min(warmup, max(0, n_seconds - stable_len))
     stable_end = min(n_seconds, stable_start + stable_len)
 
-    stable_flat = frames[stable_start:stable_end].reshape(-1, 5).astype(np.float64)
+    stable_flat = frames[stable_start:stable_end].reshape(-1, n_channels).astype(np.float64)
     corr = np.corrcoef(stable_flat.T)
     best_pair = (0, 1)
     best_corr = -np.inf
-    for i in range(5):
-        for j in range(i + 1, 5):
+    for i in range(n_channels):
+        for j in range(i + 1, n_channels):
             if corr[i, j] > best_corr:
                 best_corr = float(corr[i, j])
                 best_pair = (i, j)
@@ -342,8 +427,7 @@ def infer_channel_mapping(frames: np.ndarray, spo2: np.ndarray) -> ChannelMappin
     red = a
     ir = b
 
-    unique_spo2 = np.unique(spo2[post])
-    if unique_spo2.size > 1:
+    if np.unique(spo2[post]).size > 1:
         with np.errstate(divide="ignore", invalid="ignore"):
             r_ab = (sec_sds[post, a] / np.maximum(sec_means[post, a], 1e-9)) / (
                 sec_sds[post, b] / np.maximum(sec_means[post, b], 1e-9)
@@ -359,7 +443,6 @@ def infer_channel_mapping(frames: np.ndarray, spo2: np.ndarray) -> ChannelMappin
             if corr_ba < corr_ab:
                 red, ir = b, a
         elif sec_means[post, b].mean() > sec_means[post, a].mean():
-            # Weak fallback only when SpO2 is too flat for orientation inference.
             red, ir = b, a
     else:
         corr_ab = float("nan")
@@ -367,36 +450,51 @@ def infer_channel_mapping(frames: np.ndarray, spo2: np.ndarray) -> ChannelMappin
         if sec_means[post, b].mean() > sec_means[post, a].mean():
             red, ir = b, a
 
-    remaining = [c for c in range(5) if c not in (red, ir)]
+    remaining = [c for c in range(n_channels) if c not in (red, ir)]
     stable = slice(stable_start, stable_end)
-    start = slice(0, min(120, n_seconds))
-
-    pressure_scores: Dict[int, float] = {}
-    for c in remaining:
-        start_max = float(frames[start, :, c].max())
-        stable_median = float(np.median(frames[stable, :, c]))
-        pressure_scores[c] = (start_max + 1.0) / max(stable_median, 1.0)
-    probe_pressure = max(pressure_scores, key=pressure_scores.get)
-
-    remaining2 = [c for c in remaining if c != probe_pressure]
     freqs = np.fft.rfftfreq(100, d=1.0 / 100.0)
     hf_band = freqs >= 5.0
     lf_band = (freqs >= 0.5) & (freqs < 5.0)
+
     hf_scores: Dict[int, float] = {}
-    for c in remaining2:
+    for c in remaining:
         ratios: List[float] = []
         for second in frames[stable, :, c].astype(np.float64)[::10]:
             x = second - second.mean()
             spec = np.abs(np.fft.rfft(x)) ** 2
             ratios.append(float(spec[hf_band].sum() / (spec[lf_band].sum() + 1e-9)))
         hf_scores[c] = float(np.median(ratios)) if ratios else 0.0
-    actigraphy = max(hf_scores, key=hf_scores.get)
-    pat = [c for c in remaining2 if c != actigraphy][0]
+
+    probe_pressure = None
+    probe_pressure_aux_high = None
+
+    if low_rate_channels and 5 in low_rate_channels and len(remaining) >= 2:
+        actigraphy = max(remaining, key=hf_scores.get)
+        pat = [c for c in remaining if c != actigraphy][0]
+        probe_pressure_aux_high = 5
+        pressure_score = float(
+            (np.max(low_rate_channels[5][: min(120, n_seconds)]) + 1.0)
+            / max(float(np.median(low_rate_channels[5][min(600, n_seconds // 2) :])), 1.0)
+        )
+    else:
+        if len(remaining) < 3:
+            raise ZzpDecodeError("Need at least three non-PPG channels to infer PAT/actigraphy/probe pressure.")
+        start = slice(0, min(120, n_seconds))
+        pressure_scores: Dict[int, float] = {}
+        for c in remaining:
+            start_max = float(frames[start, :, c].max())
+            stable_median = float(np.median(frames[stable, :, c]))
+            pressure_scores[c] = (start_max + 1.0) / max(stable_median, 1.0)
+        probe_pressure = max(pressure_scores, key=pressure_scores.get)
+        pressure_score = float(pressure_scores[probe_pressure])
+        remaining2 = [c for c in remaining if c != probe_pressure]
+        actigraphy = max(remaining2, key=hf_scores.get)
+        pat = [c for c in remaining2 if c != actigraphy][0]
 
     confidence = {
         "ppg_pair": "high" if best_corr > 0.9 else "moderate",
         "red_ir_orientation": (
-            "high" if unique_spo2.size > 1 and np.isfinite(corr_ab) and np.isfinite(corr_ba) else "low"
+            "high" if np.unique(spo2[post]).size > 1 and np.isfinite(corr_ab) and np.isfinite(corr_ba) else "low"
         ),
         "pat": "moderate-high",
         "actigraphy": "high",
@@ -404,9 +502,9 @@ def infer_channel_mapping(frames: np.ndarray, spo2: np.ndarray) -> ChannelMappin
     }
     diagnostics = {
         "ppg_pair_correlation": best_corr,
-        "ratio_vs_spo2_corr_ab": float(corr_ab) if "corr_ab" in locals() else float("nan"),
-        "ratio_vs_spo2_corr_ba": float(corr_ba) if "corr_ba" in locals() else float("nan"),
-        "pressure_score": float(pressure_scores[probe_pressure]),
+        "ratio_vs_spo2_corr_ab": float(corr_ab),
+        "ratio_vs_spo2_corr_ba": float(corr_ba),
+        "pressure_score": pressure_score,
         "actigraphy_hf_score": float(hf_scores[actigraphy]),
     }
 
@@ -416,6 +514,7 @@ def infer_channel_mapping(frames: np.ndarray, spo2: np.ndarray) -> ChannelMappin
         pat=pat,
         actigraphy=actigraphy,
         probe_pressure=probe_pressure,
+        probe_pressure_aux_high=probe_pressure_aux_high,
         confidence=confidence,
         diagnostics=diagnostics,
     )
@@ -466,7 +565,10 @@ def build_signals(
     include_pulse_rate: bool,
 ) -> List[SignalSpec]:
     frames = np.asarray(decoded["frames"], dtype=np.int16)
-    flat = frames.reshape(-1, 5)
+    flat = frames.reshape(-1, frames.shape[2])
+    layout = decoded.get("layout", {})
+    low_rate_channels = decoded.get("low_rate_channels", {})
+
     signals: List[SignalSpec] = [
         SignalSpec(
             "PPG_RED",
@@ -487,22 +589,46 @@ def build_signals(
         SignalSpec(
             "PAT", flat[:, mapping.pat].copy(), 100, "count", transducer="WatchPAT PAT probe", prefilter="raw 12-bit"
         ),
-        SignalSpec(
-            "Actigraphy",
-            flat[:, mapping.actigraphy].copy(),
-            100,
-            "count",
-            transducer="WatchPAT wrist actigraph",
-            prefilter="raw 12-bit",
-        ),
-        SignalSpec(
-            "ProbePress",
-            flat[:, mapping.probe_pressure].copy(),
-            100,
-            "count",
-            transducer="WatchPAT probe pressure/servo",
-            prefilter="raw 12-bit",
-        ),
+    ]
+
+    if mapping.actigraphy is not None:
+        signals.append(
+            SignalSpec(
+                "Actigraphy",
+                flat[:, mapping.actigraphy].copy(),
+                100,
+                "count",
+                transducer="WatchPAT wrist actigraph",
+                prefilter="raw 12-bit",
+            )
+        )
+
+    if mapping.probe_pressure is not None:
+        signals.append(
+            SignalSpec(
+                "ProbePress",
+                flat[:, mapping.probe_pressure].copy(),
+                100,
+                "count",
+                transducer="WatchPAT probe pressure/servo",
+                prefilter="raw 12-bit",
+            )
+        )
+    elif mapping.probe_pressure_aux_high is not None and mapping.probe_pressure_aux_high in low_rate_channels:
+        aux = np.asarray(low_rate_channels[mapping.probe_pressure_aux_high], dtype=np.int16)
+        aux_hz = int(layout.get("low_rate_hz", {}).get(mapping.probe_pressure_aux_high, aux.shape[1]))
+        signals.append(
+            SignalSpec(
+                "ProbePress",
+                aux.reshape(-1).copy(),
+                aux_hz,
+                "count",
+                transducer="WatchPAT probe pressure/servo",
+                prefilter=f"raw 12-bit high-nibble {mapping.probe_pressure_aux_high} at {aux_hz} Hz",
+            )
+        )
+
+    signals.append(
         SignalSpec(
             "SpO2",
             np.asarray(decoded["b0"], dtype=np.int16).copy(),
@@ -510,8 +636,8 @@ def build_signals(
             "%",
             transducer="WatchPAT oximeter summary",
             prefilter="1 Hz side packet B0",
-        ),
-    ]
+        )
+    )
 
     if include_pulse_rate:
         pr = derive_pulse_rate(flat[:, mapping.ppg_ir], fs=100)
@@ -722,12 +848,14 @@ def build_summary(
         "decoded_100hz_samples": int(np.asarray(decoded["frames"]).shape[0] * 100),
         "marker_counter_start_ms": int(np.asarray(decoded["counter_ms"])[0]),
         "marker_counter_end_ms": int(np.asarray(decoded["counter_ms"])[-1]),
+        "layout": decoded.get("layout"),
         "channel_mapping": {
             "PPG_RED": mapping.ppg_red,
             "PPG_IR": mapping.ppg_ir,
             "PAT": mapping.pat,
             "Actigraphy": mapping.actigraphy,
-            "ProbePress": mapping.probe_pressure,
+            "ProbePress_high_rate_index": mapping.probe_pressure,
+            "ProbePress_aux_high_nibble": mapping.probe_pressure_aux_high,
         },
         "confidence": mapping.confidence,
         "diagnostics": mapping.diagnostics,
@@ -778,7 +906,9 @@ def convert_zzp_to_edf(
     metadata.software_version = log_info.get("software_version", metadata.software_version)
 
     mapping = infer_channel_mapping(
-        np.asarray(decoded["frames"], dtype=np.int16), np.asarray(decoded["b0"], dtype=np.int16)
+        np.asarray(decoded["frames"], dtype=np.int16),
+        np.asarray(decoded["b0"], dtype=np.int16),
+        low_rate_channels=decoded.get("low_rate_channels"),
     )
     signals = build_signals(
         decoded, mapping, include_internal_1hz=include_internal_1hz, include_pulse_rate=include_pulse_rate
