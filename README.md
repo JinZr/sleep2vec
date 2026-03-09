@@ -61,6 +61,23 @@
   ```
   Optional flags: `--meta-data-names hypertension diabetes`, `--include-no-metadata`, `--output-template 'data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle'`, `--dry-run`, `--overwrite`.
 - **Missing-channel pretrain**: if you enable `--allow-missing-channels`, presets must carry `payload["available_channels"]` (auto-populated during preset creation) so the bucketed sampler can group by montage.
+- **WatchPAT `.zzp` conversion**: `preprocess/watchpat_zzp_to_edf.py` converts a WatchPAT archive (`Sleep.dat`, `Patient.dat`, `log.dat`) into EDF for downstream inspection or external preprocessing. Example:
+  ```bash
+  python preprocess/watchpat_zzp_to_edf.py \
+    /path/to/study.zzp \
+    /path/to/study.edf \
+    --writer auto \
+    --json-summary /path/to/study_summary.json
+  ```
+  Batch conversion example:
+  ```bash
+  python preprocess/watchpat_zzp_to_edf.py \
+    /path/to/zzp_dir \
+    /path/to/edf_dir \
+    --recursive \
+    --skip-existing
+  ```
+  Batch mode shows a file-level `tqdm` progress bar. Optional flags: `--include-internal-1hz`, `--no-pulse-rate`, `--verbose`, `--json-summary /path/to/summary_dir`. `pyedflib` is used when available; otherwise the script falls back to its built-in manual EDF writer.
 
 ---
 
@@ -308,5 +325,5 @@ finetune:
 - `configs/` — training recipes for pretrain/finetune.
 - `sleep2vec/` — core library: registries, encoders, tokenizers, projection, losses, averaging, downstream heads, Lightning entrypoints.
 - `data/` — dataset/index definitions, metadata helpers, NPZ loaders, channel-selection & samplers.
-- `preprocess/` — scripts to build index CSVs/presets, split/merge dataset indices, and inspect missing-channel stats.
+- `preprocess/` — scripts to build index CSVs/presets, split/merge dataset indices, inspect missing-channel stats, and run raw format converters such as WatchPAT `.zzp` to EDF.
 - `utils/` — misc helpers.
