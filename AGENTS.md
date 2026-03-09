@@ -54,3 +54,127 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 - Follow “let it crash” for model/data semantics: missing or inconsistent YAML fields that affect model shape, task semantics, or evaluation should raise immediately.
 - Defaults are acceptable only for optimization/logging/runtime convenience (e.g., epochs, lr, batch size, W&B metadata).
 - When adding new config fields, mark explicitly whether they are required or optional and enforce it in config parsing.
+
+## Codex Subagent Operating Model
+- `AGENTS.md` defines subagent ownership and routing policy, but does not automatically spawn or schedule subagents. The parent Codex agent must still choose which subagent(s) to invoke.
+- Split work by cross-file contracts and runtime coupling, not by raw file count.
+- When a task crosses multiple ownership boundaries, assign one lead owner and request review from the adjacent owner instead of letting two agents edit the same contract blindly.
+- If a task touches `sleep2vec_moe/` or `sleep2vec2/`, treat variant validation as mandatory before calling the work complete.
+
+### Default Subagent Catalog
+
+#### `data-contract-guardian`
+- Owns: `data/default_dataset.py`, `data/psg_pretrain_dataset.py`, `data/utils.py`, `data/samplers.py`, `data/channel_selection.py`, `data/metadata.py`.
+- Responsibilities: sample index semantics, `available_channels`, `source` and metadata filtering, token-window validity, few-shot behavior, pair-first batching, collate invariants.
+- Invoke when: changing dataset fields, preset payload shape, filtering rules, missing-channel handling, sampler behavior, or data/label loading semantics.
+- Must not be split from: pair-first tests in `tests/test_pair_first_sampler.py` and `tests/test_pretrain_pair_filtering.py`.
+- Verification gate:
+```bash
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall data tests
+python3.10 -m pytest -q tests/test_pair_first_sampler.py tests/test_pretrain_pair_filtering.py
+```
+
+#### `config-task-contract`
+- Owns: `sleep2vec/config.py`, `sleep2vec/common.py`, `sleep2vec/builders.py`, `sleep2vec/registry.py`, `sleep2vec/backbones/encoder_factory.py`, `sleep2vec/modules/tokenizers.py`, `sleep2vec/modules/projection.py`.
+- Responsibilities: YAML schema strictness, built-in task semantics, channel parity checks, registry wiring, builder contracts, required vs optional config fields.
+- Invoke when: adding config fields, changing task semantics, changing registry names, changing builder signatures, or changing YAML validation behavior.
+- Must not be split from: `tests/test_config_loading.py`, `tests/test_common_finetune_apply.py`, `tests/test_metadata_task_validation.py`, `tests/test_registries_and_builders.py`.
+- Verification gate:
+```bash
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
+python3.10 -m pytest -q \
+  tests/test_config_loading.py \
+  tests/test_common_finetune_apply.py \
+  tests/test_metadata_task_validation.py \
+  tests/test_registries_and_builders.py
+```
+
+#### `model-integration`
+- Owns: `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/losses/`, `sleep2vec/downstreams/`, `sleep2vec/cls/`, `sleep2vec/modules/layer_mix.py`, `sleep2vec/visualization/layer_mix.py`.
+- Responsibilities: tokenization-to-backbone flow, CLS semantics, layer-mix behavior, downstream head contracts, pretrained-backbone loading, LoRA insertion, loss/head interaction.
+- Invoke when: changing forward shapes, CLS or token-mask semantics, head interfaces, loss output contracts, layer-mix logic, or pretrained weight loading behavior.
+- Must not be split from: `sleep2vec/config.py` task/model semantics when interface changes are involved; request review from `config-task-contract` in that case.
+- Verification gate:
+```bash
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
+python3.10 -m pytest -q \
+  tests/test_losses.py \
+  tests/test_layer_mix_visualization.py \
+  tests/test_registries_and_builders.py
+```
+
+#### `runtime-orchestrator`
+- Owns: `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `sleep2vec/checkpoints.py`, `sleep2vec/metrics.py`, `sleep2vec/callbacks/pair_acc_logger.py`, `sleep2vec/diagnostics.py`.
+- Responsibilities: trainer wiring, W&B behavior, checkpoint naming and averaging, inference execution, results CSV schema, diagnostics mode, runtime callbacks and logging.
+- Invoke when: changing CLI flags, trainer strategies, checkpoint alias behavior, runtime logging, diagnostics flow, or evaluation/export behavior.
+- Must not be split from: `tests/test_checkpoints.py` and config/task guard tests when runtime flags or monitor names change.
+- Verification gate:
+```bash
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
+python3.10 -m pytest -q \
+  tests/test_checkpoints.py \
+  tests/test_common_finetune_apply.py \
+  tests/test_metadata_task_validation.py
+```
+- Smoke gate:
+```bash
+WANDB_MODE=offline python3.10 -m sleep2vec.pretrain \
+  --config configs/sleep2vec_dense_pretrain.yaml \
+  --version-name runtime-smoke \
+  --print-diagnostics --diagnostics-steps 5 --precision 32 --devices 0
+```
+
+#### `preset-pipeline`
+- Owns: `preprocess/save_dataset_presets.py`, `preprocess/merge_dataset_presets.py`, `preprocess/split_index_by_dataset.py`, `preprocess/mask_missing_stats.py`, `preprocess/preprocess_pipeline.ipynb`.
+- Responsibilities: index splitting, preset generation, preset merging, missing-channel statistics, preprocessing documentation and reproducible data-prep flows.
+- Invoke when: changing preset pickle format, split policy, preprocessing CLI shape, or dataset preparation workflow.
+- Must not be split from: `data-contract-guardian` when a preprocessing change affects runtime `SampleIndex` payload semantics.
+- Verification gate:
+```bash
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall preprocess data
+python preprocess/save_dataset_presets.py --help
+python preprocess/merge_dataset_presets.py --help
+python preprocess/split_index_by_dataset.py --help
+python preprocess/mask_missing_stats.py --help
+```
+
+#### `variant-maintainer`
+- Owns: `sleep2vec_moe/`, `configs_moe/`, and variant-specific `sleep2vec2/` files, especially `sleep2vec2/backbones/encoder_factory.py` and `sleep2vec2/backbones/roformer/`.
+- Responsibilities: MoE config/task extensions, router/expert behavior, MoE callbacks and logging, base-to-variant parity checks, symlinked variant safety.
+- Invoke when: changing any shared base contract that might affect `sleep2vec_moe` or `sleep2vec2`, or when editing variant-only files directly.
+- Must not be skipped for: backbone API changes, CLS/task config changes, checkpoint-loading changes, callback/logging changes, or tokenizer/projection interface changes.
+- Verification gate:
+```bash
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec_moe sleep2vec2
+python3.10 -m pytest -q tests/test_checkpoints.py tests/test_config_loading.py
+```
+
+#### `regression-guard`
+- Owns: the `tests/` strategy rather than a product module.
+- Responsibilities: add or extend tests when a contract changes, identify missing coverage, and prevent silent regressions in data/config/runtime/variant flows.
+- Invoke when: a change modifies an existing contract, fixes a regression, or introduces a new CLI/YAML/runtime branch.
+- Default expectation: every non-trivial contract change should either update an existing test or document why no test was added.
+
+### Routing Rules
+- If a task changes `data/` semantics or sampler behavior, route first to `data-contract-guardian`.
+- If a task changes YAML fields, task semantics, or registries, route first to `config-task-contract`.
+- If a task changes model forward paths, head/loss contracts, LoRA, or layer-mix behavior, route first to `model-integration`.
+- If a task changes entrypoints, checkpoints, metrics, callbacks, diagnostics, or inference/export behavior, route first to `runtime-orchestrator`.
+- If a task changes preprocessing scripts or preset generation logic, route first to `preset-pipeline`.
+- If a task touches `sleep2vec_moe/`, `configs_moe/`, or `sleep2vec2/`, require `variant-maintainer` review before completion.
+- If a task changes a contract already covered by tests, or should be covered but is not, involve `regression-guard`.
+
+### Do Not Split
+- Keep `data/default_dataset.py`, `data/psg_pretrain_dataset.py`, `data/utils.py`, and `data/samplers.py` under one owner for a single change.
+- Keep `sleep2vec/config.py`, `sleep2vec/common.py`, and `sleep2vec/builders.py` under one owner for a single change.
+- Keep `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_modelling.py`, and `sleep2vec/sleep2vec_finetuning.py` under one owner for a single change.
+- Keep `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `sleep2vec/checkpoints.py`, and `sleep2vec/metrics.py` under one owner for a single change.
+
+### Handoff Format
+- Every subagent report should include:
+  - scope touched
+  - files changed or reviewed
+  - contract assumptions
+  - verification commands run
+  - blockers or unverified parts
+- If verification could not run because `python3.10` or `pytest` is unavailable, state that explicitly instead of implying the gate passed.
