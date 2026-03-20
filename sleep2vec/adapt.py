@@ -1,8 +1,8 @@
 import argparse
 import logging
-import os
 from pathlib import Path
 import sys
+import typing as t
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -21,6 +21,32 @@ from sleep2vec.common import apply_model_config_args, persist_run_config_and_arg
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_adaptation import AdaptPairScheduleCallback, Sleep2vecAdaptation, initial_pair_probs_for_phase
 from sleep2vec.utils import get_pretrain_dataloader
+
+
+def _resolve_adapt_run_artifacts(
+    *,
+    ckpt_path: t.Optional[Path],
+    version_name: str,
+    backbone_arch: str,
+    phase: str,
+    exp_info: str = "",
+) -> tuple[Path, str, t.Optional[str]]:
+    if ckpt_path is not None:
+        ckpt_path = Path(ckpt_path)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        if not ckpt_path.is_file():
+            raise ValueError(f"Checkpoint path must be a file: {ckpt_path}")
+        save_path = ckpt_path.parent
+        run_name = save_path.parent.name
+        return save_path, run_name, run_name
+
+    exp_bits = [version_name, backbone_arch, "adapt", phase]
+    extra_tag = exp_info.strip().replace(" ", "_")
+    if extra_tag:
+        exp_bits.append(extra_tag)
+    run_name = "-".join(filter(None, exp_bits))
+    return Path("log-adapt") / run_name / "checkpoints", run_name, None
 
 
 def sleep2vec_adapt(args):
@@ -50,23 +76,17 @@ def sleep2vec_adapt(args):
         train_batch_sampler
     ) and not handles_distributed_sharding(val_batch_sampler)
 
-    if args.ckpt_path is not None and os.path.isfile(args.ckpt_path):
-        save_path = os.path.dirname(args.ckpt_path)
-        run_name = os.path.basename(os.path.dirname(save_path))
-        wandb_id = run_name
-    else:
-        exp_bits = [args.version_name, args.backbone_arch, "adapt", args.phase]
-        extra_tag = getattr(args, "exp_info", "") or ""
-        extra_tag = extra_tag.strip().replace(" ", "_")
-        if extra_tag:
-            exp_bits.append(extra_tag)
-        run_name = "-".join(filter(None, exp_bits))
-        save_path = f"log-adapt/{run_name}/checkpoints"
-        os.makedirs(save_path, exist_ok=True)
-        wandb_id = None
-        args.ckpt_path = None
+    save_path, run_name, wandb_id = _resolve_adapt_run_artifacts(
+        ckpt_path=args.ckpt_path,
+        version_name=args.version_name,
+        backbone_arch=args.backbone_arch,
+        phase=args.phase,
+        exp_info=getattr(args, "exp_info", "") or "",
+    )
+    if wandb_id is None:
+        save_path.mkdir(parents=True, exist_ok=True)
 
-    exp_dir = Path(save_path).parent
+    exp_dir = save_path.parent
     persist_run_config_and_args(args, exp_dir)
 
     model = Sleep2vecAdaptation(
@@ -80,7 +100,7 @@ def sleep2vec_adapt(args):
     logger = WandbLogger(
         project="sleep2vec-adapt",
         name=f"s2v-adapt-{run_name}",
-        save_dir=os.path.dirname(save_path),
+        save_dir=str(save_path.parent),
         id=wandb_id,
         resume="allow" if wandb_id else None,
     )
@@ -88,7 +108,7 @@ def sleep2vec_adapt(args):
     monitor = "val_contrastive_acc"
     mode = "max"
     checkpoint_cb = ModelCheckpoint(
-        dirpath=save_path,
+        dirpath=str(save_path),
         monitor=monitor,
         mode=mode,
         filename="epoch={epoch}-step={step}",

@@ -43,6 +43,18 @@ def _model_payload() -> dict:
     }
 
 
+def _channels_only_payload() -> dict:
+    return {
+        "model": {
+            "channels": [
+                {"name": "eeg", "input_dim": 4},
+                {"name": "ecg", "input_dim": 4},
+                {"name": "ppg", "input_dim": 8},
+            ]
+        }
+    }
+
+
 def test_resolve_channels_and_dims_defaults_to_all_yaml_channels(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _model_payload())
 
@@ -66,3 +78,12 @@ def test_resolve_channels_and_dims_rejects_unknown_subset_channels(tmp_path: Pat
 
     with pytest.raises(ValueError, match="Channels must be declared in YAML model.channels"):
         _resolve_channels_and_dims(config_path, ["unknown"])
+
+
+def test_resolve_channels_and_dims_accepts_channels_only_yaml(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+
+    channels, dims = _resolve_channels_and_dims(config_path, None)
+
+    assert channels == ["eeg", "ecg", "ppg"]
+    assert dims == {"eeg": 4, "ecg": 4, "ppg": 8}

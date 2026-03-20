@@ -5,6 +5,8 @@ import argparse
 from pathlib import Path
 import sys
 
+import yaml
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -179,11 +181,30 @@ def _render_output_path(
 def _resolve_channels_and_dims(
     config_path: Path, selected_channels: list[str] | None
 ) -> tuple[list[str], dict[str, int]]:
-    from sleep2vec.config import load_model_config
+    data = yaml.safe_load(config_path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError("Top-level YAML must be a mapping with model.channels.")
 
-    model_cfg = load_model_config(config_path)
-    all_channels = [channel.name for channel in model_cfg.channels]
-    all_channel_input_dims = {channel.name: int(channel.input_dim) for channel in model_cfg.channels}
+    model_block = data.get("model")
+    if not isinstance(model_block, dict):
+        raise ValueError("Config YAML must contain a top-level model.channels list.")
+
+    channels_raw = model_block.get("channels")
+    if not isinstance(channels_raw, list) or not channels_raw:
+        raise ValueError("Config YAML must contain a non-empty model.channels list.")
+
+    all_channels: list[str] = []
+    all_channel_input_dims: dict[str, int] = {}
+    for item in channels_raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each model.channels entry must be a mapping.")
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Each model.channels entry must define a non-empty string 'name'.")
+        if "input_dim" not in item:
+            raise ValueError(f"Channel '{name}' must define input_dim.")
+        all_channels.append(name)
+        all_channel_input_dims[name] = int(item["input_dim"])
 
     if selected_channels is None:
         return all_channels, all_channel_input_dims
