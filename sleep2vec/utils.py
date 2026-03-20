@@ -118,13 +118,13 @@ def get_pretrain_dataloader(args):
         "num_workers": args.num_workers,
         "worker_init_fn": _seed_worker,
     }
-    train_loader = PSGPretrainDataset(
+    channel_input_dims = dict(getattr(args, "channel_input_dims", {}) or {})
+    base_dataset_kwargs = dict(
         channel_names=args.channel_names,
-        channel_input_dims=getattr(args, "channel_input_dims", None),
+        channel_input_dims=channel_input_dims,
         save_preset_path=None,
         load_preset_path=args.pretrain_preset_path,
         index=args.pretrain_data_index,
-        split=["train"],
         max_tokens=args.max_tokens,
         stride_tokens=args.max_tokens,  # 0 for truncation
         mask_rate=args.mask_rate,
@@ -133,11 +133,36 @@ def get_pretrain_dataloader(args):
         allow_missing_channels=allow_missing_channels,
         min_channels=min_channels,
         bucket_by_available_channels=bucket_by_available_channels,
-        train_pair_sampling=train_pair_sampling,
-        train_pair_probs=train_pair_probs,
-        train_pair_track_unique_samples=train_pair_track_unique_samples,
+    )
+
+    def build_pretrain_dataset(
+        *,
+        split,
+        dataloader_kwargs,
+        pair_selector=None,
+        train_pair_sampling_override=None,
+        train_pair_probs_override=None,
+        train_pair_track_unique_samples_override=False,
+        is_train_set,
+    ):
+        return PSGPretrainDataset(
+            **base_dataset_kwargs,
+            split=split,
+            pair_selector=pair_selector,
+            train_pair_sampling=train_pair_sampling_override,
+            train_pair_probs=train_pair_probs_override,
+            train_pair_track_unique_samples=train_pair_track_unique_samples_override,
+            is_train_set=is_train_set,
+            **dataloader_kwargs,
+        )
+
+    train_loader = build_pretrain_dataset(
+        split=["train"],
+        dataloader_kwargs=kwargs,
+        train_pair_sampling_override=train_pair_sampling,
+        train_pair_probs_override=train_pair_probs,
+        train_pair_track_unique_samples_override=train_pair_track_unique_samples,
         is_train_set=True,
-        **kwargs,
     ).dataloader(device=args.device)
     logging.info("Train DataLoader created successfully!")
 
@@ -149,27 +174,14 @@ def get_pretrain_dataloader(args):
     val_loaders = []
     for pair in val_pairs:
         pair_selector = RoundRobinPairSelector([pair])
-        val_dataset = PSGPretrainDataset(
-            channel_names=args.channel_names,
-            channel_input_dims=getattr(args, "channel_input_dims", None),
-            save_preset_path=None,
-            load_preset_path=args.pretrain_preset_path,
-            index=args.pretrain_data_index,
+        val_dataset = build_pretrain_dataset(
             split=["val"],
-            max_tokens=args.max_tokens,
-            stride_tokens=args.max_tokens,  # 0 for truncation
-            mask_rate=args.mask_rate,
-            use_legacy_body_movement=False,
-            generative=False,
-            allow_missing_channels=allow_missing_channels,
-            min_channels=min_channels,
-            bucket_by_available_channels=bucket_by_available_channels,
-            train_pair_sampling=None,
-            train_pair_probs=None,
-            train_pair_track_unique_samples=False,
-            is_train_set=False,
+            dataloader_kwargs=val_kwargs,
             pair_selector=pair_selector,
-            **val_kwargs,
+            train_pair_sampling_override=None,
+            train_pair_probs_override=None,
+            train_pair_track_unique_samples_override=False,
+            is_train_set=False,
         )
         if allow_missing_channels:
             _filter_dataset_for_pair_support(val_dataset, pair, list(args.channel_names))
@@ -198,16 +210,11 @@ def _build_finetune_loader(
             "Extend metadata label encoding before using multiclass metadata targets."
         )
     dataset_channel_names = list(args.data_channel_names)
-    dataset_channel_input_dims = {
-        name: int(getattr(args, "channel_input_dims", {}).get(name))
-        for name in dataset_channel_names
-        if name in getattr(args, "channel_input_dims", {})
-    }
+    dataset_channel_input_dims = dict(getattr(args, "channel_input_dims", {}) or {})
     if args.label_name == "stage5" and "stage5" not in dataset_channel_names:
         # stage5 is a per-token label; include it in the batch tokens so downstream loss can
         # read batch["tokens"]["stage5"] without treating it as an input modality.
         dataset_channel_names.append("stage5")
-        dataset_channel_input_dims["stage5"] = 1
 
     dataset_kwargs = dict(
         channel_names=dataset_channel_names,

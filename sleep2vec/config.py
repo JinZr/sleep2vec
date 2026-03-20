@@ -278,6 +278,30 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     return HeadConfig(temporal_agg=temporal_cfg, channel_agg=channel_cfg, **head_raw)
 
 
+def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfig:
+    if not isinstance(model_block, dict):
+        raise ValueError("model block must be a mapping.")
+    if "backbone" not in model_block:
+        raise ValueError("model.backbone is required in YAML.")
+    if "projection" not in model_block:
+        raise ValueError("model.projection is required in YAML.")
+    if "cls" not in model_block:
+        raise ValueError("model.cls is required in YAML.")
+
+    channels = _require_channels(model_block)
+    backbone = BackboneConfig(**model_block.get("backbone"))
+    projection = ProjectionConfig(**model_block.get("projection"))
+    cls_cfg = _build_cls_config(model_block)
+    head = _build_head_config(model_block, required=require_head)
+    return ModelConfig(
+        channels=channels,
+        backbone=backbone,
+        projection=projection,
+        cls=cls_cfg,
+        head=head,
+    )
+
+
 def _build_layer_mix_config(raw: t.Any) -> LayerMixConfig | None:
     if raw is None:
         return None
@@ -511,34 +535,25 @@ def _build_model_averaging_config(data: dict[str, t.Any]) -> ModelAveragingConfi
     return ModelAveragingConfig(name=name, params=params)
 
 
-def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
+def _load_yaml_mapping(path: str | Path, *, error_message: str) -> dict[str, t.Any]:
     data = yaml.safe_load(Path(path).read_text())
     if not isinstance(data, dict):
-        raise ValueError("Top-level YAML must be a mapping with model/loss blocks.")
+        raise ValueError(error_message)
+    return data
+
+
+def load_model_config(path: str | Path, *, require_head: bool = False) -> ModelConfig:
+    data = _load_yaml_mapping(path, error_message="Top-level YAML must be a mapping with a model block.")
+    return _build_model_config(data.get("model", {}), require_head=require_head)
+
+
+def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
+    data = _load_yaml_mapping(path, error_message="Top-level YAML must be a mapping with model/loss blocks.")
 
     model_block = data.get("model", {})
     loss_block = data.get("loss", {})
     data_block = data.get("data", {})
-
-    if "backbone" not in model_block:
-        raise ValueError("model.backbone is required in YAML.")
-    if "projection" not in model_block:
-        raise ValueError("model.projection is required in YAML.")
-    if "cls" not in model_block:
-        raise ValueError("model.cls is required in YAML.")
-
-    channels = _require_channels(model_block)
-    backbone = BackboneConfig(**model_block.get("backbone"))
-    projection = ProjectionConfig(**model_block.get("projection"))
-    cls_cfg = _build_cls_config(model_block)
-    head = _build_head_config(model_block, required=False)
-    model_cfg = ModelConfig(
-        channels=channels,
-        backbone=backbone,
-        projection=projection,
-        cls=cls_cfg,
-        head=head,
-    )
+    model_cfg = _build_model_config(model_block, require_head=False)
 
     loss_cfg = _build_loss(loss_block)
     data_cfg = PretrainDataConfig(**data_block)
@@ -549,9 +564,7 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
 
 
 def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
-    data = yaml.safe_load(Path(path).read_text())
-    if not isinstance(data, dict):
-        raise ValueError("Top-level YAML must be a mapping with a model block.")
+    data = _load_yaml_mapping(path, error_message="Top-level YAML must be a mapping with a model block.")
     model_block = data.get("model", {})
     data_block = data.get("data", {})
     finetune_block = data.get("finetune")
@@ -561,28 +574,10 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         raise ValueError("finetune block must be a mapping.")
     lora_block = finetune_block.get("lora", {})
     averaging_cfg = _build_model_averaging_config(data)
-    if "backbone" not in model_block:
-        raise ValueError("model.backbone is required in YAML.")
-    if "projection" not in model_block:
-        raise ValueError("model.projection is required in YAML.")
-    if "cls" not in model_block:
-        raise ValueError("model.cls is required in YAML.")
-
-    channels = _require_channels(model_block)
-    backbone = BackboneConfig(**model_block.get("backbone"))
-    projection = ProjectionConfig(**model_block.get("projection"))
-    cls_cfg = _build_cls_config(model_block)
+    model_cfg = _build_model_config(model_block, require_head=True)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
     task_cfg = _build_task_config(finetune_block.get("task"))
-    head = _build_head_config(model_block, required=True)
-    model_cfg = ModelConfig(
-        channels=channels,
-        backbone=backbone,
-        projection=projection,
-        cls=cls_cfg,
-        head=head,
-    )
-    _validate_layer_mix_config(layer_mix_cfg, backbone)
+    _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
     finetune_cfg = FinetuneConfig(

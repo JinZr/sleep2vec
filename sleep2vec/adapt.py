@@ -2,7 +2,6 @@ import argparse
 import logging
 import os
 from pathlib import Path
-import shutil
 import sys
 
 import pytorch_lightning as pl
@@ -18,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.samplers import handles_distributed_sharding
 from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
-from sleep2vec.common import dump_cli_args_yaml
+from sleep2vec.common import apply_model_config_args, persist_run_config_and_args
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_adaptation import AdaptPairScheduleCallback, Sleep2vecAdaptation, initial_pair_probs_for_phase
 from sleep2vec.utils import get_pretrain_dataloader
@@ -36,9 +35,7 @@ def sleep2vec_adapt(args):
 
     args.mask_rate = config_bundle.data.mask_rate
     args.max_tokens = config_bundle.data.max_tokens
-    args.channel_names = [c.name for c in model_config.channels]
-    args.channel_input_dims = {c.name: c.input_dim for c in model_config.channels}
-    args.backbone_arch = model_config.backbone.name
+    apply_model_config_args(args, model_config, set_backbone_arch=True)
     args.train_pair_probs = initial_pair_probs_for_phase(
         args.phase,
         channel_names=args.channel_names,
@@ -70,20 +67,7 @@ def sleep2vec_adapt(args):
         args.ckpt_path = None
 
     exp_dir = Path(save_path).parent
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    dest_config = exp_dir / "config.yaml"
-    try:
-        shutil.copy2(args.config, dest_config)
-        logging.info(f"Copied config to {dest_config}")
-    except Exception as exc:
-        logging.warning(f"Failed to copy config to {dest_config}: {exc}")
-
-    cli_args_path = exp_dir / "cli_args.yaml"
-    try:
-        dump_cli_args_yaml(args, cli_args_path)
-        logging.info(f"Saved CLI args to {cli_args_path}")
-    except Exception as exc:
-        logging.warning(f"Failed to write CLI args YAML to {cli_args_path}: {exc}")
+    persist_run_config_and_args(args, exp_dir)
 
     model = Sleep2vecAdaptation(
         args,

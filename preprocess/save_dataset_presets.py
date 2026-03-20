@@ -9,18 +9,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-DEFAULT_CHANNELS = [
-    "heartbeat",
-    "breath",
-    "eeg_original",
-    "ecg_original",
-    "eog_original",
-    "emg_original",
-    "spo2",
-    "resp_original",
-    "resp_nasal_original",
-]
-
 DEFAULT_SPLITS = ["test", "val", "train"]
 
 
@@ -33,6 +21,12 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         required=True,
         help="One or more index CSV files.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="YAML config whose model.channels define dataset channel names and input_dim values.",
     )
     parser.add_argument(
         "--dataset-name",
@@ -80,8 +74,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--channels",
         nargs="+",
-        default=DEFAULT_CHANNELS,
-        help="Channel names to include.",
+        default=None,
+        help="Optional subset of channels declared in YAML model.channels.",
     )
     parser.add_argument("--batch-size", type=int, default=16, help="Dataloader batch size in preset filtering.")
     parser.add_argument(
@@ -182,14 +176,39 @@ def _render_output_path(
     return Path(rendered).expanduser()
 
 
+def _resolve_channels_and_dims(config_path: Path, selected_channels: list[str] | None) -> tuple[list[str], dict[str, int]]:
+    from sleep2vec.config import load_model_config
+
+    model_cfg = load_model_config(config_path)
+    all_channels = [channel.name for channel in model_cfg.channels]
+    all_channel_input_dims = {channel.name: int(channel.input_dim) for channel in model_cfg.channels}
+
+    if selected_channels is None:
+        return all_channels, all_channel_input_dims
+
+    selected = _dedupe_keep_order(selected_channels)
+    unknown = [name for name in selected if name not in all_channel_input_dims]
+    if unknown:
+        raise ValueError(
+            "Channels must be declared in YAML model.channels. "
+            f"Unknown: {unknown}; available: {all_channels}"
+        )
+    return selected, {name: all_channel_input_dims[name] for name in selected}
+
+
 def main() -> None:
     args = parse_args()
+
+    args.config = args.config.expanduser()
+    if not args.config.exists():
+        raise FileNotFoundError(f"Config YAML not found: {args.config}")
 
     index_paths = [Path(p).expanduser() for p in args.index]
     missing = [str(p) for p in index_paths if not p.exists()]
     if missing:
         raise FileNotFoundError(f"Index CSV not found: {missing}")
 
+    channel_names, channel_input_dims = _resolve_channels_and_dims(args.config, args.channels)
     dataset_name = args.dataset_name or _infer_dataset_name(index_paths)
     splits = _dedupe_keep_order(args.split)
     meta_data_variants = _resolve_meta_names(args.meta_data_names, args.include_no_metadata)
@@ -205,7 +224,9 @@ def main() -> None:
         dataset_cls = PSGPretrainDataset
 
     print(f"Dataset name: {dataset_name}")
+    print(f"Config YAML: {args.config}")
     print(f"Index CSV(s): {[str(p) for p in index_paths]}")
+    print(f"Channels: {channel_names}")
     print(f"Splits: {splits}")
     print(f"Metadata variants: {[m if m else 'none' for m in meta_data_variants]}")
     print(f"n_tokens={args.n_tokens}, stride_tokens={stride_tokens}")
@@ -238,8 +259,8 @@ def main() -> None:
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
             dataset = dataset_cls(
-                channel_names=args.channels,
-                channel_input_dims=None,
+                channel_names=channel_names,
+                channel_input_dims=channel_input_dims,
                 save_preset_path=str(output_path),
                 load_preset_path=None,
                 index=[str(p) for p in index_paths],

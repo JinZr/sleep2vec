@@ -1,7 +1,6 @@
 import argparse
 import logging
 from pathlib import Path
-import shutil
 import sys
 
 import pytorch_lightning as pl
@@ -16,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from sleep2vec.common import apply_finetune_config, dump_cli_args_yaml
+from sleep2vec.common import apply_finetune_config, persist_run_config_and_args
 from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import get_finetune_dataloaders
@@ -42,20 +41,7 @@ def supervised(args, config_bundle):
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
-    exp_root.mkdir(parents=True, exist_ok=True)
-    dest_config = exp_root / "config.yaml"
-    try:
-        shutil.copy2(args.config, dest_config)
-        logging.info(f"Copied config to {dest_config}")
-    except Exception as exc:  # pragma: no cover - best-effort
-        logging.warning(f"Failed to copy config to {dest_config}: {exc}")
-
-    cli_args_path = exp_root / "cli_args.yaml"
-    try:
-        dump_cli_args_yaml(args, cli_args_path)
-        logging.info(f"Saved CLI args to {cli_args_path}")
-    except Exception as exc:  # pragma: no cover - best-effort
-        logging.warning(f"Failed to write CLI args YAML to {cli_args_path}: {exc}")
+    persist_run_config_and_args(args, exp_root)
 
     # get data loaders
     train_loader, val_loader, test_loader = prepare_dataloader(args)

@@ -147,6 +147,7 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
 
     assert [c.name for c in model_cfg.channels] == ["eeg", "ecg"]
     assert args.channel_names == ["eeg", "ecg"]
+    assert args.channel_input_dims == {"eeg": 4, "ecg": 4}
     assert set(args.data_channel_names) == {"eeg", "ecg"}
     assert args.max_tokens == 4
     assert args.finetune_data_index == Path("index/custom.csv")

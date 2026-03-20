@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
+import shutil
 import typing as t
 
 import yaml
 
-from sleep2vec.config import TaskConfig, load_finetune_config
+from sleep2vec.config import ModelConfig, TaskConfig, load_finetune_config
 
 _BUILTIN_TASK_SPECS = {
     "stage5": {
@@ -31,6 +33,34 @@ _BUILTIN_TASK_SPECS = {
         "monitor_mod": "min",
     },
 }
+
+
+def channel_input_dims_from_model_config(model_cfg: ModelConfig) -> dict[str, int]:
+    return {channel.name: int(channel.input_dim) for channel in model_cfg.channels}
+
+
+def apply_model_config_args(args, model_cfg: ModelConfig, *, set_backbone_arch: bool = False) -> None:
+    args.channel_names = [c.name for c in model_cfg.channels]
+    args.channel_input_dims = channel_input_dims_from_model_config(model_cfg)
+    if set_backbone_arch:
+        args.backbone_arch = model_cfg.backbone.name
+
+
+def persist_run_config_and_args(args: argparse.Namespace, exp_dir: Path) -> None:
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    dest_config = exp_dir / "config.yaml"
+    try:
+        shutil.copy2(args.config, dest_config)
+        logging.info(f"Copied config to {dest_config}")
+    except Exception as exc:  # pragma: no cover - best-effort
+        logging.warning(f"Failed to copy config to {dest_config}: {exc}")
+
+    cli_args_path = exp_dir / "cli_args.yaml"
+    try:
+        dump_cli_args_yaml(args, cli_args_path)
+        logging.info(f"Saved CLI args to {cli_args_path}")
+    except Exception as exc:  # pragma: no cover - best-effort
+        logging.warning(f"Failed to write CLI args YAML to {cli_args_path}: {exc}")
 
 
 def _validate_metadata_label_support(args) -> None:
@@ -105,8 +135,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     finetune_cfg = config_bundle.finetune
     lora_cfg = finetune_cfg.lora
 
-    args.channel_names = [c.name for c in model_cfg.channels]
-    args.channel_input_dims = {c.name: c.input_dim for c in model_cfg.channels}
+    apply_model_config_args(args, model_cfg)
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
     args.max_tokens = data_cfg.max_tokens
     args.finetune_data_index = Path(data_cfg.finetune_data_index) if data_cfg.finetune_data_index else None
