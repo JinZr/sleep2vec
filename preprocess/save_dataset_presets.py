@@ -176,7 +176,9 @@ def _render_output_path(
     return Path(rendered).expanduser()
 
 
-def _resolve_channels_and_dims(config_path: Path, selected_channels: list[str] | None) -> tuple[list[str], dict[str, int]]:
+def _resolve_channels_and_dims(
+    config_path: Path, selected_channels: list[str] | None
+) -> tuple[list[str], dict[str, int]]:
     from sleep2vec.config import load_model_config
 
     model_cfg = load_model_config(config_path)
@@ -190,8 +192,7 @@ def _resolve_channels_and_dims(config_path: Path, selected_channels: list[str] |
     unknown = [name for name in selected if name not in all_channel_input_dims]
     if unknown:
         raise ValueError(
-            "Channels must be declared in YAML model.channels. "
-            f"Unknown: {unknown}; available: {all_channels}"
+            "Channels must be declared in YAML model.channels. " f"Unknown: {unknown}; available: {all_channels}"
         )
     return selected, {name: all_channel_input_dims[name] for name in selected}
 

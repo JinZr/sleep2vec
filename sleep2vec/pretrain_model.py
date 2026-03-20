@@ -428,9 +428,7 @@ class Sleep2vecPretrainModel(nn.Module):
         new_set = {str(name) for name in new_channels}
         unknown = sorted(new_set - set(self.channel_names))
         if unknown:
-            raise ValueError(
-                f"Unknown adaptation channels {unknown}. Available channels: {self.channel_names}"
-            )
+            raise ValueError(f"Unknown adaptation channels {unknown}. Available channels: {self.channel_names}")
         legacy_set = {name for name in self.channel_names if name not in new_set}
         return new_set, legacy_set
 

@@ -12,7 +12,6 @@ from sleep2vec.checkpoints import load_pretrain_init_weights
 from sleep2vec.config import AdaptConfig
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
 
-
 Pair = tuple[str, str]
 
 
@@ -98,7 +97,9 @@ class Sleep2vecAdaptation(Sleep2vecPretraining):
             raise ValueError("Adaptation requires --pretrained-backbone-path.")
 
         if args.pretrained_backbone_path and args.ckpt_path is None:
-            load_info = load_pretrain_init_weights(self.model, args.pretrained_backbone_path, device="cpu", strict=False)
+            load_info = load_pretrain_init_weights(
+                self.model, args.pretrained_backbone_path, device="cpu", strict=False
+            )
             logging.info(
                 "Loaded adaptation init from %s using prefix=%s (%d keys).",
                 args.pretrained_backbone_path,
@@ -113,7 +114,9 @@ class Sleep2vecAdaptation(Sleep2vecPretraining):
         if self.model_averager is not None:
             self.model_averager.sync_from_student()
 
-        train_shared_projection = bool(self.adapt_config.stage1.train_shared_projection) if self.phase == "stage1" else False
+        train_shared_projection = (
+            bool(self.adapt_config.stage1.train_shared_projection) if self.phase == "stage1" else False
+        )
         self.model.apply_adaptation_freeze_policy(
             phase=self.phase,
             new_channels=self.adapt_config.new_channels,
