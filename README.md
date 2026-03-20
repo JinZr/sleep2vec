@@ -20,6 +20,7 @@
   - [Data Format \& Caches](#data-format--caches)
   - [Quick Start](#quick-start)
     - [Pretrain (contrastive)](#pretrain-contrastive)
+    - [Adaptation — staged wearable expansion](#adaptation--staged-wearable-expansion)
     - [Finetune — classification](#finetune--classification)
     - [Finetune — regression](#finetune--regression)
   - [Inference Only](#inference-only)
@@ -32,8 +33,9 @@
 
 ## Overview
 - Refactored training flow: **YAML defines architecture & loss**, **CLI sets training hyperparameters** (epochs, lr, devices, etc.).
-- Supports contrastive pretraining plus downstream classification or regression finetuning.
+- Supports contrastive pretraining, staged modality adaptation for new sensors, plus downstream classification or regression finetuning.
 - Extensible registries for backbones, tokenizers, projection heads, losses, model averaging, LoRA-backed heads, and downstream heads.
+- Dataset channel names and per-token input widths now come from YAML `model.channels`, so custom modalities such as wearable `ppg` or `actigraphy_vm` can be added without editing the dataset registry.
 - WandB logging is enabled by default; inference-only runner is included for evaluating checkpoints.
 
 ---
@@ -44,22 +46,25 @@
 - Pair-accuracy heatmap logging uses `matplotlib` + `seaborn` (already included in `requirements.txt`).
 - Authenticate to Weights & Biases before running (`WANDB_API_KEY=...` or `WANDB_MODE=offline`) because entrypoints call `wandb.login()`.
 - Default precision is bf16/bf16-mixed; pass `--precision 32` if your GPUs do not support bf16.
+- Main entrypoints: `python -m sleep2vec.pretrain ...`, `python -m sleep2vec.adapt --phase stage1|stage2 ...`, `python -m sleep2vec.finetune ...`, `python -m sleep2vec.infer ...`.
 
 ---
 
 ## Data Format & Caches
 - **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set.
-- **NPZ contents per row**: keys `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, `resp_nasal_original`, `stage5`. Each NPZ stores contiguous 30 s windows. 128 Hz channels expect 3840 frames/token; 4 Hz channels expect 120 frames/token; `stage5` is one label per token.
-- **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided.
+- **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy_vm`. `stage5` remains a special per-token label channel and always uses width `1`.
+- **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided. Preset generation now requires a YAML config so the script can resolve channel names and `input_dim` values from `model.channels`.
 - To build presets, run:
   ```bash
   python preprocess/save_dataset_presets.py \
+    --config configs/sleep2vec_dense_pretrain.yaml \
     --index /path/to/index.csv \
     --dataset-name shhs \
     --n-tokens 1535 \
     --split train val test
   ```
-  Optional flags: `--meta-data-names hypertension diabetes`, `--include-no-metadata`, `--output-template 'data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle'`, `--dry-run`, `--overwrite`.
+  Optional flags: `--channels eeg_original ecg_original`, `--meta-data-names hypertension diabetes`, `--include-no-metadata`, `--output-template 'data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle'`, `--dry-run`, `--overwrite`.
+- `--channels` is now an optional ordered subset of YAML `model.channels`; any requested channel that is missing from the YAML or lacks `input_dim` fails fast.
 - **Missing-channel pretrain**: if you enable `--allow-missing-channels`, presets must carry `payload["available_channels"]` (auto-populated during preset creation) so the bucketed sampler can group by montage.
 - **WatchPAT `.zzp` conversion**: `preprocess/watchpat_zzp_to_edf.py` converts a WatchPAT archive (`Sleep.dat`, `Patient.dat`, `log.dat`) into EDF for downstream inspection or external preprocessing. Example:
   ```bash
@@ -97,6 +102,7 @@ python -m sleep2vec.pretrain \
 ```
 Optional:
 - `--warmup-steps N` to override the default LR warmup (3% of total steps).
+- `--pretrained-backbone-path /path/to/base.ckpt` to initialize the pretrain model from an existing checkpoint. Loader prefers `ema_model.` weights and falls back to `model.`; if `--ckpt-path` is also set, Lightning resume takes precedence.
 - `--allow-missing-channels` to accept samples with missing channels; pair with `--min-channels` and (recommended) `--bucket-by-available-channels`.
 
 Example (missing-channel pretrain):
@@ -111,6 +117,39 @@ python -m sleep2vec.pretrain \
   --allow-missing-channels --min-channels 6 --bucket-by-available-channels
 ```
 
+### Adaptation — staged wearable expansion
+`sleep2vec.adapt` runs a two-phase pretrain-style adaptation loop for newly introduced modalities while reusing an existing backbone checkpoint. The YAML must include a top-level `adapt:` block and the `adapt.new_channels` names must also appear in `model.channels`.
+
+Stage 1: train only the new-modality tokenizers (and optionally the shared projection head).
+```bash
+python -m sleep2vec.adapt \
+  --config configs/sleep2vec_dense_adapt_ppg_actigraphy.yaml \
+  --phase stage1 \
+  --pretrained-backbone-path /path/to/base_pretrain.ckpt \
+  --pretrain-data-index /path/to/index.csv \
+  --pretrain-preset-path /path/to/wearable_cache.pkl \
+  --version-name wearable-v1 \
+  --epochs 40 --lr 5e-5 --batch-size 256 \
+  --devices 0 1
+```
+
+Stage 2: resume from the stage-1 checkpoint, unfreeze the encoder/legacy tokenizers, and anneal the training pair distribution back toward legacy pairs.
+```bash
+python -m sleep2vec.adapt \
+  --config configs/sleep2vec_dense_adapt_ppg_actigraphy.yaml \
+  --phase stage2 \
+  --ckpt-path /path/to/stage1.ckpt \
+  --version-name wearable-v1 \
+  --epochs 60 --lr 2e-5 --batch-size 256 \
+  --devices 0 1
+```
+
+Notes:
+- Provided example configs: `configs/sleep2vec_dense_adapt_ppg_actigraphy.yaml` and `configs/sleep2vec_dense_adapt_ppg_actigraphy_cls.yaml`.
+- Adaptation defaults to missing-channel-aware pair-first sampling (`--allow-missing-channels` on, `--train-pair-monitor-enable` on) because wearable datasets often have heterogeneous sensor availability.
+- `adapt.stage2.pair_schedule` is defined as training-progress fractions (`until` in `(0, 1]`) and must end at `1.0`.
+- Starting a fresh adapt run uses `--pretrained-backbone-path`; resuming an exact run uses `--ckpt-path` and reuses the existing `log-adapt/<run_name>/checkpoints` directory and W&B id.
+
 ### Finetune — classification
 ```bash
 python -m sleep2vec.finetune \
@@ -122,6 +161,7 @@ python -m sleep2vec.finetune \
 Notes:
 - `stage5` is a **per-token sequence labeling** task (`is_seq=True`). Use token-level downstream (`model.cls.downstream: tokens`).
 - Do **not** add `stage5` to `data.data_channel_names`; it is loaded as a label into `batch["tokens"]["stage5"]` automatically when `--label-name stage5`.
+- `--pretrained-backbone-path /path/to/pretrain_or_adapt.ckpt` can be used to bootstrap downstream training from a pretrain/adaptation checkpoint; loader prefers `ema_model.` and falls back to `model.`.
 
 ### Finetune — regression
 ```bash
@@ -139,7 +179,7 @@ Custom metadata labels:
 - Example YAMLs: `configs/sleep2vec_dense_finetune_custom_reg.yaml`, `configs/sleep2vec_dense_finetune_custom_cls.yaml`.
 
 > [!Note]
-> `--version-name` is required for pretraining run naming; downstream runs auto-generate a version when omitted. Ensure your YAML `data.*` paths point to real preset pickles.
+> `--version-name` is required for pretraining/adaptation run naming; downstream runs auto-generate a version when omitted. Ensure your YAML `data.*` paths point to real preset pickles.
 
 ---
 
@@ -156,6 +196,7 @@ python -m sleep2vec.infer \
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
 Use the same `--label-name` that was used for fine-tuning; it is required.
 To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
+Use `--pretrained-backbone-path` if you want to preload a pretrain/adaptation initialization checkpoint before applying downstream weights.
 Use `--wandb` to enable W&B logging during inference (needed for confusion matrix logging).
 
 ---
@@ -270,10 +311,36 @@ finetune:
 - When `use_for_eval: true`, finetune/infer will evaluate with the averaged weights if present.
 - Downstream loading can request averaged weights with `use_ema="ema"` when calling `load_pretrained_backbone`.
 
+**Adaptation Config**
+- `sleep2vec.adapt` reuses the pretrain model/loss schema and adds a top-level `adapt` block:
+  ```yaml
+  adapt:
+    new_channels: [ppg, actigraphy_vm]
+    stage1:
+      train_shared_projection: false
+    stage2:
+      lr_scales:
+        encoder: 0.1
+        shared_legacy: 0.5
+        new_modalities: 1.0
+      pair_schedule:
+        - until: 0.25
+          new_pair_ratio: 1.0
+        - until: 0.50
+          new_pair_ratio: 0.7
+        - until: 1.0
+          new_pair_ratio: 0.0
+  ```
+- `adapt.new_channels` must be a non-empty subset of `model.channels`.
+- Stage 1 freezes the encoder, CLS embedding, and legacy tokenizers; only the new modality tokenizers train, plus `proj_head` when `train_shared_projection: true`.
+- Stage 2 restores training for encoder/CLS, shared projection, legacy tokenizers, and new tokenizers, with per-group LR scales from `adapt.stage2.lr_scales`.
+- `pair_schedule` reallocates pair-first sampling mass toward pairs that include a new modality early in training, then anneals back toward the full pair set.
+
 **Optimization & Checkpointing**  
 - Pretrain/finetune use linear warmup + cosine LR decay; override warmup with `--warmup-steps`.
 - Finetune saves `best.ckpt` and `last.ckpt` plus periodic checkpoints; set `--ckpt-every-n-epochs` to control frequency.
-- `--precision` and `--gradient-clip-val` are supported by both pretrain and finetune CLIs.
+- Pretrain and adaptation can also warm-start from `--pretrained-backbone-path`; the loader extracts the pretrain-model subtree (`ema_model.` first, then `model.`) and syncs model averaging state from the loaded student weights.
+- `--precision` and `--gradient-clip-val` are supported by pretrain, adaptation, and finetune CLIs.
 
 **Pair-accuracy heatmap (pretrain)**  
 - Validation uses per-pair dataloaders to log contrastive accuracy per modality pair.
@@ -306,7 +373,7 @@ finetune:
     --version-name debug-diag \
     --print-diagnostics --diagnostics-steps 5 --precision 32 --devices 0
   ```
-  (Use the same flags with `sleep2vec.finetune` for downstream diagnostics.)
+  (Use the same flags with `sleep2vec.adapt` or `sleep2vec.finetune` for adaptation/downstream diagnostics.)
 
 > [!Important]
 > Prefer `--precision 32` when using diagnostics; mixed precision can distort the printed tensor statistics.
@@ -315,15 +382,17 @@ finetune:
 
 ## Working Tips
 - Maintain separate YAML per stage (`*_pretrain.yaml`, `*_finetune_*.yaml`); only pretrain YAML defines `loss`.
+- When adding a new modality, first declare it in `model.channels` with the correct `input_dim`, regenerate presets with the same `--config`, then pretrain/adapt from a checkpoint as needed.
 - All channels must share the same `out_dim`; the builder enforces this.
 - `data.data_channel_names` in finetune YAML must match `model.channels` (input modalities only); per-token labels like `stage5` are loaded automatically when used as `--label-name`.
+- `pretrain.py`, `adapt.py`, and `finetune.py` copy the resolved `config.yaml` plus `cli_args.yaml` into the run directory for reproducibility.
 - When experimenting, adjust CLI flags for training schedules and keep structural changes in YAML for reproducibility.
 
 ---
 
 ## Repository Layout
-- `configs/` — training recipes for pretrain/finetune.
-- `sleep2vec/` — core library: registries, encoders, tokenizers, projection, losses, averaging, downstream heads, Lightning entrypoints.
+- `configs/` — training recipes for pretrain, adaptation, and finetune.
+- `sleep2vec/` — core library: registries, encoders, tokenizers, projection, losses, averaging, downstream heads, adaptation modules, and Lightning entrypoints.
 - `data/` — dataset/index definitions, metadata helpers, NPZ loaders, channel-selection & samplers.
 - `preprocess/` — scripts to build index CSVs/presets, split/merge dataset indices, inspect missing-channel stats, and run raw format converters such as WatchPAT `.zzp` to EDF.
 - `utils/` — misc helpers.

@@ -95,7 +95,7 @@ adapt:
       - until: 0.75
         new_pair_ratio: 0.5
       - until: 1.0
-        new_pair_ratio: 0.0  # builtin default schedule resolves this final stage to uniform over active pairs
+        new_pair_ratio: 0.34545454545454546  # 19/55 active pairs touch ppg or actigraphy_vm, making this final stage uniform over active pairs
 model_averaging:
   name: ema
   params:

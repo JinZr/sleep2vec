@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from itertools import combinations
 from pathlib import Path
 
 import pytest
@@ -203,6 +204,28 @@ def test_load_pretrain_config_validates_adapt_schedule_endpoint(tmp_path: Path):
 
     with pytest.raises(ValueError, match="must end with until=1.0"):
         load_pretrain_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "sleep2vec_dense_adapt_ppg_actigraphy.yaml",
+        "sleep2vec_dense_adapt_ppg_actigraphy_cls.yaml",
+    ],
+)
+def test_ppg_actigraphy_adapt_configs_keep_uniform_final_stage_sampling(config_name: str):
+    config_path = Path(__file__).resolve().parents[1] / "configs" / config_name
+    bundle = load_pretrain_config(config_path)
+
+    assert bundle.adapt is not None
+    channel_names = [channel.name for channel in bundle.model.channels]
+    new_channels = set(bundle.adapt.new_channels)
+    all_pairs = list(combinations(channel_names, 2))
+    new_pair_count = sum(1 for left, right in all_pairs if left in new_channels or right in new_channels)
+    final_ratio = bundle.adapt.stage2.pair_schedule[-1].new_pair_ratio
+
+    assert final_ratio > 0.0
+    assert final_ratio == pytest.approx(new_pair_count / len(all_pairs))
 
 
 def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
