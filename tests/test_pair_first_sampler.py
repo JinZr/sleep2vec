@@ -161,3 +161,26 @@ def test_pair_first_sampler_shuffle_fallback_allows_duplicates_when_pool_is_smal
         indices = [idx for idx, _ in batch]
         assert len(indices) == 4
         assert len(set(indices)) < len(indices)
+
+
+def test_pair_first_sampler_can_update_pair_probs() -> None:
+    data = [_make_sample(i, ["a", "b", "c"]) for i in range(120)]
+    sampler = PairFirstBatchSampler(
+        data,
+        channel_names=["a", "b", "c"],
+        batch_size=2,
+        min_channels=2,
+        seed=31,
+    )
+
+    sampler.set_pair_probs({("a", "b"): 1.0, ("a", "c"): 0.0, ("b", "c"): 0.0})
+    _ = list(iter(sampler))
+
+    target = sampler.get_target_distribution()
+    counts = sampler.get_last_epoch_counts()
+    assert target[("a", "b")] == pytest.approx(1.0)
+    assert target[("a", "c")] == pytest.approx(0.0)
+    assert target[("b", "c")] == pytest.approx(0.0)
+    assert counts[("a", "b")] == len(sampler)
+    assert counts[("a", "c")] == 0
+    assert counts[("b", "c")] == 0

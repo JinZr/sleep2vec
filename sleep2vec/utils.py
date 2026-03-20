@@ -79,6 +79,7 @@ def get_pretrain_dataloader(args):
     min_channels = int(getattr(args, "min_channels", 6))
     bucket_by_available_channels = bool(getattr(args, "bucket_by_available_channels", True))
     train_pair_sampling = str(getattr(args, "train_pair_sampling", "uniform"))
+    train_pair_probs = getattr(args, "train_pair_probs", None)
     train_pair_track_unique_samples = bool(getattr(args, "train_pair_track_unique_samples", False))
     val_num_workers = getattr(args, "val_num_workers", None)
     if val_num_workers is None:
@@ -119,6 +120,7 @@ def get_pretrain_dataloader(args):
     }
     train_loader = PSGPretrainDataset(
         channel_names=args.channel_names,
+        channel_input_dims=getattr(args, "channel_input_dims", None),
         save_preset_path=None,
         load_preset_path=args.pretrain_preset_path,
         index=args.pretrain_data_index,
@@ -132,6 +134,7 @@ def get_pretrain_dataloader(args):
         min_channels=min_channels,
         bucket_by_available_channels=bucket_by_available_channels,
         train_pair_sampling=train_pair_sampling,
+        train_pair_probs=train_pair_probs,
         train_pair_track_unique_samples=train_pair_track_unique_samples,
         is_train_set=True,
         **kwargs,
@@ -148,6 +151,7 @@ def get_pretrain_dataloader(args):
         pair_selector = RoundRobinPairSelector([pair])
         val_dataset = PSGPretrainDataset(
             channel_names=args.channel_names,
+            channel_input_dims=getattr(args, "channel_input_dims", None),
             save_preset_path=None,
             load_preset_path=args.pretrain_preset_path,
             index=args.pretrain_data_index,
@@ -161,6 +165,7 @@ def get_pretrain_dataloader(args):
             min_channels=min_channels,
             bucket_by_available_channels=bucket_by_available_channels,
             train_pair_sampling=None,
+            train_pair_probs=None,
             train_pair_track_unique_samples=False,
             is_train_set=False,
             pair_selector=pair_selector,
@@ -193,13 +198,20 @@ def _build_finetune_loader(
             "Extend metadata label encoding before using multiclass metadata targets."
         )
     dataset_channel_names = list(args.data_channel_names)
+    dataset_channel_input_dims = {
+        name: int(getattr(args, "channel_input_dims", {}).get(name))
+        for name in dataset_channel_names
+        if name in getattr(args, "channel_input_dims", {})
+    }
     if args.label_name == "stage5" and "stage5" not in dataset_channel_names:
         # stage5 is a per-token label; include it in the batch tokens so downstream loss can
         # read batch["tokens"]["stage5"] without treating it as an input modality.
         dataset_channel_names.append("stage5")
+        dataset_channel_input_dims["stage5"] = 1
 
     dataset_kwargs = dict(
         channel_names=dataset_channel_names,
+        channel_input_dims=dataset_channel_input_dims,
         save_preset_path=None,
         load_preset_path=args.finetune_preset_path,
         index=args.finetune_data_index,

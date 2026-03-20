@@ -12,36 +12,40 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
 import wandb
 
-# Make sure the repository root is importable when running this file directly
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data.samplers import handles_distributed_sharding
 from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
-from sleep2vec.checkpoints import load_pretrain_init_weights
 from sleep2vec.common import dump_cli_args_yaml
 from sleep2vec.config import load_pretrain_config
-from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
+from sleep2vec.sleep2vec_adaptation import AdaptPairScheduleCallback, Sleep2vecAdaptation, initial_pair_probs_for_phase
 from sleep2vec.utils import get_pretrain_dataloader
 
 
-def sleep2vec_pretrain(args):
-
+def sleep2vec_adapt(args):
     config_bundle = load_pretrain_config(args.config)
+    if config_bundle.adapt is None:
+        raise ValueError("Adaptation config requires a top-level 'adapt' block.")
+
     model_config = config_bundle.model
     loss_config = config_bundle.loss
     averaging_config = config_bundle.averaging
+    adapt_config = config_bundle.adapt
+
     args.mask_rate = config_bundle.data.mask_rate
     args.max_tokens = config_bundle.data.max_tokens
     args.channel_names = [c.name for c in model_config.channels]
     args.channel_input_dims = {c.name: c.input_dim for c in model_config.channels}
     args.backbone_arch = model_config.backbone.name
+    args.train_pair_probs = initial_pair_probs_for_phase(
+        args.phase,
+        channel_names=args.channel_names,
+        adapt_config=adapt_config,
+    )
 
-    # get data loaders
     train_loader, val_loaders = get_pretrain_dataloader(args)
-    # Disable Lightning's distributed sampler injection only when our custom
-    # batch sampler already shards across ranks.
     train_batch_sampler = getattr(train_loader, "batch_sampler", None)
     main_val_loader = val_loaders[0] if val_loaders else None
     val_batch_sampler = getattr(main_val_loader, "batch_sampler", None)
@@ -49,87 +53,71 @@ def sleep2vec_pretrain(args):
         train_batch_sampler
     ) and not handles_distributed_sharding(val_batch_sampler)
 
-    # ========= 目录与 logger =========
-    if args.ckpt_path is not None and os.path.isfile(args.ckpt_path):  # NEW
-        # 1. 用旧目录继续
+    if args.ckpt_path is not None and os.path.isfile(args.ckpt_path):
         save_path = os.path.dirname(args.ckpt_path)
         run_name = os.path.basename(os.path.dirname(save_path))
-        logging.info(f"run_name: {run_name}")
-        wandb_id = run_name  # 简单做法，也可手动传 id
+        wandb_id = run_name
     else:
-        # 2. 全新训练：创建新目录
-        exp_bits = [args.version_name, args.backbone_arch]
+        exp_bits = [args.version_name, args.backbone_arch, "adapt", args.phase]
         extra_tag = getattr(args, "exp_info", "") or ""
         extra_tag = extra_tag.strip().replace(" ", "_")
         if extra_tag:
             exp_bits.append(extra_tag)
-        exp_bits.append("unsupervised")
         run_name = "-".join(filter(None, exp_bits))
-        save_path = f"log-pretrain/{run_name}/checkpoints"
+        save_path = f"log-adapt/{run_name}/checkpoints"
         os.makedirs(save_path, exist_ok=True)
-        wandb_id = None  # 让 wandb 自动分配
-        args.ckpt_path = None  # 防止误传
+        wandb_id = None
+        args.ckpt_path = None
 
-    # Always stash the YAML used for this run alongside checkpoints.
     exp_dir = Path(save_path).parent
     exp_dir.mkdir(parents=True, exist_ok=True)
     dest_config = exp_dir / "config.yaml"
     try:
         shutil.copy2(args.config, dest_config)
         logging.info(f"Copied config to {dest_config}")
-    except Exception as exc:  # pragma: no cover - best-effort
+    except Exception as exc:
         logging.warning(f"Failed to copy config to {dest_config}: {exc}")
 
     cli_args_path = exp_dir / "cli_args.yaml"
     try:
         dump_cli_args_yaml(args, cli_args_path)
         logging.info(f"Saved CLI args to {cli_args_path}")
-    except Exception as exc:  # pragma: no cover - best-effort
+    except Exception as exc:
         logging.warning(f"Failed to write CLI args YAML to {cli_args_path}: {exc}")
 
-    model = Sleep2vecPretraining(args, model_config, loss_config, averaging_config=averaging_config)
-    if args.pretrained_backbone_path and args.ckpt_path is None:
-        load_info = load_pretrain_init_weights(model.model, args.pretrained_backbone_path, device="cpu", strict=False)
-        logging.info(
-            "Loaded pretrain-model init from %s using prefix=%s (%d keys).",
-            args.pretrained_backbone_path,
-            load_info.used_prefix,
-            load_info.loaded_keys,
-        )
-        if load_info.missing_keys:
-            logging.warning("Missing init keys: %s", load_info.missing_keys)
-        if load_info.unexpected_keys:
-            logging.warning("Unexpected init keys: %s", load_info.unexpected_keys)
-        if model.model_averager is not None:
-            model.model_averager.sync_from_student()
+    model = Sleep2vecAdaptation(
+        args,
+        model_config,
+        loss_config,
+        adapt_config=adapt_config,
+        averaging_config=averaging_config,
+    )
 
     logger = WandbLogger(
-        project="sleep2vec-pretrain",
-        name=f"s2v-pretrain-{run_name}",
+        project="sleep2vec-adapt",
+        name=f"s2v-adapt-{run_name}",
         save_dir=os.path.dirname(save_path),
-        id=wandb_id,  # NEW：保持同一个 run
-        resume="allow" if wandb_id else None,  # NEW：若 id 存在则追加
+        id=wandb_id,
+        resume="allow" if wandb_id else None,
     )
 
     monitor = "val_contrastive_acc"
     mode = "max"
     checkpoint_cb = ModelCheckpoint(
-        dirpath=save_path,  # 你的 ckpt 目录
-        monitor=monitor,  # 监控验证集 Cohen κ
-        mode=mode,  # 越大越好
+        dirpath=save_path,
+        monitor=monitor,
+        mode=mode,
         filename="epoch={epoch}-step={step}",
-        save_on_train_epoch_end=True,  # 只在 epoch 末保存
-        every_n_epochs=1,  # 每个 epoch 都存
-        save_top_k=50,  # -1 全部保留；你也可按需改成 3
+        save_on_train_epoch_end=True,
+        every_n_epochs=1,
+        save_top_k=50,
     )
-
     early_stop_cb = EarlyStopping(
-        monitor=monitor,  # 必须与 log 名一致
-        patience=args.patience,  # 早停容忍 epoch 数
-        mode=mode,  # 越小越好
+        monitor=monitor,
+        patience=args.patience,
+        mode=mode,
         verbose=True,
     )
-
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     if args.strategy == "ddp":
@@ -137,11 +125,8 @@ def sleep2vec_pretrain(args):
     elif args.strategy == "deepspeed":
         if args.deepspeed_config is None:
             raise ValueError("deepspeed_config must be provided when using DeepSpeed strategy.")
-        strategy = DeepSpeedStrategy(
-            config=args.deepspeed_config,
-        )
+        strategy = DeepSpeedStrategy(config=args.deepspeed_config)
     else:
-        # fall back to Lightning's default strategy selection
         strategy = "auto"
 
     pair_acc_cb = PairAccLoggerCallback(
@@ -152,14 +137,20 @@ def sleep2vec_pretrain(args):
         train_pair_min_unique_coverage_warn_threshold=args.train_pair_min_unique_coverage_warn_threshold,
     )
     callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb]
+    if args.phase == "stage2":
+        callbacks.append(
+            AdaptPairScheduleCallback(
+                new_channels=adapt_config.new_channels,
+                pair_schedule=adapt_config.stage2.pair_schedule,
+            )
+        )
+
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
         accelerator="gpu",
         strategy=strategy,
         benchmark=True,
-        # Custom bucketed batch sampler handles distributed sharding itself.
-        # Disable Lightning's distributed sampler injection only in that case.
         use_distributed_sampler=use_distributed_sampler,
         logger=logger,
         max_epochs=args.epochs,
@@ -169,7 +160,6 @@ def sleep2vec_pretrain(args):
         gradient_clip_val=args.gradient_clip_val,
     )
     if args.print_diagnostics:
-        # short diagnostic run: disable bar/ckpt/val to keep output clean
         callbacks = []
         enable_checkpointing = False
         trainer_kwargs.update(
@@ -185,8 +175,6 @@ def sleep2vec_pretrain(args):
         enable_checkpointing=enable_checkpointing,
         **trainer_kwargs,
     )
-
-    # train the model
     trainer.fit(
         model,
         train_dataloaders=train_loader,
@@ -198,117 +186,104 @@ def sleep2vec_pretrain(args):
 if __name__ == "__main__":
     wandb.login()
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--config",
-        type=Path,
-        required=True,
-        help="YAML file containing model and loss configuration.",
-    )
-    parser.add_argument("--epochs", type=int, default=120, help="number of epochs")
-    parser.add_argument("--lr", type=float, default=5e-5, help="learning rate")
+    parser = argparse.ArgumentParser(description="Run staged modality adaptation for sleep2vec.")
+    parser.add_argument("--config", type=Path, required=True, help="Pretrain-style YAML containing an adapt block.")
+    parser.add_argument("--phase", type=str, choices=["stage1", "stage2"], required=True, help="Adaptation phase.")
+    parser.add_argument("--epochs", type=int, default=120, help="Number of epochs.")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Base learning rate.")
     parser.add_argument(
         "--warmup-steps",
         type=int,
         default=None,
         help="Override warmup steps for LR schedule (default: 3% of total steps).",
     )
-    parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
-    parser.add_argument("--batch-size", type=int, default=320, help="batch size")
-    parser.add_argument("--num-workers", type=int, default=8, help="number of dataloader workers")
+    parser.add_argument("--weight-decay", type=float, default=1e-2, help="Weight decay for AdamW.")
+    parser.add_argument("--batch-size", type=int, default=320, help="Batch size.")
+    parser.add_argument("--num-workers", type=int, default=8, help="Training dataloader workers.")
     parser.add_argument(
         "--val-num-workers",
         type=int,
         default=None,
-        help=(
-            "Validation dataloader workers. "
-            "Default: 0 when --allow-missing-channels is enabled, otherwise follows --num-workers."
-        ),
+        help="Validation dataloader workers. Default: 0 for adaptation pair-first runs.",
     )
-    parser.add_argument("--devices", type=int, nargs="+", default=[0, 1], help="GPU device ids")
+    parser.add_argument("--devices", type=int, nargs="+", default=[0, 1], help="GPU device ids.")
+    parser.add_argument("--patience", type=int, default=20, help="Early stopping patience in epochs.")
+    parser.add_argument("--device", type=str, default="cuda", help="Torch device used by dataloader.")
+    parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="Gradient clipping value.")
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="bf16",
+        help="Mixed precision setting passed to Lightning Trainer.",
+    )
     parser.add_argument(
         "--ckpt-path",
         type=Path,
         default=None,
-        help="要继续训练的 checkpoint 路径 (.ckpt)",
+        help="Optional Lightning checkpoint to resume exactly.",
     )
     parser.add_argument(
         "--pretrained-backbone-path",
         type=Path,
         default=None,
-        help="Optional pretrain-model init checkpoint. Loads ema_model. first and falls back to model.",
+        help="Required pretrain-model init checkpoint. Loads ema_model. first and falls back to model.",
     )
-
-    parser.add_argument(
-        "--version-name",
-        type=str,
-        required=True,
-        help="version name used for logging and checkpoint directory",
-    )
-    parser.add_argument("--patience", type=int, default=20, help="early stopping patience in epochs")
-    parser.add_argument("--device", type=str, default="cuda", help="torch device used by dataloader")
+    parser.add_argument("--version-name", type=str, required=True, help="Version name used for logging.")
+    parser.add_argument("--exp-info", type=str, default="", help="Optional extra tag appended to the run name.")
     parser.add_argument(
         "--pretrain-data-index",
         type=Path,
         default="index/hsp_psg_pretrain.csv",
-        help="CSV index file for pretraining data",
+        help="CSV index file for adaptation data.",
     )
     parser.add_argument(
         "--pretrain-preset-path",
         type=Path,
         default="/data/ywx/BIOT/data/5dataset_preset_120.pickle",
-        help="path to precomputed preset pickle for PSG dataset",
+        help="Path to precomputed preset pickle for adaptation data.",
     )
     parser.add_argument(
         "--allow-missing-channels",
-        action="store_true",
-        help="Allow samples with missing channels (default: require all configured channels).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable pair-first sampling over heterogeneous modality availability.",
     )
-    parser.add_argument(
-        "--min-channels",
-        type=int,
-        default=6,
-        help="Minimum available channels required when --allow-missing-channels is enabled.",
-    )
+    parser.add_argument("--min-channels", type=int, default=2, help="Minimum available channels for adaptation.")
     parser.add_argument(
         "--bucket-by-available-channels",
         dest="bucket_by_available_channels",
         action="store_true",
         default=True,
-        help="Bucket batches by available-channel signature (default: enabled when allowing missing channels).",
+        help="Bucket batches by available-channel signature when pair-first is not active.",
     )
     parser.add_argument(
         "--no-bucket-by-available-channels",
         dest="bucket_by_available_channels",
         action="store_false",
-        help="Disable available-channel bucketing even when allowing missing channels.",
+        help="Disable available-channel bucketing fallback.",
     )
     parser.add_argument(
         "--train-pair-sampling",
         type=str,
         default="uniform",
-        choices=["uniform"],
-        help="Training pair-first sampling strategy when allowing missing channels.",
+        help="Training pair-first sampling strategy. Adaptation currently requires 'uniform'.",
     )
     parser.add_argument(
         "--train-pair-track-unique-samples",
         action="store_true",
-        help=(
-            "Track per-pair unique sampled indices during training monitoring. "
-            "Disabled by default to reduce host memory usage."
-        ),
+        help="Track per-pair unique sampled indices during training monitoring.",
     )
     parser.add_argument(
         "--train-pair-skew-warn-threshold",
         type=float,
         default=0.05,
-        help="Warn when |actual_pair_ratio - target_pair_ratio| exceeds this threshold in an epoch.",
+        help="Warn when |actual_pair_ratio - target_pair_ratio| exceeds this threshold.",
     )
     parser.add_argument(
         "--train-pair-monitor-enable",
         dest="train_pair_monitor_enable",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable epoch-level train pair sampling distribution monitoring.",
     )
     parser.add_argument(
@@ -327,64 +302,21 @@ if __name__ == "__main__":
         "--train-pair-min-unique-coverage-warn-threshold",
         type=float,
         default=0.1,
-        help="Warn when unique sampled indices / pair pool size falls below this threshold in an epoch.",
+        help="Warn when unique sampled indices / pair pool size falls below this threshold.",
     )
-    parser.add_argument(
-        "--exp-info",
-        type=str,
-        default="",
-        help=(
-            "Extra tag inserted into log-pretrain/<run_name>; useful for noting "
-            "backbone variants or ablation identifiers."
-        ),
-    )
-
-    parser.add_argument(
-        "--precision",
-        type=str,
-        default="bf16",
-        choices=[
-            "transformer-engine",
-            "transformer-engine-float16",
-            "16-true",
-            "16-mixed",
-            "bf16-true",
-            "bf16-mixed",
-            "32-true",
-            "64-true",
-            "64",
-            "32",
-            "16",
-            "bf16",
-        ],
-        help="mixed precision setting passed to Lightning Trainer",
-    )
+    parser.add_argument("--strategy", type=str, default="ddp", choices=["ddp", "deepspeed", "auto"])
+    parser.add_argument("--deepspeed-config", type=Path, default=None, help="DeepSpeed config path when used.")
     parser.add_argument(
         "--print-diagnostics",
         action="store_true",
-        help="Run a short batch or two, print tensor diagnostics, and exit (disables progress bar).",
+        help="Run a short diagnostic pass, print tensor stats, and exit.",
     )
     parser.add_argument(
         "--diagnostics-steps",
         type=int,
         default=5,
-        help="Number of training steps to accumulate diagnostics before stopping.",
-    )
-    parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
-    parser.add_argument(
-        "--strategy",
-        type=str,
-        default="ddp",
-        choices=["ddp", "deepspeed", "none"],
-        help="distributed training strategy",
-    )
-    parser.add_argument(
-        "--deepspeed-config",
-        type=str,
-        default=None,
-        help="DeepSpeed config JSON path when strategy is 'deepspeed'",
+        help="Number of training steps to gather diagnostics before stopping.",
     )
 
-    args = parser.parse_args()
-    logging.info(args)
-    sleep2vec_pretrain(args)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    sleep2vec_adapt(parser.parse_args())

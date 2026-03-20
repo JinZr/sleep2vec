@@ -155,6 +155,56 @@ def test_load_pretrain_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.data.max_tokens == 4
 
 
+def test_load_pretrain_config_parses_adapt_block(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {
+        "new_channels": ["eeg"],
+        "stage1": {"train_shared_projection": True},
+        "stage2": {
+            "lr_scales": {"encoder": 0.2, "shared_legacy": 0.6, "new_modalities": 1.0},
+            "pair_schedule": [
+                {"until": 0.5, "new_pair_ratio": 1.0},
+                {"until": 1.0, "new_pair_ratio": 0.0},
+            ],
+        },
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_pretrain_config(config_path)
+
+    assert bundle.adapt is not None
+    assert bundle.adapt.new_channels == ["eeg"]
+    assert bundle.adapt.stage1.train_shared_projection is True
+    assert bundle.adapt.stage2.lr_scales.encoder == pytest.approx(0.2)
+    assert bundle.adapt.stage2.pair_schedule[-1].until == pytest.approx(1.0)
+
+
+def test_load_pretrain_config_requires_adapt_new_channels(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {"stage1": {"train_shared_projection": False}}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="adapt.new_channels is required"):
+        load_pretrain_config(config_path)
+
+
+def test_load_pretrain_config_validates_adapt_schedule_endpoint(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {
+        "new_channels": ["eeg"],
+        "stage2": {
+            "pair_schedule": [
+                {"until": 0.5, "new_pair_ratio": 1.0},
+                {"until": 0.8, "new_pair_ratio": 0.0},
+            ]
+        },
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="must end with until=1.0"):
+        load_pretrain_config(config_path)
+
+
 def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _finetune_payload())
     bundle = load_finetune_config(config_path)

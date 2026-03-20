@@ -51,6 +51,11 @@ class BaseModelAverager:
             return self.averaged_model
         return self.student
 
+    def sync_from_student(self) -> None:
+        if self.averaged_model is None:
+            return
+        self.averaged_model.load_state_dict(self.student.state_dict(), strict=True)
+
     # Lifecycle hooks -----------------------------------------------------
     def on_fit_start(self, trainer) -> None:
         return None

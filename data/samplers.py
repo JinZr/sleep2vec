@@ -388,6 +388,9 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
     def get_target_distribution(self) -> dict[Pair, float]:
         return {pair: prob for pair, prob in zip(self._pairs, self._pair_probs)}
 
+    def set_pair_probs(self, pair_probs: dict[Pair, float] | None) -> None:
+        self._pair_probs = self._resolve_pair_probs(pair_probs)
+
     def get_last_epoch_counts(self) -> dict[Pair, int]:
         return dict(self._last_epoch_pair_counter)
 

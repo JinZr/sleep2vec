@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 import re
@@ -8,6 +9,14 @@ import typing as t
 import torch
 
 _EPOCH_RE = re.compile(r"epoch[=\-](\d+)")
+
+
+@dataclass
+class PretrainInitLoadResult:
+    used_prefix: str
+    loaded_keys: int
+    missing_keys: list[str]
+    unexpected_keys: list[str]
 
 
 def _parse_epoch(path: Path) -> int | None:
@@ -20,8 +29,16 @@ def _parse_epoch(path: Path) -> int | None:
         return None
 
 
+def load_checkpoint(path: Path | str, device: torch.device | str) -> t.Any:
+    return torch.load(Path(path), map_location=torch.device(device), weights_only=False)
+
+
 def _load_state_dict(path: Path, device: torch.device) -> dict[str, torch.Tensor]:
-    ckpt = torch.load(path, map_location=device, weights_only=False)
+    ckpt = load_checkpoint(path, device)
+    return get_state_dict_from_checkpoint(ckpt)
+
+
+def get_state_dict_from_checkpoint(ckpt: t.Any) -> dict[str, torch.Tensor]:
     if isinstance(ckpt, dict) and "state_dict" in ckpt:
         state = ckpt["state_dict"]
     elif isinstance(ckpt, dict) and "model" in ckpt:
@@ -30,8 +47,45 @@ def _load_state_dict(path: Path, device: torch.device) -> dict[str, torch.Tensor
         state = ckpt
 
     if not isinstance(state, dict):
-        raise ValueError(f"Checkpoint {path} does not contain a state_dict.")
+        raise ValueError("Checkpoint payload does not contain a state_dict.")
     return state
+
+
+def extract_pretrain_init_state_dict(
+    ckpt: t.Any,
+    *,
+    prefixes: t.Sequence[str] = ("ema_model.", "model."),
+) -> tuple[dict[str, torch.Tensor], str]:
+    state_dict = get_state_dict_from_checkpoint(ckpt)
+    for prefix in prefixes:
+        filtered = {k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)}
+        if filtered:
+            return filtered, prefix
+
+    preview = ", ".join(list(state_dict.keys())[:8])
+    raise ValueError(
+        "Checkpoint does not contain any pretrain-model subtree matching "
+        f"{list(prefixes)}. Example keys: [{preview}]"
+    )
+
+
+def load_pretrain_init_weights(
+    module: torch.nn.Module,
+    ckpt_path: Path | str,
+    *,
+    device: torch.device | str = torch.device("cpu"),
+    strict: bool = False,
+    prefixes: t.Sequence[str] = ("ema_model.", "model."),
+) -> PretrainInitLoadResult:
+    ckpt = load_checkpoint(ckpt_path, device)
+    filtered_state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt, prefixes=prefixes)
+    load_info = module.load_state_dict(filtered_state_dict, strict=strict)
+    return PretrainInitLoadResult(
+        used_prefix=used_prefix,
+        loaded_keys=len(filtered_state_dict),
+        missing_keys=list(load_info.missing_keys),
+        unexpected_keys=list(load_info.unexpected_keys),
+    )
 
 
 def select_checkpoints(
@@ -119,4 +173,12 @@ def average_checkpoints(
     return avg
 
 
-__all__ = ["average_checkpoints", "select_checkpoints"]
+__all__ = [
+    "PretrainInitLoadResult",
+    "average_checkpoints",
+    "extract_pretrain_init_state_dict",
+    "get_state_dict_from_checkpoint",
+    "load_checkpoint",
+    "load_pretrain_init_weights",
+    "select_checkpoints",
+]

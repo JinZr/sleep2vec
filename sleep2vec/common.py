@@ -106,6 +106,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     lora_cfg = finetune_cfg.lora
 
     args.channel_names = [c.name for c in model_cfg.channels]
+    args.channel_input_dims = {c.name: c.input_dim for c in model_cfg.channels}
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
     args.max_tokens = data_cfg.max_tokens
     args.finetune_data_index = Path(data_cfg.finetune_data_index) if data_cfg.finetune_data_index else None

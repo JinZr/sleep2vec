@@ -164,6 +164,8 @@ class Sleep2vecPretrainModel(nn.Module):
         logging.info(f"Total parameters: {self.total_params}")
         self.trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         logging.info(f"Trainable parameters: {self.trainable_params}")
+        self._forced_eval_modules: list[nn.Module] = []
+        self._forced_train_modules: list[nn.Module] = []
 
     def _tokenize_two_random_channels(self, tokens):
         """
@@ -421,3 +423,124 @@ class Sleep2vecPretrainModel(nn.Module):
         total = sum(p.numel() for _, p in self.named_parameters())
         trainable = sum(p.numel() for _, p in self.named_parameters() if p.requires_grad)
         logging.info(f"[freeze_backbone_groups] backbone trainable: {trainable}/{total} ({trainable/total:.4%})")
+
+    def _resolve_adaptation_channels(self, new_channels: t.Sequence[str]) -> tuple[set[str], set[str]]:
+        new_set = {str(name) for name in new_channels}
+        unknown = sorted(new_set - set(self.channel_names))
+        if unknown:
+            raise ValueError(
+                f"Unknown adaptation channels {unknown}. Available channels: {self.channel_names}"
+            )
+        legacy_set = {name for name in self.channel_names if name not in new_set}
+        return new_set, legacy_set
+
+    def _adaptation_group_for_param(self, name: str, new_channels: t.Set[str]) -> str | None:
+        if name.startswith("encoder.") or name.startswith("cls_embedding."):
+            return "encoder_cls"
+        if name.startswith("embedding_projection.") or name.startswith("proj_head."):
+            return "shared_projection"
+        if name.startswith("tokenizer_mapping."):
+            channel_name = name.split(".", 2)[1]
+            return "new_modalities" if channel_name in new_channels else "legacy_modalities"
+        if name.startswith("mask_embed."):
+            channel_name = name.split(".", 2)[1]
+            return "new_modalities" if channel_name in new_channels else "legacy_modalities"
+        return None
+
+    def get_adaptation_param_groups(self, new_channels: t.Sequence[str]) -> dict[str, list[tuple[str, nn.Parameter]]]:
+        new_set, _ = self._resolve_adaptation_channels(new_channels)
+        groups = {
+            "encoder_cls": [],
+            "shared_projection": [],
+            "legacy_modalities": [],
+            "new_modalities": [],
+        }
+        for name, param in self.named_parameters():
+            group_name = self._adaptation_group_for_param(name, new_set)
+            if group_name is not None:
+                groups[group_name].append((name, param))
+        return groups
+
+    def _set_adaptation_group_trainable(
+        self,
+        groups: dict[str, list[tuple[str, nn.Parameter]]],
+        trainable_groups: set[str],
+    ) -> None:
+        for group_name, params in groups.items():
+            flag = group_name in trainable_groups
+            for _, param in params:
+                param.requires_grad = flag
+
+    def _tokenizer_modules(self, channel_names: t.Iterable[str]) -> list[nn.Module]:
+        modules: list[nn.Module] = []
+        for channel_name in channel_names:
+            if channel_name in self.tokenizer_mapping:
+                modules.append(self.tokenizer_mapping[channel_name])
+        return modules
+
+    def _set_mode_policy(self, *, forced_eval: list[nn.Module], forced_train: list[nn.Module]) -> None:
+        self._forced_eval_modules = list(dict.fromkeys(forced_eval))
+        self._forced_train_modules = list(dict.fromkeys(forced_train))
+        self.apply_forced_module_modes()
+
+    def apply_forced_module_modes(self) -> None:
+        for module in self._forced_eval_modules:
+            module.eval()
+        for module in self._forced_train_modules:
+            module.train()
+
+    def apply_adaptation_freeze_policy(
+        self,
+        *,
+        phase: str,
+        new_channels: t.Sequence[str],
+        train_shared_projection: bool = False,
+    ) -> None:
+        new_set, legacy_set = self._resolve_adaptation_channels(new_channels)
+        groups = self.get_adaptation_param_groups(new_set)
+
+        for _, param in self.named_parameters():
+            param.requires_grad = False
+
+        if phase == "stage1":
+            trainable_groups = {"new_modalities"}
+            if train_shared_projection:
+                trainable_groups.add("shared_projection")
+            self._set_adaptation_group_trainable(groups, trainable_groups)
+
+            forced_eval = [
+                self.encoder,
+                self.cls_embedding,
+                *self._tokenizer_modules(legacy_set),
+            ]
+            if not train_shared_projection and self.proj_head is not None:
+                forced_eval.append(self.proj_head)
+            forced_train = self._tokenizer_modules(new_set)
+            if train_shared_projection and self.proj_head is not None:
+                forced_train.append(self.proj_head)
+            self._set_mode_policy(
+                forced_eval=[module for module in forced_eval if module is not None],
+                forced_train=[module for module in forced_train if module is not None],
+            )
+        elif phase == "stage2":
+            trainable_groups = {"encoder_cls", "shared_projection", "legacy_modalities", "new_modalities"}
+            self._set_adaptation_group_trainable(groups, trainable_groups)
+            forced_train = [self.encoder, self.cls_embedding, *self._tokenizer_modules(self.channel_names)]
+            if self.proj_head is not None:
+                forced_train.append(self.proj_head)
+            self._set_mode_policy(
+                forced_eval=[],
+                forced_train=[module for module in forced_train if module is not None],
+            )
+        else:
+            raise ValueError(f"Unsupported adaptation phase '{phase}'. Expected 'stage1' or 'stage2'.")
+
+        total = sum(param.numel() for _, param in self.named_parameters())
+        trainable = sum(param.numel() for _, param in self.named_parameters() if param.requires_grad)
+        logging.info(
+            "[adaptation_freeze_policy] phase=%s trainable=%s/%s (%s)",
+            phase,
+            trainable,
+            total,
+            f"{trainable / total:.4%}" if total else "0.0000%",
+        )

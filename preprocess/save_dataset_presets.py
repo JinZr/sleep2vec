@@ -239,6 +239,7 @@ def main() -> None:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             dataset = dataset_cls(
                 channel_names=args.channels,
+                channel_input_dims=None,
                 save_preset_path=str(output_path),
                 load_preset_path=None,
                 index=[str(p) for p in index_paths],

@@ -297,7 +297,7 @@ if __name__ == "__main__":
         "--pretrained-backbone-path",
         type=str,
         default=None,
-        help="optional path to pretrained backbone checkpoint (.ckpt)",
+        help="Optional pretrain-model init checkpoint (.ckpt). Loads ema_model. first and falls back to model.",
     )
     parser.add_argument(
         "--ckpt-path",

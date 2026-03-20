@@ -33,18 +33,22 @@ class PSGPretrainDataset(DefaultDataset):
         allow_missing_channels: bool = False,
         bucket_by_available_channels: bool = False,
         train_pair_sampling: str | None = None,
+        train_pair_probs: t.Optional[t.Mapping[tuple[str, str], float]] = None,
         train_pair_track_unique_samples: bool = False,
         generative: bool = False,
         is_train_set: bool = True,
+        channel_input_dims: t.Optional[t.Mapping[str, int]] = None,
         **kwargs: t.Any,
     ) -> None:
 
         self.channel_names = channel_names
+        self.channel_input_dims = {str(k): int(v) for k, v in (channel_input_dims or {}).items()}
         self.randomly_select_channels = randomly_select_channels
         self.min_channels = min_channels
         self.allow_missing_channels = allow_missing_channels
         self.bucket_by_available_channels = bucket_by_available_channels
         self.train_pair_sampling = train_pair_sampling
+        self.train_pair_probs = dict(train_pair_probs or {})
         self.train_pair_track_unique_samples = bool(train_pair_track_unique_samples)
         self.token_sec = token_sec
         self.generative = generative
@@ -115,7 +119,7 @@ class PSGPretrainDataset(DefaultDataset):
         else:
             data = None
 
-        registry = {
+        legacy_registry = {
             "heartbeat": (
                 default_extractor("heartbeat", self.token_sec * 4),
                 default_tokenizer(4 * self.token_sec),
@@ -167,10 +171,30 @@ class PSGPretrainDataset(DefaultDataset):
                 default_mlm_mask_generator(0.0),
             ),
         }
+        registry: dict[str, tuple[t.Callable, t.Callable, t.Callable]] = {}
+        unknown = []
+        for name in channel_names:
+            if name == "stage5":
+                registry[name] = legacy_registry[name]
+                continue
+            if name in self.channel_input_dims:
+                frames_per_token = int(self.channel_input_dims[name])
+                registry[name] = (
+                    default_extractor(name, frames_per_token),
+                    default_tokenizer(frames_per_token),
+                    default_mlm_mask_generator(mask_rate),
+                )
+                continue
+            if name in legacy_registry:
+                registry[name] = legacy_registry[name]
+                continue
+            unknown.append(name)
 
-        unknown = [name for name in channel_names if name not in registry]
         if unknown:
-            raise ValueError(f"Unknown channels requested: {unknown}")
+            raise ValueError(
+                f"Unknown channels requested: {unknown}. "
+                "Provide channel_input_dims for non-legacy modalities."
+            )
 
         extractors = {name: registry[name][0] for name in channel_names}
         tokenizers = {name: registry[name][1] for name in channel_names}

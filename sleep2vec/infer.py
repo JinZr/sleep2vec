@@ -234,7 +234,7 @@ def parse_args():
         "--pretrained-backbone-path",
         type=str,
         default=None,
-        help="Optional backbone checkpoint to load before downstream weights.",
+        help="Optional pretrain-model init checkpoint to load before downstream weights.",
     )
     parser.add_argument(
         "--wandb",
