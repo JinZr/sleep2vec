@@ -1,4 +1,5 @@
 import argparse
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 import sys
@@ -10,6 +11,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
 import wandb
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -23,30 +25,148 @@ from sleep2vec.sleep2vec_adaptation import AdaptPairScheduleCallback, Sleep2vecA
 from sleep2vec.utils import get_pretrain_dataloader
 
 
+@dataclass(frozen=True)
+class AdaptRunArtifacts:
+    save_path: Path
+    run_name: str
+    wandb_id: t.Optional[str]
+    trainer_ckpt_path: t.Optional[Path]
+    write_root_files: bool
+
+
+def _require_checkpoint_file(ckpt_path: Path, *, arg_name: str) -> Path:
+    ckpt_path = Path(ckpt_path)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"{arg_name} not found: {ckpt_path}")
+    if not ckpt_path.is_file():
+        raise ValueError(f"{arg_name} must be a file: {ckpt_path}")
+    return ckpt_path
+
+
+def _checkpoint_dir_name_for_phase(phase: str) -> str:
+    if phase == "stage1":
+        return "checkpoints"
+    if phase == "stage2":
+        return "checkpoints.stage2"
+    raise ValueError(f"Unsupported adaptation phase '{phase}'.")
+
+
+def _checkpoint_dir_for_phase(exp_dir: Path, phase: str) -> Path:
+    return exp_dir / _checkpoint_dir_name_for_phase(phase)
+
+
+def _validate_checkpoint_dir_for_phase(*, ckpt_path: Path, expected_phase: str, context: str) -> Path:
+    exp_dir = ckpt_path.parent.parent
+    expected_dir = _checkpoint_dir_for_phase(exp_dir, expected_phase)
+    if ckpt_path.parent != expected_dir:
+        raise ValueError(f"{context}. Expected checkpoint under {expected_dir}, got {ckpt_path.parent}.")
+    return exp_dir
+
+
+def _load_saved_cli_args(exp_dir: Path, *, phase: str | None = None) -> tuple[Path, dict[str, t.Any]]:
+    candidates: list[Path] = []
+    if phase:
+        candidates.append(exp_dir / f"cli_args.{phase}.yaml")
+    candidates.append(exp_dir / "cli_args.yaml")
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        data = yaml.safe_load(candidate.read_text())
+        if not isinstance(data, dict):
+            raise ValueError(f"Saved CLI args must be a mapping: {candidate}")
+        return candidate, data
+    expected = ", ".join(str(path) for path in candidates)
+    raise ValueError(f"Expected saved CLI args in the checkpoint run directory: {expected}.")
+
+
+def _validate_saved_phase(*, exp_dir: Path, expected_phase: str, context: str) -> Path:
+    cli_args_path, cli_args = _load_saved_cli_args(exp_dir, phase=expected_phase)
+    phase = cli_args.get("phase")
+    if phase != expected_phase:
+        raise ValueError(f"{context}. Found phase={phase!r} in {cli_args_path}.")
+    return cli_args_path
+
+
+def _resolve_stage1_transition_checkpoint(pretrained_backbone_path: Path) -> Path:
+    ckpt_path = _require_checkpoint_file(pretrained_backbone_path, arg_name="pretrained_backbone_path")
+    exp_dir = _validate_checkpoint_dir_for_phase(
+        ckpt_path=ckpt_path,
+        expected_phase="stage1",
+        context=(
+            "--phase stage2 requires --pretrained-backbone-path to point to a prior adapt stage1 checkpoint"
+        ),
+    )
+    _validate_saved_phase(
+        exp_dir=exp_dir,
+        expected_phase="stage1",
+        context="--phase stage2 requires --pretrained-backbone-path to point to a prior adapt stage1 checkpoint",
+    )
+    return ckpt_path
+
+
 def _resolve_adapt_run_artifacts(
     *,
     ckpt_path: t.Optional[Path],
+    pretrained_backbone_path: t.Optional[Path],
     version_name: str,
     backbone_arch: str,
     phase: str,
     exp_info: str = "",
-) -> tuple[Path, str, t.Optional[str]]:
+) -> AdaptRunArtifacts:
     if ckpt_path is not None:
-        ckpt_path = Path(ckpt_path)
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-        if not ckpt_path.is_file():
-            raise ValueError(f"Checkpoint path must be a file: {ckpt_path}")
+        ckpt_path = _require_checkpoint_file(ckpt_path, arg_name="ckpt_path")
+        exp_dir = _validate_checkpoint_dir_for_phase(
+            ckpt_path=ckpt_path,
+            expected_phase=phase,
+            context=(
+                f"--ckpt-path resumes an exact adapt {phase} run only; "
+                "use --pretrained-backbone-path for stage transitions"
+            ),
+        )
+        _validate_saved_phase(
+            exp_dir=exp_dir,
+            expected_phase=phase,
+            context=(
+                f"--ckpt-path resumes an exact adapt {phase} run only; "
+                "use --pretrained-backbone-path for stage transitions"
+            ),
+        )
         save_path = ckpt_path.parent
         run_name = save_path.parent.name
-        return save_path, run_name, run_name
+        return AdaptRunArtifacts(
+            save_path=save_path,
+            run_name=run_name,
+            wandb_id=run_name,
+            trainer_ckpt_path=ckpt_path,
+            write_root_files=False,
+        )
+
+    if phase == "stage2" and pretrained_backbone_path is not None:
+        stage1_ckpt_path = _resolve_stage1_transition_checkpoint(pretrained_backbone_path)
+        exp_dir = stage1_ckpt_path.parent.parent
+        save_path = _checkpoint_dir_for_phase(exp_dir, phase)
+        run_name = save_path.parent.name
+        return AdaptRunArtifacts(
+            save_path=save_path,
+            run_name=run_name,
+            wandb_id=run_name,
+            trainer_ckpt_path=None,
+            write_root_files=False,
+        )
 
     exp_bits = [version_name, backbone_arch, "adapt", phase]
     extra_tag = exp_info.strip().replace(" ", "_")
     if extra_tag:
         exp_bits.append(extra_tag)
     run_name = "-".join(filter(None, exp_bits))
-    return Path("log-adapt") / run_name / "checkpoints", run_name, None
+    return AdaptRunArtifacts(
+        save_path=Path("log-adapt") / run_name / "checkpoints",
+        run_name=run_name,
+        wandb_id=None,
+        trainer_ckpt_path=None,
+        write_root_files=True,
+    )
 
 
 def sleep2vec_adapt(args):
@@ -76,18 +196,30 @@ def sleep2vec_adapt(args):
         train_batch_sampler
     ) and not handles_distributed_sharding(val_batch_sampler)
 
-    save_path, run_name, wandb_id = _resolve_adapt_run_artifacts(
+    artifacts = _resolve_adapt_run_artifacts(
         ckpt_path=args.ckpt_path,
+        pretrained_backbone_path=args.pretrained_backbone_path,
         version_name=args.version_name,
         backbone_arch=args.backbone_arch,
         phase=args.phase,
         exp_info=getattr(args, "exp_info", "") or "",
     )
-    if wandb_id is None:
-        save_path.mkdir(parents=True, exist_ok=True)
+    save_path = artifacts.save_path
+    run_name = artifacts.run_name
+    wandb_id = artifacts.wandb_id
+    trainer_ckpt_path = artifacts.trainer_ckpt_path
+    write_root_files = artifacts.write_root_files
+    save_path.mkdir(parents=True, exist_ok=True)
+    if wandb_id is not None:
+        logging.info("Reusing adapt run directory %s (wandb_id=%s)", save_path.parent, wandb_id)
 
     exp_dir = save_path.parent
-    persist_run_config_and_args(args, exp_dir)
+    persist_run_config_and_args(
+        args,
+        exp_dir,
+        phase_name=str(args.phase),
+        write_root_files=write_root_files,
+    )
 
     model = Sleep2vecAdaptation(
         args,
@@ -183,7 +315,7 @@ def sleep2vec_adapt(args):
         model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loaders if not args.print_diagnostics else None,
-        ckpt_path=args.ckpt_path,
+        ckpt_path=trainer_ckpt_path,
     )
 
 
@@ -224,13 +356,17 @@ if __name__ == "__main__":
         "--ckpt-path",
         type=Path,
         default=None,
-        help="Optional Lightning checkpoint to resume exactly.",
+        help="Optional Lightning checkpoint to resume exactly within the same adapt phase/run.",
     )
     parser.add_argument(
         "--pretrained-backbone-path",
         type=Path,
         default=None,
-        help="Required pretrain-model init checkpoint. Loads ema_model. first and falls back to model.",
+        help=(
+            "Weight-init checkpoint. Use this for fresh stage1 runs and for stage1->stage2 transitions; "
+            "stage2 expects it to point to a prior adapt stage1 checkpoint. "
+            "Loads ema_model. first and falls back to model."
+        ),
     )
     parser.add_argument("--version-name", type=str, required=True, help="Version name used for logging.")
     parser.add_argument("--exp-info", type=str, default="", help="Optional extra tag appended to the run name.")

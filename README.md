@@ -133,12 +133,12 @@ python -m sleep2vec.adapt \
   --devices 0 1
 ```
 
-Stage 2: resume from the stage-1 checkpoint, unfreeze the encoder/legacy tokenizers, and anneal the training pair distribution back toward legacy pairs.
+Stage 2: initialize from the stage-1 checkpoint, unfreeze the encoder/legacy tokenizers, and anneal the training pair distribution back toward legacy pairs.
 ```bash
 python -m sleep2vec.adapt \
   --config configs/sleep2vec_dense_adapt_ppg_actigraphy.yaml \
   --phase stage2 \
-  --ckpt-path /path/to/stage1.ckpt \
+  --pretrained-backbone-path /path/to/stage1.ckpt \
   --version-name wearable-v1 \
   --epochs 60 --lr 2e-5 --batch-size 256 \
   --devices 0 1
@@ -148,7 +148,9 @@ Notes:
 - Provided example configs: `configs/sleep2vec_dense_adapt_ppg_actigraphy.yaml` and `configs/sleep2vec_dense_adapt_ppg_actigraphy_cls.yaml`.
 - Adaptation defaults to missing-channel-aware pair-first sampling (`--allow-missing-channels` on, `--train-pair-monitor-enable` on) because wearable datasets often have heterogeneous sensor availability.
 - `adapt.stage2.pair_schedule` is defined as training-progress fractions (`until` in `(0, 1]`) and must end at `1.0`.
-- Starting a fresh adapt run uses `--pretrained-backbone-path`; resuming an exact run uses `--ckpt-path` and reuses the existing `log-adapt/<run_name>/checkpoints` directory and W&B id.
+- Starting a fresh adapt stage1 run uses `--pretrained-backbone-path` with a base pretrain checkpoint.
+- Starting stage2 uses `--pretrained-backbone-path` with a prior adapt stage1 checkpoint; this reuses the existing experiment directory and W&B id but writes new checkpoints under `log-adapt/<run_name>/checkpoints.stage2`, restarting optimizer/scheduler/epoch state from zero.
+- Resuming an exact in-progress adapt run uses `--ckpt-path`; this is the only path that forwards a checkpoint into Lightning resume.
 
 ### Finetune — classification
 ```bash

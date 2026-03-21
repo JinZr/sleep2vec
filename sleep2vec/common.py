@@ -46,21 +46,40 @@ def apply_model_config_args(args, model_cfg: ModelConfig, *, set_backbone_arch: 
         args.backbone_arch = model_cfg.backbone.name
 
 
-def persist_run_config_and_args(args: argparse.Namespace, exp_dir: Path) -> None:
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    dest_config = exp_dir / "config.yaml"
+def _copy_file(src: Path, dest: Path, *, label: str) -> None:
     try:
-        shutil.copy2(args.config, dest_config)
-        logging.info(f"Copied config to {dest_config}")
+        shutil.copy2(src, dest)
+        logging.info(f"Copied {label} to {dest}")
     except Exception as exc:  # pragma: no cover - best-effort
-        logging.warning(f"Failed to copy config to {dest_config}: {exc}")
+        logging.warning(f"Failed to copy {label} to {dest}: {exc}")
 
-    cli_args_path = exp_dir / "cli_args.yaml"
+
+def _write_cli_args(args: argparse.Namespace, dest: Path) -> None:
     try:
-        dump_cli_args_yaml(args, cli_args_path)
-        logging.info(f"Saved CLI args to {cli_args_path}")
+        dump_cli_args_yaml(args, dest)
+        logging.info(f"Saved CLI args to {dest}")
     except Exception as exc:  # pragma: no cover - best-effort
-        logging.warning(f"Failed to write CLI args YAML to {cli_args_path}: {exc}")
+        logging.warning(f"Failed to write CLI args YAML to {dest}: {exc}")
+
+
+def persist_run_config_and_args(
+    args: argparse.Namespace,
+    exp_dir: Path,
+    *,
+    phase_name: str | None = None,
+    write_root_files: bool = True,
+) -> None:
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    config_src = Path(args.config)
+
+    if write_root_files:
+        _copy_file(config_src, exp_dir / "config.yaml", label="config")
+        _write_cli_args(args, exp_dir / "cli_args.yaml")
+
+    if phase_name:
+        suffix = f".{phase_name}"
+        _copy_file(config_src, exp_dir / f"config{suffix}.yaml", label=f"{phase_name} config")
+        _write_cli_args(args, exp_dir / f"cli_args{suffix}.yaml")
 
 
 def _validate_metadata_label_support(args) -> None:

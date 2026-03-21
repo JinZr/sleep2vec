@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 from pathlib import Path
 import sys
 import types
-from typing import Callable
+from types import ModuleType
 
 import pytest
+import yaml
+
+from sleep2vec.common import persist_run_config_and_args
 
 
-def _load_resolve_adapt_run_artifacts() -> Callable:
+def _load_adapt_module() -> ModuleType:
     module_name = "_sleep2vec_adapt_test"
     stubbed_modules = {
         "pytorch_lightning": types.ModuleType("pytorch_lightning"),
@@ -60,7 +64,7 @@ def _load_resolve_adapt_run_artifacts() -> Callable:
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
-        return module._resolve_adapt_run_artifacts
+        return module
     finally:
         for name, original in originals.items():
             if original is None:
@@ -70,33 +74,41 @@ def _load_resolve_adapt_run_artifacts() -> Callable:
 
 
 @pytest.fixture(scope="module")
-def resolve_adapt_run_artifacts() -> Callable:
-    return _load_resolve_adapt_run_artifacts()
+def adapt_module() -> ModuleType:
+    return _load_adapt_module()
 
 
-def test_resolve_adapt_run_artifacts_builds_new_run_path_without_ckpt(resolve_adapt_run_artifacts: Callable):
-    save_path, run_name, wandb_id = resolve_adapt_run_artifacts(
+def _write_cli_args(path: Path, *, phase: str) -> None:
+    path.write_text(yaml.safe_dump({"phase": phase}))
+
+
+def test_resolve_adapt_run_artifacts_builds_new_run_path_without_ckpt(adapt_module: ModuleType):
+    artifacts = adapt_module._resolve_adapt_run_artifacts(
         ckpt_path=None,
+        pretrained_backbone_path=None,
         version_name="wearable-v1",
         backbone_arch="roformer",
         phase="stage1",
         exp_info="ppg actigraphy",
     )
 
-    assert save_path == Path("log-adapt/wearable-v1-roformer-adapt-stage1-ppg_actigraphy/checkpoints")
-    assert run_name == "wearable-v1-roformer-adapt-stage1-ppg_actigraphy"
-    assert wandb_id is None
+    assert artifacts.save_path == Path("log-adapt/wearable-v1-roformer-adapt-stage1-ppg_actigraphy/checkpoints")
+    assert artifacts.run_name == "wearable-v1-roformer-adapt-stage1-ppg_actigraphy"
+    assert artifacts.wandb_id is None
+    assert artifacts.trainer_ckpt_path is None
+    assert artifacts.write_root_files is True
 
 
 def test_resolve_adapt_run_artifacts_rejects_missing_ckpt(
     tmp_path: Path,
-    resolve_adapt_run_artifacts: Callable,
+    adapt_module: ModuleType,
 ):
     missing = tmp_path / "missing.ckpt"
 
-    with pytest.raises(FileNotFoundError, match="Checkpoint not found"):
-        resolve_adapt_run_artifacts(
+    with pytest.raises(FileNotFoundError, match="ckpt_path not found"):
+        adapt_module._resolve_adapt_run_artifacts(
             ckpt_path=missing,
+            pretrained_backbone_path=None,
             version_name="wearable-v1",
             backbone_arch="roformer",
             phase="stage2",
@@ -105,14 +117,15 @@ def test_resolve_adapt_run_artifacts_rejects_missing_ckpt(
 
 def test_resolve_adapt_run_artifacts_rejects_directory_ckpt(
     tmp_path: Path,
-    resolve_adapt_run_artifacts: Callable,
+    adapt_module: ModuleType,
 ):
     ckpt_dir = tmp_path / "run_a" / "checkpoints"
     ckpt_dir.mkdir(parents=True)
 
-    with pytest.raises(ValueError, match="Checkpoint path must be a file"):
-        resolve_adapt_run_artifacts(
+    with pytest.raises(ValueError, match="ckpt_path must be a file"):
+        adapt_module._resolve_adapt_run_artifacts(
             ckpt_path=ckpt_dir,
+            pretrained_backbone_path=None,
             version_name="wearable-v1",
             backbone_arch="roformer",
             phase="stage2",
@@ -121,19 +134,203 @@ def test_resolve_adapt_run_artifacts_rejects_directory_ckpt(
 
 def test_resolve_adapt_run_artifacts_uses_existing_ckpt_parent(
     tmp_path: Path,
-    resolve_adapt_run_artifacts: Callable,
+    adapt_module: ModuleType,
 ):
-    ckpt_path = tmp_path / "run_a" / "checkpoints" / "epoch=1.ckpt"
+    ckpt_path = tmp_path / "run_a" / "checkpoints.stage2" / "epoch=1.ckpt"
     ckpt_path.parent.mkdir(parents=True)
     ckpt_path.write_text("checkpoint")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.stage2.yaml", phase="stage2")
 
-    save_path, run_name, wandb_id = resolve_adapt_run_artifacts(
+    artifacts = adapt_module._resolve_adapt_run_artifacts(
         ckpt_path=ckpt_path,
+        pretrained_backbone_path=None,
         version_name="ignored",
         backbone_arch="ignored",
         phase="stage2",
     )
 
-    assert save_path == ckpt_path.parent
-    assert run_name == "run_a"
-    assert wandb_id == "run_a"
+    assert artifacts.save_path == ckpt_path.parent
+    assert artifacts.run_name == "run_a"
+    assert artifacts.wandb_id == "run_a"
+    assert artifacts.trainer_ckpt_path == ckpt_path
+    assert artifacts.write_root_files is False
+
+
+def test_resolve_adapt_run_artifacts_rejects_cross_phase_ckpt_resume(
+    tmp_path: Path,
+    adapt_module: ModuleType,
+):
+    ckpt_path = tmp_path / "run_a" / "checkpoints" / "epoch=1.ckpt"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_text("checkpoint")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.yaml", phase="stage1")
+
+    with pytest.raises(ValueError, match="resumes an exact adapt stage2 run only"):
+        adapt_module._resolve_adapt_run_artifacts(
+            ckpt_path=ckpt_path,
+            pretrained_backbone_path=None,
+            version_name="ignored",
+            backbone_arch="ignored",
+            phase="stage2",
+        )
+
+
+def test_resolve_adapt_run_artifacts_reuses_stage1_run_for_stage2_transition(
+    tmp_path: Path,
+    adapt_module: ModuleType,
+):
+    ckpt_path = tmp_path / "run_a" / "checkpoints" / "epoch=1.ckpt"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_text("checkpoint")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.yaml", phase="stage1")
+
+    artifacts = adapt_module._resolve_adapt_run_artifacts(
+        ckpt_path=None,
+        pretrained_backbone_path=ckpt_path,
+        version_name="ignored",
+        backbone_arch="ignored",
+        phase="stage2",
+    )
+
+    assert artifacts.save_path == ckpt_path.parent.parent / "checkpoints.stage2"
+    assert artifacts.run_name == "run_a"
+    assert artifacts.wandb_id == "run_a"
+    assert artifacts.trainer_ckpt_path is None
+    assert artifacts.write_root_files is False
+
+
+def test_resolve_adapt_run_artifacts_prefers_stage1_snapshot_when_present(
+    tmp_path: Path,
+    adapt_module: ModuleType,
+):
+    ckpt_path = tmp_path / "run_a" / "checkpoints" / "epoch=1.ckpt"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_text("checkpoint")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.yaml", phase="stage2")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.stage1.yaml", phase="stage1")
+
+    artifacts = adapt_module._resolve_adapt_run_artifacts(
+        ckpt_path=None,
+        pretrained_backbone_path=ckpt_path,
+        version_name="ignored",
+        backbone_arch="ignored",
+        phase="stage2",
+    )
+
+    assert artifacts.save_path == ckpt_path.parent.parent / "checkpoints.stage2"
+    assert artifacts.run_name == "run_a"
+    assert artifacts.trainer_ckpt_path is None
+
+
+def test_resolve_adapt_run_artifacts_rejects_stage1_checkpoint_for_stage2_resume_after_transition(
+    tmp_path: Path,
+    adapt_module: ModuleType,
+):
+    ckpt_path = tmp_path / "run_a" / "checkpoints" / "epoch=1.ckpt"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_text("checkpoint")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.stage1.yaml", phase="stage1")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.stage2.yaml", phase="stage2")
+
+    with pytest.raises(ValueError, match="resumes an exact adapt stage2 run only"):
+        adapt_module._resolve_adapt_run_artifacts(
+            ckpt_path=ckpt_path,
+            pretrained_backbone_path=None,
+            version_name="ignored",
+            backbone_arch="ignored",
+            phase="stage2",
+        )
+
+
+def test_resolve_adapt_run_artifacts_rejects_non_stage1_transition_checkpoint(
+    tmp_path: Path,
+    adapt_module: ModuleType,
+):
+    ckpt_path = tmp_path / "run_a" / "checkpoints" / "epoch=1.ckpt"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_text("checkpoint")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.yaml", phase="stage2")
+
+    with pytest.raises(ValueError, match="prior adapt stage1 checkpoint"):
+        adapt_module._resolve_adapt_run_artifacts(
+            ckpt_path=None,
+            pretrained_backbone_path=ckpt_path,
+            version_name="ignored",
+            backbone_arch="ignored",
+            phase="stage2",
+        )
+
+
+def test_resolve_adapt_run_artifacts_rejects_stage2_checkpoint_for_stage2_transition(
+    tmp_path: Path,
+    adapt_module: ModuleType,
+):
+    ckpt_path = tmp_path / "run_a" / "checkpoints.stage2" / "epoch=1.ckpt"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_text("checkpoint")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.stage1.yaml", phase="stage1")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.stage2.yaml", phase="stage2")
+
+    with pytest.raises(ValueError, match="prior adapt stage1 checkpoint"):
+        adapt_module._resolve_adapt_run_artifacts(
+            ckpt_path=None,
+            pretrained_backbone_path=ckpt_path,
+            version_name="ignored",
+            backbone_arch="ignored",
+            phase="stage2",
+        )
+
+
+def _args_with_config(config_path: Path, *, phase: str) -> argparse.Namespace:
+    return argparse.Namespace(
+        config=config_path,
+        phase=phase,
+        version_name="wearable-v1",
+    )
+
+
+def test_persist_run_config_and_args_writes_root_and_stage1_snapshots(tmp_path: Path):
+    config_path = tmp_path / "stage1_config.yaml"
+    config_path.write_text("stage: 1\n")
+    exp_dir = tmp_path / "log-adapt" / "run_a"
+
+    persist_run_config_and_args(
+        _args_with_config(config_path, phase="stage1"),
+        exp_dir,
+        phase_name="stage1",
+        write_root_files=True,
+    )
+
+    assert (exp_dir / "config.yaml").read_text() == "stage: 1\n"
+    assert (exp_dir / "config.stage1.yaml").read_text() == "stage: 1\n"
+    assert yaml.safe_load((exp_dir / "cli_args.yaml").read_text())["phase"] == "stage1"
+    assert yaml.safe_load((exp_dir / "cli_args.stage1.yaml").read_text())["phase"] == "stage1"
+
+
+def test_persist_run_config_and_args_preserves_existing_root_files_for_stage2(tmp_path: Path):
+    stage1_config = tmp_path / "stage1_config.yaml"
+    stage1_config.write_text("stage: 1\n")
+    stage2_config = tmp_path / "stage2_config.yaml"
+    stage2_config.write_text("stage: 2\n")
+    exp_dir = tmp_path / "log-adapt" / "run_a"
+
+    persist_run_config_and_args(
+        _args_with_config(stage1_config, phase="stage1"),
+        exp_dir,
+        phase_name="stage1",
+        write_root_files=True,
+    )
+    root_config_before = (exp_dir / "config.yaml").read_text()
+    root_cli_before = (exp_dir / "cli_args.yaml").read_text()
+
+    persist_run_config_and_args(
+        _args_with_config(stage2_config, phase="stage2"),
+        exp_dir,
+        phase_name="stage2",
+        write_root_files=False,
+    )
+
+    assert (exp_dir / "config.yaml").read_text() == root_config_before
+    assert (exp_dir / "cli_args.yaml").read_text() == root_cli_before
+    assert (exp_dir / "config.stage2.yaml").read_text() == "stage: 2\n"
+    assert yaml.safe_load((exp_dir / "cli_args.stage2.yaml").read_text())["phase"] == "stage2"

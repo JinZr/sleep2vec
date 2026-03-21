@@ -39,15 +39,12 @@ def _load_state_dict(path: Path, device: torch.device) -> dict[str, torch.Tensor
 
 
 def get_state_dict_from_checkpoint(ckpt: t.Any) -> dict[str, torch.Tensor]:
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:
-        state = ckpt["state_dict"]
-    elif isinstance(ckpt, dict) and "model" in ckpt:
-        state = ckpt["model"]
-    else:
-        state = ckpt
+    if not isinstance(ckpt, dict) or "state_dict" not in ckpt:
+        raise ValueError("Checkpoint payload must be a Lightning .ckpt with top-level 'state_dict'.")
 
+    state = ckpt["state_dict"]
     if not isinstance(state, dict):
-        raise ValueError("Checkpoint payload does not contain a state_dict.")
+        raise ValueError("Checkpoint payload 'state_dict' must be a mapping.")
     return state
 
 
