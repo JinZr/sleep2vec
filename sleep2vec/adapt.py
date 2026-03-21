@@ -93,9 +93,7 @@ def _resolve_stage1_transition_checkpoint(pretrained_backbone_path: Path) -> Pat
     exp_dir = _validate_checkpoint_dir_for_phase(
         ckpt_path=ckpt_path,
         expected_phase="stage1",
-        context=(
-            "--phase stage2 requires --pretrained-backbone-path to point to a prior adapt stage1 checkpoint"
-        ),
+        context=("--phase stage2 requires --pretrained-backbone-path to point to a prior adapt stage1 checkpoint"),
     )
     _validate_saved_phase(
         exp_dir=exp_dir,
