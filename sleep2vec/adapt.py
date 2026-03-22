@@ -401,12 +401,6 @@ if __name__ == "__main__":
         help="Disable available-channel bucketing fallback.",
     )
     parser.add_argument(
-        "--train-pair-sampling",
-        type=str,
-        default="uniform",
-        help="Training pair-first sampling strategy. Adaptation currently requires 'uniform'.",
-    )
-    parser.add_argument(
         "--train-pair-track-unique-samples",
         action="store_true",
         help="Track per-pair unique sampled indices during training monitoring.",

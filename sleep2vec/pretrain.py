@@ -268,13 +268,6 @@ if __name__ == "__main__":
         help="Disable available-channel bucketing even when allowing missing channels.",
     )
     parser.add_argument(
-        "--train-pair-sampling",
-        type=str,
-        default="uniform",
-        choices=["uniform"],
-        help="Training pair-first sampling strategy when allowing missing channels.",
-    )
-    parser.add_argument(
         "--train-pair-track-unique-samples",
         action="store_true",
         help=(

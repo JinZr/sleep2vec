@@ -78,7 +78,6 @@ def get_pretrain_dataloader(args):
     allow_missing_channels = bool(getattr(args, "allow_missing_channels", False))
     min_channels = int(getattr(args, "min_channels", 6))
     bucket_by_available_channels = bool(getattr(args, "bucket_by_available_channels", True))
-    train_pair_sampling = str(getattr(args, "train_pair_sampling", "uniform"))
     train_pair_probs = getattr(args, "train_pair_probs", None)
     train_pair_track_unique_samples = bool(getattr(args, "train_pair_track_unique_samples", False))
     val_num_workers = getattr(args, "val_num_workers", None)
@@ -92,24 +91,20 @@ def get_pretrain_dataloader(args):
     if allow_missing_channels:
         logging.warning(
             "allow_missing_channels enabled: accepting samples with missing channels "
-            "(min_channels=%d, bucket_by_available_channels=%s, train_pair_sampling=%s, "
+            "(min_channels=%d, bucket_by_available_channels=%s, pair_sampling=uniform, "
             "train_pair_track_unique_samples=%s).",
             min_channels,
             bucket_by_available_channels,
-            train_pair_sampling,
             train_pair_track_unique_samples,
         )
         if min_channels < 2:
             logging.warning("min_channels is < 2; contrastive pretraining may be unstable.")
-        if train_pair_sampling != "uniform":
-            raise ValueError(f"Unsupported train_pair_sampling={train_pair_sampling!r}. Supported: 'uniform'.")
         if not bucket_by_available_channels:
             logging.warning(
-                "bucket_by_available_channels is disabled; this only affects legacy non-pair-first fallback."
+                "bucket_by_available_channels is disabled; this only affects validation or other non-pair-first paths."
             )
     else:
         logging.info("allow_missing_channels disabled: requiring all configured channels.")
-        train_pair_sampling = None
         train_pair_track_unique_samples = False
 
     kwargs = {
@@ -128,7 +123,6 @@ def get_pretrain_dataloader(args):
         max_tokens=args.max_tokens,
         stride_tokens=args.max_tokens,  # 0 for truncation
         mask_rate=args.mask_rate,
-        use_legacy_body_movement=False,
         generative=False,
         allow_missing_channels=allow_missing_channels,
         min_channels=min_channels,
@@ -140,7 +134,6 @@ def get_pretrain_dataloader(args):
         split,
         dataloader_kwargs,
         pair_selector=None,
-        train_pair_sampling_override=None,
         train_pair_probs_override=None,
         train_pair_track_unique_samples_override=False,
         is_train_set,
@@ -149,7 +142,6 @@ def get_pretrain_dataloader(args):
             **base_dataset_kwargs,
             split=split,
             pair_selector=pair_selector,
-            train_pair_sampling=train_pair_sampling_override,
             train_pair_probs=train_pair_probs_override,
             train_pair_track_unique_samples=train_pair_track_unique_samples_override,
             is_train_set=is_train_set,
@@ -159,7 +151,6 @@ def get_pretrain_dataloader(args):
     train_loader = build_pretrain_dataset(
         split=["train"],
         dataloader_kwargs=kwargs,
-        train_pair_sampling_override=train_pair_sampling,
         train_pair_probs_override=train_pair_probs,
         train_pair_track_unique_samples_override=train_pair_track_unique_samples,
         is_train_set=True,
@@ -178,7 +169,6 @@ def get_pretrain_dataloader(args):
             split=["val"],
             dataloader_kwargs=val_kwargs,
             pair_selector=pair_selector,
-            train_pair_sampling_override=None,
             train_pair_probs_override=None,
             train_pair_track_unique_samples_override=False,
             is_train_set=False,
@@ -226,7 +216,6 @@ def _build_finetune_loader(
         max_tokens=args.max_tokens,
         stride_tokens=args.max_tokens,
         mask_rate=0.0,
-        use_legacy_body_movement=False,
         meta_data_names=meta_data_names,
         meta_data_regression_names=meta_data_regression_names,
         sources=sources,

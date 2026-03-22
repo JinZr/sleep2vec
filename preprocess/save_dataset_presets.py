@@ -88,12 +88,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--mask-rate", type=float, default=0.0, help="MLM mask rate.")
     parser.add_argument(
-        "--use-legacy-body-movement",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Use legacy body movement processing.",
-    )
-    parser.add_argument(
         "--allow-missing-channels",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -291,7 +285,6 @@ def main() -> None:
                 max_tokens=args.n_tokens,
                 stride_tokens=stride_tokens,
                 mask_rate=args.mask_rate,
-                use_legacy_body_movement=args.use_legacy_body_movement,
                 allow_missing_channels=args.allow_missing_channels,
                 min_channels=args.min_channels,
                 **loader_kwargs,

@@ -81,7 +81,7 @@ def test_psg_dataset_requires_explicit_dims_for_non_stage5_channels(tmp_path: Pa
         )
 
 
-def test_psg_dataset_pair_first_defaults_to_uniform_probs_when_none(tmp_path: Path):
+def test_psg_dataset_pair_first_uses_uniform_probs_when_pair_probs_omitted(tmp_path: Path):
     npz_path = tmp_path / "sample.npz"
     np.savez(
         npz_path,
@@ -115,7 +115,6 @@ def test_psg_dataset_pair_first_defaults_to_uniform_probs_when_none(tmp_path: Pa
         randomly_select_channels=False,
         allow_missing_channels=True,
         min_channels=2,
-        train_pair_sampling="uniform",
         batch_size=1,
         shuffle=False,
         num_workers=0,

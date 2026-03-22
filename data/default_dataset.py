@@ -244,7 +244,6 @@ class DefaultDataset(BaseDataset):
         min_channels = getattr(self, "min_channels", 2)
         channel_name_set = set(channel_names)
         bucket_by_available_channels = bool(getattr(self, "bucket_by_available_channels", False))
-        train_pair_sampling = getattr(self, "train_pair_sampling", None)
         train_pair_probs = getattr(self, "train_pair_probs", None)
         train_pair_track_unique_samples = bool(getattr(self, "train_pair_track_unique_samples", False))
         pair_selector = getattr(self, "pair_selector", None)
@@ -452,9 +451,9 @@ class DefaultDataset(BaseDataset):
         if sampler is not None:
             dl_kwargs.pop("shuffle", None)  # sampler 与 shuffle 互斥
 
-        if allow_missing_channels and self.is_train_set and train_pair_sampling is not None:
+        if allow_missing_channels and self.is_train_set:
             if sampler is not None:
-                raise ValueError("train_pair_sampling is incompatible with metadata weighted sampler.")
+                raise ValueError("Pair-first sampling is incompatible with metadata weighted sampler.")
 
             from data.samplers import PairFirstBatchSampler
 
@@ -468,7 +467,7 @@ class DefaultDataset(BaseDataset):
                 shuffle=shuffle,
                 drop_last=self.is_train_set,
                 seed=self.seed,
-                pair_sampling=str(train_pair_sampling),
+                pair_sampling="uniform",
                 pair_probs=train_pair_probs,
                 track_unique_sample_counts=train_pair_track_unique_samples,
             )

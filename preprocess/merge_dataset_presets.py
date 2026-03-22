@@ -47,15 +47,11 @@ def main() -> None:
     output_path = Path(args.output)
 
     loaded_lists = []
-    total = 0
     for p in input_paths:
         data = _validate_items(p, _load_preset(p))
         loaded_lists.append(data)
-        total += len(data)
 
     merged = _flatten(loaded_lists)
-    if len(merged) != total:
-        raise RuntimeError("Merged length mismatch; aborting.")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as f:

@@ -67,7 +67,6 @@ class PSGPretrainDataset(DefaultDataset):
         token_sec: int = 30,
         stride_tokens: int = 0,  # 0 for truncation
         mask_rate: float = 0.15,
-        use_legacy_body_movement: bool = False,
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names: t.Optional[t.List[str]] = None,  # ← 新增参数
         meta_data_regression_names: t.Optional[t.List[str]] = None,
@@ -77,7 +76,6 @@ class PSGPretrainDataset(DefaultDataset):
         min_channels: int = 2,
         allow_missing_channels: bool = False,
         bucket_by_available_channels: bool = False,
-        train_pair_sampling: str | None = None,
         train_pair_probs: t.Optional[t.Mapping[tuple[str, str], float]] = None,
         train_pair_track_unique_samples: bool = False,
         generative: bool = False,
@@ -91,7 +89,6 @@ class PSGPretrainDataset(DefaultDataset):
         self.min_channels = min_channels
         self.allow_missing_channels = allow_missing_channels
         self.bucket_by_available_channels = bucket_by_available_channels
-        self.train_pair_sampling = train_pair_sampling
         self.train_pair_probs = None if train_pair_probs is None else dict(train_pair_probs)
         self.train_pair_track_unique_samples = bool(train_pair_track_unique_samples)
         self.token_sec = token_sec
