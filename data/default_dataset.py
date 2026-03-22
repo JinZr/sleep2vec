@@ -95,11 +95,9 @@ class DefaultDataset(BaseDataset):
                 self.data = pickle.load(f)
         elif data is not None:
             # ✅ 初始化时检查并过滤掉 token 长度不一致的样本
-            allow_missing_channels = bool(getattr(self, "allow_missing_channels", False))
-            channel_names = getattr(self, "channel_names", None)
-            if allow_missing_channels and channel_names is None:
-                raise ValueError("DefaultDataset requires channel_names when allow_missing_channels is enabled.")
-            min_channels = getattr(self, "min_channels", 2)
+            allow_missing_channels = bool(self.allow_missing_channels)
+            channel_names = self.channel_names
+            min_channels = self.min_channels
             self.data = filter_valid_sample_indices(
                 data,
                 extractors,
@@ -194,7 +192,7 @@ class DefaultDataset(BaseDataset):
         return len(self.data)
 
     def reset_pair_selector(self) -> None:
-        selector = getattr(self, "pair_selector", None)
+        selector = self.pair_selector
         if selector is not None and hasattr(selector, "reset"):
             selector.reset()
 
@@ -240,13 +238,13 @@ class DefaultDataset(BaseDataset):
         randomly_select_channels = self.randomly_select_channels
         generative = self.generative
         disease_names = self.meta_data_names
-        allow_missing_channels = bool(getattr(self, "allow_missing_channels", False))
-        min_channels = getattr(self, "min_channels", 2)
+        allow_missing_channels = bool(self.allow_missing_channels)
+        min_channels = self.min_channels
         channel_name_set = set(channel_names)
-        bucket_by_available_channels = bool(getattr(self, "bucket_by_available_channels", False))
-        train_pair_probs = getattr(self, "train_pair_probs", None)
-        train_pair_track_unique_samples = bool(getattr(self, "train_pair_track_unique_samples", False))
-        pair_selector = getattr(self, "pair_selector", None)
+        bucket_by_available_channels = bool(self.bucket_by_available_channels)
+        train_pair_probs = self.train_pair_probs
+        train_pair_track_unique_samples = bool(self.train_pair_track_unique_samples)
+        pair_selector = self.pair_selector
 
         def collate_fn(indices, tolerance=1):
             selected_pair: tuple[str, str] | None = None

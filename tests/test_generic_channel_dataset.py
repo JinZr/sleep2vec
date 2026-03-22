@@ -123,3 +123,39 @@ def test_psg_dataset_pair_first_uses_uniform_probs_when_pair_probs_omitted(tmp_p
     loader = dataset.dataloader(device="cpu")
     assert dataset.train_pair_probs is None
     assert loader.batch_sampler.get_target_distribution() == {("eeg_original", "ecg_original"): 1.0}
+
+
+def test_psg_dataset_reset_pair_selector_is_noop_when_selector_is_none(tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, wearable=np.arange(8, dtype=np.float32))
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "train",
+                "duration": 2,
+                "age": 40,
+                "sex": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    dataset = PSGPretrainDataset(
+        channel_names=["wearable"],
+        channel_input_dims={"wearable": 4},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["train"],
+        max_tokens=2,
+        token_sec=1,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    dataset.reset_pair_selector()
