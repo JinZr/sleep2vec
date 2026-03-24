@@ -64,22 +64,19 @@ model:
       tokenizer:
         name: sundial
         out_dim: 768
-    - name: actigraphy_vm
+    - name: actigraphy
       input_dim: 960
       tokenizer:
         name: sundial
         out_dim: 768
 loss:
-  name: weighted_info_nce
+  name: info_nce
   temperature: 0.2
-  params:
-    hard_scale: 0.10
-    pos_margin: 0.0
 data:
   mask_rate: 0.15
   max_tokens: 120
 adapt:
-  new_channels: [ppg, actigraphy_vm]
+  new_channels: [ppg, actigraphy]
   stage1:
     train_shared_projection: false
   stage2:
