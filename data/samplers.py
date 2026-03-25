@@ -42,9 +42,10 @@ def handles_distributed_sharding(batch_sampler: t.Any) -> bool:
     """Return True when a batch sampler already shards across ranks."""
     if batch_sampler is None:
         return False
-    return isinstance(batch_sampler, DistributedShardedBatchSampler) or bool(
-        getattr(batch_sampler, "handles_distributed_sharding", False)
-    )
+    flag = getattr(batch_sampler, "handles_distributed_sharding", None)
+    if flag is not None:
+        return bool(flag)
+    return isinstance(batch_sampler, DistributedShardedBatchSampler)
 
 
 class DistributedShardedBatchSampler(Sampler[list[int]]):
@@ -75,6 +76,7 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
         min_channels: int = 2,
         shuffle: bool = True,
         drop_last: bool = True,
+        shard_across_ranks: bool = True,
         seed: int = 0,
     ) -> None:
         if batch_size <= 0:
@@ -85,9 +87,11 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
         self._min_channels = int(min_channels)
         self._shuffle = bool(shuffle)
         self._drop_last = bool(drop_last)
+        self._shard_across_ranks = bool(shard_across_ranks)
         self._seed = int(seed)
         self._epoch = 0
         self._manual_epoch = False
+        self.handles_distributed_sharding = self._shard_across_ranks
 
         buckets: dict[tuple[str, ...], list[int]] = defaultdict(list)
         for i, src in enumerate(data):
@@ -119,7 +123,8 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
             else:
                 total_batches += math.ceil(n / self._batch_size)
 
-        total_batches = (total_batches // world_size) * world_size
+        if self._shard_across_ranks:
+            total_batches = (total_batches // world_size) * world_size
         if total_batches == 0:
             raise ValueError(
                 "Bucketed sampler produced 0 batches after truncation. "
@@ -128,12 +133,18 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
         return total_batches
 
     def __len__(self) -> int:
-        _, world_size = _get_dist_info()
+        if self._shard_across_ranks:
+            _, world_size = _get_dist_info()
+        else:
+            world_size = 1
         total_batches = self._compute_total_batches(world_size)
         return total_batches // world_size
 
     def __iter__(self):
-        rank, world_size = _get_dist_info()
+        if self._shard_across_ranks:
+            rank, world_size = _get_dist_info()
+        else:
+            rank, world_size = 0, 1
         total_batches = self._compute_total_batches(world_size)
         # Keep shuffle order identical across ranks; sharding happens via modulo.
         rng = random.Random(self._seed + 1000 * self._epoch)
