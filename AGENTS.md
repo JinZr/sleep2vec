@@ -33,6 +33,18 @@ bash utils/style_check.sh
 - Use 4-space indentation; follow snake_case for functions/variables/modules and PascalCase for classes.
 - Keep architecture and loss choices in YAML under `configs/`; training hyperparameters stay on the CLI.
 
+## Codex Index Usage Policy
+- Before editing code, determine the current Git branch and consult the matching index under `doc/codex_index/branches/<branch>/`.
+- At minimum, review `README.md`, `REUSE_GUIDE.md`, `MODULE_MAP.md`, and the relevant files under `FUNCTIONS/` or `WORKFLOWS/` for the area being changed.
+- Before adding any new function, method, helper, wrapper, or utility, search the index for existing implementations with the same or overlapping responsibility.
+- Prefer reusing or minimally extending an indexed implementation over creating a new one.
+- New functions are allowed only when the indexed code does not satisfy the required contract; when creating one, briefly state why the indexed implementations were not suitable.
+- Avoid near-duplicate helpers, thin wrappers, renamed copies, and parallel implementations of already-indexed behavior.
+- If the relevant index is missing, stale, or branch-mismatched, refresh the relevant portion of the index before editing, or report the gap as a blocker.
+- After making changes, update the relevant files under `doc/codex_index/branches/<branch>/` whenever the change affects indexed responsibilities, reusable implementations, contracts, workflows, or duplication guidance; do this before declaring the task complete.
+- In the first progress update before making edits, name the index files consulted.
+- In the final response, briefly state whether an indexed implementation was reused or a new one was intentionally introduced.
+
 ## Testing Guidelines
 - There is no dedicated test suite checked in; use diagnostics and short runs for sanity checks.
 - Quick smoke test example:
