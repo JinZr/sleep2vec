@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import data.samplers as samplers
 from data.default_dataset import DefaultDataset, SampleIndex
+import data.samplers as samplers
 from data.samplers import AvailableChannelsBucketBatchSampler, handles_distributed_sharding
 
 
