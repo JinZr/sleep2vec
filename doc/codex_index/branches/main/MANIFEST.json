@@ -1,0 +1,42 @@
+{
+  "branch": "main",
+  "commit": "825a30433e1f3d4cfcf6e4338cde5c29426411f3",
+  "generated_at": "2026-03-25T08:31:56Z",
+  "mode": "initialize-main",
+  "coverage": {
+    "tracked_file_counts": {
+      "sleep2vec": 58,
+      "data": 6,
+      "preprocess": 6,
+      "sleep2vec2": 0,
+      "sleep2vec_moe": 0,
+      "sleep2vec_hires": 0,
+      "configs": 12,
+      "tests": 10,
+      "utils": 1
+    },
+    "function_catalog_scope": [
+      "config parsing and CLI binding",
+      "registry and builder surfaces",
+      "runtime entrypoints and checkpoint utilities",
+      "core backbone and downstream model contracts",
+      "dataset, metadata, and sampler contracts",
+      "preprocessing and conversion CLIs",
+      "diagnostics and visualization hooks"
+    ],
+    "workflow_scope": [
+      "pretrain",
+      "finetune",
+      "infer and checkpoint averaging",
+      "preprocessing and preset generation"
+    ]
+  },
+  "exclusions": [
+    "AGENTS.md is referenced for ownership context but not duplicated here",
+    "preprocess/preprocess_pipeline.ipynb is summarized only at workflow level",
+    "sleep2vec2, sleep2vec_moe, and sleep2vec_hires have no tracked source files on this branch",
+    "__pycache__, .DS_Store, and ignored local artifacts are excluded",
+    "untracked workspaces such as index/ and new_index/ are excluded",
+    "product code outside doc/codex_index/branches/main/ was not modified"
+  ]
+}
