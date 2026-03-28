@@ -333,12 +333,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="Weight decay for AdamW.")
     parser.add_argument("--batch-size", type=int, default=320, help="Batch size.")
-    parser.add_argument("--num-workers", type=int, default=8, help="Training dataloader workers.")
+    parser.add_argument("--num-workers", type=int, default=16, help="Training dataloader workers.")
     parser.add_argument(
         "--val-num-workers",
         type=int,
-        default=None,
-        help="Validation dataloader workers. Default: 0 for adaptation pair-first runs.",
+        default=4,
+        help="Validation dataloader workers.",
     )
     parser.add_argument("--devices", type=int, nargs="+", default=[0, 1], help="GPU device ids.")
     parser.add_argument("--patience", type=int, default=20, help="Early stopping patience in epochs.")
