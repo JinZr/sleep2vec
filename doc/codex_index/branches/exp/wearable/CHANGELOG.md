@@ -1,5 +1,14 @@
 # Branch Index Changelog
 
+## 2026-04-10 17:43 +0800
+
+- refreshed handbook snapshot to `c6cee5cef93c4228b2b11cfd79a83becdbe059a0`
+- recorded dirty working-tree status and noted that untracked files were excluded from branch-canonical indexing
+- updated config, data-loading, finetune, metrics, and reuse docs to describe built-in sleep-staging tasks `stage3`, `stage4`, and `stage5`
+- documented that `stage3` and `stage4` reuse raw `stage5` token labels plus runtime remapping rather than introducing new input channels
+
+Stale entries removed: stage5-only downstream task descriptions. This was a `refresh` run.
+
 ## 2026-04-09 16:44 +0800
 
 - initialized branch handbook for `exp/wearable`

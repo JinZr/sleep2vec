@@ -7,6 +7,7 @@ import torch
 from data.channel_selection import RoundRobinPairSelector, build_all_pairs
 from data.psg_pretrain_dataset import PSGPretrainDataset
 from data.utils import load_npz
+from sleep2vec.common import is_builtin_stage_task
 
 
 def move_to_device(data, device="cuda"):
@@ -191,20 +192,21 @@ def _build_finetune_loader(
     is_train_set,
     few_shot=None,
 ):
-    meta_data_names = [] if args.label_name in {"age", "sex", "stage5"} else [args.label_name]
+    is_stage_task = is_builtin_stage_task(args.label_name)
+    meta_data_names = [] if args.label_name in {"age", "sex"} or is_stage_task else [args.label_name]
     meta_data_regression_names = [] if args.is_classification else list(meta_data_names)
     if meta_data_names and args.is_classification and args.output_dim > 2:
         raise ValueError(
-            "Metadata classification currently supports only binary labels (output_dim=2) for non-stage5 tasks. "
+            "Metadata classification currently supports only binary labels (output_dim=2) for non-sleep-staging tasks. "
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
             "Extend metadata label encoding before using multiclass metadata targets."
         )
     dataset_channel_names = list(args.data_channel_names)
     dataset_channel_input_dims = dict(getattr(args, "channel_input_dims", {}) or {})
-    if args.label_name == "stage5" and "stage5" not in dataset_channel_names:
-        # stage5 is a per-token label; include it in the batch tokens so downstream loss can
-        # read batch["tokens"]["stage5"] without treating it as an input modality.
-        dataset_channel_names.append("stage5")
+    label_source_name = getattr(args, "label_source_name", args.label_name)
+    if is_stage_task and label_source_name not in dataset_channel_names:
+        # Built-in sleep-staging tasks always consume raw stage5 tokens as labels.
+        dataset_channel_names.append(label_source_name)
 
     dataset_kwargs = dict(
         channel_names=dataset_channel_names,

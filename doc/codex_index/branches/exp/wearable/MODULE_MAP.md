@@ -8,7 +8,7 @@
 | `data/` | Sample indexing, dataset filtering, collate path, metadata handling, samplers | `default_dataset.py`, `psg_pretrain_dataset.py`, `samplers.py`, `utils.py`, `metadata.py`, `channel_selection.py` | Branch changes here are tightly coupled to wearable and missing-channel behavior |
 | `preprocess/` | CSV splitting, preset generation, preset merging, missing-channel statistics, WatchPAT conversion | `save_dataset_presets.py`, `merge_dataset_presets.py`, `split_index_by_dataset.py`, `mask_missing_stats.py`, `watchpat_zzp_to_edf.py` | `save_dataset_presets.py` is now YAML-aware and should stay aligned with runtime channel contracts |
 | `configs/` | Recipe definitions | `sleep2vec_dense_pretrain.yaml`, `sleep2vec_dense_adapt_ppg_actigraphy.yaml`, `sleep2vec_large_pretrain.yaml`, downstream configs under `cls_emb/` and `token_emb/` | Architecture and task selection live here; CLI should not duplicate them |
-| `tests/` | Contract coverage | `test_config_loading.py`, `test_adapt.py`, `test_adapt_pair_schedule_callback.py`, `test_adaptation.py`, `test_bucket_sampler.py`, `test_generic_channel_dataset.py`, `test_save_dataset_presets.py`, `test_pair_first_sampler.py`, `test_checkpoints.py` | Strongest branch-specific safety net is around adaptation and heterogeneous-channel loaders |
+| `tests/` | Contract coverage | `test_config_loading.py`, `test_common_finetune_apply.py`, `test_metadata_task_validation.py`, `test_adapt.py`, `test_adapt_pair_schedule_callback.py`, `test_adaptation.py`, `test_bucket_sampler.py`, `test_generic_channel_dataset.py`, `test_save_dataset_presets.py`, `test_pair_first_sampler.py`, `test_checkpoints.py` | Strongest branch-specific safety net is around adaptation, heterogeneous-channel loaders, and built-in downstream task semantics |
 | `utils/` | Repository helpers | `style_check.sh` is the main operational helper mentioned in repo docs | No branch-specific product logic found here |
 
 ## Dependency Map
@@ -37,7 +37,7 @@
 
 - `sleep2vec/sleep2vec_modelling.py` wraps contrastive pretraining.
 - `sleep2vec/sleep2vec_adaptation.py` subclasses the pretraining module for staged adaptation.
-- `sleep2vec/sleep2vec_finetuning.py` wraps downstream task training and evaluation.
+- `sleep2vec/sleep2vec_finetuning.py` wraps downstream task training and evaluation, including built-in sleep-staging target remapping before loss and metrics.
 
 ### Evaluation and artifacts
 
@@ -51,6 +51,11 @@
 
 - Canonical: `sleep2vec/config.py`, `sleep2vec/common.py`
 - Avoid duplicating: ad-hoc YAML reads in entrypoints or preprocess scripts beyond `save_dataset_presets.py`
+
+### Built-in sleep-staging remapping
+
+- Canonical: `sleep2vec/common.py`, `sleep2vec/utils.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`
+- Avoid duplicating: separate stage-name tables, raw-label-source lookups, or label-remap logic in configs, heads, or ad-hoc scripts
 
 ### Channel and input-dimension semantics
 

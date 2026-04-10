@@ -79,6 +79,30 @@ def _finetune_payload() -> dict:
     ("label_name", "expected"),
     [
         (
+            "stage3",
+            {
+                "output_dim": 3,
+                "is_classification": True,
+                "is_seq": True,
+                "monitor": "val_accuracy",
+                "monitor_mod": "max",
+                "label_source_name": "stage5",
+                "stage_names": ["W", "NREM", "REM"],
+            },
+        ),
+        (
+            "stage4",
+            {
+                "output_dim": 4,
+                "is_classification": True,
+                "is_seq": True,
+                "monitor": "val_accuracy",
+                "monitor_mod": "max",
+                "label_source_name": "stage5",
+                "stage_names": ["W", "N1N2", "N3", "REM"],
+            },
+        ),
+        (
             "stage5",
             {
                 "output_dim": 5,
@@ -86,6 +110,8 @@ def _finetune_payload() -> dict:
                 "is_seq": True,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
+                "label_source_name": "stage5",
+                "stage_names": ["W", "N1", "N2", "N3", "REM"],
             },
         ),
         (
@@ -136,6 +162,20 @@ def test_apply_task_flags_rejects_builtin_conflict_from_yaml_task():
     )
 
     with pytest.raises(ValueError, match="output_dim must be 5 when --label-name is 'stage5'"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_stage4_builtin_conflict_from_yaml_task():
+    args = argparse.Namespace(label_name="stage4")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=5,
+        is_seq=True,
+        monitor="val_accuracy",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="output_dim must be 4 when --label-name is 'stage4'"):
         apply_task_flags(args, task_cfg)
 
 

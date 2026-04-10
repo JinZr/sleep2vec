@@ -12,11 +12,16 @@ Reuse these before adding new config parsing:
 - `sleep2vec.common.apply_model_config_args`
 - `sleep2vec.common.apply_finetune_config`
 - `sleep2vec.common.apply_task_flags`
+- `sleep2vec.common.get_task_label_source_name`
+- `sleep2vec.common.get_task_stage_names`
+- `sleep2vec.common.get_task_label_merge_map`
+- `sleep2vec.common.remap_stage_labels`
 
 Why these are canonical:
 
 - they already enforce required-vs-optional YAML structure
-- they keep built-in task semantics (`stage5`, `sex`, `age`) in one place
+- they keep built-in task semantics (`stage3`, `stage4`, `stage5`, `sex`, `age`) in one place
+- they also define raw-label sources, merged label maps, and stage-name tables for built-in sleep-staging tasks
 - they are the only branch code paths that understand `adapt.*`
 
 Duplication risk:
@@ -98,7 +103,25 @@ Duplication risk:
 
 - High. New model entrypoints should compose these pieces rather than recreating them.
 
-### 6. Checkpoint averaging and init loading
+### 6. Downstream stage-label handling
+
+Reuse these before changing staged finetune or infer behavior:
+
+- `sleep2vec.utils._build_finetune_loader`
+- `sleep2vec.sleep2vec_finetuning.Sleep2vecFinetuning._get_targets`
+- `sleep2vec.metrics.compute_downstream_metrics`
+
+Why these are canonical:
+
+- the loader injects raw `stage5` tokens for built-in sleep-staging tasks instead of treating `stage3` or `stage4` as separate input channels
+- finetuning remaps raw labels into merged staging spaces before loss and evaluation
+- metrics emit per-stage F1 values from task-specific `stage_names` instead of assuming five stages
+
+Duplication risk:
+
+- High. Re-implementing stage remapping in a head, script, or notebook will drift from the runtime contract.
+
+### 7. Checkpoint averaging and init loading
 
 Reuse these before loading weights manually:
 
@@ -112,7 +135,7 @@ Why these are canonical:
 - they already know about `ema_model.` vs `model.` prefixes
 - they already define the fallback from epoch ordering to modification time for inference-time averaging
 
-### 7. Preset preparation
+### 8. Preset preparation
 
 Reuse these before adding another data-prep helper:
 

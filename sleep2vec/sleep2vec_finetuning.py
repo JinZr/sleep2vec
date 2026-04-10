@@ -13,6 +13,7 @@ import yaml
 
 from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
+from sleep2vec.common import remap_stage_labels
 from sleep2vec.metrics import compute_downstream_metrics
 from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
 
@@ -195,10 +196,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return loss if stage == "train" else None
 
     def _compute_loss(self, logits, batch):
-        if self.args.is_seq:
-            targets = batch["tokens"][self.args.label_name].to(self.args.device)
-        else:
-            targets = batch["metadata"][self.args.label_name].to(self.args.device)
+        targets = self._get_targets(batch)
 
         if self.args.is_classification:
             logits_flat = logits.view(-1, logits.size(-1))
@@ -220,10 +218,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return loss, int(valid_targets.numel())
 
     def _extract_valid_predictions(self, batch, logits):
-        if self.args.is_seq:
-            labels = batch["tokens"][self.args.label_name].to(self.args.device)
-        else:
-            labels = batch["metadata"][self.args.label_name].to(self.args.device)
+        labels = self._get_targets(batch)
 
         if self.args.is_classification:
             if logits.dim() == 3:
@@ -249,6 +244,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
         preds = logits[mask].to(torch.float32).detach().cpu().numpy()
         labels_np = labels[mask].to(torch.float32).detach().cpu().numpy()
         return preds, labels_np
+
+    def _get_targets(self, batch):
+        if not self.args.is_seq:
+            return batch["metadata"][self.args.label_name].to(self.args.device)
+
+        label_source_name = getattr(self.args, "label_source_name", self.args.label_name)
+        labels = batch["tokens"][label_source_name].to(self.args.device)
+        return remap_stage_labels(labels, self.args.label_name)
 
     @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):

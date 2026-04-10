@@ -112,7 +112,11 @@ def compute_downstream_metrics(
         )
         if output_dim == 2:
             result["roc_auc"] = roc_auc_from_two_logits(gts, preds)
-        if output_dim == 5:
+        if stage_names is None and output_dim == 5:
+            stage_names = ["W", "N1", "N2", "N3", "REM"]
+        if stage_names is not None:
+            if output_dim is None:
+                output_dim = len(stage_names)
             probs = preds.astype(np.float32)
             y_true = gts.astype(np.int64)
             y_pred = probs.argmax(axis=1)
@@ -120,7 +124,6 @@ def compute_downstream_metrics(
             labels = np.arange(output_dim)
             f1_per_class = f1_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
 
-            stage_names = stage_names or ["W", "N1", "N2", "N3", "REM"]
             assert len(stage_names) == output_dim
 
             for i, f1 in enumerate(f1_per_class):

@@ -3,11 +3,13 @@
 ## Baseline Status
 
 - Branch: `exp/wearable`
-- HEAD: `75f98ef35fd16000302291205429ea3f6d556788`
+- HEAD: `c6cee5cef93c4228b2b11cfd79a83becdbe059a0`
 - `main`: `9abfaa6cec09c26798cf960c0e15c0a0ca846093`
 - Merge base: `825a30433e1f3d4cfcf6e4338cde5c29426411f3`
-- Commits ahead of `main`: `19`
+- Commits ahead of `main`: `20`
 - Main handbook availability: unavailable in this checkout because `doc/codex_index/branches/main/` has no files
+- Working tree status: dirty; tracked downstream-task edits were incorporated into this refresh
+- Untracked files under `configs/` and `tests/` were excluded from branch-canonical indexing
 
 ## Headline Differences
 
@@ -111,6 +113,27 @@ Effect:
 
 - the branch documents large-model pretraining and wearable adaptation recipes directly in YAML
 
+## Checkout-Local Tracked Modifications Beyond `HEAD`
+
+Changed:
+
+- `sleep2vec/common.py`
+- `sleep2vec/utils.py`
+- `sleep2vec/sleep2vec_finetuning.py`
+- `sleep2vec/metrics.py`
+- `sleep2vec/finetune.py`
+- `sleep2vec/infer.py`
+- `tests/test_common_finetune_apply.py`
+- `tests/test_metadata_task_validation.py`
+
+Effect:
+
+- built-in downstream sleep-staging labels now include `stage3` and `stage4` in addition to `stage5`
+- raw labels still come from `batch["tokens"]["stage5"]`, so dataset construction does not treat `stage3` or `stage4` as new input channels
+- `Sleep2vecFinetuning` remaps raw `stage5` labels into three-stage or four-stage targets before loss and metric computation
+- `compute_downstream_metrics` can emit per-stage F1 values for three-stage, four-stage, or five-stage task taxonomies
+- finetune and infer CLI help text now advertises the expanded built-in label set
+
 ## Notable Cleanups Relative To Earlier Logic
 
 - legacy `train_pair_sampling` flags are no longer part of the active runtime path
@@ -126,9 +149,11 @@ These areas are effectively outside branch-local code analysis for this handbook
 
 ## Stale Entries Removed
 
-- none; this is the first branch-local handbook for `exp/wearable`
+- handbook statements that treated `stage5` as the only built-in token-level downstream task
 
 ## Unresolved Ambiguities
 
+- the tracked downstream-task edits described above are not represented by the current `HEAD` commit or the `main...HEAD` diff
+- untracked files `configs/ppg_stage3_finetune*.yaml`, `configs/ppg_stage4_finetune*.yaml`, `configs/ppg_stage5_finetune*.yaml`, and `tests/test_stage_task_remapping.py` were excluded from branch-canonical indexing until they become tracked
 - without a populated `main` handbook, document-to-document stale-entry comparison is not possible
 - variant-package parity versus other branches is `unknown`

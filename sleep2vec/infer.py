@@ -162,7 +162,7 @@ def parse_args():
         type=str,
         required=True,
         help=(
-            "downstream label to predict (built-ins: age, sex, stage5; "
+            "downstream label to predict (built-ins: age, sex, stage3, stage4, stage5; "
             "custom labels require finetune.task in the YAML config)"
         ),
     )

@@ -18,9 +18,10 @@
 
 ## Task Contracts
 
-- built-in labels: `stage5`, `sex`, `age`
+- built-in labels: `stage3`, `stage4`, `stage5`, `sex`, `age`
 - custom labels require `finetune.task` in YAML
-- token-level prediction is only supported for `stage5` in current runtime code
+- token-level prediction is only supported for built-in sleep-staging labels `stage3`, `stage4`, and `stage5` in current runtime code
+- built-in sleep-staging tasks always source raw labels from `batch["tokens"]["stage5"]`; `stage3` and `stage4` remap those raw labels before loss and metrics
 - `data.data_channel_names` must match `model.channels`
 
 ## Main Reuse Points

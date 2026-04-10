@@ -64,12 +64,24 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None`
-- Purpose and contract: resolves built-in or YAML-defined task semantics into runtime flags such as `output_dim`, `is_classification`, `is_seq`, `monitor`, and `monitor_mod`.
+- Purpose and contract: resolves built-in or YAML-defined task semantics into runtime flags such as `output_dim`, `is_classification`, `is_seq`, `monitor`, `monitor_mod`, `label_source_name`, `stage_names`, and `label_merge_map`.
 - Important inputs: argparse namespace with `label_name`; optional YAML `TaskConfig`.
 - Important outputs: mutated namespace.
 - Side effects: mutates `args`; raises for unsupported metadata task semantics.
-- Notable callers/callees: called by `sleep2vec.common.apply_finetune_config`; uses `_validate_builtin_task_cfg` and `_validate_metadata_label_support`.
+- Notable callers/callees: called by `sleep2vec.common.apply_finetune_config`; uses `_validate_builtin_task_cfg`, `_validate_metadata_label_support`, and the built-in task helper accessors in `sleep2vec.common`.
 - Reuse guidance: canonical downstream task resolver.
+- Duplication-risk notes: high.
+
+## `sleep2vec.common.remap_stage_labels`
+
+- File: `sleep2vec/common.py`
+- Signature: `remap_stage_labels(labels, label_name: str)`
+- Purpose and contract: remaps raw built-in sleep-staging labels into merged label spaces for `stage3` and `stage4`; returns the original labels unchanged for tasks without a merge map.
+- Important inputs: tensor-like labels and the requested downstream label name.
+- Important outputs: remapped labels with ignore indices preserved.
+- Side effects: clones the label tensor when a merge map exists.
+- Notable callers/callees: called by `Sleep2vecFinetuning._get_targets`; uses `get_task_label_merge_map`.
+- Reuse guidance: canonical stage-label merge path.
 - Duplication-risk notes: high.
 
 ## `sleep2vec.common.apply_finetune_config`

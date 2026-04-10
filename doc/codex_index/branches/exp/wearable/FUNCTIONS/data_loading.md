@@ -16,7 +16,7 @@
 
 - File: `data/psg_pretrain_dataset.py`
 - Signature: `_build_channel_registry(*, channel_names, channel_input_dims, mask_rate) -> dict[str, tuple[Callable, Callable, Callable]]`
-- Purpose and contract: maps requested channels to extractor, tokenizer, and mask-generator triples; requires explicit `channel_input_dims` for all non-`stage5` channels.
+- Purpose and contract: maps requested channels to extractor, tokenizer, and mask-generator triples; requires explicit `channel_input_dims` for every input channel, with raw label stream `stage5` as the only built-in exception.
 - Important inputs: channel name list, per-channel input widths, mask rate.
 - Important outputs: registry keyed by channel name.
 - Side effects: none.
@@ -76,7 +76,7 @@
 
 - File: `sleep2vec/utils.py`
 - Signature: `_build_finetune_loader(args, *, split, sources, shuffle, is_train_set, few_shot=None)`
-- Purpose and contract: builds downstream loaders on top of `PSGPretrainDataset`, converts custom labels into metadata requirements, injects `stage5` as a token label when needed, and disables missing-channel behavior for downstream tasks.
+- Purpose and contract: builds downstream loaders on top of `PSGPretrainDataset`, converts custom labels into metadata requirements, routes built-in sleep-staging tasks through raw `stage5` token labels, and disables missing-channel behavior for downstream tasks.
 - Important inputs: argparse namespace, split, source list, few-shot setting.
 - Important outputs: downstream `DataLoader`.
 - Side effects: dataset construction.

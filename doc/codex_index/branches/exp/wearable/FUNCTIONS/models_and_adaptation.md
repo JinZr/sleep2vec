@@ -48,6 +48,18 @@
 - Reuse guidance: canonical downstream forward path.
 - Duplication-risk notes: very high.
 
+## `sleep2vec.sleep2vec_finetuning.Sleep2vecFinetuning._get_targets`
+
+- File: `sleep2vec/sleep2vec_finetuning.py`
+- Signature: `_get_targets(self, batch)`
+- Purpose and contract: selects metadata targets for non-sequence tasks or token targets for sequence tasks; built-in sleep-staging tasks read raw `batch["tokens"][label_source_name]` and remap labels when the task requests a merged staging taxonomy.
+- Important inputs: collated batch and runtime task metadata stored on `self.args`.
+- Important outputs: target tensor on the configured device.
+- Side effects: device transfer; clones labels when remapping is required.
+- Notable callers/callees: used by `_compute_loss` and `_extract_valid_predictions`; delegates to `sleep2vec.common.remap_stage_labels`.
+- Reuse guidance: canonical downstream target-selection path.
+- Duplication-risk notes: high.
+
 ## `sleep2vec.downstream_model.Sleep2vecDownstreamModel.load_pretrained_backbone`
 
 - File: `sleep2vec/downstream_model.py`

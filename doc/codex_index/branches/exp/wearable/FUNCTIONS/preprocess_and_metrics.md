@@ -76,8 +76,8 @@
 
 - File: `sleep2vec/metrics.py`
 - Signature: `compute_downstream_metrics(gts, preds, *, is_classification: bool, output_dim: int | None = None, stage_names=None)`
-- Purpose and contract: computes classification or regression metrics, with special handling for binary ROC-AUC and five-stage sleep staging metrics.
-- Important inputs: ground truths, predictions, task kind, optional output dimension and stage names.
+- Purpose and contract: computes classification or regression metrics, with special handling for binary ROC-AUC and task-specific sleep-staging metrics when `stage_names` describe three-stage, four-stage, or five-stage label sets.
+- Important inputs: ground truths, predictions, task kind, optional output dimension, and optional stage-name labels.
 - Important outputs: metric dictionary.
 - Side effects: none.
 - Notable callers/callees: used by `Sleep2vecFinetuning._finalize_epoch`.
