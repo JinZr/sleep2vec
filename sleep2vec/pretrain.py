@@ -36,12 +36,11 @@ def sleep2vec_pretrain(args):
     apply_model_config_args(args, model_config, set_backbone_arch=True)
 
     # get data loaders
-    train_loader, val_loaders = get_pretrain_dataloader(args)
+    train_loader, val_loader = get_pretrain_dataloader(args)
     # Disable Lightning's distributed sampler injection only when our custom
     # batch sampler already shards across ranks.
     train_batch_sampler = getattr(train_loader, "batch_sampler", None)
-    main_val_loader = val_loaders[0] if val_loaders else None
-    val_batch_sampler = getattr(main_val_loader, "batch_sampler", None)
+    val_batch_sampler = getattr(val_loader, "batch_sampler", None)
     use_distributed_sampler = not handles_distributed_sharding(
         train_batch_sampler
     ) and not handles_distributed_sharding(val_batch_sampler)
@@ -174,7 +173,7 @@ def sleep2vec_pretrain(args):
     trainer.fit(
         model,
         train_dataloaders=train_loader,
-        val_dataloaders=val_loaders if not args.print_diagnostics else None,
+        val_dataloaders=val_loader if not args.print_diagnostics else None,
         ckpt_path=args.ckpt_path,
     )
 

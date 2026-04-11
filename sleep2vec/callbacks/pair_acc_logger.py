@@ -35,6 +35,7 @@ class PairAccLoggerCallback(pl.Callback):
         self._train_pair_min_unique_coverage_warn_threshold = float(train_pair_min_unique_coverage_warn_threshold)
         self._unique_tracking_disabled_notified = False
         self._val_pairs: list[tuple[str, str] | None] = []
+        self._val_pair_to_idx: dict[tuple[str, str], int] = {}
         self._pair_sums: torch.Tensor | None = None
         self._pair_counts: torch.Tensor | None = None
 
@@ -42,29 +43,31 @@ class PairAccLoggerCallback(pl.Callback):
         loaders = trainer.val_dataloaders or []
         if not loaders:
             self._val_pairs = []
+            self._val_pair_to_idx = {}
             self._pair_sums = None
             self._pair_counts = None
             return
-        if not isinstance(loaders, (list, tuple)):
-            loaders = [loaders]
+        if isinstance(loaders, (list, tuple)):
+            loader = loaders[0] if loaders else None
+        else:
+            loader = loaders
+        if loader is None:
+            self._val_pairs = []
+            self._val_pair_to_idx = {}
+            self._pair_sums = None
+            self._pair_counts = None
+            return
 
-        val_pairs: list[tuple[str, str] | None] = []
-        missing_pair = False
-        for loader in loaders:
-            dataset = getattr(loader, "dataset", None)
-            if dataset is not None and hasattr(dataset, "reset_pair_selector"):
-                dataset.reset_pair_selector()
-            pair = getattr(dataset, "pair", None) if dataset is not None else None
-            if pair is None:
-                missing_pair = True
-            val_pairs.append(pair)
-
-        if missing_pair:
-            fallback = build_all_pairs(self._modality_names)
-            if len(fallback) == len(val_pairs):
-                val_pairs = list(fallback)
+        dataset = getattr(loader, "dataset", None)
+        if dataset is not None and hasattr(dataset, "reset_pair_selector"):
+            dataset.reset_pair_selector()
+        batch_sampler = getattr(loader, "batch_sampler", None)
+        val_pairs = list(getattr(batch_sampler, "pairs", []) or [])
+        if not val_pairs:
+            val_pairs = build_all_pairs(self._modality_names)
 
         self._val_pairs = val_pairs
+        self._val_pair_to_idx = {pair: idx for idx, pair in enumerate(val_pairs) if pair is not None}
         device = pl_module.device
         self._pair_sums = torch.zeros(len(val_pairs), device=device)
         self._pair_counts = torch.zeros(len(val_pairs), device=device)
@@ -89,10 +92,18 @@ class PairAccLoggerCallback(pl.Callback):
         if batch_size is None:
             length = batch.get("length") if isinstance(batch, dict) else None
             batch_size = int(length.shape[0]) if length is not None else 1
-        if dataloader_idx >= self._pair_sums.numel():
+        pair = None
+        if isinstance(batch, dict):
+            raw_pair = batch.get("pair")
+            if isinstance(raw_pair, (list, tuple)) and len(raw_pair) == 2:
+                pair = (str(raw_pair[0]), str(raw_pair[1]))
+        if pair is None:
             return
-        self._pair_sums[dataloader_idx] += acc.detach() * batch_size
-        self._pair_counts[dataloader_idx] += batch_size
+        pair_idx = self._val_pair_to_idx.get(pair)
+        if pair_idx is None:
+            return
+        self._pair_sums[pair_idx] += acc.detach() * batch_size
+        self._pair_counts[pair_idx] += batch_size
 
     def on_validation_epoch_end(self, trainer, pl_module) -> None:
         if self._pair_sums is None or self._pair_counts is None or not self._val_pairs:
@@ -134,6 +145,7 @@ class PairAccLoggerCallback(pl.Callback):
 
         self._pair_sums = None
         self._pair_counts = None
+        self._val_pair_to_idx = {}
 
     def on_train_epoch_end(self, trainer, pl_module) -> None:
         if not self._train_pair_monitor_enabled:

@@ -334,7 +334,9 @@ class DefaultDataset(BaseDataset):
                             src for src, avail in avail_map if best_pair[0] in avail and best_pair[1] in avail
                         ]
             else:
-                if pair_selector is not None:
+                if selected_pair is not None:
+                    chosen = [selected_pair[0], selected_pair[1]]
+                elif pair_selector is not None:
                     chosen = pair_selector.select(channel_names)
                 elif randomly_select_channels:
                     chosen = random.sample(channel_names, k=2)
@@ -448,6 +450,17 @@ class DefaultDataset(BaseDataset):
         dl_kwargs = dict(self.dataloader_config)
         if sampler is not None:
             dl_kwargs.pop("shuffle", None)  # sampler 与 shuffle 互斥
+        explicit_batch_sampler = dl_kwargs.pop("batch_sampler", None)
+
+        if explicit_batch_sampler is not None:
+            dl_kwargs.pop("batch_size", None)
+            dl_kwargs.pop("shuffle", None)
+            return DataLoader(
+                self,
+                batch_sampler=explicit_batch_sampler,
+                collate_fn=collate_fn,
+                **dl_kwargs,
+            )
 
         if allow_missing_channels and self.is_train_set:
             if sampler is not None:

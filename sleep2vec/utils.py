@@ -4,9 +4,8 @@ import random
 import numpy as np
 import torch
 
-from data.channel_selection import RoundRobinPairSelector, build_all_pairs
 from data.psg_pretrain_dataset import PSGPretrainDataset
-from data.utils import load_npz
+from data.samplers import SequentialPairEvalBatchSampler
 from sleep2vec.common import is_builtin_stage_task
 
 
@@ -21,44 +20,6 @@ def move_to_device(data, device="cuda"):
     if isinstance(data, tuple):
         return tuple(move_to_device(x, device) for x in data)
     return data
-
-
-def _resolve_available_channels(sample, channel_names: list[str]) -> set[str]:
-    payload = getattr(sample, "payload", None)
-    if isinstance(payload, dict):
-        avail = payload.get("available_channels")
-        if avail:
-            return {str(ch) for ch in avail}
-
-    sample_path = getattr(sample, "path", None)
-    if not sample_path:
-        return set()
-
-    try:
-        with load_npz(sample_path) as npz:
-            return {str(ch) for ch in channel_names if ch in npz}
-    except Exception:
-        return set()
-
-
-def _filter_dataset_for_pair_support(dataset, pair: tuple[str, str], channel_names: list[str]) -> None:
-    left, right = str(pair[0]), str(pair[1])
-    filtered = []
-    for sample in dataset.data:
-        avail = _resolve_available_channels(sample, channel_names)
-        if left in avail and right in avail:
-            filtered.append(sample)
-
-    before = len(dataset.data)
-    after = len(filtered)
-    if after == 0:
-        raise ValueError(
-            "No validation samples support scheduled pair "
-            f"{left}__{right}. Check allow_missing_channels/min_channels/index/preset consistency."
-        )
-    dataset.data = filtered
-    if after < before:
-        logging.info("Filtered val dataset for pair %s__%s: kept %d / %d samples", left, right, after, before)
 
 
 def get_pretrain_dataloader(args):
@@ -161,26 +122,29 @@ def get_pretrain_dataloader(args):
     val_kwargs = dict(kwargs)
     val_kwargs["shuffle"] = False
     val_kwargs["num_workers"] = val_num_workers
-    logging.info("Validation DataLoader workers: %d", val_num_workers)
-    val_pairs = build_all_pairs(args.channel_names)
-    val_loaders = []
-    for pair in val_pairs:
-        pair_selector = RoundRobinPairSelector([pair])
-        val_dataset = build_pretrain_dataset(
-            split=["val"],
-            dataloader_kwargs=val_kwargs,
-            pair_selector=pair_selector,
-            train_pair_probs_override=None,
-            train_pair_track_unique_samples_override=False,
-            is_train_set=False,
-        )
-        if allow_missing_channels:
-            _filter_dataset_for_pair_support(val_dataset, pair, list(args.channel_names))
-        val_dataset.pair = pair
-        val_loaders.append(val_dataset.dataloader(device=args.device))
-    logging.info("Valid DataLoaders created successfully! (pairs=%d)", len(val_loaders))
+    val_dataset = build_pretrain_dataset(
+        split=["val"],
+        dataloader_kwargs=val_kwargs,
+        pair_selector=None,
+        train_pair_probs_override=None,
+        train_pair_track_unique_samples_override=False,
+        is_train_set=False,
+    )
+    val_batch_sampler = SequentialPairEvalBatchSampler(
+        val_dataset.data,
+        channel_names=args.channel_names,
+        batch_size=args.batch_size,
+        min_channels=min_channels,
+    )
+    val_dataset.dataloader_config["batch_sampler"] = val_batch_sampler
+    val_loader = val_dataset.dataloader(device=args.device)
+    logging.info(
+        "Validation DataLoader created successfully! (pairs=%d, workers=%d)",
+        len(val_batch_sampler.pairs),
+        val_num_workers,
+    )
 
-    return train_loader, val_loaders
+    return train_loader, val_loader
 
 
 def _build_finetune_loader(
