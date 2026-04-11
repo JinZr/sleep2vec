@@ -80,6 +80,7 @@ class PSGPretrainDataset(DefaultDataset):
         train_pair_track_unique_samples: bool = False,
         generative: bool = False,
         is_train_set: bool = True,
+        filter_max_workers: int | None = None,
         **kwargs: t.Any,
     ) -> None:
 
@@ -184,4 +185,5 @@ class PSGPretrainDataset(DefaultDataset):
             sources=sources,
             pair_selector=pair_selector,
             dataloader_config=kwargs,
+            filter_max_workers=filter_max_workers,
         )

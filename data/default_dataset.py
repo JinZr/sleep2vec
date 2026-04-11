@@ -65,6 +65,7 @@ class DefaultDataset(BaseDataset):
         sources=None,  # ← 新增参数
         pair_selector: t.Any | None = None,
         seed: int = 42,
+        filter_max_workers: int | None = None,
     ) -> None:
         """
         Args:
@@ -106,6 +107,7 @@ class DefaultDataset(BaseDataset):
                 channel_names=channel_names,
                 min_channels=min_channels,
                 tolerance=1,
+                max_workers=filter_max_workers,
             )
             if save_preset_path:
                 with open(save_preset_path, "wb") as f:

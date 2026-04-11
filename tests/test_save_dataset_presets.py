@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+import types
 
 import pytest
 import yaml
 
-from preprocess.save_dataset_presets import _resolve_channels_and_dims
+from preprocess.save_dataset_presets import (
+    _build_preset_job,
+    _resolve_channels_and_dims,
+    _resolve_filter_workers,
+)
 
 
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "config.yaml") -> Path:
@@ -87,3 +93,45 @@ def test_resolve_channels_and_dims_accepts_channels_only_yaml(tmp_path: Path):
 
     assert channels == ["eeg", "ecg", "ppg"]
     assert dims == {"eeg": 4, "ecg": 4, "ppg": 8}
+
+
+def test_resolve_filter_workers_defaults_to_single_thread_for_parallel_jobs():
+    assert _resolve_filter_workers(None, jobs=3) == 1
+    assert _resolve_filter_workers(None, jobs=1) is None
+    assert _resolve_filter_workers(5, jobs=3) == 5
+
+
+def test_build_preset_job_passes_filter_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class FakeDataset:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __len__(self) -> int:
+            return 7
+
+    fake_module = types.SimpleNamespace(PSGPretrainDataset=FakeDataset)
+    monkeypatch.setitem(sys.modules, "data.psg_pretrain_dataset", fake_module)
+
+    output_path, sample_count = _build_preset_job(
+        output_path=tmp_path / "preset.pkl",
+        index_paths=["/tmp/index.csv"],
+        channel_names=["eeg", "ecg"],
+        channel_input_dims={"eeg": 4, "ecg": 4},
+        split="train",
+        meta_data_name="ahi",
+        n_tokens=128,
+        stride_tokens=64,
+        mask_rate=0.0,
+        allow_missing_channels=True,
+        min_channels=2,
+        batch_size=8,
+        shuffle=False,
+        filter_max_workers=3,
+    )
+
+    assert output_path == tmp_path / "preset.pkl"
+    assert sample_count == 7
+    assert captured["filter_max_workers"] == 3
+    assert captured["meta_data_names"] == ["ahi"]

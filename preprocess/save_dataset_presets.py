@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import sys
 
@@ -103,6 +104,18 @@ def parse_args() -> argparse.Namespace:
         "--overwrite",
         action="store_true",
         help="Overwrite existing preset files.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of preset outputs to build in parallel.",
+    )
+    parser.add_argument(
+        "--filter-workers",
+        type=int,
+        default=None,
+        help="Thread count used inside per-preset sample validation.",
     )
     parser.add_argument(
         "--dry-run",
@@ -212,12 +225,64 @@ def _resolve_channels_and_dims(
     return selected, {name: all_channel_input_dims[name] for name in selected}
 
 
+def _resolve_filter_workers(filter_workers: int | None, jobs: int) -> int | None:
+    if filter_workers is not None:
+        return filter_workers
+    if jobs > 1:
+        return 1
+    return None
+
+
+def _build_preset_job(
+    *,
+    output_path: Path,
+    index_paths: list[str],
+    channel_names: list[str],
+    channel_input_dims: dict[str, int],
+    split: str,
+    meta_data_name: str | None,
+    n_tokens: int,
+    stride_tokens: int,
+    mask_rate: float,
+    allow_missing_channels: bool,
+    min_channels: int,
+    batch_size: int,
+    shuffle: bool,
+    filter_max_workers: int | None,
+) -> tuple[Path, int]:
+    from data.psg_pretrain_dataset import PSGPretrainDataset
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    dataset = PSGPretrainDataset(
+        channel_names=channel_names,
+        channel_input_dims=channel_input_dims,
+        save_preset_path=str(output_path),
+        load_preset_path=None,
+        index=index_paths,
+        meta_data_names=[meta_data_name] if meta_data_name else [],
+        split=split,
+        max_tokens=n_tokens,
+        stride_tokens=stride_tokens,
+        mask_rate=mask_rate,
+        allow_missing_channels=allow_missing_channels,
+        min_channels=min_channels,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        filter_max_workers=filter_max_workers,
+    )
+    return output_path, len(dataset)
+
+
 def main() -> None:
     args = parse_args()
 
     args.config = args.config.expanduser()
     if not args.config.exists():
         raise FileNotFoundError(f"Config YAML not found: {args.config}")
+    if args.jobs < 1:
+        raise ValueError("--jobs must be >= 1")
+    if args.filter_workers is not None and args.filter_workers < 1:
+        raise ValueError("--filter-workers must be >= 1")
 
     index_paths = [Path(p).expanduser() for p in args.index]
     missing = [str(p) for p in index_paths if not p.exists()]
@@ -231,13 +296,7 @@ def main() -> None:
     stride_tokens = (
         args.stride_tokens if args.stride_tokens is not None else (0 if args.n_tokens == 1535 else args.n_tokens)
     )
-    loader_kwargs = {"batch_size": args.batch_size, "shuffle": args.shuffle}
-
-    dataset_cls = None
-    if not args.dry_run:
-        from data.psg_pretrain_dataset import PSGPretrainDataset
-
-        dataset_cls = PSGPretrainDataset
+    filter_max_workers = _resolve_filter_workers(args.filter_workers, args.jobs)
 
     print(f"Dataset name: {dataset_name}")
     print(f"Config YAML: {args.config}")
@@ -246,10 +305,12 @@ def main() -> None:
     print(f"Splits: {splits}")
     print(f"Metadata variants: {[m if m else 'none' for m in meta_data_variants]}")
     print(f"n_tokens={args.n_tokens}, stride_tokens={stride_tokens}")
+    print(f"jobs={args.jobs}, filter_workers={filter_max_workers if filter_max_workers is not None else 'default'}")
 
     planned = 0
     created = 0
     skipped = 0
+    jobs: list[dict[str, object]] = []
 
     for meta_data_name in meta_data_variants:
         for split in splits:
@@ -273,24 +334,38 @@ def main() -> None:
             if args.dry_run:
                 continue
 
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            dataset = dataset_cls(
-                channel_names=channel_names,
-                channel_input_dims=channel_input_dims,
-                save_preset_path=str(output_path),
-                load_preset_path=None,
-                index=[str(p) for p in index_paths],
-                meta_data_names=[meta_data_name] if meta_data_name else [],
-                split=split,
-                max_tokens=args.n_tokens,
-                stride_tokens=stride_tokens,
-                mask_rate=args.mask_rate,
-                allow_missing_channels=args.allow_missing_channels,
-                min_channels=args.min_channels,
-                **loader_kwargs,
+            jobs.append(
+                {
+                    "output_path": output_path,
+                    "index_paths": [str(p) for p in index_paths],
+                    "channel_names": channel_names,
+                    "channel_input_dims": channel_input_dims,
+                    "split": split,
+                    "meta_data_name": meta_data_name,
+                    "n_tokens": args.n_tokens,
+                    "stride_tokens": stride_tokens,
+                    "mask_rate": args.mask_rate,
+                    "allow_missing_channels": args.allow_missing_channels,
+                    "min_channels": args.min_channels,
+                    "batch_size": args.batch_size,
+                    "shuffle": args.shuffle,
+                    "filter_max_workers": filter_max_workers,
+                }
             )
-            print(f"  samples: {len(dataset)}")
-            created += 1
+
+    if not args.dry_run:
+        if args.jobs == 1:
+            for job in jobs:
+                output_path, sample_count = _build_preset_job(**job)
+                print(f"  done: {output_path} ({sample_count} samples)")
+                created += 1
+        else:
+            with ProcessPoolExecutor(max_workers=args.jobs) as executor:
+                future_to_job = {executor.submit(_build_preset_job, **job): job for job in jobs}
+                for future in as_completed(future_to_job):
+                    output_path, sample_count = future.result()
+                    print(f"  done: {output_path} ({sample_count} samples)")
+                    created += 1
 
     if args.dry_run:
         print(f"Dry run complete. Planned {planned} preset(s); no files were written.")
