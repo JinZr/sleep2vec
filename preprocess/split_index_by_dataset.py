@@ -1,69 +1,114 @@
 #!/usr/bin/env python3
 import argparse
-from typing import Dict, Tuple
+from typing import Dict
 
 import numpy as np
 import pandas as pd
 
-
-def compute_group_key(dataset_col: pd.Series) -> pd.Series:
-    dataset_str = dataset_col.astype("string")
-    return dataset_str.fillna("")
-
-
-def compute_external_mask(dataset_col: pd.Series) -> pd.Series:
-    dataset_str = dataset_col.astype("string")
-    return dataset_str.str.contains(r"(mros|mesa|shhs|hspS0001)", case=False, na=False)
+TRUTHY_MASK_VALUES = frozenset({"1", "1.0", "true", "t", "yes"})
+EXTERNAL_DATASET_PATTERN = r"(?:mros|mesa|shhs|hspS0001)"
 
 
 def get_channel_mask_columns(df: pd.DataFrame) -> list[str]:
     return [col for col in df.columns if col.endswith("_mask") and col != "stage_mask"]
 
 
+def normalize_mask_frame(df: pd.DataFrame, mask_cols: list[str]) -> pd.DataFrame:
+    if not mask_cols:
+        return pd.DataFrame(index=df.index)
+
+    return (
+        df[mask_cols]
+        .astype("string")
+        .fillna("")
+        .apply(lambda col: col.str.strip().str.lower().isin(TRUTHY_MASK_VALUES))
+    )
+
+
 def compute_available_channels(df: pd.DataFrame, mask_cols: list[str]) -> pd.Series:
-    return df[mask_cols].eq(1).sum(axis=1)
+    return normalize_mask_frame(df, mask_cols).sum(axis=1)
 
 
-def assign_splits(
+def compute_external_mask(dataset_col: pd.Series) -> pd.Series:
+    dataset_str = dataset_col.astype("string")
+    return dataset_str.str.contains(EXTERNAL_DATASET_PATTERN, case=False, na=False)
+
+
+def split_sizes(n_rows: int) -> tuple[int, int]:
+    n_val = min(n_rows // 10, 200)
+    n_test = min(n_rows // 10, 200)
+    if n_val + n_test > n_rows:
+        n_test = max(0, n_rows - n_val)
+    return n_val, n_test
+
+
+def assign_splits_by_dataset(
     df: pd.DataFrame,
-    group_key: pd.Series,
     seed: int,
     shuffle: bool,
-) -> Tuple[pd.Series, Dict[str, Dict[str, int]]]:
+) -> tuple[pd.Series, Dict[str, Dict[str, int]]]:
     rng = np.random.default_rng(seed)
-    split = pd.Series(index=df.index, dtype="object")
+    split = pd.Series("train", index=df.index, dtype="string")
     stats: Dict[str, Dict[str, int]] = {}
 
-    for group, idx in df.groupby(group_key, sort=False).groups.items():
-        idx = np.array(list(idx))
+    dataset_key = df["dataset"].astype("string").fillna("")
+    for dataset, rows in df.groupby(dataset_key, sort=False).groups.items():
+        idx = np.array(list(rows))
         if shuffle:
             rng.shuffle(idx)
 
-        n = len(idx)
-        n_val = min(n // 10, 200)
-        n_test = min(n // 10, 200)
-        if n_val + n_test > n:
-            n_test = max(0, n - n_val)
+        n_val, n_test = split_sizes(len(idx))
+        split.loc[idx[:n_val]] = "val"
+        split.loc[idx[n_val : n_val + n_test]] = "test"
 
-        val_idx = idx[:n_val]
-        test_idx = idx[n_val : n_val + n_test]
-        train_idx = idx[n_val + n_test :]
-
-        split.loc[val_idx] = "val"
-        split.loc[test_idx] = "test"
-        split.loc[train_idx] = "train"
-
-        stats[str(group)] = {"train": len(train_idx), "val": len(val_idx), "test": len(test_idx)}
+        stats[str(dataset)] = {
+            "train": int(len(idx) - n_val - n_test),
+            "val": int(n_val),
+            "test": int(n_test),
+        }
 
     return split, stats
+
+
+def find_missing_global_pair_coverage(
+    df: pd.DataFrame,
+    split: pd.Series,
+    mask_cols: list[str],
+) -> Dict[str, list[str]]:
+    if not mask_cols:
+        return {}
+
+    mask_frame = normalize_mask_frame(df, mask_cols)
+    channels = [col[:-5] for col in mask_cols]
+    missing: Dict[str, list[str]] = {}
+
+    for target_split in ("val", "test"):
+        target_idx = split.index[split == target_split]
+        target_masks = mask_frame.loc[target_idx]
+        missing_pairs: list[str] = []
+
+        for i, left in enumerate(channels):
+            left_col = f"{left}_mask"
+            for right in channels[i + 1 :]:
+                right_col = f"{right}_mask"
+                feasible = mask_frame[left_col] & mask_frame[right_col]
+                if not feasible.any():
+                    continue
+                covered = target_masks[left_col] & target_masks[right_col]
+                if not covered.any():
+                    missing_pairs.append(f"{left}__{right}")
+
+        if missing_pairs:
+            missing[target_split] = missing_pairs
+
+    return missing
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Split a CSV by dataset groups, with hsp* datasets grouped together, "
-            "and write a new CSV with a split column. Rows matching external "
-            "datasets are labeled as external."
+            "Split a CSV by dataset and write a new CSV with a split column. "
+            "Rows matching external datasets are labeled as external."
         )
     )
     parser.add_argument("--input", required=True, help="Path to input CSV file.")
@@ -79,7 +124,12 @@ def parse_args() -> argparse.Namespace:
         "--shuffle",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Shuffle rows within each group before splitting (default: True).",
+        help="Shuffle rows within each dataset before splitting (default: True).",
+    )
+    parser.add_argument(
+        "--require-pair-coverage",
+        action="store_true",
+        help="Fail if val or test misses any feasible channel pair.",
     )
     return parser.parse_args()
 
@@ -92,35 +142,45 @@ def main() -> None:
         raise ValueError("Missing required column: dataset")
 
     mask_cols = get_channel_mask_columns(df)
+
     if args.min_channels > 0:
         if not mask_cols:
-            raise ValueError("No *_mask columns found (excluding stage_mask); cannot apply --min-channels filter.")
+            raise ValueError("No *_mask columns found (excluding stage_mask); cannot apply --min-channels.")
         available_channels = compute_available_channels(df, mask_cols)
         before_count = len(df)
         df = df.loc[available_channels >= args.min_channels].copy()
-        filtered_out = before_count - len(df)
-        print(f"Filtered out {filtered_out} rows with < {args.min_channels} available channels.")
+        print(f"Filtered out {before_count - len(df)} rows with < {args.min_channels} available channels.")
 
+    df["split"] = pd.Series(index=df.index, dtype="string")
     external_mask = compute_external_mask(df["dataset"])
-    df["split"] = pd.Series(index=df.index, dtype="object")
     df.loc[external_mask, "split"] = "external"
 
     internal_df = df.loc[~external_mask]
-    if not internal_df.empty:
-        group_key = compute_group_key(internal_df["dataset"])
-        split, stats = assign_splits(internal_df, group_key, seed=args.seed, shuffle=args.shuffle)
-        df.loc[internal_df.index, "split"] = split
+    if internal_df.empty:
+        stats: Dict[str, Dict[str, int]] = {}
     else:
-        stats = {}
+        split, stats = assign_splits_by_dataset(
+            internal_df,
+            seed=args.seed,
+            shuffle=args.shuffle,
+        )
+        df.loc[internal_df.index, "split"] = split
+
+        missing_pairs = find_missing_global_pair_coverage(internal_df, split, mask_cols)
+        if missing_pairs:
+            details = "; ".join(f"{name}={pairs}" for name, pairs in missing_pairs.items())
+            message = f"Missing feasible global channel pairs: {details}"
+            if args.require_pair_coverage:
+                raise ValueError(message)
+            print(f"Warning: {message}")
 
     df.to_csv(args.output, index=False)
 
-    total = df["split"].value_counts().to_dict()
     print("Wrote:", args.output)
-    print("Total split counts:", total)
+    print("Total split counts:", df["split"].value_counts().to_dict())
     print("Per-group counts:")
-    for group, counts in stats.items():
-        print(f"  {group}: {counts}")
+    for dataset, counts in stats.items():
+        print(f"  {dataset}: {counts}")
 
 
 if __name__ == "__main__":
