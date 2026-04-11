@@ -10,7 +10,6 @@ import yaml
 from preprocess.save_dataset_presets import (
     _build_preset_job,
     _resolve_channels_and_dims,
-    _resolve_filter_workers,
 )
 
 
@@ -93,12 +92,6 @@ def test_resolve_channels_and_dims_accepts_channels_only_yaml(tmp_path: Path):
 
     assert channels == ["eeg", "ecg", "ppg"]
     assert dims == {"eeg": 4, "ecg": 4, "ppg": 8}
-
-
-def test_resolve_filter_workers_defaults_to_single_thread_for_parallel_jobs():
-    assert _resolve_filter_workers(None, jobs=3) == 1
-    assert _resolve_filter_workers(None, jobs=1) is None
-    assert _resolve_filter_workers(5, jobs=3) == 5
 
 
 def test_build_preset_job_passes_filter_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
