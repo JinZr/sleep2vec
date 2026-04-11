@@ -34,9 +34,20 @@ def compute_external_mask(dataset_col: pd.Series) -> pd.Series:
     return dataset_str.str.contains(EXTERNAL_DATASET_PATTERN, case=False, na=False)
 
 
-def split_sizes(n_rows: int) -> tuple[int, int]:
-    n_val = min(n_rows // 10, 200)
-    n_test = min(n_rows // 10, 200)
+def split_sizes(
+    n_rows: int,
+    *,
+    n_val: int = 20,
+    n_test: int = 20,
+) -> tuple[int, int]:
+    if n_val < 0:
+        raise ValueError(f"n_val must be >= 0, got {n_val}")
+    n_val = min(n_val, n_rows)
+
+    if n_test < 0:
+        raise ValueError(f"n_test must be >= 0, got {n_test}")
+    n_test = min(n_test, n_rows)
+
     if n_val + n_test > n_rows:
         n_test = max(0, n_rows - n_val)
     return n_val, n_test
@@ -46,6 +57,8 @@ def assign_splits_by_dataset(
     df: pd.DataFrame,
     seed: int,
     shuffle: bool,
+    n_val: int = 20,
+    n_test: int = 20,
 ) -> tuple[pd.Series, Dict[str, Dict[str, int]]]:
     rng = np.random.default_rng(seed)
     split = pd.Series("train", index=df.index, dtype="string")
@@ -57,14 +70,18 @@ def assign_splits_by_dataset(
         if shuffle:
             rng.shuffle(idx)
 
-        n_val, n_test = split_sizes(len(idx))
-        split.loc[idx[:n_val]] = "val"
-        split.loc[idx[n_val : n_val + n_test]] = "test"
+        n_val_rows, n_test_rows = split_sizes(
+            len(idx),
+            n_val=n_val,
+            n_test=n_test,
+        )
+        split.loc[idx[:n_val_rows]] = "val"
+        split.loc[idx[n_val_rows : n_val_rows + n_test_rows]] = "test"
 
         stats[str(dataset)] = {
-            "train": int(len(idx) - n_val - n_test),
-            "val": int(n_val),
-            "test": int(n_test),
+            "train": int(len(idx) - n_val_rows - n_test_rows),
+            "val": int(n_val_rows),
+            "test": int(n_test_rows),
         }
 
     return split, stats
@@ -115,10 +132,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, help="Path to output CSV file.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for shuffling.")
     parser.add_argument(
+        "--n-val",
+        type=int,
+        default=20,
+        help="Number of validation rows per dataset (default: 20).",
+    )
+    parser.add_argument(
+        "--n-test",
+        type=int,
+        default=20,
+        help="Number of test rows per dataset (default: 20).",
+    )
+    parser.add_argument(
         "--min-channels",
         type=int,
-        default=0,
-        help="Minimum number of available channels required to keep a row (default: 0).",
+        default=2,
+        help="Minimum number of available channels required to keep a row (default: 2).",
     )
     parser.add_argument(
         "--shuffle",
@@ -163,6 +192,8 @@ def main() -> None:
             internal_df,
             seed=args.seed,
             shuffle=args.shuffle,
+            n_val=args.n_val,
+            n_test=args.n_test,
         )
         df.loc[internal_df.index, "split"] = split
 

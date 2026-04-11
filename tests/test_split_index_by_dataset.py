@@ -38,27 +38,53 @@ def test_mask_normalization_and_available_channel_count():
 
 def test_split_sizes_match_current_policy():
     assert split_sizes(0) == (0, 0)
-    assert split_sizes(5) == (0, 0)
-    assert split_sizes(12) == (1, 1)
-    assert split_sizes(3000) == (200, 200)
+    assert split_sizes(5) == (5, 0)
+    assert split_sizes(12) == (12, 0)
+    assert split_sizes(3000) == (20, 20)
+    assert split_sizes(20, n_val=3, n_test=5) == (3, 5)
+    assert split_sizes(4, n_val=3, n_test=3) == (3, 1)
 
 
 def test_assign_splits_by_dataset_preserves_per_dataset_quota():
     rows = [{"dataset": "d1", "a_mask": 1, "b_mask": 1} for _ in range(12)]
-    rows += [{"dataset": "d2", "a_mask": 1, "b_mask": 1} for _ in range(5)]
+    rows += [{"dataset": "d2", "a_mask": 1, "b_mask": 1} for _ in range(45)]
     df = _build_df(rows)
 
     split, stats = assign_splits_by_dataset(df, seed=0, shuffle=False)
 
     assert stats == {
-        "d1": {"train": 10, "val": 1, "test": 1},
-        "d2": {"train": 5, "val": 0, "test": 0},
+        "d1": {"train": 0, "val": 12, "test": 0},
+        "d2": {"train": 5, "val": 20, "test": 20},
     }
     counts = pd.crosstab(df["dataset"], split)
-    assert int(counts.loc["d1", "train"]) == 10
-    assert int(counts.loc["d1", "val"]) == 1
-    assert int(counts.loc["d1", "test"]) == 1
+    assert int(counts.loc["d1", "val"]) == 12
     assert int(counts.loc["d2", "train"]) == 5
+    assert int(counts.loc["d2", "val"]) == 20
+    assert int(counts.loc["d2", "test"]) == 20
+
+
+def test_assign_splits_by_dataset_respects_custom_cli_policy():
+    rows = [{"dataset": "d1", "a_mask": 1, "b_mask": 1} for _ in range(20)]
+    rows += [{"dataset": "d2", "a_mask": 1, "b_mask": 1} for _ in range(9)]
+    df = _build_df(rows)
+
+    split, stats = assign_splits_by_dataset(
+        df,
+        seed=0,
+        shuffle=False,
+        n_val=3,
+        n_test=2,
+    )
+
+    assert stats == {
+        "d1": {"train": 15, "val": 3, "test": 2},
+        "d2": {"train": 4, "val": 3, "test": 2},
+    }
+    counts = pd.crosstab(df["dataset"], split)
+    assert int(counts.loc["d1", "val"]) == 3
+    assert int(counts.loc["d1", "test"]) == 2
+    assert int(counts.loc["d2", "val"]) == 3
+    assert int(counts.loc["d2", "test"]) == 2
 
 
 def test_find_missing_global_pair_coverage_reports_uncovered_pairs():
@@ -68,7 +94,7 @@ def test_find_missing_global_pair_coverage_reports_uncovered_pairs():
     ] + [{"dataset": "demo", "a_mask": 1, "b_mask": 1, "c_mask": 1} for _ in range(10)]
     df = _build_df(rows)
     mask_cols = get_channel_mask_columns(df)
-    split, _ = assign_splits_by_dataset(df, seed=0, shuffle=False)
+    split, _ = assign_splits_by_dataset(df, seed=0, shuffle=False, n_val=1, n_test=1)
 
     missing = find_missing_global_pair_coverage(df, split, mask_cols)
 
@@ -85,7 +111,7 @@ def test_find_missing_global_pair_coverage_ignores_globally_impossible_pairs():
     ] + [{"dataset": "demo", "eeg_mask": 0, "ecg_mask": 0, "actigraphy_mask": 1} for _ in range(10)]
     df = _build_df(rows)
     mask_cols = get_channel_mask_columns(df)
-    split, _ = assign_splits_by_dataset(df, seed=0, shuffle=False)
+    split, _ = assign_splits_by_dataset(df, seed=0, shuffle=False, n_val=1, n_test=1)
 
     missing = find_missing_global_pair_coverage(df, split, mask_cols)
 
