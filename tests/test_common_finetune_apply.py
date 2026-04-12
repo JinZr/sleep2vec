@@ -221,6 +221,7 @@ def test_dump_cli_args_yaml_converts_namespace_and_paths(tmp_path: Path):
         output_path=Path("outputs/run_a"),
         nested={"artifact": Path("artifacts/model.ckpt")},
         values=[Path("x.txt"), 5],
+        pair_probs={("breath", "ppg"): 0.4},
     )
     dest = tmp_path / "logs" / "cli_args.yaml"
 
@@ -232,3 +233,4 @@ def test_dump_cli_args_yaml_converts_namespace_and_paths(tmp_path: Path):
     assert loaded["output_path"] == "outputs/run_a"
     assert loaded["nested"]["artifact"] == "artifacts/model.ckpt"
     assert loaded["values"] == ["x.txt", 5]
+    assert loaded["pair_probs"]["['breath', 'ppg']"] == 0.4

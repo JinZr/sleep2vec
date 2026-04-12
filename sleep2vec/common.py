@@ -268,7 +268,15 @@ def _to_yamlable(obj: t.Any) -> t.Any:
         return str(obj)
 
     if isinstance(obj, dict):
-        return {k: _to_yamlable(v) for k, v in obj.items()}
+        converted: dict[t.Any, t.Any] = {}
+        for key, value in obj.items():
+            yaml_key = _to_yamlable(key)
+            if isinstance(yaml_key, list):
+                yaml_key = str(yaml_key)
+            elif not isinstance(yaml_key, (str, int, float, bool)) and yaml_key is not None:
+                yaml_key = str(yaml_key)
+            converted[yaml_key] = _to_yamlable(value)
+        return converted
 
     if isinstance(obj, (list, tuple)):
         return [_to_yamlable(v) for v in obj]

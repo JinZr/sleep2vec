@@ -334,3 +334,27 @@ def test_persist_run_config_and_args_preserves_existing_root_files_for_stage2(tm
     assert (exp_dir / "cli_args.yaml").read_text() == root_cli_before
     assert (exp_dir / "config.stage2.yaml").read_text() == "stage: 2\n"
     assert yaml.safe_load((exp_dir / "cli_args.stage2.yaml").read_text())["phase"] == "stage2"
+
+
+def test_load_saved_cli_args_accepts_persisted_pair_probs(tmp_path: Path, adapt_module: ModuleType):
+    config_path = tmp_path / "stage1_config.yaml"
+    config_path.write_text("stage: 1\n")
+    exp_dir = tmp_path / "log-adapt" / "run_a"
+    args = argparse.Namespace(
+        config=config_path,
+        phase="stage1",
+        version_name="wearable-v1",
+        train_pair_probs={("breath", "ppg"): 0.4, ("ecg", "ppg"): 0.6},
+    )
+
+    persist_run_config_and_args(
+        args,
+        exp_dir,
+        phase_name="stage1",
+        write_root_files=True,
+    )
+
+    _, loaded = adapt_module._load_saved_cli_args(exp_dir, phase="stage1")
+    assert loaded["phase"] == "stage1"
+    assert loaded["train_pair_probs"]["['breath', 'ppg']"] == 0.4
+    assert loaded["train_pair_probs"]["['ecg', 'ppg']"] == 0.6
