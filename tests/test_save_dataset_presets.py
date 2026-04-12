@@ -7,10 +7,7 @@ import types
 import pytest
 import yaml
 
-from preprocess.save_dataset_presets import (
-    _build_preset_job,
-    _resolve_channels_and_dims,
-)
+from preprocess.save_dataset_presets import _build_preset_job, _resolve_channels_and_dims
 
 
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "config.yaml") -> Path:
