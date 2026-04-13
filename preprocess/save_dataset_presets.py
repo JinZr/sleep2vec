@@ -4,15 +4,21 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+import pickle
 import sys
+import tempfile
 
+import pandas as pd
 import yaml
+
+from preprocess.split_index_by_dataset import normalize_mask_frame
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_SPLITS = ["test", "val", "train"]
+BUILTIN_CHANNEL_SPECS = {"stage5": {"input_dim": 1, "mask_column": "stage_mask"}}
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,7 +29,7 @@ def parse_args() -> argparse.Namespace:
         "--index",
         nargs="+",
         required=True,
-        help="One or more index CSV files.",
+        help="Single index CSV file.",
     )
     parser.add_argument(
         "--config",
@@ -78,7 +84,7 @@ def parse_args() -> argparse.Namespace:
         "--channels",
         nargs="+",
         default=None,
-        help="Optional subset of channels declared in YAML model.channels.",
+        help="Optional subset of channels declared in YAML model.channels. Built-in validation channel 'stage5' is also allowed.",
     )
     parser.add_argument("--batch-size", type=int, default=16, help="Dataloader batch size in preset filtering.")
     parser.add_argument(
@@ -211,12 +217,72 @@ def _resolve_channels_and_dims(
         return all_channels, all_channel_input_dims
 
     selected = _dedupe_keep_order(selected_channels)
-    unknown = [name for name in selected if name not in all_channel_input_dims]
+    unknown = [name for name in selected if name not in all_channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
     if unknown:
         raise ValueError(
             "Channels must be declared in YAML model.channels. " f"Unknown: {unknown}; available: {all_channels}"
         )
-    return selected, {name: all_channel_input_dims[name] for name in selected}
+    resolved_dims = {name: all_channel_input_dims[name] for name in selected if name in all_channel_input_dims}
+    for name in selected:
+        if name in BUILTIN_CHANNEL_SPECS:
+            resolved_dims[name] = int(BUILTIN_CHANNEL_SPECS[name]["input_dim"])
+    return selected, resolved_dims
+
+
+def _mask_column_for_channel(channel_name: str) -> str:
+    spec = BUILTIN_CHANNEL_SPECS.get(channel_name)
+    if spec is not None:
+        return str(spec["mask_column"])
+    return f"{channel_name}_mask"
+
+
+def _resolve_single_index_path(index_paths: list[str]) -> Path:
+    if not index_paths:
+        raise ValueError("index list is empty.")
+    if len(index_paths) != 1:
+        raise ValueError("save_dataset_presets.py accepts exactly one index CSV.")
+    return Path(index_paths[0]).expanduser()
+
+
+def _load_index_df(index_paths: list[str]) -> pd.DataFrame:
+    path = _resolve_single_index_path(index_paths)
+    df = pd.read_csv(path, low_memory=False)
+    df["source"] = str(path)
+    return df
+
+
+def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: list[str]) -> pd.DataFrame:
+    required = _dedupe_keep_order(required_channels)
+    if not required:
+        return df
+
+    mask_columns = {channel: _mask_column_for_channel(channel) for channel in required}
+    available_mask_columns = [mask_columns[channel] for channel in required if mask_columns[channel] in df.columns]
+    if not available_mask_columns:
+        return df
+
+    mask_frame = normalize_mask_frame(df, available_mask_columns)
+    keep_mask = mask_frame.all(axis=1)
+    filtered = df.loc[keep_mask].copy()
+    if filtered.empty:
+        raise ValueError(f"No rows satisfy required mask columns for channels: {required}")
+    return filtered
+
+
+def _restore_preset_source(output_path: Path, source_value: str) -> None:
+    if not output_path.exists():
+        return
+
+    with open(output_path, "rb") as f:
+        data = pickle.load(f)
+
+    for item in data:
+        metadata = getattr(item, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata["source"] = source_value
+
+    with open(output_path, "wb") as f:
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def _build_preset_job(
@@ -238,25 +304,46 @@ def _build_preset_job(
 ) -> tuple[Path, int]:
     from data.psg_pretrain_dataset import PSGPretrainDataset
 
+    single_index_path = str(_resolve_single_index_path(index_paths))
+    index = [single_index_path]
+    filtered_index_path: str | None = None
+    if not allow_missing_channels:
+        filtered_index = _filter_index_df_for_required_channels(_load_index_df(index_paths), channel_names)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".csv",
+            prefix=f"{output_path.stem}.required_masks.",
+            delete=False,
+        ) as tmp:
+            filtered_index.to_csv(tmp.name, index=False)
+            filtered_index_path = tmp.name
+        index = [filtered_index_path]
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    dataset = PSGPretrainDataset(
-        channel_names=channel_names,
-        channel_input_dims=channel_input_dims,
-        save_preset_path=str(output_path),
-        load_preset_path=None,
-        index=index_paths,
-        meta_data_names=[meta_data_name] if meta_data_name else [],
-        split=split,
-        max_tokens=n_tokens,
-        stride_tokens=stride_tokens,
-        mask_rate=mask_rate,
-        allow_missing_channels=allow_missing_channels,
-        min_channels=min_channels,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        filter_max_workers=filter_max_workers,
-    )
-    return output_path, len(dataset)
+    try:
+        dataset = PSGPretrainDataset(
+            channel_names=channel_names,
+            channel_input_dims=channel_input_dims,
+            save_preset_path=str(output_path),
+            load_preset_path=None,
+            index=index,
+            meta_data_names=[meta_data_name] if meta_data_name else [],
+            split=split,
+            max_tokens=n_tokens,
+            stride_tokens=stride_tokens,
+            mask_rate=mask_rate,
+            allow_missing_channels=allow_missing_channels,
+            min_channels=min_channels,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            filter_max_workers=filter_max_workers,
+        )
+        if filtered_index_path is not None:
+            _restore_preset_source(output_path, single_index_path)
+        return output_path, len(dataset)
+    finally:
+        if filtered_index_path is not None:
+            Path(filtered_index_path).unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -272,6 +359,8 @@ def main() -> None:
     missing = [str(p) for p in index_paths if not p.exists()]
     if missing:
         raise FileNotFoundError(f"Index CSV not found: {missing}")
+    if len(index_paths) != 1:
+        raise ValueError("save_dataset_presets.py accepts exactly one index CSV.")
 
     channel_names, channel_input_dims = _resolve_channels_and_dims(args.config, args.channels)
     dataset_name = args.dataset_name or _infer_dataset_name(index_paths)
@@ -289,6 +378,10 @@ def main() -> None:
     print(f"Metadata variants: {[m if m else 'none' for m in meta_data_variants]}")
     print(f"n_tokens={args.n_tokens}, stride_tokens={stride_tokens}")
     print(f"num_workers={args.num_workers}")
+    if args.allow_missing_channels:
+        print("Index mask prefilter: disabled (allow_missing_channels=True)")
+    else:
+        print(f"Index mask prefilter: required channels {channel_names}")
 
     planned = 0
     created = 0
