@@ -4,69 +4,13 @@ import typing as t
 
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
-from sklearn.metrics import confusion_matrix
 import wandb
 
 from sleep2vec.config import EvalVisualizationsConfig
-
-
-def render_confusion_matrix_heatmap(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    class_labels: t.Sequence[str],
-    *,
-    title: str = "Confusion Matrix",
-) -> plt.Figure:
-    labels = np.arange(len(class_labels), dtype=np.int64)
-    cm = confusion_matrix(y_true.astype(np.int64), y_pred.astype(np.int64), labels=labels)
-
-    fig_width = max(6.0, 0.8 * len(class_labels) + 2.0)
-    fig_height = max(5.0, 0.7 * len(class_labels) + 1.5)
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt="d",
-        cmap="Blues",
-        xticklabels=list(class_labels),
-        yticklabels=list(class_labels),
-        cbar=True,
-        ax=ax,
-    )
-    ax.set_title(title)
-    ax.set_xlabel("Predicted Label")
-    ax.set_ylabel("True Label")
-    plt.tight_layout()
-    return fig
-
-
-def render_regression_scatter_plot(
-    targets: np.ndarray,
-    preds: np.ndarray,
-    *,
-    title: str = "Prediction vs Target",
-) -> plt.Figure:
-    targets = np.asarray(targets, dtype=np.float32).reshape(-1)
-    preds = np.asarray(preds, dtype=np.float32).reshape(-1)
-
-    bounds = np.concatenate([targets, preds], axis=0)
-    lower = float(bounds.min())
-    upper = float(bounds.max())
-    if lower == upper:
-        lower -= 1.0
-        upper += 1.0
-
-    fig, ax = plt.subplots(figsize=(6.5, 6.0))
-    ax.scatter(targets, preds, alpha=0.35, s=16, edgecolors="none")
-    ax.plot([lower, upper], [lower, upper], linestyle="--", color="black", linewidth=1.0)
-    ax.set_xlim(lower, upper)
-    ax.set_ylim(lower, upper)
-    ax.set_title(title)
-    ax.set_xlabel("True Target")
-    ax.set_ylabel("Predicted Target")
-    plt.tight_layout()
-    return fig
+from sleep2vec.visualization.downstream_eval_plots import (
+    render_confusion_matrix_heatmap,
+    render_regression_scatter_plot,
+)
 
 
 class DownstreamEvalVisualizer:

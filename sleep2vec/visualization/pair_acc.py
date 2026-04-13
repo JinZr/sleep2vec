@@ -5,7 +5,9 @@ import typing as t
 from matplotlib.colors import PowerNorm
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
+
+from sleep2vec.visualization.heatmaps import render_matrix_heatmap
+from sleep2vec.visualization.theme import _OPENAI_BLUE_CMAP
 
 
 def render_pair_acc_heatmap(
@@ -20,21 +22,18 @@ def render_pair_acc_heatmap(
         raise ValueError(f"pair acc matrix shape {mat.shape} does not match modalities {size}x{size}")
     for i in range(size):
         mat[i, i] = 1.0
-    fig, ax = plt.subplots(figsize=(12, 9))
-    sns.heatmap(
+
+    return render_matrix_heatmap(
         mat,
-        annot=True,
-        fmt=".3f",
-        xticklabels=modality_names,
-        yticklabels=modality_names,
-        cmap="Blues",
-        cbar=True,
-        square=True,
+        modality_names,
+        modality_names,
+        title=title,
+        xlabel="Gallery Modality",
+        ylabel="Query Modality",
+        cmap=_OPENAI_BLUE_CMAP,
         norm=PowerNorm(gamma=0.5, vmin=0.0, vmax=1.0),
-        ax=ax,
+        figsize=(12.0, 9.0),
+        annotation_formatter=lambda value: f"{value:.3f}",
+        colorbar_title="Accuracy",
+        subplots_adjust={"left": 0.16, "right": 0.91, "bottom": 0.16, "top": 0.90},
     )
-    ax.set_title(title)
-    ax.set_xlabel("Gallery Modality")
-    ax.set_ylabel("Query Modality")
-    plt.tight_layout()
-    return fig
