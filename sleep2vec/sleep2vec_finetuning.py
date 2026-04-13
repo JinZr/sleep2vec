@@ -5,9 +5,8 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import pytorch_lightning as pl
-import seaborn as sns
-from sklearn.metrics import confusion_matrix
 import torch
+import torch.distributed as dist
 import wandb
 import yaml
 
@@ -15,6 +14,7 @@ from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.common import remap_stage_labels
 from sleep2vec.metrics import compute_downstream_metrics
+from sleep2vec.visualization.downstream_eval import DownstreamEvalVisualizer
 from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
 
 from .downstream_model import Sleep2vecDownstreamModel
@@ -87,6 +87,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self.model_averager: BaseModelAverager | None = build_model_averager(averaging_config, self.model)
         if self.model_averager is not None:
             self.model_averager.attach_to_module(self)
+        self._eval_visualizer = DownstreamEvalVisualizer(
+            getattr(finetune_config, "eval_visualizations", None) if finetune_config is not None else None
+        )
 
     def on_save_checkpoint(self, checkpoint):
         super().on_save_checkpoint(checkpoint)
@@ -127,13 +130,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._finalize_epoch(stage="val")
 
     def on_test_epoch_end(self):
-        result = self._finalize_epoch(stage="test")
-        if result is None:
-            return
-        preds, gts = result
-        trainer = getattr(self, "trainer", None)
-        if self.args.is_classification and trainer is not None and trainer.is_global_zero:
-            self._log_confusion_matrix(preds, gts)
+        self._finalize_epoch(stage="test")
 
     def on_fit_start(self):
         super().on_fit_start()
@@ -260,6 +257,36 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return None
         return getter()
 
+    def _empty_epoch_outputs(self):
+        if self.args.is_classification:
+            output_dim = int(getattr(self.args, "output_dim", 0) or 0)
+            return np.empty((0, output_dim), dtype=np.float32), np.empty((0,), dtype=np.int64)
+        return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
+
+    def _concat_epoch_outputs(self, outputs):
+        if not outputs:
+            return self._empty_epoch_outputs()
+
+        preds, gts = zip(*outputs)
+        return np.concatenate(preds, axis=0), np.concatenate(gts, axis=0)
+
+    def _gather_eval_outputs(self, preds: np.ndarray, gts: np.ndarray):
+        if not dist.is_available() or not dist.is_initialized() or not hasattr(dist, "all_gather_object"):
+            return preds, gts
+
+        world_size = dist.get_world_size()
+        gathered_preds: list[np.ndarray | None] = [None] * world_size
+        gathered_gts: list[np.ndarray | None] = [None] * world_size
+        dist.all_gather_object(gathered_preds, preds)
+        dist.all_gather_object(gathered_gts, gts)
+
+        gathered_preds = [item for item in gathered_preds if isinstance(item, np.ndarray) and item.size > 0]
+        gathered_gts = [item for item in gathered_gts if isinstance(item, np.ndarray) and item.size > 0]
+        if not gathered_preds or not gathered_gts:
+            return self._empty_epoch_outputs()
+
+        return np.concatenate(gathered_preds, axis=0), np.concatenate(gathered_gts, axis=0)
+
     def _log_layer_mix_weights(self, stage: str, model: torch.nn.Module) -> None:
         snapshot = self._layer_mix_snapshot(model)
         if snapshot is None:
@@ -327,12 +354,13 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]
-        if not outputs:
-            return None
+        preds, gts = self._concat_epoch_outputs(outputs)
+        outputs.clear()
 
-        preds, gts = zip(*outputs)
-        preds = np.concatenate(preds, axis=0)
-        gts = np.concatenate(gts, axis=0)
+        if stage in {"val", "test"}:
+            preds, gts = self._gather_eval_outputs(preds, gts)
+        if preds.size == 0 or gts.size == 0:
+            return None
 
         metrics = compute_downstream_metrics(
             gts,
@@ -347,11 +375,23 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 v,
                 prog_bar=(stage != "train"),
                 logger=True,
-                sync_dist=True,
+                sync_dist=(stage == "train"),
                 on_epoch=True,
             )
 
-        outputs.clear()
+        trainer = getattr(self, "trainer", None)
+        if stage in {"val", "test"} and trainer is not None and trainer.is_global_zero:
+            self._eval_visualizer.log(
+                stage=stage,
+                preds=preds,
+                targets=gts,
+                is_classification=self.args.is_classification,
+                output_dim=getattr(self.args, "output_dim", None),
+                label_name=self.args.label_name,
+                current_epoch=int(self.current_epoch),
+                class_labels=getattr(self.args, "class_labels", None),
+            )
+
         return preds, gts
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
@@ -371,20 +411,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if self.model_averager is not None:
             return self.model_averager.eval_model()
         return self.model
-
-    def _log_confusion_matrix(self, preds: np.ndarray, gts: np.ndarray):
-        if getattr(wandb, "run", None) is None:
-            return
-        pred_labels = preds.argmax(axis=1)
-        cm = confusion_matrix(gts, pred_labels)
-
-        fig, ax = plt.subplots(figsize=(6, 5))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
-        ax.set_xlabel("Predicted Label")
-        ax.set_ylabel("True Label")
-        ax.set_title(f"Test Confusion Matrix (epoch {self.current_epoch})")
-        wandb.log({"confusion_matrix": wandb.Image(fig)})
-        plt.close(fig)
 
     def configure_optimizers(self):
         decay, no_decay = [], []

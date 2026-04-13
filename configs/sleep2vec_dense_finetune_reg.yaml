@@ -87,6 +87,13 @@ finetune:
     freeze_backbone_and_insert_lora: false
     insert_lora: true
     separate_adapters: false
+  eval_visualizations:
+    enabled: true
+    stages: [val, test]
+    confusion_matrix:
+      enabled: false
+    regression_scatter:
+      enabled: true
 
 model_averaging:
   name: ema

@@ -53,6 +53,13 @@ finetune:
     is_seq: true
     monitor: val_accuracy
     monitor_mod: max
+  eval_visualizations:
+    enabled: true
+    stages: [val, test]
+    confusion_matrix:
+      enabled: true
+    regression_scatter:
+      enabled: false
 model_averaging:
   name: ema
   params:

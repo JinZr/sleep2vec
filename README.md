@@ -51,7 +51,7 @@
 ---
 
 ## Data Format & Caches
-- **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set.
+- **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set. For the built-in `sex` task, the normalized contract is `sex=female|male`, encoded as `0=female`, `1=male`. If your source metadata uses `sexM`, convert it to `sex` with `1 -> male`, `0 -> female` during preprocessing.
 - **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy_vm`. `stage5` remains a special per-token label channel and always uses width `1`.
 - **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided. Preset generation now requires a YAML config so the script can resolve channel names and `input_dim` values from `model.channels`.
 - To build presets, run:
@@ -164,6 +164,7 @@ Notes:
 - Built-in sleep-staging labels are `stage3`, `stage4`, and `stage5`. They are all **per-token sequence labeling** tasks (`is_seq=True`) and use token-level downstream (`model.cls.downstream: tokens`).
 - `stage3` merges raw `stage5` labels into `W / NREM / REM`; `stage4` merges raw `stage5` labels into `W / N1N2 / N3 / REM`.
 - Do **not** add `stage5` to `data.data_channel_names`; raw `stage5` is loaded automatically into `batch["tokens"]["stage5"]` whenever `--label-name` is `stage3`, `stage4`, or `stage5`.
+- Built-in `sex` classification is a metadata task with class order `["female", "male"]`, so targets are encoded as `0=female`, `1=male`.
 - `--pretrained-backbone-path /path/to/pretrain_or_adapt.ckpt` can be used to bootstrap downstream training from a pretrain/adaptation checkpoint; loader prefers `ema_model.` and falls back to `model.`.
 
 ### Finetune — regression

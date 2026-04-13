@@ -63,6 +63,19 @@ class LayerMixConfig:
 
 
 @dataclass
+class EvalVisualizationPlotConfig:
+    enabled: bool = False
+
+
+@dataclass
+class EvalVisualizationsConfig:
+    enabled: bool = False
+    stages: t.List[str] = field(default_factory=lambda: ["val", "test"])
+    confusion_matrix: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
+    regression_scatter: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
+
+
+@dataclass
 class HeadConfig:
     channel_agg: "ChannelAggConfig"
     temporal_agg: "TemporalAggConfig"
@@ -197,6 +210,7 @@ class FinetuneConfig:
     lora: LoraConfig = field(default_factory=LoraConfig)
     layer_mix: LayerMixConfig | None = None
     task: TaskConfig | None = None
+    eval_visualizations: EvalVisualizationsConfig | None = None
 
 
 @dataclass
@@ -322,6 +336,64 @@ def _build_layer_mix_config(raw: t.Any) -> LayerMixConfig | None:
         raw["layer_indices"] = layer_indices
 
     return LayerMixConfig(**raw)
+
+
+def _build_eval_visualization_plot_config(raw: t.Any, *, field_name: str) -> EvalVisualizationPlotConfig:
+    if raw is None:
+        return EvalVisualizationPlotConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"finetune.eval_visualizations.{field_name} must be a mapping when provided.")
+
+    extra = sorted(set(raw.keys()) - {"enabled"})
+    if extra:
+        raise ValueError(f"finetune.eval_visualizations.{field_name} has unsupported fields: {extra}")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"finetune.eval_visualizations.{field_name}.enabled must be a boolean.")
+
+    return EvalVisualizationPlotConfig(enabled=enabled)
+
+
+def _build_eval_visualizations_config(raw: t.Any) -> EvalVisualizationsConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.eval_visualizations must be a mapping when provided.")
+
+    allowed = {"enabled", "stages", "confusion_matrix", "regression_scatter"}
+    extra = sorted(set(raw.keys()) - allowed)
+    if extra:
+        raise ValueError(f"finetune.eval_visualizations has unsupported fields: {extra}")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("finetune.eval_visualizations.enabled must be a boolean.")
+
+    stages = raw.get("stages", ["val", "test"])
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("finetune.eval_visualizations.stages must be a non-empty list.")
+    if not all(isinstance(stage, str) for stage in stages):
+        raise ValueError("finetune.eval_visualizations.stages must be a list of strings.")
+    if len(set(stages)) != len(stages):
+        raise ValueError("finetune.eval_visualizations.stages must not contain duplicates.")
+    invalid_stages = [stage for stage in stages if stage not in {"val", "test"}]
+    if invalid_stages:
+        raise ValueError(
+            "finetune.eval_visualizations.stages only supports 'val' and 'test'. " f"Got: {invalid_stages}"
+        )
+
+    return EvalVisualizationsConfig(
+        enabled=enabled,
+        stages=list(stages),
+        confusion_matrix=_build_eval_visualization_plot_config(
+            raw.get("confusion_matrix"), field_name="confusion_matrix"
+        ),
+        regression_scatter=_build_eval_visualization_plot_config(
+            raw.get("regression_scatter"),
+            field_name="regression_scatter",
+        ),
+    )
 
 
 def _build_task_config(raw: t.Any) -> TaskConfig | None:
@@ -576,6 +648,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     averaging_cfg = _build_model_averaging_config(data)
     model_cfg = _build_model_config(model_block, require_head=True)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
+    eval_visualizations_cfg = _build_eval_visualizations_config(finetune_block.get("eval_visualizations"))
     task_cfg = _build_task_config(finetune_block.get("task"))
     _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
     data_cfg = FinetuneDataConfig(**data_block)
@@ -585,6 +658,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         lora=lora_cfg,
         layer_mix=layer_mix_cfg,
         task=task_cfg,
+        eval_visualizations=eval_visualizations_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
@@ -607,6 +681,8 @@ __all__ = [
     "ModelConfig",
     "ClsConfig",
     "LayerMixConfig",
+    "EvalVisualizationPlotConfig",
+    "EvalVisualizationsConfig",
     "TemporalAggConfig",
     "ModelAveragingConfig",
     "ProjectionConfig",

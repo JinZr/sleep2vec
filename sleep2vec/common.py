@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict, is_dataclass
 import logging
 from pathlib import Path
 import shutil
@@ -46,6 +47,7 @@ _BUILTIN_TASK_SPECS = {
         "is_seq": False,
         "monitor": "val_accuracy",
         "monitor_mod": "max",
+        "class_labels": ["female", "male"],
     },
     "age": {
         "type": "regression",
@@ -76,6 +78,17 @@ def get_task_stage_names(label_name: str) -> list[str] | None:
     if spec is None or "stage_names" not in spec:
         return None
     return list(spec["stage_names"])
+
+
+def get_task_class_labels(label_name: str) -> list[str] | None:
+    spec = _BUILTIN_TASK_SPECS.get(label_name)
+    if spec is None:
+        return None
+    if "class_labels" in spec:
+        return list(spec["class_labels"])
+    if "stage_names" in spec:
+        return list(spec["stage_names"])
+    return None
 
 
 def get_task_label_merge_map(label_name: str) -> dict[int, int] | None:
@@ -169,12 +182,14 @@ def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict
 def _apply_builtin_task_attrs(args: argparse.Namespace, label_name: str) -> None:
     args.label_source_name = get_task_label_source_name(label_name)
     args.stage_names = get_task_stage_names(label_name)
+    args.class_labels = get_task_class_labels(label_name)
     args.label_merge_map = get_task_label_merge_map(label_name)
 
 
 def _apply_custom_task_attrs(args: argparse.Namespace) -> None:
     args.label_source_name = args.label_name
     args.stage_names = None
+    args.class_labels = None
     args.label_merge_map = None
 
 
@@ -245,6 +260,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.insert_lora = lora_cfg.insert_lora
     args.separate_adapters = lora_cfg.separate_adapters
     args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
+    args.eval_visualizations = finetune_cfg.eval_visualizations
     args.head_kwargs = {}
 
     # Fail fast if requested dataloader channels differ from model/backbone channels.
@@ -260,6 +276,9 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
 
 def _to_yamlable(obj: t.Any) -> t.Any:
     """Convert argparse / pathlib objects into YAML-safe primitives."""
+
+    if is_dataclass(obj):
+        return _to_yamlable(asdict(obj))
 
     if isinstance(obj, argparse.Namespace):
         obj = vars(obj)

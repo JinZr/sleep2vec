@@ -238,6 +238,25 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.finetune.task.output_dim == 2
 
 
+def test_load_finetune_config_parses_eval_visualizations(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["eval_visualizations"] = {
+        "enabled": True,
+        "stages": ["val", "test"],
+        "confusion_matrix": {"enabled": True},
+        "regression_scatter": {"enabled": False},
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.eval_visualizations is not None
+    assert bundle.finetune.eval_visualizations.enabled is True
+    assert bundle.finetune.eval_visualizations.stages == ["val", "test"]
+    assert bundle.finetune.eval_visualizations.confusion_matrix.enabled is True
+    assert bundle.finetune.eval_visualizations.regression_scatter.enabled is False
+
+
 @pytest.mark.parametrize("missing_key", ["backbone", "projection", "cls"])
 def test_load_pretrain_config_requires_model_blocks(tmp_path: Path, missing_key: str):
     payload = _pretrain_payload()
@@ -402,6 +421,33 @@ def test_load_finetune_config_rejects_layer_index_above_backbone_depth(tmp_path:
     config_path = _write_yaml(tmp_path, payload)
 
     with pytest.raises(ValueError, match="must be <= num_hidden_layers"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("eval_visualizations", "pattern"),
+    [
+        ("bad", "must be a mapping"),
+        ({"enabled": "yes"}, "enabled must be a boolean"),
+        ({"stages": "val"}, "stages must be a non-empty list"),
+        ({"stages": []}, "stages must be a non-empty list"),
+        ({"stages": ["val", "val"]}, "must not contain duplicates"),
+        ({"stages": ["train"]}, "only supports 'val' and 'test'"),
+        ({"unknown": {}}, "unsupported fields"),
+        ({"confusion_matrix": {"extra": True}}, "confusion_matrix has unsupported fields"),
+        ({"regression_scatter": {"enabled": "yes"}}, "regression_scatter.enabled must be a boolean"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_eval_visualizations(
+    tmp_path: Path,
+    eval_visualizations,
+    pattern: str,
+):
+    payload = _finetune_payload()
+    payload["finetune"]["eval_visualizations"] = eval_visualizations
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
         load_finetune_config(config_path)
 
 

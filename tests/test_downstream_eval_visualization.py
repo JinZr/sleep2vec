@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from sleep2vec.config import EvalVisualizationPlotConfig, EvalVisualizationsConfig
+import sleep2vec.visualization.downstream_eval as downstream_eval
+from sleep2vec.visualization.downstream_eval import (
+    DownstreamEvalVisualizer,
+    render_confusion_matrix_heatmap,
+    render_regression_scatter_plot,
+)
+
+
+def test_render_confusion_matrix_heatmap_uses_stage_labels():
+    fig = render_confusion_matrix_heatmap(
+        np.array([0, 1, 2], dtype=np.int64),
+        np.array([0, 1, 2], dtype=np.int64),
+        ["W", "NREM", "REM"],
+        title="demo",
+    )
+
+    ax = fig.axes[0]
+    assert [tick.get_text() for tick in ax.get_xticklabels()] == ["W", "NREM", "REM"]
+    assert [tick.get_text() for tick in ax.get_yticklabels()] == ["W", "NREM", "REM"]
+    plt.close(fig)
+
+
+def test_render_confusion_matrix_heatmap_uses_sex_labels():
+    fig = render_confusion_matrix_heatmap(
+        np.array([0, 1], dtype=np.int64),
+        np.array([0, 1], dtype=np.int64),
+        ["female", "male"],
+        title="demo",
+    )
+
+    ax = fig.axes[0]
+    assert [tick.get_text() for tick in ax.get_xticklabels()] == ["female", "male"]
+    assert [tick.get_text() for tick in ax.get_yticklabels()] == ["female", "male"]
+    plt.close(fig)
+
+
+def test_render_regression_scatter_plot_draws_scatter_and_diagonal():
+    fig = render_regression_scatter_plot(
+        np.array([20.0, 30.0, 40.0], dtype=np.float32),
+        np.array([21.0, 29.0, 41.0], dtype=np.float32),
+        title="demo",
+    )
+
+    ax = fig.axes[0]
+    assert ax.get_xlabel() == "True Target"
+    assert ax.get_ylabel() == "Predicted Target"
+    assert len(ax.collections) == 1
+    assert len(ax.lines) == 1
+    plt.close(fig)
+
+
+def test_downstream_eval_visualizer_respects_stage_gating_and_logs_confusion_matrix(monkeypatch):
+    logged = []
+    monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)
+    monkeypatch.setattr(downstream_eval.wandb, "Image", lambda fig: fig)
+    monkeypatch.setattr(downstream_eval.wandb, "log", lambda payload, commit=False: logged.append((payload, commit)))
+
+    visualizer = DownstreamEvalVisualizer(
+        EvalVisualizationsConfig(
+            enabled=True,
+            stages=["val"],
+            confusion_matrix=EvalVisualizationPlotConfig(enabled=True),
+            regression_scatter=EvalVisualizationPlotConfig(enabled=True),
+        )
+    )
+
+    visualizer.log(
+        stage="test",
+        preds=np.eye(2, dtype=np.float32),
+        targets=np.array([0, 1], dtype=np.int64),
+        is_classification=True,
+        output_dim=2,
+        label_name="sex",
+        current_epoch=3,
+        class_labels=["female", "male"],
+    )
+    assert logged == []
+
+    visualizer.log(
+        stage="val",
+        preds=np.eye(2, dtype=np.float32),
+        targets=np.array([0, 1], dtype=np.int64),
+        is_classification=True,
+        output_dim=2,
+        label_name="sex",
+        current_epoch=3,
+        class_labels=["female", "male"],
+    )
+
+    assert len(logged) == 1
+    payload, commit = logged[0]
+    assert list(payload) == ["val_eval/confusion_matrix"]
+    assert commit is False
+
+
+def test_downstream_eval_visualizer_logs_regression_scatter(monkeypatch):
+    logged = []
+    monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)
+    monkeypatch.setattr(downstream_eval.wandb, "Image", lambda fig: fig)
+    monkeypatch.setattr(downstream_eval.wandb, "log", lambda payload, commit=False: logged.append((payload, commit)))
+
+    visualizer = DownstreamEvalVisualizer(
+        EvalVisualizationsConfig(
+            enabled=True,
+            stages=["val", "test"],
+            confusion_matrix=EvalVisualizationPlotConfig(enabled=False),
+            regression_scatter=EvalVisualizationPlotConfig(enabled=True),
+        )
+    )
+
+    visualizer.log(
+        stage="test",
+        preds=np.array([20.0, 40.0], dtype=np.float32),
+        targets=np.array([18.0, 41.0], dtype=np.float32),
+        is_classification=False,
+        output_dim=1,
+        label_name="age",
+        current_epoch=1,
+    )
+
+    assert len(logged) == 1
+    payload, commit = logged[0]
+    assert list(payload) == ["test_eval/regression_scatter"]
+    assert commit is False

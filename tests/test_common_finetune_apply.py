@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from sleep2vec.common import apply_finetune_config, apply_task_flags, dump_cli_args_yaml
-from sleep2vec.config import TaskConfig
+from sleep2vec.config import EvalVisualizationPlotConfig, EvalVisualizationsConfig, TaskConfig
 
 
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "finetune.yaml") -> Path:
@@ -88,6 +88,7 @@ def _finetune_payload() -> dict:
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
                 "stage_names": ["W", "NREM", "REM"],
+                "class_labels": ["W", "NREM", "REM"],
             },
         ),
         (
@@ -100,6 +101,7 @@ def _finetune_payload() -> dict:
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
                 "stage_names": ["W", "N1N2", "N3", "REM"],
+                "class_labels": ["W", "N1N2", "N3", "REM"],
             },
         ),
         (
@@ -112,6 +114,7 @@ def _finetune_payload() -> dict:
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
                 "stage_names": ["W", "N1", "N2", "N3", "REM"],
+                "class_labels": ["W", "N1", "N2", "N3", "REM"],
             },
         ),
         (
@@ -122,6 +125,7 @@ def _finetune_payload() -> dict:
                 "is_seq": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
+                "class_labels": ["female", "male"],
             },
         ),
         (
@@ -132,6 +136,7 @@ def _finetune_payload() -> dict:
                 "is_seq": False,
                 "monitor": "val_mae",
                 "monitor_mod": "min",
+                "class_labels": None,
             },
         ),
     ],
@@ -199,10 +204,32 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert args.insert_lora is True
     assert args.separate_adapters is True
     assert args.freeze_tokenizer is False
+    assert args.eval_visualizations is None
     assert args.output_dim == 2
     assert args.is_classification is True
     assert args.is_seq is False
     assert config_bundle.finetune.task is not None
+
+
+def test_apply_finetune_config_populates_eval_visualizations(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["eval_visualizations"] = {
+        "enabled": True,
+        "stages": ["val", "test"],
+        "confusion_matrix": {"enabled": True},
+        "regression_scatter": {"enabled": False},
+    }
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    config_bundle, _ = apply_finetune_config(args)
+
+    assert config_bundle.finetune.eval_visualizations is not None
+    assert args.eval_visualizations is not None
+    assert args.eval_visualizations.enabled is True
+    assert args.eval_visualizations.stages == ["val", "test"]
+    assert args.eval_visualizations.confusion_matrix.enabled is True
+    assert args.eval_visualizations.regression_scatter.enabled is False
 
 
 def test_apply_finetune_config_rejects_data_channel_mismatch(tmp_path: Path):
@@ -234,3 +261,23 @@ def test_dump_cli_args_yaml_converts_namespace_and_paths(tmp_path: Path):
     assert loaded["nested"]["artifact"] == "artifacts/model.ckpt"
     assert loaded["values"] == ["x.txt", 5]
     assert loaded["pair_probs"]["['breath', 'ppg']"] == 0.4
+
+
+def test_dump_cli_args_yaml_serializes_eval_visualizations_dataclass(tmp_path: Path):
+    args = argparse.Namespace(
+        eval_visualizations=EvalVisualizationsConfig(
+            enabled=True,
+            stages=["val", "test"],
+            confusion_matrix=EvalVisualizationPlotConfig(enabled=True),
+            regression_scatter=EvalVisualizationPlotConfig(enabled=False),
+        )
+    )
+    dest = tmp_path / "logs" / "cli_args.yaml"
+
+    dump_cli_args_yaml(args, dest)
+
+    loaded = yaml.safe_load(dest.read_text())
+    assert loaded["eval_visualizations"]["enabled"] is True
+    assert loaded["eval_visualizations"]["stages"] == ["val", "test"]
+    assert loaded["eval_visualizations"]["confusion_matrix"]["enabled"] is True
+    assert loaded["eval_visualizations"]["regression_scatter"]["enabled"] is False
