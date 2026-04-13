@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from sleep2vec.visualization.heatmaps import render_matrix_heatmap
+from sleep2vec.visualization.theme import _OPENAI_BLUE_CMAP
 
 
 def render_layer_mix_heatmap(
@@ -30,7 +31,7 @@ def render_layer_mix_heatmap(
         title=title,
         xlabel="Layer",
         ylabel="Modality",
-        cmap="YlGnBu",
+        cmap=_OPENAI_BLUE_CMAP,
         vmin=0.0,
         vmax=1.0,
         figsize=(fig_width, fig_height),

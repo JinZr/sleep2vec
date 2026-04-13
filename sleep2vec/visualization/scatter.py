@@ -9,7 +9,9 @@ from sleep2vec.visualization.theme import (
     _PRIMARY,
     _PRIMARY_DARK,
     _PRIMARY_LIGHT,
+    apply_plot_layout,
     style_axes,
+    style_plot_text,
     use_openai_like_theme,
 )
 
@@ -66,15 +68,17 @@ def render_prediction_scatter(
     ax.set_xlim(lower, upper)
     ax.set_ylim(lower, upper)
     ax.set_box_aspect(1)
-    ax.set_title(title, pad=14, loc="center")
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+    style_plot_text(ax, title=title, xlabel=xlabel, ylabel=ylabel)
 
     use_integer_ticks = bool(np.allclose(bounds, np.round(bounds), atol=1e-6))
     ax.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=use_integer_ticks))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6, integer=use_integer_ticks))
 
-    fig.subplots_adjust(**(subplots_adjust or {"left": 0.15, "right": 0.97, "bottom": 0.14, "top": 0.90}))
+    apply_plot_layout(
+        fig,
+        defaults={"left": 0.15, "right": 0.97, "bottom": 0.15, "top": 0.90},
+        subplots_adjust=subplots_adjust,
+    )
     return fig
 
 

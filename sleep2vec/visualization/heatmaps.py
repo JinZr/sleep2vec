@@ -6,7 +6,15 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 
-from sleep2vec.visualization.theme import _FIGURE_BG, _OPENAI_BLUE_CMAP, _TEXT_COLOR, use_openai_like_theme
+from sleep2vec.visualization.theme import (
+    _FIGURE_BG,
+    _OPENAI_BLUE_CMAP,
+    _TEXT_COLOR,
+    apply_plot_layout,
+    pick_mono_font_family,
+    style_plot_text,
+    use_openai_like_theme,
+)
 
 
 def _style_heatmap_annotations(
@@ -28,6 +36,7 @@ def _style_heatmap_annotations(
                 formatter(value),
                 ha="center",
                 va="center",
+                fontfamily=pick_mono_font_family(),
                 fontsize=fontsize,
                 fontweight=fontweight,
                 color="#FFFFFF" if value > threshold else _TEXT_COLOR,
@@ -42,12 +51,12 @@ def _style_heatmap_colorbar(
     integer_ticks: bool,
 ) -> None:
     cbar.outline.set_visible(False)
-    cbar.ax.tick_params(length=0, colors=_TEXT_COLOR, labelsize=10)
+    cbar.ax.tick_params(length=0, colors=_TEXT_COLOR, labelsize=11, pad=6)
     if integer_ticks:
         integer_max = int(max_value)
         if integer_max <= 8:
             cbar.set_ticks(np.arange(0, integer_max + 1, 1))
-    cbar.ax.set_title(title, color=_TEXT_COLOR, fontsize=11, pad=10, loc="left")
+    cbar.ax.set_title(title, color=_TEXT_COLOR, fontsize=12, pad=12, loc="left")
 
 
 def render_matrix_heatmap(
@@ -70,10 +79,10 @@ def render_matrix_heatmap(
     colorbar_title: str = "Value",
     integer_colorbar_ticks: bool = False,
     colorbar_fraction: float = 0.05,
-    colorbar_pad: float = 0.02,
-    colorbar_shrink: float = 0.92,
+    colorbar_pad: float = 0.025,
+    colorbar_shrink: float = 0.9,
     minor_grid_color: str = "#F3F5F9",
-    minor_grid_linewidth: float = 1.8,
+    minor_grid_linewidth: float = 1.6,
     subplots_adjust: dict[str, float] | None = None,
 ) -> plt.Figure:
     use_openai_like_theme()
@@ -94,13 +103,11 @@ def render_matrix_heatmap(
     image = ax.imshow(mat, **image_kwargs)
 
     num_rows, num_cols = mat.shape
-    ax.set_title(title, pad=14, loc="center", color=_TEXT_COLOR)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+    style_plot_text(ax, title=title, xlabel=xlabel, ylabel=ylabel)
     ax.set_xticks(np.arange(num_cols), labels=list(x_labels))
     ax.set_yticks(np.arange(num_rows), labels=list(y_labels))
-    ax.tick_params(axis="x", rotation=0)
-    ax.tick_params(axis="y", rotation=0)
+    ax.tick_params(axis="x", rotation=0, length=0, pad=8, labelsize=11)
+    ax.tick_params(axis="y", rotation=0, length=0, pad=8, labelsize=11)
 
     ax.set_xticks(np.arange(-0.5, num_cols, 1), minor=True)
     ax.set_yticks(np.arange(-0.5, num_rows, 1), minor=True)
@@ -118,9 +125,6 @@ def render_matrix_heatmap(
 
     for spine in ax.spines.values():
         spine.set_visible(False)
-    ax.tick_params(axis="both", colors=_TEXT_COLOR, labelsize=12, pad=6)
-    ax.xaxis.labelpad = 10
-    ax.yaxis.labelpad = 10
 
     max_value = float(np.max(mat)) if mat.size else 0.0
     cbar = fig.colorbar(image, ax=ax, fraction=colorbar_fraction, pad=colorbar_pad, shrink=colorbar_shrink)
@@ -131,7 +135,11 @@ def render_matrix_heatmap(
         integer_ticks=integer_colorbar_ticks,
     )
 
-    fig.subplots_adjust(**(subplots_adjust or {"left": 0.14, "right": 0.88, "bottom": 0.14, "top": 0.88}))
+    apply_plot_layout(
+        fig,
+        defaults={"left": 0.16, "right": 0.89, "bottom": 0.16, "top": 0.89},
+        subplots_adjust=subplots_adjust,
+    )
     return fig
 
 

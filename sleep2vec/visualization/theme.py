@@ -22,6 +22,10 @@ _PRIMARY_MID = "#7889D1"
 _PRIMARY_LIGHT = "#AEB9EA"
 _PRIMARY_PALE = "#D8DFF5"
 
+_TITLE_PAD = 16
+_LABEL_PAD = 12
+_TICK_PAD = 8
+
 _OPENAI_BLUE_CMAP = LinearSegmentedColormap.from_list(
     "openai_like_eval_blues",
     ["#F7F8FC", "#E2E7F7", "#B7C2ED", "#7B8CD1", "#43508F"],
@@ -44,22 +48,25 @@ def register_local_fonts() -> None:
 
 @lru_cache(maxsize=1)
 def pick_font_family() -> str:
+    return pick_mono_font_family()
+
+
+@lru_cache(maxsize=1)
+def pick_mono_font_family() -> str:
     register_local_fonts()
     preferred = [
         "Roboto Mono",
         "JetBrains Mono",
-        "Inter",
-        "Aptos",
-        "Arial",
-        "Helvetica Neue",
-        "Helvetica",
-        "DejaVu Sans",
+        "SF Mono",
+        "Menlo",
+        "Monaco",
+        "DejaVu Sans Mono",
     ]
     available = {font.name for font in fm.fontManager.ttflist}
     for name in preferred:
         if name in available:
             return name
-    return "DejaVu Sans"
+    return "DejaVu Sans Mono"
 
 
 def use_openai_like_theme() -> None:
@@ -103,11 +110,11 @@ def style_axes(ax: plt.Axes, *, show_grid: bool) -> None:
     ax.spines["bottom"].set_color(_AXIS_COLOR)
     ax.spines["left"].set_linewidth(1.15)
     ax.spines["bottom"].set_linewidth(1.15)
-    ax.tick_params(axis="both", colors=_TEXT_COLOR, labelsize=11, pad=8)
+    ax.tick_params(axis="both", colors=_TEXT_COLOR, labelsize=11, pad=_TICK_PAD)
     ax.xaxis.label.set_color(_TEXT_COLOR)
     ax.yaxis.label.set_color(_TEXT_COLOR)
-    ax.xaxis.labelpad = 10
-    ax.yaxis.labelpad = 10
+    ax.xaxis.labelpad = _LABEL_PAD
+    ax.yaxis.labelpad = _LABEL_PAD
     ax.set_axisbelow(True)
     if show_grid:
         ax.grid(True, color=_GRID_COLOR, linestyle=(0, (6, 8)), linewidth=0.9, alpha=1.0)
@@ -115,10 +122,32 @@ def style_axes(ax: plt.Axes, *, show_grid: bool) -> None:
         ax.grid(False)
 
 
+def style_plot_text(ax: plt.Axes, *, title: str, xlabel: str, ylabel: str) -> None:
+    ax.set_title(title, pad=_TITLE_PAD, loc="center", color=_TEXT_COLOR)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.xaxis.label.set_color(_TEXT_COLOR)
+    ax.yaxis.label.set_color(_TEXT_COLOR)
+    ax.xaxis.labelpad = _LABEL_PAD
+    ax.yaxis.labelpad = _LABEL_PAD
+
+
+def apply_plot_layout(
+    fig: plt.Figure,
+    *,
+    defaults: dict[str, float],
+    subplots_adjust: dict[str, float] | None = None,
+) -> None:
+    fig.subplots_adjust(**(subplots_adjust or defaults))
+
+
 __all__ = [
+    "apply_plot_layout",
     "pick_font_family",
+    "pick_mono_font_family",
     "register_local_fonts",
     "style_axes",
+    "style_plot_text",
     "use_openai_like_theme",
     "_TEXT_COLOR",
     "_FIGURE_BG",
