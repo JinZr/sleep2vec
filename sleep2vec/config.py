@@ -68,10 +68,16 @@ class EvalVisualizationPlotConfig:
 
 
 @dataclass
+class ConfusionMatrixVisualizationConfig:
+    enabled: bool = False
+    show_raw_counts: bool = False
+
+
+@dataclass
 class EvalVisualizationsConfig:
     enabled: bool = False
     stages: t.List[str] = field(default_factory=lambda: ["val", "test"])
-    confusion_matrix: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
+    confusion_matrix: ConfusionMatrixVisualizationConfig = field(default_factory=ConfusionMatrixVisualizationConfig)
     roc_curve: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
     regression_scatter: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
 
@@ -356,6 +362,27 @@ def _build_eval_visualization_plot_config(raw: t.Any, *, field_name: str) -> Eva
     return EvalVisualizationPlotConfig(enabled=enabled)
 
 
+def _build_confusion_matrix_visualization_config(raw: t.Any) -> ConfusionMatrixVisualizationConfig:
+    if raw is None:
+        return ConfusionMatrixVisualizationConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.eval_visualizations.confusion_matrix must be a mapping when provided.")
+
+    extra = sorted(set(raw.keys()) - {"enabled", "show_raw_counts"})
+    if extra:
+        raise ValueError(f"finetune.eval_visualizations.confusion_matrix has unsupported fields: {extra}")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("finetune.eval_visualizations.confusion_matrix.enabled must be a boolean.")
+
+    show_raw_counts = raw.get("show_raw_counts", False)
+    if not isinstance(show_raw_counts, bool):
+        raise ValueError("finetune.eval_visualizations.confusion_matrix.show_raw_counts must be a boolean.")
+
+    return ConfusionMatrixVisualizationConfig(enabled=enabled, show_raw_counts=show_raw_counts)
+
+
 def _build_eval_visualizations_config(raw: t.Any) -> EvalVisualizationsConfig | None:
     if raw is None:
         return None
@@ -387,9 +414,7 @@ def _build_eval_visualizations_config(raw: t.Any) -> EvalVisualizationsConfig | 
     return EvalVisualizationsConfig(
         enabled=enabled,
         stages=list(stages),
-        confusion_matrix=_build_eval_visualization_plot_config(
-            raw.get("confusion_matrix"), field_name="confusion_matrix"
-        ),
+        confusion_matrix=_build_confusion_matrix_visualization_config(raw.get("confusion_matrix")),
         roc_curve=_build_eval_visualization_plot_config(raw.get("roc_curve"), field_name="roc_curve"),
         regression_scatter=_build_eval_visualization_plot_config(
             raw.get("regression_scatter"),

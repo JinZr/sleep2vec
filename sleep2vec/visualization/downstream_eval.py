@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import wandb
 
+from sleep2vec.common import is_builtin_stage_task
 from sleep2vec.config import EvalVisualizationsConfig
 from sleep2vec.visualization.downstream_eval_plots import (
     render_binary_roc_curve_plot,
@@ -48,6 +49,8 @@ class DownstreamEvalVisualizer:
                 pred_labels.reshape(-1),
                 resolved_labels,
                 title=f"{stage.title()} Confusion Matrix ({label_name}, epoch {current_epoch})",
+                normalize_rows=is_builtin_stage_task(label_name),
+                show_raw_counts=self._config.confusion_matrix.show_raw_counts,
             )
             payload[f"{stage}_eval/confusion_matrix"] = wandb.Image(fig)
             plt.close(fig)

@@ -7,7 +7,12 @@ import pytest
 import yaml
 
 from sleep2vec.common import apply_finetune_config, apply_task_flags, dump_cli_args_yaml
-from sleep2vec.config import EvalVisualizationPlotConfig, EvalVisualizationsConfig, TaskConfig
+from sleep2vec.config import (
+    ConfusionMatrixVisualizationConfig,
+    EvalVisualizationPlotConfig,
+    EvalVisualizationsConfig,
+    TaskConfig,
+)
 
 
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "finetune.yaml") -> Path:
@@ -216,7 +221,7 @@ def test_apply_finetune_config_populates_eval_visualizations(tmp_path: Path):
     payload["finetune"]["eval_visualizations"] = {
         "enabled": True,
         "stages": ["val", "test"],
-        "confusion_matrix": {"enabled": True},
+        "confusion_matrix": {"enabled": True, "show_raw_counts": True},
         "roc_curve": {"enabled": True},
         "regression_scatter": {"enabled": False},
     }
@@ -230,6 +235,7 @@ def test_apply_finetune_config_populates_eval_visualizations(tmp_path: Path):
     assert args.eval_visualizations.enabled is True
     assert args.eval_visualizations.stages == ["val", "test"]
     assert args.eval_visualizations.confusion_matrix.enabled is True
+    assert args.eval_visualizations.confusion_matrix.show_raw_counts is True
     assert args.eval_visualizations.roc_curve.enabled is True
     assert args.eval_visualizations.regression_scatter.enabled is False
 
@@ -270,7 +276,7 @@ def test_dump_cli_args_yaml_serializes_eval_visualizations_dataclass(tmp_path: P
         eval_visualizations=EvalVisualizationsConfig(
             enabled=True,
             stages=["val", "test"],
-            confusion_matrix=EvalVisualizationPlotConfig(enabled=True),
+            confusion_matrix=ConfusionMatrixVisualizationConfig(enabled=True, show_raw_counts=True),
             roc_curve=EvalVisualizationPlotConfig(enabled=True),
             regression_scatter=EvalVisualizationPlotConfig(enabled=False),
         )
@@ -283,5 +289,6 @@ def test_dump_cli_args_yaml_serializes_eval_visualizations_dataclass(tmp_path: P
     assert loaded["eval_visualizations"]["enabled"] is True
     assert loaded["eval_visualizations"]["stages"] == ["val", "test"]
     assert loaded["eval_visualizations"]["confusion_matrix"]["enabled"] is True
+    assert loaded["eval_visualizations"]["confusion_matrix"]["show_raw_counts"] is True
     assert loaded["eval_visualizations"]["roc_curve"]["enabled"] is True
     assert loaded["eval_visualizations"]["regression_scatter"]["enabled"] is False

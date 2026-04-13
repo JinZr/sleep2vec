@@ -22,6 +22,7 @@ def _style_heatmap_annotations(
     matrix: np.ndarray,
     *,
     formatter: t.Callable[[float], str],
+    annotation_texts: np.ndarray | None,
     threshold_ratio: float,
     fontsize: int,
     fontweight: str,
@@ -30,10 +31,11 @@ def _style_heatmap_annotations(
     for row_idx in range(matrix.shape[0]):
         for col_idx in range(matrix.shape[1]):
             value = float(matrix[row_idx, col_idx])
+            text = str(annotation_texts[row_idx, col_idx]) if annotation_texts is not None else formatter(value)
             ax.text(
                 col_idx,
                 row_idx,
-                formatter(value),
+                text,
                 ha="center",
                 va="center",
                 fontfamily=pick_mono_font_family(),
@@ -73,6 +75,7 @@ def render_matrix_heatmap(
     vmax: float | None = None,
     figsize: tuple[float, float],
     annotation_formatter: t.Callable[[float], str],
+    annotation_texts: np.ndarray | None = None,
     annotation_threshold_ratio: float = 0.58,
     annotation_fontsize: int = 12,
     annotation_fontweight: str = "bold",
@@ -118,6 +121,7 @@ def render_matrix_heatmap(
         ax,
         mat,
         formatter=annotation_formatter,
+        annotation_texts=annotation_texts,
         threshold_ratio=annotation_threshold_ratio,
         fontsize=annotation_fontsize,
         fontweight=annotation_fontweight,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 
-from sleep2vec.config import EvalVisualizationPlotConfig, EvalVisualizationsConfig
+from sleep2vec.config import ConfusionMatrixVisualizationConfig, EvalVisualizationPlotConfig, EvalVisualizationsConfig
 import sleep2vec.visualization.downstream_eval as downstream_eval
 from sleep2vec.visualization.downstream_eval import (
     DownstreamEvalVisualizer,
@@ -38,6 +38,35 @@ def test_render_confusion_matrix_heatmap_uses_sex_labels():
     ax = fig.axes[0]
     assert [tick.get_text() for tick in ax.get_xticklabels()] == ["female", "male"]
     assert [tick.get_text() for tick in ax.get_yticklabels()] == ["female", "male"]
+    plt.close(fig)
+
+
+def test_render_confusion_matrix_heatmap_normalizes_stage_rows_and_can_show_counts():
+    fig = render_confusion_matrix_heatmap(
+        np.array([0, 0, 0, 1, 1, 2], dtype=np.int64),
+        np.array([0, 1, 1, 1, 0, 2], dtype=np.int64),
+        ["W", "NREM", "REM"],
+        title="demo",
+        normalize_rows=True,
+        show_raw_counts=True,
+    )
+
+    ax = fig.axes[0]
+    heatmap = np.asarray(ax.images[0].get_array(), dtype=np.float32)
+    assert np.allclose(
+        heatmap,
+        np.array(
+            [
+                [33.333332, 66.666664, 0.0],
+                [50.0, 50.0, 0.0],
+                [0.0, 0.0, 100.0],
+            ],
+            dtype=np.float32,
+        ),
+        atol=1e-4,
+    )
+    assert {text.get_text() for text in ax.texts} >= {"33.3%\n(1)", "66.7%\n(2)", "100%\n(1)"}
+    assert fig.axes[1].get_title(loc="left") == "Percent"
     plt.close(fig)
 
 
@@ -92,7 +121,7 @@ def test_downstream_eval_visualizer_respects_stage_gating_and_logs_confusion_mat
         EvalVisualizationsConfig(
             enabled=True,
             stages=["val"],
-            confusion_matrix=EvalVisualizationPlotConfig(enabled=True),
+            confusion_matrix=ConfusionMatrixVisualizationConfig(enabled=True),
             roc_curve=EvalVisualizationPlotConfig(enabled=True),
             regression_scatter=EvalVisualizationPlotConfig(enabled=True),
         )
@@ -127,6 +156,45 @@ def test_downstream_eval_visualizer_respects_stage_gating_and_logs_confusion_mat
     assert commit is False
 
 
+def test_downstream_eval_visualizer_normalizes_stage_confusion_matrix_and_threads_raw_count_flag(monkeypatch):
+    logged = []
+    captured = {}
+    monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)
+    monkeypatch.setattr(downstream_eval.wandb, "Image", lambda fig: fig)
+    monkeypatch.setattr(downstream_eval.wandb, "log", lambda payload, commit=False: logged.append((payload, commit)))
+
+    def _fake_confusion_matrix(*args, **kwargs):
+        captured.update(kwargs)
+        return plt.figure()
+
+    monkeypatch.setattr(downstream_eval, "render_confusion_matrix_heatmap", _fake_confusion_matrix)
+
+    visualizer = DownstreamEvalVisualizer(
+        EvalVisualizationsConfig(
+            enabled=True,
+            stages=["test"],
+            confusion_matrix=ConfusionMatrixVisualizationConfig(enabled=True, show_raw_counts=True),
+            roc_curve=EvalVisualizationPlotConfig(enabled=False),
+            regression_scatter=EvalVisualizationPlotConfig(enabled=False),
+        )
+    )
+
+    visualizer.log(
+        stage="test",
+        preds=np.eye(3, dtype=np.float32),
+        targets=np.array([0, 1, 2], dtype=np.int64),
+        is_classification=True,
+        output_dim=3,
+        label_name="stage3",
+        current_epoch=2,
+        class_labels=["W", "NREM", "REM"],
+    )
+
+    assert captured["normalize_rows"] is True
+    assert captured["show_raw_counts"] is True
+    assert len(logged) == 1
+
+
 def test_downstream_eval_visualizer_logs_regression_scatter(monkeypatch):
     logged = []
     monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)
@@ -137,7 +205,7 @@ def test_downstream_eval_visualizer_logs_regression_scatter(monkeypatch):
         EvalVisualizationsConfig(
             enabled=True,
             stages=["val", "test"],
-            confusion_matrix=EvalVisualizationPlotConfig(enabled=False),
+            confusion_matrix=ConfusionMatrixVisualizationConfig(enabled=False),
             roc_curve=EvalVisualizationPlotConfig(enabled=False),
             regression_scatter=EvalVisualizationPlotConfig(enabled=True),
         )
@@ -169,7 +237,7 @@ def test_downstream_eval_visualizer_skips_roc_curve_when_targets_have_one_class(
         EvalVisualizationsConfig(
             enabled=True,
             stages=["test"],
-            confusion_matrix=EvalVisualizationPlotConfig(enabled=False),
+            confusion_matrix=ConfusionMatrixVisualizationConfig(enabled=False),
             roc_curve=EvalVisualizationPlotConfig(enabled=True),
             regression_scatter=EvalVisualizationPlotConfig(enabled=False),
         )

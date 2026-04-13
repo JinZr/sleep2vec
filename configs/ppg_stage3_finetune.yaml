@@ -58,6 +58,7 @@ finetune:
     stages: [val, test]
     confusion_matrix:
       enabled: true
+      show_raw_counts: false
     regression_scatter:
       enabled: false
 model_averaging:
