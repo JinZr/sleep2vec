@@ -7,6 +7,7 @@ from sleep2vec.config import EvalVisualizationPlotConfig, EvalVisualizationsConf
 import sleep2vec.visualization.downstream_eval as downstream_eval
 from sleep2vec.visualization.downstream_eval import (
     DownstreamEvalVisualizer,
+    render_binary_roc_curve_plot,
     render_confusion_matrix_heatmap,
     render_regression_scatter_plot,
 )
@@ -55,6 +56,32 @@ def test_render_regression_scatter_plot_draws_scatter_and_diagonal():
     plt.close(fig)
 
 
+def test_render_binary_roc_curve_plot_draws_roc_and_chance_lines():
+    fig = render_binary_roc_curve_plot(
+        np.array([0, 0, 1, 1], dtype=np.int64),
+        np.array(
+            [
+                [0.95, 0.05],
+                [0.80, 0.20],
+                [0.30, 0.70],
+                [0.05, 0.95],
+            ],
+            dtype=np.float32,
+        ),
+        title="demo",
+    )
+
+    assert fig is not None
+    ax = fig.axes[0]
+    assert ax.get_xlabel() == "False Positive Rate"
+    assert ax.get_ylabel() == "True Positive Rate"
+    assert len(ax.lines) == 2
+    legend = ax.get_legend()
+    assert legend is not None
+    assert legend.get_frame().get_visible() is True
+    plt.close(fig)
+
+
 def test_downstream_eval_visualizer_respects_stage_gating_and_logs_confusion_matrix(monkeypatch):
     logged = []
     monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)
@@ -66,6 +93,7 @@ def test_downstream_eval_visualizer_respects_stage_gating_and_logs_confusion_mat
             enabled=True,
             stages=["val"],
             confusion_matrix=EvalVisualizationPlotConfig(enabled=True),
+            roc_curve=EvalVisualizationPlotConfig(enabled=True),
             regression_scatter=EvalVisualizationPlotConfig(enabled=True),
         )
     )
@@ -95,7 +123,7 @@ def test_downstream_eval_visualizer_respects_stage_gating_and_logs_confusion_mat
 
     assert len(logged) == 1
     payload, commit = logged[0]
-    assert list(payload) == ["val_eval/confusion_matrix"]
+    assert list(payload) == ["val_eval/confusion_matrix", "val_eval/roc_curve"]
     assert commit is False
 
 
@@ -110,6 +138,7 @@ def test_downstream_eval_visualizer_logs_regression_scatter(monkeypatch):
             enabled=True,
             stages=["val", "test"],
             confusion_matrix=EvalVisualizationPlotConfig(enabled=False),
+            roc_curve=EvalVisualizationPlotConfig(enabled=False),
             regression_scatter=EvalVisualizationPlotConfig(enabled=True),
         )
     )
@@ -128,3 +157,33 @@ def test_downstream_eval_visualizer_logs_regression_scatter(monkeypatch):
     payload, commit = logged[0]
     assert list(payload) == ["test_eval/regression_scatter"]
     assert commit is False
+
+
+def test_downstream_eval_visualizer_skips_roc_curve_when_targets_have_one_class(monkeypatch):
+    logged = []
+    monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)
+    monkeypatch.setattr(downstream_eval.wandb, "Image", lambda fig: fig)
+    monkeypatch.setattr(downstream_eval.wandb, "log", lambda payload, commit=False: logged.append((payload, commit)))
+
+    visualizer = DownstreamEvalVisualizer(
+        EvalVisualizationsConfig(
+            enabled=True,
+            stages=["test"],
+            confusion_matrix=EvalVisualizationPlotConfig(enabled=False),
+            roc_curve=EvalVisualizationPlotConfig(enabled=True),
+            regression_scatter=EvalVisualizationPlotConfig(enabled=False),
+        )
+    )
+
+    visualizer.log(
+        stage="test",
+        preds=np.array([[0.9, 0.1], [0.8, 0.2]], dtype=np.float32),
+        targets=np.array([0, 0], dtype=np.int64),
+        is_classification=True,
+        output_dim=2,
+        label_name="sex",
+        current_epoch=1,
+        class_labels=["female", "male"],
+    )
+
+    assert logged == []

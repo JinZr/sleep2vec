@@ -6,6 +6,7 @@ from pathlib import Path
 import matplotlib as mpl
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.font_manager as fm
+from matplotlib.legend import Legend
 import matplotlib.pyplot as plt
 
 _ASSET_FONT_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
@@ -141,7 +142,57 @@ def apply_plot_layout(
     fig.subplots_adjust(**(subplots_adjust or defaults))
 
 
+def add_openai_legend(
+    ax: plt.Axes,
+    *,
+    title: str | None = None,
+    loc: str = "lower right",
+    bbox_to_anchor: tuple[float, float] | None = None,
+    fontsize: int = 10,
+    title_fontsize: int = 9,
+    handlelength: float = 1.9,
+    labelspacing: float = 0.45,
+    borderpad: float = 0.55,
+    handletextpad: float = 0.7,
+    borderaxespad: float = 0.0,
+) -> Legend:
+    legend = ax.legend(
+        loc=loc,
+        bbox_to_anchor=bbox_to_anchor,
+        frameon=True,
+        fancybox=True,
+        framealpha=1.0,
+        facecolor=_FIGURE_BG,
+        edgecolor=_AXIS_COLOR,
+        fontsize=fontsize,
+        title=title,
+        title_fontsize=title_fontsize,
+        handlelength=handlelength,
+        labelspacing=labelspacing,
+        borderpad=borderpad,
+        handletextpad=handletextpad,
+        borderaxespad=borderaxespad,
+    )
+    frame = legend.get_frame()
+    frame.set_linewidth(1.0)
+    frame.set_edgecolor(_AXIS_COLOR)
+    frame.set_facecolor(_FIGURE_BG)
+    frame.set_alpha(1.0)
+    if hasattr(frame, "set_boxstyle"):
+        frame.set_boxstyle("round,pad=0.25,rounding_size=0.2")
+    for text in legend.get_texts():
+        text.set_color(_TEXT_COLOR)
+        text.set_fontfamily(pick_mono_font_family())
+    if legend.get_title() is not None:
+        legend.get_title().set_color(_TEXT_COLOR)
+        legend.get_title().set_fontfamily(pick_mono_font_family())
+    if hasattr(legend, "_legend_box"):
+        legend._legend_box.align = "left"
+    return legend
+
+
 __all__ = [
+    "add_openai_legend",
     "apply_plot_layout",
     "pick_font_family",
     "pick_mono_font_family",

@@ -217,6 +217,7 @@ def test_apply_finetune_config_populates_eval_visualizations(tmp_path: Path):
         "enabled": True,
         "stages": ["val", "test"],
         "confusion_matrix": {"enabled": True},
+        "roc_curve": {"enabled": True},
         "regression_scatter": {"enabled": False},
     }
     config_path = _write_yaml(tmp_path, payload)
@@ -229,6 +230,7 @@ def test_apply_finetune_config_populates_eval_visualizations(tmp_path: Path):
     assert args.eval_visualizations.enabled is True
     assert args.eval_visualizations.stages == ["val", "test"]
     assert args.eval_visualizations.confusion_matrix.enabled is True
+    assert args.eval_visualizations.roc_curve.enabled is True
     assert args.eval_visualizations.regression_scatter.enabled is False
 
 
@@ -269,6 +271,7 @@ def test_dump_cli_args_yaml_serializes_eval_visualizations_dataclass(tmp_path: P
             enabled=True,
             stages=["val", "test"],
             confusion_matrix=EvalVisualizationPlotConfig(enabled=True),
+            roc_curve=EvalVisualizationPlotConfig(enabled=True),
             regression_scatter=EvalVisualizationPlotConfig(enabled=False),
         )
     )
@@ -280,4 +283,5 @@ def test_dump_cli_args_yaml_serializes_eval_visualizations_dataclass(tmp_path: P
     assert loaded["eval_visualizations"]["enabled"] is True
     assert loaded["eval_visualizations"]["stages"] == ["val", "test"]
     assert loaded["eval_visualizations"]["confusion_matrix"]["enabled"] is True
+    assert loaded["eval_visualizations"]["roc_curve"]["enabled"] is True
     assert loaded["eval_visualizations"]["regression_scatter"]["enabled"] is False

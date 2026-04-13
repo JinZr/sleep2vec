@@ -92,6 +92,8 @@ finetune:
     stages: [val, test]
     confusion_matrix:
       enabled: true
+    roc_curve:
+      enabled: true
     regression_scatter:
       enabled: false
 

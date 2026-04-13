@@ -3,8 +3,10 @@ from __future__ import annotations
 import typing as t
 
 import numpy as np
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import auc, confusion_matrix, roc_curve
 
+from sleep2vec.metrics import binary_positive_scores_from_two_logits
+from sleep2vec.visualization.curves import render_binary_roc_curve
 from sleep2vec.visualization.heatmaps import render_matrix_heatmap
 from sleep2vec.visualization.scatter import render_prediction_scatter
 from sleep2vec.visualization.theme import _OPENAI_BLUE_CMAP, use_openai_like_theme
@@ -58,8 +60,31 @@ def render_regression_scatter_plot(
     )
 
 
+def render_binary_roc_curve_plot(
+    targets: np.ndarray,
+    preds: np.ndarray,
+    *,
+    title: str = "ROC Curve",
+):
+    y_true, y_score = binary_positive_scores_from_two_logits(targets, preds)
+    if y_true.size == 0 or np.unique(y_true).size < 2:
+        return None
+
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    roc_auc = float(auc(fpr, tpr))
+    return render_binary_roc_curve(
+        fpr,
+        tpr,
+        roc_auc=roc_auc,
+        title=title,
+        figsize=(7.2, 6.7),
+        subplots_adjust={"left": 0.16, "right": 0.97, "bottom": 0.15, "top": 0.90},
+    )
+
+
 __all__ = [
     "use_openai_like_theme",
+    "render_binary_roc_curve_plot",
     "render_confusion_matrix_heatmap",
     "render_regression_scatter_plot",
 ]

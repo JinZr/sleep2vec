@@ -8,6 +8,7 @@ import wandb
 
 from sleep2vec.config import EvalVisualizationsConfig
 from sleep2vec.visualization.downstream_eval_plots import (
+    render_binary_roc_curve_plot,
     render_confusion_matrix_heatmap,
     render_regression_scatter_plot,
 )
@@ -51,6 +52,16 @@ class DownstreamEvalVisualizer:
             payload[f"{stage}_eval/confusion_matrix"] = wandb.Image(fig)
             plt.close(fig)
 
+        if is_classification and output_dim == 2 and self._config.roc_curve.enabled:
+            fig = render_binary_roc_curve_plot(
+                np.asarray(targets, dtype=np.int64).reshape(-1),
+                np.asarray(preds, dtype=np.float32),
+                title=f"{stage.title()} ROC Curve ({label_name}, epoch {current_epoch})",
+            )
+            if fig is not None:
+                payload[f"{stage}_eval/roc_curve"] = wandb.Image(fig)
+                plt.close(fig)
+
         if (not is_classification) and output_dim == 1 and self._config.regression_scatter.enabled:
             fig = render_regression_scatter_plot(
                 np.asarray(targets, dtype=np.float32).reshape(-1),
@@ -82,6 +93,7 @@ class DownstreamEvalVisualizer:
 
 __all__ = [
     "DownstreamEvalVisualizer",
+    "render_binary_roc_curve_plot",
     "render_confusion_matrix_heatmap",
     "render_regression_scatter_plot",
 ]

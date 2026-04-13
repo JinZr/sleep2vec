@@ -4,15 +4,12 @@ from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
-from pyhealth.metrics import multiclass_metrics_fn
 from scipy.stats import pearsonr
 from sklearn.metrics import confusion_matrix, f1_score, recall_score, roc_auc_score
 
 
-def roc_auc_from_two_logits(gts, preds) -> float:
-    """
-    计算二分类场景下基于两列 logits/probabilities 的 ROC-AUC。
-    """
+def binary_positive_scores_from_two_logits(gts, preds) -> tuple[np.ndarray, np.ndarray]:
+    """Return binary labels and positive-class scores from (N, 2) logits or probabilities."""
     y_true = np.asarray(gts)
     y_pred = np.asarray(preds)
 
@@ -21,7 +18,7 @@ def roc_auc_from_two_logits(gts, preds) -> float:
     y_true = y_true.astype(int).reshape(-1)
 
     if y_pred.ndim != 2 or y_pred.shape[1] != 2:
-        raise ValueError(f"preds 必须是 (N,2)，当前 {y_pred.shape}")
+        raise ValueError(f"preds must be (N, 2), got {y_pred.shape}")
 
     row_sum = y_pred.sum(axis=1, keepdims=True)
     looks_like_prob = y_pred.min() >= 0.0 and y_pred.max() <= 1.0 and np.allclose(row_sum, 1.0, atol=1e-4)
@@ -32,6 +29,15 @@ def roc_auc_from_two_logits(gts, preds) -> float:
         e = np.exp(z, dtype=np.float64)
         proba = (e / e.sum(axis=1, keepdims=True)).astype(np.float32)
         y_score = proba[:, 1]
+
+    return y_true, y_score
+
+
+def roc_auc_from_two_logits(gts, preds) -> float:
+    """
+    计算二分类场景下基于两列 logits/probabilities 的 ROC-AUC。
+    """
+    y_true, y_score = binary_positive_scores_from_two_logits(gts, preds)
 
     if np.unique(y_true).size < 2:
         return np.nan
@@ -105,6 +111,8 @@ def compute_downstream_metrics(
 ):
     """统一的下游任务指标计算。"""
     if is_classification:
+        from pyhealth.metrics import multiclass_metrics_fn
+
         result = multiclass_metrics_fn(
             gts,
             preds,

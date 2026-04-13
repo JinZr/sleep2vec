@@ -72,6 +72,7 @@ class EvalVisualizationsConfig:
     enabled: bool = False
     stages: t.List[str] = field(default_factory=lambda: ["val", "test"])
     confusion_matrix: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
+    roc_curve: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
     regression_scatter: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
 
 
@@ -361,7 +362,7 @@ def _build_eval_visualizations_config(raw: t.Any) -> EvalVisualizationsConfig | 
     if not isinstance(raw, dict):
         raise ValueError("finetune.eval_visualizations must be a mapping when provided.")
 
-    allowed = {"enabled", "stages", "confusion_matrix", "regression_scatter"}
+    allowed = {"enabled", "stages", "confusion_matrix", "roc_curve", "regression_scatter"}
     extra = sorted(set(raw.keys()) - allowed)
     if extra:
         raise ValueError(f"finetune.eval_visualizations has unsupported fields: {extra}")
@@ -389,6 +390,7 @@ def _build_eval_visualizations_config(raw: t.Any) -> EvalVisualizationsConfig | 
         confusion_matrix=_build_eval_visualization_plot_config(
             raw.get("confusion_matrix"), field_name="confusion_matrix"
         ),
+        roc_curve=_build_eval_visualization_plot_config(raw.get("roc_curve"), field_name="roc_curve"),
         regression_scatter=_build_eval_visualization_plot_config(
             raw.get("regression_scatter"),
             field_name="regression_scatter",

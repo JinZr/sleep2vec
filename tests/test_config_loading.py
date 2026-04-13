@@ -244,6 +244,7 @@ def test_load_finetune_config_parses_eval_visualizations(tmp_path: Path):
         "enabled": True,
         "stages": ["val", "test"],
         "confusion_matrix": {"enabled": True},
+        "roc_curve": {"enabled": True},
         "regression_scatter": {"enabled": False},
     }
     config_path = _write_yaml(tmp_path, payload)
@@ -254,6 +255,7 @@ def test_load_finetune_config_parses_eval_visualizations(tmp_path: Path):
     assert bundle.finetune.eval_visualizations.enabled is True
     assert bundle.finetune.eval_visualizations.stages == ["val", "test"]
     assert bundle.finetune.eval_visualizations.confusion_matrix.enabled is True
+    assert bundle.finetune.eval_visualizations.roc_curve.enabled is True
     assert bundle.finetune.eval_visualizations.regression_scatter.enabled is False
 
 
@@ -435,6 +437,7 @@ def test_load_finetune_config_rejects_layer_index_above_backbone_depth(tmp_path:
         ({"stages": ["train"]}, "only supports 'val' and 'test'"),
         ({"unknown": {}}, "unsupported fields"),
         ({"confusion_matrix": {"extra": True}}, "confusion_matrix has unsupported fields"),
+        ({"roc_curve": {"enabled": "yes"}}, "roc_curve.enabled must be a boolean"),
         ({"regression_scatter": {"enabled": "yes"}}, "regression_scatter.enabled must be a boolean"),
     ],
 )
