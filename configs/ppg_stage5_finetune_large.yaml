@@ -61,6 +61,9 @@ finetune:
       show_raw_counts: false
     regression_scatter:
       enabled: false
+preset_build:
+  required_channels: [ppg, stage5]
+  min_channels: 2
 model_averaging:
   name: ema
   params:

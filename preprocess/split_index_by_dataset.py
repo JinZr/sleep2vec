@@ -146,8 +146,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-channels",
         type=int,
-        default=2,
-        help="Minimum number of available channels required to keep a row (default: 2).",
+        default=0,
+        help="Minimum number of available channels required to keep a row (default: 0).",
     )
     parser.add_argument(
         "--shuffle",

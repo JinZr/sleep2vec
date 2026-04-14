@@ -60,6 +60,9 @@ finetune:
       enabled: false
     regression_scatter:
       enabled: true
+preset_build:
+  required_channels: [ppg]
+  min_channels: 1
 model_averaging:
   name: ema
   params:

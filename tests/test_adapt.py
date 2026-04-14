@@ -222,6 +222,28 @@ def test_resolve_adapt_run_artifacts_prefers_stage1_snapshot_when_present(
     assert artifacts.trainer_ckpt_path is None
 
 
+def test_resolve_adapt_run_artifacts_rejects_non_empty_stage2_dir_for_fresh_transition(
+    tmp_path: Path,
+    adapt_module: ModuleType,
+):
+    ckpt_path = tmp_path / "run_a" / "checkpoints" / "epoch=1.ckpt"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_text("checkpoint")
+    _write_cli_args(ckpt_path.parent.parent / "cli_args.yaml", phase="stage1")
+    stage2_ckpt = ckpt_path.parent.parent / "checkpoints.stage2" / "epoch=9.ckpt"
+    stage2_ckpt.parent.mkdir(parents=True)
+    stage2_ckpt.write_text("stage2 checkpoint")
+
+    with pytest.raises(ValueError, match="refuses to reuse a non-empty checkpoints.stage2 directory"):
+        adapt_module._resolve_adapt_run_artifacts(
+            ckpt_path=None,
+            pretrained_backbone_path=ckpt_path,
+            version_name="ignored",
+            backbone_arch="ignored",
+            phase="stage2",
+        )
+
+
 def test_resolve_adapt_run_artifacts_rejects_stage1_checkpoint_for_stage2_resume_after_transition(
     tmp_path: Path,
     adapt_module: ModuleType,

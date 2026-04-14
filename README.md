@@ -54,6 +54,9 @@
 - **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set. For the built-in `sex` task, the normalized contract is `sex=female|male`, encoded as `0=female`, `1=male`. If your source metadata uses `sexM`, convert it to `sex` with `1 -> male`, `0 -> female` during preprocessing.
 - **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy_vm`. `stage5` remains a special per-token label channel and always uses width `1`.
 - **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided. Preset generation now requires a YAML config so the script can resolve channel names and `input_dim` values from `model.channels`.
+- `preprocess/save_dataset_presets.py` also honors an optional top-level `preset_build` block. Use it when preset validation must differ from runtime input modalities, for example token-level PPG staging should validate both `ppg` and `stage5`.
+- `preset_build.required_channels` is the YAML source of truth for preset validation channels; do not combine it with CLI `--channels`.
+- `preset_build` must define both `required_channels` and `min_channels`; `preset_build.min_channels` overrides CLI `--min-channels` for preset generation only.
 - To build presets, run:
   ```bash
   python preprocess/save_dataset_presets.py \
@@ -150,6 +153,7 @@ Notes:
 - `adapt.stage2.pair_schedule` is defined as training-progress fractions (`until` in `(0, 1]`) and must end at `1.0`.
 - Starting a fresh adapt stage1 run uses `--pretrained-backbone-path` with a base pretrain checkpoint.
 - Starting stage2 uses `--pretrained-backbone-path` with a prior adapt stage1 checkpoint; this reuses the existing experiment directory and W&B id but writes new checkpoints under `log-adapt/<run_name>/checkpoints.stage2`, restarting optimizer/scheduler/epoch state from zero.
+- Fresh stage2 transition refuses to reuse a non-empty `checkpoints.stage2` directory; resume the old stage2 with `--ckpt-path`, or clear/move the old stage2 checkpoints first.
 - Resuming an exact in-progress adapt run uses `--ckpt-path`; this is the only path that forwards a checkpoint into Lightning resume.
 
 ### Finetune — classification

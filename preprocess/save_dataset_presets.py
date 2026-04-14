@@ -7,6 +7,7 @@ from pathlib import Path
 import pickle
 import sys
 import tempfile
+import typing as t
 
 import pandas as pd
 import yaml
@@ -185,14 +186,15 @@ def _render_output_path(
     return Path(rendered).expanduser()
 
 
-def _resolve_channels_and_dims(
-    config_path: Path, selected_channels: list[str] | None
-) -> tuple[list[str], dict[str, int]]:
+def _load_config_mapping(config_path: Path) -> dict[str, t.Any]:
     data = yaml.safe_load(config_path.read_text())
     if not isinstance(data, dict):
         raise ValueError("Top-level YAML must be a mapping with model.channels.")
+    return data
 
-    model_block = data.get("model")
+
+def _load_model_channels(config_data: dict[str, t.Any]) -> tuple[list[str], dict[str, int]]:
+    model_block = config_data.get("model")
     if not isinstance(model_block, dict):
         raise ValueError("Config YAML must contain a top-level model.channels list.")
 
@@ -212,21 +214,101 @@ def _resolve_channels_and_dims(
             raise ValueError(f"Channel '{name}' must define input_dim.")
         all_channels.append(name)
         all_channel_input_dims[name] = int(item["input_dim"])
+    return all_channels, all_channel_input_dims
 
-    if selected_channels is None:
-        return all_channels, all_channel_input_dims
 
-    selected = _dedupe_keep_order(selected_channels)
-    unknown = [name for name in selected if name not in all_channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
+def _load_preset_build_block(config_data: dict[str, t.Any]) -> tuple[list[str] | None, int | None]:
+    raw = config_data.get("preset_build")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        raise ValueError("preset_build must be a mapping when provided.")
+
+    allowed = {"required_channels", "min_channels"}
+    extra = sorted(set(raw.keys()) - allowed)
+    if extra:
+        raise ValueError(f"preset_build has unsupported fields: {extra}")
+
+    required_channels = raw.get("required_channels")
+    if required_channels is not None:
+        if not isinstance(required_channels, list) or not required_channels:
+            raise ValueError("preset_build.required_channels must be a non-empty list when provided.")
+        if not all(isinstance(name, str) and name for name in required_channels):
+            raise ValueError("preset_build.required_channels must contain non-empty strings.")
+        if len(set(required_channels)) != len(required_channels):
+            raise ValueError("preset_build.required_channels must not contain duplicates.")
+
+    min_channels = raw.get("min_channels")
+    if min_channels is not None:
+        if not isinstance(min_channels, int) or min_channels < 1:
+            raise ValueError("preset_build.min_channels must be an integer >= 1 when provided.")
+
+    if required_channels is None or min_channels is None:
+        raise ValueError("preset_build must define both preset_build.required_channels and preset_build.min_channels.")
+
+    return required_channels, min_channels
+
+
+def _resolve_validation_channels(
+    *,
+    model_channels: list[str],
+    channel_input_dims: dict[str, int],
+    preset_required_channels: list[str] | None,
+    selected_channels: list[str] | None,
+) -> tuple[list[str], dict[str, int]]:
+    if preset_required_channels is not None:
+        if selected_channels is not None:
+            raise ValueError("--channels cannot be used when preset_build.required_channels is set in the YAML.")
+        resolved = list(preset_required_channels)
+    elif selected_channels is None:
+        resolved = list(model_channels)
+    else:
+        resolved = _dedupe_keep_order(selected_channels)
+
+    unknown = [name for name in resolved if name not in channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
     if unknown:
         raise ValueError(
-            "Channels must be declared in YAML model.channels. " f"Unknown: {unknown}; available: {all_channels}"
+            "Channels must be declared in YAML model.channels or preset_build.required_channels must use built-ins only. "
+            f"Unknown: {unknown}; model channels: {model_channels}"
         )
-    resolved_dims = {name: all_channel_input_dims[name] for name in selected if name in all_channel_input_dims}
-    for name in selected:
-        if name in BUILTIN_CHANNEL_SPECS:
+
+    resolved_dims: dict[str, int] = {}
+    for name in resolved:
+        if name in channel_input_dims:
+            resolved_dims[name] = channel_input_dims[name]
+        else:
             resolved_dims[name] = int(BUILTIN_CHANNEL_SPECS[name]["input_dim"])
-    return selected, resolved_dims
+    return resolved, resolved_dims
+
+
+def _resolve_effective_min_channels(
+    *,
+    channel_names: t.Sequence[str],
+    cli_min_channels: int,
+    preset_min_channels: int | None,
+) -> int:
+    resolved = int(cli_min_channels if preset_min_channels is None else preset_min_channels)
+    if resolved < 1:
+        raise ValueError("min_channels must be >= 1.")
+    if resolved > len(channel_names):
+        raise ValueError(
+            f"min_channels={resolved} exceeds the number of validation channels ({len(channel_names)}): {list(channel_names)}"
+        )
+    return resolved
+
+
+def _resolve_channels_and_dims(
+    config_path: Path, selected_channels: list[str] | None
+) -> tuple[list[str], dict[str, int]]:
+    data = _load_config_mapping(config_path)
+    model_channels, channel_input_dims = _load_model_channels(data)
+    preset_required_channels, _ = _load_preset_build_block(data)
+    return _resolve_validation_channels(
+        model_channels=model_channels,
+        channel_input_dims=channel_input_dims,
+        preset_required_channels=preset_required_channels,
+        selected_channels=selected_channels,
+    )
 
 
 def _mask_column_for_channel(channel_name: str) -> str:
@@ -362,7 +444,23 @@ def main() -> None:
     if len(index_paths) != 1:
         raise ValueError("save_dataset_presets.py accepts exactly one index CSV.")
 
-    channel_names, channel_input_dims = _resolve_channels_and_dims(args.config, args.channels)
+    config_data = _load_config_mapping(args.config)
+    model_channels, model_channel_input_dims = _load_model_channels(config_data)
+    preset_required_channels, preset_min_channels = _load_preset_build_block(config_data)
+    channel_names, channel_input_dims = _resolve_validation_channels(
+        model_channels=model_channels,
+        channel_input_dims=model_channel_input_dims,
+        preset_required_channels=preset_required_channels,
+        selected_channels=args.channels,
+    )
+    if args.allow_missing_channels:
+        effective_min_channels = _resolve_effective_min_channels(
+            channel_names=channel_names,
+            cli_min_channels=args.min_channels,
+            preset_min_channels=preset_min_channels,
+        )
+    else:
+        effective_min_channels = int(args.min_channels if preset_min_channels is None else preset_min_channels)
     dataset_name = args.dataset_name or _infer_dataset_name(index_paths)
     splits = _dedupe_keep_order(args.split)
     meta_data_variants = _resolve_meta_names(args.meta_data_names, args.include_no_metadata)
@@ -374,6 +472,7 @@ def main() -> None:
     print(f"Config YAML: {args.config}")
     print(f"Index CSV(s): {[str(p) for p in index_paths]}")
     print(f"Channels: {channel_names}")
+    print(f"Effective min_channels={effective_min_channels}")
     print(f"Splits: {splits}")
     print(f"Metadata variants: {[m if m else 'none' for m in meta_data_variants]}")
     print(f"n_tokens={args.n_tokens}, stride_tokens={stride_tokens}")
@@ -422,7 +521,7 @@ def main() -> None:
                     "stride_tokens": stride_tokens,
                     "mask_rate": args.mask_rate,
                     "allow_missing_channels": args.allow_missing_channels,
-                    "min_channels": args.min_channels,
+                    "min_channels": effective_min_channels,
                     "batch_size": args.batch_size,
                     "shuffle": args.shuffle,
                 }

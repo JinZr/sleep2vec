@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pandas as pd
 
 from preprocess.split_index_by_dataset import (
@@ -7,6 +9,7 @@ from preprocess.split_index_by_dataset import (
     compute_available_channels,
     find_missing_global_pair_coverage,
     get_channel_mask_columns,
+    main as split_index_main,
     normalize_mask_frame,
     split_sizes,
 )
@@ -116,3 +119,54 @@ def test_find_missing_global_pair_coverage_ignores_globally_impossible_pairs():
     missing = find_missing_global_pair_coverage(df, split, mask_cols)
 
     assert missing == {}
+
+
+def test_split_index_main_keeps_single_modality_rows_by_default(tmp_path, monkeypatch):
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    pd.DataFrame(
+        [
+            {"dataset": "demo", "path": "a.npz", "ppg_mask": 1},
+            {"dataset": "demo", "path": "b.npz", "ppg_mask": 1},
+        ]
+    ).to_csv(input_path, index=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["split_index_by_dataset.py", "--input", str(input_path), "--output", str(output_path), "--no-shuffle"],
+    )
+    split_index_main()
+
+    output_df = pd.read_csv(output_path)
+    assert output_df["path"].tolist() == ["a.npz", "b.npz"]
+
+
+def test_split_index_main_filters_single_modality_rows_when_min_channels_is_explicit(tmp_path, monkeypatch):
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    pd.DataFrame(
+        [
+            {"dataset": "demo", "path": "a.npz", "ppg_mask": 1},
+            {"dataset": "demo", "path": "b.npz", "ppg_mask": 1},
+        ]
+    ).to_csv(input_path, index=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "split_index_by_dataset.py",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--min-channels",
+            "2",
+            "--no-shuffle",
+        ],
+    )
+    split_index_main()
+
+    output_df = pd.read_csv(output_path)
+    assert output_df.empty

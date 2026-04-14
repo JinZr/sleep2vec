@@ -12,8 +12,14 @@ import yaml
 from preprocess.save_dataset_presets import (
     _build_preset_job,
     _filter_index_df_for_required_channels,
+    _load_config_mapping,
     _load_index_df,
+    _load_model_channels,
+    _load_preset_build_block,
     _resolve_channels_and_dims,
+    _resolve_effective_min_channels,
+    _resolve_validation_channels,
+    main as save_dataset_presets_main,
 )
 
 
@@ -64,6 +70,17 @@ def _channels_only_payload() -> dict:
     }
 
 
+def _preset_build_payload(*, required_channels=None, min_channels=None) -> dict:
+    payload = _model_payload()
+    preset_build = {}
+    if required_channels is not None:
+        preset_build["required_channels"] = required_channels
+    if min_channels is not None:
+        preset_build["min_channels"] = min_channels
+    payload["preset_build"] = preset_build
+    return payload
+
+
 def test_resolve_channels_and_dims_defaults_to_all_yaml_channels(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _model_payload())
 
@@ -85,7 +102,7 @@ def test_resolve_channels_and_dims_allows_yaml_declared_subset_in_requested_orde
 def test_resolve_channels_and_dims_rejects_unknown_subset_channels(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _model_payload())
 
-    with pytest.raises(ValueError, match="Channels must be declared in YAML model.channels"):
+    with pytest.raises(ValueError, match="Unknown: \\['unknown'\\]"):
         _resolve_channels_and_dims(config_path, ["unknown"])
 
 
@@ -96,6 +113,107 @@ def test_resolve_channels_and_dims_accepts_builtin_stage5_subset(tmp_path: Path)
 
     assert channels == ["ppg", "stage5"]
     assert dims == {"ppg": 8, "stage5": 1}
+
+
+def test_load_preset_build_block_parses_explicit_contract(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "stage5"], min_channels=2))
+    config_data = _load_config_mapping(config_path)
+
+    required_channels, min_channels = _load_preset_build_block(config_data)
+
+    assert required_channels == ["ppg", "stage5"]
+    assert min_channels == 2
+
+
+def test_load_preset_build_block_rejects_duplicate_required_channels(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "ppg"]))
+    config_data = _load_config_mapping(config_path)
+
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        _load_preset_build_block(config_data)
+
+
+def test_load_preset_build_block_rejects_partial_contract(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg"]))
+    config_data = _load_config_mapping(config_path)
+
+    with pytest.raises(ValueError, match="must define both preset_build.required_channels and preset_build.min_channels"):
+        _load_preset_build_block(config_data)
+
+
+def test_resolve_validation_channels_uses_preset_build_required_channels(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "stage5"], min_channels=2))
+    config_data = _load_config_mapping(config_path)
+    model_channels, channel_input_dims = _load_model_channels(config_data)
+    preset_required_channels, _ = _load_preset_build_block(config_data)
+
+    channels, dims = _resolve_validation_channels(
+        model_channels=model_channels,
+        channel_input_dims=channel_input_dims,
+        preset_required_channels=preset_required_channels,
+        selected_channels=None,
+    )
+
+    assert channels == ["ppg", "stage5"]
+    assert dims == {"ppg": 8, "stage5": 1}
+
+
+def test_resolve_validation_channels_rejects_cli_channels_when_preset_build_required_channels_exist(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "stage5"], min_channels=2))
+    config_data = _load_config_mapping(config_path)
+    model_channels, channel_input_dims = _load_model_channels(config_data)
+    preset_required_channels, _ = _load_preset_build_block(config_data)
+
+    with pytest.raises(ValueError, match="--channels cannot be used when preset_build.required_channels is set"):
+        _resolve_validation_channels(
+            model_channels=model_channels,
+            channel_input_dims=channel_input_dims,
+            preset_required_channels=preset_required_channels,
+            selected_channels=["ppg"],
+        )
+
+
+def test_resolve_effective_min_channels_prefers_preset_build_override():
+    effective_min_channels = _resolve_effective_min_channels(
+        channel_names=["ppg"],
+        cli_min_channels=2,
+        preset_min_channels=1,
+    )
+
+    assert effective_min_channels == 1
+
+
+def test_resolve_effective_min_channels_rejects_value_above_channel_count():
+    with pytest.raises(ValueError, match="exceeds the number of validation channels"):
+        _resolve_effective_min_channels(
+            channel_names=["ppg"],
+            cli_min_channels=2,
+            preset_min_channels=2,
+        )
+
+
+def test_strict_mode_single_channel_subset_does_not_need_min_channel_validation(tmp_path: Path, monkeypatch):
+    config_path = _write_yaml(tmp_path, _model_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": "a.npz"}]).to_csv(index_path, index=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--channels",
+            "ppg",
+            "--no-allow-missing-channels",
+            "--dry-run",
+        ],
+    )
+
+    save_dataset_presets_main()
 
 
 def test_filter_index_df_for_required_channels_uses_generic_and_builtin_masks():
