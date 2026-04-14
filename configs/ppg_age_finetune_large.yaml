@@ -1,8 +1,8 @@
 model:
   backbone:
     name: roformer
-    hidden_size: 768
-    num_hidden_layers: 12
+    hidden_size: 1024
+    num_hidden_layers: 16
     num_attention_heads: 16
     vocab_size: 1
   projection:
@@ -20,11 +20,11 @@ model:
         name: sundial
         out_dim: 768
   head:
-    name: classification
+    name: regression
     dropout: 0.1
     hidden_dim: null
     channel_agg:
-      name: gated_scalar
+      name: mean
       kwargs: {}
     temporal_agg:
       name: mean
@@ -33,7 +33,7 @@ data:
   max_tokens: 1535  # whole-night cap in 30 s epochs
   data_channel_names: [ppg]
   finetune_data_index: null
-  finetune_preset_path: new_index/ppg_stage5_wholenight_merged_preset_1535.pickle
+  finetune_preset_path: new_index/ppg_age_wholenight_merged_preset_1535_age.pickle
   train_dataset_names: []
   test_dataset_names: []
   n_few_shot: 0
@@ -48,19 +48,18 @@ finetune:
     insert_lora: true
     separate_adapters: false
   task:
-    type: classification
-    output_dim: 4
-    is_seq: true
-    monitor: val_accuracy
-    monitor_mod: max
+    type: regression
+    output_dim: 1
+    is_seq: false
+    monitor: val_mae
+    monitor_mod: min
   eval_visualizations:
     enabled: true
     stages: [val, test]
     confusion_matrix:
-      enabled: true
-      show_raw_counts: false
-    regression_scatter:
       enabled: false
+    regression_scatter:
+      enabled: true
 model_averaging:
   name: ema
   params:
