@@ -2,7 +2,7 @@
   "schema_version": 1,
   "branch": "dev/ahi",
   "commit": "2ab2875b0f882c0f03a17e66fcc9831b8de96063",
-  "generated_at": "2026-04-14T15:17:25Z",
+  "generated_at": "2026-04-14T16:13:14Z",
   "mode": "initialize-branch",
   "source_of_truth": "checked-out branch plus tracked working-tree edits",
   "baseline": {
@@ -55,8 +55,9 @@
   },
   "working_tree_dirty": true,
   "working_tree_notes": [
-    "tracked ahi implementation edits in README.md, data/, preprocess/, sleep2vec/, and tests/ were incorporated into this initialization",
-    "no untracked product files were indexed as branch-canonical source"
+      "tracked ahi implementation edits in README.md, data/, preprocess/, sleep2vec/, and tests/ were incorporated into this branch handbook",
+      "the current working tree now includes event-based AHI evaluation and checkpoint-persisted threshold reuse for built-in ahi",
+      "no untracked product files were indexed as branch-canonical source"
   ],
   "required_outputs": [
     "README.md",
@@ -78,7 +79,7 @@
     "main-only wording that described stage5 as the only built-in sequence task"
   ],
   "unresolved_ambiguities": [
-    "runtime validation is limited in this environment because python3.10, pytest, torch, and scipy are unavailable",
+    "runtime validation is limited in this environment because python3.10, pytest, torch, scipy, and pytorch-lightning are unavailable",
     "no committed branch delta exists yet; the documented ahi behavior is currently a working-tree change"
   ]
 }

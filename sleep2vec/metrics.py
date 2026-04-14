@@ -5,7 +5,21 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+
+AHI_THRESHOLD_GRID = tuple(float(x) for x in np.arange(0.01, 1.0, 0.01))
+AHI_SEVERITY_THRESHOLDS = (5.0, 15.0, 30.0)
+AHI_SEGMENT_MERGE_TOLERANCE = 3
+AHI_MIN_EVENT_DURATION = 10
+AHI_MIN_TST_HOURS = 2.0
 
 
 def binary_positive_scores_from_two_logits(gts, preds) -> tuple[np.ndarray, np.ndarray]:
@@ -101,6 +115,121 @@ def macro_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(specs)) if specs else 0.0
 
 
+def icc2_two_raters_arrays(a: np.ndarray, b: np.ndarray) -> float:
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    n = a.shape[0]
+    if n < 2:
+        return 0.0
+
+    k = 2
+    y = np.concatenate([a, b], axis=0)
+    gm = y.mean()
+    mean_by_target = (a + b) / 2.0
+    mean_a = a.mean()
+    mean_b = b.mean()
+
+    sst = np.square(y - gm).sum()
+    ssb = k * np.square(mean_by_target - gm).sum()
+    ssr = n * ((mean_a - gm) ** 2 + (mean_b - gm) ** 2)
+    sse = max(sst - ssb - ssr, 0.0)
+
+    df_subjects = n - 1
+    df_raters = k - 1
+    df_error = (n - 1) * (k - 1)
+    if df_subjects <= 0 or df_raters <= 0 or df_error <= 0:
+        return 0.0
+
+    msb = ssb / df_subjects
+    msr = ssr / df_raters
+    mse = sse / df_error
+    denom = msb + (k - 1) * mse + (k * (msr - mse)) / n
+    if denom == 0:
+        return 0.0
+    return float((msb - mse) / denom)
+
+
+def binary_sequence_to_segments(labels, *, interval: int = 1) -> list[list[int]]:
+    cls_interval = np.asarray(labels, dtype=np.int64).reshape(-1)
+    padded = np.concatenate(([0], cls_interval, [0]))
+    diff = np.diff(padded)
+    starts = np.where(diff == 1)[0]
+    ends = np.where(diff == -1)[0] - 1
+    if starts.size == 0:
+        return []
+    segments = np.column_stack((starts * interval, ends * interval))
+    return segments.tolist()
+
+
+def merge_intervals(intervals, *, tolerance: int = AHI_SEGMENT_MERGE_TOLERANCE) -> list[list[int]]:
+    ordered = [list(interval) for interval in intervals]
+    if not ordered:
+        return []
+    ordered.sort(key=lambda x: x[0])
+    merged = [ordered[0]]
+    for current in ordered[1:]:
+        previous = merged[-1]
+        if current[0] <= previous[1] + tolerance:
+            previous[1] = max(previous[1], current[1])
+        else:
+            merged.append(current)
+    return merged
+
+
+def filter_segments_by_stage(intervals, sleep_mask: np.ndarray) -> list[list[int]]:
+    filtered: list[list[int]] = []
+    mask = np.asarray(sleep_mask, dtype=np.int64).reshape(-1)
+    for start, end in intervals:
+        left = max(int(round(start)), 0)
+        right = min(int(round(end)), mask.shape[0])
+        if right > left and mask[left:right].sum() > 0:
+            filtered.append([int(start), int(end)])
+    return filtered
+
+
+def filter_segments_by_duration(intervals, *, min_duration: int = AHI_MIN_EVENT_DURATION) -> list[list[int]]:
+    return [list(interval) for interval in intervals if (interval[1] - interval[0]) > min_duration]
+
+
+def vectorized_event_stats(gt_segments, pred_segments, *, threshold: float = 0.5) -> tuple[float, float, float]:
+    gt_seg = np.asarray(gt_segments, dtype=np.float32)
+    pre_seg = np.asarray(pred_segments, dtype=np.float32)
+
+    if gt_seg.size == 0:
+        return 0.0, float(len(pred_segments)), 0.0
+    if pre_seg.size == 0:
+        return 0.0, 0.0, float(len(gt_segments))
+
+    intersect_mask = (gt_seg[:, None, 0] <= pre_seg[None, :, 1]) & (gt_seg[:, None, 1] >= pre_seg[None, :, 0])
+    union = np.maximum(gt_seg[:, None, 1], pre_seg[None, :, 1]) - np.minimum(gt_seg[:, None, 0], pre_seg[None, :, 0])
+    gt_lengths = (gt_seg[:, 1] - gt_seg[:, 0])[:, None]
+    pre_lengths = (pre_seg[:, 1] - pre_seg[:, 0])[None, :]
+    overlap = np.where(intersect_mask, gt_lengths + pre_lengths - union, 0.0)
+    ratio = np.where(union > 0, overlap / union, 0.0)
+    matched = (ratio > threshold).any(axis=1).astype(np.float32)
+
+    tp = float(matched.sum())
+    fp = float(len(pred_segments) - tp)
+    fn = float(len(gt_segments) - tp)
+    return tp, fp, fn
+
+
+def _safe_pearson(a: np.ndarray, b: np.ndarray, *, require_min_count: int = 2, nan_if_invalid: bool = False) -> float:
+    if len(a) < require_min_count or len(b) < require_min_count:
+        return float("nan") if nan_if_invalid else 0.0
+    if np.std(a) == 0 or np.std(b) == 0:
+        return float("nan") if nan_if_invalid else 0.0
+    value = float(np.corrcoef(a, b)[0, 1])
+    if np.isnan(value):
+        return float("nan") if nan_if_invalid else 0.0
+    return value
+
+
+def _format_threshold_suffix(threshold: float) -> str:
+    value = int(threshold) if float(threshold).is_integer() else threshold
+    return str(value).replace(".", "p")
+
+
 def compute_binary_label_metrics(gts, preds) -> dict[str, float]:
     y_true = np.asarray(gts, dtype=np.int64).reshape(-1)
     y_score = np.asarray(preds, dtype=np.float32).reshape(-1)
@@ -120,6 +249,201 @@ def compute_binary_label_metrics(gts, preds) -> dict[str, float]:
         except Exception:
             result["roc_auc"] = np.nan
     return result
+
+
+def compute_ahi_pointwise_metrics(gts, preds) -> dict[str, float]:
+    return {f"ahi_pointwise_{key}": value for key, value in compute_binary_label_metrics(gts, preds).items()}
+
+
+def _evaluate_single_ahi_record(
+    record: Mapping[str, np.ndarray],
+    *,
+    threshold: float,
+) -> tuple[tuple[float, float, float], float | None, float | None]:
+    truth = np.asarray(record["truth"], dtype=np.int64).reshape(-1)
+    score = np.asarray(record["score"], dtype=np.float32).reshape(-1)
+    stage5 = np.asarray(record["stage5"], dtype=np.int64).reshape(-1)
+
+    if truth.shape[0] != score.shape[0]:
+        raise ValueError(f"AHI truth/pred length mismatch: {truth.shape[0]} vs {score.shape[0]}")
+    if stage5.shape[0] * 30 < truth.shape[0]:
+        raise ValueError(f"stage5 token count {stage5.shape[0]} cannot cover {truth.shape[0]} ahi seconds")
+
+    sleep_mask = np.repeat(stage5, 30)[: truth.shape[0]] > 0
+    gt_segments = merge_intervals(binary_sequence_to_segments(truth, interval=1))
+    pred_binary = (score > threshold).astype(np.int64)
+    pred_segments = merge_intervals(binary_sequence_to_segments(pred_binary, interval=1))
+    tst = float(sleep_mask.sum() / 3600.0)
+    if tst < AHI_MIN_TST_HOURS:
+        pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
+        tp, fp, fn = vectorized_event_stats(gt_segments, pred_segments)
+        return (tp, fp, fn), None, None
+
+    pred_segments = filter_segments_by_stage(pred_segments, sleep_mask)
+    pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
+    tp, fp, fn = vectorized_event_stats(gt_segments, pred_segments)
+    pred_ahi = float(len(pred_segments) / tst)
+    true_ahi = float(len(gt_segments) / tst)
+    return (tp, fp, fn), pred_ahi, true_ahi
+
+
+def _aggregate_ahi_records(
+    records: list[Mapping[str, np.ndarray]],
+    *,
+    threshold: float,
+) -> dict[str, Any]:
+    tp = fp = fn = 0.0
+    pred_ahi: list[float] = []
+    true_ahi: list[float] = []
+
+    for record in records:
+        (record_tp, record_fp, record_fn), record_pred_ahi, record_true_ahi = _evaluate_single_ahi_record(
+            record,
+            threshold=threshold,
+        )
+        tp += record_tp
+        fp += record_fp
+        fn += record_fn
+        if record_pred_ahi is not None and record_true_ahi is not None:
+            pred_ahi.append(record_pred_ahi)
+            true_ahi.append(record_true_ahi)
+
+    return {
+        "event_tp": tp,
+        "event_fp": fp,
+        "event_fn": fn,
+        "pred_ahi": np.asarray(pred_ahi, dtype=np.float32),
+        "true_ahi": np.asarray(true_ahi, dtype=np.float32),
+    }
+
+
+def select_best_ahi_threshold(
+    records: list[Mapping[str, np.ndarray]],
+    *,
+    search_thresholds: tuple[float, ...] = AHI_THRESHOLD_GRID,
+) -> tuple[float, dict[str, Any]]:
+    best_threshold: float | None = None
+    best_pearson = float("-inf")
+    best_mae = float("inf")
+    best_aggregate: dict[str, Any] | None = None
+
+    for threshold in search_thresholds:
+        aggregate = _aggregate_ahi_records(records, threshold=threshold)
+        pred_ahi = aggregate["pred_ahi"]
+        true_ahi = aggregate["true_ahi"]
+        if pred_ahi.size == 0 or true_ahi.size == 0:
+            continue
+        pearson = _safe_pearson(true_ahi, pred_ahi, require_min_count=2, nan_if_invalid=False)
+        mae = float(np.mean(np.abs(pred_ahi - true_ahi)))
+        if pearson > best_pearson or (np.isclose(pearson, best_pearson) and mae < best_mae):
+            best_threshold = float(threshold)
+            best_pearson = float(pearson)
+            best_mae = float(mae)
+            best_aggregate = aggregate
+
+    if best_threshold is None or best_aggregate is None:
+        raise ValueError(
+            "Unable to fit an AHI event threshold from validation records. "
+            "Need at least 1 non-skipped sample with TST >= 2h."
+        )
+    return best_threshold, best_aggregate
+
+
+def compute_ahi_event_metrics(
+    records: list[Mapping[str, np.ndarray]],
+    *,
+    threshold: float | None = None,
+    search_thresholds: tuple[float, ...] = AHI_THRESHOLD_GRID,
+    severity_thresholds: tuple[float, ...] = AHI_SEVERITY_THRESHOLDS,
+) -> tuple[dict[str, float], float]:
+    if threshold is None:
+        threshold, aggregate = select_best_ahi_threshold(records, search_thresholds=search_thresholds)
+    else:
+        threshold = float(threshold)
+        aggregate = _aggregate_ahi_records(records, threshold=threshold)
+
+    tp = aggregate["event_tp"]
+    fp = aggregate["event_fp"]
+    fn = aggregate["event_fn"]
+    event_precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    event_recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    event_f1 = (
+        2 * event_precision * event_recall / (event_precision + event_recall)
+        if (event_precision + event_recall) > 0
+        else 0.0
+    )
+
+    pred_ahi = aggregate["pred_ahi"]
+    true_ahi = aggregate["true_ahi"]
+    metrics: dict[str, float] = {
+        "ahi_event_precision": float(event_precision),
+        "ahi_event_recall": float(event_recall),
+        "ahi_event_f1": float(event_f1),
+        "ahi_opt_threshold": float(threshold),
+    }
+
+    if true_ahi.size == 0 or pred_ahi.size == 0:
+        metrics.update(
+            {
+                "ahi_pearson": np.nan,
+                "ahi_mae": np.nan,
+                "ahi_icc": np.nan,
+                "ahi_acc": np.nan,
+                "ahi_macro_f1": np.nan,
+                "ahi_weighted_f1": np.nan,
+            }
+        )
+        for severity_threshold in severity_thresholds:
+            suffix = _format_threshold_suffix(severity_threshold)
+            metrics.update(
+                {
+                    f"ahi_threshold_{suffix}_precision": np.nan,
+                    f"ahi_threshold_{suffix}_recall": np.nan,
+                    f"ahi_threshold_{suffix}_f1": np.nan,
+                    f"ahi_threshold_{suffix}_specificity": np.nan,
+                    f"ahi_threshold_{suffix}_accuracy": np.nan,
+                    f"ahi_threshold_{suffix}_auroc": np.nan,
+                    f"ahi_threshold_{suffix}_auprc": np.nan,
+                }
+            )
+        return metrics, float(threshold)
+
+    metrics["ahi_mae"] = float(np.mean(np.abs(pred_ahi - true_ahi)))
+    metrics["ahi_pearson"] = _safe_pearson(true_ahi, pred_ahi, require_min_count=2, nan_if_invalid=False)
+    metrics["ahi_icc"] = icc2_two_raters_arrays(true_ahi, pred_ahi)
+
+    for severity_threshold in severity_thresholds:
+        suffix = _format_threshold_suffix(severity_threshold)
+        y_true = (true_ahi > severity_threshold).astype(int)
+        y_pred = (pred_ahi > severity_threshold).astype(int)
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+        tn, fp_bin, fn_bin, tp_bin = (int(cm[0, 0]), int(cm[0, 1]), int(cm[1, 0]), int(cm[1, 1]))
+        precision = tp_bin / (tp_bin + fp_bin) if (tp_bin + fp_bin) > 0 else 0.0
+        recall = tp_bin / (tp_bin + fn_bin) if (tp_bin + fn_bin) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        specificity = tn / (tn + fp_bin) if (tn + fp_bin) > 0 else 0.0
+        accuracy = (tn + tp_bin) / cm.sum() if cm.sum() > 0 else 0.0
+        auroc = roc_auc_score(y_true, pred_ahi) if len(np.unique(y_true)) > 1 else 0.0
+        auprc = average_precision_score(y_true, pred_ahi) if len(np.unique(y_true)) > 1 else 0.0
+        metrics.update(
+            {
+                f"ahi_threshold_{suffix}_precision": float(precision),
+                f"ahi_threshold_{suffix}_recall": float(recall),
+                f"ahi_threshold_{suffix}_f1": float(f1),
+                f"ahi_threshold_{suffix}_specificity": float(specificity),
+                f"ahi_threshold_{suffix}_accuracy": float(accuracy),
+                f"ahi_threshold_{suffix}_auroc": float(auroc),
+                f"ahi_threshold_{suffix}_auprc": float(auprc),
+            }
+        )
+
+    bins = [0.0] + list(severity_thresholds) + [np.inf]
+    true_cls = np.digitize(true_ahi, bins) - 1
+    pred_cls = np.digitize(pred_ahi, bins) - 1
+    metrics["ahi_acc"] = float(accuracy_score(true_cls, pred_cls))
+    metrics["ahi_macro_f1"] = float(f1_score(true_cls, pred_cls, average="macro"))
+    metrics["ahi_weighted_f1"] = float(f1_score(true_cls, pred_cls, average="weighted"))
+    return metrics, float(threshold)
 
 
 def compute_downstream_metrics(

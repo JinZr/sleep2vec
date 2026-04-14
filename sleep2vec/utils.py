@@ -171,6 +171,9 @@ def _build_finetune_loader(
     if is_seq_task and label_source_name not in dataset_channel_names:
         # Built-in sequence tasks consume runtime label channels from the NPZ batch.
         dataset_channel_names.append(label_source_name)
+    for auxiliary_name in getattr(args, "auxiliary_label_source_names", []) or []:
+        if auxiliary_name not in dataset_channel_names:
+            dataset_channel_names.append(auxiliary_name)
 
     dataset_kwargs = dict(
         channel_names=dataset_channel_names,

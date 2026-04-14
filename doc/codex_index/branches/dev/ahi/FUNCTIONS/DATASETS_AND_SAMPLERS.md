@@ -158,4 +158,4 @@
 - Side effects: seed initialization in `get_finetune_dataloaders`.
 - Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callee is `PSGPretrainDataset.dataloader`.
 - Reuse guidance: use these helpers for any finetune or inference data-loading path.
-- Duplication risk notes: built-in seq label-channel insertion (`stage5`, `ahi`) and metadata label selection should not be duplicated in trainer code.
+- Duplication risk notes: built-in seq label-channel insertion (`stage5`, `ahi`) and metadata label selection should not be duplicated in trainer code. `ahi` additionally requires raw `stage5` as a metric-only auxiliary channel for event-based AHI evaluation.

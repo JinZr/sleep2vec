@@ -92,8 +92,8 @@ The runtime assumes a batch dictionary with these keys:
 - All configured channels must share one tokenizer output dimension.
 - `model.cls.downstream='cls'` requires a real CLS strategy such as `bert`.
 - Built-in sequence tasks are `stage3`, `stage4`, `stage5`, and `ahi`.
-- `stage3`, `stage4`, and `stage5` consume raw `batch["tokens"]["stage5"]`; `ahi` consumes raw `batch["tokens"]["ahi"]`.
-- `ahi` targets are per-token `[30]` binary slices padded with `-1.0`; loss and metrics flatten only valid positions.
+- `stage3`, `stage4`, and `stage5` consume raw `batch["tokens"]["stage5"]`; `ahi` consumes raw `batch["tokens"]["ahi"]` and also requires raw `batch["tokens"]["stage5"]` as an auxiliary metric source.
+- `ahi` targets are per-token `[30]` binary slices padded with `-1.0`; training loss stays pointwise BCE, while validation/test/infer metrics are event-based AHI built from thresholded 1-second events plus TST from raw `stage5`.
 - Non-built-in sequence labels are unsupported, and non-built-in metadata classification remains binary-only.
 - Pair-first missing-channel pretraining requires `payload["available_channels"]` to be present on every sample.
 - Weighted InfoNCE requires both `w` and `h` in the batch.

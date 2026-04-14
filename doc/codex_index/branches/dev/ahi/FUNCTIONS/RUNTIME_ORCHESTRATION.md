@@ -75,7 +75,7 @@
 - Side effects: optional W&B run, trainer evaluation, optional results CSV output.
 - Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, `_init_wandb`.
 - Reuse guidance: extend here for inference-only behavior changes.
-- Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`, not in trainer code.
+- Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`, not in trainer code; built-in `ahi` intentionally rejects `avg_ckpts > 1` because an averaged state dict has no paired validation-fitted threshold.
 
 ## `sleep2vec.checkpoints.select_checkpoints`
 
@@ -106,9 +106,20 @@
 - Purpose and contract: reduce per-sample predictions into multiclass classification, seq multi-label binary, or regression metrics, with stage-specific metrics for sleep-staging outputs.
 - Important inputs/outputs: ground truth and predictions in, metrics dict out.
 - Side effects: none.
-- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees are `compute_binary_label_metrics` for `ahi`-style flattened binary outputs and `roc_auc_from_two_logits` for two-logit classification.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees are `compute_binary_label_metrics` for debug pointwise binary outputs and `roc_auc_from_two_logits` for two-logit classification.
 - Reuse guidance: use this as the only downstream metric reducer.
 - Duplication risk notes: do not implement alternative epoch metric logic in trainers unless the contract truly changes.
+
+## `sleep2vec.metrics.compute_ahi_event_metrics`
+
+- File: `sleep2vec/metrics.py`
+- Signature: `compute_ahi_event_metrics(records, *, threshold: float | None = None, search_thresholds=..., severity_thresholds=...) -> tuple[dict[str, float], float]`
+- Purpose and contract: convert per-sample 1-second `ahi` predictions into event segments, mask predictions by raw `stage5` sleep periods, compute TST-aware final AHI, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite.
+- Important inputs/outputs: per-sample `truth` / `score` / `stage5` records in; metrics dict plus chosen threshold out.
+- Side effects: none.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `select_best_ahi_threshold`, `binary_sequence_to_segments`, `merge_intervals`, `filter_segments_by_stage`, and `vectorized_event_stats`.
+- Reuse guidance: use this for every final `ahi` validation/test/infer metric path instead of re-deriving event counts in trainer code.
+- Duplication risk notes: threshold search, TST semantics, and event filtering must stay centralized here.
 
 ## `sleep2vec.metrics.save_result_csv`
 

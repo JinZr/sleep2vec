@@ -84,6 +84,12 @@ def _init_wandb(args):
 
 
 def run_inference(args):
+    if args.label_name == "ahi" and args.avg_ckpts > 1:
+        raise ValueError(
+            "AHI inference does not support --avg-ckpts > 1 because averaged checkpoints "
+            "do not have a single validation-fitted `ahi_eval_threshold` to reuse."
+        )
+
     config_bundle, model_cfg = apply_finetune_config(args)
 
     trainer_precision = args.precision

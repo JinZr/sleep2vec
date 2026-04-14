@@ -33,9 +33,10 @@ Changed:
 Effect:
 
 - added built-in `ahi` as a sequence task with `label_source_name='ahi'`, `output_dim=30`, `monitor='val_f1'`, and an internal multi-label flag
+- updated built-in `ahi` monitoring to `val_ahi_pearson` and coupled it to checkpoint-persisted validation threshold fitting
 - split built-in sequence handling into shared seq-label plumbing plus sleep-stage-only remapping from raw `stage5`
 - added runtime `ahi` dataset-channel support and strict preset filtering via `ahi_mask`
-- changed finetune/infer runtime to treat `ahi` as BCE-with-logits over flattened valid positions rather than multiclass cross-entropy
+- kept `ahi` training on BCE-with-logits over flattened valid positions, but changed validation/test/infer to event-based AHI metrics derived from thresholded events plus raw-`stage5` TST
 - kept evaluation visualizations off the existing confusion-matrix path for `ahi`
 
 ## Areas With No Branch-Local Source Delta

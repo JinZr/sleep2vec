@@ -93,6 +93,7 @@ def _finetune_payload() -> dict:
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
+                "auxiliary_label_source_names": [],
                 "stage_names": ["W", "NREM", "REM"],
                 "class_labels": ["W", "NREM", "REM"],
             },
@@ -107,6 +108,7 @@ def _finetune_payload() -> dict:
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
+                "auxiliary_label_source_names": [],
                 "stage_names": ["W", "N1N2", "N3", "REM"],
                 "class_labels": ["W", "N1N2", "N3", "REM"],
             },
@@ -121,6 +123,7 @@ def _finetune_payload() -> dict:
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
+                "auxiliary_label_source_names": [],
                 "stage_names": ["W", "N1", "N2", "N3", "REM"],
                 "class_labels": ["W", "N1", "N2", "N3", "REM"],
             },
@@ -132,9 +135,10 @@ def _finetune_payload() -> dict:
                 "is_classification": True,
                 "is_seq": True,
                 "is_multilabel": True,
-                "monitor": "val_f1",
+                "monitor": "val_ahi_pearson",
                 "monitor_mod": "max",
                 "label_source_name": "ahi",
+                "auxiliary_label_source_names": ["stage5"],
                 "stage_names": None,
                 "class_labels": None,
             },
@@ -148,6 +152,7 @@ def _finetune_payload() -> dict:
                 "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
+                "auxiliary_label_source_names": [],
                 "class_labels": ["female", "male"],
             },
         ),
@@ -160,6 +165,7 @@ def _finetune_payload() -> dict:
                 "is_multilabel": False,
                 "monitor": "val_mae",
                 "monitor_mod": "min",
+                "auxiliary_label_source_names": [],
                 "class_labels": None,
             },
         ),
@@ -214,11 +220,25 @@ def test_apply_task_flags_rejects_ahi_builtin_conflict_from_yaml_task():
         type="classification",
         output_dim=29,
         is_seq=True,
-        monitor="val_f1",
+        monitor="val_ahi_pearson",
         monitor_mod="max",
     )
 
     with pytest.raises(ValueError, match="output_dim must be 30 when --label-name is 'ahi'"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_ahi_builtin_monitor_conflict():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=30,
+        is_seq=True,
+        monitor="val_f1",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="monitor must be 'val_ahi_pearson' when --label-name is 'ahi'"):
         apply_task_flags(args, task_cfg)
 
 

@@ -13,7 +13,7 @@ import yaml
 from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.common import remap_stage_labels
-from sleep2vec.metrics import compute_downstream_metrics
+from sleep2vec.metrics import compute_ahi_event_metrics, compute_ahi_pointwise_metrics, compute_downstream_metrics
 from sleep2vec.visualization.downstream_eval import DownstreamEvalVisualizer
 from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
 
@@ -77,6 +77,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
         self._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
         self._regression_loss = torch.nn.MSELoss()
+        self._ahi_eval_threshold: float | None = None
 
         # Optional tensor diagnostics (borrowed from icefall)
         self._diagnostic = None
@@ -109,6 +110,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
             eval_layer_mix = self._layer_mix_snapshot(eval_model)
             if eval_layer_mix is not None:
                 checkpoint["layer_mix_weights_eval"] = eval_layer_mix
+        if self._is_ahi_task() and self._ahi_eval_threshold is not None:
+            checkpoint["ahi_eval_threshold"] = float(self._ahi_eval_threshold)
 
     # ---------- Lightning hooks ----------
     def training_step(self, batch, batch_idx):
@@ -142,6 +145,17 @@ class Sleep2vecFinetuning(pl.LightningModule):
         super().on_load_checkpoint(checkpoint)
         if self.model_averager is not None:
             self.model_averager.on_load_checkpoint(checkpoint)
+        if self._is_ahi_task():
+            threshold = checkpoint.get("ahi_eval_threshold")
+            self._ahi_eval_threshold = None if threshold is None else float(threshold)
+
+    def on_test_start(self):
+        super().on_test_start()
+        if self._is_ahi_task() and self._ahi_eval_threshold is None:
+            raise ValueError(
+                "AHI test/inference requires a validation-fitted threshold stored in the checkpoint. "
+                "This checkpoint does not contain `ahi_eval_threshold`."
+            )
 
     def load_state_dict(self, state_dict, strict: bool = True):
         # Allow missing/extra layer-mix weights when loading older checkpoints.
@@ -187,9 +201,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 batch_size=max(valid_count, 1),
             )
 
-        preds = self._extract_valid_predictions(batch, logits)
-        if preds is not None:
-            self._stage_outputs[stage].append(preds)
+        if self._is_ahi_task() and stage in {"val", "test"}:
+            records = self._extract_ahi_event_records(batch, logits)
+            if records:
+                self._stage_outputs[stage].extend(records)
+        else:
+            preds = self._extract_valid_predictions(batch, logits)
+            if preds is not None:
+                self._stage_outputs[stage].append(preds)
 
         return loss if stage == "train" else None
 
@@ -259,6 +278,23 @@ class Sleep2vecFinetuning(pl.LightningModule):
         labels_np = labels[mask].to(torch.float32).detach().cpu().numpy()
         return preds, labels_np
 
+    def _extract_ahi_event_records(self, batch, logits) -> list[dict[str, np.ndarray]]:
+        labels = batch["tokens"]["ahi"].detach().cpu()
+        stage5 = batch["tokens"]["stage5"].detach().cpu()
+        probs = torch.sigmoid(logits).to(torch.float32).detach().cpu()
+
+        records: list[dict[str, np.ndarray]] = []
+        for idx in range(labels.size(0)):
+            second_valid_mask = labels[idx].reshape(-1) != -1.0
+            if not second_valid_mask.any():
+                continue
+            token_valid_mask = labels[idx].ne(-1.0).any(dim=-1)
+            truth = labels[idx].reshape(-1)[second_valid_mask].to(torch.int64).numpy()
+            score = probs[idx].reshape(-1)[second_valid_mask].numpy()
+            stage_tokens = stage5[idx][token_valid_mask].to(torch.int64).numpy()
+            records.append({"truth": truth, "score": score, "stage5": stage_tokens})
+        return records
+
     def _get_targets(self, batch):
         if not self.args.is_seq:
             return batch["metadata"][self.args.label_name].to(self.args.device)
@@ -268,6 +304,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if getattr(self.args, "is_multilabel", False):
             return labels
         return remap_stage_labels(labels, self.args.label_name)
+
+    def _is_ahi_task(self) -> bool:
+        return getattr(self.args, "label_name", None) == "ahi"
 
     @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):
@@ -307,6 +346,20 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return self._empty_epoch_outputs()
 
         return np.concatenate(gathered_preds, axis=0), np.concatenate(gathered_gts, axis=0)
+
+    def _gather_ahi_event_records(self, records: list[dict[str, np.ndarray]]) -> list[dict[str, np.ndarray]]:
+        if not dist.is_available() or not dist.is_initialized() or not hasattr(dist, "all_gather_object"):
+            return records
+
+        world_size = dist.get_world_size()
+        gathered: list[list[dict[str, np.ndarray]] | None] = [None] * world_size
+        dist.all_gather_object(gathered, records)
+
+        merged: list[dict[str, np.ndarray]] = []
+        for item in gathered:
+            if isinstance(item, list):
+                merged.extend(item)
+        return merged
 
     def _log_layer_mix_weights(self, stage: str, model: torch.nn.Module) -> None:
         snapshot = self._layer_mix_snapshot(model)
@@ -375,6 +428,54 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]
+
+        if self._is_ahi_task() and stage == "train":
+            preds, gts = self._concat_epoch_outputs(outputs)
+            outputs.clear()
+            if preds.size == 0 or gts.size == 0:
+                return None
+
+            metrics = compute_ahi_pointwise_metrics(gts, preds)
+            for k, v in metrics.items():
+                self.log(
+                    f"{stage}_{k}",
+                    v,
+                    prog_bar=False,
+                    logger=True,
+                    sync_dist=True,
+                    on_epoch=True,
+                )
+            return preds, gts
+
+        if self._is_ahi_task() and stage in {"val", "test"}:
+            records = list(outputs)
+            outputs.clear()
+            records = self._gather_ahi_event_records(records)
+            if not records:
+                return None
+
+            if stage == "val":
+                metrics, fitted_threshold = compute_ahi_event_metrics(records, threshold=None)
+                self._ahi_eval_threshold = fitted_threshold
+            else:
+                if self._ahi_eval_threshold is None:
+                    raise ValueError(
+                        "AHI evaluation requires a validation-fitted threshold. "
+                        "No `ahi_eval_threshold` is available for test/inference."
+                    )
+                metrics, _ = compute_ahi_event_metrics(records, threshold=self._ahi_eval_threshold)
+
+            for k, v in metrics.items():
+                self.log(
+                    f"{stage}_{k}",
+                    v,
+                    prog_bar=(stage != "train"),
+                    logger=True,
+                    sync_dist=False,
+                    on_epoch=True,
+                )
+            return records
+
         preds, gts = self._concat_epoch_outputs(outputs)
         outputs.clear()
 

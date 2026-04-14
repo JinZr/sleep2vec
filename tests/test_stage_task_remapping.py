@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from sleep2vec.metrics import compute_downstream_metrics
+from sleep2vec.metrics import compute_ahi_pointwise_metrics, compute_downstream_metrics
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import _build_finetune_loader
 
@@ -30,10 +30,12 @@ def _seq_args(
     label_source_name: str,
     output_dim: int,
     is_multilabel: bool = False,
+    auxiliary_label_source_names: list[str] | None = None,
 ) -> argparse.Namespace:
     return argparse.Namespace(
         label_name=label_name,
         label_source_name=label_source_name,
+        auxiliary_label_source_names=auxiliary_label_source_names or [],
         data_channel_names=["eeg"],
         channel_input_dims={"eeg": 4},
         finetune_preset_path=None,
@@ -69,7 +71,13 @@ def test_build_finetune_loader_uses_stage5_tokens_for_stage3(monkeypatch):
 
 def test_build_finetune_loader_uses_ahi_tokens_for_ahi(monkeypatch):
     monkeypatch.setattr("sleep2vec.utils.PSGPretrainDataset", _DummyDataset)
-    args = _seq_args("ahi", label_source_name="ahi", output_dim=30, is_multilabel=True)
+    args = _seq_args(
+        "ahi",
+        label_source_name="ahi",
+        output_dim=30,
+        is_multilabel=True,
+        auxiliary_label_source_names=["stage5"],
+    )
 
     loader = _build_finetune_loader(
         args,
@@ -81,7 +89,7 @@ def test_build_finetune_loader_uses_ahi_tokens_for_ahi(monkeypatch):
 
     assert loader == {"device": "cpu"}
     assert _DummyDataset.last_device == "cpu"
-    assert _DummyDataset.last_init_kwargs["channel_names"] == ["eeg", "ahi"]
+    assert _DummyDataset.last_init_kwargs["channel_names"] == ["eeg", "ahi", "stage5"]
     assert _DummyDataset.last_init_kwargs["meta_data_names"] == []
     assert _DummyDataset.last_init_kwargs["meta_data_regression_names"] == []
 
@@ -124,6 +132,24 @@ def test_get_targets_returns_raw_ahi_labels():
     labels = module._get_targets(batch)
 
     assert torch.equal(labels, torch.tensor([[[0.0, 1.0], [1.0, -1.0]]]))
+
+
+def test_extract_ahi_event_records_keeps_sample_boundaries_and_stage5():
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    logits = torch.tensor([[[0.0, 0.0], [2.0, -2.0]]], dtype=torch.float32)
+    batch = {
+        "tokens": {
+            "ahi": torch.tensor([[[0.0, 1.0], [1.0, 0.0]]], dtype=torch.float32),
+            "stage5": torch.tensor([[0.0, 2.0]], dtype=torch.float32),
+        }
+    }
+
+    records = module._extract_ahi_event_records(batch, logits)
+
+    assert len(records) == 1
+    assert records[0]["truth"].tolist() == [0, 1, 1, 0]
+    assert records[0]["stage5"].tolist() == [0, 2]
+    assert records[0]["score"].shape == (4,)
 
 
 def test_compute_loss_ignores_ahi_padding():
@@ -186,3 +212,16 @@ def test_compute_downstream_metrics_reports_binary_scores_for_ahi():
     assert metrics["recall"] == 1.0
     assert metrics["f1"] == 1.0
     assert metrics["roc_auc"] == 1.0
+
+
+def test_compute_ahi_pointwise_metrics_uses_namespaced_keys():
+    metrics = compute_ahi_pointwise_metrics(
+        np.array([0, 1, 1, 0]),
+        np.array([0.1, 0.9, 0.8, 0.2], dtype=np.float32),
+    )
+
+    assert metrics["ahi_pointwise_accuracy"] == 1.0
+    assert metrics["ahi_pointwise_precision"] == 1.0
+    assert metrics["ahi_pointwise_recall"] == 1.0
+    assert metrics["ahi_pointwise_f1"] == 1.0
+    assert metrics["ahi_pointwise_roc_auc"] == 1.0

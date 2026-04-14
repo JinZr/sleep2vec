@@ -46,9 +46,10 @@ _BUILTIN_TASK_SPECS = {
         "output_dim": 30,
         "is_seq": True,
         "is_multilabel": True,
-        "monitor": "val_f1",
+        "monitor": "val_ahi_pearson",
         "monitor_mod": "max",
         "label_source_name": "ahi",
+        "auxiliary_label_source_names": ["stage5"],
     },
     "sex": {
         "type": "classification",
@@ -117,6 +118,13 @@ def get_task_label_merge_map(label_name: str) -> dict[int, int] | None:
 def get_task_is_multilabel(label_name: str) -> bool:
     spec = _BUILTIN_TASK_SPECS.get(label_name)
     return bool(spec is not None and spec.get("is_multilabel", False))
+
+
+def get_task_auxiliary_label_source_names(label_name: str) -> list[str]:
+    spec = _BUILTIN_TASK_SPECS.get(label_name)
+    if spec is None or "auxiliary_label_source_names" not in spec:
+        return []
+    return [str(name) for name in spec["auxiliary_label_source_names"]]
 
 
 def remap_stage_labels(labels, label_name: str):
@@ -212,6 +220,7 @@ def _apply_builtin_task_attrs(args: argparse.Namespace, label_name: str) -> None
     args.class_labels = get_task_class_labels(label_name)
     args.label_merge_map = get_task_label_merge_map(label_name)
     args.is_multilabel = get_task_is_multilabel(label_name)
+    args.auxiliary_label_source_names = get_task_auxiliary_label_source_names(label_name)
 
 
 def _apply_custom_task_attrs(args: argparse.Namespace) -> None:
@@ -220,6 +229,7 @@ def _apply_custom_task_attrs(args: argparse.Namespace) -> None:
     args.class_labels = None
     args.label_merge_map = None
     args.is_multilabel = False
+    args.auxiliary_label_source_names = []
 
 
 def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:

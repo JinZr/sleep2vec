@@ -8,6 +8,10 @@
 - Recorded the new runtime split between sleep-stage remapping and `ahi` multi-label BCE/metric reduction.
 - Added `DELTA_FROM_MAIN.md` for the branch-specific working-tree delta.
 
+## 2026-04-15
+
+- Updated the `ahi` handbook to reflect event-based AHI evaluation, validation-only threshold fitting, checkpoint threshold persistence, and raw-`stage5` TST semantics.
+
 ## 2026-03-25
 
 - Created the initial `main` branch engineering index.

@@ -184,7 +184,9 @@ Custom metadata labels:
 - Set `--label-name` to the CSV column name (e.g., `bmi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
 - Use the same `--label-name` for `sleep2vec.infer` (required) when evaluating custom tasks.
 - Token-level labels (`is_seq: true`) are only supported for built-in sequence labels (`stage3`, `stage4`, `stage5`, `ahi`) unless you extend the dataloader.
-- Built-in `ahi` expects a flat 1 Hz NPZ array named `ahi`; each 30-second token is reshaped into 30 binary labels and trained with sigmoid/BCE while monitoring `val_f1`.
+- Built-in `ahi` expects a flat 1 Hz NPZ array named `ahi`; each 30-second token is reshaped into 30 binary labels and trained with sigmoid/BCE.
+- Built-in `ahi` also loads raw `stage5` labels as an auxiliary metric-only channel. Final validation/test/infer metrics are **event-based AHI**, not pointwise second-level metrics.
+- The built-in `ahi` evaluator fits the event threshold on validation only, saves it in the checkpoint, reuses it for test/infer, computes TST from raw `stage5 > 0`, skips samples with `TST < 2h`, and monitors `val_ahi_pearson`.
 - Example YAMLs: `configs/sleep2vec_dense_finetune_custom_reg.yaml`, `configs/sleep2vec_dense_finetune_custom_cls.yaml`.
 
 > [!Note]
