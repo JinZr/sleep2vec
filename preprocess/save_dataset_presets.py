@@ -268,6 +268,9 @@ def _resolve_validation_channels(
     else:
         resolved = _dedupe_keep_order(selected_channels)
 
+    if "ahi" in resolved and "stage5" not in resolved:
+        resolved.append("stage5")
+
     unknown = [name for name in resolved if name not in channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
     if unknown:
         raise ValueError(
