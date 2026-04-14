@@ -61,7 +61,7 @@ def supervised(args, config_bundle):
         project="sleep2vec-finetune",  # 相当于 TensorBoard 的 log dir
         name=f"s2v-finetune-{version}",  # run 名称
         save_dir="./wandb_logs",  # 本地缓存目录，可选
-        log_model=True,  # 训练结束自动保存 ckpt
+        log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )
 
     early_stop_callback = EarlyStopping(
