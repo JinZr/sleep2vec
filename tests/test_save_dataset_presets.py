@@ -137,7 +137,9 @@ def test_load_preset_build_block_rejects_partial_contract(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg"]))
     config_data = _load_config_mapping(config_path)
 
-    with pytest.raises(ValueError, match="must define both preset_build.required_channels and preset_build.min_channels"):
+    with pytest.raises(
+        ValueError, match="must define both preset_build.required_channels and preset_build.min_channels"
+    ):
         _load_preset_build_block(config_data)
 
 
