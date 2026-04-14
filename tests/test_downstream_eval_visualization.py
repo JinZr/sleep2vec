@@ -41,6 +41,33 @@ def test_render_confusion_matrix_heatmap_uses_sex_labels():
     plt.close(fig)
 
 
+def test_render_confusion_matrix_heatmap_normalizes_binary_rows():
+    fig = render_confusion_matrix_heatmap(
+        np.array([0, 0, 0, 1, 1], dtype=np.int64),
+        np.array([0, 1, 1, 1, 0], dtype=np.int64),
+        ["female", "male"],
+        title="demo",
+        normalize_rows=True,
+    )
+
+    ax = fig.axes[0]
+    heatmap = np.asarray(ax.images[0].get_array(), dtype=np.float32)
+    assert np.allclose(
+        heatmap,
+        np.array(
+            [
+                [33.333332, 66.666664],
+                [50.0, 50.0],
+            ],
+            dtype=np.float32,
+        ),
+        atol=1e-4,
+    )
+    assert {text.get_text() for text in ax.texts} >= {"33.3%", "66.7%", "50%"}
+    assert fig.axes[1].get_title(loc="left") == "Percent"
+    plt.close(fig)
+
+
 def test_render_confusion_matrix_heatmap_normalizes_stage_rows_and_can_show_counts():
     fig = render_confusion_matrix_heatmap(
         np.array([0, 0, 0, 1, 1, 2], dtype=np.int64),
@@ -156,7 +183,7 @@ def test_downstream_eval_visualizer_respects_stage_gating_and_logs_confusion_mat
     assert commit is False
 
 
-def test_downstream_eval_visualizer_normalizes_stage_confusion_matrix_and_threads_raw_count_flag(monkeypatch):
+def test_downstream_eval_visualizer_normalizes_confusion_matrix_and_threads_raw_count_flag(monkeypatch):
     logged = []
     captured = {}
     monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)
@@ -181,13 +208,13 @@ def test_downstream_eval_visualizer_normalizes_stage_confusion_matrix_and_thread
 
     visualizer.log(
         stage="test",
-        preds=np.eye(3, dtype=np.float32),
-        targets=np.array([0, 1, 2], dtype=np.int64),
+        preds=np.eye(2, dtype=np.float32),
+        targets=np.array([0, 1], dtype=np.int64),
         is_classification=True,
-        output_dim=3,
-        label_name="stage3",
+        output_dim=2,
+        label_name="sex",
         current_epoch=2,
-        class_labels=["W", "NREM", "REM"],
+        class_labels=["female", "male"],
     )
 
     assert captured["normalize_rows"] is True
