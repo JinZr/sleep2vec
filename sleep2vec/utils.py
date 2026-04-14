@@ -6,7 +6,7 @@ import torch
 
 from data.psg_pretrain_dataset import PSGPretrainDataset
 from data.samplers import SequentialPairEvalBatchSampler
-from sleep2vec.common import is_builtin_stage_task
+from sleep2vec.common import is_builtin_seq_task
 
 
 def move_to_device(data, device="cuda"):
@@ -156,20 +156,20 @@ def _build_finetune_loader(
     is_train_set,
     few_shot=None,
 ):
-    is_stage_task = is_builtin_stage_task(args.label_name)
-    meta_data_names = [] if args.label_name in {"age", "sex"} or is_stage_task else [args.label_name]
+    is_seq_task = is_builtin_seq_task(args.label_name)
+    meta_data_names = [] if args.label_name in {"age", "sex"} or is_seq_task else [args.label_name]
     meta_data_regression_names = [] if args.is_classification else list(meta_data_names)
     if meta_data_names and args.is_classification and args.output_dim > 2:
         raise ValueError(
-            "Metadata classification currently supports only binary labels (output_dim=2) for non-sleep-staging tasks. "
+            "Metadata classification currently supports only binary labels (output_dim=2) for non-built-in sequence tasks. "
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
             "Extend metadata label encoding before using multiclass metadata targets."
         )
     dataset_channel_names = list(args.data_channel_names)
     dataset_channel_input_dims = dict(getattr(args, "channel_input_dims", {}) or {})
     label_source_name = getattr(args, "label_source_name", args.label_name)
-    if is_stage_task and label_source_name not in dataset_channel_names:
-        # Built-in sleep-staging tasks always consume raw stage5 tokens as labels.
+    if is_seq_task and label_source_name not in dataset_channel_names:
+        # Built-in sequence tasks consume runtime label channels from the NPZ batch.
         dataset_channel_names.append(label_source_name)
 
     dataset_kwargs = dict(

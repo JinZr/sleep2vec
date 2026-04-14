@@ -52,7 +52,7 @@
 
 ## Data Format & Caches
 - **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set. For the built-in `sex` task, the normalized contract is `sex=female|male`, encoded as `0=female`, `1=male`. If your source metadata uses `sexM`, convert it to `sex` with `1 -> male`, `0 -> female` during preprocessing.
-- **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy_vm`. `stage5` remains a special per-token label channel and always uses width `1`.
+- **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy_vm`. Built-in sequence labels are the exception: raw `stage5` remains a special per-token label channel with width `1`, and built-in `ahi` is loaded from the NPZ key `ahi` into width `30` token labels.
 - **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided. Preset generation now requires a YAML config so the script can resolve channel names and `input_dim` values from `model.channels`.
 - `preprocess/save_dataset_presets.py` also honors an optional top-level `preset_build` block. Use it when preset validation must differ from runtime input modalities, for example token-level PPG staging should validate both `ppg` and `stage5`.
 - `preset_build.required_channels` is the YAML source of truth for preset validation channels; do not combine it with CLI `--channels`.
@@ -167,7 +167,7 @@ python -m sleep2vec.finetune \
 Notes:
 - Built-in sleep-staging labels are `stage3`, `stage4`, and `stage5`. They are all **per-token sequence labeling** tasks (`is_seq=True`) and use token-level downstream (`model.cls.downstream: tokens`).
 - `stage3` merges raw `stage5` labels into `W / NREM / REM`; `stage4` merges raw `stage5` labels into `W / N1N2 / N3 / REM`.
-- Do **not** add `stage5` to `data.data_channel_names`; raw `stage5` is loaded automatically into `batch["tokens"]["stage5"]` whenever `--label-name` is `stage3`, `stage4`, or `stage5`.
+- Do **not** add `stage5` or `ahi` to `data.data_channel_names`; built-in sequence labels are loaded automatically into `batch["tokens"][...]` whenever `--label-name` is `stage3`, `stage4`, `stage5`, or `ahi`.
 - Built-in `sex` classification is a metadata task with class order `["female", "male"]`, so targets are encoded as `0=female`, `1=male`.
 - `--pretrained-backbone-path /path/to/pretrain_or_adapt.ckpt` can be used to bootstrap downstream training from a pretrain/adaptation checkpoint; loader prefers `ema_model.` and falls back to `model.`.
 
@@ -181,9 +181,10 @@ python -m sleep2vec.finetune \
 ```
 
 Custom metadata labels:
-- Set `--label-name` to the CSV column name (e.g., `ahi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
+- Set `--label-name` to the CSV column name (e.g., `bmi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
 - Use the same `--label-name` for `sleep2vec.infer` (required) when evaluating custom tasks.
-- Token-level labels (`is_seq: true`) are only supported for built-in sleep-staging labels (`stage3`, `stage4`, `stage5`) unless you extend the dataloader.
+- Token-level labels (`is_seq: true`) are only supported for built-in sequence labels (`stage3`, `stage4`, `stage5`, `ahi`) unless you extend the dataloader.
+- Built-in `ahi` expects a flat 1 Hz NPZ array named `ahi`; each 30-second token is reshaped into 30 binary labels and trained with sigmoid/BCE while monitoring `val_f1`.
 - Example YAMLs: `configs/sleep2vec_dense_finetune_custom_reg.yaml`, `configs/sleep2vec_dense_finetune_custom_cls.yaml`.
 
 > [!Note]
@@ -291,7 +292,7 @@ model:
 - `embedding_type: bert` adds a BERT-style CLS token and exposes both `cls_hidden` and `token_hidden`.
 - `downstream: tokens` uses token-level features (sequence tasks) or token pooling (non-seq tasks via `model.head.temporal_agg`).
 - `downstream: cls` uses the CLS embedding for **non-seq** tasks and requires `embedding_type: bert`.
-- For `--label-name stage3`, `stage4`, or `stage5` (`is_seq=True`), downstream is always token-level; if you set `downstream: cls` it will be ignored (a warning is logged).
+- For `--label-name stage3`, `stage4`, `stage5`, or `ahi` (`is_seq=True`), downstream is always token-level; if you set `downstream: cls` it will be ignored (a warning is logged).
 - `model.cls` is currently required by the config parser. To disable CLS token usage, set `embedding_type: null` with `downstream: tokens`.
 
 **Layer Mix (downstream)**  
@@ -392,7 +393,7 @@ finetune:
 - Maintain separate YAML per stage (`*_pretrain.yaml`, `*_finetune_*.yaml`); only pretrain YAML defines `loss`.
 - When adding a new modality, first declare it in `model.channels` with the correct `input_dim`, regenerate presets with the same `--config`, then pretrain/adapt from a checkpoint as needed.
 - All channels must share the same `out_dim`; the builder enforces this.
-- `data.data_channel_names` in finetune YAML must match `model.channels` (input modalities only); built-in sleep-staging labels (`stage3`, `stage4`, `stage5`) load raw `stage5` tokens automatically when used as `--label-name`.
+- `data.data_channel_names` in finetune YAML must match `model.channels` (input modalities only); built-in sequence labels (`stage3`, `stage4`, `stage5`, `ahi`) load their runtime label tokens automatically when used as `--label-name` (`stage3`/`stage4`/`stage5` from raw `stage5`, `ahi` from raw `ahi`).
 - `pretrain.py`, `adapt.py`, and `finetune.py` copy the resolved `config.yaml` plus `cli_args.yaml` into the run directory for reproducibility.
 - When experimenting, adjust CLI flags for training schedules and keep structural changes in YAML for reproducibility.
 

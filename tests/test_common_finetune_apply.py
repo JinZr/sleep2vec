@@ -89,6 +89,7 @@ def _finetune_payload() -> dict:
                 "output_dim": 3,
                 "is_classification": True,
                 "is_seq": True,
+                "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
@@ -102,6 +103,7 @@ def _finetune_payload() -> dict:
                 "output_dim": 4,
                 "is_classification": True,
                 "is_seq": True,
+                "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
@@ -115,6 +117,7 @@ def _finetune_payload() -> dict:
                 "output_dim": 5,
                 "is_classification": True,
                 "is_seq": True,
+                "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
@@ -123,11 +126,26 @@ def _finetune_payload() -> dict:
             },
         ),
         (
+            "ahi",
+            {
+                "output_dim": 30,
+                "is_classification": True,
+                "is_seq": True,
+                "is_multilabel": True,
+                "monitor": "val_f1",
+                "monitor_mod": "max",
+                "label_source_name": "ahi",
+                "stage_names": None,
+                "class_labels": None,
+            },
+        ),
+        (
             "sex",
             {
                 "output_dim": 2,
                 "is_classification": True,
                 "is_seq": False,
+                "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "class_labels": ["female", "male"],
@@ -139,6 +157,7 @@ def _finetune_payload() -> dict:
                 "output_dim": 1,
                 "is_classification": False,
                 "is_seq": False,
+                "is_multilabel": False,
                 "monitor": "val_mae",
                 "monitor_mod": "min",
                 "class_labels": None,
@@ -186,6 +205,20 @@ def test_apply_task_flags_rejects_stage4_builtin_conflict_from_yaml_task():
     )
 
     with pytest.raises(ValueError, match="output_dim must be 4 when --label-name is 'stage4'"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_ahi_builtin_conflict_from_yaml_task():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=29,
+        is_seq=True,
+        monitor="val_f1",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="output_dim must be 30 when --label-name is 'ahi'"):
         apply_task_flags(args, task_cfg)
 
 

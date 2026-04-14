@@ -115,6 +115,15 @@ def test_resolve_channels_and_dims_accepts_builtin_stage5_subset(tmp_path: Path)
     assert dims == {"ppg": 8, "stage5": 1}
 
 
+def test_resolve_channels_and_dims_accepts_builtin_ahi_subset(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _model_payload())
+
+    channels, dims = _resolve_channels_and_dims(config_path, ["ppg", "ahi"])
+
+    assert channels == ["ppg", "ahi"]
+    assert dims == {"ppg": 8, "ahi": 30}
+
+
 def test_load_preset_build_block_parses_explicit_contract(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "stage5"], min_channels=2))
     config_data = _load_config_mapping(config_path)
@@ -231,6 +240,20 @@ def test_filter_index_df_for_required_channels_uses_generic_and_builtin_masks():
     filtered = _filter_index_df_for_required_channels(df, ["ppg", "stage5"])
 
     assert filtered["path"].tolist() == ["a.npz", "d.npz"]
+
+
+def test_filter_index_df_for_required_channels_uses_ahi_mask():
+    df = pd.DataFrame(
+        [
+            {"path": "a.npz", "ppg_mask": "1", "ahi_mask": 1},
+            {"path": "b.npz", "ppg_mask": "1", "ahi_mask": 0},
+            {"path": "c.npz", "ppg_mask": "0", "ahi_mask": 1},
+        ]
+    )
+
+    filtered = _filter_index_df_for_required_channels(df, ["ppg", "ahi"])
+
+    assert filtered["path"].tolist() == ["a.npz"]
 
 
 def test_filter_index_df_for_required_channels_falls_back_when_some_masks_are_missing():
@@ -357,6 +380,52 @@ def test_build_preset_job_prefilters_index_with_required_masks(tmp_path: Path, m
 
     assert output_path == tmp_path / "preset.pkl"
     assert sample_count == 2
+    assert captured["filtered_paths"] == ["a.npz"]
+
+
+def test_build_preset_job_prefilters_index_with_ahi_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class FakeDataset:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            index_paths = kwargs["index"]
+            filtered_df = pd.read_csv(index_paths[0], low_memory=False)
+            captured["filtered_paths"] = filtered_df["path"].tolist()
+
+        def __len__(self) -> int:
+            return 1
+
+    fake_module = types.SimpleNamespace(PSGPretrainDataset=FakeDataset)
+    monkeypatch.setitem(sys.modules, "data.psg_pretrain_dataset", fake_module)
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "age": 40, "sex": 1, "ppg_mask": 1, "ahi_mask": 1},
+            {"path": "b.npz", "split": "train", "duration": 60, "age": 40, "sex": 1, "ppg_mask": 1, "ahi_mask": 0},
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_path, sample_count = _build_preset_job(
+        output_path=tmp_path / "preset.pkl",
+        index_paths=[str(index_path)],
+        channel_names=["ppg", "ahi"],
+        channel_input_dims={"ppg": 8, "ahi": 30},
+        split="train",
+        meta_data_name=None,
+        n_tokens=128,
+        stride_tokens=64,
+        mask_rate=0.0,
+        allow_missing_channels=False,
+        min_channels=2,
+        batch_size=8,
+        shuffle=False,
+        filter_max_workers=1,
+    )
+
+    assert output_path == tmp_path / "preset.pkl"
+    assert sample_count == 1
     assert captured["filtered_paths"] == ["a.npz"]
 
 

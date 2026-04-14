@@ -41,6 +41,15 @@ _BUILTIN_TASK_SPECS = {
         "label_source_name": "stage5",
         "stage_names": ["W", "N1", "N2", "N3", "REM"],
     },
+    "ahi": {
+        "type": "classification",
+        "output_dim": 30,
+        "is_seq": True,
+        "is_multilabel": True,
+        "monitor": "val_f1",
+        "monitor_mod": "max",
+        "label_source_name": "ahi",
+    },
     "sex": {
         "type": "classification",
         "output_dim": 2,
@@ -59,11 +68,18 @@ _BUILTIN_TASK_SPECS = {
 }
 
 
-def is_builtin_stage_task(label_name: str | None) -> bool:
+def is_builtin_seq_task(label_name: str | None) -> bool:
     if label_name is None:
         return False
     spec = _BUILTIN_TASK_SPECS.get(label_name)
     return bool(spec is not None and spec["is_seq"])
+
+
+def is_builtin_stage_task(label_name: str | None) -> bool:
+    if not is_builtin_seq_task(label_name):
+        return False
+    spec = _BUILTIN_TASK_SPECS.get(label_name)
+    return bool(spec is not None and spec.get("label_source_name") == "stage5")
 
 
 def get_task_label_source_name(label_name: str) -> str:
@@ -96,6 +112,11 @@ def get_task_label_merge_map(label_name: str) -> dict[int, int] | None:
     if spec is None or "label_merge_map" not in spec:
         return None
     return {int(k): int(v) for k, v in spec["label_merge_map"].items()}
+
+
+def get_task_is_multilabel(label_name: str) -> bool:
+    spec = _BUILTIN_TASK_SPECS.get(label_name)
+    return bool(spec is not None and spec.get("is_multilabel", False))
 
 
 def remap_stage_labels(labels, label_name: str):
@@ -161,10 +182,10 @@ def _validate_metadata_label_support(args) -> None:
     if (
         getattr(args, "is_classification", False)
         and int(getattr(args, "output_dim", 0)) > 2
-        and not is_builtin_stage_task(getattr(args, "label_name", None))
+        and not is_builtin_seq_task(getattr(args, "label_name", None))
     ):
         raise ValueError(
-            "Metadata classification currently supports only binary labels (output_dim=2) for non-sleep-staging tasks. "
+            "Metadata classification currently supports only binary labels (output_dim=2) for non-built-in sequence tasks. "
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
             "Extend metadata label encoding before using multiclass metadata targets."
         )
@@ -177,6 +198,12 @@ def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict
         raise ValueError(f"finetune.task.type must be '{spec['type']}' when --label-name is '{label_name}'.")
     if task_cfg.is_seq != spec["is_seq"]:
         raise ValueError(f"finetune.task.is_seq must be {spec['is_seq']} when --label-name is '{label_name}'.")
+    if task_cfg.monitor != spec["monitor"]:
+        raise ValueError(f"finetune.task.monitor must be '{spec['monitor']}' when --label-name is '{label_name}'.")
+    if task_cfg.monitor_mod != spec["monitor_mod"]:
+        raise ValueError(
+            f"finetune.task.monitor_mod must be '{spec['monitor_mod']}' when --label-name is '{label_name}'."
+        )
 
 
 def _apply_builtin_task_attrs(args: argparse.Namespace, label_name: str) -> None:
@@ -184,6 +211,7 @@ def _apply_builtin_task_attrs(args: argparse.Namespace, label_name: str) -> None
     args.stage_names = get_task_stage_names(label_name)
     args.class_labels = get_task_class_labels(label_name)
     args.label_merge_map = get_task_label_merge_map(label_name)
+    args.is_multilabel = get_task_is_multilabel(label_name)
 
 
 def _apply_custom_task_attrs(args: argparse.Namespace) -> None:
@@ -191,6 +219,7 @@ def _apply_custom_task_attrs(args: argparse.Namespace) -> None:
     args.stage_names = None
     args.class_labels = None
     args.label_merge_map = None
+    args.is_multilabel = False
 
 
 def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
@@ -207,11 +236,13 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
         args.is_seq = task_cfg.is_seq
         args.monitor = task_cfg.monitor
         args.monitor_mod = task_cfg.monitor_mod
-        if is_builtin_stage_task(args.label_name) and not args.is_seq:
-            raise ValueError("finetune.task.is_seq must be true when --label-name is one of: stage3, stage4, stage5.")
-        if args.is_seq and not is_builtin_stage_task(args.label_name):
+        if is_builtin_seq_task(args.label_name) and not args.is_seq:
             raise ValueError(
-                "finetune.task.is_seq is only supported for built-in sleep-staging labels (stage3, stage4, stage5). "
+                "finetune.task.is_seq must be true when --label-name is one of: stage3, stage4, stage5, ahi."
+            )
+        if args.is_seq and not is_builtin_seq_task(args.label_name):
+            raise ValueError(
+                "finetune.task.is_seq is only supported for built-in sequence labels (stage3, stage4, stage5, ahi). "
                 "Extend the dataloader if you need token-level labels for other targets."
             )
         _validate_metadata_label_support(args)

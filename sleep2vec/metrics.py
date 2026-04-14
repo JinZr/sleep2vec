@@ -5,7 +5,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr
-from sklearn.metrics import confusion_matrix, f1_score, recall_score, roc_auc_score
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
 
 
 def binary_positive_scores_from_two_logits(gts, preds) -> tuple[np.ndarray, np.ndarray]:
@@ -101,15 +101,40 @@ def macro_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(specs)) if specs else 0.0
 
 
+def compute_binary_label_metrics(gts, preds) -> dict[str, float]:
+    y_true = np.asarray(gts, dtype=np.int64).reshape(-1)
+    y_score = np.asarray(preds, dtype=np.float32).reshape(-1)
+    y_pred = (y_score >= 0.5).astype(np.int64)
+
+    result = {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+    }
+    if np.unique(y_true).size < 2:
+        result["roc_auc"] = np.nan
+    else:
+        try:
+            result["roc_auc"] = float(roc_auc_score(y_true, y_score))
+        except Exception:
+            result["roc_auc"] = np.nan
+    return result
+
+
 def compute_downstream_metrics(
     gts,
     preds,
     *,
     is_classification: bool,
+    is_multilabel: bool = False,
     output_dim: int | None = None,
     stage_names=None,
 ):
     """统一的下游任务指标计算。"""
+    if is_multilabel:
+        return compute_binary_label_metrics(gts, preds)
+
     if is_classification:
         from pyhealth.metrics import multiclass_metrics_fn
 

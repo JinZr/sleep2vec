@@ -19,7 +19,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_SPLITS = ["test", "val", "train"]
-BUILTIN_CHANNEL_SPECS = {"stage5": {"input_dim": 1, "mask_column": "stage_mask"}}
+BUILTIN_CHANNEL_SPECS = {
+    "stage5": {"input_dim": 1, "mask_column": "stage_mask"},
+    "ahi": {"input_dim": 30, "mask_column": "ahi_mask"},
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,7 +88,7 @@ def parse_args() -> argparse.Namespace:
         "--channels",
         nargs="+",
         default=None,
-        help="Optional subset of channels declared in YAML model.channels. Built-in validation channel 'stage5' is also allowed.",
+        help="Optional subset of channels declared in YAML model.channels. Built-in validation channels 'stage5' and 'ahi' are also allowed.",
     )
     parser.add_argument("--batch-size", type=int, default=16, help="Dataloader batch size in preset filtering.")
     parser.add_argument(

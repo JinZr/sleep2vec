@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "branch": "dev/ahi",
+  "commit": "2ab2875b0f882c0f03a17e66fcc9831b8de96063",
+  "generated_at": "2026-04-14T15:17:25Z",
+  "mode": "initialize-branch",
+  "source_of_truth": "checked-out branch plus tracked working-tree edits",
+  "baseline": {
+    "main_commit": "2ab2875b0f882c0f03a17e66fcc9831b8de96063",
+    "merge_base_with_main": "2ab2875b0f882c0f03a17e66fcc9831b8de96063",
+    "main_index_available": true,
+    "notes": [
+      "HEAD currently matches main; branch-specific handbook deltas come from tracked working-tree edits",
+      "main handbook content was used only as an initialization baseline"
+    ]
+  },
+  "tracked_roots": [
+    "sleep2vec/",
+    "data/",
+    "preprocess/",
+    "sleep2vec2/",
+    "sleep2vec_moe/",
+    "sleep2vec_hires/",
+    "configs/",
+    "tests/",
+    "utils/"
+  ],
+  "coverage": {
+    "tracked_file_counts": {
+      "sleep2vec": 75,
+      "data": 6,
+      "preprocess": 6,
+      "sleep2vec2": 0,
+      "sleep2vec_moe": 0,
+      "sleep2vec_hires": 0,
+      "configs": 26,
+      "tests": 20,
+      "utils": 2
+    },
+    "function_catalog_scope": [
+      "config parsing and CLI binding",
+      "registry and builder surfaces",
+      "runtime entrypoints and checkpoint utilities",
+      "core backbone and downstream model contracts",
+      "dataset, metadata, and sampler contracts",
+      "preprocessing and preset generation",
+      "diagnostics and visualization hooks"
+    ],
+    "workflow_scope": [
+      "pretrain",
+      "finetune",
+      "infer and checkpoint averaging",
+      "preprocessing and preset generation"
+    ]
+  },
+  "working_tree_dirty": true,
+  "working_tree_notes": [
+    "tracked ahi implementation edits in README.md, data/, preprocess/, sleep2vec/, and tests/ were incorporated into this initialization",
+    "no untracked product files were indexed as branch-canonical source"
+  ],
+  "required_outputs": [
+    "README.md",
+    "MANIFEST.json",
+    "SYSTEM_OVERVIEW.md",
+    "MODULE_MAP.md",
+    "REUSE_GUIDE.md",
+    "CHANGELOG.md",
+    "DELTA_FROM_MAIN.md",
+    "FUNCTIONS/",
+    "WORKFLOWS/"
+  ],
+  "variant_status": {
+    "sleep2vec2": "no tracked source files on this branch",
+    "sleep2vec_moe": "no tracked source files on this branch",
+    "sleep2vec_hires": "no tracked source files on this branch"
+  },
+  "stale_entries_removed": [
+    "main-only wording that described stage5 as the only built-in sequence task"
+  ],
+  "unresolved_ambiguities": [
+    "runtime validation is limited in this environment because python3.10, pytest, torch, and scipy are unavailable",
+    "no committed branch delta exists yet; the documented ahi behavior is currently a working-tree change"
+  ]
+}

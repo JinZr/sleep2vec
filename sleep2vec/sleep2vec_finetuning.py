@@ -75,6 +75,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
+        self._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
         self._regression_loss = torch.nn.MSELoss()
 
         # Optional tensor diagnostics (borrowed from icefall)
@@ -195,6 +196,13 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _compute_loss(self, logits, batch):
         targets = self._get_targets(batch)
 
+        if getattr(self.args, "is_multilabel", False):
+            valid_mask = targets != -1.0
+            if not valid_mask.any():
+                return None
+            loss = self._multilabel_loss(logits, targets.float())[valid_mask].mean()
+            return loss, int(valid_mask.sum().item())
+
         if self.args.is_classification:
             logits_flat = logits.view(-1, logits.size(-1))
             targets_flat = targets.view(-1).long()
@@ -216,6 +224,15 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _extract_valid_predictions(self, batch, logits):
         labels = self._get_targets(batch)
+
+        if getattr(self.args, "is_multilabel", False):
+            mask = labels != -1.0
+            if not mask.any():
+                return None
+
+            probs = torch.sigmoid(logits[mask]).to(torch.float32).detach().cpu().numpy()
+            labels_np = labels[mask].to(torch.int64).detach().cpu().numpy()
+            return probs, labels_np
 
         if self.args.is_classification:
             if logits.dim() == 3:
@@ -248,6 +265,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
         label_source_name = getattr(self.args, "label_source_name", self.args.label_name)
         labels = batch["tokens"][label_source_name].to(self.args.device)
+        if getattr(self.args, "is_multilabel", False):
+            return labels
         return remap_stage_labels(labels, self.args.label_name)
 
     @staticmethod
@@ -258,6 +277,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return getter()
 
     def _empty_epoch_outputs(self):
+        if getattr(self.args, "is_multilabel", False):
+            return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.int64)
         if self.args.is_classification:
             output_dim = int(getattr(self.args, "output_dim", 0) or 0)
             return np.empty((0, output_dim), dtype=np.float32), np.empty((0,), dtype=np.int64)
@@ -366,6 +387,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             gts,
             preds,
             is_classification=self.args.is_classification,
+            is_multilabel=getattr(self.args, "is_multilabel", False),
             output_dim=getattr(self.args, "output_dim", None),
             stage_names=getattr(self.args, "stage_names", None),
         )
@@ -380,7 +402,12 @@ class Sleep2vecFinetuning(pl.LightningModule):
             )
 
         trainer = getattr(self, "trainer", None)
-        if stage in {"val", "test"} and trainer is not None and trainer.is_global_zero:
+        if (
+            stage in {"val", "test"}
+            and trainer is not None
+            and trainer.is_global_zero
+            and not getattr(self.args, "is_multilabel", False)
+        ):
             self._eval_visualizer.log(
                 stage=stage,
                 preds=preds,

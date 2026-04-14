@@ -29,11 +29,16 @@ def _build_channel_registry(
             default_extractor("stage5", 1),
             default_tokenizer(1),
             default_mlm_mask_generator(0.0),
-        )
+        ),
+        "ahi": (
+            default_extractor("ahi", 30),
+            default_tokenizer(30),
+            default_mlm_mask_generator(0.0),
+        ),
     }
     missing: list[str] = []
     for name in channel_names:
-        if name == "stage5":
+        if name in registry:
             continue
         frames_per_token = channel_input_dims.get(name)
         if frames_per_token is None:
@@ -48,7 +53,7 @@ def _build_channel_registry(
     if missing:
         raise ValueError(
             "Missing channel_input_dims for requested channels: "
-            f"{sorted(missing)}. Provide explicit YAML-driven widths for all non-stage5 channels."
+            f"{sorted(missing)}. Provide explicit YAML-driven widths for all non-built-in channels."
         )
     return registry
 

@@ -409,7 +409,7 @@ class DefaultDataset(BaseDataset):
             tokens = {}
             for key in samples[0].tokens.keys():
                 token_seqs = [s.tokens[key] for s in samples]
-                pad_value = -1.0 if key == "stage5" else 0.0
+                pad_value = -1.0 if key in {"stage5", "ahi"} else 0.0
                 padded = pad_sequence(token_seqs, batch_first=True, padding_value=pad_value)
                 # padded = pad_sequence(token_seqs, batch_first=True, padding_value=0.0).to(device)
                 tokens[key] = padded
