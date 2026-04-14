@@ -30,6 +30,8 @@ import typing as t
 import torch
 from torch.utils.data import Sampler
 
+Pair = tuple[str, str]
+
 
 def _get_dist_info() -> tuple[int, int]:
     """Return (rank, world_size) for torch.distributed when initialized."""
@@ -42,9 +44,73 @@ def handles_distributed_sharding(batch_sampler: t.Any) -> bool:
     """Return True when a batch sampler already shards across ranks."""
     if batch_sampler is None:
         return False
-    return isinstance(batch_sampler, DistributedShardedBatchSampler) or bool(
-        getattr(batch_sampler, "handles_distributed_sharding", False)
-    )
+    flag = getattr(batch_sampler, "handles_distributed_sharding", None)
+    if flag is not None:
+        return bool(flag)
+    return isinstance(batch_sampler, DistributedShardedBatchSampler)
+
+
+def _resolve_available_channel_set(src: t.Any, *, allowed: set[str], sample_idx: int) -> set[str]:
+    payload = getattr(src, "payload", None)
+    if not isinstance(payload, dict) or "available_channels" not in payload:
+        sample_id = getattr(src, "id", sample_idx)
+        sample_path = getattr(src, "path", "?")
+        raise ValueError(
+            "Pair samplers require payload['available_channels'] for every sample. "
+            f"Missing at sample id={sample_id}, path={sample_path}."
+        )
+
+    avail = payload.get("available_channels")
+    if not isinstance(avail, (list, tuple, set)):
+        sample_id = getattr(src, "id", sample_idx)
+        raise ValueError(
+            "payload['available_channels'] must be a list/tuple/set. "
+            f"Got type={type(avail).__name__} for sample id={sample_id}."
+        )
+    return {str(ch) for ch in avail if str(ch) in allowed}
+
+
+def _build_pair_index_pools(
+    data: t.Sequence[t.Any],
+    *,
+    channel_names: t.Sequence[str],
+    min_channels: int,
+) -> tuple[list[Pair], dict[Pair, array], int]:
+    all_pairs: list[Pair] = list(itertools.combinations([str(ch) for ch in channel_names], 2))
+    max_index = max(0, len(data) - 1)
+    index_typecode = "I" if max_index <= 0xFFFFFFFF else "Q"
+    pair_to_indices: dict[Pair, array] = {pair: array(index_typecode) for pair in all_pairs}
+    eligible_indices: set[int] = set()
+    allowed = {str(ch) for ch in channel_names}
+
+    for i, src in enumerate(data):
+        avail_set = _resolve_available_channel_set(src, allowed=allowed, sample_idx=i)
+        if len(avail_set) < min_channels:
+            continue
+
+        matched = False
+        for pair in all_pairs:
+            if pair[0] in avail_set and pair[1] in avail_set:
+                pair_to_indices[pair].append(i)
+                matched = True
+        if matched:
+            eligible_indices.add(i)
+
+    empty_pairs = [pair for pair in all_pairs if not pair_to_indices[pair]]
+    if empty_pairs:
+        preview = ", ".join(f"{a}__{b}" for a, b in empty_pairs[:8])
+        suffix = " ..." if len(empty_pairs) > 8 else ""
+        raise ValueError(
+            "Configured pairs have empty sample pools. "
+            f"empty_pairs={len(empty_pairs)}/{len(all_pairs)} [{preview}{suffix}]. "
+            "Check channel_names, payload['available_channels'], and min_channels consistency."
+        )
+
+    eligible_size = len(eligible_indices)
+    if eligible_size == 0:
+        raise ValueError("Pair samplers found 0 eligible samples.")
+
+    return all_pairs, pair_to_indices, eligible_size
 
 
 class DistributedShardedBatchSampler(Sampler[list[int]]):
@@ -75,6 +141,7 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
         min_channels: int = 2,
         shuffle: bool = True,
         drop_last: bool = True,
+        shard_across_ranks: bool = True,
         seed: int = 0,
     ) -> None:
         if batch_size <= 0:
@@ -85,9 +152,11 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
         self._min_channels = int(min_channels)
         self._shuffle = bool(shuffle)
         self._drop_last = bool(drop_last)
+        self._shard_across_ranks = bool(shard_across_ranks)
         self._seed = int(seed)
         self._epoch = 0
         self._manual_epoch = False
+        self.handles_distributed_sharding = self._shard_across_ranks
 
         buckets: dict[tuple[str, ...], list[int]] = defaultdict(list)
         for i, src in enumerate(data):
@@ -119,7 +188,8 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
             else:
                 total_batches += math.ceil(n / self._batch_size)
 
-        total_batches = (total_batches // world_size) * world_size
+        if self._shard_across_ranks:
+            total_batches = (total_batches // world_size) * world_size
         if total_batches == 0:
             raise ValueError(
                 "Bucketed sampler produced 0 batches after truncation. "
@@ -128,12 +198,18 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
         return total_batches
 
     def __len__(self) -> int:
-        _, world_size = _get_dist_info()
+        if self._shard_across_ranks:
+            _, world_size = _get_dist_info()
+        else:
+            world_size = 1
         total_batches = self._compute_total_batches(world_size)
         return total_batches // world_size
 
     def __iter__(self):
-        rank, world_size = _get_dist_info()
+        if self._shard_across_ranks:
+            rank, world_size = _get_dist_info()
+        else:
+            rank, world_size = 0, 1
         total_batches = self._compute_total_batches(world_size)
         # Keep shuffle order identical across ranks; sharding happens via modulo.
         rng = random.Random(self._seed + 1000 * self._epoch)
@@ -170,9 +246,6 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
         """Optionally set epoch for deterministic shuffling across ranks."""
         self._epoch = int(epoch)
         self._manual_epoch = True
-
-
-Pair = tuple[str, str]
 
 
 class PairFirstBatchSampler(DistributedShardedBatchSampler):
@@ -221,65 +294,15 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
         self._last_epoch_unique_sample_counts: dict[Pair, int] = {}
         self._pair_pool_sizes: dict[Pair, int] = {}
 
-        all_pairs: list[Pair] = list(itertools.combinations(self._channel_names, 2))
-        max_index = max(0, len(data) - 1)
-        index_typecode = "I" if max_index <= 0xFFFFFFFF else "Q"
-        self._index_typecode = index_typecode
-        pair_to_indices: dict[Pair, array] = {pair: array(index_typecode) for pair in all_pairs}
-        eligible_indices: set[int] = set()
-        allowed = set(self._channel_names)
-
-        for i, src in enumerate(data):
-            payload = getattr(src, "payload", None)
-            if not isinstance(payload, dict) or "available_channels" not in payload:
-                sample_id = getattr(src, "id", i)
-                sample_path = getattr(src, "path", "?")
-                raise ValueError(
-                    "PairFirstBatchSampler requires payload['available_channels'] for every sample. "
-                    f"Missing at sample id={sample_id}, path={sample_path}."
-                )
-            avail = payload.get("available_channels")
-            if not isinstance(avail, (list, tuple, set)):
-                sample_id = getattr(src, "id", i)
-                raise ValueError(
-                    "payload['available_channels'] must be a list/tuple/set. "
-                    f"Got type={type(avail).__name__} for sample id={sample_id}."
-                )
-            avail_set = {str(ch) for ch in avail if str(ch) in allowed}
-            if len(avail_set) < self._min_channels:
-                continue
-
-            matched = False
-            for pair in all_pairs:
-                if pair[0] in avail_set and pair[1] in avail_set:
-                    pair_to_indices[pair].append(i)
-                    matched = True
-            if matched:
-                eligible_indices.add(i)
-
-        empty_pairs = [pair for pair in all_pairs if not pair_to_indices[pair]]
-        if empty_pairs:
-            preview = ", ".join(f"{a}__{b}" for a, b in empty_pairs[:8])
-            suffix = " ..." if len(empty_pairs) > 8 else ""
-            raise ValueError(
-                "PairFirstBatchSampler found configured pairs with empty sample pools. "
-                f"empty_pairs={len(empty_pairs)}/{len(all_pairs)} [{preview}{suffix}]. "
-                "Check pretrain channel_names and preset payload['available_channels'] consistency."
-            )
-
-        if not pair_to_indices:
-            raise ValueError(
-                "PairFirstBatchSampler found no valid pair pools. "
-                "Check channel_names, available_channels, and min_channels."
-            )
-
+        all_pairs, pair_to_indices, eligible_size = _build_pair_index_pools(
+            data,
+            channel_names=self._channel_names,
+            min_channels=self._min_channels,
+        )
         self._pair_to_indices = pair_to_indices
         self._pairs = list(all_pairs)
         self._pair_pool_sizes = {pair: len(pair_to_indices[pair]) for pair in self._pairs}
-        self._eligible_size = len(eligible_indices)
-        if self._eligible_size == 0:
-            raise ValueError("PairFirstBatchSampler found 0 eligible samples.")
-
+        self._eligible_size = eligible_size
         self._pair_probs = self._resolve_pair_probs(pair_probs)
 
     def _resolve_pair_probs(self, pair_probs: dict[Pair, float] | None) -> list[float]:
@@ -388,6 +411,9 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
     def get_target_distribution(self) -> dict[Pair, float]:
         return {pair: prob for pair, prob in zip(self._pairs, self._pair_probs)}
 
+    def set_pair_probs(self, pair_probs: dict[Pair, float] | None) -> None:
+        self._pair_probs = self._resolve_pair_probs(pair_probs)
+
     def get_last_epoch_counts(self) -> dict[Pair, int]:
         return dict(self._last_epoch_pair_counter)
 
@@ -399,3 +425,43 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
 
     def is_tracking_unique_sample_counts(self) -> bool:
         return self._track_unique_sample_counts
+
+
+class SequentialPairEvalBatchSampler(Sampler[list[tuple[int, Pair]]]):
+    handles_distributed_sharding = False
+
+    def __init__(
+        self,
+        data: t.Sequence[t.Any],
+        *,
+        channel_names: t.Sequence[str],
+        batch_size: int,
+        min_channels: int = 2,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        if min_channels < 2:
+            raise ValueError(f"min_channels must be >= 2, got {min_channels}")
+        if len(channel_names) < 2:
+            raise ValueError(f"Need at least 2 channels to build pairs, got {len(channel_names)}")
+
+        self._batch_size = int(batch_size)
+        self._pairs, self._pair_to_indices, _ = _build_pair_index_pools(
+            data,
+            channel_names=channel_names,
+            min_channels=int(min_channels),
+        )
+
+    def __len__(self) -> int:
+        return sum(math.ceil(len(indices) / self._batch_size) for indices in self._pair_to_indices.values())
+
+    def __iter__(self):
+        for pair in self._pairs:
+            indices = self._pair_to_indices[pair]
+            for start in range(0, len(indices), self._batch_size):
+                batch = [int(idx) for idx in indices[start : start + self._batch_size]]
+                yield [(idx, pair) for idx in batch]
+
+    @property
+    def pairs(self) -> list[Pair]:
+        return list(self._pairs)

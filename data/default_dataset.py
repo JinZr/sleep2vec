@@ -65,6 +65,7 @@ class DefaultDataset(BaseDataset):
         sources=None,  # ← 新增参数
         pair_selector: t.Any | None = None,
         seed: int = 42,
+        filter_max_workers: int | None = None,
     ) -> None:
         """
         Args:
@@ -95,11 +96,9 @@ class DefaultDataset(BaseDataset):
                 self.data = pickle.load(f)
         elif data is not None:
             # ✅ 初始化时检查并过滤掉 token 长度不一致的样本
-            allow_missing_channels = bool(getattr(self, "allow_missing_channels", False))
-            channel_names = getattr(self, "channel_names", None)
-            if allow_missing_channels and channel_names is None:
-                raise ValueError("DefaultDataset requires channel_names when allow_missing_channels is enabled.")
-            min_channels = getattr(self, "min_channels", 2)
+            allow_missing_channels = bool(self.allow_missing_channels)
+            channel_names = self.channel_names
+            min_channels = self.min_channels
             self.data = filter_valid_sample_indices(
                 data,
                 extractors,
@@ -108,6 +107,7 @@ class DefaultDataset(BaseDataset):
                 channel_names=channel_names,
                 min_channels=min_channels,
                 tolerance=1,
+                max_workers=filter_max_workers,
             )
             if save_preset_path:
                 with open(save_preset_path, "wb") as f:
@@ -194,7 +194,7 @@ class DefaultDataset(BaseDataset):
         return len(self.data)
 
     def reset_pair_selector(self) -> None:
-        selector = getattr(self, "pair_selector", None)
+        selector = self.pair_selector
         if selector is not None and hasattr(selector, "reset"):
             selector.reset()
 
@@ -240,13 +240,13 @@ class DefaultDataset(BaseDataset):
         randomly_select_channels = self.randomly_select_channels
         generative = self.generative
         disease_names = self.meta_data_names
-        allow_missing_channels = bool(getattr(self, "allow_missing_channels", False))
-        min_channels = getattr(self, "min_channels", 2)
+        allow_missing_channels = bool(self.allow_missing_channels)
+        min_channels = self.min_channels
         channel_name_set = set(channel_names)
-        bucket_by_available_channels = bool(getattr(self, "bucket_by_available_channels", False))
-        train_pair_sampling = getattr(self, "train_pair_sampling", None)
-        train_pair_track_unique_samples = bool(getattr(self, "train_pair_track_unique_samples", False))
-        pair_selector = getattr(self, "pair_selector", None)
+        bucket_by_available_channels = bool(self.bucket_by_available_channels)
+        train_pair_probs = self.train_pair_probs
+        train_pair_track_unique_samples = bool(self.train_pair_track_unique_samples)
+        pair_selector = self.pair_selector
 
         def collate_fn(indices, tolerance=1):
             selected_pair: tuple[str, str] | None = None
@@ -336,7 +336,9 @@ class DefaultDataset(BaseDataset):
                             src for src, avail in avail_map if best_pair[0] in avail and best_pair[1] in avail
                         ]
             else:
-                if pair_selector is not None:
+                if selected_pair is not None:
+                    chosen = [selected_pair[0], selected_pair[1]]
+                elif pair_selector is not None:
                     chosen = pair_selector.select(channel_names)
                 elif randomly_select_channels:
                     chosen = random.sample(channel_names, k=2)
@@ -450,10 +452,21 @@ class DefaultDataset(BaseDataset):
         dl_kwargs = dict(self.dataloader_config)
         if sampler is not None:
             dl_kwargs.pop("shuffle", None)  # sampler 与 shuffle 互斥
+        explicit_batch_sampler = dl_kwargs.pop("batch_sampler", None)
 
-        if allow_missing_channels and self.is_train_set and train_pair_sampling is not None:
+        if explicit_batch_sampler is not None:
+            dl_kwargs.pop("batch_size", None)
+            dl_kwargs.pop("shuffle", None)
+            return DataLoader(
+                self,
+                batch_sampler=explicit_batch_sampler,
+                collate_fn=collate_fn,
+                **dl_kwargs,
+            )
+
+        if allow_missing_channels and self.is_train_set:
             if sampler is not None:
-                raise ValueError("train_pair_sampling is incompatible with metadata weighted sampler.")
+                raise ValueError("Pair-first sampling is incompatible with metadata weighted sampler.")
 
             from data.samplers import PairFirstBatchSampler
 
@@ -467,7 +480,8 @@ class DefaultDataset(BaseDataset):
                 shuffle=shuffle,
                 drop_last=self.is_train_set,
                 seed=self.seed,
-                pair_sampling=str(train_pair_sampling),
+                pair_sampling="uniform",
+                pair_probs=train_pair_probs,
                 track_unique_sample_counts=train_pair_track_unique_samples,
             )
 
@@ -500,7 +514,8 @@ class DefaultDataset(BaseDataset):
                 batch_size=batch_size,
                 min_channels=min_channels,
                 shuffle=shuffle,
-                drop_last=True,
+                drop_last=self.is_train_set,
+                shard_across_ranks=self.is_train_set,
                 seed=self.seed,
             )
 
@@ -516,5 +531,5 @@ class DefaultDataset(BaseDataset):
             **dl_kwargs,
             collate_fn=collate_fn,
             sampler=sampler,
-            drop_last=True,
+            drop_last=self.is_train_set,
         )

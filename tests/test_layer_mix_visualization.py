@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
+from sleep2vec.visualization.theme import _OPENAI_BLUE_CMAP
 
 
 def test_render_layer_mix_heatmap_accepts_valid_shape():
@@ -12,6 +13,7 @@ def test_render_layer_mix_heatmap_accepts_valid_shape():
         assert fig.axes[0].get_xlabel() == "Layer"
         assert fig.axes[0].get_ylabel() == "Modality"
         assert fig.axes[0].get_title() == "demo"
+        assert fig.axes[0].images[0].cmap.name == _OPENAI_BLUE_CMAP.name
     finally:
         plt.close(fig)
 

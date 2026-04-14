@@ -2,7 +2,6 @@ import argparse
 import logging
 import os
 from pathlib import Path
-import shutil
 import sys
 
 import pytorch_lightning as pl
@@ -19,7 +18,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.samplers import handles_distributed_sharding
 from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
-from sleep2vec.common import dump_cli_args_yaml
+from sleep2vec.checkpoints import load_pretrain_init_weights
+from sleep2vec.common import apply_model_config_args, persist_run_config_and_args
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
 from sleep2vec.utils import get_pretrain_dataloader
@@ -33,16 +33,14 @@ def sleep2vec_pretrain(args):
     averaging_config = config_bundle.averaging
     args.mask_rate = config_bundle.data.mask_rate
     args.max_tokens = config_bundle.data.max_tokens
-    args.channel_names = [c.name for c in model_config.channels]
-    args.backbone_arch = model_config.backbone.name
+    apply_model_config_args(args, model_config, set_backbone_arch=True)
 
     # get data loaders
-    train_loader, val_loaders = get_pretrain_dataloader(args)
+    train_loader, val_loader = get_pretrain_dataloader(args)
     # Disable Lightning's distributed sampler injection only when our custom
     # batch sampler already shards across ranks.
     train_batch_sampler = getattr(train_loader, "batch_sampler", None)
-    main_val_loader = val_loaders[0] if val_loaders else None
-    val_batch_sampler = getattr(main_val_loader, "batch_sampler", None)
+    val_batch_sampler = getattr(val_loader, "batch_sampler", None)
     use_distributed_sampler = not handles_distributed_sharding(
         train_batch_sampler
     ) and not handles_distributed_sharding(val_batch_sampler)
@@ -70,22 +68,23 @@ def sleep2vec_pretrain(args):
 
     # Always stash the YAML used for this run alongside checkpoints.
     exp_dir = Path(save_path).parent
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    dest_config = exp_dir / "config.yaml"
-    try:
-        shutil.copy2(args.config, dest_config)
-        logging.info(f"Copied config to {dest_config}")
-    except Exception as exc:  # pragma: no cover - best-effort
-        logging.warning(f"Failed to copy config to {dest_config}: {exc}")
-
-    cli_args_path = exp_dir / "cli_args.yaml"
-    try:
-        dump_cli_args_yaml(args, cli_args_path)
-        logging.info(f"Saved CLI args to {cli_args_path}")
-    except Exception as exc:  # pragma: no cover - best-effort
-        logging.warning(f"Failed to write CLI args YAML to {cli_args_path}: {exc}")
+    persist_run_config_and_args(args, exp_dir)
 
     model = Sleep2vecPretraining(args, model_config, loss_config, averaging_config=averaging_config)
+    if args.pretrained_backbone_path and args.ckpt_path is None:
+        load_info = load_pretrain_init_weights(model.model, args.pretrained_backbone_path, device="cpu", strict=False)
+        logging.info(
+            "Loaded pretrain-model init from %s using prefix=%s (%d keys).",
+            args.pretrained_backbone_path,
+            load_info.used_prefix,
+            load_info.loaded_keys,
+        )
+        if load_info.missing_keys:
+            logging.warning("Missing init keys: %s", load_info.missing_keys)
+        if load_info.unexpected_keys:
+            logging.warning("Unexpected init keys: %s", load_info.unexpected_keys)
+        if model.model_averager is not None:
+            model.model_averager.sync_from_student()
 
     logger = WandbLogger(
         project="sleep2vec-pretrain",
@@ -174,7 +173,7 @@ def sleep2vec_pretrain(args):
     trainer.fit(
         model,
         train_dataloaders=train_loader,
-        val_dataloaders=val_loaders if not args.print_diagnostics else None,
+        val_dataloaders=val_loader if not args.print_diagnostics else None,
         ckpt_path=args.ckpt_path,
     )
 
@@ -199,15 +198,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
     parser.add_argument("--batch-size", type=int, default=320, help="batch size")
-    parser.add_argument("--num-workers", type=int, default=8, help="number of dataloader workers")
+    parser.add_argument("--num-workers", type=int, default=16, help="Training dataloader workers.")
     parser.add_argument(
         "--val-num-workers",
         type=int,
-        default=None,
-        help=(
-            "Validation dataloader workers. "
-            "Default: 0 when --allow-missing-channels is enabled, otherwise follows --num-workers."
-        ),
+        default=4,
+        help="Validation dataloader workers.",
     )
     parser.add_argument("--devices", type=int, nargs="+", default=[0, 1], help="GPU device ids")
     parser.add_argument(
@@ -215,6 +211,12 @@ if __name__ == "__main__":
         type=Path,
         default=None,
         help="要继续训练的 checkpoint 路径 (.ckpt)",
+    )
+    parser.add_argument(
+        "--pretrained-backbone-path",
+        type=Path,
+        default=None,
+        help="Optional pretrain-model init checkpoint. Loads ema_model. first and falls back to model.",
     )
 
     parser.add_argument(
@@ -260,13 +262,6 @@ if __name__ == "__main__":
         dest="bucket_by_available_channels",
         action="store_false",
         help="Disable available-channel bucketing even when allowing missing channels.",
-    )
-    parser.add_argument(
-        "--train-pair-sampling",
-        type=str,
-        default="uniform",
-        choices=["uniform"],
-        help="Training pair-first sampling strategy when allowing missing channels.",
     )
     parser.add_argument(
         "--train-pair-track-unique-samples",

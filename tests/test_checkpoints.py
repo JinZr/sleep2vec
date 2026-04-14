@@ -5,8 +5,16 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn as nn
 
-from sleep2vec.checkpoints import _parse_epoch, average_checkpoints, select_checkpoints
+from sleep2vec.checkpoints import (
+    _parse_epoch,
+    average_checkpoints,
+    extract_pretrain_init_state_dict,
+    get_state_dict_from_checkpoint,
+    load_pretrain_init_weights,
+    select_checkpoints,
+)
 
 
 def _save_ckpt(path: Path, state: dict[str, torch.Tensor], *, wrapper: str = "state_dict") -> None:
@@ -91,7 +99,7 @@ def test_average_checkpoints_averages_float_and_integer_tensors(tmp_path: Path):
     ckpt1 = tmp_path / "epoch=1.ckpt"
     ckpt2 = tmp_path / "epoch=2.ckpt"
     _save_ckpt(ckpt1, state1, wrapper="state_dict")
-    _save_ckpt(ckpt2, state2, wrapper="raw")
+    _save_ckpt(ckpt2, state2, wrapper="state_dict")
 
     averaged = average_checkpoints([ckpt1, ckpt2], device="cpu")
 
@@ -99,16 +107,10 @@ def test_average_checkpoints_averages_float_and_integer_tensors(tmp_path: Path):
     assert torch.equal(averaged["int_weight"], torch.tensor([3, 5], dtype=torch.int64))
 
 
-def test_average_checkpoints_supports_model_wrapper(tmp_path: Path):
-    state1 = {"w": torch.tensor([1.0, 2.0])}
-    state2 = {"w": torch.tensor([3.0, 4.0])}
-    ckpt1 = tmp_path / "m1.ckpt"
-    ckpt2 = tmp_path / "m2.ckpt"
-    _save_ckpt(ckpt1, state1, wrapper="model")
-    _save_ckpt(ckpt2, state2, wrapper="model")
-
-    averaged = average_checkpoints([ckpt1, ckpt2], device="cpu")
-    assert torch.allclose(averaged["w"], torch.tensor([2.0, 3.0]))
+@pytest.mark.parametrize("payload", [{"model": {"w": torch.tensor([1.0])}}, {"w": torch.tensor([1.0])}])
+def test_get_state_dict_from_checkpoint_requires_lightning_state_dict(payload: dict):
+    with pytest.raises(ValueError, match="top-level 'state_dict'"):
+        get_state_dict_from_checkpoint(payload)
 
 
 def test_average_checkpoints_rejects_missing_keys_across_checkpoints(tmp_path: Path):
@@ -119,3 +121,39 @@ def test_average_checkpoints_rejects_missing_keys_across_checkpoints(tmp_path: P
 
     with pytest.raises(KeyError, match="Missing key 'b'"):
         average_checkpoints([ckpt1, ckpt2], device="cpu")
+
+
+def test_extract_pretrain_init_state_dict_prefers_ema_model():
+    ckpt = {
+        "state_dict": {
+            "ema_model.encoder.weight": torch.tensor([1.0]),
+            "model.encoder.weight": torch.tensor([2.0]),
+        }
+    }
+
+    state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt)
+
+    assert used_prefix == "ema_model."
+    assert torch.equal(state_dict["encoder.weight"], torch.tensor([1.0]))
+
+
+class _TinyInitModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = nn.Linear(2, 2)
+        self.tokenizer_mapping = nn.ModuleDict({"legacy": nn.Linear(2, 2)})
+
+
+def test_load_pretrain_init_weights_reports_partial_channel_mismatch(tmp_path: Path):
+    module = _TinyInitModule()
+    ckpt_path = tmp_path / "init.ckpt"
+    state_dict = module.state_dict()
+    state_dict["tokenizer_mapping.new.weight"] = torch.ones(2, 2)
+    state_dict["tokenizer_mapping.new.bias"] = torch.ones(2)
+    torch.save({"state_dict": {f"model.{k}": v for k, v in state_dict.items()}}, ckpt_path)
+
+    result = load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
+
+    assert result.used_prefix == "model."
+    assert "tokenizer_mapping.new.weight" in result.unexpected_keys
+    assert "tokenizer_mapping.new.bias" in result.unexpected_keys
