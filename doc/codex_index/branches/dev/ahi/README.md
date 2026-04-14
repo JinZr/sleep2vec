@@ -5,9 +5,10 @@ This directory is the branch-scoped engineering manual for `dev/ahi`. It is inte
 ## Branch Scope
 
 - Branch: `dev/ahi`
-- Commit: `2ab2875b0f882c0f03a17e66fcc9831b8de96063`
-- Generated at: `2026-04-14T15:17:25Z`
-- Mode: `initialize-branch`
+- Commit: `0de463929a695c30ec29fa94cfd1e0c5df9e8d92`
+- Generated at: `2026-04-14T17:41:10Z`
+- Mode: `repair`
+- Main baseline: `2ab2875b0f882c0f03a17e66fcc9831b8de96063` (`dev/ahi` is 3 commits ahead)
 
 ## Purpose
 
@@ -32,18 +33,18 @@ The index is intentionally biased toward contract-bearing, reuse-relevant APIs r
 
 Tracked files indexed from this branch:
 
-- `sleep2vec/`: 58 tracked files
+- `sleep2vec/`: 75 tracked files
 - `data/`: 6 tracked files
 - `preprocess/`: 6 tracked files
-- `configs/`: 12 tracked files
-- `tests/`: 10 tracked files
-- `utils/`: 1 tracked file
+- `configs/`: 26 tracked files
+- `tests/`: 21 tracked files
+- `utils/`: 2 tracked files
 
 Branch-state coverage only:
 
-- `sleep2vec2/`: no tracked source files on `main`
-- `sleep2vec_moe/`: no tracked source files on `main`
-- `sleep2vec_hires/`: no tracked source files on `main`
+- `sleep2vec2/`: no tracked source files on this branch
+- `sleep2vec_moe/`: no tracked source files on this branch
+- `sleep2vec_hires/`: no tracked source files on this branch
 
 ## Coverage Boundaries
 
@@ -75,6 +76,7 @@ Branch-state coverage only:
 
 ## Reliability Notes
 
-- Every claim in this index is grounded in the current tracked code plus the active tracked working-tree edits on `dev/ahi`.
+- Every claim in this index is grounded in the current tracked code on `dev/ahi` and compared against `main` only for cross-branch delta reporting.
+- No tracked product-code edits were pending under indexed roots during this repair.
 - If behavior is unclear from source, the index says `unknown` rather than inferring.
-- Some runtime paths were only statically inspected due environment limits; those areas are explicitly marked in the relevant pages.
+- Runtime execution was not rerun as part of this documentation-only repair; verification evidence comes from source inspection plus the tracked tests under `tests/`.

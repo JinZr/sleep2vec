@@ -2,7 +2,7 @@
 
 ## 2026-04-15
 
-- Repaired the `dev/ahi` handbook metadata to the current branch tip `d3aa466d51c5f62323c2ffa9199db6bafeadd62a`.
+- Repaired the `dev/ahi` handbook metadata to the current branch tip `0de463929a695c30ec29fa94cfd1e0c5df9e8d92`.
 - Converted `DELTA_FROM_MAIN.md` from working-tree-only wording to the committed two-commit branch delta.
 - Refreshed reuse and workflow notes for built-in `ahi` threshold persistence, event metrics, built-in validation channels, and `ahi_mask` preset prefiltering.
 

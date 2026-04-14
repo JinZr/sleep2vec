@@ -4,12 +4,56 @@
 
 - File: `preprocess/save_dataset_presets.py`
 - Signature: `main() -> None`
-- Purpose and contract: canonical preset-generation CLI. It resolves dataset name, split variants, metadata variants, and output paths, then instantiates `PSGPretrainDataset` with `save_preset_path` so preset validation and writing happen through the dataset layer.
+- Purpose and contract: canonical preset-generation CLI. It resolves dataset name, split variants, metadata variants, channel validation policy, and output paths, then instantiates `PSGPretrainDataset` with `save_preset_path` so preset validation and writing happen through the dataset layer.
 - Important inputs/outputs: CLI args in; preset pickle files out.
-- Side effects: creates parent directories and writes preset files unless `--dry-run` is set.
-- Key callers/callees: called from `__main__`; callees include `_infer_dataset_name`, `_resolve_meta_names`, `_render_output_path`, and `PSGPretrainDataset`.
+- Side effects: creates parent directories, may create a temporary filtered CSV, writes preset files unless `--dry-run` is set.
+- Key callers/callees: called from `__main__`; callees include `_load_preset_build_block`, `_resolve_validation_channels`, `_build_preset_job`, and `PSGPretrainDataset`.
 - Reuse guidance: use this CLI path to generate preset pickles.
 - Duplication risk notes: do not pickle `SampleIndex` lists directly in one-off scripts unless the preset schema is intentionally changing.
+
+## `preprocess.save_dataset_presets._load_preset_build_block`
+
+- File: `preprocess/save_dataset_presets.py`
+- Signature: `_load_preset_build_block(config_data: dict[str, Any]) -> tuple[list[str] | None, int | None]`
+- Purpose and contract: parse the optional YAML `preset_build` block and require both `required_channels` and `min_channels` when it is present.
+- Important inputs/outputs: raw config mapping in; validated `required_channels` / `min_channels` pair out.
+- Side effects: none.
+- Key callers/callees: callers are `_resolve_channels_and_dims` and `main`.
+- Reuse guidance: keep YAML-driven preset channel policy here.
+- Duplication risk notes: do not interpret `preset_build` ad hoc in callers.
+
+## `preprocess.save_dataset_presets._resolve_validation_channels`
+
+- File: `preprocess/save_dataset_presets.py`
+- Signature: `_resolve_validation_channels(*, model_channels, channel_input_dims, preset_required_channels, selected_channels) -> tuple[list[str], dict[str, int]]`
+- Purpose and contract: derive the effective preset-validation channel set from YAML model channels, optional `preset_build.required_channels`, optional CLI `--channels`, and built-in validation channels such as `stage5` and `ahi`.
+- Important inputs/outputs: configured channel sources in; ordered channel list plus resolved input dims out.
+- Side effects: none.
+- Key callers/callees: callers are `_resolve_channels_and_dims` and `main`.
+- Reuse guidance: use this helper for every preset-builder channel-selection change.
+- Duplication risk notes: built-in validation-channel handling belongs here, not in wrapper scripts.
+
+## `preprocess.save_dataset_presets._filter_index_df_for_required_channels`
+
+- File: `preprocess/save_dataset_presets.py`
+- Signature: `_filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: list[str]) -> pd.DataFrame`
+- Purpose and contract: prefilter one index dataframe to rows whose required channel-mask columns are all present, using built-in mask mappings such as `stage_mask` for `stage5` and `ahi_mask` for `ahi`.
+- Important inputs/outputs: dataframe plus required channels in; filtered dataframe out.
+- Side effects: none.
+- Key callers/callees: caller is `_build_preset_job`; callee is `normalize_mask_frame`.
+- Reuse guidance: use this when missing channels are disallowed for preset generation.
+- Duplication risk notes: mask-column mapping must stay aligned with built-in channel specs.
+
+## `preprocess.save_dataset_presets._build_preset_job`
+
+- File: `preprocess/save_dataset_presets.py`
+- Signature: `_build_preset_job(*, output_path, index_paths, channel_names, channel_input_dims, split, meta_data_name, n_tokens, stride_tokens, mask_rate, allow_missing_channels, min_channels, batch_size, shuffle, filter_max_workers) -> tuple[Path, int]`
+- Purpose and contract: execute one preset-build unit, optionally materializing a temporary required-mask-filtered CSV before delegating to `PSGPretrainDataset`.
+- Important inputs/outputs: one job specification in; output path plus dataset length out.
+- Side effects: may create and remove a temporary CSV, writes the preset pickle, and restores original `metadata["source"]` after filtered builds.
+- Key callers/callees: caller is `main`; callees include `_resolve_single_index_path`, `_filter_index_df_for_required_channels`, `_restore_preset_source`, and `PSGPretrainDataset`.
+- Reuse guidance: keep per-job preset side effects here.
+- Duplication risk notes: temporary filtered-index handling should not be reimplemented in parallel job wrappers.
 
 ## `preprocess.save_dataset_presets._infer_dataset_name`
 
@@ -40,7 +84,7 @@
 - Purpose and contract: merge multiple preset pickle files into one by concatenating their top-level lists.
 - Important inputs/outputs: input preset paths and output path in; merged preset file out.
 - Side effects: writes one pickle file.
-- Key callers/callees: callees include `_load_preset`, `_validate_items`, `_flatten`.
+- Key callers/callees: callees include `_load_preset`, `_validate_items`, and `_flatten`.
 - Reuse guidance: use for preset concatenation after separate generation passes.
 - Duplication risk notes: this utility trusts all list items to be schema-compatible.
 
@@ -65,17 +109,6 @@
 - Key callers/callees: caller is `main`.
 - Reuse guidance: use when filtering rows by minimum channel availability before preset generation.
 - Duplication risk notes: presence semantics must match `mask_missing_stats.py`.
-
-## `preprocess.split_index_by_dataset.assign_splits`
-
-- File: `preprocess/split_index_by_dataset.py`
-- Signature: `assign_splits(df: pd.DataFrame, group_key: pd.Series, seed: int, shuffle: bool) -> tuple[pd.Series, dict[str, dict[str, int]]]`
-- Purpose and contract: assign train/val/test splits per dataset group with capped 10% val and test allocation.
-- Important inputs/outputs: grouped dataframe and RNG settings in; split series plus per-group counts out.
-- Side effects: none.
-- Key callers/callees: caller is `main`.
-- Reuse guidance: this is the canonical split-allocation policy.
-- Duplication risk notes: if allocation rules change, update this helper and downstream documentation together.
 
 ## `preprocess.split_index_by_dataset.main`
 
@@ -120,36 +153,3 @@
 - Key callers/callees: caller is `convert_zzp_to_edf`; callees include `_find_valid_markers`, `_estimate_pre_marker_frames`, `infer_stream_layout`, and `_parse_full_second_segment`.
 - Reuse guidance: use when conversion work needs decoded Sleep.dat signals before EDF packaging.
 - Duplication risk notes: Sleep.dat layout inference is specialized and should not be reimplemented casually.
-
-## `preprocess.watchpat_zzp_to_edf.infer_stream_layout`
-
-- File: `preprocess/watchpat_zzp_to_edf.py`
-- Signature: `infer_stream_layout(payload, marker_positions, probe_seconds: int = 20) -> StreamLayout`
-- Purpose and contract: infer high-rate and low-rate channel layout heuristically from timing markers and frame counts.
-- Important inputs/outputs: raw payload and marker positions in; `StreamLayout` out.
-- Side effects: none.
-- Key callers/callees: caller is `decode_sleep_dat`.
-- Reuse guidance: use for WatchPAT frame-layout inference only.
-- Duplication risk notes: layout heuristics are domain-specific; if they change, keep all downstream channel-mapping assumptions in sync.
-
-## `preprocess.watchpat_zzp_to_edf.infer_channel_mapping`
-
-- File: `preprocess/watchpat_zzp_to_edf.py`
-- Signature: `infer_channel_mapping(frames, spo2, low_rate_channels)`
-- Purpose and contract: infer semantic channel mapping from decoded frame arrays and low-rate channels.
-- Important inputs/outputs: decoded frames in; mapping object out.
-- Side effects: none.
-- Key callers/callees: caller is `convert_zzp_to_edf`.
-- Reuse guidance: use only within the WatchPAT conversion pipeline.
-- Duplication risk notes: exact physiological mapping heuristics are specialized and partially heuristic; avoid cloning them outside this module.
-
-## `preprocess.watchpat_zzp_to_edf.build_signals`
-
-- File: `preprocess/watchpat_zzp_to_edf.py`
-- Signature: `build_signals(decoded, mapping, include_internal_1hz, include_pulse_rate)`
-- Purpose and contract: convert decoded samples plus inferred mapping into EDF-ready `SignalSpec` records.
-- Important inputs/outputs: decoded conversion state in; signal list out.
-- Side effects: may derive additional pulse-rate signals.
-- Key callers/callees: caller is `convert_zzp_to_edf`; may call `derive_pulse_rate`.
-- Reuse guidance: use for EDF packaging after decode/mapping.
-- Duplication risk notes: keep signal labeling and sample-rate decisions centralized here.

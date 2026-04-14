@@ -3,18 +3,17 @@
 ## Baseline Status
 
 - Branch: `dev/ahi`
-- HEAD: `2ab2875b0f882c0f03a17e66fcc9831b8de96063`
+- HEAD: `0de463929a695c30ec29fa94cfd1e0c5df9e8d92`
 - `main`: `2ab2875b0f882c0f03a17e66fcc9831b8de96063`
 - Merge base: `2ab2875b0f882c0f03a17e66fcc9831b8de96063`
-- Commits ahead of `main`: `0`
+- Commits ahead of `main`: `3`
 - Main handbook availability: available under `doc/codex_index/branches/main/`
-- Working tree status: dirty; this handbook includes the tracked `ahi` implementation edits listed below
+- Working tree status: clean under indexed product roots
 
-## Checkout-Local Tracked Modifications Beyond `HEAD`
+## Committed Branch Delta Relative To `main`
 
 Changed:
 
-- `README.md`
 - `data/default_dataset.py`
 - `data/psg_pretrain_dataset.py`
 - `preprocess/save_dataset_presets.py`
@@ -24,6 +23,7 @@ Changed:
 - `sleep2vec/metrics.py`
 - `sleep2vec/sleep2vec_finetuning.py`
 - `sleep2vec/utils.py`
+- `tests/test_ahi_event_metrics.py`
 - `tests/test_common_finetune_apply.py`
 - `tests/test_generic_channel_dataset.py`
 - `tests/test_metadata_task_validation.py`
@@ -32,12 +32,14 @@ Changed:
 
 Effect:
 
-- added built-in `ahi` as a sequence task with `label_source_name='ahi'`, `output_dim=30`, `monitor='val_f1'`, and an internal multi-label flag
-- updated built-in `ahi` monitoring to `val_ahi_pearson` and coupled it to checkpoint-persisted validation threshold fitting
-- split built-in sequence handling into shared seq-label plumbing plus sleep-stage-only remapping from raw `stage5`
-- added runtime `ahi` dataset-channel support and strict preset filtering via `ahi_mask`
-- kept `ahi` training on BCE-with-logits over flattened valid positions, but changed validation/test/infer to event-based AHI metrics derived from thresholded events plus raw-`stage5` TST
-- kept evaluation visualizations off the existing confusion-matrix path for `ahi`
+- added built-in `ahi` as a sequence classification task with `label_source_name='ahi'`, `output_dim=30`, `is_multilabel=True`, and auxiliary raw `stage5` tokens for evaluation
+- enforced built-in `ahi` monitoring as `val_ahi_pearson` and persisted the validation-fitted `ahi_eval_threshold` into downstream checkpoints
+- split built-in sequence handling between sleep-stage remapping from raw `stage5` and raw `ahi` multi-label targets with no label remap
+- extended runtime `ahi` evaluation from pointwise token metrics to event-based AHI summaries with threshold search, TST gating, severity-threshold metrics, ICC, and Pearson
+- fixed AHI event-overlap and severity-threshold boundary semantics so the handbook now matches the current `sleep2vec/metrics.py` implementation
+- disallowed `--avg-ckpts > 1` for `ahi` inference because averaged checkpoints cannot carry one reusable validation-fitted threshold
+- added runtime `ahi` dataset-channel support, `-1.0` ignore-value padding, and strict preset filtering via `ahi_mask` when missing channels are disallowed
+- expanded test coverage with `tests/test_ahi_event_metrics.py` and related config/data/preset assertions for the new `ahi` path
 
 ## Areas With No Branch-Local Source Delta
 
@@ -47,9 +49,10 @@ Effect:
 
 ## Stale Entries Removed
 
+- working-tree-only wording that treated `dev/ahi` as a dirty checkout on top of `main`
 - `stage5`-only wording for built-in sequence-task support
+- stale branch README counts that no longer matched the tracked tree
 
 ## Unresolved Ambiguities
 
-- `HEAD` itself has no committed delta from `main`; the branch-specific behavior documented here comes from tracked working-tree edits
-- Runtime validation is partially blocked in this environment because `python3.10`, `pytest`, `torch`, and `scipy` are unavailable
+- Runtime execution was not rerun during this documentation-only repair; branch claims were checked by source inspection and tracked tests.

@@ -7,7 +7,7 @@
 - Purpose and contract: canonical pretrain entrypoint after argument parsing; binds YAML into runtime args, builds loaders, configures callbacks, persists run artifacts, and launches `trainer.fit`.
 - Important inputs/outputs: CLI namespace in; no direct return value.
 - Side effects: creates experiment directories, copies config, writes `cli_args.yaml`, initializes W&B, runs training.
-- Key callers/callees: called from `__main__`; calls `load_pretrain_config`, `get_pretrain_dataloader`, `Sleep2vecPretraining`, `dump_cli_args_yaml`.
+- Key callers/callees: called from `__main__`; calls `load_pretrain_config`, `get_pretrain_dataloader`, `Sleep2vecPretraining`, and `dump_cli_args_yaml`.
 - Reuse guidance: reuse this flow for any new pretrain CLI behavior rather than adding separate orchestration scripts.
 - Duplication risk notes: artifact-writing and trainer construction overlap conceptually with `finetune.py`, but this remains the canonical pretrain path.
 
@@ -29,7 +29,7 @@
 - Purpose and contract: canonical finetune orchestration routine; persists run artifacts, builds loaders, instantiates `Sleep2vecFinetuning`, trains, evaluates, and writes results.
 - Important inputs/outputs: CLI namespace and config bundle in; no direct return value.
 - Side effects: creates run directories, writes YAML snapshots, trains/tests models, copies `best.ckpt`, appends results CSV.
-- Key callers/callees: called from `__main__`; calls `prepare_dataloader`, `Sleep2vecFinetuning`, `save_result_csv`, `dump_cli_args_yaml`.
+- Key callers/callees: called from `__main__`; calls `prepare_dataloader`, `Sleep2vecFinetuning`, `persist_run_config_and_args`, and `save_result_csv`.
 - Reuse guidance: extend this routine instead of creating parallel finetune scripts.
 - Duplication risk notes: configuration-copy behavior overlaps with `pretrain.py`.
 
@@ -55,17 +55,6 @@
 - Reuse guidance: use this for inference-only dataloader creation.
 - Duplication risk notes: do not duplicate eval-split/source resolution in new inference code.
 
-## `sleep2vec.infer._init_wandb`
-
-- File: `sleep2vec/infer.py`
-- Signature: `_init_wandb(args)`
-- Purpose and contract: initialize a rank-zero-only W&B run for inference when requested.
-- Important inputs/outputs: namespace in, W&B run or `None` out.
-- Side effects: external W&B initialization.
-- Key callers/callees: caller is `run_inference`; callee is `_is_rank_zero`.
-- Reuse guidance: use this exact gating if new inference artifacts need W&B.
-- Duplication risk notes: keep rank-zero gating centralized.
-
 ## `sleep2vec.infer.run_inference`
 
 - File: `sleep2vec/infer.py`
@@ -73,7 +62,7 @@
 - Purpose and contract: canonical inference driver; normalizes config, builds trainer and loader, optionally averages checkpoints, runs evaluation, and writes metrics.
 - Important inputs/outputs: namespace in; no direct return value.
 - Side effects: optional W&B run, trainer evaluation, optional results CSV output.
-- Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, `_init_wandb`.
+- Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, and `Sleep2vecFinetuning`.
 - Reuse guidance: extend here for inference-only behavior changes.
 - Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`, not in trainer code; built-in `ahi` intentionally rejects `avg_ckpts > 1` because an averaged state dict has no paired validation-fitted threshold.
 
@@ -99,27 +88,85 @@
 - Reuse guidance: reuse for checkpoint averaging rather than open-coding tensor accumulation.
 - Duplication risk notes: supports raw dicts, `state_dict`, and `model` wrappers already.
 
-## `sleep2vec.metrics.compute_downstream_metrics`
+## `Sleep2vecFinetuning.on_save_checkpoint`, `on_load_checkpoint`, and `on_test_start`
+
+- File: `sleep2vec/sleep2vec_finetuning.py`
+- Signatures:
+  - `on_save_checkpoint(self, checkpoint) -> None`
+  - `on_load_checkpoint(self, checkpoint) -> None`
+  - `on_test_start(self) -> None`
+- Purpose and contract: persist model/finetune config snapshots into checkpoints, save the validation-fitted `ahi_eval_threshold`, reload that threshold on restore, and fail fast before test/inference when `ahi` lacks a stored threshold.
+- Important inputs/outputs: checkpoint mapping in/out; no return value.
+- Side effects: mutates checkpoint payload and may raise `ValueError`.
+- Key callers/callees: called by Lightning; `on_save_checkpoint` also snapshots layer-mix weights when available.
+- Reuse guidance: keep `ahi` threshold persistence here instead of patching checkpoint state in entrypoints.
+- Duplication risk notes: do not invent a second storage location for the fitted `ahi` threshold.
+
+## `Sleep2vecFinetuning._extract_ahi_event_records`
+
+- File: `sleep2vec/sleep2vec_finetuning.py`
+- Signature: `_extract_ahi_event_records(self, batch, logits) -> list[dict[str, np.ndarray]]`
+- Purpose and contract: convert one batch of raw `ahi` token labels, sigmoid scores, and auxiliary `stage5` tokens into per-sample records for final event-based AHI reduction.
+- Important inputs/outputs: batch plus logits in; list of `{truth, score, stage5}` records out.
+- Side effects: none.
+- Key callers/callees: caller is `_shared_step`; downstream consumer is `compute_ahi_event_metrics`.
+- Reuse guidance: use this helper when the final AHI reduction contract changes.
+- Duplication risk notes: sample-boundary preservation and `stage5` alignment belong here, not in metrics helpers.
+
+## `Sleep2vecFinetuning._finalize_epoch`
+
+- File: `sleep2vec/sleep2vec_finetuning.py`
+- Signature: `_finalize_epoch(self, stage: str)`
+- Purpose and contract: reduce cached epoch outputs into train/val/test metrics, with a dedicated `ahi` path that keeps pointwise metrics on train and event-based metrics on val/test.
+- Important inputs/outputs: stage name plus cached outputs in; logs metrics and returns reduced arrays/records when present.
+- Side effects: emits Lightning metrics, clears epoch caches, and may update `self._ahi_eval_threshold`.
+- Key callers/callees: callers are `on_train_epoch_end`, `on_validation_epoch_end`, and `on_test_epoch_end`; callees include `compute_ahi_pointwise_metrics`, `compute_ahi_event_metrics`, `compute_downstream_metrics`, and `_eval_visualizer.log`.
+- Reuse guidance: keep epoch-level metric branching here rather than scattering task-specific logic across callbacks or entrypoints.
+- Duplication risk notes: `ahi` final evaluation intentionally bypasses `compute_downstream_metrics` and the confusion-matrix visualizer.
+
+## `sleep2vec.metrics.compute_ahi_pointwise_metrics`
 
 - File: `sleep2vec/metrics.py`
-- Signature: `compute_downstream_metrics(gts, preds, *, is_classification: bool, is_multilabel: bool = False, output_dim: int | None = None, stage_names=None)`
-- Purpose and contract: reduce per-sample predictions into multiclass classification, seq multi-label binary, or regression metrics, with stage-specific metrics for sleep-staging outputs.
-- Important inputs/outputs: ground truth and predictions in, metrics dict out.
+- Signature: `compute_ahi_pointwise_metrics(gts, preds) -> dict[str, float]`
+- Purpose and contract: wrap binary token-level metrics under `ahi_pointwise_*` names for train-time AHI logging.
+- Important inputs/outputs: flattened binary labels and sigmoid scores in; namespaced metrics dict out.
 - Side effects: none.
-- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees are `compute_binary_label_metrics` for debug pointwise binary outputs and `roc_auc_from_two_logits` for two-logit classification.
-- Reuse guidance: use this as the only downstream metric reducer.
-- Duplication risk notes: do not implement alternative epoch metric logic in trainers unless the contract truly changes.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callee is `compute_binary_label_metrics`.
+- Reuse guidance: use this for AHI train-stage reporting instead of logging generic binary keys directly.
+- Duplication risk notes: final AHI validation/test metrics do not belong here.
+
+## `sleep2vec.metrics.select_best_ahi_threshold`
+
+- File: `sleep2vec/metrics.py`
+- Signature: `select_best_ahi_threshold(records, *, search_thresholds=...) -> tuple[float, dict[str, Any]]`
+- Purpose and contract: search the configured threshold grid, skipping records without usable TST summaries, and choose the threshold that maximizes Pearson with MAE tie-break.
+- Important inputs/outputs: per-sample `{truth, score, stage5}` records in; selected threshold plus cached aggregate out.
+- Side effects: none.
+- Key callers/callees: caller is `compute_ahi_event_metrics`; callee is `_aggregate_ahi_records`.
+- Reuse guidance: reuse this if threshold search policy changes.
+- Duplication risk notes: validation threshold fitting must stay centralized here.
 
 ## `sleep2vec.metrics.compute_ahi_event_metrics`
 
 - File: `sleep2vec/metrics.py`
 - Signature: `compute_ahi_event_metrics(records, *, threshold: float | None = None, search_thresholds=..., severity_thresholds=...) -> tuple[dict[str, float], float]`
-- Purpose and contract: convert per-sample 1-second `ahi` predictions into event segments, mask predictions by raw `stage5` sleep periods including end-boundary sleep overlap, compute TST-aware final AHI, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite with inclusive clinical cutoffs at 5/15/30 for the thresholded severity metrics.
+- Purpose and contract: convert per-sample 1-second `ahi` predictions into event segments, mask predictions by raw `stage5` sleep periods, compute TST-aware final AHI, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite.
 - Important inputs/outputs: per-sample `truth` / `score` / `stage5` records in; metrics dict plus chosen threshold out.
 - Side effects: none.
-- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `select_best_ahi_threshold`, `binary_sequence_to_segments`, `merge_intervals`, `filter_segments_by_stage`, and `vectorized_event_stats`.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `select_best_ahi_threshold`, `binary_sequence_to_segments`, `merge_intervals`, `filter_segments_by_stage`, `filter_segments_by_duration`, and `vectorized_event_stats`.
 - Reuse guidance: use this for every final `ahi` validation/test/infer metric path instead of re-deriving event counts in trainer code.
-- Duplication risk notes: threshold search, TST semantics, end-boundary sleep-overlap handling, and severity-cutoff labeling must stay centralized here.
+- Duplication risk notes: threshold search, TST semantics, duration filtering, and event filtering must stay centralized here.
+
+## `sleep2vec.metrics.compute_downstream_metrics`
+
+- File: `sleep2vec/metrics.py`
+- Signature: `compute_downstream_metrics(gts, preds, *, is_classification: bool, is_multilabel: bool = False, output_dim: int | None = None, stage_names=None)`
+- Purpose and contract: reduce non-AHI downstream predictions into multiclass classification or regression metrics, with stage-specific metrics for sleep-staging outputs.
+- Important inputs/outputs: ground truth and predictions in, metrics dict out.
+- Side effects: none.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch` for non-AHI paths; callees include `multiclass_metrics_fn`, `roc_auc_from_two_logits`, and `macro_specificity`.
+- Reuse guidance: use this as the only generic downstream metric reducer.
+- Duplication risk notes: `ahi` val/test/infer bypass this function by design.
 
 ## `sleep2vec.metrics.save_result_csv`
 

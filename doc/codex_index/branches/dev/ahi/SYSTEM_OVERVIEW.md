@@ -27,7 +27,7 @@ The top-level product behavior is not encoded in YAML alone. YAML defines model,
 1. Parse CLI.
 2. Load YAML with `load_pretrain_config`.
 3. Copy selected config fields back into `args`.
-4. Build train loader plus one validation loader per channel pair through `get_pretrain_dataloader`.
+4. Build the train loader plus the validation loader through `get_pretrain_dataloader`.
 5. Instantiate `Sleep2vecPretraining`, which owns a `Sleep2vecPretrainModel`, contrastive loss, diagnostics hooks, and optional model averager.
 6. Configure Lightning callbacks:
    - `ModelCheckpoint`
@@ -53,6 +53,7 @@ The monitored validation metric is `val_contrastive_acc`.
    - optional pretrained-backbone loading
    - optional LoRA insertion
    - optional model averaging
+   - `ahi` checkpoint-threshold persistence plus event-based validation/test reduction when `label_name == "ahi"`
 6. Run `trainer.fit(...)`.
 7. Test the best checkpoint or requested checkpoint with `trainer.test(...)`.
 8. Append evaluation metrics to a CSV with `save_result_csv`.
@@ -70,7 +71,7 @@ The monitored validation metric is `val_contrastive_acc`.
 7. Run `trainer.test(...)`.
 8. Optionally write `results.csv`.
 
-This is evaluation-only orchestration; checkpoint selection and averaging live in `sleep2vec/checkpoints.py`, not in the trainer classes.
+This is evaluation-only orchestration; checkpoint selection and averaging live in `sleep2vec/checkpoints.py`, not in the trainer classes. Built-in `ahi` intentionally rejects `avg_ckpts > 1` because an averaged state dict has no single validation-fitted threshold to reuse.
 
 ## Core Data Contract
 
@@ -94,6 +95,7 @@ The runtime assumes a batch dictionary with these keys:
 - Built-in sequence tasks are `stage3`, `stage4`, `stage5`, and `ahi`.
 - `stage3`, `stage4`, and `stage5` consume raw `batch["tokens"]["stage5"]`; `ahi` consumes raw `batch["tokens"]["ahi"]` and also requires raw `batch["tokens"]["stage5"]` as an auxiliary metric source.
 - `ahi` targets are per-token `[30]` binary slices padded with `-1.0`; training loss stays pointwise BCE, while validation/test/infer metrics are event-based AHI built from thresholded 1-second events plus TST from raw `stage5`.
+- `ahi` validation fits its threshold from validation records with `TST >= 2h`; test and inference require that stored threshold to be present in the checkpoint.
 - Non-built-in sequence labels are unsupported, and non-built-in metadata classification remains binary-only.
 - Pair-first missing-channel pretraining requires `payload["available_channels"]` to be present on every sample.
 - Weighted InfoNCE requires both `w` and `h` in the batch.
@@ -132,6 +134,7 @@ The canonical preset path is:
 
 - Pretrain checkpoints: `log-pretrain/<run>/checkpoints/`
 - Finetune checkpoints: `log-finetune/<version>/checkpoints/`
+- `ahi` finetune checkpoints may also contain `ahi_eval_threshold`
 - Per-run copied configs: `config.yaml`
 - Per-run CLI snapshot: `cli_args.yaml`
 - Downstream results table: caller-specified CSV via `save_result_csv`
@@ -143,4 +146,4 @@ The canonical preset path is:
 
 ## Variant State On This Branch
 
-`sleep2vec2/`, `sleep2vec_moe/`, and `sleep2vec_hires/` exist as directories but contain no tracked source files on `main`. Treat them as branch-state notes, not active extension targets, unless tracked code appears in a later commit.
+`sleep2vec2/`, `sleep2vec_moe/`, and `sleep2vec_hires/` exist as directories but contain no tracked source files on this branch. Treat them as branch-state notes, not active extension targets, unless tracked code appears in a later commit.

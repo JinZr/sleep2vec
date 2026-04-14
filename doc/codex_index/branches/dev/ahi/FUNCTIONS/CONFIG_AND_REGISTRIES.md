@@ -33,11 +33,31 @@
 - Reuse guidance: call this before constructing tokenizers or downstream heads from a `ModelConfig`.
 - Duplication risk notes: tokenizer dimension parity must not be rechecked differently elsewhere.
 
+## Built-in task helper family
+
+- File: `sleep2vec/common.py`
+- Functions:
+  - `is_builtin_seq_task(label_name: str | None) -> bool`
+  - `is_builtin_stage_task(label_name: str | None) -> bool`
+  - `get_task_label_source_name(label_name: str) -> str`
+  - `get_task_stage_names(label_name: str) -> list[str] | None`
+  - `get_task_class_labels(label_name: str) -> list[str] | None`
+  - `get_task_label_merge_map(label_name: str) -> dict[int, int] | None`
+  - `get_task_is_multilabel(label_name: str) -> bool`
+  - `get_task_auxiliary_label_source_names(label_name: str) -> list[str]`
+  - `remap_stage_labels(labels, label_name: str)`
+- Purpose and contract: expose the normalized built-in task spec and keep sleep-stage remapping separate from raw `ahi` sequence labels.
+- Important inputs/outputs: built-in label name in; canonical task attributes or remapped labels out.
+- Side effects: none.
+- Key callers/callees: callers are `apply_task_flags`, `sleep2vec.utils._build_finetune_loader`, and `Sleep2vecFinetuning._get_targets`.
+- Reuse guidance: use these helpers instead of hardcoding task-specific label sources or merge maps.
+- Duplication risk notes: `ahi` and sleep-stage semantics must stay centralized here; do not invent a second built-in-task map elsewhere.
+
 ## `sleep2vec.common.apply_task_flags`
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None`
-- Purpose and contract: Populate `args.output_dim`, `args.is_classification`, `args.is_seq`, `args.is_multilabel`, `args.monitor`, and `args.monitor_mod` from either built-in label semantics or explicit finetune task config.
+- Purpose and contract: Populate `args.output_dim`, `args.is_classification`, `args.is_seq`, `args.is_multilabel`, `args.monitor`, `args.monitor_mod`, `args.label_source_name`, `args.stage_names`, `args.class_labels`, `args.label_merge_map`, and `args.auxiliary_label_source_names` from either built-in label semantics or explicit finetune task config.
 - Important inputs/outputs: mutates `argparse.Namespace` in place.
 - Side effects: namespace mutation only.
 - Key callers/callees: caller is `apply_finetune_config`; callees are `_validate_builtin_task_cfg`, `_validate_metadata_label_support`, and the built-in task-spec helpers.
@@ -48,11 +68,11 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_finetune_config(args) -> tuple[Any, Any]`
-- Purpose and contract: Load finetune YAML, copy data/model/task/LoRA settings into the CLI namespace, and enforce dataloader/model channel parity.
+- Purpose and contract: Load finetune YAML, copy data/model/task/LoRA settings into the CLI namespace, enforce dataloader/model channel parity, and derive all built-in task attributes before loaders are built.
 - Important inputs/outputs: mutates `args`; returns `(config_bundle, model_cfg)` for convenience.
 - Side effects: converts configured data paths into `Path` objects and mutates many runtime flags.
-- Key callers/callees: callers are `sleep2vec.finetune` and `sleep2vec.infer`; callee is `load_finetune_config`.
-- Reuse guidance: this is the canonical CLI binding layer for finetune/inference.
+- Key callers/callees: callers are `sleep2vec.finetune` and `sleep2vec.infer`; callees are `load_finetune_config`, `apply_model_config_args`, and `apply_task_flags`.
+- Reuse guidance: this is the canonical CLI binding layer for finetune and inference.
 - Duplication risk notes: do not partially mirror its behavior in entrypoints.
 
 ## `sleep2vec.common.dump_cli_args_yaml`
@@ -62,7 +82,7 @@
 - Purpose and contract: Persist CLI plus derived runtime arguments as YAML next to experiment artifacts.
 - Important inputs/outputs: namespace in, YAML path out.
 - Side effects: creates parent directories and writes a YAML file.
-- Key callers/callees: callers are `sleep2vec.pretrain.sleep2vec_pretrain` and `sleep2vec.finetune.supervised`; callee is `_to_yamlable`.
+- Key callers/callees: callers are `sleep2vec.pretrain.sleep2vec_pretrain`, `sleep2vec.finetune.supervised`, and `persist_run_config_and_args`.
 - Reuse guidance: use this for run metadata snapshots instead of creating new serializers.
 - Duplication risk notes: artifact-writing flows are duplicated at the entrypoint level, but this serializer is the canonical primitive.
 

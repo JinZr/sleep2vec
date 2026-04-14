@@ -13,14 +13,14 @@ These are the stable cross-file boundaries that matter before editing:
 | Downstream model | `sleep2vec/downstream_model.py`, `sleep2vec/downstreams/` | Temporal aggregation, channel fusion, downstream heads, layer mix, pretrained loading, LoRA insertion | `peft`, downstream registries | New heads or fusion modes | Canonical downstream feature path |
 | Lightning runtime | `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/sleep2vec_finetuning.py` | Training loop glue, optimizer schedule, diagnostics, model averaging, metric logging | PyTorch Lightning, loss/metrics, callbacks | New trainer behavior | Keep scheduler/loss/logging changes here |
 | Runtime entrypoints | `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py` | CLI parsing, experiment folder setup, trainer creation, checkpoint/test orchestration | `sleep2vec.common`, `sleep2vec.utils`, Lightning | New CLI flags, run naming, checkpoint policy | Thin orchestration only |
-| Runtime utilities | `sleep2vec/checkpoints.py`, `sleep2vec/metrics.py`, `sleep2vec/diagnostics.py`, `sleep2vec/callbacks/pair_acc_logger.py`, `sleep2vec/visualization/` | Checkpoint averaging, metrics, diagnostics hooks, pair accuracy logging, visualization artifacts | Torch, sklearn, wandb, matplotlib | New logging/export surfaces | `ahi` binary metric reduction lives here; keep task-specific math centralized |
+| Runtime utilities | `sleep2vec/checkpoints.py`, `sleep2vec/metrics.py`, `sleep2vec/diagnostics.py`, `sleep2vec/callbacks/pair_acc_logger.py`, `sleep2vec/visualization/` | Checkpoint averaging, metrics, diagnostics hooks, pair accuracy logging, visualization artifacts | Torch, sklearn, wandb, matplotlib | New logging/export surfaces | `ahi` pointwise-train metrics and final event-based evaluation both live here; keep task-specific math centralized |
 | Dataset core | `data/default_dataset.py`, `data/psg_pretrain_dataset.py` | Build `SampleIndex` windows, validate/load presets, collate batches, materialize metadata, pick sampler | `data.utils`, `data.metadata`, `data.samplers` | New dataset formats or collate behavior | Built-in runtime label channels such as `stage5` and `ahi` are owned here |
 | Data helpers | `data/utils.py`, `data/metadata.py`, `data/channel_selection.py`, `data/samplers.py` | NPZ I/O, token windowing, metadata tensorization, pair scheduling, distributed-aware sampling | NumPy, Torch | New samplers, metadata encodings | Missing-channel pretrain relies on these |
 | Preprocessing CLIs | `preprocess/*.py` | CSV splitting, preset generation/merge, missing-mask stats, WatchPAT conversion | pandas, pickle, NumPy, optional EDF deps | New data-prep utilities | CLI tools are the canonical prep surface |
 | Config recipes | `configs/` | Encode model/head/task variants | Config parser + entrypoints | New recipe variants | Folder names are not always semantically authoritative |
-| Tests | `tests/` | Pin config, registry, loss, checkpoint, pair-sampler, and visualization contracts | pytest | New contract coverage | Some important tests are not in CI |
+| Tests | `tests/` | Pin config, registry, loss, checkpoint, pair-sampler, visualization, and AHI runtime contracts | pytest | New contract coverage | Some important tests are not in CI |
 | Formatting wrapper | `utils/style_check.sh` | Run `isort`, `black`, `flake8` over repo | Python env toolchain | None | Lint wrapper only |
-| Variant namespaces | `sleep2vec2/`, `sleep2vec_moe/`, `sleep2vec_hires/` | Branch-state placeholders on `main` | unknown | unknown | No tracked source files on this branch |
+| Variant namespaces | `sleep2vec2/`, `sleep2vec_moe/`, `sleep2vec_hires/` | Branch-state placeholders on this branch | unknown | unknown | No tracked source files on this branch |
 
 ## Key Dependencies
 
@@ -47,6 +47,7 @@ These are the stable cross-file boundaries that matter before editing:
 - Config/task edits usually span `sleep2vec/config.py` and `sleep2vec/common.py`.
 - Forward-path edits usually span `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, and the downstream fusion modules.
 - Missing-channel pretraining edits usually span `data/default_dataset.py`, `data/utils.py`, `data/samplers.py`, and `sleep2vec/utils.py`.
+- Built-in `ahi` task edits usually span `sleep2vec/common.py`, `sleep2vec/utils.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`, and `preprocess/save_dataset_presets.py`.
 - Preprocessing edits should stay in `preprocess/` unless the preset schema or `SampleIndex` payload changes.
 - Variant edits cannot be completed on this branch without first adding tracked source files to the variant directories.
 
