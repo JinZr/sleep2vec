@@ -181,7 +181,7 @@ def filter_segments_by_stage(intervals, sleep_mask: np.ndarray) -> list[list[int
     mask = np.asarray(sleep_mask, dtype=np.int64).reshape(-1)
     for start, end in intervals:
         left = max(int(round(start)), 0)
-        right = min(int(round(end)), mask.shape[0])
+        right = min(int(round(end)) + 1, mask.shape[0])
         if right > left and mask[left:right].sum() > 0:
             filtered.append([int(start), int(end)])
     return filtered
@@ -414,8 +414,8 @@ def compute_ahi_event_metrics(
 
     for severity_threshold in severity_thresholds:
         suffix = _format_threshold_suffix(severity_threshold)
-        y_true = (true_ahi > severity_threshold).astype(int)
-        y_pred = (pred_ahi > severity_threshold).astype(int)
+        y_true = (true_ahi >= severity_threshold).astype(int)
+        y_pred = (pred_ahi >= severity_threshold).astype(int)
         cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
         tn, fp_bin, fn_bin, tp_bin = (int(cm[0, 0]), int(cm[0, 1]), int(cm[1, 0]), int(cm[1, 1]))
         precision = tp_bin / (tp_bin + fp_bin) if (tp_bin + fp_bin) > 0 else 0.0

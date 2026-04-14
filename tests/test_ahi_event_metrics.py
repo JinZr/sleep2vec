@@ -56,6 +56,13 @@ def test_filter_segments_by_stage_requires_sleep_overlap():
     assert filtered == [[20, 40]]
 
 
+def test_filter_segments_by_stage_keeps_sleep_overlap_at_segment_end():
+    sleep_mask = np.zeros(20, dtype=np.int64)
+    sleep_mask[11] = 1
+    filtered = filter_segments_by_stage([[0, 11]], sleep_mask)
+    assert filtered == [[0, 11]]
+
+
 def test_filter_segments_by_duration_preserves_external_gt_10_semantics():
     filtered = filter_segments_by_duration([[0, 10], [0, 11], [20, 35]])
     assert filtered == [[0, 11], [20, 35]]
@@ -110,6 +117,33 @@ def test_compute_ahi_event_metrics_reports_perfect_event_and_ahi_scores():
     assert metrics["ahi_pearson"] == 1.0
     assert metrics["ahi_icc"] == 1.0
     assert metrics["ahi_opt_threshold"] == 0.5
+
+
+def test_compute_ahi_event_metrics_uses_inclusive_clinical_cutoffs(monkeypatch: pytest.MonkeyPatch):
+    def fake_aggregate(records, *, threshold):
+        return {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([6.0, 16.0, 31.0, 0.0], dtype=np.float32),
+            "true_ahi": np.array([5.0, 15.0, 30.0, 0.0], dtype=np.float32),
+        }
+
+    monkeypatch.setattr(metrics_mod, "_aggregate_ahi_records", fake_aggregate)
+
+    metrics, threshold = compute_ahi_event_metrics([{}], threshold=0.5)
+
+    assert threshold == 0.5
+    assert metrics["ahi_threshold_5_precision"] == 1.0
+    assert metrics["ahi_threshold_5_recall"] == 1.0
+    assert metrics["ahi_threshold_5_f1"] == 1.0
+    assert metrics["ahi_threshold_15_precision"] == 1.0
+    assert metrics["ahi_threshold_15_recall"] == 1.0
+    assert metrics["ahi_threshold_15_f1"] == 1.0
+    assert metrics["ahi_threshold_30_precision"] == 1.0
+    assert metrics["ahi_threshold_30_recall"] == 1.0
+    assert metrics["ahi_threshold_30_f1"] == 1.0
+    assert metrics["ahi_acc"] == 1.0
 
 
 def test_select_best_ahi_threshold_uses_pearson_then_mae_tiebreak(monkeypatch: pytest.MonkeyPatch):

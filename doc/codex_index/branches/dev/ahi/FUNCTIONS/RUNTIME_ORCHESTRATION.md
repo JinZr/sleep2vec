@@ -114,12 +114,12 @@
 
 - File: `sleep2vec/metrics.py`
 - Signature: `compute_ahi_event_metrics(records, *, threshold: float | None = None, search_thresholds=..., severity_thresholds=...) -> tuple[dict[str, float], float]`
-- Purpose and contract: convert per-sample 1-second `ahi` predictions into event segments, mask predictions by raw `stage5` sleep periods, compute TST-aware final AHI, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite.
+- Purpose and contract: convert per-sample 1-second `ahi` predictions into event segments, mask predictions by raw `stage5` sleep periods including end-boundary sleep overlap, compute TST-aware final AHI, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite with inclusive clinical cutoffs at 5/15/30 for the thresholded severity metrics.
 - Important inputs/outputs: per-sample `truth` / `score` / `stage5` records in; metrics dict plus chosen threshold out.
 - Side effects: none.
 - Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `select_best_ahi_threshold`, `binary_sequence_to_segments`, `merge_intervals`, `filter_segments_by_stage`, and `vectorized_event_stats`.
 - Reuse guidance: use this for every final `ahi` validation/test/infer metric path instead of re-deriving event counts in trainer code.
-- Duplication risk notes: threshold search, TST semantics, and event filtering must stay centralized here.
+- Duplication risk notes: threshold search, TST semantics, end-boundary sleep-overlap handling, and severity-cutoff labeling must stay centralized here.
 
 ## `sleep2vec.metrics.save_result_csv`
 
