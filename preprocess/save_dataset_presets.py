@@ -294,6 +294,8 @@ def _resolve_effective_min_channels(
     preset_min_channels: int | None,
 ) -> int:
     resolved = int(cli_min_channels if preset_min_channels is None else preset_min_channels)
+    if "ahi" in channel_names:
+        resolved = max(resolved, len(channel_names))
     if resolved < 1:
         raise ValueError("min_channels must be >= 1.")
     if resolved > len(channel_names):

@@ -120,8 +120,8 @@ def test_resolve_channels_and_dims_accepts_builtin_ahi_subset(tmp_path: Path):
 
     channels, dims = _resolve_channels_and_dims(config_path, ["ppg", "ahi"])
 
-    assert channels == ["ppg", "ahi"]
-    assert dims == {"ppg": 8, "ahi": 30}
+    assert channels == ["ppg", "ahi", "stage5"]
+    assert dims == {"ppg": 8, "ahi": 30, "stage5": 1}
 
 
 def test_load_preset_build_block_parses_explicit_contract(tmp_path: Path):
@@ -192,6 +192,16 @@ def test_resolve_effective_min_channels_prefers_preset_build_override():
     )
 
     assert effective_min_channels == 1
+
+
+def test_resolve_effective_min_channels_enforces_full_channels_for_ahi():
+    effective_min_channels = _resolve_effective_min_channels(
+        channel_names=["ppg", "ahi", "stage5"],
+        cli_min_channels=2,
+        preset_min_channels=2,
+    )
+
+    assert effective_min_channels == 3
 
 
 def test_resolve_effective_min_channels_rejects_value_above_channel_count():

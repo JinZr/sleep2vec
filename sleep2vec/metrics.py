@@ -188,7 +188,7 @@ def filter_segments_by_stage(intervals, sleep_mask: np.ndarray) -> list[list[int
 
 
 def filter_segments_by_duration(intervals, *, min_duration: int = AHI_MIN_EVENT_DURATION) -> list[list[int]]:
-    return [list(interval) for interval in intervals if (interval[1] - interval[0]) > min_duration]
+    return [list(interval) for interval in intervals if (interval[1] - interval[0] + 1) >= min_duration]
 
 
 def vectorized_event_stats(gt_segments, pred_segments, *, threshold: float = 0.5) -> tuple[float, float, float]:
@@ -275,10 +275,13 @@ def _evaluate_single_ahi_record(
     pred_segments = merge_intervals(binary_sequence_to_segments(pred_binary, interval=1))
     tst = float(sleep_mask.sum() / 3600.0)
     if tst < AHI_MIN_TST_HOURS:
+        gt_segments = filter_segments_by_duration(gt_segments, min_duration=AHI_MIN_EVENT_DURATION)
         pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
         tp, fp, fn = vectorized_event_stats(gt_segments, pred_segments)
         return (tp, fp, fn), None, None
 
+    gt_segments = filter_segments_by_stage(gt_segments, sleep_mask)
+    gt_segments = filter_segments_by_duration(gt_segments, min_duration=AHI_MIN_EVENT_DURATION)
     pred_segments = filter_segments_by_stage(pred_segments, sleep_mask)
     pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
     tp, fp, fn = vectorized_event_stats(gt_segments, pred_segments)
@@ -335,7 +338,12 @@ def select_best_ahi_threshold(
             continue
         pearson = _safe_pearson(true_ahi, pred_ahi, require_min_count=2, nan_if_invalid=False)
         mae = float(np.mean(np.abs(pred_ahi - true_ahi)))
-        if pearson > best_pearson or (np.isclose(pearson, best_pearson) and mae < best_mae):
+        if pearson > best_pearson or (
+            np.isclose(pearson, best_pearson)
+            and (
+                mae < best_mae or (np.isclose(mae, best_mae) and (best_threshold is None or threshold > best_threshold))
+            )
+        ):
             best_threshold = float(threshold)
             best_pearson = float(pearson)
             best_mae = float(mae)

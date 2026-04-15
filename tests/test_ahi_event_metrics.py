@@ -63,9 +63,9 @@ def test_filter_segments_by_stage_keeps_sleep_overlap_at_segment_end():
     assert filtered == [[0, 11]]
 
 
-def test_filter_segments_by_duration_preserves_external_gt_10_semantics():
-    filtered = filter_segments_by_duration([[0, 10], [0, 11], [20, 35]])
-    assert filtered == [[0, 11], [20, 35]]
+def test_filter_segments_by_duration_uses_inclusive_duration_semantics():
+    filtered = filter_segments_by_duration([[0, 8], [0, 9], [0, 10], [20, 35]])
+    assert filtered == [[0, 9], [0, 10], [20, 35]]
 
 
 def test_evaluate_single_ahi_record_skips_short_tst_for_ahi_summary():
@@ -94,6 +94,20 @@ def test_evaluate_single_ahi_record_keeps_short_tst_wake_false_positive_unmasked
     assert detection == (0.0, 1.0, 0.0)
     assert pred_ahi is None
     assert true_ahi is None
+
+
+def test_evaluate_single_ahi_record_filters_wake_only_gt_event_from_ahi_summary():
+    record = {
+        "truth": np.concatenate([np.ones(13, dtype=np.int64), np.zeros(7217, dtype=np.int64)]),
+        "score": np.full(7230, 0.05, dtype=np.float32),
+        "stage5": np.concatenate([np.zeros(1, dtype=np.int64), np.full(240, 2, dtype=np.int64)]),
+    }
+
+    detection, pred_ahi, true_ahi = _evaluate_single_ahi_record(record, threshold=0.5)
+
+    assert detection == (0.0, 0.0, 0.0)
+    assert pred_ahi == 0.0
+    assert true_ahi == 0.0
 
 
 def test_compute_ahi_event_metrics_reports_perfect_event_and_ahi_scores():
@@ -186,6 +200,23 @@ def test_select_best_ahi_threshold_allows_single_sample_mae_tiebreak(monkeypatch
     threshold, _ = select_best_ahi_threshold([{}], search_thresholds=(0.1, 0.2))
 
     assert threshold == 0.2
+
+
+def test_select_best_ahi_threshold_prefers_higher_threshold_on_exact_metric_tie(monkeypatch: pytest.MonkeyPatch):
+    def fake_aggregate(records, *, threshold):
+        return {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+            "true_ahi": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        }
+
+    monkeypatch.setattr(metrics_mod, "_aggregate_ahi_records", fake_aggregate)
+
+    threshold, _ = select_best_ahi_threshold([{}], search_thresholds=(0.1, 0.2, 0.3))
+
+    assert threshold == 0.3
 
 
 def test_select_best_ahi_threshold_rejects_all_skipped_samples(monkeypatch: pytest.MonkeyPatch):
