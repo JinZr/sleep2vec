@@ -5,7 +5,9 @@ import typing as t
 
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
+
+from sleep2vec.visualization.heatmaps import render_matrix_heatmap
+from sleep2vec.visualization.theme import _OPENAI_BLUE_CMAP
 
 
 def render_layer_mix_heatmap(
@@ -22,24 +24,21 @@ def render_layer_mix_heatmap(
 
     fig_width = max(8.0, 0.8 * len(layer_ids) + 3.0)
     fig_height = max(4.0, 0.7 * len(modality_names) + 2.0)
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    sns.heatmap(
+    return render_matrix_heatmap(
         mat,
-        annot=True,
-        fmt=".3f",
-        xticklabels=[str(v) for v in layer_ids],
-        yticklabels=list(modality_names),
-        cmap="YlGnBu",
+        [str(v) for v in layer_ids],
+        list(modality_names),
+        title=title,
+        xlabel="Layer",
+        ylabel="Modality",
+        cmap=_OPENAI_BLUE_CMAP,
         vmin=0.0,
         vmax=1.0,
-        cbar=True,
-        ax=ax,
+        figsize=(fig_width, fig_height),
+        annotation_formatter=lambda value: f"{value:.3f}",
+        colorbar_title="Weight",
+        subplots_adjust={"left": 0.16, "right": 0.90, "bottom": 0.18, "top": 0.88},
     )
-    ax.set_title(title)
-    ax.set_xlabel("Layer")
-    ax.set_ylabel("Modality")
-    plt.tight_layout()
-    return fig
 
 
 def build_layer_mix_rows(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from itertools import combinations
 from pathlib import Path
 
 import pytest
@@ -155,6 +156,78 @@ def test_load_pretrain_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.data.max_tokens == 4
 
 
+def test_load_pretrain_config_parses_adapt_block(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {
+        "new_channels": ["eeg"],
+        "stage1": {"train_shared_projection": True},
+        "stage2": {
+            "lr_scales": {"encoder": 0.2, "shared_legacy": 0.6, "new_modalities": 1.0},
+            "pair_schedule": [
+                {"until": 0.5, "new_pair_ratio": 1.0},
+                {"until": 1.0, "new_pair_ratio": 0.0},
+            ],
+        },
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_pretrain_config(config_path)
+
+    assert bundle.adapt is not None
+    assert bundle.adapt.new_channels == ["eeg"]
+    assert bundle.adapt.stage1.train_shared_projection is True
+    assert bundle.adapt.stage2.lr_scales.encoder == pytest.approx(0.2)
+    assert bundle.adapt.stage2.pair_schedule[-1].until == pytest.approx(1.0)
+
+
+def test_load_pretrain_config_requires_adapt_new_channels(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {"stage1": {"train_shared_projection": False}}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="adapt.new_channels is required"):
+        load_pretrain_config(config_path)
+
+
+def test_load_pretrain_config_validates_adapt_schedule_endpoint(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {
+        "new_channels": ["eeg"],
+        "stage2": {
+            "pair_schedule": [
+                {"until": 0.5, "new_pair_ratio": 1.0},
+                {"until": 0.8, "new_pair_ratio": 0.0},
+            ]
+        },
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="must end with until=1.0"):
+        load_pretrain_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "sleep2vec_dense_adapt_ppg_actigraphy.yaml",
+        "sleep2vec_dense_adapt_ppg_actigraphy_cls.yaml",
+    ],
+)
+def test_ppg_actigraphy_adapt_configs_keep_uniform_final_stage_sampling(config_name: str):
+    config_path = Path(__file__).resolve().parents[1] / "configs" / config_name
+    bundle = load_pretrain_config(config_path)
+
+    assert bundle.adapt is not None
+    channel_names = [channel.name for channel in bundle.model.channels]
+    new_channels = set(bundle.adapt.new_channels)
+    all_pairs = list(combinations(channel_names, 2))
+    new_pair_count = sum(1 for left, right in all_pairs if left in new_channels or right in new_channels)
+    final_ratio = bundle.adapt.stage2.pair_schedule[-1].new_pair_ratio
+
+    assert final_ratio > 0.0
+    assert final_ratio == pytest.approx(new_pair_count / len(all_pairs))
+
+
 def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _finetune_payload())
     bundle = load_finetune_config(config_path)
@@ -163,6 +236,28 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.model.head.temporal_agg.name == "mean"
     assert bundle.finetune.task is not None
     assert bundle.finetune.task.output_dim == 2
+
+
+def test_load_finetune_config_parses_eval_visualizations(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["eval_visualizations"] = {
+        "enabled": True,
+        "stages": ["val", "test"],
+        "confusion_matrix": {"enabled": True, "show_raw_counts": True},
+        "roc_curve": {"enabled": True},
+        "regression_scatter": {"enabled": False},
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.eval_visualizations is not None
+    assert bundle.finetune.eval_visualizations.enabled is True
+    assert bundle.finetune.eval_visualizations.stages == ["val", "test"]
+    assert bundle.finetune.eval_visualizations.confusion_matrix.enabled is True
+    assert bundle.finetune.eval_visualizations.confusion_matrix.show_raw_counts is True
+    assert bundle.finetune.eval_visualizations.roc_curve.enabled is True
+    assert bundle.finetune.eval_visualizations.regression_scatter.enabled is False
 
 
 @pytest.mark.parametrize("missing_key", ["backbone", "projection", "cls"])
@@ -329,6 +424,38 @@ def test_load_finetune_config_rejects_layer_index_above_backbone_depth(tmp_path:
     config_path = _write_yaml(tmp_path, payload)
 
     with pytest.raises(ValueError, match="must be <= num_hidden_layers"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("eval_visualizations", "pattern"),
+    [
+        ("bad", "must be a mapping"),
+        ({"enabled": "yes"}, "enabled must be a boolean"),
+        ({"stages": "val"}, "stages must be a non-empty list"),
+        ({"stages": []}, "stages must be a non-empty list"),
+        ({"stages": ["val", "val"]}, "must not contain duplicates"),
+        ({"stages": ["train"]}, "only supports 'val' and 'test'"),
+        ({"unknown": {}}, "unsupported fields"),
+        ({"confusion_matrix": {"extra": True}}, "confusion_matrix has unsupported fields"),
+        (
+            {"confusion_matrix": {"show_raw_counts": "yes"}},
+            "confusion_matrix.show_raw_counts must be a boolean",
+        ),
+        ({"roc_curve": {"enabled": "yes"}}, "roc_curve.enabled must be a boolean"),
+        ({"regression_scatter": {"enabled": "yes"}}, "regression_scatter.enabled must be a boolean"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_eval_visualizations(
+    tmp_path: Path,
+    eval_visualizations,
+    pattern: str,
+):
+    payload = _finetune_payload()
+    payload["finetune"]["eval_visualizations"] = eval_visualizations
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
         load_finetune_config(config_path)
 
 

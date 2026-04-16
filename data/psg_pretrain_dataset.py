@@ -10,6 +10,49 @@ from data.utils import default_extractor, default_mlm_mask_generator, default_to
 PAD_STAGE = -1
 
 
+def _normalize_channel_input_dims(channel_input_dims: t.Mapping[str, int]) -> dict[str, int]:
+    normalized = {str(name): int(dim) for name, dim in channel_input_dims.items()}
+    invalid = sorted(name for name, dim in normalized.items() if dim <= 0)
+    if invalid:
+        raise ValueError(f"channel_input_dims must be positive for all channels. Invalid: {invalid}")
+    return normalized
+
+
+def _build_channel_registry(
+    *,
+    channel_names: t.Sequence[str],
+    channel_input_dims: t.Mapping[str, int],
+    mask_rate: float,
+) -> dict[str, tuple[t.Callable, t.Callable, t.Callable]]:
+    registry: dict[str, tuple[t.Callable, t.Callable, t.Callable]] = {
+        "stage5": (
+            default_extractor("stage5", 1),
+            default_tokenizer(1),
+            default_mlm_mask_generator(0.0),
+        )
+    }
+    missing: list[str] = []
+    for name in channel_names:
+        if name == "stage5":
+            continue
+        frames_per_token = channel_input_dims.get(name)
+        if frames_per_token is None:
+            missing.append(name)
+            continue
+        registry[name] = (
+            default_extractor(name, frames_per_token),
+            default_tokenizer(frames_per_token),
+            default_mlm_mask_generator(mask_rate),
+        )
+
+    if missing:
+        raise ValueError(
+            "Missing channel_input_dims for requested channels: "
+            f"{sorted(missing)}. Provide explicit YAML-driven widths for all non-stage5 channels."
+        )
+    return registry
+
+
 class PSGPretrainDataset(DefaultDataset):
     def __init__(
         self,
@@ -19,10 +62,11 @@ class PSGPretrainDataset(DefaultDataset):
         index: str,
         split: t.List[str],
         max_tokens: int,
+        *,
+        channel_input_dims: t.Mapping[str, int],
         token_sec: int = 30,
         stride_tokens: int = 0,  # 0 for truncation
         mask_rate: float = 0.15,
-        use_legacy_body_movement: bool = False,
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names: t.Optional[t.List[str]] = None,  # ← 新增参数
         meta_data_regression_names: t.Optional[t.List[str]] = None,
@@ -32,19 +76,21 @@ class PSGPretrainDataset(DefaultDataset):
         min_channels: int = 2,
         allow_missing_channels: bool = False,
         bucket_by_available_channels: bool = False,
-        train_pair_sampling: str | None = None,
+        train_pair_probs: t.Optional[t.Mapping[tuple[str, str], float]] = None,
         train_pair_track_unique_samples: bool = False,
         generative: bool = False,
         is_train_set: bool = True,
+        filter_max_workers: int | None = None,
         **kwargs: t.Any,
     ) -> None:
 
         self.channel_names = channel_names
+        self.channel_input_dims = _normalize_channel_input_dims(channel_input_dims)
         self.randomly_select_channels = randomly_select_channels
         self.min_channels = min_channels
         self.allow_missing_channels = allow_missing_channels
         self.bucket_by_available_channels = bucket_by_available_channels
-        self.train_pair_sampling = train_pair_sampling
+        self.train_pair_probs = None if train_pair_probs is None else dict(train_pair_probs)
         self.train_pair_track_unique_samples = bool(train_pair_track_unique_samples)
         self.token_sec = token_sec
         self.generative = generative
@@ -115,62 +161,11 @@ class PSGPretrainDataset(DefaultDataset):
         else:
             data = None
 
-        registry = {
-            "heartbeat": (
-                default_extractor("heartbeat", self.token_sec * 4),
-                default_tokenizer(4 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "breath": (
-                default_extractor("breath", self.token_sec * 4),
-                default_tokenizer(4 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "eeg_original": (
-                default_extractor("eeg_original", self.token_sec * 128),
-                default_tokenizer(128 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "ecg_original": (
-                default_extractor("ecg_original", self.token_sec * 128),
-                default_tokenizer(128 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "eog_original": (
-                default_extractor("eog_original", self.token_sec * 128),
-                default_tokenizer(128 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "emg_original": (
-                default_extractor("emg_original", self.token_sec * 128),
-                default_tokenizer(128 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "spo2": (
-                default_extractor("spo2", self.token_sec * 4),
-                default_tokenizer(4 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "resp_original": (
-                default_extractor("resp_original", self.token_sec * 4),
-                default_tokenizer(4 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "resp_nasal_original": (
-                default_extractor("resp_nasal_original", self.token_sec * 4),
-                default_tokenizer(4 * self.token_sec),
-                default_mlm_mask_generator(mask_rate),
-            ),
-            "stage5": (
-                default_extractor("stage5", 1),
-                default_tokenizer(1),
-                default_mlm_mask_generator(0.0),
-            ),
-        }
-
-        unknown = [name for name in channel_names if name not in registry]
-        if unknown:
-            raise ValueError(f"Unknown channels requested: {unknown}")
+        registry = _build_channel_registry(
+            channel_names=channel_names,
+            channel_input_dims=self.channel_input_dims,
+            mask_rate=mask_rate,
+        )
 
         extractors = {name: registry[name][0] for name in channel_names}
         tokenizers = {name: registry[name][1] for name in channel_names}
@@ -190,4 +185,5 @@ class PSGPretrainDataset(DefaultDataset):
             sources=sources,
             pair_selector=pair_selector,
             dataloader_config=kwargs,
+            filter_max_workers=filter_max_workers,
         )

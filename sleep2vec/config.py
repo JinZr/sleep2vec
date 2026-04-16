@@ -63,6 +63,26 @@ class LayerMixConfig:
 
 
 @dataclass
+class EvalVisualizationPlotConfig:
+    enabled: bool = False
+
+
+@dataclass
+class ConfusionMatrixVisualizationConfig:
+    enabled: bool = False
+    show_raw_counts: bool = False
+
+
+@dataclass
+class EvalVisualizationsConfig:
+    enabled: bool = False
+    stages: t.List[str] = field(default_factory=lambda: ["val", "test"])
+    confusion_matrix: ConfusionMatrixVisualizationConfig = field(default_factory=ConfusionMatrixVisualizationConfig)
+    roc_curve: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
+    regression_scatter: EvalVisualizationPlotConfig = field(default_factory=EvalVisualizationPlotConfig)
+
+
+@dataclass
 class HeadConfig:
     channel_agg: "ChannelAggConfig"
     temporal_agg: "TemporalAggConfig"
@@ -108,11 +128,52 @@ class ModelAveragingConfig:
 
 
 @dataclass
+class AdaptStage1Config:
+    train_shared_projection: bool = False
+
+
+@dataclass
+class AdaptLrScalesConfig:
+    encoder: float = 0.1
+    shared_legacy: float = 0.5
+    new_modalities: float = 1.0
+
+
+@dataclass
+class AdaptPairSchedulePoint:
+    until: float
+    new_pair_ratio: float
+
+
+def _default_adapt_pair_schedule() -> list["AdaptPairSchedulePoint"]:
+    return [
+        AdaptPairSchedulePoint(until=0.25, new_pair_ratio=1.0),
+        AdaptPairSchedulePoint(until=0.50, new_pair_ratio=0.7),
+        AdaptPairSchedulePoint(until=0.75, new_pair_ratio=0.5),
+        AdaptPairSchedulePoint(until=1.0, new_pair_ratio=0.0),
+    ]
+
+
+@dataclass
+class AdaptStage2Config:
+    lr_scales: AdaptLrScalesConfig = field(default_factory=AdaptLrScalesConfig)
+    pair_schedule: list[AdaptPairSchedulePoint] = field(default_factory=_default_adapt_pair_schedule)
+
+
+@dataclass
+class AdaptConfig:
+    new_channels: list[str]
+    stage1: AdaptStage1Config = field(default_factory=AdaptStage1Config)
+    stage2: AdaptStage2Config = field(default_factory=AdaptStage2Config)
+
+
+@dataclass
 class PretrainConfigBundle:
     model: ModelConfig
     loss: LossConfig
     data: "PretrainDataConfig"
     averaging: "ModelAveragingConfig | None" = None
+    adapt: "AdaptConfig | None" = None
 
 
 @dataclass
@@ -156,6 +217,7 @@ class FinetuneConfig:
     lora: LoraConfig = field(default_factory=LoraConfig)
     layer_mix: LayerMixConfig | None = None
     task: TaskConfig | None = None
+    eval_visualizations: EvalVisualizationsConfig | None = None
 
 
 @dataclass
@@ -237,6 +299,30 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     return HeadConfig(temporal_agg=temporal_cfg, channel_agg=channel_cfg, **head_raw)
 
 
+def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfig:
+    if not isinstance(model_block, dict):
+        raise ValueError("model block must be a mapping.")
+    if "backbone" not in model_block:
+        raise ValueError("model.backbone is required in YAML.")
+    if "projection" not in model_block:
+        raise ValueError("model.projection is required in YAML.")
+    if "cls" not in model_block:
+        raise ValueError("model.cls is required in YAML.")
+
+    channels = _require_channels(model_block)
+    backbone = BackboneConfig(**model_block.get("backbone"))
+    projection = ProjectionConfig(**model_block.get("projection"))
+    cls_cfg = _build_cls_config(model_block)
+    head = _build_head_config(model_block, required=require_head)
+    return ModelConfig(
+        channels=channels,
+        backbone=backbone,
+        projection=projection,
+        cls=cls_cfg,
+        head=head,
+    )
+
+
 def _build_layer_mix_config(raw: t.Any) -> LayerMixConfig | None:
     if raw is None:
         return None
@@ -257,6 +343,84 @@ def _build_layer_mix_config(raw: t.Any) -> LayerMixConfig | None:
         raw["layer_indices"] = layer_indices
 
     return LayerMixConfig(**raw)
+
+
+def _build_eval_visualization_plot_config(raw: t.Any, *, field_name: str) -> EvalVisualizationPlotConfig:
+    if raw is None:
+        return EvalVisualizationPlotConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"finetune.eval_visualizations.{field_name} must be a mapping when provided.")
+
+    extra = sorted(set(raw.keys()) - {"enabled"})
+    if extra:
+        raise ValueError(f"finetune.eval_visualizations.{field_name} has unsupported fields: {extra}")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"finetune.eval_visualizations.{field_name}.enabled must be a boolean.")
+
+    return EvalVisualizationPlotConfig(enabled=enabled)
+
+
+def _build_confusion_matrix_visualization_config(raw: t.Any) -> ConfusionMatrixVisualizationConfig:
+    if raw is None:
+        return ConfusionMatrixVisualizationConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.eval_visualizations.confusion_matrix must be a mapping when provided.")
+
+    extra = sorted(set(raw.keys()) - {"enabled", "show_raw_counts"})
+    if extra:
+        raise ValueError(f"finetune.eval_visualizations.confusion_matrix has unsupported fields: {extra}")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("finetune.eval_visualizations.confusion_matrix.enabled must be a boolean.")
+
+    show_raw_counts = raw.get("show_raw_counts", False)
+    if not isinstance(show_raw_counts, bool):
+        raise ValueError("finetune.eval_visualizations.confusion_matrix.show_raw_counts must be a boolean.")
+
+    return ConfusionMatrixVisualizationConfig(enabled=enabled, show_raw_counts=show_raw_counts)
+
+
+def _build_eval_visualizations_config(raw: t.Any) -> EvalVisualizationsConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.eval_visualizations must be a mapping when provided.")
+
+    allowed = {"enabled", "stages", "confusion_matrix", "roc_curve", "regression_scatter"}
+    extra = sorted(set(raw.keys()) - allowed)
+    if extra:
+        raise ValueError(f"finetune.eval_visualizations has unsupported fields: {extra}")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("finetune.eval_visualizations.enabled must be a boolean.")
+
+    stages = raw.get("stages", ["val", "test"])
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("finetune.eval_visualizations.stages must be a non-empty list.")
+    if not all(isinstance(stage, str) for stage in stages):
+        raise ValueError("finetune.eval_visualizations.stages must be a list of strings.")
+    if len(set(stages)) != len(stages):
+        raise ValueError("finetune.eval_visualizations.stages must not contain duplicates.")
+    invalid_stages = [stage for stage in stages if stage not in {"val", "test"}]
+    if invalid_stages:
+        raise ValueError(
+            "finetune.eval_visualizations.stages only supports 'val' and 'test'. " f"Got: {invalid_stages}"
+        )
+
+    return EvalVisualizationsConfig(
+        enabled=enabled,
+        stages=list(stages),
+        confusion_matrix=_build_confusion_matrix_visualization_config(raw.get("confusion_matrix")),
+        roc_curve=_build_eval_visualization_plot_config(raw.get("roc_curve"), field_name="roc_curve"),
+        regression_scatter=_build_eval_visualization_plot_config(
+            raw.get("regression_scatter"),
+            field_name="regression_scatter",
+        ),
+    )
 
 
 def _build_task_config(raw: t.Any) -> TaskConfig | None:
@@ -325,6 +489,104 @@ def _build_loss(loss_block: dict[str, t.Any]) -> LossConfig:
     return LossConfig(**loss_block)
 
 
+def _build_adapt_stage1_config(raw: t.Any) -> AdaptStage1Config:
+    if raw is None:
+        return AdaptStage1Config()
+    if not isinstance(raw, dict):
+        raise ValueError("adapt.stage1 must be a mapping when provided.")
+    return AdaptStage1Config(**raw)
+
+
+def _build_adapt_lr_scales(raw: t.Any) -> AdaptLrScalesConfig:
+    if raw is None:
+        return AdaptLrScalesConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("adapt.stage2.lr_scales must be a mapping when provided.")
+    return AdaptLrScalesConfig(**raw)
+
+
+def _build_adapt_pair_schedule(raw: t.Any) -> list[AdaptPairSchedulePoint]:
+    if raw is None:
+        return _default_adapt_pair_schedule()
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("adapt.stage2.pair_schedule must be a non-empty list when provided.")
+
+    schedule: list[AdaptPairSchedulePoint] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each adapt.stage2.pair_schedule item must be a mapping.")
+        if "until" not in item or "new_pair_ratio" not in item:
+            raise ValueError("Each adapt.stage2.pair_schedule item must contain 'until' and 'new_pair_ratio'.")
+        schedule.append(
+            AdaptPairSchedulePoint(
+                until=float(item["until"]),
+                new_pair_ratio=float(item["new_pair_ratio"]),
+            )
+        )
+    return schedule
+
+
+def _build_adapt_stage2_config(raw: t.Any) -> AdaptStage2Config:
+    if raw is None:
+        return AdaptStage2Config()
+    if not isinstance(raw, dict):
+        raise ValueError("adapt.stage2 must be a mapping when provided.")
+    return AdaptStage2Config(
+        lr_scales=_build_adapt_lr_scales(raw.get("lr_scales")),
+        pair_schedule=_build_adapt_pair_schedule(raw.get("pair_schedule")),
+    )
+
+
+def _build_adapt_config(raw: t.Any) -> AdaptConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("adapt block must be a mapping when provided.")
+    new_channels = raw.get("new_channels")
+    if not isinstance(new_channels, list) or not new_channels:
+        raise ValueError("adapt.new_channels is required and must be a non-empty list.")
+    if not all(isinstance(name, str) and name for name in new_channels):
+        raise ValueError("adapt.new_channels must contain non-empty strings.")
+    if len(set(new_channels)) != len(new_channels):
+        raise ValueError("adapt.new_channels must not contain duplicates.")
+
+    return AdaptConfig(
+        new_channels=list(new_channels),
+        stage1=_build_adapt_stage1_config(raw.get("stage1")),
+        stage2=_build_adapt_stage2_config(raw.get("stage2")),
+    )
+
+
+def _validate_adapt_config(adapt_cfg: AdaptConfig | None, model_cfg: ModelConfig) -> None:
+    if adapt_cfg is None:
+        return
+
+    channel_names = {channel.name for channel in model_cfg.channels}
+    missing = [name for name in adapt_cfg.new_channels if name not in channel_names]
+    if missing:
+        raise ValueError(
+            "adapt.new_channels must be present in model.channels. "
+            f"Missing: {missing}; available: {sorted(channel_names)}"
+        )
+
+    schedule = adapt_cfg.stage2.pair_schedule
+    last_until = 0.0
+    for point in schedule:
+        if not (0.0 < point.until <= 1.0):
+            raise ValueError("adapt.stage2.pair_schedule.until values must be in (0, 1].")
+        if point.until < last_until:
+            raise ValueError("adapt.stage2.pair_schedule.until values must be non-decreasing.")
+        if not (0.0 <= point.new_pair_ratio <= 1.0):
+            raise ValueError("adapt.stage2.pair_schedule.new_pair_ratio values must be in [0, 1].")
+        last_until = point.until
+
+    if schedule and abs(schedule[-1].until - 1.0) > 1e-8:
+        raise ValueError("adapt.stage2.pair_schedule must end with until=1.0.")
+    for field_name, value in vars(adapt_cfg.stage2.lr_scales).items():
+        if value < 0.0:
+            raise ValueError(f"adapt.stage2.lr_scales.{field_name} must be >= 0.")
+
+
 def validate_model_config(model_cfg: ModelConfig) -> int:
     """Checks model config sanity and returns the shared channel feature dim."""
     out_dims = {ch.tokenizer.out_dim for ch in model_cfg.channels}
@@ -372,45 +634,36 @@ def _build_model_averaging_config(data: dict[str, t.Any]) -> ModelAveragingConfi
     return ModelAveragingConfig(name=name, params=params)
 
 
-def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
+def _load_yaml_mapping(path: str | Path, *, error_message: str) -> dict[str, t.Any]:
     data = yaml.safe_load(Path(path).read_text())
     if not isinstance(data, dict):
-        raise ValueError("Top-level YAML must be a mapping with model/loss blocks.")
+        raise ValueError(error_message)
+    return data
+
+
+def load_model_config(path: str | Path, *, require_head: bool = False) -> ModelConfig:
+    data = _load_yaml_mapping(path, error_message="Top-level YAML must be a mapping with a model block.")
+    return _build_model_config(data.get("model", {}), require_head=require_head)
+
+
+def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
+    data = _load_yaml_mapping(path, error_message="Top-level YAML must be a mapping with model/loss blocks.")
 
     model_block = data.get("model", {})
     loss_block = data.get("loss", {})
     data_block = data.get("data", {})
-
-    if "backbone" not in model_block:
-        raise ValueError("model.backbone is required in YAML.")
-    if "projection" not in model_block:
-        raise ValueError("model.projection is required in YAML.")
-    if "cls" not in model_block:
-        raise ValueError("model.cls is required in YAML.")
-
-    channels = _require_channels(model_block)
-    backbone = BackboneConfig(**model_block.get("backbone"))
-    projection = ProjectionConfig(**model_block.get("projection"))
-    cls_cfg = _build_cls_config(model_block)
-    head = _build_head_config(model_block, required=False)
-    model_cfg = ModelConfig(
-        channels=channels,
-        backbone=backbone,
-        projection=projection,
-        cls=cls_cfg,
-        head=head,
-    )
+    model_cfg = _build_model_config(model_block, require_head=False)
 
     loss_cfg = _build_loss(loss_block)
     data_cfg = PretrainDataConfig(**data_block)
     averaging_cfg = _build_model_averaging_config(data)
-    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg, averaging=averaging_cfg)
+    adapt_cfg = _build_adapt_config(data.get("adapt"))
+    _validate_adapt_config(adapt_cfg, model_cfg)
+    return PretrainConfigBundle(model=model_cfg, loss=loss_cfg, data=data_cfg, averaging=averaging_cfg, adapt=adapt_cfg)
 
 
 def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
-    data = yaml.safe_load(Path(path).read_text())
-    if not isinstance(data, dict):
-        raise ValueError("Top-level YAML must be a mapping with a model block.")
+    data = _load_yaml_mapping(path, error_message="Top-level YAML must be a mapping with a model block.")
     model_block = data.get("model", {})
     data_block = data.get("data", {})
     finetune_block = data.get("finetune")
@@ -420,28 +673,11 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         raise ValueError("finetune block must be a mapping.")
     lora_block = finetune_block.get("lora", {})
     averaging_cfg = _build_model_averaging_config(data)
-    if "backbone" not in model_block:
-        raise ValueError("model.backbone is required in YAML.")
-    if "projection" not in model_block:
-        raise ValueError("model.projection is required in YAML.")
-    if "cls" not in model_block:
-        raise ValueError("model.cls is required in YAML.")
-
-    channels = _require_channels(model_block)
-    backbone = BackboneConfig(**model_block.get("backbone"))
-    projection = ProjectionConfig(**model_block.get("projection"))
-    cls_cfg = _build_cls_config(model_block)
+    model_cfg = _build_model_config(model_block, require_head=True)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
+    eval_visualizations_cfg = _build_eval_visualizations_config(finetune_block.get("eval_visualizations"))
     task_cfg = _build_task_config(finetune_block.get("task"))
-    head = _build_head_config(model_block, required=True)
-    model_cfg = ModelConfig(
-        channels=channels,
-        backbone=backbone,
-        projection=projection,
-        cls=cls_cfg,
-        head=head,
-    )
-    _validate_layer_mix_config(layer_mix_cfg, backbone)
+    _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
     finetune_cfg = FinetuneConfig(
@@ -449,6 +685,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         lora=lora_cfg,
         layer_mix=layer_mix_cfg,
         task=task_cfg,
+        eval_visualizations=eval_visualizations_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
@@ -460,12 +697,19 @@ __all__ = [
     "FinetuneDataConfig",
     "PretrainDataConfig",
     "BackboneConfig",
+    "AdaptConfig",
+    "AdaptLrScalesConfig",
+    "AdaptPairSchedulePoint",
+    "AdaptStage1Config",
+    "AdaptStage2Config",
     "ChannelConfig",
     "HeadConfig",
     "LossConfig",
     "ModelConfig",
     "ClsConfig",
     "LayerMixConfig",
+    "EvalVisualizationPlotConfig",
+    "EvalVisualizationsConfig",
     "TemporalAggConfig",
     "ModelAveragingConfig",
     "ProjectionConfig",

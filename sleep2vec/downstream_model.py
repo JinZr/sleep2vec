@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import yaml
 
+from sleep2vec.checkpoints import load_checkpoint, load_pretrain_init_weights
 from sleep2vec.config import HeadConfig, LayerMixConfig, ModelConfig
 from sleep2vec.modules.layer_mix import LayerMix
 
@@ -377,32 +378,29 @@ class Sleep2vecDownstreamModel(nn.Module):
         return self.head(features)
 
     def load_pretrained_backbone(self, ckpt_path, use_ema: bool | str | None = True):
-        logging.info(f"Loading backbone from {ckpt_path}")
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-        state_dict = ckpt["state_dict"]
+        logging.info(f"Loading pretrain-model init weights from {ckpt_path}")
+        ckpt = load_checkpoint(ckpt_path, device="cpu")
 
         averaging_name = None
         if isinstance(use_ema, str):
             averaging_name = use_ema
         elif use_ema:
             averaging_name = "ema"
-
-        prefix = f"{averaging_name}_model." if averaging_name else "model."
-        filtered_state_dict = {k.replace(prefix, ""): v for k, v in state_dict.items() if k.startswith(prefix)}
-
-        if averaging_name and not filtered_state_dict:
-            logging.warning(f"{averaging_name} weights not found in checkpoint; falling back to student weights.")
-            prefix = "model."
-            filtered_state_dict = {k.replace(prefix, ""): v for k, v in state_dict.items() if k.startswith(prefix)}
+        prefixes = (f"{averaging_name}_model.", "model.") if averaging_name else ("model.",)
 
         # Sanity check CLS settings against serialized config in checkpoint (assumes YAML is present)
         self._warn_on_cls_mismatch(ckpt)
 
-        # 加载到 self.backbone
-        load_info = self.backbone.load_state_dict(filtered_state_dict, strict=False)
+        load_info = load_pretrain_init_weights(
+            self.backbone,
+            ckpt_path,
+            device="cpu",
+            strict=False,
+            prefixes=prefixes,
+        )
 
         # 打印加载结果
-        total_keys = len(filtered_state_dict)
+        total_keys = load_info.loaded_keys
         missing_keys = load_info.missing_keys
         unexpected_keys = load_info.unexpected_keys
 

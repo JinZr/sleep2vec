@@ -24,11 +24,24 @@ def test_apply_task_flags_rejects_multiclass_metadata_label():
         apply_task_flags(args, task_cfg)
 
 
-def test_apply_task_flags_allows_stage5_multiclass():
-    args = _args("stage5")
+@pytest.mark.parametrize(
+    ("label_name", "output_dim", "stage_names", "class_labels"),
+    [
+        ("stage3", 3, ["W", "NREM", "REM"], ["W", "NREM", "REM"]),
+        ("stage4", 4, ["W", "N1N2", "N3", "REM"], ["W", "N1N2", "N3", "REM"]),
+        ("stage5", 5, ["W", "N1", "N2", "N3", "REM"], ["W", "N1", "N2", "N3", "REM"]),
+    ],
+)
+def test_apply_task_flags_allows_builtin_stage_multiclass(
+    label_name: str,
+    output_dim: int,
+    stage_names: list[str],
+    class_labels: list[str],
+):
+    args = _args(label_name)
     task_cfg = TaskConfig(
         type="classification",
-        output_dim=5,
+        output_dim=output_dim,
         is_seq=True,
         monitor="val_accuracy",
         monitor_mod="max",
@@ -37,8 +50,11 @@ def test_apply_task_flags_allows_stage5_multiclass():
     apply_task_flags(args, task_cfg)
 
     assert args.is_classification is True
-    assert args.output_dim == 5
+    assert args.output_dim == output_dim
     assert args.is_seq is True
+    assert args.label_source_name == "stage5"
+    assert args.stage_names == stage_names
+    assert args.class_labels == class_labels
 
 
 def test_apply_task_flags_allows_binary_metadata_classification():
@@ -56,6 +72,7 @@ def test_apply_task_flags_allows_binary_metadata_classification():
     assert args.is_classification is True
     assert args.output_dim == 2
     assert args.is_seq is False
+    assert args.class_labels is None
 
 
 def test_apply_task_flags_allows_metadata_regression():
@@ -73,3 +90,4 @@ def test_apply_task_flags_allows_metadata_regression():
     assert args.is_classification is False
     assert args.output_dim == 1
     assert args.is_seq is False
+    assert args.class_labels is None
