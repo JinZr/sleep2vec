@@ -228,6 +228,7 @@ __marimo__/
 # Numpy / array artifacts
 *.npy
 *.npz
+egs/data_hub/
 
 # Serialized Python objects
 *.pkl
