@@ -314,7 +314,9 @@ def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[d
             current_true_ahi = float(item["true_ahi"])
             current_tst_hours = float(item["tst_hours"])
             if truth.shape[0] != score.shape[0]:
-                raise ValueError(f"AHI truth/pred length mismatch for path {path}: {truth.shape[0]} vs {score.shape[0]}")
+                raise ValueError(
+                    f"AHI truth/pred length mismatch for path {path}: {truth.shape[0]} vs {score.shape[0]}"
+                )
             if truth.shape[0] % 30 != 0:
                 raise ValueError(f"AHI window for path {path} has non-token-aligned second count {truth.shape[0]}")
             token_count = truth.shape[0] // 30
@@ -326,7 +328,9 @@ def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[d
             if true_ahi is None:
                 true_ahi = current_true_ahi
             elif not np.isclose(true_ahi, current_true_ahi):
-                raise ValueError(f"Inconsistent scalar 'ahi' across windows for path {path}: {true_ahi} vs {current_true_ahi}")
+                raise ValueError(
+                    f"Inconsistent scalar 'ahi' across windows for path {path}: {true_ahi} vs {current_true_ahi}"
+                )
             if tst_hours is None:
                 tst_hours = current_tst_hours
             elif not np.isclose(tst_hours, current_tst_hours):
