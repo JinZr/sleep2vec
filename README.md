@@ -52,7 +52,7 @@
 
 ## Data Format & Caches
 - **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set. For the built-in `sex` task, the normalized contract is `sex=female|male`, encoded as `0=female`, `1=male`. If your source metadata uses `sexM`, convert it to `sex` with `1 -> male`, `0 -> female` during preprocessing.
-- **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy_vm`. Built-in sequence labels are the exception: raw `stage5` remains a special per-token label channel with width `1`, and built-in `ahi` is loaded from the NPZ key `ahi` into width `30` token labels.
+- **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy_vm`. Built-in sequence labels are the exception: raw `stage5` remains a special per-token label channel with width `1`, and built-in `ahi` reads 1 Hz event labels from NPZ key `ah_event` into width `30` token labels while requiring scalar NPZ summaries `ahi` and `tst`.
 - **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided. Preset generation now requires a YAML config so the script can resolve channel names and `input_dim` values from `model.channels`.
 - `preprocess/save_dataset_presets.py` also honors an optional top-level `preset_build` block. Use it when preset validation must differ from runtime input modalities, for example token-level PPG staging should validate both `ppg` and `stage5`.
 - `preset_build.required_channels` is the YAML source of truth for preset validation channels; do not combine it with CLI `--channels`.
@@ -184,9 +184,9 @@ Custom metadata labels:
 - Set `--label-name` to the CSV column name (e.g., `bmi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
 - Use the same `--label-name` for `sleep2vec.infer` (required) when evaluating custom tasks.
 - Token-level labels (`is_seq: true`) are only supported for built-in sequence labels (`stage3`, `stage4`, `stage5`, `ahi`) unless you extend the dataloader.
-- Built-in `ahi` expects a flat 1 Hz NPZ array named `ahi`; each 30-second token is reshaped into 30 binary labels and trained with sigmoid/BCE.
-- Built-in `ahi` also loads raw `stage5` labels as an auxiliary metric-only channel. Final validation/test/infer metrics are **event-based AHI**, not pointwise second-level metrics.
-- The built-in `ahi` evaluator fits the event threshold on validation only, saves it in the checkpoint, reuses it for test/infer, computes TST from raw `stage5 > 0`, skips samples with `TST < 2h`, and monitors `val_ahi_pearson`.
+- Built-in `ahi` expects a flat 1 Hz NPZ array named `ah_event`; each 30-second token is reshaped into 30 binary labels and trained with sigmoid/BCE.
+- Built-in `ahi` also requires scalar NPZ keys `ahi` and `tst`; final validation/test/infer metrics are **event-based AHI**, not pointwise second-level metrics.
+- The built-in `ahi` evaluator fits the event threshold on validation only, saves it in the checkpoint, reuses it for test/infer, computes predicted AHI as event count divided by scalar `tst`, compares against scalar ground-truth `ahi`, skips samples with `TST < 2h`, and monitors `val_ahi_pearson`.
 - Example YAMLs: `configs/sleep2vec_dense_finetune_custom_reg.yaml`, `configs/sleep2vec_dense_finetune_custom_cls.yaml`.
 
 > [!Note]
@@ -395,7 +395,7 @@ finetune:
 - Maintain separate YAML per stage (`*_pretrain.yaml`, `*_finetune_*.yaml`); only pretrain YAML defines `loss`.
 - When adding a new modality, first declare it in `model.channels` with the correct `input_dim`, regenerate presets with the same `--config`, then pretrain/adapt from a checkpoint as needed.
 - All channels must share the same `out_dim`; the builder enforces this.
-- `data.data_channel_names` in finetune YAML must match `model.channels` (input modalities only); built-in sequence labels (`stage3`, `stage4`, `stage5`, `ahi`) load their runtime label tokens automatically when used as `--label-name` (`stage3`/`stage4`/`stage5` from raw `stage5`, `ahi` from raw `ahi`).
+- `data.data_channel_names` in finetune YAML must match `model.channels` (input modalities only); built-in sequence labels (`stage3`, `stage4`, `stage5`, `ahi`) load their runtime label tokens automatically when used as `--label-name` (`stage3`/`stage4`/`stage5` from raw `stage5`, `ahi` from raw `ah_event` plus scalar NPZ summaries `ahi` and `tst`).
 - `pretrain.py`, `adapt.py`, and `finetune.py` copy the resolved `config.yaml` plus `cli_args.yaml` into the run directory for reproducibility.
 - When experimenting, adjust CLI flags for training schedules and keep structural changes in YAML for reproducibility.
 

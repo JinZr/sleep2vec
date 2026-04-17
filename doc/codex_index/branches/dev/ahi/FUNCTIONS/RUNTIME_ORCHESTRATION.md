@@ -106,12 +106,12 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `_extract_ahi_event_records(self, batch, logits) -> list[dict[str, np.ndarray]]`
-- Purpose and contract: convert one batch of raw `ahi` token labels, sigmoid scores, and auxiliary `stage5` tokens into per-sample records for final event-based AHI reduction.
-- Important inputs/outputs: batch plus logits in; list of `{truth, score, stage5}` records out.
+- Purpose and contract: convert one batch of raw `ahi` token labels, sigmoid scores, and scalar AHI/TST metadata into per-sample records for final event-based AHI reduction, preserving optional `stage5` only when present in the batch.
+- Important inputs/outputs: batch plus logits in; list of `{truth, score, true_ahi, tst_hours}` records out, plus optional `stage5`.
 - Side effects: none.
 - Key callers/callees: caller is `_shared_step`; downstream consumer is `compute_ahi_event_metrics`.
 - Reuse guidance: use this helper when the final AHI reduction contract changes.
-- Duplication risk notes: sample-boundary preservation and `stage5` alignment belong here, not in metrics helpers.
+- Duplication risk notes: sample-boundary preservation and scalar-summary alignment belong here, not in metrics helpers.
 
 ## `Sleep2vecFinetuning._finalize_epoch`
 
@@ -139,8 +139,8 @@
 
 - File: `sleep2vec/metrics.py`
 - Signature: `select_best_ahi_threshold(records, *, search_thresholds=...) -> tuple[float, dict[str, Any]]`
-- Purpose and contract: search the configured threshold grid, skipping records without usable TST summaries, and choose the threshold that maximizes Pearson, then minimizes MAE, then prefers the higher threshold on exact metric ties.
-- Important inputs/outputs: per-sample `{truth, score, stage5}` records in; selected threshold plus cached aggregate out.
+- Purpose and contract: search the configured threshold grid, skipping records without usable scalar `tst_hours`, and choose the threshold that maximizes Pearson, then minimizes MAE, then prefers the higher threshold on exact metric ties.
+- Important inputs/outputs: per-sample `{truth, score, true_ahi, tst_hours}` records in; selected threshold plus cached aggregate out.
 - Side effects: none.
 - Key callers/callees: caller is `compute_ahi_event_metrics`; callee is `_aggregate_ahi_records`.
 - Reuse guidance: reuse this if threshold search policy changes.
@@ -150,12 +150,12 @@
 
 - File: `sleep2vec/metrics.py`
 - Signature: `compute_ahi_event_metrics(records, *, threshold: float | None = None, search_thresholds=..., severity_thresholds=...) -> tuple[dict[str, float], float]`
-- Purpose and contract: convert per-sample 1-second `ahi` predictions into inclusive `[start, end]` event segments, apply raw `stage5` sleep-period gating symmetrically to ground-truth and prediction events on TST-qualified samples, keep events whose inclusive duration is at least 10 seconds, compute TST-aware final AHI, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite. `TST < 2h` exclusion remains a runtime guardrail for final AHI summaries rather than part of the event definition itself.
-- Important inputs/outputs: per-sample `truth` / `score` / `stage5` records in; metrics dict plus chosen threshold out.
+- Purpose and contract: convert per-sample 1-second `ahi` predictions into inclusive `[start, end]` event segments, keep events whose inclusive duration is at least 10 seconds, match events with inclusive IoU arithmetic, compute predicted AHI from event count divided by scalar `tst_hours`, compare against scalar ground-truth `true_ahi`, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite. `TST < 2h` exclusion remains a runtime guardrail for final AHI summaries rather than part of the event definition itself.
+- Important inputs/outputs: per-sample `truth` / `score` / `true_ahi` / `tst_hours` records in; metrics dict plus chosen threshold out.
 - Side effects: none.
-- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `select_best_ahi_threshold`, `binary_sequence_to_segments`, `merge_intervals`, `filter_segments_by_stage`, `filter_segments_by_duration`, and `vectorized_event_stats`.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `select_best_ahi_threshold`, `binary_sequence_to_segments`, `merge_intervals`, `filter_segments_by_duration`, and `vectorized_event_stats`.
 - Reuse guidance: use this for every final `ahi` validation/test/infer metric path instead of re-deriving event counts in trainer code.
-- Duplication risk notes: threshold search, TST semantics, duration filtering, and event filtering must stay centralized here.
+- Duplication risk notes: threshold search, scalar-summary semantics, inclusive event-overlap arithmetic, and duration filtering must stay centralized here.
 
 ## `sleep2vec.metrics.compute_downstream_metrics`
 

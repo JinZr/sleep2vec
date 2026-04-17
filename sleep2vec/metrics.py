@@ -201,9 +201,11 @@ def vectorized_event_stats(gt_segments, pred_segments, *, threshold: float = 0.5
         return 0.0, 0.0, float(len(gt_segments))
 
     intersect_mask = (gt_seg[:, None, 0] <= pre_seg[None, :, 1]) & (gt_seg[:, None, 1] >= pre_seg[None, :, 0])
-    union = np.maximum(gt_seg[:, None, 1], pre_seg[None, :, 1]) - np.minimum(gt_seg[:, None, 0], pre_seg[None, :, 0])
-    gt_lengths = (gt_seg[:, 1] - gt_seg[:, 0])[:, None]
-    pre_lengths = (pre_seg[:, 1] - pre_seg[:, 0])[None, :]
+    union = (
+        np.maximum(gt_seg[:, None, 1], pre_seg[None, :, 1]) - np.minimum(gt_seg[:, None, 0], pre_seg[None, :, 0]) + 1
+    )
+    gt_lengths = (gt_seg[:, 1] - gt_seg[:, 0] + 1)[:, None]
+    pre_lengths = (pre_seg[:, 1] - pre_seg[:, 0] + 1)[None, :]
     overlap = np.where(intersect_mask, gt_lengths + pre_lengths - union, 0.0)
     ratio = np.where(union > 0, overlap / union, 0.0)
     matched = (ratio > threshold).any(axis=1).astype(np.float32)
@@ -262,32 +264,94 @@ def _evaluate_single_ahi_record(
 ) -> tuple[tuple[float, float, float], float | None, float | None]:
     truth = np.asarray(record["truth"], dtype=np.int64).reshape(-1)
     score = np.asarray(record["score"], dtype=np.float32).reshape(-1)
-    stage5 = np.asarray(record["stage5"], dtype=np.int64).reshape(-1)
+    true_ahi = float(record["true_ahi"])
+    tst_hours = float(record["tst_hours"])
 
     if truth.shape[0] != score.shape[0]:
         raise ValueError(f"AHI truth/pred length mismatch: {truth.shape[0]} vs {score.shape[0]}")
-    if stage5.shape[0] * 30 < truth.shape[0]:
-        raise ValueError(f"stage5 token count {stage5.shape[0]} cannot cover {truth.shape[0]} ahi seconds")
+    if not np.isfinite(true_ahi) or true_ahi < 0:
+        raise ValueError(f"AHI summary ground truth must be finite and >= 0, got {true_ahi}")
+    if not np.isfinite(tst_hours) or tst_hours <= 0:
+        raise ValueError(f"TST hours must be finite and > 0, got {tst_hours}")
 
-    sleep_mask = np.repeat(stage5, 30)[: truth.shape[0]] > 0
     gt_segments = merge_intervals(binary_sequence_to_segments(truth, interval=1))
     pred_binary = (score > threshold).astype(np.int64)
     pred_segments = merge_intervals(binary_sequence_to_segments(pred_binary, interval=1))
-    tst = float(sleep_mask.sum() / 3600.0)
-    if tst < AHI_MIN_TST_HOURS:
-        gt_segments = filter_segments_by_duration(gt_segments, min_duration=AHI_MIN_EVENT_DURATION)
-        pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
-        tp, fp, fn = vectorized_event_stats(gt_segments, pred_segments)
-        return (tp, fp, fn), None, None
-
-    gt_segments = filter_segments_by_stage(gt_segments, sleep_mask)
     gt_segments = filter_segments_by_duration(gt_segments, min_duration=AHI_MIN_EVENT_DURATION)
-    pred_segments = filter_segments_by_stage(pred_segments, sleep_mask)
     pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
     tp, fp, fn = vectorized_event_stats(gt_segments, pred_segments)
-    pred_ahi = float(len(pred_segments) / tst)
-    true_ahi = float(len(gt_segments) / tst)
+    if tst_hours < AHI_MIN_TST_HOURS:
+        return (tp, fp, fn), None, None
+
+    pred_ahi = float(len(pred_segments) / tst_hours)
     return (tp, fp, fn), pred_ahi, true_ahi
+
+
+def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, np.ndarray]]] = {}
+    passthrough: list[dict[str, Any]] = []
+
+    for record in records:
+        if "path" not in record or "token_start" not in record:
+            passthrough.append(dict(record))
+            continue
+        grouped.setdefault(str(record["path"]), []).append(record)
+
+    merged: list[dict[str, Any]] = passthrough
+    for path, items in grouped.items():
+        ordered = sorted(items, key=lambda item: int(item["token_start"]))
+        merged_truth: list[np.ndarray] = []
+        merged_score: list[np.ndarray] = []
+        merged_stage5: list[np.ndarray] = []
+        expected_next_start: int | None = None
+        true_ahi: float | None = None
+        tst_hours: float | None = None
+
+        for item in ordered:
+            token_start = int(item["token_start"])
+            truth = np.asarray(item["truth"], dtype=np.int64).reshape(-1)
+            score = np.asarray(item["score"], dtype=np.float32).reshape(-1)
+            current_true_ahi = float(item["true_ahi"])
+            current_tst_hours = float(item["tst_hours"])
+            if truth.shape[0] != score.shape[0]:
+                raise ValueError(f"AHI truth/pred length mismatch for path {path}: {truth.shape[0]} vs {score.shape[0]}")
+            if truth.shape[0] % 30 != 0:
+                raise ValueError(f"AHI window for path {path} has non-token-aligned second count {truth.shape[0]}")
+            token_count = truth.shape[0] // 30
+            if expected_next_start is not None and token_start != expected_next_start:
+                raise ValueError(
+                    f"AHI windows for path {path} are not contiguous and non-overlapping: "
+                    f"expected token_start={expected_next_start}, got {token_start}"
+                )
+            if true_ahi is None:
+                true_ahi = current_true_ahi
+            elif not np.isclose(true_ahi, current_true_ahi):
+                raise ValueError(f"Inconsistent scalar 'ahi' across windows for path {path}: {true_ahi} vs {current_true_ahi}")
+            if tst_hours is None:
+                tst_hours = current_tst_hours
+            elif not np.isclose(tst_hours, current_tst_hours):
+                raise ValueError(
+                    f"Inconsistent scalar 'tst' across windows for path {path}: {tst_hours} vs {current_tst_hours}"
+                )
+
+            merged_truth.append(truth)
+            merged_score.append(score)
+            if "stage5" in item:
+                merged_stage5.append(np.asarray(item["stage5"], dtype=np.int64).reshape(-1))
+            expected_next_start = token_start + token_count
+
+        merged_record: dict[str, Any] = {
+            "path": path,
+            "truth": np.concatenate(merged_truth, axis=0),
+            "score": np.concatenate(merged_score, axis=0),
+            "true_ahi": float(true_ahi) if true_ahi is not None else np.nan,
+            "tst_hours": float(tst_hours) if tst_hours is not None else np.nan,
+        }
+        if merged_stage5:
+            merged_record["stage5"] = np.concatenate(merged_stage5, axis=0)
+        merged.append(merged_record)
+
+    return merged
 
 
 def _aggregate_ahi_records(
@@ -299,7 +363,7 @@ def _aggregate_ahi_records(
     pred_ahi: list[float] = []
     true_ahi: list[float] = []
 
-    for record in records:
+    for record in _merge_ahi_window_records(records):
         (record_tp, record_fp, record_fn), record_pred_ahi, record_true_ahi = _evaluate_single_ahi_record(
             record,
             threshold=threshold,

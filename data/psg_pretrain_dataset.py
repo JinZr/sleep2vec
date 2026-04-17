@@ -31,7 +31,7 @@ def _build_channel_registry(
             default_mlm_mask_generator(0.0),
         ),
         "ahi": (
-            default_extractor("ahi", 30),
+            default_extractor("ahi", 30, source_name="ah_event"),
             default_tokenizer(30),
             default_mlm_mask_generator(0.0),
         ),

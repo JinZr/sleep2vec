@@ -157,9 +157,13 @@ def _build_finetune_loader(
     few_shot=None,
 ):
     is_seq_task = is_builtin_seq_task(args.label_name)
-    meta_data_names = [] if args.label_name in {"age", "sex"} or is_seq_task else [args.label_name]
-    meta_data_regression_names = [] if args.is_classification else list(meta_data_names)
-    if meta_data_names and args.is_classification and args.output_dim > 2:
+    if args.label_name == "ahi":
+        meta_data_names = ["ahi", "tst"]
+        meta_data_regression_names = ["ahi", "tst"]
+    else:
+        meta_data_names = [] if args.label_name in {"age", "sex"} or is_seq_task else [args.label_name]
+        meta_data_regression_names = [] if args.is_classification else list(meta_data_names)
+    if meta_data_names and args.is_classification and args.output_dim > 2 and not is_seq_task:
         raise ValueError(
             "Metadata classification currently supports only binary labels (output_dim=2) for non-built-in sequence tasks. "
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "

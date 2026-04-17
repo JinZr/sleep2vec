@@ -9,13 +9,13 @@
 - Side effects: when building from CSV, stamps `metadata["source"]` from the CSV path and expands each row into one or more `SampleIndex` windows.
 - Key callers/callees: callers are `sleep2vec.utils` and `preprocess/save_dataset_presets.py`; callees are `window`, `default_extractor`, `default_tokenizer`, `default_mlm_mask_generator`, and `DefaultDataset.__init__`.
 - Reuse guidance: use this class for PSG-style NPZ/preset loading instead of building `SampleIndex` lists manually.
-- Duplication risk notes: the built-in runtime label registry (`stage5`, `ahi`) lives here and should not be replicated in caller code.
+- Duplication risk notes: the built-in runtime label registry (`stage5`, `ahi`) plus the special `ah_event` backing key for `ahi` live here and should not be replicated in caller code.
 
 ## `data.utils.filter_valid_sample_indices`
 
 - File: `data/utils.py`
 - Signature: `filter_valid_sample_indices(data, extractors, tokenizers, *, allow_missing_channels, channel_names=None, min_channels=2, tolerance=1, max_workers=None) -> list`
-- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, and recording `payload["available_channels"]` in missing-channel mode.
+- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, recording `payload["available_channels"]` in missing-channel mode, and persisting built-in AHI scalar summaries (`ahi`, `tst`) into sample metadata when that contract is requested.
 - Important inputs/outputs: raw `SampleIndex` list in; filtered `SampleIndex` list out.
 - Side effects: mutates `sample_index.payload["available_channels"]` for retained samples in missing-channel mode.
 - Key callers/callees: caller is `DefaultDataset.__init__`; callees are `load_npz`, extractors, tokenizers.
@@ -158,4 +158,15 @@
 - Side effects: seed initialization in `get_finetune_dataloaders`.
 - Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callee is `PSGPretrainDataset.dataloader`.
 - Reuse guidance: use these helpers for any finetune or inference data-loading path.
-- Duplication risk notes: built-in seq label-channel insertion (`stage5`, `ahi`) and metadata label selection should not be duplicated in trainer code. `ahi` additionally requires raw `stage5` as a metric-only auxiliary channel for event-based AHI evaluation.
+- Duplication risk notes: built-in seq label-channel insertion (`stage5`, `ahi`) and metadata label selection should not be duplicated in trainer code. `ahi` additionally requires scalar summary metadata (`ahi`, `tst`) to survive batch tensorization as regression-style metadata for event-based evaluation.
+
+## `preprocess.save_dataset_presets._resolve_effective_min_channels`
+
+- File: `preprocess/save_dataset_presets.py`
+- Signature: `_resolve_effective_min_channels(*, channel_names, cli_min_channels, preset_min_channels) -> int`
+- Purpose and contract: compute the effective missing-channel admission threshold for preset generation, while forcing built-in `ahi` presets to require every requested validation channel.
+- Important inputs/outputs: requested validation channel names plus CLI/YAML minimums in; final `min_channels` out.
+- Side effects: none.
+- Key callers/callees: caller is `save_dataset_presets.main`.
+- Reuse guidance: use this helper instead of open-coding special-case AHI admission policy in wrapper scripts.
+- Duplication risk notes: AHI preset generation must stay strict because downstream preset loading does not revalidate missing `ah_event` / `ahi` / `tst` contracts.

@@ -93,8 +93,8 @@ The runtime assumes a batch dictionary with these keys:
 - All configured channels must share one tokenizer output dimension.
 - `model.cls.downstream='cls'` requires a real CLS strategy such as `bert`.
 - Built-in sequence tasks are `stage3`, `stage4`, `stage5`, and `ahi`.
-- `stage3`, `stage4`, and `stage5` consume raw `batch["tokens"]["stage5"]`; `ahi` consumes raw `batch["tokens"]["ahi"]` and also requires raw `batch["tokens"]["stage5"]` as an auxiliary metric source.
-- `ahi` targets are per-token `[30]` binary slices padded with `-1.0`; training loss stays pointwise BCE, while validation/test/infer metrics are event-based AHI built from thresholded 1-second events plus TST from raw `stage5`.
+- `stage3`, `stage4`, and `stage5` consume raw `batch["tokens"]["stage5"]`; `ahi` consumes raw `batch["tokens"]["ahi"]` backed by NPZ `ah_event` and also requires scalar metadata `ahi` and `tst` for final evaluation.
+- `ahi` targets are per-token `[30]` binary slices padded with `-1.0`; training loss stays pointwise BCE, while validation/test/infer metrics are event-based AHI built from thresholded 1-second events plus scalar NPZ summaries `ahi` and `tst`.
 - `ahi` validation fits its threshold from validation records with `TST >= 2h`; test and inference require that stored threshold to be present in the checkpoint.
 - Non-built-in sequence labels are unsupported, and non-built-in metadata classification remains binary-only.
 - Pair-first missing-channel pretraining requires `payload["available_channels"]` to be present on every sample.

@@ -120,8 +120,8 @@ def test_resolve_channels_and_dims_accepts_builtin_ahi_subset(tmp_path: Path):
 
     channels, dims = _resolve_channels_and_dims(config_path, ["ppg", "ahi"])
 
-    assert channels == ["ppg", "ahi", "stage5"]
-    assert dims == {"ppg": 8, "ahi": 30, "stage5": 1}
+    assert channels == ["ppg", "ahi"]
+    assert dims == {"ppg": 8, "ahi": 30}
 
 
 def test_load_preset_build_block_parses_explicit_contract(tmp_path: Path):
@@ -194,9 +194,19 @@ def test_resolve_effective_min_channels_prefers_preset_build_override():
     assert effective_min_channels == 1
 
 
-def test_resolve_effective_min_channels_enforces_full_channels_for_ahi():
+def test_resolve_effective_min_channels_requires_all_channels_for_ahi():
     effective_min_channels = _resolve_effective_min_channels(
-        channel_names=["ppg", "ahi", "stage5"],
+        channel_names=["ppg", "ahi"],
+        cli_min_channels=2,
+        preset_min_channels=2,
+    )
+
+    assert effective_min_channels == 2
+
+
+def test_resolve_effective_min_channels_overrides_partial_config_for_ahi():
+    effective_min_channels = _resolve_effective_min_channels(
+        channel_names=["ppg", "spo2", "ahi"],
         cli_min_channels=2,
         preset_min_channels=2,
     )
@@ -437,6 +447,7 @@ def test_build_preset_job_prefilters_index_with_ahi_mask(tmp_path: Path, monkeyp
     assert output_path == tmp_path / "preset.pkl"
     assert sample_count == 1
     assert captured["filtered_paths"] == ["a.npz"]
+    assert captured["channel_names"] == ["ppg", "ahi"]
 
 
 def test_build_preset_job_restores_original_source_after_strict_prefilter(

@@ -32,9 +32,9 @@ Changed:
 
 Effect:
 
-- added built-in `ahi` as a sequence classification task with `label_source_name='ahi'`, `output_dim=30`, `is_multilabel=True`, and auxiliary raw `stage5` tokens for evaluation
+- added built-in `ahi` as a sequence classification task with `label_source_name='ahi'`, `output_dim=30`, `is_multilabel=True`, NPZ-backed event labels from `ah_event`, and scalar NPZ summaries `ahi` / `tst` for evaluation
 - enforced built-in `ahi` monitoring as `val_ahi_pearson` and persisted the validation-fitted `ahi_eval_threshold` into downstream checkpoints
-- split built-in sequence handling between sleep-stage remapping from raw `stage5` and raw `ahi` multi-label targets with no label remap
+- split built-in sequence handling between sleep-stage remapping from raw `stage5` and raw AHI event targets from NPZ `ah_event` with no label remap
 - extended runtime `ahi` evaluation from pointwise token metrics to event-based AHI summaries with threshold search, TST gating, severity-threshold metrics, ICC, and Pearson
 - fixed AHI event-overlap and severity-threshold boundary semantics so the handbook now matches the current `sleep2vec/metrics.py` implementation
 - disallowed `--avg-ckpts > 1` for `ahi` inference because averaged checkpoints cannot carry one reusable validation-fitted threshold

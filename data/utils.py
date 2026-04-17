@@ -19,14 +19,20 @@ def load_npz(path: str, mmap_mode: str | None = "r"):
         return np.load(path, allow_pickle=False)
 
 
-def default_extractor(name: str, frames_per_token: int, dtype: torch.dtype = torch.float32):
-    """Slice channel `name` between token-aligned frame offsets."""
+def default_extractor(
+    name: str,
+    frames_per_token: int,
+    dtype: torch.dtype = torch.float32,
+    *,
+    source_name: str | None = None,
+):
+    """Slice one NPZ channel between token-aligned frame offsets."""
 
     def extract(npz, start: int, end: int):
         s = start * frames_per_token
         e = end * frames_per_token
 
-        arr = npz[name]
+        arr = npz[source_name or name]
         segment = arr[s:e]
 
         # Collapse trivial second dimension without copying.
@@ -73,6 +79,30 @@ def default_mlm_mask_generator(mask_ratio: float = 0.15):
         return mask
 
     return generate_mask
+
+
+def _load_scalar_npz_value(npz, key: str) -> float:
+    if key not in npz:
+        raise KeyError(f"Built-in AHI contract requires NPZ key '{key}'.")
+    raw = np.asarray(npz[key])
+    if raw.ndim != 0:
+        raise ValueError(f"Built-in AHI contract requires NPZ key '{key}' to be scalar, got shape {raw.shape}.")
+    value = float(raw)
+    if not np.isfinite(value):
+        raise ValueError(f"Built-in AHI contract requires NPZ key '{key}' to be finite, got {value}.")
+    return value
+
+
+def load_builtin_ahi_metadata(npz) -> tuple[float, float]:
+    if "ah_event" not in npz:
+        raise KeyError("Built-in AHI contract requires NPZ key 'ah_event'.")
+    ahi_value = _load_scalar_npz_value(npz, "ahi")
+    tst_value = _load_scalar_npz_value(npz, "tst")
+    if ahi_value < 0:
+        raise ValueError(f"Built-in AHI contract requires scalar 'ahi' >= 0, got {ahi_value}.")
+    if tst_value <= 0:
+        raise ValueError(f"Built-in AHI contract requires scalar 'tst' > 0, got {tst_value}.")
+    return ahi_value, tst_value
 
 
 def pad(x, max_len: int, pad_value: torch.types.Number = 0, dim: int = 0) -> torch.Tensor:
@@ -124,13 +154,32 @@ def filter_valid_sample_indices(
 
     worker_count = max_workers or _default_worker_count()
     channel_names = list(channel_names or [])
+    requires_builtin_ahi = "ahi" in extractors
 
     def _available_from_npz(npz):
-        return [ch for ch in channel_names if ch in npz]
+        available = []
+        for ch in channel_names:
+            if ch == "ahi":
+                try:
+                    load_builtin_ahi_metadata(npz)
+                except Exception:
+                    continue
+                available.append(ch)
+                continue
+            if ch in npz:
+                available.append(ch)
+        return available
 
     def process_sample(sample_index):
         try:
             with load_npz(sample_index.path) as npz:
+                if requires_builtin_ahi:
+                    ahi_value, tst_value = load_builtin_ahi_metadata(npz)
+                    metadata = getattr(sample_index, "metadata", None)
+                    if isinstance(metadata, dict):
+                        metadata["ahi"] = ahi_value
+                        metadata["tst"] = tst_value
+
                 if allow_missing_channels:
                     available = _available_from_npz(npz)
                     if len(available) < min_channels:
