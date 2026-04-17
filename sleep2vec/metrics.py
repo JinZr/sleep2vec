@@ -276,7 +276,8 @@ def _evaluate_single_ahi_record(
 
     gt_segments = merge_intervals(binary_sequence_to_segments(truth, interval=1))
     pred_binary = (score > threshold).astype(np.int64)
-    pred_segments = merge_intervals(binary_sequence_to_segments(pred_binary, interval=1))
+    raw_pred_segments = binary_sequence_to_segments(pred_binary, interval=1)
+    pred_segments = merge_intervals(raw_pred_segments)
     stage5 = np.asarray(record["stage5"], dtype=np.int64).reshape(-1)
     second_valid_mask_raw = record.get("second_valid_mask")
     if second_valid_mask_raw is not None:
@@ -300,6 +301,7 @@ def _evaluate_single_ahi_record(
                 f"{stage5.shape[0]} tokens vs {truth.shape[0]} seconds"
             )
         sleep_mask = np.repeat((stage5 > 0).astype(np.int64), 30)
+    summary_pred_segments = filter_segments_by_stage(raw_pred_segments, sleep_mask)
     pred_segments = filter_segments_by_stage(pred_segments, sleep_mask)
     gt_segments = filter_segments_by_duration(gt_segments, min_duration=AHI_MIN_EVENT_DURATION)
     pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
@@ -307,7 +309,7 @@ def _evaluate_single_ahi_record(
     if tst_hours < AHI_MIN_TST_HOURS:
         return (tp, fp, fn), None, None
 
-    pred_ahi = float(len(pred_segments) / tst_hours)
+    pred_ahi = float(len(summary_pred_segments) / tst_hours)
     return (tp, fp, fn), pred_ahi, true_ahi
 
 

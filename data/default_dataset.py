@@ -287,7 +287,17 @@ class DefaultDataset(BaseDataset):
                         avail = payload["available_channels"]
                     else:
                         with load_npz(src.path) as npz:
-                            avail = [k for k in channel_names if k in npz]
+                            avail = []
+                            for channel_name in channel_names:
+                                if channel_name == "ahi":
+                                    try:
+                                        load_builtin_ahi_metadata(npz)
+                                    except Exception:
+                                        continue
+                                    avail.append(channel_name)
+                                    continue
+                                if channel_name in npz:
+                                    avail.append(channel_name)
                     return set([k for k in avail if k in channel_name_set])
 
                 avail_map = []

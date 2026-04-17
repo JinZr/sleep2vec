@@ -298,6 +298,48 @@ def test_psg_dataset_loads_builtin_ahi_scalars_from_npz_for_old_finetune_preset_
     assert batch["metadata"]["tst"].tolist() == [4.5]
 
 
+def test_psg_dataset_missing_channel_fallback_recognizes_builtin_ahi_for_legacy_preset(tmp_path: Path):
+    npz_path = tmp_path / "preset_missing_channels.npz"
+    _write_ahi_npz(npz_path, np.arange(60, dtype=np.float32), ahi=7.5, tst=4.0, stage5=[1.0, 2.0])
+
+    preset_path = tmp_path / "preset_missing_channels.pkl"
+    samples = [
+        SampleIndex(
+            id=0,
+            path=str(npz_path),
+            start=0,
+            end=2,
+            metadata={"age": 40, "sex": 1, "source": "preset", "path": str(npz_path), "split": "val"},
+        )
+    ]
+    with open(preset_path, "wb") as f:
+        pickle.dump(samples, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    dataset = PSGPretrainDataset(
+        channel_names=["ahi", "stage5"],
+        channel_input_dims={},
+        save_preset_path=None,
+        load_preset_path=str(preset_path),
+        index=None,
+        split=["val"],
+        max_tokens=2,
+        token_sec=30,
+        mask_rate=0.0,
+        allow_missing_channels=True,
+        min_channels=2,
+        randomly_select_channels=False,
+        is_train_set=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+
+    assert set(batch["tokens"].keys()) == {"ahi", "stage5"}
+    assert batch["metadata"]["path"] == [str(npz_path)]
+
+
 def test_psg_dataset_pair_first_uses_uniform_probs_when_pair_probs_omitted(tmp_path: Path):
     npz_path = tmp_path / "sample.npz"
     np.savez(

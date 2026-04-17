@@ -64,7 +64,7 @@
 - Side effects: nested `collate_fn` performs NPZ I/O on every batch and may select channels randomly.
 - Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `load_npz`, `process_metadata`, `build_w_h_age_sex_center`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
 - Reuse guidance: this is the canonical place to change batch structure.
-- Duplication risk notes: avoid adding parallel collate implementations elsewhere in the repo; ignore-value padding for runtime label channels belongs here.
+- Duplication risk notes: avoid adding parallel collate implementations elsewhere in the repo; ignore-value padding for runtime label channels belongs here. When missing-channel batches must recompute channel availability at collate time, built-in `ahi` must be resolved with the same `ah_event` / scalar-summary contract used by `filter_valid_sample_indices`, including legacy presets that do not serialize `payload["available_channels"]`.
 
 ## `data.metadata.build_w_h_age_sex_center`
 

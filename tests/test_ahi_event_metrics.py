@@ -77,6 +77,38 @@ def test_filter_segments_by_duration_uses_inclusive_duration_semantics():
     assert filtered == [[0, 9], [0, 10], [20, 35]]
 
 
+def test_evaluate_single_ahi_record_summary_ahi_does_not_merge_close_predictions():
+    record = _ahi_record(
+        num_stage_tokens=240,
+        truth_segments=[(10, 35)],
+        score_segments=[(10, 20, 0.9), (23, 33, 0.9)],
+        true_ahi=0.5,
+        tst_hours=4.0,
+    )
+
+    detection, pred_ahi, true_ahi = _evaluate_single_ahi_record(record, threshold=0.5)
+
+    assert detection == (1.0, 0.0, 0.0)
+    assert pred_ahi == pytest.approx(0.5)
+    assert true_ahi == 0.5
+
+
+def test_evaluate_single_ahi_record_summary_ahi_keeps_short_predictions():
+    record = _ahi_record(
+        num_stage_tokens=240,
+        truth_segments=[(40, 55)],
+        score_segments=[(40, 48, 0.9)],
+        true_ahi=0.25,
+        tst_hours=4.0,
+    )
+
+    detection, pred_ahi, true_ahi = _evaluate_single_ahi_record(record, threshold=0.5)
+
+    assert detection == (0.0, 0.0, 1.0)
+    assert pred_ahi == pytest.approx(0.25)
+    assert true_ahi == 0.25
+
+
 def test_evaluate_single_ahi_record_skips_short_tst_for_ahi_summary():
     record = _ahi_record(
         num_stage_tokens=120,
@@ -184,6 +216,36 @@ def test_compute_ahi_event_metrics_reports_perfect_event_and_ahi_scores():
     assert metrics["ahi_mae"] == 0.0
     assert metrics["ahi_pearson"] == 1.0
     assert metrics["ahi_icc"] == 1.0
+    assert metrics["ahi_opt_threshold"] == 0.5
+
+
+def test_compute_ahi_event_metrics_summary_ahi_aligns_with_scalar_ground_truth_without_changing_detection():
+    records = [
+        _ahi_record(
+            num_stage_tokens=240,
+            truth_segments=[(10, 35)],
+            score_segments=[(10, 20, 0.9), (23, 33, 0.9)],
+            true_ahi=0.5,
+            tst_hours=4.0,
+        ),
+        _ahi_record(
+            num_stage_tokens=240,
+            truth_segments=[(40, 55)],
+            score_segments=[(40, 48, 0.9)],
+            true_ahi=0.25,
+            tst_hours=4.0,
+        ),
+    ]
+
+    metrics, threshold = compute_ahi_event_metrics(records, threshold=0.5)
+
+    assert threshold == 0.5
+    assert metrics["ahi_event_precision"] == 1.0
+    assert metrics["ahi_event_recall"] == 0.5
+    assert metrics["ahi_event_f1"] == pytest.approx(2.0 / 3.0)
+    assert metrics["ahi_mae"] == 0.0
+    assert metrics["ahi_pearson"] == pytest.approx(1.0)
+    assert metrics["ahi_icc"] == pytest.approx(1.0)
     assert metrics["ahi_opt_threshold"] == 0.5
 
 

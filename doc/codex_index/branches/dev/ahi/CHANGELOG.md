@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-04-17
+
+- Documented the built-in `ahi` runtime split between detection-style event metrics and NPZ-aligned scalar summary AHI.
+- Recorded that scalar summary AHI now counts stage-filtered raw predicted positive runs without merge or min-duration filtering, while event TP/FP/FN semantics stay unchanged.
+- Fixed the missing-channel collate fallback so built-in `ahi` availability is recomputed from `ah_event` plus scalar `ahi` / `tst`, matching preset validation for legacy presets without serialized `available_channels`.
+
 ## 2026-04-15
 
 - Repaired the `dev/ahi` handbook metadata to the current branch tip `0de463929a695c30ec29fa94cfd1e0c5df9e8d92`.

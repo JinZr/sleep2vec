@@ -65,7 +65,7 @@ Custom labels require `finetune.task` in YAML.
 
 - Task semantics are enforced before loaders are built.
 - `ahi` reuses the normal sequence head path and keeps pointwise BCE training.
-- `ahi` validation/test checkpoint selection uses event-based AHI metrics: threshold search on validation, checkpoint-persisted threshold reuse on test/infer, scalar NPZ `tst` for TST gating, scalar NPZ `ahi` as the summary ground truth, wake-only predicted events filtered using the required `stage5` stream with `second_valid_mask` alignment for partial-token masking, exact duplicate gathered windows ignored before contiguity checks, and `TST < 2h` exclusion from final AHI summary metrics.
+- `ahi` validation/test checkpoint selection uses event-based AHI metrics with split post-processing: threshold search on validation and checkpoint-persisted threshold reuse on test/infer still run through `compute_ahi_event_metrics`, detection stats continue to use merged + duration-filtered events, scalar NPZ `ahi` remains the summary ground truth, and scalar summary AHI is counted from stage-filtered raw predicted positive runs without merge or min-duration filtering so it aligns with NPZ `ahi`. Scalar NPZ `tst` remains the summary denominator, exact duplicate gathered windows are ignored before contiguity checks, and `TST < 2h` exclusion still applies to final summary metrics.
 - CLS vs token downstream behavior is defined by `model.cls`, not by folder naming in `configs/`.
 - Layer mix is applied inside `Sleep2vecDownstreamModel`, not in the trainer.
 - Loss and metric reduction happen inside `Sleep2vecFinetuning`, not in heads.
