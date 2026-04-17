@@ -4,7 +4,7 @@
 
 - Repaired the `dev/ahi` handbook metadata to the current branch tip `0de463929a695c30ec29fa94cfd1e0c5df9e8d92`.
 - Converted `DELTA_FROM_MAIN.md` from working-tree-only wording to the committed two-commit branch delta.
-- Refreshed reuse and workflow notes for built-in `ahi` threshold persistence, event metrics, built-in validation channels, and `ahi_mask` preset prefiltering.
+- Refreshed reuse and workflow notes for built-in `ahi` threshold persistence, event metrics, built-in validation channels, and `ah_event_mask` preset prefiltering.
 - Clarified runtime documentation that built-in `ahi` event gating on TST-qualified samples is symmetric for ground-truth and predictions.
 - Recorded the AHI event-eval contract as inclusive `>=10s` duration filtering and explicit Pearson -> MAE -> higher-threshold tie-break selection.
 

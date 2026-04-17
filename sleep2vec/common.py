@@ -49,6 +49,7 @@ _BUILTIN_TASK_SPECS = {
         "monitor": "val_ahi_pearson",
         "monitor_mod": "max",
         "label_source_name": "ahi",
+        "auxiliary_label_source_names": ["stage5"],
     },
     "sex": {
         "type": "classification",

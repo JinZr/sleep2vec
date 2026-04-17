@@ -1,6 +1,7 @@
-path,dataset,session_id,patient_id,split,duration,age,sex,stage_mask,heartbeat_mask,breath_mask,eeg_original_mask,ecg_original_mask,emg_original_mask,eog_original_mask,resp_original_mask,resp_nasal_original_mask,spo2_mask,ppg_mask,actigraphy_mask
-egs/data/npz/S002_PSG_df_updated.npz,dreamt_9_channels,S002_PSG_df_updated,S002,test,31464,29,female,0,1,1,1,1,1,1,1,1,1,1,1
-egs/data/npz/S003_PSG_df_updated.npz,dreamt_9_channels,S003_PSG_df_updated,S003,train,32064,41,male,0,1,1,1,1,1,1,1,1,1,1,1
-egs/data/npz/S004_PSG_df_updated.npz,dreamt_9_channels,S004_PSG_df_updated,S004,val,30971,35,female,0,1,1,1,1,1,1,1,1,1,1,1
-egs/data/npz/S005_PSG_df_updated.npz,dreamt_9_channels,S005_PSG_df_updated,S005,train,31123,52,male,0,1,1,1,1,1,1,1,1,1,1,1
-egs/data/npz/S006_PSG_df_updated.npz,dreamt_9_channels,S006_PSG_df_updated,S006,val,31230,46,female,0,1,1,1,1,1,1,1,1,1,1,1
+path,dataset,patient_id,duration,stage_mask,heartbeat_mask,breath_mask,eeg_original_mask,ecg_original_mask,emg_original_mask,eog_original_mask,resp_original_mask,resp_nasal_original_mask,spo2_mask,ah_event_mask
+egs/data/npz/pats-800003-baseline.npz,pats_9_channels,pats-800003-baseline,31068.0,1,1,1,1,1,1,1,1,1,1,1
+egs/data/npz/pats-800022-baseline.npz,pats_9_channels,pats-800022-baseline,35616.0,1,1,1,1,1,1,1,1,1,1,1
+egs/data/npz/pats-800022-followup.npz,pats_9_channels,pats-800022-followup,38308.0,1,1,1,1,1,1,1,1,1,1,1
+egs/data/npz/pats-800105-baseline.npz,pats_9_channels,pats-800105-baseline,35183.0,1,1,1,1,1,1,1,1,1,1,1
+egs/data/npz/pats-800194-baseline.npz,pats_9_channels,pats-800194-baseline,35506.0,1,1,1,1,1,1,1,1,1,1,1
+egs/data/npz/pats-800227-baseline.npz,pats_9_channels,pats-800227-baseline,34584.0,1,1,1,1,1,1,1,1,1,1,1

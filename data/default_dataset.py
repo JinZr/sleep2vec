@@ -140,10 +140,13 @@ class DefaultDataset(BaseDataset):
 
         random.seed(self.seed)
         selected = []
+        built_in_ahi_runtime_metadata = "ahi" in getattr(self, "channel_names", [])
 
         for d in self.data:
             keep = True
             for meta_data_name in self.meta_data_names:
+                if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
+                    continue
                 value = d.metadata.get(meta_data_name, None)
 
                 # 如果字段缺失 或 值为 NaN，则丢弃

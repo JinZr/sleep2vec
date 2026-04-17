@@ -120,8 +120,8 @@ def test_resolve_channels_and_dims_accepts_builtin_ahi_subset(tmp_path: Path):
 
     channels, dims = _resolve_channels_and_dims(config_path, ["ppg", "ahi"])
 
-    assert channels == ["ppg", "ahi"]
-    assert dims == {"ppg": 8, "ahi": 30}
+    assert channels == ["ppg", "ahi", "stage5"]
+    assert dims == {"ppg": 8, "ahi": 30, "stage5": 1}
 
 
 def test_load_preset_build_block_parses_explicit_contract(tmp_path: Path):
@@ -169,6 +169,23 @@ def test_resolve_validation_channels_uses_preset_build_required_channels(tmp_pat
     assert dims == {"ppg": 8, "stage5": 1}
 
 
+def test_resolve_validation_channels_auto_adds_stage5_for_ahi(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "ahi"], min_channels=2))
+    config_data = _load_config_mapping(config_path)
+    model_channels, channel_input_dims = _load_model_channels(config_data)
+    preset_required_channels, _ = _load_preset_build_block(config_data)
+
+    channels, dims = _resolve_validation_channels(
+        model_channels=model_channels,
+        channel_input_dims=channel_input_dims,
+        preset_required_channels=preset_required_channels,
+        selected_channels=None,
+    )
+
+    assert channels == ["ppg", "ahi", "stage5"]
+    assert dims == {"ppg": 8, "ahi": 30, "stage5": 1}
+
+
 def test_resolve_validation_channels_rejects_cli_channels_when_preset_build_required_channels_exist(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "stage5"], min_channels=2))
     config_data = _load_config_mapping(config_path)
@@ -196,22 +213,22 @@ def test_resolve_effective_min_channels_prefers_preset_build_override():
 
 def test_resolve_effective_min_channels_requires_all_channels_for_ahi():
     effective_min_channels = _resolve_effective_min_channels(
-        channel_names=["ppg", "ahi"],
-        cli_min_channels=2,
-        preset_min_channels=2,
-    )
-
-    assert effective_min_channels == 2
-
-
-def test_resolve_effective_min_channels_overrides_partial_config_for_ahi():
-    effective_min_channels = _resolve_effective_min_channels(
-        channel_names=["ppg", "spo2", "ahi"],
+        channel_names=["ppg", "ahi", "stage5"],
         cli_min_channels=2,
         preset_min_channels=2,
     )
 
     assert effective_min_channels == 3
+
+
+def test_resolve_effective_min_channels_overrides_partial_config_for_ahi():
+    effective_min_channels = _resolve_effective_min_channels(
+        channel_names=["ppg", "spo2", "ahi", "stage5"],
+        cli_min_channels=2,
+        preset_min_channels=2,
+    )
+
+    assert effective_min_channels == 4
 
 
 def test_resolve_effective_min_channels_rejects_value_above_channel_count():
@@ -262,18 +279,30 @@ def test_filter_index_df_for_required_channels_uses_generic_and_builtin_masks():
     assert filtered["path"].tolist() == ["a.npz", "d.npz"]
 
 
-def test_filter_index_df_for_required_channels_uses_ahi_mask():
+def test_filter_index_df_for_required_channels_uses_ah_event_mask():
     df = pd.DataFrame(
         [
-            {"path": "a.npz", "ppg_mask": "1", "ahi_mask": 1},
-            {"path": "b.npz", "ppg_mask": "1", "ahi_mask": 0},
-            {"path": "c.npz", "ppg_mask": "0", "ahi_mask": 1},
+            {"path": "a.npz", "ppg_mask": "1", "ah_event_mask": 1},
+            {"path": "b.npz", "ppg_mask": "1", "ah_event_mask": 0},
+            {"path": "c.npz", "ppg_mask": "0", "ah_event_mask": 1},
         ]
     )
 
     filtered = _filter_index_df_for_required_channels(df, ["ppg", "ahi"])
 
     assert filtered["path"].tolist() == ["a.npz"]
+
+
+def test_filter_index_df_for_required_channels_rejects_missing_stage_mask_for_ahi_contract():
+    df = pd.DataFrame(
+        [
+            {"path": "a.npz", "ppg_mask": "1", "ah_event_mask": 1},
+            {"path": "b.npz", "ppg_mask": "1", "ah_event_mask": 0},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="requires index column 'stage_mask'"):
+        _filter_index_df_for_required_channels(df, ["ppg", "ahi", "stage5"])
 
 
 def test_filter_index_df_for_required_channels_falls_back_when_some_masks_are_missing():
@@ -403,7 +432,7 @@ def test_build_preset_job_prefilters_index_with_required_masks(tmp_path: Path, m
     assert captured["filtered_paths"] == ["a.npz"]
 
 
-def test_build_preset_job_prefilters_index_with_ahi_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_build_preset_job_prefilters_index_with_ahi_and_stage5_masks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
     class FakeDataset:
@@ -422,16 +451,44 @@ def test_build_preset_job_prefilters_index_with_ahi_mask(tmp_path: Path, monkeyp
     index_path = tmp_path / "index.csv"
     pd.DataFrame(
         [
-            {"path": "a.npz", "split": "train", "duration": 60, "age": 40, "sex": 1, "ppg_mask": 1, "ahi_mask": 1},
-            {"path": "b.npz", "split": "train", "duration": 60, "age": 40, "sex": 1, "ppg_mask": 1, "ahi_mask": 0},
+            {
+                "path": "a.npz",
+                "split": "train",
+                "duration": 60,
+                "age": 40,
+                "sex": 1,
+                "ppg_mask": 1,
+                "ah_event_mask": 1,
+                "stage_mask": 1,
+            },
+            {
+                "path": "b.npz",
+                "split": "train",
+                "duration": 60,
+                "age": 40,
+                "sex": 1,
+                "ppg_mask": 1,
+                "ah_event_mask": 1,
+                "stage_mask": 0,
+            },
+            {
+                "path": "c.npz",
+                "split": "train",
+                "duration": 60,
+                "age": 40,
+                "sex": 1,
+                "ppg_mask": 1,
+                "ah_event_mask": 0,
+                "stage_mask": 1,
+            },
         ]
     ).to_csv(index_path, index=False)
 
     output_path, sample_count = _build_preset_job(
         output_path=tmp_path / "preset.pkl",
         index_paths=[str(index_path)],
-        channel_names=["ppg", "ahi"],
-        channel_input_dims={"ppg": 8, "ahi": 30},
+        channel_names=["ppg", "ahi", "stage5"],
+        channel_input_dims={"ppg": 8, "ahi": 30, "stage5": 1},
         split="train",
         meta_data_name=None,
         n_tokens=128,
@@ -447,7 +504,7 @@ def test_build_preset_job_prefilters_index_with_ahi_mask(tmp_path: Path, monkeyp
     assert output_path == tmp_path / "preset.pkl"
     assert sample_count == 1
     assert captured["filtered_paths"] == ["a.npz"]
-    assert captured["channel_names"] == ["ppg", "ahi"]
+    assert captured["channel_names"] == ["ppg", "ahi", "stage5"]
 
 
 def test_build_preset_job_restores_original_source_after_strict_prefilter(

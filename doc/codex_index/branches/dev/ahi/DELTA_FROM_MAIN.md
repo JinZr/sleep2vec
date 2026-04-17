@@ -38,7 +38,7 @@ Effect:
 - extended runtime `ahi` evaluation from pointwise token metrics to event-based AHI summaries with threshold search, TST gating, severity-threshold metrics, ICC, and Pearson
 - fixed AHI event-overlap and severity-threshold boundary semantics so the handbook now matches the current `sleep2vec/metrics.py` implementation
 - disallowed `--avg-ckpts > 1` for `ahi` inference because averaged checkpoints cannot carry one reusable validation-fitted threshold
-- added runtime `ahi` dataset-channel support, `-1.0` ignore-value padding, and strict preset filtering via `ahi_mask` when missing channels are disallowed
+- added runtime `ahi` dataset-channel support, `-1.0` ignore-value padding, and strict preset filtering via `ah_event_mask` when missing channels are disallowed
 - expanded test coverage with `tests/test_ahi_event_metrics.py` and related config/data/preset assertions for the new `ahi` path
 
 ## Areas With No Branch-Local Source Delta

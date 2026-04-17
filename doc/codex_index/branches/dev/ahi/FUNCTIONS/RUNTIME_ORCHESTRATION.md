@@ -106,8 +106,8 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `_extract_ahi_event_records(self, batch, logits) -> list[dict[str, np.ndarray]]`
-- Purpose and contract: convert one batch of raw `ahi` token labels, sigmoid scores, and scalar AHI/TST metadata into per-sample records for final event-based AHI reduction, preserving optional `stage5` only when present in the batch.
-- Important inputs/outputs: batch plus logits in; list of `{truth, score, true_ahi, tst_hours}` records out, plus optional `stage5`.
+- Purpose and contract: convert one batch of raw `ahi` token labels, sigmoid scores, scalar AHI/TST metadata, and the built-in auxiliary `stage5` token stream into per-sample records for final event-based AHI reduction. The record keeps token-level `stage5` plus a per-second `second_valid_mask` so partially masked tokens stay aligned with second-level `truth`/`score`.
+- Important inputs/outputs: batch plus logits in; list of `{truth, score, true_ahi, tst_hours, stage5, second_valid_mask}` records out.
 - Side effects: none.
 - Key callers/callees: caller is `_shared_step`; downstream consumer is `compute_ahi_event_metrics`.
 - Reuse guidance: use this helper when the final AHI reduction contract changes.
@@ -150,12 +150,12 @@
 
 - File: `sleep2vec/metrics.py`
 - Signature: `compute_ahi_event_metrics(records, *, threshold: float | None = None, search_thresholds=..., severity_thresholds=...) -> tuple[dict[str, float], float]`
-- Purpose and contract: convert per-sample 1-second `ahi` predictions into inclusive `[start, end]` event segments, keep events whose inclusive duration is at least 10 seconds, match events with inclusive IoU arithmetic, compute predicted AHI from event count divided by scalar `tst_hours`, compare against scalar ground-truth `true_ahi`, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite. `TST < 2h` exclusion remains a runtime guardrail for final AHI summaries rather than part of the event definition itself.
+- Purpose and contract: convert per-sample 1-second `ahi` predictions into inclusive `[start, end]` event segments, deduplicate gathered windows by keeping the first record for each `(path, token_start)` before enforcing per-recording contiguity, keep events whose inclusive duration is at least 10 seconds, mask wake-only predicted events using the required `stage5` stream (optionally filtered by per-window `second_valid_mask`), match events with inclusive IoU arithmetic, compute predicted AHI from event count divided by scalar `tst_hours`, compare against scalar ground-truth `true_ahi`, search the validation threshold by Pearson/MAE when needed, and emit the built-in event-based `ahi` metric suite. `TST < 2h` exclusion remains a runtime guardrail for final AHI summaries rather than part of the event definition itself.
 - Important inputs/outputs: per-sample `truth` / `score` / `true_ahi` / `tst_hours` records in; metrics dict plus chosen threshold out.
 - Side effects: none.
 - Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `select_best_ahi_threshold`, `binary_sequence_to_segments`, `merge_intervals`, `filter_segments_by_duration`, and `vectorized_event_stats`.
 - Reuse guidance: use this for every final `ahi` validation/test/infer metric path instead of re-deriving event counts in trainer code.
-- Duplication risk notes: threshold search, scalar-summary semantics, inclusive event-overlap arithmetic, and duration filtering must stay centralized here.
+- Duplication risk notes: threshold search, scalar-summary semantics, gathered-window deduplication, stage-aware prediction masking, inclusive event-overlap arithmetic, and duration filtering must stay centralized here.
 
 ## `sleep2vec.metrics.compute_downstream_metrics`
 

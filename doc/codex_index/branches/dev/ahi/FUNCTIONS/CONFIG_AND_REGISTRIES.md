@@ -46,12 +46,12 @@
   - `get_task_is_multilabel(label_name: str) -> bool`
   - `get_task_auxiliary_label_source_names(label_name: str) -> list[str]`
   - `remap_stage_labels(labels, label_name: str)`
-- Purpose and contract: expose the normalized built-in task spec and keep sleep-stage remapping separate from raw `ahi` sequence labels.
+- Purpose and contract: expose the normalized built-in task spec and keep sleep-stage remapping separate from raw `ahi` sequence labels. Built-in `ahi` additionally declares `stage5` as an auxiliary runtime label source so final event metrics can apply sleep-stage masking without changing the primary target path.
 - Important inputs/outputs: built-in label name in; canonical task attributes or remapped labels out.
 - Side effects: none.
 - Key callers/callees: callers are `apply_task_flags`, `sleep2vec.utils._build_finetune_loader`, and `Sleep2vecFinetuning._get_targets`.
 - Reuse guidance: use these helpers instead of hardcoding task-specific label sources or merge maps.
-- Duplication risk notes: `ahi` and sleep-stage semantics must stay centralized here; do not invent a second built-in-task map elsewhere.
+- Duplication risk notes: `ahi` and sleep-stage semantics must stay centralized here; do not invent a second built-in-task map elsewhere or wire `stage5` for AHI only in loader code.
 
 ## `sleep2vec.common.apply_task_flags`
 

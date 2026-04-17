@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 DEFAULT_SPLITS = ["test", "val", "train"]
 BUILTIN_CHANNEL_SPECS = {
     "stage5": {"input_dim": 1, "mask_column": "stage_mask"},
-    "ahi": {"input_dim": 30, "mask_column": "ahi_mask"},
+    "ahi": {"input_dim": 30, "mask_column": "ah_event_mask"},
 }
 
 
@@ -267,6 +267,8 @@ def _resolve_validation_channels(
         resolved = list(model_channels)
     else:
         resolved = _dedupe_keep_order(selected_channels)
+    if "ahi" in resolved and "stage5" not in resolved:
+        resolved = [*resolved, "stage5"]
 
     unknown = [name for name in resolved if name not in channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
     if unknown:
@@ -344,6 +346,11 @@ def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: 
         return df
 
     mask_columns = {channel: _mask_column_for_channel(channel) for channel in required}
+    if "ahi" in required and "stage5" in required and mask_columns["stage5"] not in df.columns:
+        raise ValueError(
+            "Built-in AHI strict preset filtering requires index column 'stage_mask' "
+            "because validation channels include both 'ahi' and 'stage5'."
+        )
     available_mask_columns = [mask_columns[channel] for channel in required if mask_columns[channel] in df.columns]
     if not available_mask_columns:
         return df

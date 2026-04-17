@@ -53,6 +53,7 @@ This is the canonical split policy before preset generation.
    - YAML model channels are the default
    - CLI `--channels` can narrow them only when `preset_build.required_channels` is absent
    - built-in validation channels `stage5` and `ahi` are accepted and get fixed input dims / mask columns
+   - if `ahi` is selected, `stage5` is appended automatically so built-in AHI presets validate the sleep-stage stream required by final runtime metrics
 5. resolves metadata variants
 6. resolves output paths from a template
 7. for each `(metadata, split)` pair, instantiates `PSGPretrainDataset`
@@ -64,8 +65,9 @@ This is the canonical split policy before preset generation.
 - When `--allow-missing-channels` is `false`, the preset builder first prefilters the CSV by required mask columns before constructing the dataset.
 - Built-in mask mapping is part of the contract:
   - `stage5` -> `stage_mask`
-  - `ahi` -> `ahi_mask`
+  - `ahi` -> `ah_event_mask`
   - other channels -> `<channel>_mask`
+- In the tightened built-in AHI path, strict preset filtering therefore requires both `ah_event_mask` and `stage_mask`.
 
 ### Preset Schema
 

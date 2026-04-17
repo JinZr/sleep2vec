@@ -37,12 +37,12 @@
 
 - File: `data/default_dataset.py`
 - Signature: `DefaultDataset.filter_with_metadata(self) -> list[SampleIndex]`
-- Purpose and contract: drop samples that lack requested metadata, do not match configured sources, or do not belong to requested splits.
+- Purpose and contract: drop samples that lack requested metadata, do not match configured sources, or do not belong to requested splits. For built-in `ahi` runtime loading, missing serialized `ahi` / `tst` metadata on legacy presets is tolerated because those scalars are backfilled from NPZ during collate.
 - Important inputs/outputs: operates on `self.data`; returns the filtered list.
 - Side effects: mutates `self.data`.
 - Key callers/callees: called during dataset initialization.
 - Reuse guidance: use this path for metadata/source/split filtering rather than re-filtering in callers.
-- Duplication risk notes: filtering semantics belong at dataset-construction time, not in loaders or trainers.
+- Duplication risk notes: filtering semantics belong at dataset-construction time, not in loaders or trainers. Do not add a second legacy-preset compatibility filter in finetune helpers.
 
 ## `DefaultDataset.select_few_shot`
 
@@ -158,7 +158,7 @@
 - Side effects: seed initialization in `get_finetune_dataloaders`.
 - Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callee is `PSGPretrainDataset.dataloader`.
 - Reuse guidance: use these helpers for any finetune or inference data-loading path.
-- Duplication risk notes: built-in seq label-channel insertion (`stage5`, `ahi`) and metadata label selection should not be duplicated in trainer code. `ahi` additionally requires scalar summary metadata (`ahi`, `tst`) to survive batch tensorization as regression-style metadata for event-based evaluation.
+- Duplication risk notes: built-in seq label-channel insertion (`stage5`, `ahi`) and metadata label selection should not be duplicated in trainer code. `ahi` additionally requires scalar summary metadata (`ahi`, `tst`) to survive batch tensorization as regression-style metadata for event-based evaluation, and its preset-validation channel set now auto-expands to include `stage5`; legacy presets may still rely on collate-time NPZ backfill for serialized scalars.
 
 ## `preprocess.save_dataset_presets._resolve_effective_min_channels`
 

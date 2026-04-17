@@ -29,7 +29,7 @@ def _ahi_record(
     base_score: float = 0.05,
     true_ahi: float,
     tst_hours: float,
-    stage_value: int | None = None,
+    stage_value: int | None = 2,
 ) -> dict[str, np.ndarray]:
     length = num_stage_tokens * 30
     truth = np.zeros(length, dtype=np.int64)
@@ -93,7 +93,7 @@ def test_evaluate_single_ahi_record_skips_short_tst_for_ahi_summary():
     assert true_ahi is None
 
 
-def test_evaluate_single_ahi_record_keeps_short_tst_wake_false_positive_unmasked():
+def test_evaluate_single_ahi_record_keeps_short_tst_false_positive_when_stage5_marks_sleep():
     record = _ahi_record(
         num_stage_tokens=120,
         truth_segments=[],
@@ -107,6 +107,37 @@ def test_evaluate_single_ahi_record_keeps_short_tst_wake_false_positive_unmasked
     assert detection == (0.0, 1.0, 0.0)
     assert pred_ahi is None
     assert true_ahi is None
+
+
+def test_evaluate_single_ahi_record_masks_wake_only_false_positive_when_stage5_is_present():
+    record = _ahi_record(
+        num_stage_tokens=4,
+        truth_segments=[],
+        score_segments=[(0, 11, 0.9)],
+        true_ahi=0.0,
+        tst_hours=4.0,
+    )
+    record["stage5"] = np.array([0, 2, 2, 2], dtype=np.int64)
+
+    detection, pred_ahi, true_ahi = _evaluate_single_ahi_record(record, threshold=0.5)
+
+    assert detection == (0.0, 0.0, 0.0)
+    assert pred_ahi == 0.0
+    assert true_ahi == 0.0
+
+
+def test_evaluate_single_ahi_record_requires_stage5():
+    record = _ahi_record(
+        num_stage_tokens=4,
+        truth_segments=[],
+        score_segments=[],
+        true_ahi=0.0,
+        tst_hours=4.0,
+        stage_value=None,
+    )
+
+    with pytest.raises(KeyError, match="stage5"):
+        _evaluate_single_ahi_record(record, threshold=0.5)
 
 
 def test_evaluate_single_ahi_record_uses_scalar_ground_truth_ahi_for_summary():
@@ -230,6 +261,166 @@ def test_compute_ahi_event_metrics_aggregates_windows_by_recording():
     assert metrics["ahi_event_recall"] == 1.0
     assert metrics["ahi_mae"] == 0.0
     assert metrics["ahi_pearson"] == pytest.approx(1.0)
+
+
+def test_compute_ahi_event_metrics_supports_second_level_masked_stage5_windows():
+    second_valid_mask = np.zeros(60, dtype=np.bool_)
+    second_valid_mask[:15] = True
+    second_valid_mask[30:45] = True
+    truth = np.zeros(30, dtype=np.int64)
+    truth[5:19] = 1
+    score = np.full(30, 0.05, dtype=np.float32)
+    score[5:19] = 0.9
+    records = [
+        {
+            "path": "rec_a.npz",
+            "token_start": 0,
+            "truth": truth,
+            "score": score,
+            "true_ahi": np.float32(0.25),
+            "tst_hours": np.float32(4.0),
+            "stage5": np.array([2, 2], dtype=np.int64),
+            "second_valid_mask": second_valid_mask,
+        }
+    ]
+
+    metrics, threshold = compute_ahi_event_metrics(records, threshold=0.5)
+
+    assert threshold == 0.5
+    assert metrics["ahi_event_precision"] == 1.0
+    assert metrics["ahi_event_recall"] == 1.0
+    assert metrics["ahi_event_f1"] == 1.0
+    assert metrics["ahi_mae"] == 0.0
+
+
+def test_compute_ahi_event_metrics_deduplicates_identical_windows_by_recording():
+    records = [
+        {
+            "path": "rec_a.npz",
+            "token_start": 0,
+            **_ahi_record(
+                num_stage_tokens=240,
+                truth_segments=[(10, 22)],
+                score_segments=[(10, 22, 0.9)],
+                true_ahi=0.5,
+                tst_hours=4.0,
+            ),
+        },
+        {
+            "path": "rec_a.npz",
+            "token_start": 0,
+            **_ahi_record(
+                num_stage_tokens=240,
+                truth_segments=[(10, 22)],
+                score_segments=[(10, 22, 0.9)],
+                true_ahi=0.5,
+                tst_hours=4.0,
+            ),
+        },
+        {
+            "path": "rec_a.npz",
+            "token_start": 240,
+            **_ahi_record(
+                num_stage_tokens=240,
+                truth_segments=[(40, 52)],
+                score_segments=[(40, 52, 0.9)],
+                true_ahi=0.5,
+                tst_hours=4.0,
+            ),
+        },
+    ]
+
+    metrics, threshold = compute_ahi_event_metrics(records, threshold=0.5)
+
+    assert threshold == 0.5
+    assert metrics["ahi_event_precision"] == 1.0
+    assert metrics["ahi_event_recall"] == 1.0
+    assert metrics["ahi_mae"] == 0.0
+
+
+def test_compute_ahi_event_metrics_deduplicates_duplicate_windows_with_different_padding_layouts():
+    truth = np.zeros(30, dtype=np.int64)
+    truth[5:19] = 1
+    score = np.full(30, 0.05, dtype=np.float32)
+    score[5:19] = 0.9
+    first_mask = np.zeros(60, dtype=np.bool_)
+    first_mask[:30] = True
+    second_mask = np.zeros(90, dtype=np.bool_)
+    second_mask[:30] = True
+    records = [
+        {
+            "path": "rec_a.npz",
+            "token_start": 0,
+            "truth": truth,
+            "score": score,
+            "true_ahi": np.float32(0.25),
+            "tst_hours": np.float32(4.0),
+            "stage5": np.array([2, 2], dtype=np.int64),
+            "second_valid_mask": first_mask,
+        },
+        {
+            "path": "rec_a.npz",
+            "token_start": 0,
+            "truth": truth,
+            "score": score,
+            "true_ahi": np.float32(0.25),
+            "tst_hours": np.float32(4.0),
+            "stage5": np.array([2, 2, -1], dtype=np.int64),
+            "second_valid_mask": second_mask,
+        },
+    ]
+
+    metrics, threshold = compute_ahi_event_metrics(records, threshold=0.5)
+
+    assert threshold == 0.5
+    assert metrics["ahi_event_precision"] == 1.0
+    assert metrics["ahi_event_recall"] == 1.0
+    assert metrics["ahi_mae"] == 0.0
+
+
+def test_compute_ahi_event_metrics_uses_first_seen_duplicate_window():
+    records = [
+        {
+            "path": "rec_a.npz",
+            "token_start": 0,
+            **_ahi_record(
+                num_stage_tokens=240,
+                truth_segments=[(10, 22)],
+                score_segments=[(10, 22, 0.9)],
+                true_ahi=0.5,
+                tst_hours=4.0,
+            ),
+        },
+        {
+            "path": "rec_a.npz",
+            "token_start": 0,
+            **_ahi_record(
+                num_stage_tokens=240,
+                truth_segments=[],
+                score_segments=[],
+                true_ahi=0.5,
+                tst_hours=4.0,
+            ),
+        },
+        {
+            "path": "rec_a.npz",
+            "token_start": 240,
+            **_ahi_record(
+                num_stage_tokens=240,
+                truth_segments=[(40, 52)],
+                score_segments=[(40, 52, 0.9)],
+                true_ahi=0.5,
+                tst_hours=4.0,
+            ),
+        },
+    ]
+
+    metrics, threshold = compute_ahi_event_metrics(records, threshold=0.5)
+
+    assert threshold == 0.5
+    assert metrics["ahi_event_precision"] == 1.0
+    assert metrics["ahi_event_recall"] == 1.0
+    assert metrics["ahi_mae"] == 0.0
 
 
 def test_compute_ahi_event_metrics_uses_inclusive_clinical_cutoffs(monkeypatch: pytest.MonkeyPatch):

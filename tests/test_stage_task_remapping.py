@@ -76,6 +76,7 @@ def test_build_finetune_loader_uses_ahi_tokens_for_ahi(monkeypatch):
         label_source_name="ahi",
         output_dim=30,
         is_multilabel=True,
+        auxiliary_label_source_names=["stage5"],
     )
 
     loader = _build_finetune_loader(
@@ -88,7 +89,7 @@ def test_build_finetune_loader_uses_ahi_tokens_for_ahi(monkeypatch):
 
     assert loader == {"device": "cpu"}
     assert _DummyDataset.last_device == "cpu"
-    assert _DummyDataset.last_init_kwargs["channel_names"] == ["eeg", "ahi"]
+    assert _DummyDataset.last_init_kwargs["channel_names"] == ["eeg", "ahi", "stage5"]
     assert _DummyDataset.last_init_kwargs["meta_data_names"] == ["ahi", "tst"]
     assert _DummyDataset.last_init_kwargs["meta_data_regression_names"] == ["ahi", "tst"]
 
@@ -139,6 +140,7 @@ def test_extract_ahi_event_records_keeps_sample_boundaries_and_scalar_summary():
     batch = {
         "tokens": {
             "ahi": torch.tensor([[[0.0, 1.0], [1.0, 0.0]]], dtype=torch.float32),
+            "stage5": torch.tensor([[0.0, 2.0]], dtype=torch.float32),
         },
         "metadata": {
             "ahi": torch.tensor([16.5], dtype=torch.float32),
@@ -155,16 +157,17 @@ def test_extract_ahi_event_records_keeps_sample_boundaries_and_scalar_summary():
     assert records[0]["score"].shape == (4,)
     assert records[0]["true_ahi"] == 16.5
     assert records[0]["tst_hours"] == 5.25
+    assert records[0]["stage5"].tolist() == [0, 2]
     assert records[0]["path"] == "sample-a.npz"
     assert records[0]["token_start"] == 0
 
 
-def test_extract_ahi_event_records_keeps_optional_stage5_when_present():
+def test_extract_ahi_event_records_keeps_stage5_tokens_with_second_level_mask():
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
     logits = torch.tensor([[[0.0, 0.0], [2.0, -2.0]]], dtype=torch.float32)
     batch = {
         "tokens": {
-            "ahi": torch.tensor([[[0.0, 1.0], [1.0, 0.0]]], dtype=torch.float32),
+            "ahi": torch.tensor([[[0.0, 1.0], [-1.0, -1.0]]], dtype=torch.float32),
             "stage5": torch.tensor([[0.0, 2.0]], dtype=torch.float32),
         },
         "metadata": {
@@ -178,6 +181,31 @@ def test_extract_ahi_event_records_keeps_optional_stage5_when_present():
     records = module._extract_ahi_event_records(batch, logits)
 
     assert records[0]["stage5"].tolist() == [0, 2]
+    assert records[0]["second_valid_mask"].tolist() == [True, True, False, False]
+
+
+def test_extract_ahi_event_records_keeps_stage5_aligned_for_partially_masked_token():
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    logits = torch.tensor([[[0.0, 0.0], [2.0, -2.0]]], dtype=torch.float32)
+    batch = {
+        "tokens": {
+            "ahi": torch.tensor([[[0.0, -1.0], [1.0, 0.0]]], dtype=torch.float32),
+            "stage5": torch.tensor([[0.0, 2.0]], dtype=torch.float32),
+        },
+        "metadata": {
+            "ahi": torch.tensor([8.0], dtype=torch.float32),
+            "tst": torch.tensor([4.0], dtype=torch.float32),
+            "path": ["sample-c.npz"],
+        },
+        "token_start": torch.tensor([4], dtype=torch.long),
+    }
+
+    records = module._extract_ahi_event_records(batch, logits)
+
+    assert records[0]["truth"].tolist() == [0, 1, 0]
+    assert records[0]["score"].shape == (3,)
+    assert records[0]["stage5"].tolist() == [0, 2]
+    assert records[0]["second_valid_mask"].tolist() == [True, False, True, True]
 
 
 def test_compute_loss_ignores_ahi_padding():

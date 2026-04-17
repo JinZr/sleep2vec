@@ -38,7 +38,7 @@ def test_apply_task_flags_rejects_multiclass_metadata_label():
         ("stage3", 3, ["W", "NREM", "REM"], ["W", "NREM", "REM"], "stage5", [], False),
         ("stage4", 4, ["W", "N1N2", "N3", "REM"], ["W", "N1N2", "N3", "REM"], "stage5", [], False),
         ("stage5", 5, ["W", "N1", "N2", "N3", "REM"], ["W", "N1", "N2", "N3", "REM"], "stage5", [], False),
-        ("ahi", 30, None, None, "ahi", [], True),
+        ("ahi", 30, None, None, "ahi", ["stage5"], True),
     ],
 )
 def test_apply_task_flags_allows_builtin_seq_labels(

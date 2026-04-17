@@ -26,7 +26,7 @@
 
 - File: `preprocess/save_dataset_presets.py`
 - Signature: `_resolve_validation_channels(*, model_channels, channel_input_dims, preset_required_channels, selected_channels) -> tuple[list[str], dict[str, int]]`
-- Purpose and contract: derive the effective preset-validation channel set from YAML model channels, optional `preset_build.required_channels`, optional CLI `--channels`, and built-in validation channels such as `stage5` and `ahi`.
+- Purpose and contract: derive the effective preset-validation channel set from YAML model channels, optional `preset_build.required_channels`, optional CLI `--channels`, and built-in validation channels such as `stage5` and `ahi`. When `ahi` is selected, `stage5` is appended automatically so built-in AHI presets validate the sleep-stage stream required by final runtime metrics.
 - Important inputs/outputs: configured channel sources in; ordered channel list plus resolved input dims out.
 - Side effects: none.
 - Key callers/callees: callers are `_resolve_channels_and_dims` and `main`.
@@ -37,7 +37,7 @@
 
 - File: `preprocess/save_dataset_presets.py`
 - Signature: `_filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: list[str]) -> pd.DataFrame`
-- Purpose and contract: prefilter one index dataframe to rows whose required channel-mask columns are all present, using built-in mask mappings such as `stage_mask` for `stage5` and `ahi_mask` for `ahi`.
+- Purpose and contract: prefilter one index dataframe to rows whose required channel-mask columns are all present, using built-in mask mappings such as `stage_mask` for `stage5` and `ah_event_mask` for `ahi`. For built-in AHI preset generation this means strict mode requires both `ah_event_mask` and `stage_mask`.
 - Important inputs/outputs: dataframe plus required channels in; filtered dataframe out.
 - Side effects: none.
 - Key callers/callees: caller is `_build_preset_job`; callee is `normalize_mask_frame`.

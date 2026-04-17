@@ -277,6 +277,30 @@ def _evaluate_single_ahi_record(
     gt_segments = merge_intervals(binary_sequence_to_segments(truth, interval=1))
     pred_binary = (score > threshold).astype(np.int64)
     pred_segments = merge_intervals(binary_sequence_to_segments(pred_binary, interval=1))
+    stage5 = np.asarray(record["stage5"], dtype=np.int64).reshape(-1)
+    second_valid_mask_raw = record.get("second_valid_mask")
+    if second_valid_mask_raw is not None:
+        second_valid_mask = np.asarray(second_valid_mask_raw, dtype=np.bool_).reshape(-1)
+        expected_second_count = stage5.shape[0] * 30
+        if second_valid_mask.shape[0] != expected_second_count:
+            raise ValueError(
+                "AHI second_valid_mask length must match stage5 token count: "
+                f"{second_valid_mask.shape[0]} vs {expected_second_count}"
+            )
+        if int(second_valid_mask.sum()) != truth.shape[0]:
+            raise ValueError(
+                "AHI second_valid_mask valid-second count must match truth/score length: "
+                f"{int(second_valid_mask.sum())} vs {truth.shape[0]}"
+            )
+        sleep_mask = np.repeat((stage5 > 0).astype(np.int64), 30)[second_valid_mask]
+    else:
+        if stage5.shape[0] * 30 != truth.shape[0]:
+            raise ValueError(
+                "AHI stage5 length must match the truth/score token count: "
+                f"{stage5.shape[0]} tokens vs {truth.shape[0]} seconds"
+            )
+        sleep_mask = np.repeat((stage5 > 0).astype(np.int64), 30)
+    pred_segments = filter_segments_by_stage(pred_segments, sleep_mask)
     gt_segments = filter_segments_by_duration(gt_segments, min_duration=AHI_MIN_EVENT_DURATION)
     pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
     tp, fp, fn = vectorized_event_stats(gt_segments, pred_segments)
@@ -303,9 +327,12 @@ def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[d
         merged_truth: list[np.ndarray] = []
         merged_score: list[np.ndarray] = []
         merged_stage5: list[np.ndarray] = []
+        merged_second_valid_mask: list[np.ndarray] = []
+        use_second_valid_mask: bool | None = None
         expected_next_start: int | None = None
         true_ahi: float | None = None
         tst_hours: float | None = None
+        previous_token_start: int | None = None
 
         for item in ordered:
             token_start = int(item["token_start"])
@@ -317,9 +344,40 @@ def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[d
                 raise ValueError(
                     f"AHI truth/pred length mismatch for path {path}: {truth.shape[0]} vs {score.shape[0]}"
                 )
-            if truth.shape[0] % 30 != 0:
-                raise ValueError(f"AHI window for path {path} has non-token-aligned second count {truth.shape[0]}")
-            token_count = truth.shape[0] // 30
+            stage5 = np.asarray(item["stage5"], dtype=np.int64).reshape(-1)
+            token_count = stage5.shape[0]
+            second_valid_mask_raw = item.get("second_valid_mask")
+            second_valid_mask: np.ndarray | None = None
+            if second_valid_mask_raw is not None:
+                second_valid_mask = np.asarray(second_valid_mask_raw, dtype=np.bool_).reshape(-1)
+                expected_second_count = token_count * 30
+                if second_valid_mask.shape[0] != expected_second_count:
+                    raise ValueError(
+                        "AHI second_valid_mask length must match stage5 token count for "
+                        f"path {path} token_start={token_start}: "
+                        f"{second_valid_mask.shape[0]} vs {expected_second_count}"
+                    )
+                if int(second_valid_mask.sum()) != truth.shape[0]:
+                    raise ValueError(
+                        "AHI second_valid_mask valid-second count must match truth/score length for "
+                        f"path {path} token_start={token_start}: "
+                        f"{int(second_valid_mask.sum())} vs {truth.shape[0]}"
+                    )
+            elif truth.shape[0] != token_count * 30:
+                raise ValueError(
+                    "AHI stage5 length must match the truth/score token count for "
+                    f"path {path} token_start={token_start}: "
+                    f"{token_count} tokens vs {truth.shape[0]} seconds"
+                )
+            if previous_token_start is not None and token_start == previous_token_start:
+                # In distributed evaluation, duplicate windows can be gathered with different
+                # padding layouts. Keep the first seen record for a duplicated token_start.
+                continue
+            has_second_valid_mask = second_valid_mask is not None
+            if use_second_valid_mask is None:
+                use_second_valid_mask = has_second_valid_mask
+            elif use_second_valid_mask != has_second_valid_mask:
+                raise ValueError(f"AHI second_valid_mask usage is inconsistent across windows for path {path}")
             if expected_next_start is not None and token_start != expected_next_start:
                 raise ValueError(
                     f"AHI windows for path {path} are not contiguous and non-overlapping: "
@@ -340,9 +398,11 @@ def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[d
 
             merged_truth.append(truth)
             merged_score.append(score)
-            if "stage5" in item:
-                merged_stage5.append(np.asarray(item["stage5"], dtype=np.int64).reshape(-1))
+            merged_stage5.append(stage5)
+            if second_valid_mask is not None:
+                merged_second_valid_mask.append(second_valid_mask)
             expected_next_start = token_start + token_count
+            previous_token_start = token_start
 
         merged_record: dict[str, Any] = {
             "path": path,
@@ -350,9 +410,10 @@ def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[d
             "score": np.concatenate(merged_score, axis=0),
             "true_ahi": float(true_ahi) if true_ahi is not None else np.nan,
             "tst_hours": float(tst_hours) if tst_hours is not None else np.nan,
+            "stage5": np.concatenate(merged_stage5, axis=0),
         }
-        if merged_stage5:
-            merged_record["stage5"] = np.concatenate(merged_stage5, axis=0)
+        if use_second_valid_mask:
+            merged_record["second_valid_mask"] = np.concatenate(merged_second_valid_mask, axis=0)
         merged.append(merged_record)
 
     return merged

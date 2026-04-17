@@ -18,7 +18,7 @@ This page answers the practical question: when you need to add or change behavio
 | Pretrained backbone loading | `Sleep2vecDownstreamModel.load_pretrained_backbone` | Encodes prefix handling, EMA fallback, and CLS mismatch warnings | Custom checkpoint slicing logic |
 | LoRA insertion | `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora` | Centralizes freeze policy and adapter insertion | Direct `peft` calls in trainer code |
 | Pretrain data loaders | `sleep2vec.utils.get_pretrain_dataloader` | Owns missing-channel mode, pair-first training, and validation loader construction | Building `PSGPretrainDataset` loaders manually in entrypoints |
-| Finetune data loaders | `sleep2vec.utils.get_finetune_dataloaders` and `_build_finetune_loader` | Own split/source choices and built-in sequence pseudo-channel behavior (`stage5`, `ahi`) plus the built-in AHI summary metadata (`ahi`, `tst`) needed for final evaluation | Hand-rolled finetune loader creation |
+| Finetune data loaders | `sleep2vec.utils.get_finetune_dataloaders` and `_build_finetune_loader` | Own split/source choices and built-in sequence pseudo-channel behavior (`stage5`, `ahi`) plus the built-in AHI summary metadata (`ahi`, `tst`) and required auxiliary `stage5` stream for final evaluation | Hand-rolled finetune loader creation |
 | Sample validation | `data.utils.filter_valid_sample_indices` | Produces `payload["available_channels"]` and drops broken samples early | Custom preset-building loops |
 | Runtime batch assembly | `DefaultDataset.dataloader` | Single source for collate-time NPZ reads, tokenization, metadata packing, `w/h` matrices, pair tagging, and ignore-value padding for runtime label channels | New collate functions outside `data/default_dataset.py` |
 | Missing-channel training batches | `PairFirstBatchSampler` | Canonical train-time sampler for pair-first missing-channel pretraining | Ad hoc pair scheduling loops |
@@ -28,9 +28,9 @@ This page answers the practical question: when you need to add or change behavio
 | AHI train-time pointwise metrics | `sleep2vec.metrics.compute_ahi_pointwise_metrics` | Keeps training-time debug metrics namespaced separately from final event-based AHI evaluation | Reusing generic binary metric names in the trainer |
 | AHI final validation/test/infer metrics | `sleep2vec.metrics.compute_ahi_event_metrics` | Centralizes event matching, validation threshold fitting, TST gating, severity-threshold summaries, ICC, and Pearson | Re-deriving AHI event logic inside `Sleep2vecFinetuning` |
 | Result CSV output | `sleep2vec.metrics.save_result_csv` | Preserves standard columns and append behavior | One-off CSV writers |
-| Preset validation channel resolution | `preprocess.save_dataset_presets._resolve_validation_channels` | Owns YAML-vs-built-in channel selection, including built-in `stage5` / `ahi` validation channels | Duplicated channel subset logic in wrapper scripts |
+| Preset validation channel resolution | `preprocess.save_dataset_presets._resolve_validation_channels` | Owns YAML-vs-built-in channel selection, including built-in `stage5` / `ahi` validation channels and automatic `ahi -> stage5` expansion | Duplicated channel subset logic in wrapper scripts |
 | AHI preset admission threshold | `preprocess.save_dataset_presets._resolve_effective_min_channels` | Forces built-in `ahi` presets to require every requested validation channel before serializing windows | Ad hoc `min_channels` overrides in preset scripts |
-| Preset required-mask prefilter | `preprocess.save_dataset_presets._filter_index_df_for_required_channels` | Applies strict mask-based CSV prefiltering with built-in `stage_mask` / `ahi_mask` handling when missing channels are disallowed | Manual CSV filtering before preset generation |
+| Preset required-mask prefilter | `preprocess.save_dataset_presets._filter_index_df_for_required_channels` | Applies strict mask-based CSV prefiltering with built-in `stage_mask` / `ah_event_mask` handling when missing channels are disallowed | Manual CSV filtering before preset generation |
 | Preset generation | `preprocess.save_dataset_presets.main` and `_build_preset_job` | Canonical CLI path that exercises `PSGPretrainDataset` and preset side effects | External scripts that pickle `SampleIndex` lists directly |
 | Split generation | `preprocess/split_index_by_dataset.py` | Canonical dataset-group split policy | Manual split assignment notebooks |
 | Missing-mask statistics | `preprocess/mask_missing_stats.py` | Canonical `_mask == 1` presence semantics | New mask-summary scripts with different conventions |
@@ -49,7 +49,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Reuse the built-in task helper family in `sleep2vec.common`.
 - Keep sleep-stage remapping in `remap_stage_labels`.
-- Keep raw `ahi` handling separate from sleep-stage remaps; `ahi` consumes runtime `batch["tokens"]["ahi"]` built from NPZ `ah_event`, plus scalar NPZ summaries `ahi` and `tst`.
+- Keep raw `ahi` handling separate from sleep-stage remaps; `ahi` consumes runtime `batch["tokens"]["ahi"]` built from NPZ `ah_event`, requires `batch["tokens"]["stage5"]` as an auxiliary runtime stream for final masking, and uses scalar NPZ summaries `ahi` and `tst`.
 - Do not invent a second task registry in entrypoints or trainer code.
 
 ### If you are changing model construction

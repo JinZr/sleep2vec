@@ -257,7 +257,7 @@ def test_psg_dataset_rejects_malformed_builtin_ahi_scalars(tmp_path: Path, npz_p
         )
 
 
-def test_psg_dataset_loads_builtin_ahi_scalars_from_npz_for_old_preset_metadata(tmp_path: Path):
+def test_psg_dataset_loads_builtin_ahi_scalars_from_npz_for_old_finetune_preset_metadata(tmp_path: Path):
     npz_path = tmp_path / "preset_sample.npz"
     _write_ahi_npz(npz_path, np.arange(60, dtype=np.float32), ahi=12.5, tst=4.5)
 
@@ -284,6 +284,8 @@ def test_psg_dataset_loads_builtin_ahi_scalars_from_npz_for_old_preset_metadata(
         max_tokens=2,
         token_sec=30,
         mask_rate=0.0,
+        meta_data_names=["ahi", "tst"],
+        meta_data_regression_names=["ahi", "tst"],
         randomly_select_channels=False,
         batch_size=1,
         shuffle=False,

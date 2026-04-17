@@ -285,15 +285,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
         tst_hours = batch["metadata"]["tst"].to(torch.float32).detach().cpu()
         token_start = batch["token_start"].to(torch.long).detach().cpu()
         paths = list(batch["metadata"]["path"])
-        stage5 = batch["tokens"].get("stage5")
-        if stage5 is not None:
-            stage5 = stage5.detach().cpu()
+        stage5 = batch["tokens"]["stage5"].detach().cpu()
 
         records: list[dict[str, np.ndarray]] = []
         for idx in range(labels.size(0)):
             second_valid_mask = labels[idx].reshape(-1) != -1.0
             if not second_valid_mask.any():
                 continue
+            stage5_tokens = stage5[idx].to(torch.int64).reshape(-1).numpy()
             truth = labels[idx].reshape(-1)[second_valid_mask].to(torch.int64).numpy()
             score = probs[idx].reshape(-1)[second_valid_mask].numpy()
             record = {
@@ -303,10 +302,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 "score": score,
                 "true_ahi": float(true_ahi[idx].item()),
                 "tst_hours": float(tst_hours[idx].item()),
+                "stage5": stage5_tokens,
+                "second_valid_mask": second_valid_mask.numpy(),
             }
-            if stage5 is not None:
-                token_valid_mask = labels[idx].ne(-1.0).any(dim=-1)
-                record["stage5"] = stage5[idx][token_valid_mask].to(torch.int64).numpy()
             records.append(record)
         return records
 
