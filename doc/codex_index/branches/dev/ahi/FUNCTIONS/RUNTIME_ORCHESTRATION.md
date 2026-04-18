@@ -117,12 +117,12 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `_finalize_epoch(self, stage: str)`
-- Purpose and contract: reduce cached epoch outputs into train/val/test metrics, with a dedicated `ahi` path that keeps pointwise metrics on train and event-based metrics on val/test.
+- Purpose and contract: reduce cached epoch outputs into train/val/test metrics, with a dedicated `ahi` path that keeps pointwise metrics on train and event-based metrics on val/test, and optionally emits the scalar-summary AHI scatter plot when regression-style eval visualizations are enabled.
 - Important inputs/outputs: stage name plus cached outputs in; logs metrics and returns reduced arrays/records when present.
 - Side effects: emits Lightning metrics, clears epoch caches, and may update `self._ahi_eval_threshold`.
 - Key callers/callees: callers are `on_train_epoch_end`, `on_validation_epoch_end`, and `on_test_epoch_end`; callees include `compute_ahi_pointwise_metrics`, `compute_ahi_event_metrics`, `compute_downstream_metrics`, and `_eval_visualizer.log`.
 - Reuse guidance: keep epoch-level metric branching here rather than scattering task-specific logic across callbacks or entrypoints.
-- Duplication risk notes: `ahi` final evaluation intentionally bypasses `compute_downstream_metrics` and the confusion-matrix visualizer.
+- Duplication risk notes: `ahi` final evaluation intentionally bypasses `compute_downstream_metrics` and the generic classification visualizer; only the scalar-summary scatter plot is reused from the shared visualization surface.
 
 ## `sleep2vec.metrics.compute_ahi_pointwise_metrics`
 

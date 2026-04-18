@@ -13,7 +13,12 @@ import yaml
 from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.common import remap_stage_labels
-from sleep2vec.metrics import compute_ahi_event_metrics, compute_ahi_pointwise_metrics, compute_downstream_metrics
+from sleep2vec.metrics import (
+    compute_ahi_event_metrics,
+    compute_ahi_pointwise_metrics,
+    compute_downstream_metrics,
+    extract_ahi_summary_scatter_arrays,
+)
 from sleep2vec.visualization.downstream_eval import DownstreamEvalVisualizer
 from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
 
@@ -468,15 +473,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 return None
 
             if stage == "val":
-                metrics, fitted_threshold = compute_ahi_event_metrics(records, threshold=None)
-                self._ahi_eval_threshold = fitted_threshold
+                metrics, eval_threshold = compute_ahi_event_metrics(records, threshold=None)
+                self._ahi_eval_threshold = eval_threshold
             else:
                 if self._ahi_eval_threshold is None:
                     raise ValueError(
                         "AHI evaluation requires a validation-fitted threshold. "
                         "No `ahi_eval_threshold` is available for test/inference."
                     )
-                metrics, _ = compute_ahi_event_metrics(records, threshold=self._ahi_eval_threshold)
+                eval_threshold = float(self._ahi_eval_threshold)
+                metrics, _ = compute_ahi_event_metrics(records, threshold=eval_threshold)
 
             for k, v in metrics.items():
                 self.log(
@@ -486,6 +492,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     logger=True,
                     sync_dist=False,
                     on_epoch=True,
+                )
+            trainer = getattr(self, "trainer", None)
+            if trainer is not None and trainer.is_global_zero:
+                true_ahi, pred_ahi = extract_ahi_summary_scatter_arrays(records, threshold=eval_threshold)
+                self._eval_visualizer.log_ahi_summary_scatter(
+                    stage=stage,
+                    preds=pred_ahi,
+                    targets=true_ahi,
+                    label_name=self.args.label_name,
+                    current_epoch=int(self.current_epoch),
                 )
             return records
 

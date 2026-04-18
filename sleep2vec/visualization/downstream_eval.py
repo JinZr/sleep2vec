@@ -76,6 +76,35 @@ class DownstreamEvalVisualizer:
         if payload:
             wandb.log(payload, commit=False)
 
+    def log_ahi_summary_scatter(
+        self,
+        *,
+        stage: str,
+        preds: np.ndarray,
+        targets: np.ndarray,
+        label_name: str,
+        current_epoch: int,
+    ) -> None:
+        if not self.enabled_for_stage(stage):
+            return
+        if self._config is None or not self._config.regression_scatter.enabled:
+            return
+        if getattr(wandb, "run", None) is None:
+            return
+
+        preds = np.asarray(preds, dtype=np.float32).reshape(-1)
+        targets = np.asarray(targets, dtype=np.float32).reshape(-1)
+        if preds.size == 0 or targets.size == 0:
+            return
+
+        fig = render_regression_scatter_plot(
+            targets,
+            preds,
+            title=f"{stage.title()} Prediction Scatter ({label_name}, epoch {current_epoch})",
+        )
+        wandb.log({f"{stage}_eval/regression_scatter": wandb.Image(fig)}, commit=False)
+        plt.close(fig)
+
     @staticmethod
     def _resolve_class_labels(
         class_labels: t.Sequence[str] | None,

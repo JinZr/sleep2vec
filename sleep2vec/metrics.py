@@ -451,6 +451,15 @@ def _aggregate_ahi_records(
     }
 
 
+def extract_ahi_summary_scatter_arrays(
+    records: list[Mapping[str, np.ndarray]],
+    *,
+    threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    aggregate = _aggregate_ahi_records(records, threshold=float(threshold))
+    return aggregate["true_ahi"], aggregate["pred_ahi"]
+
+
 def select_best_ahi_threshold(
     records: list[Mapping[str, np.ndarray]],
     *,

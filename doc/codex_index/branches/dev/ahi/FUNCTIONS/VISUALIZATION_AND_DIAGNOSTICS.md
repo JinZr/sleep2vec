@@ -55,6 +55,17 @@
 - Reuse guidance: use when serializing layer-mix snapshots to tabular artifacts.
 - Duplication risk notes: keep the row schema stable with the visualization logic.
 
+## `sleep2vec.visualization.downstream_eval.DownstreamEvalVisualizer.log_ahi_summary_scatter`
+
+- File: `sleep2vec/visualization/downstream_eval.py`
+- Signature: `log_ahi_summary_scatter(self, *, stage, preds, targets, label_name, current_epoch) -> None`
+- Purpose and contract: emit the built-in AHI scalar-summary scatter plot (`true_ahi` vs `pred_ahi`) for val/test when `eval_visualizations.regression_scatter` is enabled.
+- Important inputs/outputs: aggregated scalar AHI arrays in; no return value.
+- Side effects: may log a W&B image under `<stage>_eval/regression_scatter`.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callee is `render_regression_scatter_plot`.
+- Reuse guidance: use this AHI-specific path instead of trying to force built-in `ahi` through the generic non-sequence regression visualizer.
+- Duplication risk notes: AHI final evaluation still bypasses the generic confusion-matrix / ROC visualizer path.
+
 ## `sleep2vec.visualization.pair_acc.render_pair_acc_heatmap`
 
 - File: `sleep2vec/visualization/pair_acc.py`

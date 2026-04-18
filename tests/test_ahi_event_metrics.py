@@ -13,6 +13,7 @@ from sleep2vec.metrics import (
     _evaluate_single_ahi_record,
     binary_sequence_to_segments,
     compute_ahi_event_metrics,
+    extract_ahi_summary_scatter_arrays,
     filter_segments_by_duration,
     filter_segments_by_stage,
     merge_intervals,
@@ -647,6 +648,72 @@ def test_ahi_test_epoch_reuses_saved_threshold(monkeypatch: pytest.MonkeyPatch):
     module._finalize_epoch("test")
 
     assert used["threshold"] == 0.37
+
+
+def test_extract_ahi_summary_scatter_arrays_returns_scalar_pairs():
+    true_ahi, pred_ahi = extract_ahi_summary_scatter_arrays(
+        [
+            _ahi_record(
+                num_stage_tokens=240,
+                truth_segments=[(10, 35)],
+                score_segments=[(10, 35, 0.9)],
+                true_ahi=0.5,
+                tst_hours=4.0,
+            ),
+            _ahi_record(
+                num_stage_tokens=240,
+                truth_segments=[(20, 45)],
+                score_segments=[(20, 45, 0.9)],
+                true_ahi=0.5,
+                tst_hours=4.0,
+            ),
+        ],
+        threshold=0.5,
+    )
+
+    assert true_ahi.shape == (2,)
+    assert pred_ahi.shape == (2,)
+    assert np.allclose(true_ahi, np.array([0.5, 0.5], dtype=np.float32))
+    assert np.allclose(pred_ahi, np.array([0.25, 0.25], dtype=np.float32))
+
+
+def test_ahi_val_epoch_logs_summary_scatter(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics",
+        lambda records, *, threshold=None, **_: ({"ahi_pearson": 0.7}, 0.37 if threshold is None else float(threshold)),
+    )
+    monkeypatch.setattr(
+        "sleep2vec.sleep2vec_finetuning.extract_ahi_summary_scatter_arrays",
+        lambda records, *, threshold: (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
+    )
+
+    captured: dict[str, object] = {}
+
+    class _DummyVisualizer:
+        def log_ahi_summary_scatter(self, **kwargs):
+            captured.update(kwargs)
+
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi")
+    module._ahi_eval_threshold = None
+    module._stage_outputs = {
+        "train": [],
+        "val": [{"truth": np.array([0]), "score": np.array([0.1]), "true_ahi": 0.0, "tst_hours": 4.0}],
+        "test": [],
+    }
+    module.log = lambda *args, **kwargs: None
+    module._gather_ahi_event_records = lambda records: records
+    module._eval_visualizer = _DummyVisualizer()
+    module.trainer = argparse.Namespace(is_global_zero=True)
+    module.current_epoch = 3
+
+    module._finalize_epoch("val")
+
+    assert module._ahi_eval_threshold == 0.37
+    assert captured["stage"] == "val"
+    assert captured["label_name"] == "ahi"
+    assert np.allclose(captured["targets"], np.array([1.0], dtype=np.float32))
+    assert np.allclose(captured["preds"], np.array([1.2], dtype=np.float32))
 
 
 def test_run_inference_rejects_ahi_checkpoint_averaging():
