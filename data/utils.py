@@ -209,6 +209,14 @@ def filter_valid_sample_indices(
                             }
                             tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
 
+                        if requires_builtin_ahi and not bool((tokens["ahi"].reshape(-1) != -1.0).any().item()):
+                            logging.info(
+                                "[Skip] Built-in AHI sample %s has no valid ah_event labels. Meta: %s",
+                                getattr(sample_index, "id", "?"),
+                                getattr(sample_index, "metadata", {}),
+                            )
+                            continue
+
                         lengths = [v.shape[0] for v in tokens.values()]
                         max_len, min_len = max(lengths), min(lengths)
 

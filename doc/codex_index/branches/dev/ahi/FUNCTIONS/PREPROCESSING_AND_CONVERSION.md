@@ -4,7 +4,7 @@
 
 - File: `preprocess/save_dataset_presets.py`
 - Signature: `main() -> None`
-- Purpose and contract: canonical preset-generation CLI. It resolves dataset name, split variants, metadata variants, channel validation policy, and output paths, then instantiates `PSGPretrainDataset` with `save_preset_path` so preset validation and writing happen through the dataset layer.
+- Purpose and contract: canonical preset-generation CLI. It resolves dataset name, split variants, metadata variants, channel validation policy, and output paths, then instantiates `PSGPretrainDataset` with `save_preset_path` so preset validation and writing happen through the dataset layer, including built-in AHI rejection of samples whose tokenized `ah_event` labels are all ignore-valued.
 - Important inputs/outputs: CLI args in; preset pickle files out.
 - Side effects: creates parent directories, may create a temporary filtered CSV, writes preset files unless `--dry-run` is set.
 - Key callers/callees: called from `__main__`; callees include `_load_preset_build_block`, `_resolve_validation_channels`, `_build_preset_job`, and `PSGPretrainDataset`.
