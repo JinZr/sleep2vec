@@ -333,6 +333,7 @@ if __name__ == "__main__":
         help="save checkpoints every N epochs",
     )
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parser.parse_args()
 
     config_bundle, _ = apply_finetune_config(args)
