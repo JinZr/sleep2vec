@@ -773,11 +773,22 @@ def test_ahi_test_start_allows_explicit_test_search_without_saved_threshold(monk
 def test_ahi_test_epoch_reuses_saved_threshold(monkeypatch: pytest.MonkeyPatch):
     used: dict[str, float] = {}
 
-    def fake_compute(records, *, threshold=None, **_):
+    def fake_compute(prepared_records, *, threshold=None, **_):
         used["threshold"] = threshold
         return {"ahi_pearson": 0.7, "ahi_opt_threshold": float(threshold)}, float(threshold)
 
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics", fake_compute)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning._prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning._compute_ahi_event_metrics_from_prepared", fake_compute)
+    monkeypatch.setattr(
+        "sleep2vec.sleep2vec_finetuning._aggregate_prepared_ahi_records",
+        lambda prepared_records, *, threshold: {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([0.7], dtype=np.float32),
+            "true_ahi": np.array([0.7], dtype=np.float32),
+        },
+    )
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
     module.args = argparse.Namespace(label_name="ahi")
@@ -798,12 +809,23 @@ def test_ahi_test_epoch_reuses_saved_threshold(monkeypatch: pytest.MonkeyPatch):
 def test_ahi_test_epoch_searches_requested_threshold_grid(monkeypatch: pytest.MonkeyPatch):
     used: dict[str, object] = {}
 
-    def fake_compute(records, *, threshold=None, search_thresholds=None, **_):
+    def fake_compute(prepared_records, *, threshold=None, search_thresholds=None, **_):
         used["threshold"] = threshold
         used["search_thresholds"] = search_thresholds
         return {"ahi_pearson": 0.7, "ahi_opt_threshold": 0.03}, 0.03
 
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics", fake_compute)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning._prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning._compute_ahi_event_metrics_from_prepared", fake_compute)
+    monkeypatch.setattr(
+        "sleep2vec.sleep2vec_finetuning._aggregate_prepared_ahi_records",
+        lambda prepared_records, *, threshold: {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([0.7], dtype=np.float32),
+            "true_ahi": np.array([0.7], dtype=np.float32),
+        },
+    )
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
     module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02, 0.03))
@@ -828,7 +850,7 @@ def test_ahi_test_epoch_search_falls_back_to_saved_threshold(monkeypatch: pytest
     calls: list[tuple[float | None, tuple[float, ...] | None]] = []
     messages: list[str] = []
 
-    def fake_compute(records, *, threshold=None, search_thresholds=None, **_):
+    def fake_compute(prepared_records, *, threshold=None, search_thresholds=None, **_):
         calls.append((threshold, search_thresholds))
         if threshold is None:
             raise ValueError(
@@ -840,7 +862,18 @@ def test_ahi_test_epoch_search_falls_back_to_saved_threshold(monkeypatch: pytest
     def fake_info(message, *args):
         messages.append(message % args if args else message)
 
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics", fake_compute)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning._prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning._compute_ahi_event_metrics_from_prepared", fake_compute)
+    monkeypatch.setattr(
+        "sleep2vec.sleep2vec_finetuning._aggregate_prepared_ahi_records",
+        lambda prepared_records, *, threshold: {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([0.7], dtype=np.float32),
+            "true_ahi": np.array([0.7], dtype=np.float32),
+        },
+    )
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.logging.info", fake_info)
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
@@ -877,7 +910,7 @@ def test_ahi_test_epoch_uses_broadcast_payload_on_nonzero_rank(monkeypatch: pyte
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.broadcast_object_list", fake_broadcast)
     monkeypatch.setattr(
-        "sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics",
+        "sleep2vec.sleep2vec_finetuning._compute_ahi_metrics_for_stage",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("non-zero rank must not compute AHI search")),
     )
 
@@ -929,12 +962,12 @@ def test_extract_ahi_summary_scatter_arrays_returns_scalar_pairs():
 
 def test_ahi_val_epoch_logs_summary_scatter(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics",
-        lambda records, *, threshold=None, **_: ({"ahi_pearson": 0.7}, 0.37 if threshold is None else float(threshold)),
-    )
-    monkeypatch.setattr(
-        "sleep2vec.sleep2vec_finetuning.extract_ahi_summary_scatter_arrays",
-        lambda records, *, threshold: (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
+        "sleep2vec.sleep2vec_finetuning._compute_ahi_metrics_for_stage",
+        lambda stage, records: (
+            {"ahi_pearson": 0.7},
+            0.37,
+            (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
+        ),
     )
 
     captured: dict[str, object] = {}
@@ -969,15 +1002,22 @@ def test_ahi_val_epoch_logs_summary_scatter(monkeypatch: pytest.MonkeyPatch):
 def test_ahi_val_epoch_uses_default_coarse_search_grid(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
-    def fake_compute(records, *, threshold=None, search_thresholds=None, **_):
+    def fake_compute(prepared_records, *, threshold=None, search_thresholds=None, **_):
         captured["threshold"] = threshold
         captured["search_thresholds"] = search_thresholds
         return {"ahi_pearson": 0.7}, 0.3
 
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics", fake_compute)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning._prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning._compute_ahi_event_metrics_from_prepared", fake_compute)
     monkeypatch.setattr(
-        "sleep2vec.sleep2vec_finetuning.extract_ahi_summary_scatter_arrays",
-        lambda records, *, threshold: (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
+        "sleep2vec.sleep2vec_finetuning._aggregate_prepared_ahi_records",
+        lambda prepared_records, *, threshold: {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([1.2], dtype=np.float32),
+            "true_ahi": np.array([1.0], dtype=np.float32),
+        },
     )
 
     class _DummyVisualizer:

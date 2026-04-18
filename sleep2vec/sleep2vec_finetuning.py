@@ -15,6 +15,9 @@ from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.common import remap_stage_labels
 from sleep2vec.metrics import (
     AHI_COARSE_THRESHOLD_GRID,
+    _aggregate_prepared_ahi_records,
+    _compute_ahi_event_metrics_from_prepared,
+    _prepare_ahi_records,
     compute_ahi_event_metrics,
     compute_ahi_pointwise_metrics,
     compute_downstream_metrics,
@@ -351,25 +354,29 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self,
         stage: str,
         records: list[dict[str, np.ndarray]],
-    ) -> tuple[dict[str, float], float]:
+    ) -> tuple[dict[str, float], float, tuple[np.ndarray, np.ndarray] | None]:
+        prepared_records = _prepare_ahi_records(records)
+
         if stage == "val":
-            metrics, eval_threshold = compute_ahi_event_metrics(
-                records,
+            metrics, eval_threshold = _compute_ahi_event_metrics_from_prepared(
+                prepared_records,
                 threshold=None,
                 search_thresholds=self._ahi_search_thresholds_for_stage("val"),
             )
             self._ahi_eval_threshold = float(eval_threshold)
-            return metrics, float(eval_threshold)
+            aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=float(eval_threshold))
+            return metrics, float(eval_threshold), (aggregate["true_ahi"], aggregate["pred_ahi"])
 
         test_search_thresholds = self._ahi_search_thresholds_for_stage("test")
         if test_search_thresholds is not None:
             try:
-                metrics, eval_threshold = compute_ahi_event_metrics(
-                    records,
+                metrics, eval_threshold = _compute_ahi_event_metrics_from_prepared(
+                    prepared_records,
                     threshold=None,
                     search_thresholds=test_search_thresholds,
                 )
-                return metrics, float(eval_threshold)
+                aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=float(eval_threshold))
+                return metrics, float(eval_threshold), (aggregate["true_ahi"], aggregate["pred_ahi"])
             except ValueError as exc:
                 if (
                     self._ahi_eval_threshold is not None
@@ -380,8 +387,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
                         "AHI threshold search fallback: reusing saved threshold=%.2f because no eligible summary samples were found",
                         eval_threshold,
                     )
-                    metrics, _ = compute_ahi_event_metrics(records, threshold=eval_threshold)
-                    return metrics, eval_threshold
+                    metrics, _ = _compute_ahi_event_metrics_from_prepared(prepared_records, threshold=eval_threshold)
+                    aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=eval_threshold)
+                    return metrics, eval_threshold, (aggregate["true_ahi"], aggregate["pred_ahi"])
                 raise
 
         if self._ahi_eval_threshold is None:
@@ -391,22 +399,24 @@ class Sleep2vecFinetuning(pl.LightningModule):
             )
 
         eval_threshold = float(self._ahi_eval_threshold)
-        metrics, _ = compute_ahi_event_metrics(records, threshold=eval_threshold)
-        return metrics, eval_threshold
+        metrics, _ = _compute_ahi_event_metrics_from_prepared(prepared_records, threshold=eval_threshold)
+        aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=eval_threshold)
+        return metrics, eval_threshold, (aggregate["true_ahi"], aggregate["pred_ahi"])
 
     def _compute_or_broadcast_ahi_metrics(
         self,
         stage: str,
         records: list[dict[str, np.ndarray]],
-    ) -> tuple[dict[str, float], float]:
+    ) -> tuple[dict[str, float], float, tuple[np.ndarray, np.ndarray] | None]:
         trainer = getattr(self, "trainer", None)
         if trainer is None or not self._can_broadcast_ahi_metrics():
             return self._compute_ahi_metrics_for_stage(stage, records)
 
         payload: list[dict[str, object] | None] = [None]
+        scatter_arrays: tuple[np.ndarray, np.ndarray] | None = None
         if trainer.is_global_zero:
             try:
-                metrics, eval_threshold = self._compute_ahi_metrics_for_stage(stage, records)
+                metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
                 payload[0] = {
                     "metrics": metrics,
                     "eval_threshold": float(eval_threshold),
@@ -433,7 +443,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         eval_threshold = float(result["eval_threshold"])
         if stage == "val":
             self._ahi_eval_threshold = eval_threshold
-        return metrics, eval_threshold
+        return metrics, eval_threshold, scatter_arrays
 
     @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):
@@ -581,7 +591,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             if not records:
                 return None
 
-            metrics, eval_threshold = self._compute_or_broadcast_ahi_metrics(stage, records)
+            metrics, eval_threshold, scatter_arrays = self._compute_or_broadcast_ahi_metrics(stage, records)
 
             for k, v in metrics.items():
                 self.log(
@@ -594,13 +604,28 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 )
             trainer = getattr(self, "trainer", None)
             if trainer is not None and trainer.is_global_zero:
-                true_ahi, pred_ahi = extract_ahi_summary_scatter_arrays(records, threshold=eval_threshold)
+                logging.info(
+                    "AHI summary scatter start: stage=%s samples=%d threshold=%.2f",
+                    stage,
+                    len(records),
+                    eval_threshold,
+                )
+                if scatter_arrays is None:
+                    true_ahi, pred_ahi = extract_ahi_summary_scatter_arrays(records, threshold=eval_threshold)
+                else:
+                    true_ahi, pred_ahi = scatter_arrays
                 self._eval_visualizer.log_ahi_summary_scatter(
                     stage=stage,
                     preds=pred_ahi,
                     targets=true_ahi,
                     label_name=self.args.label_name,
                     current_epoch=int(self.current_epoch),
+                )
+                logging.info(
+                    "AHI summary scatter done: stage=%s samples=%d threshold=%.2f",
+                    stage,
+                    len(true_ahi),
+                    eval_threshold,
                 )
             return records
 
