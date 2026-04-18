@@ -198,7 +198,7 @@ if __name__ == "__main__":
         help="YAML file containing model and loss configuration.",
     )
     # ---------------- Optimization & training hyper-parameters ----------------
-    parser.add_argument("--epochs", type=int, default=200, help="number of fine-tuning epochs")
+    parser.add_argument("--epochs", type=int, default=30, help="number of fine-tuning epochs")
     parser.add_argument("--lr", type=float, default=1e-6, help="learning rate for AdamW")
     parser.add_argument(
         "--warmup-steps",
