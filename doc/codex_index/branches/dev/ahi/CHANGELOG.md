@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-18
+
+- Added single-channel PPG built-in `ahi` finetune recipe files for both medium and large backbone sizes, both using `cls.embedding_type: bert` with token-level downstream heads.
+- Recorded the local config-policy exception that lets `ppg_ahi_finetune*.yaml` require `preset_build.required_channels: [ppg, ahi]` while the preset builder still auto-expands built-in `ahi` validation to include `stage5`.
+
 ## 2026-04-17
 
 - Documented the built-in `ahi` runtime split between detection-style event metrics and NPZ-aligned scalar summary AHI.

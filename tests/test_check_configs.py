@@ -15,7 +15,7 @@ def _write_yaml(path: Path, payload: dict) -> Path:
     return path
 
 
-def _ppg_finetune_payload(*, is_seq: bool, preset_build: dict | None) -> dict:
+def _ppg_finetune_payload(*, is_seq: bool, preset_build: dict | None, task_overrides: dict | None = None) -> dict:
     payload = {
         "model": {
             "backbone": {
@@ -71,6 +71,8 @@ def _ppg_finetune_payload(*, is_seq: bool, preset_build: dict | None) -> dict:
             },
         },
     }
+    if task_overrides is not None:
+        payload["finetune"]["task"].update(task_overrides)
     if preset_build is not None:
         payload["preset_build"] = preset_build
     return payload
@@ -83,6 +85,16 @@ def test_check_config_file_accepts_repo_ppg_stage3_config():
 
 def test_check_config_file_accepts_repo_ppg_age_config():
     path = Path(__file__).resolve().parents[1] / "configs" / "ppg_age_finetune_large.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_repo_ppg_ahi_config():
+    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_repo_ppg_ahi_large_config():
+    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune_large.yaml"
     check_config_file(path)
 
 
@@ -105,6 +117,32 @@ def test_check_config_file_rejects_wrong_required_channels_for_ppg_stage_config(
     _write_yaml(path, payload)
 
     with pytest.raises(ValueError, match="must set preset_build.required_channels to \\[ppg, stage5\\]"):
+        check_config_file(path)
+
+
+def test_check_config_file_rejects_wrong_required_channels_for_ppg_ahi_config(tmp_path: Path):
+    path = tmp_path / "configs" / "ppg_ahi_finetune.yaml"
+    payload = _ppg_finetune_payload(
+        is_seq=True,
+        preset_build={"required_channels": ["ppg", "stage5"], "min_channels": 2},
+        task_overrides={"output_dim": 30, "monitor": "val_ahi_pearson"},
+    )
+    _write_yaml(path, payload)
+
+    with pytest.raises(ValueError, match="must set preset_build.required_channels to \\[ppg, ahi\\]"):
+        check_config_file(path)
+
+
+def test_check_config_file_rejects_wrong_min_channels_for_ppg_ahi_config(tmp_path: Path):
+    path = tmp_path / "configs" / "ppg_ahi_finetune.yaml"
+    payload = _ppg_finetune_payload(
+        is_seq=True,
+        preset_build={"required_channels": ["ppg", "ahi"], "min_channels": 1},
+        task_overrides={"output_dim": 30, "monitor": "val_ahi_pearson"},
+    )
+    _write_yaml(path, payload)
+
+    with pytest.raises(ValueError, match="must set preset_build.min_channels to 2"):
         check_config_file(path)
 
 
