@@ -170,62 +170,75 @@ def filter_valid_sample_indices(
                 available.append(ch)
         return available
 
-    def process_sample(sample_index):
-        try:
-            with load_npz(sample_index.path) as npz:
-                if requires_builtin_ahi:
-                    ahi_value, tst_value = load_builtin_ahi_metadata(npz)
-                    metadata = getattr(sample_index, "metadata", None)
-                    if isinstance(metadata, dict):
-                        metadata["ahi"] = ahi_value
-                        metadata["tst"] = tst_value
+    samples_by_path: dict[t.Any, list[t.Any]] = {}
+    for sample_index in data:
+        path = getattr(sample_index, "path", None)
+        samples_by_path.setdefault(path, []).append(sample_index)
 
-                if allow_missing_channels:
-                    available = _available_from_npz(npz)
-                    if len(available) < min_channels:
+    def process_path(path: str, samples: list[t.Any]) -> list[t.Any]:
+        filtered_samples: list[t.Any] = []
+        try:
+            with load_npz(path) as npz:
+                for sample_index in samples:
+                    try:
+                        if requires_builtin_ahi:
+                            ahi_value, tst_value = load_builtin_ahi_metadata(npz)
+                            metadata = getattr(sample_index, "metadata", None)
+                            if isinstance(metadata, dict):
+                                metadata["ahi"] = ahi_value
+                                metadata["tst"] = tst_value
+
+                        if allow_missing_channels:
+                            available = _available_from_npz(npz)
+                            if len(available) < min_channels:
+                                logging.info(
+                                    "[Skip] Not enough channels at %s: have=%d need>=%d. Meta: %s",
+                                    sample_index.id,
+                                    len(available),
+                                    min_channels,
+                                    getattr(sample_index, "metadata", {}),
+                                )
+                                continue
+                            payload = {
+                                key: extractors[key](npz, sample_index.start, sample_index.end) for key in available
+                            }
+                            tokens = {key: tokenizers[key](payload[key]) for key in available}
+                        else:
+                            payload = {
+                                key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()
+                            }
+                            tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
+
+                        lengths = [v.shape[0] for v in tokens.values()]
+                        max_len, min_len = max(lengths), min(lengths)
+
+                        if max_len - min_len <= tolerance:
+                            if allow_missing_channels:
+                                payload_dict = getattr(sample_index, "payload", None)
+                                if isinstance(payload_dict, dict):
+                                    payload_dict["available_channels"] = list(tokens.keys())
+                            filtered_samples.append(sample_index)
+                            continue
                         logging.info(
-                            "[Skip] Not enough channels at %s: have=%d need>=%d. Meta: %s",
+                            "[Skip] Token length mismatch at %s: %s. Meta: %s",
                             sample_index.id,
-                            len(available),
-                            min_channels,
+                            lengths,
                             getattr(sample_index, "metadata", {}),
                         )
-                        return None
-                    payload = {key: extractors[key](npz, sample_index.start, sample_index.end) for key in available}
-                    tokens = {key: tokenizers[key](payload[key]) for key in available}
-                else:
-                    payload = {key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()}
-                    tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
-
-                lengths = [v.shape[0] for v in tokens.values()]
-                max_len, min_len = max(lengths), min(lengths)
-
-                if max_len - min_len <= tolerance:
-                    if allow_missing_channels:
-                        payload_dict = getattr(sample_index, "payload", None)
-                        if isinstance(payload_dict, dict):
-                            payload_dict["available_channels"] = list(tokens.keys())
-                    return sample_index
-                logging.info(
-                    "[Skip] Token length mismatch at %s: %s. Meta: %s",
-                    sample_index.id,
-                    lengths,
-                    getattr(sample_index, "metadata", {}),
-                )
-                return None
+                    except Exception as e:
+                        logging.info(f"[Skip] Error loading sample {getattr(sample_index, 'id', '?')}: {e}")
         except Exception as e:
-            logging.info(f"[Skip] Error loading sample {getattr(sample_index, 'id', '?')}: {e}")
-            return None
+            for sample_index in samples:
+                logging.info(f"[Skip] Error loading sample {getattr(sample_index, 'id', '?')}: {e}")
+        return filtered_samples
 
     filtered_data: list[t.Any] = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [executor.submit(process_sample, s) for s in data]
+        futures = [executor.submit(process_path, path, samples) for path, samples in samples_by_path.items()]
         iterator = as_completed(futures)
         iterator = tqdm(iterator, total=len(futures), desc="Validating samples", leave=False)
         for f in iterator:
-            result = f.result()
-            if result is not None:
-                filtered_data.append(result)
+            filtered_data.extend(f.result())
 
     logging.info(f"Loaded {len(filtered_data)} valid samples (from {len(data)} total)")
     return filtered_data
