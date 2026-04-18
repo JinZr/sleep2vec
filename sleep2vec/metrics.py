@@ -15,7 +15,9 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-AHI_THRESHOLD_GRID = tuple(float(x) for x in np.arange(0.01, 1.0, 0.01))
+AHI_COARSE_THRESHOLD_GRID = tuple(round(float(x), 2) for x in np.arange(0.1, 1.0, 0.1))
+AHI_FINE_THRESHOLD_GRID = tuple(round(float(x), 2) for x in np.arange(0.01, 1.0, 0.01))
+AHI_THRESHOLD_GRID = AHI_FINE_THRESHOLD_GRID
 AHI_SEVERITY_THRESHOLDS = (5.0, 15.0, 30.0)
 AHI_SEGMENT_MERGE_TOLERANCE = 3
 AHI_MIN_EVENT_DURATION = 10

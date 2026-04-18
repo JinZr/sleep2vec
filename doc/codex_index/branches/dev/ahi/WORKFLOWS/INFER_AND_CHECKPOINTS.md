@@ -32,7 +32,6 @@ Primary code path:
    - `avg_ckpts == 1`: use `ckpt_path` directly.
    - `avg_ckpts > 1`: choose candidate files from `avg_ckpt_dir` or checkpoint parent.
    - When using `best` or `last` with averaging, `avg_ckpt_dir` is required because the alias is not a concrete file.
-   - Built-in `ahi` does not support `avg_ckpts > 1` because an averaged model has no single validation-fitted `ahi_eval_threshold` to reuse.
 6. Run evaluation.
 7. Optionally append metrics to a CSV.
 
@@ -54,7 +53,7 @@ Primary code path:
 - `infer.py` is the only reviewed place that handles CPU precision fallback for `bf16`.
 - Inference can initialize W&B separately from training and only on rank zero.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
-- `ahi` inference reuses the validation-fitted event threshold saved in the checkpoint and fails fast when that threshold is missing.
+- `ahi` inference searches the cached inference probabilities on the fine `0.01..0.99` threshold grid, so it does not require a checkpoint-persisted `ahi_eval_threshold` and can still evaluate averaged checkpoints.
 - `ahi` inference computes final event-based AHI metrics and intentionally skips the existing confusion-matrix visualization branch.
 
 ## Edit Hotspots

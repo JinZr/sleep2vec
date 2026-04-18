@@ -14,6 +14,7 @@ from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.common import remap_stage_labels
 from sleep2vec.metrics import (
+    AHI_COARSE_THRESHOLD_GRID,
     compute_ahi_event_metrics,
     compute_ahi_pointwise_metrics,
     compute_downstream_metrics,
@@ -156,7 +157,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def on_test_start(self):
         super().on_test_start()
-        if self._is_ahi_task() and self._ahi_eval_threshold is None:
+        if (
+            self._is_ahi_task()
+            and self._ahi_eval_threshold is None
+            and self._ahi_search_thresholds_for_stage("test") is None
+        ):
             raise ValueError(
                 "AHI test/inference requires a validation-fitted threshold stored in the checkpoint. "
                 "This checkpoint does not contain `ahi_eval_threshold`."
@@ -326,6 +331,18 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _is_ahi_task(self) -> bool:
         return getattr(self.args, "label_name", None) == "ahi"
 
+    def _ahi_search_thresholds_for_stage(self, stage: str) -> tuple[float, ...] | None:
+        if stage == "val":
+            thresholds = getattr(self.args, "ahi_val_search_thresholds", AHI_COARSE_THRESHOLD_GRID)
+        elif stage == "test":
+            thresholds = getattr(self.args, "ahi_test_search_thresholds", None)
+        else:
+            return None
+
+        if thresholds is None:
+            return None
+        return tuple(float(value) for value in thresholds)
+
     @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):
         getter = getattr(model, "layer_mix_snapshot", None)
@@ -473,16 +490,28 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 return None
 
             if stage == "val":
-                metrics, eval_threshold = compute_ahi_event_metrics(records, threshold=None)
+                metrics, eval_threshold = compute_ahi_event_metrics(
+                    records,
+                    threshold=None,
+                    search_thresholds=self._ahi_search_thresholds_for_stage("val"),
+                )
                 self._ahi_eval_threshold = eval_threshold
             else:
-                if self._ahi_eval_threshold is None:
+                test_search_thresholds = self._ahi_search_thresholds_for_stage("test")
+                if test_search_thresholds is not None:
+                    metrics, eval_threshold = compute_ahi_event_metrics(
+                        records,
+                        threshold=None,
+                        search_thresholds=test_search_thresholds,
+                    )
+                elif self._ahi_eval_threshold is None:
                     raise ValueError(
                         "AHI evaluation requires a validation-fitted threshold. "
                         "No `ahi_eval_threshold` is available for test/inference."
                     )
-                eval_threshold = float(self._ahi_eval_threshold)
-                metrics, _ = compute_ahi_event_metrics(records, threshold=eval_threshold)
+                else:
+                    eval_threshold = float(self._ahi_eval_threshold)
+                    metrics, _ = compute_ahi_event_metrics(records, threshold=eval_threshold)
 
             for k, v in metrics.items():
                 self.log(

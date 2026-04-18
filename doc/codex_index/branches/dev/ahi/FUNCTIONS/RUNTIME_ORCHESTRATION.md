@@ -64,7 +64,7 @@
 - Side effects: optional W&B run, trainer evaluation, optional results CSV output.
 - Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, and `Sleep2vecFinetuning`.
 - Reuse guidance: extend here for inference-only behavior changes.
-- Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`, not in trainer code; built-in `ahi` intentionally rejects `avg_ckpts > 1` because an averaged state dict has no paired validation-fitted threshold.
+- Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`, not in trainer code; built-in `ahi` fine-threshold search for standalone inference is injected here so the trainer can evaluate either direct or averaged checkpoints without a second model pass.
 
 ## `sleep2vec.checkpoints.select_checkpoints`
 
@@ -95,7 +95,7 @@
   - `on_save_checkpoint(self, checkpoint) -> None`
   - `on_load_checkpoint(self, checkpoint) -> None`
   - `on_test_start(self) -> None`
-- Purpose and contract: persist model/finetune config snapshots into checkpoints, save the validation-fitted `ahi_eval_threshold`, reload that threshold on restore, and fail fast before test/inference when `ahi` lacks a stored threshold.
+- Purpose and contract: persist model/finetune config snapshots into checkpoints, save the validation-fitted `ahi_eval_threshold`, reload that threshold on restore, and fail fast before AHI test-time reuse when neither a stored threshold nor an explicit test-search grid is available.
 - Important inputs/outputs: checkpoint mapping in/out; no return value.
 - Side effects: mutates checkpoint payload and may raise `ValueError`.
 - Key callers/callees: called by Lightning; `on_save_checkpoint` also snapshots layer-mix weights when available.
@@ -117,7 +117,7 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `_finalize_epoch(self, stage: str)`
-- Purpose and contract: reduce cached epoch outputs into train/val/test metrics, with a dedicated `ahi` path that keeps pointwise metrics on train and event-based metrics on val/test, and optionally emits the scalar-summary AHI scatter plot when regression-style eval visualizations are enabled.
+- Purpose and contract: reduce cached epoch outputs into train/val/test metrics, with a dedicated `ahi` path that keeps pointwise metrics on train, uses a coarse `0.1..0.9` threshold search on validation, reuses the stored threshold on the finetune test stage unless an explicit test-search grid is provided, and optionally emits the scalar-summary AHI scatter plot when regression-style eval visualizations are enabled.
 - Important inputs/outputs: stage name plus cached outputs in; logs metrics and returns reduced arrays/records when present.
 - Side effects: emits Lightning metrics, clears epoch caches, and may update `self._ahi_eval_threshold`.
 - Key callers/callees: callers are `on_train_epoch_end`, `on_validation_epoch_end`, and `on_test_epoch_end`; callees include `compute_ahi_pointwise_metrics`, `compute_ahi_event_metrics`, `compute_downstream_metrics`, and `_eval_visualizer.log`.
@@ -139,12 +139,12 @@
 
 - File: `sleep2vec/metrics.py`
 - Signature: `select_best_ahi_threshold(records, *, search_thresholds=...) -> tuple[float, dict[str, Any]]`
-- Purpose and contract: search the configured threshold grid, skipping records without usable scalar `tst_hours`, and choose the threshold that maximizes Pearson, then minimizes MAE, then prefers the higher threshold on exact metric ties.
+- Purpose and contract: search the configured threshold grid, skipping records without usable scalar `tst_hours`, and choose the threshold that maximizes Pearson, then minimizes MAE, then prefers the higher threshold on exact metric ties. Current runtime callers use a coarse grid during finetune validation and a fine grid during standalone inference.
 - Important inputs/outputs: per-sample `{truth, score, true_ahi, tst_hours}` records in; selected threshold plus cached aggregate out.
 - Side effects: none.
 - Key callers/callees: caller is `compute_ahi_event_metrics`; callee is `_aggregate_ahi_records`.
 - Reuse guidance: reuse this if threshold search policy changes.
-- Duplication risk notes: validation threshold fitting must stay centralized here.
+- Duplication risk notes: coarse validation search and fine inference search must stay centralized here rather than diverging in trainer or entrypoint code.
 
 ## `sleep2vec.metrics.compute_ahi_event_metrics`
 
@@ -154,7 +154,7 @@
 - Important inputs/outputs: per-sample `truth` / `score` / `true_ahi` / `tst_hours` records in; metrics dict plus chosen threshold out.
 - Side effects: none.
 - Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `select_best_ahi_threshold`, `binary_sequence_to_segments`, `merge_intervals`, `filter_segments_by_duration`, and `vectorized_event_stats`.
-- Reuse guidance: use this for every final `ahi` validation/test/infer metric path instead of re-deriving event counts in trainer code.
+- Reuse guidance: use this for every final `ahi` validation/test/infer metric path instead of re-deriving event counts in trainer code; callers should change only the supplied threshold grid, not the aggregation logic.
 - Duplication risk notes: threshold search, scalar-summary semantics, gathered-window deduplication, stage-aware prediction masking, inclusive event-overlap arithmetic, and the split between detection and scalar-summary post-processing must stay centralized here.
 
 ## `sleep2vec.metrics.compute_downstream_metrics`

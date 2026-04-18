@@ -71,7 +71,7 @@ The monitored validation metric is `val_contrastive_acc`.
 7. Run `trainer.test(...)`.
 8. Optionally write `results.csv`.
 
-This is evaluation-only orchestration; checkpoint selection and averaging live in `sleep2vec/checkpoints.py`, not in the trainer classes. Built-in `ahi` intentionally rejects `avg_ckpts > 1` because an averaged state dict has no single validation-fitted threshold to reuse.
+This is evaluation-only orchestration; checkpoint selection and averaging live in `sleep2vec/checkpoints.py`, not in the trainer classes. Built-in `ahi` injects a fine threshold-search grid during standalone inference, so averaged checkpoints can still be evaluated without rerunning the model for each threshold.
 
 ## Core Data Contract
 
@@ -134,7 +134,7 @@ The canonical preset path is:
 
 - Pretrain checkpoints: `log-pretrain/<run>/checkpoints/`
 - Finetune checkpoints: `log-finetune/<version>/checkpoints/`
-- `ahi` finetune checkpoints may also contain `ahi_eval_threshold`
+- `ahi` finetune checkpoints may also contain the coarse validation-fitted `ahi_eval_threshold`
 - Per-run copied configs: `config.yaml`
 - Per-run CLI snapshot: `cli_args.yaml`
 - Downstream results table: caller-specified CSV via `save_result_csv`

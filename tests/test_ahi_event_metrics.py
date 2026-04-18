@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -10,6 +11,8 @@ import pytorch_lightning as pl
 from sleep2vec.infer import run_inference
 import sleep2vec.metrics as metrics_mod
 from sleep2vec.metrics import (
+    AHI_COARSE_THRESHOLD_GRID,
+    AHI_FINE_THRESHOLD_GRID,
     _evaluate_single_ahi_record,
     binary_sequence_to_segments,
     compute_ahi_event_metrics,
@@ -625,6 +628,16 @@ def test_ahi_test_start_requires_saved_threshold(monkeypatch: pytest.MonkeyPatch
         module.on_test_start()
 
 
+def test_ahi_test_start_allows_explicit_test_search_without_saved_threshold(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(pl.LightningModule, "on_test_start", lambda self: None)
+
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02))
+    module._ahi_eval_threshold = None
+
+    module.on_test_start()
+
+
 def test_ahi_test_epoch_reuses_saved_threshold(monkeypatch: pytest.MonkeyPatch):
     used: dict[str, float] = {}
 
@@ -648,6 +661,35 @@ def test_ahi_test_epoch_reuses_saved_threshold(monkeypatch: pytest.MonkeyPatch):
     module._finalize_epoch("test")
 
     assert used["threshold"] == 0.37
+
+
+def test_ahi_test_epoch_searches_requested_threshold_grid(monkeypatch: pytest.MonkeyPatch):
+    used: dict[str, object] = {}
+
+    def fake_compute(records, *, threshold=None, search_thresholds=None, **_):
+        used["threshold"] = threshold
+        used["search_thresholds"] = search_thresholds
+        return {"ahi_pearson": 0.7, "ahi_opt_threshold": 0.03}, 0.03
+
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics", fake_compute)
+
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02, 0.03))
+    module._ahi_eval_threshold = None
+    module._stage_outputs = {
+        "train": [],
+        "val": [],
+        "test": [{"truth": np.array([0]), "score": np.array([0.1]), "true_ahi": 0.0, "tst_hours": 4.0}],
+    }
+    module.log = lambda *args, **kwargs: None
+    module._gather_ahi_event_records = lambda records: records
+    module.trainer = argparse.Namespace(is_global_zero=False)
+    module.current_epoch = 0
+
+    module._finalize_epoch("test")
+
+    assert used["threshold"] is None
+    assert used["search_thresholds"] == (0.01, 0.02, 0.03)
 
 
 def test_extract_ahi_summary_scatter_arrays_returns_scalar_pairs():
@@ -716,8 +758,95 @@ def test_ahi_val_epoch_logs_summary_scatter(monkeypatch: pytest.MonkeyPatch):
     assert np.allclose(captured["preds"], np.array([1.2], dtype=np.float32))
 
 
-def test_run_inference_rejects_ahi_checkpoint_averaging():
-    args = argparse.Namespace(label_name="ahi", avg_ckpts=2)
+def test_ahi_val_epoch_uses_default_coarse_search_grid(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
 
-    with pytest.raises(ValueError, match="does not support --avg-ckpts > 1"):
-        run_inference(args)
+    def fake_compute(records, *, threshold=None, search_thresholds=None, **_):
+        captured["threshold"] = threshold
+        captured["search_thresholds"] = search_thresholds
+        return {"ahi_pearson": 0.7}, 0.3
+
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics", fake_compute)
+    monkeypatch.setattr(
+        "sleep2vec.sleep2vec_finetuning.extract_ahi_summary_scatter_arrays",
+        lambda records, *, threshold: (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
+    )
+
+    class _DummyVisualizer:
+        def log_ahi_summary_scatter(self, **kwargs):
+            return None
+
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi")
+    module._ahi_eval_threshold = None
+    module._stage_outputs = {
+        "train": [],
+        "val": [{"truth": np.array([0]), "score": np.array([0.1]), "true_ahi": 0.0, "tst_hours": 4.0}],
+        "test": [],
+    }
+    module.log = lambda *args, **kwargs: None
+    module._gather_ahi_event_records = lambda records: records
+    module._eval_visualizer = _DummyVisualizer()
+    module.trainer = argparse.Namespace(is_global_zero=True)
+    module.current_epoch = 0
+
+    module._finalize_epoch("val")
+
+    assert captured["threshold"] is None
+    assert captured["search_thresholds"] == AHI_COARSE_THRESHOLD_GRID
+
+
+def test_run_inference_allows_ahi_checkpoint_averaging_with_fine_search(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    @dataclass
+    class _DummyBundle:
+        finetune: object = None
+        averaging: object = None
+
+    class _DummyModule:
+        def __init__(self, args, model_cfg, finetune_config=None, averaging_config=None):
+            captured["args"] = args
+
+        def load_state_dict(self, state_dict, strict=False):
+            captured["loaded_state_dict"] = state_dict
+            return [], []
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            captured["trainer_kwargs"] = kwargs
+
+        def test(self, model=None, ckpt_path=None, dataloaders=None):
+            captured["ckpt_path"] = ckpt_path
+            captured["dataloaders"] = dataloaders
+            return [{"ahi_pearson": 0.5}]
+
+    monkeypatch.setattr("sleep2vec.infer.apply_finetune_config", lambda args: (_DummyBundle(), _DummyModelConfig()))
+    monkeypatch.setattr("sleep2vec.infer._build_inference_loader", lambda args: "loader")
+    monkeypatch.setattr("sleep2vec.infer.Sleep2vecFinetuning", _DummyModule)
+    monkeypatch.setattr("sleep2vec.infer.pl.Trainer", _DummyTrainer)
+    monkeypatch.setattr("sleep2vec.infer._init_wandb", lambda args: None)
+    monkeypatch.setattr("sleep2vec.infer.select_checkpoints", lambda *args, **kwargs: [Path("a.ckpt"), Path("b.ckpt")])
+    monkeypatch.setattr("sleep2vec.infer.average_checkpoints", lambda *args, **kwargs: {"weight": np.array([1.0])})
+
+    args = argparse.Namespace(
+        label_name="ahi",
+        avg_ckpts=2,
+        ckpt_path="/tmp/model.ckpt",
+        avg_ckpt_dir=None,
+        config=Path("dummy.yaml"),
+        precision=32,
+        accelerator="cpu",
+        devices=[0],
+        batch_size=4,
+        eval_split="test",
+        seed=4523,
+        wandb=False,
+        results_csv_path=None,
+    )
+
+    run_inference(args)
+
+    assert captured["args"].ahi_test_search_thresholds == AHI_FINE_THRESHOLD_GRID
+    assert captured["ckpt_path"] is None
+    assert captured["dataloaders"] == "loader"
