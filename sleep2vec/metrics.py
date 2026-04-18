@@ -1,5 +1,8 @@
 import copy
+from dataclasses import dataclass
+import logging
 import os
+import time
 from typing import Any, Mapping
 
 import numpy as np
@@ -259,11 +262,32 @@ def compute_ahi_pointwise_metrics(gts, preds) -> dict[str, float]:
     return {f"ahi_pointwise_{key}": value for key, value in compute_binary_label_metrics(gts, preds).items()}
 
 
-def _evaluate_single_ahi_record(
-    record: Mapping[str, np.ndarray],
-    *,
-    threshold: float,
-) -> tuple[tuple[float, float, float], float | None, float | None]:
+@dataclass(frozen=True)
+class PreparedAHIRecord:
+    score: np.ndarray
+    gt_segments: list[list[int]]
+    sleep_mask: np.ndarray
+    true_ahi: float
+    tst_hours: float
+    summary_enabled: bool
+
+
+def _resolve_ahi_search_mode(search_thresholds: tuple[float, ...]) -> str:
+    thresholds = tuple(float(value) for value in search_thresholds)
+    if thresholds == AHI_COARSE_THRESHOLD_GRID:
+        return "coarse"
+    if thresholds == AHI_FINE_THRESHOLD_GRID:
+        return "fine"
+    return "custom"
+
+
+def _should_log_ahi_search_progress(index: int, total: int) -> bool:
+    if total <= 10:
+        return True
+    return index == 1 or index == total or index % 10 == 0
+
+
+def _prepare_ahi_record(record: Mapping[str, np.ndarray]) -> PreparedAHIRecord:
     truth = np.asarray(record["truth"], dtype=np.int64).reshape(-1)
     score = np.asarray(record["score"], dtype=np.float32).reshape(-1)
     true_ahi = float(record["true_ahi"])
@@ -277,9 +301,8 @@ def _evaluate_single_ahi_record(
         raise ValueError(f"TST hours must be finite and > 0, got {tst_hours}")
 
     gt_segments = merge_intervals(binary_sequence_to_segments(truth, interval=1))
-    pred_binary = (score > threshold).astype(np.int64)
-    raw_pred_segments = binary_sequence_to_segments(pred_binary, interval=1)
-    pred_segments = merge_intervals(raw_pred_segments)
+    gt_segments = filter_segments_by_duration(gt_segments, min_duration=AHI_MIN_EVENT_DURATION)
+
     stage5 = np.asarray(record["stage5"], dtype=np.int64).reshape(-1)
     second_valid_mask_raw = record.get("second_valid_mask")
     if second_valid_mask_raw is not None:
@@ -303,16 +326,46 @@ def _evaluate_single_ahi_record(
                 f"{stage5.shape[0]} tokens vs {truth.shape[0]} seconds"
             )
         sleep_mask = np.repeat((stage5 > 0).astype(np.int64), 30)
-    summary_pred_segments = filter_segments_by_stage(raw_pred_segments, sleep_mask)
-    pred_segments = filter_segments_by_stage(pred_segments, sleep_mask)
-    gt_segments = filter_segments_by_duration(gt_segments, min_duration=AHI_MIN_EVENT_DURATION)
+
+    return PreparedAHIRecord(
+        score=score,
+        gt_segments=gt_segments,
+        sleep_mask=sleep_mask,
+        true_ahi=true_ahi,
+        tst_hours=tst_hours,
+        summary_enabled=tst_hours >= AHI_MIN_TST_HOURS,
+    )
+
+
+def _prepare_ahi_records(records: list[Mapping[str, np.ndarray]]) -> list[PreparedAHIRecord]:
+    return [_prepare_ahi_record(record) for record in _merge_ahi_window_records(records)]
+
+
+def _evaluate_prepared_ahi_record(
+    record: PreparedAHIRecord,
+    *,
+    threshold: float,
+) -> tuple[tuple[float, float, float], float | None, float | None]:
+    pred_binary = (record.score > threshold).astype(np.int64)
+    raw_pred_segments = binary_sequence_to_segments(pred_binary, interval=1)
+    pred_segments = merge_intervals(raw_pred_segments)
+    summary_pred_segments = filter_segments_by_stage(raw_pred_segments, record.sleep_mask)
+    pred_segments = filter_segments_by_stage(pred_segments, record.sleep_mask)
     pred_segments = filter_segments_by_duration(pred_segments, min_duration=AHI_MIN_EVENT_DURATION)
-    tp, fp, fn = vectorized_event_stats(gt_segments, pred_segments)
-    if tst_hours < AHI_MIN_TST_HOURS:
+    tp, fp, fn = vectorized_event_stats(record.gt_segments, pred_segments)
+    if not record.summary_enabled:
         return (tp, fp, fn), None, None
 
-    pred_ahi = float(len(summary_pred_segments) / tst_hours)
-    return (tp, fp, fn), pred_ahi, true_ahi
+    pred_ahi = float(len(summary_pred_segments) / record.tst_hours)
+    return (tp, fp, fn), pred_ahi, record.true_ahi
+
+
+def _evaluate_single_ahi_record(
+    record: Mapping[str, np.ndarray],
+    *,
+    threshold: float,
+) -> tuple[tuple[float, float, float], float | None, float | None]:
+    return _evaluate_prepared_ahi_record(_prepare_ahi_record(record), threshold=threshold)
 
 
 def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[dict[str, Any]]:
@@ -428,12 +481,21 @@ def _aggregate_ahi_records(
     *,
     threshold: float,
 ) -> dict[str, Any]:
+    prepared_records = _prepare_ahi_records(records)
+    return _aggregate_prepared_ahi_records(prepared_records, threshold=threshold)
+
+
+def _aggregate_prepared_ahi_records(
+    prepared_records: list[PreparedAHIRecord],
+    *,
+    threshold: float,
+) -> dict[str, Any]:
     tp = fp = fn = 0.0
     pred_ahi: list[float] = []
     true_ahi: list[float] = []
 
-    for record in _merge_ahi_window_records(records):
-        (record_tp, record_fp, record_fn), record_pred_ahi, record_true_ahi = _evaluate_single_ahi_record(
+    for record in prepared_records:
+        (record_tp, record_fp, record_fn), record_pred_ahi, record_true_ahi = _evaluate_prepared_ahi_record(
             record,
             threshold=threshold,
         )
@@ -458,22 +520,42 @@ def extract_ahi_summary_scatter_arrays(
     *,
     threshold: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    aggregate = _aggregate_ahi_records(records, threshold=float(threshold))
+    prepared_records = _prepare_ahi_records(records)
+    aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=float(threshold))
     return aggregate["true_ahi"], aggregate["pred_ahi"]
 
 
-def select_best_ahi_threshold(
-    records: list[Mapping[str, np.ndarray]],
+def _select_best_ahi_threshold_from_prepared(
+    prepared_records: list[PreparedAHIRecord],
     *,
     search_thresholds: tuple[float, ...] = AHI_THRESHOLD_GRID,
 ) -> tuple[float, dict[str, Any]]:
+    thresholds = tuple(float(value) for value in search_thresholds)
     best_threshold: float | None = None
     best_pearson = float("-inf")
     best_mae = float("inf")
     best_aggregate: dict[str, Any] | None = None
+    mode = _resolve_ahi_search_mode(thresholds)
+    recording_count = len(prepared_records)
+    eligible_count = sum(1 for record in prepared_records if record.summary_enabled)
+    logging.info(
+        "AHI threshold search start: mode=%s thresholds=%d recordings=%d eligible=%d",
+        mode,
+        len(thresholds),
+        recording_count,
+        eligible_count,
+    )
+    started_at = time.perf_counter()
 
-    for threshold in search_thresholds:
-        aggregate = _aggregate_ahi_records(records, threshold=threshold)
+    for index, threshold in enumerate(thresholds, start=1):
+        if _should_log_ahi_search_progress(index, len(thresholds)):
+            logging.info(
+                "AHI threshold search progress: %d/%d threshold=%.2f",
+                index,
+                len(thresholds),
+                threshold,
+            )
+        aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=threshold)
         pred_ahi = aggregate["pred_ahi"]
         true_ahi = aggregate["true_ahi"]
         if pred_ahi.size == 0 or true_ahi.size == 0:
@@ -496,21 +578,38 @@ def select_best_ahi_threshold(
             "Unable to fit an AHI event threshold from validation records. "
             "Need at least 1 non-skipped sample with TST >= 2h."
         )
+    logging.info(
+        "AHI threshold search done: best=%.2f elapsed=%.2fs",
+        best_threshold,
+        time.perf_counter() - started_at,
+    )
     return best_threshold, best_aggregate
 
 
-def compute_ahi_event_metrics(
+def select_best_ahi_threshold(
     records: list[Mapping[str, np.ndarray]],
+    *,
+    search_thresholds: tuple[float, ...] = AHI_THRESHOLD_GRID,
+) -> tuple[float, dict[str, Any]]:
+    prepared_records = _prepare_ahi_records(records)
+    return _select_best_ahi_threshold_from_prepared(prepared_records, search_thresholds=search_thresholds)
+
+
+def _compute_ahi_event_metrics_from_prepared(
+    prepared_records: list[PreparedAHIRecord],
     *,
     threshold: float | None = None,
     search_thresholds: tuple[float, ...] = AHI_THRESHOLD_GRID,
     severity_thresholds: tuple[float, ...] = AHI_SEVERITY_THRESHOLDS,
 ) -> tuple[dict[str, float], float]:
     if threshold is None:
-        threshold, aggregate = select_best_ahi_threshold(records, search_thresholds=search_thresholds)
+        threshold, aggregate = _select_best_ahi_threshold_from_prepared(
+            prepared_records,
+            search_thresholds=search_thresholds,
+        )
     else:
         threshold = float(threshold)
-        aggregate = _aggregate_ahi_records(records, threshold=threshold)
+        aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=threshold)
 
     tp = aggregate["event_tp"]
     fp = aggregate["event_fp"]
@@ -594,6 +693,22 @@ def compute_ahi_event_metrics(
     metrics["ahi_macro_f1"] = float(f1_score(true_cls, pred_cls, average="macro"))
     metrics["ahi_weighted_f1"] = float(f1_score(true_cls, pred_cls, average="weighted"))
     return metrics, float(threshold)
+
+
+def compute_ahi_event_metrics(
+    records: list[Mapping[str, np.ndarray]],
+    *,
+    threshold: float | None = None,
+    search_thresholds: tuple[float, ...] = AHI_THRESHOLD_GRID,
+    severity_thresholds: tuple[float, ...] = AHI_SEVERITY_THRESHOLDS,
+) -> tuple[dict[str, float], float]:
+    prepared_records = _prepare_ahi_records(records)
+    return _compute_ahi_event_metrics_from_prepared(
+        prepared_records,
+        threshold=threshold,
+        search_thresholds=search_thresholds,
+        severity_thresholds=severity_thresholds,
+    )
 
 
 def compute_downstream_metrics(

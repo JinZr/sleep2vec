@@ -71,7 +71,7 @@ The monitored validation metric is `val_contrastive_acc`.
 7. Run `trainer.test(...)`.
 8. Optionally write `results.csv`.
 
-This is evaluation-only orchestration; checkpoint selection and averaging live in `sleep2vec/checkpoints.py`, not in the trainer classes. Built-in `ahi` injects a fine threshold-search grid during standalone inference, so averaged checkpoints can still be evaluated without rerunning the model for each threshold.
+This is evaluation-only orchestration; checkpoint selection and averaging live in `sleep2vec/checkpoints.py`, not in the trainer classes. Built-in `ahi` injects a fine threshold-search grid during standalone inference, so averaged checkpoints can still be evaluated without rerunning the model for each threshold, while single-checkpoint runs can fall back to the saved `ahi_eval_threshold` if no summary-eligible sample exists.
 
 ## Core Data Contract
 

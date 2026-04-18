@@ -344,6 +344,98 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return tuple(float(value) for value in thresholds)
 
     @staticmethod
+    def _can_broadcast_ahi_metrics() -> bool:
+        return dist.is_available() and dist.is_initialized() and hasattr(dist, "broadcast_object_list")
+
+    def _compute_ahi_metrics_for_stage(
+        self,
+        stage: str,
+        records: list[dict[str, np.ndarray]],
+    ) -> tuple[dict[str, float], float]:
+        if stage == "val":
+            metrics, eval_threshold = compute_ahi_event_metrics(
+                records,
+                threshold=None,
+                search_thresholds=self._ahi_search_thresholds_for_stage("val"),
+            )
+            self._ahi_eval_threshold = float(eval_threshold)
+            return metrics, float(eval_threshold)
+
+        test_search_thresholds = self._ahi_search_thresholds_for_stage("test")
+        if test_search_thresholds is not None:
+            try:
+                metrics, eval_threshold = compute_ahi_event_metrics(
+                    records,
+                    threshold=None,
+                    search_thresholds=test_search_thresholds,
+                )
+                return metrics, float(eval_threshold)
+            except ValueError as exc:
+                if (
+                    self._ahi_eval_threshold is not None
+                    and "Need at least 1 non-skipped sample with TST >= 2h." in str(exc)
+                ):
+                    eval_threshold = float(self._ahi_eval_threshold)
+                    logging.info(
+                        "AHI threshold search fallback: reusing saved threshold=%.2f because no eligible summary samples were found",
+                        eval_threshold,
+                    )
+                    metrics, _ = compute_ahi_event_metrics(records, threshold=eval_threshold)
+                    return metrics, eval_threshold
+                raise
+
+        if self._ahi_eval_threshold is None:
+            raise ValueError(
+                "AHI evaluation requires a validation-fitted threshold. "
+                "No `ahi_eval_threshold` is available for test/inference."
+            )
+
+        eval_threshold = float(self._ahi_eval_threshold)
+        metrics, _ = compute_ahi_event_metrics(records, threshold=eval_threshold)
+        return metrics, eval_threshold
+
+    def _compute_or_broadcast_ahi_metrics(
+        self,
+        stage: str,
+        records: list[dict[str, np.ndarray]],
+    ) -> tuple[dict[str, float], float]:
+        trainer = getattr(self, "trainer", None)
+        if trainer is None or not self._can_broadcast_ahi_metrics():
+            return self._compute_ahi_metrics_for_stage(stage, records)
+
+        payload: list[dict[str, object] | None] = [None]
+        if trainer.is_global_zero:
+            try:
+                metrics, eval_threshold = self._compute_ahi_metrics_for_stage(stage, records)
+                payload[0] = {
+                    "metrics": metrics,
+                    "eval_threshold": float(eval_threshold),
+                    "error_type": None,
+                    "error_message": None,
+                }
+            except Exception as exc:  # pragma: no cover - distributed error fan-out
+                payload[0] = {
+                    "metrics": None,
+                    "eval_threshold": None,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+
+        dist.broadcast_object_list(payload, src=0)
+        result = payload[0] or {}
+        error_message = result.get("error_message")
+        if error_message is not None:
+            if result.get("error_type") == "ValueError":
+                raise ValueError(str(error_message))
+            raise RuntimeError(str(error_message))
+
+        metrics = result["metrics"]
+        eval_threshold = float(result["eval_threshold"])
+        if stage == "val":
+            self._ahi_eval_threshold = eval_threshold
+        return metrics, eval_threshold
+
+    @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):
         getter = getattr(model, "layer_mix_snapshot", None)
         if not callable(getter):
@@ -489,29 +581,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             if not records:
                 return None
 
-            if stage == "val":
-                metrics, eval_threshold = compute_ahi_event_metrics(
-                    records,
-                    threshold=None,
-                    search_thresholds=self._ahi_search_thresholds_for_stage("val"),
-                )
-                self._ahi_eval_threshold = eval_threshold
-            else:
-                test_search_thresholds = self._ahi_search_thresholds_for_stage("test")
-                if test_search_thresholds is not None:
-                    metrics, eval_threshold = compute_ahi_event_metrics(
-                        records,
-                        threshold=None,
-                        search_thresholds=test_search_thresholds,
-                    )
-                elif self._ahi_eval_threshold is None:
-                    raise ValueError(
-                        "AHI evaluation requires a validation-fitted threshold. "
-                        "No `ahi_eval_threshold` is available for test/inference."
-                    )
-                else:
-                    eval_threshold = float(self._ahi_eval_threshold)
-                    metrics, _ = compute_ahi_event_metrics(records, threshold=eval_threshold)
+            metrics, eval_threshold = self._compute_or_broadcast_ahi_metrics(stage, records)
 
             for k, v in metrics.items():
                 self.log(

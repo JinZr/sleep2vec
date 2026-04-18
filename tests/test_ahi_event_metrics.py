@@ -53,6 +53,17 @@ def _ahi_record(
     return record
 
 
+def _prepared_record(*, summary_enabled: bool = True) -> metrics_mod.PreparedAHIRecord:
+    return metrics_mod.PreparedAHIRecord(
+        score=np.array([0.1], dtype=np.float32),
+        gt_segments=[],
+        sleep_mask=np.array([1], dtype=np.int64),
+        true_ahi=1.0,
+        tst_hours=4.0,
+        summary_enabled=summary_enabled,
+    )
+
+
 def test_binary_sequence_to_segments_preserves_exact_boundaries():
     assert binary_sequence_to_segments([0, 1, 1, 0, 1, 1, 1, 0]) == [[1, 2], [4, 6]]
 
@@ -490,7 +501,7 @@ def test_compute_ahi_event_metrics_uses_first_seen_duplicate_window():
 
 
 def test_compute_ahi_event_metrics_uses_inclusive_clinical_cutoffs(monkeypatch: pytest.MonkeyPatch):
-    def fake_aggregate(records, *, threshold):
+    def fake_aggregate(prepared_records, *, threshold):
         return {
             "event_tp": 0.0,
             "event_fp": 0.0,
@@ -499,7 +510,8 @@ def test_compute_ahi_event_metrics_uses_inclusive_clinical_cutoffs(monkeypatch: 
             "true_ahi": np.array([5.0, 15.0, 30.0, 0.0], dtype=np.float32),
         }
 
-    monkeypatch.setattr(metrics_mod, "_aggregate_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
 
     metrics, threshold = compute_ahi_event_metrics([{}], threshold=0.5)
 
@@ -517,7 +529,7 @@ def test_compute_ahi_event_metrics_uses_inclusive_clinical_cutoffs(monkeypatch: 
 
 
 def test_select_best_ahi_threshold_uses_pearson_then_mae_tiebreak(monkeypatch: pytest.MonkeyPatch):
-    def fake_aggregate(records, *, threshold):
+    def fake_aggregate(prepared_records, *, threshold):
         if threshold == 0.1:
             pred = np.array([2.0, 4.0, 6.0], dtype=np.float32)
         else:
@@ -530,7 +542,9 @@ def test_select_best_ahi_threshold_uses_pearson_then_mae_tiebreak(monkeypatch: p
             "true_ahi": np.array([1.0, 2.0, 3.0], dtype=np.float32),
         }
 
-    monkeypatch.setattr(metrics_mod, "_aggregate_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
     threshold, _ = select_best_ahi_threshold([{}], search_thresholds=(0.1, 0.2))
 
@@ -538,7 +552,7 @@ def test_select_best_ahi_threshold_uses_pearson_then_mae_tiebreak(monkeypatch: p
 
 
 def test_select_best_ahi_threshold_allows_single_sample_mae_tiebreak(monkeypatch: pytest.MonkeyPatch):
-    def fake_aggregate(records, *, threshold):
+    def fake_aggregate(prepared_records, *, threshold):
         if threshold == 0.1:
             pred = np.array([2.0], dtype=np.float32)
         else:
@@ -551,7 +565,9 @@ def test_select_best_ahi_threshold_allows_single_sample_mae_tiebreak(monkeypatch
             "true_ahi": np.array([1.5], dtype=np.float32),
         }
 
-    monkeypatch.setattr(metrics_mod, "_aggregate_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
     threshold, _ = select_best_ahi_threshold([{}], search_thresholds=(0.1, 0.2))
 
@@ -559,7 +575,7 @@ def test_select_best_ahi_threshold_allows_single_sample_mae_tiebreak(monkeypatch
 
 
 def test_select_best_ahi_threshold_prefers_higher_threshold_on_exact_metric_tie(monkeypatch: pytest.MonkeyPatch):
-    def fake_aggregate(records, *, threshold):
+    def fake_aggregate(prepared_records, *, threshold):
         return {
             "event_tp": 0.0,
             "event_fp": 0.0,
@@ -568,7 +584,9 @@ def test_select_best_ahi_threshold_prefers_higher_threshold_on_exact_metric_tie(
             "true_ahi": np.array([1.0, 2.0, 3.0], dtype=np.float32),
         }
 
-    monkeypatch.setattr(metrics_mod, "_aggregate_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
     threshold, _ = select_best_ahi_threshold([{}], search_thresholds=(0.1, 0.2, 0.3))
 
@@ -576,7 +594,7 @@ def test_select_best_ahi_threshold_prefers_higher_threshold_on_exact_metric_tie(
 
 
 def test_select_best_ahi_threshold_rejects_all_skipped_samples(monkeypatch: pytest.MonkeyPatch):
-    def fake_aggregate(records, *, threshold):
+    def fake_aggregate(prepared_records, *, threshold):
         return {
             "event_tp": 0.0,
             "event_fp": 0.0,
@@ -585,10 +603,124 @@ def test_select_best_ahi_threshold_rejects_all_skipped_samples(monkeypatch: pyte
             "true_ahi": np.array([], dtype=np.float32),
         }
 
-    monkeypatch.setattr(metrics_mod, "_aggregate_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record(summary_enabled=False)])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
     with pytest.raises(ValueError, match="Need at least 1 non-skipped sample"):
         select_best_ahi_threshold([{}], search_thresholds=(0.1, 0.2))
+
+
+def test_select_best_ahi_threshold_prepares_records_once(monkeypatch: pytest.MonkeyPatch):
+    calls = {"prepare": 0, "aggregate": 0}
+
+    def fake_prepare(records):
+        calls["prepare"] += 1
+        return [_prepared_record()]
+
+    def fake_aggregate(prepared_records, *, threshold):
+        calls["aggregate"] += 1
+        return {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([threshold], dtype=np.float32),
+            "true_ahi": np.array([0.2], dtype=np.float32),
+        }
+
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", fake_prepare)
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
+
+    select_best_ahi_threshold([{}], search_thresholds=(0.1, 0.2, 0.3))
+
+    assert calls["prepare"] == 1
+    assert calls["aggregate"] == 3
+
+
+def test_compute_ahi_event_metrics_fixed_threshold_prepares_records_once(monkeypatch: pytest.MonkeyPatch):
+    calls = {"prepare": 0, "aggregate": 0}
+
+    def fake_prepare(records):
+        calls["prepare"] += 1
+        return [_prepared_record()]
+
+    def fake_aggregate(prepared_records, *, threshold):
+        calls["aggregate"] += 1
+        assert threshold == 0.5
+        return {
+            "event_tp": 1.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([0.5], dtype=np.float32),
+            "true_ahi": np.array([0.5], dtype=np.float32),
+        }
+
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", fake_prepare)
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+
+    metrics, threshold = compute_ahi_event_metrics([{}], threshold=0.5)
+
+    assert threshold == 0.5
+    assert metrics["ahi_event_f1"] == 1.0
+    assert calls["prepare"] == 1
+    assert calls["aggregate"] == 1
+
+
+def test_select_best_ahi_threshold_logs_coarse_progress(monkeypatch: pytest.MonkeyPatch):
+    messages: list[str] = []
+
+    def fake_info(message, *args):
+        messages.append(message % args if args else message)
+
+    def fake_aggregate(prepared_records, *, threshold):
+        return {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([threshold], dtype=np.float32),
+            "true_ahi": np.array([0.2], dtype=np.float32),
+        }
+
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod.logging, "info", fake_info)
+
+    select_best_ahi_threshold([{}], search_thresholds=AHI_COARSE_THRESHOLD_GRID)
+
+    assert messages[0] == "AHI threshold search start: mode=coarse thresholds=9 recordings=1 eligible=1"
+    assert "AHI threshold search progress: 1/9 threshold=0.10" in messages
+    assert "AHI threshold search progress: 2/9 threshold=0.20" in messages
+    assert "AHI threshold search progress: 9/9 threshold=0.90" in messages
+    assert messages[-1].startswith("AHI threshold search done: best=0.20 elapsed=")
+
+
+def test_select_best_ahi_threshold_logs_sparse_fine_progress(monkeypatch: pytest.MonkeyPatch):
+    messages: list[str] = []
+
+    def fake_info(message, *args):
+        messages.append(message % args if args else message)
+
+    def fake_aggregate(prepared_records, *, threshold):
+        return {
+            "event_tp": 0.0,
+            "event_fp": 0.0,
+            "event_fn": 0.0,
+            "pred_ahi": np.array([0.2], dtype=np.float32),
+            "true_ahi": np.array([0.2], dtype=np.float32),
+        }
+
+    monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod.logging, "info", fake_info)
+
+    select_best_ahi_threshold([{}], search_thresholds=AHI_FINE_THRESHOLD_GRID)
+
+    progress_messages = [message for message in messages if "AHI threshold search progress:" in message]
+    assert progress_messages[0] == "AHI threshold search progress: 1/99 threshold=0.01"
+    assert progress_messages[1] == "AHI threshold search progress: 10/99 threshold=0.10"
+    assert progress_messages[-1] == "AHI threshold search progress: 99/99 threshold=0.99"
+    assert len(progress_messages) == 11
 
 
 @dataclass
@@ -690,6 +822,82 @@ def test_ahi_test_epoch_searches_requested_threshold_grid(monkeypatch: pytest.Mo
 
     assert used["threshold"] is None
     assert used["search_thresholds"] == (0.01, 0.02, 0.03)
+
+
+def test_ahi_test_epoch_search_falls_back_to_saved_threshold(monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[float | None, tuple[float, ...] | None]] = []
+    messages: list[str] = []
+
+    def fake_compute(records, *, threshold=None, search_thresholds=None, **_):
+        calls.append((threshold, search_thresholds))
+        if threshold is None:
+            raise ValueError(
+                "Unable to fit an AHI event threshold from validation records. "
+                "Need at least 1 non-skipped sample with TST >= 2h."
+            )
+        return {"ahi_event_precision": 1.0, "ahi_pearson": np.nan}, float(threshold)
+
+    def fake_info(message, *args):
+        messages.append(message % args if args else message)
+
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics", fake_compute)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.logging.info", fake_info)
+
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02))
+    module._ahi_eval_threshold = 0.37
+    module._stage_outputs = {
+        "train": [],
+        "val": [],
+        "test": [{"truth": np.array([0]), "score": np.array([0.1]), "true_ahi": 0.0, "tst_hours": 1.0}],
+    }
+    module.log = lambda *args, **kwargs: None
+    module._gather_ahi_event_records = lambda records: records
+    module.trainer = argparse.Namespace(is_global_zero=False)
+    module.current_epoch = 0
+
+    module._finalize_epoch("test")
+
+    assert calls == [(None, (0.01, 0.02)), (0.37, None)]
+    assert messages == [
+        "AHI threshold search fallback: reusing saved threshold=0.37 because no eligible summary samples were found"
+    ]
+
+
+def test_ahi_test_epoch_uses_broadcast_payload_on_nonzero_rank(monkeypatch: pytest.MonkeyPatch):
+    def fake_broadcast(payload, src=0):
+        payload[0] = {
+            "metrics": {"ahi_pearson": 0.7},
+            "eval_threshold": 0.33,
+            "error_type": None,
+            "error_message": None,
+        }
+
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_available", lambda: True)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.broadcast_object_list", fake_broadcast)
+    monkeypatch.setattr(
+        "sleep2vec.sleep2vec_finetuning.compute_ahi_event_metrics",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("non-zero rank must not compute AHI search")),
+    )
+
+    logged: list[tuple[str, float]] = []
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02))
+    module._ahi_eval_threshold = None
+    module._stage_outputs = {
+        "train": [],
+        "val": [],
+        "test": [{"truth": np.array([0]), "score": np.array([0.1]), "true_ahi": 0.0, "tst_hours": 4.0}],
+    }
+    module.log = lambda name, value, **kwargs: logged.append((name, value))
+    module._gather_ahi_event_records = lambda records: records
+    module.trainer = argparse.Namespace(is_global_zero=False)
+    module.current_epoch = 0
+
+    module._finalize_epoch("test")
+
+    assert ("test_ahi_pearson", 0.7) in logged
 
 
 def test_extract_ahi_summary_scatter_arrays_returns_scalar_pairs():

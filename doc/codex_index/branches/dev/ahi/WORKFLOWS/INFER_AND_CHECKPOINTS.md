@@ -53,7 +53,7 @@ Primary code path:
 - `infer.py` is the only reviewed place that handles CPU precision fallback for `bf16`.
 - Inference can initialize W&B separately from training and only on rank zero.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
-- `ahi` inference searches the cached inference probabilities on the fine `0.01..0.99` threshold grid, so it does not require a checkpoint-persisted `ahi_eval_threshold` and can still evaluate averaged checkpoints.
+- `ahi` inference searches the cached inference probabilities on the fine `0.01..0.99` threshold grid, so it can evaluate averaged checkpoints without rerunning the model. When a non-averaged checkpoint already contains `ahi_eval_threshold`, the trainer falls back to that saved threshold if fine search finds no `TST >= 2h` summary sample.
 - `ahi` inference computes final event-based AHI metrics and intentionally skips the existing confusion-matrix visualization branch.
 
 ## Edit Hotspots
