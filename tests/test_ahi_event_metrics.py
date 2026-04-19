@@ -1268,35 +1268,43 @@ def test_ahi_val_epoch_logs_pointwise_metrics_for_non_default_monitor():
     assert module._stage_outputs["val"] == []
 
 
-def test_ahi_train_epoch_logs_reduced_pointwise_metrics_without_sync_dist(monkeypatch: pytest.MonkeyPatch):
-    reduce_calls: list[tuple[tuple[float, float, float, float], str]] = []
-
-    def fake_reduce(tensor, reduce_op="mean"):
-        reduce_calls.append((tuple(float(v.item()) for v in tensor), str(reduce_op)))
-        return torch.tensor([6.0, 2.0, 10.0, 2.0], dtype=tensor.dtype)
-
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_available", lambda: True)
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
-
+def test_ahi_train_epoch_logs_rank_zero_local_pointwise_metrics_without_sync_dist():
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
     module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max", device="cpu")
     module._stage_outputs = {"train": [], "val": [], "test": []}
     module._eval_loss_sums = {"val": 0.0, "test": 0.0}
     module._eval_loss_counts = {"val": 0, "test": 0}
-    module._ahi_train_pointwise_counts = {"tp": 1, "fp": 2, "tn": 3, "fn": 4}
+    module._ahi_train_pointwise_counts = {"tp": 6, "fp": 2, "tn": 10, "fn": 2}
     logged: list[tuple[str, float, bool]] = []
     module.log = lambda name, value, **kwargs: logged.append((name, float(value), bool(kwargs.get("sync_dist"))))
-    module.trainer = argparse.Namespace(strategy=argparse.Namespace(reduce=fake_reduce))
+    module.trainer = argparse.Namespace(is_global_zero=True)
     module.current_epoch = 0
 
     module._finalize_epoch("train")
 
-    assert reduce_calls == [((1.0, 2.0, 3.0, 4.0), "sum")]
     assert ("train_ahi_pointwise_accuracy", 0.8, False) in logged
     assert ("train_ahi_pointwise_precision", 0.75, False) in logged
     assert ("train_ahi_pointwise_recall", 0.75, False) in logged
     assert ("train_ahi_pointwise_f1", 0.75, False) in logged
     assert all(name != "train_ahi_pointwise_roc_auc" for name, _, _ in logged)
+    assert module._ahi_train_pointwise_counts == {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
+
+
+def test_ahi_train_epoch_skips_local_pointwise_logging_on_nonzero_rank():
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max", device="cpu")
+    module._stage_outputs = {"train": [], "val": [], "test": []}
+    module._eval_loss_sums = {"val": 0.0, "test": 0.0}
+    module._eval_loss_counts = {"val": 0, "test": 0}
+    module._ahi_train_pointwise_counts = {"tp": 6, "fp": 2, "tn": 10, "fn": 2}
+    logged: list[str] = []
+    module.log = lambda name, value, **kwargs: logged.append(name)
+    module.trainer = argparse.Namespace(is_global_zero=False)
+    module.current_epoch = 0
+
+    module._finalize_epoch("train")
+
+    assert logged == []
     assert module._ahi_train_pointwise_counts == {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
 
 

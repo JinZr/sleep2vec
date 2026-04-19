@@ -417,44 +417,31 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._ahi_train_pointwise_counts["tn"] += int(((preds == 0) & (targets == 0)).sum().item())
         self._ahi_train_pointwise_counts["fn"] += int(((preds == 0) & (targets == 1)).sum().item())
 
-    def _compute_reduced_ahi_train_pointwise_metrics(self) -> dict[str, float]:
+    def _compute_local_ahi_train_pointwise_metrics(self) -> dict[str, float]:
         rank, world_size = self._distributed_rank_world()
         counts = self._ahi_train_pointwise_counts
-        stats = torch.tensor(
-            [counts["tp"], counts["fp"], counts["tn"], counts["fn"]],
-            dtype=torch.float64,
-            device=torch.device(getattr(self.args, "device", "cpu")),
-        )
+        tp = int(counts["tp"])
+        fp = int(counts["fp"])
+        tn = int(counts["tn"])
+        fn = int(counts["fn"])
         logging.info(
-            "AHI train count reduce prep: rank=%d/%d tp=%d fp=%d tn=%d fn=%d",
-            rank,
-            world_size,
-            counts["tp"],
-            counts["fp"],
-            counts["tn"],
-            counts["fn"],
-        )
-        trainer = getattr(self, "trainer", None)
-        if dist.is_available() and dist.is_initialized():
-            if trainer is not None and hasattr(trainer, "strategy"):
-                stats = trainer.strategy.reduce(stats, reduce_op="sum")
-            else:  # pragma: no cover - trainer-less distributed fallback
-                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-
-        tp, fp, tn, fn = [int(value) for value in stats.tolist()]
-        total = tp + fp + tn + fn
-        accuracy = (tp + tn) / total if total > 0 else 0.0
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        logging.info(
-            "AHI train count reduce done: rank=%d/%d tp=%d fp=%d tn=%d fn=%d accuracy=%.6f f1=%.6f",
+            "AHI train local count finalize: rank=%d/%d tp=%d fp=%d tn=%d fn=%d",
             rank,
             world_size,
             tp,
             fp,
             tn,
             fn,
+        )
+        total = tp + fp + tn + fn
+        accuracy = (tp + tn) / total if total > 0 else 0.0
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        logging.info(
+            "AHI train local metric finalize: rank=%d/%d accuracy=%.6f f1=%.6f",
+            rank,
+            world_size,
             accuracy,
             f1,
         )
@@ -802,16 +789,19 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self._log_eval_loss(stage)
 
         if self._is_ahi_task() and stage == "train":
-            metrics = self._compute_reduced_ahi_train_pointwise_metrics()
-            for k, v in metrics.items():
-                self.log(
-                    f"{stage}_{k}",
-                    v,
-                    prog_bar=False,
-                    logger=True,
-                    sync_dist=False,
-                    on_epoch=True,
-                )
+            metrics = self._compute_local_ahi_train_pointwise_metrics()
+            trainer = getattr(self, "trainer", None)
+            if trainer is not None and trainer.is_global_zero:
+                for k, v in metrics.items():
+                    self.log(
+                        f"{stage}_{k}",
+                        v,
+                        prog_bar=False,
+                        logger=True,
+                        sync_dist=False,
+                        rank_zero_only=True,
+                        on_epoch=True,
+                    )
             return None
 
         if self._is_ahi_task() and stage == "val" and not self._uses_full_ahi_validation():
