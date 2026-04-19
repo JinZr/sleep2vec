@@ -137,8 +137,33 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._shared_step(batch, stage="test", model=eval_model)
 
     def on_train_epoch_end(self):
+        rank, world_size = self._distributed_rank_world()
+        logging.info(
+            "Sleep2vecFinetuning.on_train_epoch_end start: rank=%d/%d epoch=%d local_outputs=%d",
+            rank,
+            world_size,
+            int(self.current_epoch),
+            len(self._stage_outputs["train"]),
+        )
         self._log_layer_mix_weights(stage="train", model=self.model)
         self._finalize_epoch(stage="train")
+        logging.info(
+            "Sleep2vecFinetuning.on_train_epoch_end done: rank=%d/%d epoch=%d remaining_outputs=%d",
+            rank,
+            world_size,
+            int(self.current_epoch),
+            len(self._stage_outputs["train"]),
+        )
+
+    def on_train_epoch_start(self):
+        super().on_train_epoch_start()
+        rank, world_size = self._distributed_rank_world()
+        logging.info(
+            "Sleep2vecFinetuning.on_train_epoch_start reached: rank=%d/%d epoch=%d",
+            rank,
+            world_size,
+            int(self.current_epoch),
+        )
 
     def on_validation_epoch_end(self):
         rank, world_size = self._distributed_rank_world()
