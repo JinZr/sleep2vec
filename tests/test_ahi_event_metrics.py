@@ -848,7 +848,9 @@ def test_ahi_test_epoch_searches_requested_threshold_grid(monkeypatch: pytest.Mo
     assert used["search_thresholds"] == (0.01, 0.02, 0.03)
 
 
-def test_supervised_sets_coarse_test_search_for_lightweight_ahi_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_supervised_sets_coarse_test_search_for_lightweight_ahi_validation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     captured: dict[str, object] = {}
 
     @dataclass
@@ -906,7 +908,9 @@ def test_supervised_sets_coarse_test_search_for_lightweight_ahi_validation(monke
     assert captured["ahi_test_search_thresholds"] == AHI_COARSE_THRESHOLD_GRID
 
 
-def test_supervised_sets_coarse_test_search_for_epochs_zero_lightweight_ahi(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_supervised_sets_coarse_test_search_for_epochs_zero_lightweight_ahi(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     captured: dict[str, object] = {}
 
     @dataclass
