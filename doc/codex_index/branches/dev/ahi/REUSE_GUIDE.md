@@ -8,7 +8,7 @@ This page answers the practical question: when you need to add or change behavio
 | --- | --- | --- | --- |
 | Pretrain YAML parsing | `sleep2vec.config.load_pretrain_config` | Enforces required model/loss/data blocks and typed config bundle creation | Hand-written YAML parsing in `pretrain.py` |
 | Finetune YAML parsing | `sleep2vec.config.load_finetune_config` | Centralizes task, head, layer-mix, LoRA, and model-averaging parsing | Entry-point specific YAML parsing |
-| Built-in task semantics | `sleep2vec.common.apply_task_flags` plus the built-in task helper family in `sleep2vec.common` | Single source for built-in labels, monitor names, label sources, class labels, stage remaps, and auxiliary label channels | Re-copying label semantics into `finetune.py`, `infer.py`, or trainer code |
+| Built-in task semantics | `sleep2vec.common.apply_task_flags` plus the built-in task helper family in `sleep2vec.common` | Single source for built-in labels, supported AHI monitor-switch semantics, label sources, class labels, stage remaps, and auxiliary label channels | Re-copying label semantics into `finetune.py`, `infer.py`, or trainer code |
 | Finetune CLI normalization | `sleep2vec.common.apply_finetune_config` | Binds YAML into `args`, enforces channel parity, and applies built-in task semantics | Partial YAML binding in entrypoints |
 | Registry-backed construction | `sleep2vec.builders.*`, `sleep2vec.registry.*` | All config-backed model assembly flows through here | Direct instantiation scattered across callers |
 | Tokenizer instantiation | `sleep2vec.modules.tokenizers.build_tokenizer_from_channel` and `build_tokenizer_mapping` | Guarantees channel config is respected | Manual tokenizer maps |
@@ -49,7 +49,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Reuse the built-in task helper family in `sleep2vec.common`.
 - Keep sleep-stage remapping in `remap_stage_labels`.
-- Keep raw `ahi` handling separate from sleep-stage remaps; `ahi` consumes runtime `batch["tokens"]["ahi"]` built from NPZ `ah_event`, requires `batch["tokens"]["stage5"]` as an auxiliary runtime stream for final masking, and uses scalar NPZ summaries `ahi` and `tst`.
+- Keep raw `ahi` handling separate from sleep-stage remaps; `ahi` consumes runtime `batch["tokens"]["ahi"]` built from NPZ `ah_event`, requires `batch["tokens"]["stage5"]` as an auxiliary runtime stream for final masking, uses scalar NPZ summaries `ahi` and `tst`, and switches between full vs lightweight validation by the existing YAML `task.monitor` / `task.monitor_mod`, but only for monitor keys that the runtime logs with stable finite semantics.
 - Do not invent a second task registry in entrypoints or trainer code.
 
 ### If you are changing model construction
@@ -67,7 +67,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Keep trainer/callback/wandb/checkpoint behavior in `pretrain.py`, `finetune.py`, `infer.py`, or the Lightning modules.
 - Reuse `dump_cli_args_yaml`, `save_result_csv`, and checkpoint helpers instead of duplicating serialization and output logic.
-- For `ahi`, reuse `compute_ahi_pointwise_metrics` for train-only logging and `compute_ahi_event_metrics` for val/test/infer.
+- For `ahi`, reuse `compute_ahi_pointwise_metrics` for train-only and lightweight-validation logging, and `compute_ahi_event_metrics` for full val/test/infer event evaluation.
 
 ### If you are changing preprocessing
 

@@ -57,12 +57,12 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None`
-- Purpose and contract: Populate `args.output_dim`, `args.is_classification`, `args.is_seq`, `args.is_multilabel`, `args.monitor`, `args.monitor_mod`, `args.label_source_name`, `args.stage_names`, `args.class_labels`, `args.label_merge_map`, and `args.auxiliary_label_source_names` from either built-in label semantics or explicit finetune task config.
+- Purpose and contract: Populate `args.output_dim`, `args.is_classification`, `args.is_seq`, `args.is_multilabel`, `args.monitor`, `args.monitor_mod`, `args.label_source_name`, `args.stage_names`, `args.class_labels`, `args.label_merge_map`, and `args.auxiliary_label_source_names` from either built-in label semantics or explicit finetune task config. Built-in `ahi` still enforces `type=classification`, `output_dim=30`, and `is_seq=true`, and now accepts only the monitor names that the runtime actually emits stably: full validation keeps `val_ahi_pearson/max`, while lightweight validation supports `val_loss/min` plus pointwise `accuracy/precision/recall/f1` with `max`.
 - Important inputs/outputs: mutates `argparse.Namespace` in place.
 - Side effects: namespace mutation only.
 - Key callers/callees: caller is `apply_finetune_config`; callees are `_validate_builtin_task_cfg`, `_validate_metadata_label_support`, and the built-in task-spec helpers.
 - Reuse guidance: use for any finetune/infer code path that depends on label semantics.
-- Duplication risk notes: built-in task semantics must remain centralized here; `ahi` and sleep-staging should not grow separate task parsers.
+- Duplication risk notes: built-in task semantics must remain centralized here; `ahi` and sleep-staging should not grow separate task parsers, and the AHI validation-mode switch should stay derived from the existing YAML task monitor rather than a second side channel.
 
 ## `sleep2vec.common.apply_finetune_config`
 

@@ -7,7 +7,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import pytorch_lightning as pl
+import torch
 
+from sleep2vec.finetune import supervised
 from sleep2vec.infer import run_inference
 import sleep2vec.metrics as metrics_mod
 from sleep2vec.metrics import (
@@ -846,6 +848,124 @@ def test_ahi_test_epoch_searches_requested_threshold_grid(monkeypatch: pytest.Mo
     assert used["search_thresholds"] == (0.01, 0.02, 0.03)
 
 
+def test_supervised_sets_coarse_test_search_for_lightweight_ahi_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    @dataclass
+    class _DummyBundle:
+        model: object
+        averaging: object = None
+        finetune: object = None
+
+    class _DummyCheckpoint:
+        def __init__(self, *args, **kwargs):
+            self.best_model_path = str(tmp_path / "best.ckpt")
+            self.dirpath = str(tmp_path / "checkpoints")
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            self.is_global_zero = True
+
+        def fit(self, *args, **kwargs):
+            return None
+
+        def test(self, *args, **kwargs):
+            captured["ahi_test_search_thresholds"] = args_ns.ahi_test_search_thresholds
+            return [{"ahi_pearson": 0.5}]
+
+    args_ns = argparse.Namespace(
+        version="unit-test",
+        monitor="val_loss",
+        monitor_mod="min",
+        patience=1,
+        ckpt_every_n_epochs=1,
+        devices=[0],
+        epochs=1,
+        gradient_clip_val=0.0,
+        precision=32,
+        check_val_every_n_epoch=1,
+        print_diagnostics=False,
+        ckpt_path="",
+        results_csv_path=tmp_path / "results.csv",
+        label_name="ahi",
+    )
+
+    monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
+    monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.WandbLogger", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.EarlyStopping", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.LearningRateMonitor", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.ModelCheckpoint", _DummyCheckpoint)
+    monkeypatch.setattr("sleep2vec.finetune.pl.Trainer", _DummyTrainer)
+    monkeypatch.setattr("sleep2vec.finetune.shutil.copy2", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sleep2vec.finetune.save_result_csv", lambda *args, **kwargs: None)
+
+    supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
+
+    assert captured["ahi_test_search_thresholds"] == AHI_COARSE_THRESHOLD_GRID
+
+
+def test_supervised_sets_coarse_test_search_for_epochs_zero_lightweight_ahi(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    @dataclass
+    class _DummyBundle:
+        model: object
+        averaging: object = None
+        finetune: object = None
+
+    class _DummyCheckpoint:
+        def __init__(self, *args, **kwargs):
+            self.best_model_path = ""
+            self.dirpath = str(tmp_path / "checkpoints")
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            self.is_global_zero = True
+
+        def fit(self, *args, **kwargs):
+            raise AssertionError("epochs=0 must not call fit")
+
+        def test(self, *args, **kwargs):
+            captured["ahi_test_search_thresholds"] = args_ns.ahi_test_search_thresholds
+            captured["ckpt_path"] = kwargs["ckpt_path"]
+            return [{"ahi_pearson": 0.5}]
+
+    args_ns = argparse.Namespace(
+        version="unit-test",
+        monitor="val_loss",
+        monitor_mod="min",
+        patience=1,
+        ckpt_every_n_epochs=1,
+        devices=[0],
+        epochs=0,
+        gradient_clip_val=0.0,
+        precision=32,
+        check_val_every_n_epoch=1,
+        print_diagnostics=False,
+        ckpt_path="manual.ckpt",
+        results_csv_path=tmp_path / "results.csv",
+        label_name="ahi",
+    )
+
+    monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
+    monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.WandbLogger", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.EarlyStopping", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.LearningRateMonitor", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.ModelCheckpoint", _DummyCheckpoint)
+    monkeypatch.setattr("sleep2vec.finetune.pl.Trainer", _DummyTrainer)
+    monkeypatch.setattr("sleep2vec.finetune.shutil.copy2", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sleep2vec.finetune.save_result_csv", lambda *args, **kwargs: None)
+
+    supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
+
+    assert captured["ahi_test_search_thresholds"] == AHI_COARSE_THRESHOLD_GRID
+    assert captured["ckpt_path"] == "manual.ckpt"
+
+
 def test_ahi_test_epoch_search_falls_back_to_saved_threshold(monkeypatch: pytest.MonkeyPatch):
     calls: list[tuple[float | None, tuple[float, ...] | None]] = []
     messages: list[str] = []
@@ -1042,6 +1162,53 @@ def test_ahi_val_epoch_uses_default_coarse_search_grid(monkeypatch: pytest.Monke
 
     assert captured["threshold"] is None
     assert captured["search_thresholds"] == AHI_COARSE_THRESHOLD_GRID
+
+
+def test_ahi_val_shared_step_uses_pointwise_path_for_non_default_monitor():
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", monitor="val_loss", monitor_mod="min")
+    module.model = lambda batch: torch.zeros((1, 1), dtype=torch.float32)
+    module._compute_loss = lambda logits, batch: (torch.tensor(1.0), 1)
+    module._extract_ahi_event_records = lambda batch, logits: (_ for _ in ()).throw(
+        AssertionError("lightweight AHI validation must not extract event records")
+    )
+    module._extract_valid_predictions = lambda batch, logits: (
+        np.array([0.8], dtype=np.float32),
+        np.array([1], dtype=np.int64),
+    )
+    module._stage_outputs = {"train": [], "val": [], "test": []}
+    module.log = lambda *args, **kwargs: None
+
+    module._shared_step({}, stage="val")
+
+    assert len(module._stage_outputs["val"]) == 1
+
+
+def test_ahi_val_epoch_logs_pointwise_metrics_for_non_default_monitor():
+    logged: list[str] = []
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", monitor="val_loss", monitor_mod="min")
+    module._stage_outputs = {
+        "train": [],
+        "val": [
+            (
+                np.array([0.9, 0.1], dtype=np.float32),
+                np.array([1, 0], dtype=np.int64),
+            )
+        ],
+        "test": [],
+    }
+    module._gather_eval_outputs = lambda preds, gts: (preds, gts)
+    module._compute_or_broadcast_ahi_metrics = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("lightweight AHI validation must not run event metrics")
+    )
+    module.log = lambda name, value, **kwargs: logged.append(name)
+
+    module._finalize_epoch("val")
+
+    assert "val_ahi_pointwise_accuracy" in logged
+    assert "val_ahi_pointwise_f1" in logged
+    assert module._stage_outputs["val"] == []
 
 
 def test_run_inference_allows_ahi_checkpoint_averaging_with_fine_search(monkeypatch: pytest.MonkeyPatch):

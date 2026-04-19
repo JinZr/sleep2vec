@@ -228,7 +228,23 @@ def test_apply_task_flags_rejects_ahi_builtin_conflict_from_yaml_task():
         apply_task_flags(args, task_cfg)
 
 
-def test_apply_task_flags_rejects_ahi_builtin_monitor_conflict():
+def test_apply_task_flags_allows_ahi_emitted_monitor():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=30,
+        is_seq=True,
+        monitor="val_ahi_pointwise_f1",
+        monitor_mod="max",
+    )
+
+    apply_task_flags(args, task_cfg)
+
+    assert args.monitor == "val_ahi_pointwise_f1"
+    assert args.monitor_mod == "max"
+
+
+def test_apply_task_flags_rejects_ahi_monitor_that_validation_never_logs():
     args = argparse.Namespace(label_name="ahi")
     task_cfg = TaskConfig(
         type="classification",
@@ -238,7 +254,21 @@ def test_apply_task_flags_rejects_ahi_builtin_monitor_conflict():
         monitor_mod="max",
     )
 
-    with pytest.raises(ValueError, match="monitor must be 'val_ahi_pearson' when --label-name is 'ahi'"):
+    with pytest.raises(ValueError, match="finetune.task.monitor must be one of"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_ahi_pointwise_roc_auc_monitor():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=30,
+        is_seq=True,
+        monitor="val_ahi_pointwise_roc_auc",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="finetune.task.monitor must be one of"):
         apply_task_flags(args, task_cfg)
 
 

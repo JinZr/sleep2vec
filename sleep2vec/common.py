@@ -206,6 +206,27 @@ def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict
         raise ValueError(f"finetune.task.type must be '{spec['type']}' when --label-name is '{label_name}'.")
     if task_cfg.is_seq != spec["is_seq"]:
         raise ValueError(f"finetune.task.is_seq must be {spec['is_seq']} when --label-name is '{label_name}'.")
+    if label_name == "ahi":
+        allowed_ahi_monitors = {
+            "val_ahi_pearson": "max",
+            "val_loss": "min",
+            "val_ahi_pointwise_accuracy": "max",
+            "val_ahi_pointwise_precision": "max",
+            "val_ahi_pointwise_recall": "max",
+            "val_ahi_pointwise_f1": "max",
+        }
+        expected_monitor_mod = allowed_ahi_monitors.get(task_cfg.monitor)
+        if expected_monitor_mod is None:
+            raise ValueError(
+                "finetune.task.monitor must be one of "
+                f"{sorted(allowed_ahi_monitors)} when --label-name is '{label_name}'."
+            )
+        if task_cfg.monitor_mod != expected_monitor_mod:
+            raise ValueError(
+                f"finetune.task.monitor_mod must be '{expected_monitor_mod}' when "
+                f"finetune.task.monitor is '{task_cfg.monitor}' and --label-name is '{label_name}'."
+            )
+        return
     if task_cfg.monitor != spec["monitor"]:
         raise ValueError(f"finetune.task.monitor must be '{spec['monitor']}' when --label-name is '{label_name}'.")
     if task_cfg.monitor_mod != spec["monitor_mod"]:

@@ -214,7 +214,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 batch_size=max(valid_count, 1),
             )
 
-        if self._is_ahi_task() and stage in {"val", "test"}:
+        if self._is_ahi_task() and stage in {"val", "test"} and (stage != "val" or self._uses_full_ahi_validation()):
             records = self._extract_ahi_event_records(batch, logits)
             if records:
                 self._stage_outputs[stage].extend(records)
@@ -333,6 +333,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _is_ahi_task(self) -> bool:
         return getattr(self.args, "label_name", None) == "ahi"
+
+    def _uses_full_ahi_validation(self) -> bool:
+        return self._is_ahi_task() and self.args.monitor == "val_ahi_pearson" and self.args.monitor_mod == "max"
 
     def _ahi_search_thresholds_for_stage(self, stage: str) -> tuple[float, ...] | None:
         if stage == "val":
@@ -566,9 +569,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]
 
-        if self._is_ahi_task() and stage == "train":
+        if self._is_ahi_task() and (stage == "train" or (stage == "val" and not self._uses_full_ahi_validation())):
             preds, gts = self._concat_epoch_outputs(outputs)
             outputs.clear()
+            if stage == "val":
+                preds, gts = self._gather_eval_outputs(preds, gts)
             if preds.size == 0 or gts.size == 0:
                 return None
 
@@ -579,7 +584,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     v,
                     prog_bar=False,
                     logger=True,
-                    sync_dist=True,
+                    sync_dist=(stage == "train"),
                     on_epoch=True,
                 )
             return preds, gts
