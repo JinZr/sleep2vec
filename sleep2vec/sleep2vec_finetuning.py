@@ -87,6 +87,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
         self._regression_loss = torch.nn.MSELoss()
         self._ahi_eval_threshold: float | None = None
+        self._eval_loss_sums = {"val": 0.0, "test": 0.0}
+        self._eval_loss_counts = {"val": 0, "test": 0}
 
         # Optional tensor diagnostics (borrowed from icefall)
         self._diagnostic = None
@@ -204,15 +206,21 @@ class Sleep2vecFinetuning(pl.LightningModule):
             loss = None
         else:
             loss, valid_count = loss_info
-            self.log(
-                f"{stage}_loss",
-                loss,
-                prog_bar=True,
-                sync_dist=True,
-                on_step=(stage == "train"),
-                on_epoch=True,
-                batch_size=max(valid_count, 1),
-            )
+            eval_loss_sums = getattr(self, "_eval_loss_sums", {})
+            eval_loss_counts = getattr(self, "_eval_loss_counts", {})
+            if stage == "train":
+                self.log(
+                    f"{stage}_loss",
+                    loss,
+                    prog_bar=True,
+                    sync_dist=True,
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=max(valid_count, 1),
+                )
+            elif stage in eval_loss_sums and stage in eval_loss_counts:
+                eval_loss_sums[stage] += float(loss.detach().item()) * valid_count
+                eval_loss_counts[stage] += int(valid_count)
 
         if self._is_ahi_task() and stage in {"val", "test"} and (stage != "val" or self._uses_full_ahi_validation()):
             records = self._extract_ahi_event_records(batch, logits)
@@ -501,6 +509,43 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 merged.extend(item)
         return merged
 
+    def _log_eval_loss(self, stage: str) -> None:
+        eval_loss_sums = getattr(self, "_eval_loss_sums", {})
+        eval_loss_counts = getattr(self, "_eval_loss_counts", {})
+        if stage not in eval_loss_sums or stage not in eval_loss_counts:
+            return
+
+        loss_sum = float(eval_loss_sums[stage])
+        loss_count = int(eval_loss_counts[stage])
+        eval_loss_sums[stage] = 0.0
+        eval_loss_counts[stage] = 0
+
+        stats = torch.tensor(
+            [loss_sum, float(loss_count)],
+            dtype=torch.float64,
+            device=torch.device(getattr(self.args, "device", "cpu")),
+        )
+        trainer = getattr(self, "trainer", None)
+        if dist.is_available() and dist.is_initialized():
+            if trainer is not None and hasattr(trainer, "strategy"):
+                stats = trainer.strategy.reduce(stats, reduce_op="sum")
+            else:  # pragma: no cover - trainer-less distributed fallback
+                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+
+        global_loss_count = int(stats[1].item())
+        if global_loss_count == 0:
+            return
+
+        self.log(
+            f"{stage}_loss",
+            float(stats[0].item()) / global_loss_count,
+            prog_bar=True,
+            logger=True,
+            sync_dist=False,
+            on_step=False,
+            on_epoch=True,
+        )
+
     def _log_layer_mix_weights(self, stage: str, model: torch.nn.Module) -> None:
         snapshot = self._layer_mix_snapshot(model)
         if snapshot is None:
@@ -568,6 +613,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]
+        if stage in getattr(self, "_eval_loss_sums", {}):
+            self._log_eval_loss(stage)
 
         if self._is_ahi_task() and (stage == "train" or (stage == "val" and not self._uses_full_ahi_validation())):
             preds, gts = self._concat_epoch_outputs(outputs)

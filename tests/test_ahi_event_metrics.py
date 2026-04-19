@@ -1168,6 +1168,26 @@ def test_ahi_val_epoch_uses_default_coarse_search_grid(monkeypatch: pytest.Monke
     assert captured["search_thresholds"] == AHI_COARSE_THRESHOLD_GRID
 
 
+def test_ahi_val_shared_step_accumulates_eval_loss_without_step_logging():
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max")
+    module.model = lambda batch: torch.zeros((1, 1), dtype=torch.float32)
+    module._compute_loss = lambda logits, batch: (torch.tensor(1.5), 3)
+    module._extract_ahi_event_records = lambda batch, logits: [{"truth": np.array([0], dtype=np.int64)}]
+    module._stage_outputs = {"train": [], "val": [], "test": []}
+    module._eval_loss_sums = {"val": 0.0, "test": 0.0}
+    module._eval_loss_counts = {"val": 0, "test": 0}
+    logged: list[str] = []
+    module.log = lambda name, value, **kwargs: logged.append(name)
+
+    module._shared_step({}, stage="val")
+
+    assert logged == []
+    assert module._eval_loss_sums["val"] == pytest.approx(4.5)
+    assert module._eval_loss_counts["val"] == 3
+    assert len(module._stage_outputs["val"]) == 1
+
+
 def test_ahi_val_shared_step_uses_pointwise_path_for_non_default_monitor():
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
     module.args = argparse.Namespace(label_name="ahi", monitor="val_loss", monitor_mod="min")
@@ -1213,6 +1233,54 @@ def test_ahi_val_epoch_logs_pointwise_metrics_for_non_default_monitor():
     assert "val_ahi_pointwise_accuracy" in logged
     assert "val_ahi_pointwise_f1" in logged
     assert module._stage_outputs["val"] == []
+
+
+def test_ahi_val_epoch_logs_reduced_eval_loss_before_event_metrics(monkeypatch: pytest.MonkeyPatch):
+    reduce_calls: list[tuple[tuple[float, float], str]] = []
+
+    def fake_reduce(tensor, reduce_op="mean"):
+        reduce_calls.append(((float(tensor[0].item()), float(tensor[1].item())), str(reduce_op)))
+        return torch.tensor([12.0, 4.0], dtype=tensor.dtype)
+
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_available", lambda: True)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
+
+    captured: dict[str, object] = {}
+
+    class _DummyVisualizer:
+        def log_ahi_summary_scatter(self, **kwargs):
+            captured.update(kwargs)
+
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max", device="cpu")
+    module._ahi_eval_threshold = None
+    module._stage_outputs = {
+        "train": [],
+        "val": [{"truth": np.array([0]), "score": np.array([0.1]), "true_ahi": 0.0, "tst_hours": 4.0}],
+        "test": [],
+    }
+    module._eval_loss_sums = {"val": 6.0, "test": 0.0}
+    module._eval_loss_counts = {"val": 2, "test": 0}
+    module._gather_ahi_event_records = lambda records: records
+    module._compute_or_broadcast_ahi_metrics = lambda stage, records: (
+        {"ahi_pearson": 0.7},
+        0.37,
+        (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
+    )
+    module._eval_visualizer = _DummyVisualizer()
+    logged: list[tuple[str, float, bool]] = []
+    module.log = lambda name, value, **kwargs: logged.append((name, float(value), bool(kwargs.get("sync_dist"))))
+    module.trainer = argparse.Namespace(is_global_zero=True, strategy=argparse.Namespace(reduce=fake_reduce))
+    module.current_epoch = 0
+
+    module._finalize_epoch("val")
+
+    assert reduce_calls == [((6.0, 2.0), "sum")]
+    assert logged[0] == ("val_loss", 3.0, False)
+    assert ("val_ahi_pearson", 0.7, False) in logged
+    assert module._eval_loss_sums["val"] == 0.0
+    assert module._eval_loss_counts["val"] == 0
+    assert captured["stage"] == "val"
 
 
 def test_run_inference_allows_ahi_checkpoint_averaging_with_fine_search(monkeypatch: pytest.MonkeyPatch):
