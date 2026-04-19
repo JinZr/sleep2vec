@@ -297,6 +297,13 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return preds, labels_np
 
     def _extract_ahi_event_records(self, batch, logits) -> list[dict[str, np.ndarray]]:
+        """Build per-sample AHI eval records.
+
+        Built-in ``ahi`` currently runs on whole-night inputs by default, so validation/test/infer
+        usually emit one logical record per path. ``token_start`` is still preserved because the
+        downstream AHI metric path can merge records when a caller explicitly evaluates windowed
+        samples or distributed gathering surfaces duplicate windows.
+        """
         labels = batch["tokens"]["ahi"].detach().cpu()
         probs = torch.sigmoid(logits).to(torch.float32).detach().cpu()
         true_ahi = batch["metadata"]["ahi"].to(torch.float32).detach().cpu()

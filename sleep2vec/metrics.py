@@ -371,6 +371,12 @@ def _evaluate_single_ahi_record(
 
 
 def _merge_ahi_window_records(records: list[Mapping[str, np.ndarray]]) -> list[dict[str, Any]]:
+    """Normalize AHI eval records to one logical record per path.
+
+    Under the current built-in ``ahi`` contract, finetune/infer default to whole-night inputs, so
+    this helper is typically a passthrough aside from tolerating duplicate gathered windows. The
+    contiguity checks only matter when a caller explicitly feeds multiple windows for the same path.
+    """
     grouped: dict[str, list[Mapping[str, np.ndarray]]] = {}
     passthrough: list[dict[str, Any]] = []
 
