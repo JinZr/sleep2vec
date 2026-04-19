@@ -26,7 +26,7 @@
 
 - File: `sleep2vec/finetune.py`
 - Signature: `supervised(args, config_bundle) -> None`
-- Purpose and contract: canonical finetune orchestration routine; persists run artifacts, builds loaders, instantiates `Sleep2vecFinetuning`, trains, evaluates, and writes results.
+- Purpose and contract: canonical finetune orchestration routine; persists run artifacts, builds loaders, instantiates `Sleep2vecFinetuning`, trains, evaluates, and writes results. When running distributed built-in `ahi` finetune, it disables Lightning's built-in progress bar so rank-zero-only progress callbacks do not delay epoch-end synchronization relative to the other ranks.
 - Important inputs/outputs: CLI namespace and config bundle in; no direct return value.
 - Side effects: creates run directories, writes YAML snapshots, trains/tests models, copies `best.ckpt`, appends results CSV.
 - Key callers/callees: called from `__main__`; calls `prepare_dataloader`, `Sleep2vecFinetuning`, `persist_run_config_and_args`, and `save_result_csv`.
