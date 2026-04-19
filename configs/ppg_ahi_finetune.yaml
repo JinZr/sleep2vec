@@ -51,8 +51,8 @@ finetune:
     type: classification
     output_dim: 30
     is_seq: true
-    monitor: val_loss
-    monitor_mod: min
+    monitor: val_ahi_pearson
+    monitor_mod: max
   eval_visualizations:
     enabled: true
     stages: [val, test]

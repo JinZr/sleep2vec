@@ -55,7 +55,7 @@ Built-in labels:
 - `stage3`: classification, `output_dim=3`, sequence prediction, raw labels from `stage5`
 - `stage4`: classification, `output_dim=4`, sequence prediction, raw labels from `stage5`
 - `stage5`: classification, `output_dim=5`, sequence prediction
-- `ahi`: seq multi-label classification, `output_dim=30`, raw labels from NPZ `ah_event`, required auxiliary runtime `stage5` tokens for final masking, per-window `second_valid_mask` alignment for partial-token padding, scalar NPZ summaries `ahi` / `tst` for metrics. `task.monitor` / `task.monitor_mod` choose between full validation (`val_ahi_pearson` + `max`) and lightweight validation (`val_loss` + `min` or stable emitted pointwise metrics `accuracy/precision/recall/f1` + `max`); the checked-in PPG AHI finetune recipes currently use `val_loss` + `min`.
+- `ahi`: seq multi-label classification, `output_dim=30`, raw labels from NPZ `ah_event`, required auxiliary runtime `stage5` tokens for final masking, per-window `second_valid_mask` alignment for partial-token padding, scalar NPZ summaries `ahi` / `tst` for metrics. `task.monitor` / `task.monitor_mod` choose between full validation (`val_ahi_pearson` + `max`) and lightweight validation (`val_loss` + `min` or stable emitted pointwise metrics `accuracy/precision/recall/f1` + `max`).
 - `sex`: classification, `output_dim=2`, non-sequence
 - `age`: regression, `output_dim=1`, non-sequence
 
