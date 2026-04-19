@@ -26,7 +26,7 @@ This page answers the practical question: when you need to add or change behavio
 | Distributed AHI finetune progress bar | `sleep2vec.callbacks.progress_bar.build_distributed_ahi_progress_bar` | Keeps the built-in batch-level progress bar while skipping the rank-zero-only train-epoch-end UI work that skews later hooks under DDP | Re-embedding custom progress-bar subclasses in `finetune.py` or adding post-hoc barrier callbacks |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
 | Non-AHI downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Canonical reducer for multiclass classification and regression outputs | Per-task custom metric calculations in trainer code |
-| AHI lightweight val pointwise metrics | `sleep2vec.metrics.compute_ahi_pointwise_metrics` | Keeps lightweight-validation token metrics namespaced separately from final event-based AHI evaluation | Reusing generic binary metric names in the trainer |
+| AHI token-level pointwise metrics | `sleep2vec.metrics.compute_ahi_pointwise_metrics` | Keeps token-level AHI binary metrics namespaced when a caller explicitly needs array-based pointwise summaries | Reusing generic binary metric names in ad hoc callers |
 | AHI final validation/test/infer metrics | `sleep2vec.metrics.compute_ahi_event_metrics` | Centralizes event matching, validation threshold fitting, TST gating, and the split between detection-style event stats and NPZ-aligned scalar AHI summaries | Re-deriving AHI event logic inside `Sleep2vecFinetuning` |
 | Result CSV output | `sleep2vec.metrics.save_result_csv` | Preserves standard columns and append behavior | One-off CSV writers |
 | Preset validation channel resolution | `preprocess.save_dataset_presets._resolve_validation_channels` | Owns YAML-vs-built-in channel selection, including built-in `stage5` / `ahi` validation channels and automatic `ahi -> stage5` expansion | Duplicated channel subset logic in wrapper scripts |
@@ -50,7 +50,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Reuse the built-in task helper family in `sleep2vec.common`.
 - Keep sleep-stage remapping in `remap_stage_labels`.
-- Keep raw `ahi` handling separate from sleep-stage remaps; `ahi` consumes runtime `batch["tokens"]["ahi"]` built from NPZ `ah_event`, requires `batch["tokens"]["stage5"]` as an auxiliary runtime stream for final masking, uses scalar NPZ summaries `ahi` and `tst`, and switches between full vs lightweight validation by the existing YAML `task.monitor` / `task.monitor_mod`, but only for monitor keys that the runtime logs with stable finite semantics.
+- Keep raw `ahi` handling separate from sleep-stage remaps; `ahi` consumes runtime `batch["tokens"]["ahi"]` built from NPZ `ah_event`, requires `batch["tokens"]["stage5"]` as an auxiliary runtime stream for final masking, uses scalar NPZ summaries `ahi` and `tst`, and always runs the full validation event-eval path so the fitted `ahi_eval_threshold` can be persisted into checkpoints.
 - Do not invent a second task registry in entrypoints or trainer code.
 
 ### If you are changing model construction
@@ -69,7 +69,7 @@ This page answers the practical question: when you need to add or change behavio
 - Keep trainer/callback/wandb/checkpoint behavior in `pretrain.py`, `finetune.py`, `infer.py`, or the Lightning modules.
 - Keep reusable callback implementations in `sleep2vec/callbacks/`; entrypoints should only decide when to install them.
 - Reuse `dump_cli_args_yaml`, `save_result_csv`, and checkpoint helpers instead of duplicating serialization and output logic.
-- For `ahi`, reuse `compute_ahi_pointwise_metrics` for lightweight-validation logging, and `compute_ahi_event_metrics` for full val/test/infer event evaluation. Train-time AHI pointwise metrics should stay on the reduced confusion-count path inside `Sleep2vecFinetuning` instead of rebuilding epoch-wide token arrays; log accuracy/precision/recall/F1 from globally reduced counts and keep train ROC-AUC unsupported.
+- For `ahi`, reuse `compute_ahi_event_metrics` for val/test/infer event evaluation and checkpoint-threshold reuse. Train-time AHI pointwise metrics should stay on the reduced confusion-count path inside `Sleep2vecFinetuning` instead of rebuilding epoch-wide token arrays; log accuracy/precision/recall/F1 from globally reduced counts and keep train ROC-AUC unsupported.
 
 ### If you are changing preprocessing
 

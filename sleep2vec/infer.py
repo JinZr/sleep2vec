@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sleep2vec.checkpoints import average_checkpoints, select_checkpoints
 from sleep2vec.common import apply_finetune_config
-from sleep2vec.metrics import AHI_FINE_THRESHOLD_GRID, save_result_csv
+from sleep2vec.metrics import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import _build_finetune_loader
 
@@ -85,8 +85,10 @@ def _init_wandb(args):
 
 def run_inference(args):
     config_bundle, model_cfg = apply_finetune_config(args)
-    if args.label_name == "ahi":
-        args.ahi_test_search_thresholds = AHI_FINE_THRESHOLD_GRID
+    if args.label_name == "ahi" and args.avg_ckpts > 1:
+        raise ValueError(
+            "AHI inference does not support average checkpoints because `ahi_eval_threshold` is checkpoint-specific."
+        )
 
     trainer_precision = args.precision
     if args.accelerator == "cpu" and isinstance(trainer_precision, str) and "bf16" in trainer_precision:

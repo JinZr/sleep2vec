@@ -14,11 +14,10 @@ from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.common import remap_stage_labels
 from sleep2vec.metrics import (
-    AHI_COARSE_THRESHOLD_GRID,
+    AHI_FINE_THRESHOLD_GRID,
     _aggregate_prepared_ahi_records,
     _compute_ahi_event_metrics_from_prepared,
     _prepare_ahi_records,
-    compute_ahi_pointwise_metrics,
     compute_downstream_metrics,
     extract_ahi_summary_scatter_arrays,
 )
@@ -162,11 +161,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def on_test_start(self):
         super().on_test_start()
-        if (
-            self._is_ahi_task()
-            and self._ahi_eval_threshold is None
-            and self._ahi_search_thresholds_for_stage("test") is None
-        ):
+        if self._is_ahi_task() and self._ahi_eval_threshold is None:
             raise ValueError(
                 "AHI test/inference requires a validation-fitted threshold stored in the checkpoint. "
                 "This checkpoint does not contain `ahi_eval_threshold`."
@@ -224,7 +219,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
         if self._is_ahi_task() and stage == "train":
             self._accumulate_ahi_train_pointwise_counts(batch, logits)
-        elif self._is_ahi_task() and stage in {"val", "test"} and (stage != "val" or self._uses_full_ahi_validation()):
+        elif self._is_ahi_task() and stage in {"val", "test"}:
             records = self._extract_ahi_event_records(batch, logits)
             if records:
                 self._stage_outputs[stage].extend(records)
@@ -387,16 +382,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             "ahi_pointwise_f1": float(f1),
         }
 
-    def _uses_full_ahi_validation(self) -> bool:
-        return self._is_ahi_task() and self.args.monitor == "val_ahi_pearson" and self.args.monitor_mod == "max"
-
     def _ahi_search_thresholds_for_stage(self, stage: str) -> tuple[float, ...] | None:
-        if stage == "val":
-            thresholds = getattr(self.args, "ahi_val_search_thresholds", AHI_COARSE_THRESHOLD_GRID)
-        elif stage == "test":
-            thresholds = getattr(self.args, "ahi_test_search_thresholds", None)
-        else:
+        if stage != "val":
             return None
+        thresholds = getattr(self.args, "ahi_val_search_thresholds", AHI_FINE_THRESHOLD_GRID)
 
         if thresholds is None:
             return None
@@ -422,31 +411,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self._ahi_eval_threshold = float(eval_threshold)
             aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=float(eval_threshold))
             return metrics, float(eval_threshold), (aggregate["true_ahi"], aggregate["pred_ahi"])
-
-        test_search_thresholds = self._ahi_search_thresholds_for_stage("test")
-        if test_search_thresholds is not None:
-            try:
-                metrics, eval_threshold = _compute_ahi_event_metrics_from_prepared(
-                    prepared_records,
-                    threshold=None,
-                    search_thresholds=test_search_thresholds,
-                )
-                aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=float(eval_threshold))
-                return metrics, float(eval_threshold), (aggregate["true_ahi"], aggregate["pred_ahi"])
-            except ValueError as exc:
-                if (
-                    self._ahi_eval_threshold is not None
-                    and "Need at least 1 non-skipped sample with TST >= 2h." in str(exc)
-                ):
-                    eval_threshold = float(self._ahi_eval_threshold)
-                    logging.info(
-                        "AHI threshold search fallback: reusing saved threshold=%.2f because no eligible summary samples were found",
-                        eval_threshold,
-                    )
-                    metrics, _ = _compute_ahi_event_metrics_from_prepared(prepared_records, threshold=eval_threshold)
-                    aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=eval_threshold)
-                    return metrics, eval_threshold, (aggregate["true_ahi"], aggregate["pred_ahi"])
-                raise
 
         if self._ahi_eval_threshold is None:
             raise ValueError(
@@ -673,25 +637,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     on_epoch=True,
                 )
             return None
-
-        if self._is_ahi_task() and stage == "val" and not self._uses_full_ahi_validation():
-            preds, gts = self._concat_epoch_outputs(outputs)
-            outputs.clear()
-            preds, gts = self._gather_eval_outputs(preds, gts)
-            if preds.size == 0 or gts.size == 0:
-                return None
-
-            metrics = compute_ahi_pointwise_metrics(gts, preds)
-            for k, v in metrics.items():
-                self.log(
-                    f"{stage}_{k}",
-                    v,
-                    prog_bar=False,
-                    logger=True,
-                    sync_dist=False,
-                    on_epoch=True,
-                )
-            return preds, gts
 
         if self._is_ahi_task() and stage in {"val", "test"}:
             records = list(outputs)

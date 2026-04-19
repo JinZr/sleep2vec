@@ -209,11 +209,6 @@ def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict
     if label_name == "ahi":
         allowed_ahi_monitors = {
             "val_ahi_pearson": "max",
-            "val_loss": "min",
-            "val_ahi_pointwise_accuracy": "max",
-            "val_ahi_pointwise_precision": "max",
-            "val_ahi_pointwise_recall": "max",
-            "val_ahi_pointwise_f1": "max",
         }
         expected_monitor_mod = allowed_ahi_monitors.get(task_cfg.monitor)
         if expected_monitor_mod is None:

@@ -106,7 +106,7 @@
   - `on_save_checkpoint(self, checkpoint) -> None`
   - `on_load_checkpoint(self, checkpoint) -> None`
   - `on_test_start(self) -> None`
-- Purpose and contract: persist model/finetune config snapshots into checkpoints, save the validation-fitted `ahi_eval_threshold`, reload that threshold on restore, and fail fast before AHI test-time reuse when neither a stored threshold nor an explicit test-search grid is available.
+- Purpose and contract: persist model/finetune config snapshots into checkpoints, save the validation-fitted `ahi_eval_threshold`, reload that threshold on restore, and fail fast before AHI test/infer reuse when the checkpoint does not contain that stored threshold.
 - Important inputs/outputs: checkpoint mapping in/out; no return value.
 - Side effects: mutates checkpoint payload and may raise `ValueError`.
 - Key callers/callees: called by Lightning; `on_save_checkpoint` also snapshots layer-mix weights when available.
@@ -128,34 +128,34 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `_finalize_epoch(self, stage: str)`
-- Purpose and contract: reduce cached epoch outputs into train/val/test metrics. Validation/test loss is accumulated locally during step execution, reduced once across ranks at epoch end, and then logged with `sync_dist=False` so callback-visible monitor values stay identical on every rank without relying on Lightning's step-level eval-loss sync. The dedicated `ahi` path now keeps train-time pointwise metrics as reduced confusion-count totals (`tp/fp/tn/fn`) instead of concatenating every token-level prediction across the epoch; train accuracy/precision/recall/F1 are computed once from globally reduced counts, logged as normal train metrics on every rank, and train ROC-AUC is intentionally skipped. Full event-eval validation still runs only when `args.monitor == "val_ahi_pearson"` and `args.monitor_mod == "max"`, otherwise lightweight validation logs the manually reduced `val_loss` plus emitted pointwise AHI metrics from gathered arrays, and the existing test-stage event-eval path is reused once an explicit or saved threshold/search grid is available. When rank zero emits the summary scatter plot, all ranks rejoin through a strategy barrier before exiting the validation/test epoch so later train-epoch collectives do not get ahead of the rank-zero-only visualization work.
+- Purpose and contract: reduce cached epoch outputs into train/val/test metrics. Validation/test loss is accumulated locally during step execution, reduced once across ranks at epoch end, and then logged with `sync_dist=False` so callback-visible monitor values stay identical on every rank without relying on Lightning's step-level eval-loss sync. The dedicated `ahi` path now keeps train-time pointwise metrics as reduced confusion-count totals (`tp/fp/tn/fn`) instead of concatenating every token-level prediction across the epoch; train accuracy/precision/recall/F1 are computed once from globally reduced counts, logged as normal train metrics on every rank, and train ROC-AUC is intentionally skipped. Built-in `ahi` validation now always runs the full event-based reduction, fits `ahi_eval_threshold` on the fine `0.01..0.99` grid, and updates the checkpoint-bound threshold state every validation epoch. Test and standalone inference never search again; they reuse the restored `ahi_eval_threshold` and fail fast if it is missing. When rank zero emits the summary scatter plot, all ranks rejoin through a strategy barrier before exiting the validation/test epoch so later train-epoch collectives do not get ahead of the rank-zero-only visualization work.
 - Important inputs/outputs: stage name plus cached outputs in; logs metrics and returns reduced arrays/records when present.
 - Side effects: emits Lightning metrics, clears epoch caches, and may update `self._ahi_eval_threshold`.
-- Key callers/callees: callers are `on_train_epoch_end`, `on_validation_epoch_end`, and `on_test_epoch_end`; callees include `compute_ahi_pointwise_metrics`, `compute_ahi_event_metrics`, `compute_downstream_metrics`, and `_eval_visualizer.log`.
+- Key callers/callees: callers are `on_train_epoch_end`, `on_validation_epoch_end`, and `on_test_epoch_end`; callees include `compute_ahi_event_metrics`, `compute_downstream_metrics`, and `_eval_visualizer.log`.
 - Reuse guidance: keep epoch-level metric branching here rather than scattering task-specific logic across callbacks or entrypoints.
-- Duplication risk notes: `ahi` final evaluation intentionally bypasses `compute_downstream_metrics` and the generic classification visualizer; only the scalar-summary scatter plot is reused from the shared visualization surface, while lightweight validation should keep reusing `compute_ahi_pointwise_metrics` instead of inventing a second token-level reducer. Train-time AHI pointwise metrics intentionally do not reuse the array-based reducer because epoch-wide concatenation and ROC-AUC sorting are too expensive at full token scale; keep the reduced confusion-count path there and do not reintroduce train-time full-array accumulation. Do not reintroduce step-level `sync_dist=True` eval-loss logging alongside this epoch-end reduction path.
+- Duplication risk notes: `ahi` final evaluation intentionally bypasses `compute_downstream_metrics` and the generic classification visualizer; only the scalar-summary scatter plot is reused from the shared visualization surface. Train-time AHI pointwise metrics intentionally do not reuse the array-based reducer because epoch-wide concatenation and ROC-AUC sorting are too expensive at full token scale; keep the reduced confusion-count path there and do not reintroduce train-time full-array accumulation. Do not reintroduce step-level `sync_dist=True` eval-loss logging alongside this epoch-end reduction path, and do not add a second test/infer threshold-search path outside the checkpoint-bound `ahi_eval_threshold`.
 
 ## `sleep2vec.metrics.compute_ahi_pointwise_metrics`
 
 - File: `sleep2vec/metrics.py`
 - Signature: `compute_ahi_pointwise_metrics(gts, preds) -> dict[str, float]`
-- Purpose and contract: wrap binary token-level metrics under `ahi_pointwise_*` names for lightweight validation logging (and any small-array callers that already materialized all predictions).
+- Purpose and contract: wrap binary token-level metrics under `ahi_pointwise_*` names for small-array callers that already materialized all predictions.
 - Important inputs/outputs: flattened binary labels and sigmoid scores in; namespaced metrics dict out.
 - Side effects: none.
-- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callee is `compute_binary_label_metrics`.
-- Reuse guidance: use this for lightweight AHI validation/reporting whenever callers already materialized token-level arrays, instead of logging generic binary keys directly.
-- Duplication risk notes: final AHI validation/test metrics do not belong here.
+- Key callers/callees: callers are small-array tests or ad hoc metric consumers; callee is `compute_binary_label_metrics`.
+- Reuse guidance: use this whenever a caller explicitly needs namespaced token-level AHI binary metrics from already materialized arrays, instead of logging generic binary keys directly.
+- Duplication risk notes: final AHI validation/test/infer metrics do not belong here.
 
 ## `sleep2vec.metrics.select_best_ahi_threshold`
 
 - File: `sleep2vec/metrics.py`
 - Signature: `select_best_ahi_threshold(records, *, search_thresholds=...) -> tuple[float, dict[str, Any]]`
-- Purpose and contract: search the configured threshold grid, skipping records without usable scalar `tst_hours`, and choose the threshold that maximizes Pearson, then minimizes MAE, then prefers the higher threshold on exact metric ties. Current runtime callers use a coarse grid during finetune validation and a fine grid during standalone inference, while reusing a prepared-record cache and emitting progress logs during the threshold loop.
+- Purpose and contract: search the configured threshold grid, skipping records without usable scalar `tst_hours`, and choose the threshold that maximizes Pearson, then minimizes MAE, then prefers the higher threshold on exact metric ties. Current runtime callers fit the checkpoint-bound threshold during finetune validation on the fine grid, while reusing a prepared-record cache and emitting progress logs during the threshold loop.
 - Important inputs/outputs: per-sample `{truth, score, true_ahi, tst_hours}` records in; selected threshold plus cached aggregate out.
 - Side effects: none.
 - Key callers/callees: caller is `compute_ahi_event_metrics`; callee is `_aggregate_ahi_records`.
 - Reuse guidance: reuse this if threshold search policy changes.
-- Duplication risk notes: coarse validation search and fine inference search must stay centralized here rather than diverging in trainer or entrypoint code.
+- Duplication risk notes: validation-side threshold fitting must stay centralized here rather than diverging in trainer or entrypoint code.
 
 ## `sleep2vec.metrics.compute_ahi_event_metrics`
 
