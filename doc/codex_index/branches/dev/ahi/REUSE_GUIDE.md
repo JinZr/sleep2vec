@@ -25,7 +25,7 @@ This page answers the practical question: when you need to add or change behavio
 | Validation pair filtering | `sleep2vec.utils._filter_dataset_for_pair_support` | Canonical filter for per-pair validation loaders | Duplicated support checks |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
 | Non-AHI downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Canonical reducer for multiclass classification and regression outputs | Per-task custom metric calculations in trainer code |
-| AHI train-time pointwise metrics | `sleep2vec.metrics.compute_ahi_pointwise_metrics` | Keeps training-time debug metrics namespaced separately from final event-based AHI evaluation | Reusing generic binary metric names in the trainer |
+| AHI lightweight val pointwise metrics | `sleep2vec.metrics.compute_ahi_pointwise_metrics` | Keeps lightweight-validation token metrics namespaced separately from final event-based AHI evaluation | Reusing generic binary metric names in the trainer |
 | AHI final validation/test/infer metrics | `sleep2vec.metrics.compute_ahi_event_metrics` | Centralizes event matching, validation threshold fitting, TST gating, and the split between detection-style event stats and NPZ-aligned scalar AHI summaries | Re-deriving AHI event logic inside `Sleep2vecFinetuning` |
 | Result CSV output | `sleep2vec.metrics.save_result_csv` | Preserves standard columns and append behavior | One-off CSV writers |
 | Preset validation channel resolution | `preprocess.save_dataset_presets._resolve_validation_channels` | Owns YAML-vs-built-in channel selection, including built-in `stage5` / `ahi` validation channels and automatic `ahi -> stage5` expansion | Duplicated channel subset logic in wrapper scripts |
@@ -67,7 +67,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Keep trainer/callback/wandb/checkpoint behavior in `pretrain.py`, `finetune.py`, `infer.py`, or the Lightning modules.
 - Reuse `dump_cli_args_yaml`, `save_result_csv`, and checkpoint helpers instead of duplicating serialization and output logic.
-- For `ahi`, reuse `compute_ahi_pointwise_metrics` for train-only and lightweight-validation logging, and `compute_ahi_event_metrics` for full val/test/infer event evaluation.
+- For `ahi`, reuse `compute_ahi_pointwise_metrics` for lightweight-validation logging, and `compute_ahi_event_metrics` for full val/test/infer event evaluation. Train-time AHI pointwise metrics should stay on the reduced confusion-count path inside `Sleep2vecFinetuning` instead of rebuilding epoch-wide token arrays.
 
 ### If you are changing preprocessing
 
