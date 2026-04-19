@@ -780,6 +780,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     len(true_ahi),
                     eval_threshold,
                 )
+            if trainer is not None and dist.is_available() and dist.is_initialized() and hasattr(trainer, "strategy"):
+                rank, world_size = self._distributed_rank_world()
+                logging.info("AHI epoch-end barrier start: stage=%s rank=%d/%d", stage, rank, world_size)
+                trainer.strategy.barrier(f"ahi_{stage}_epoch_end")
+                logging.info("AHI epoch-end barrier done: stage=%s rank=%d/%d", stage, rank, world_size)
             return records
 
         preds, gts = self._concat_epoch_outputs(outputs)
