@@ -719,10 +719,10 @@ def test_select_best_ahi_threshold_logs_sparse_fine_progress(monkeypatch: pytest
     select_best_ahi_threshold([{}], search_thresholds=AHI_FINE_THRESHOLD_GRID)
 
     progress_messages = [message for message in messages if "AHI threshold search progress:" in message]
-    assert progress_messages[0] == "AHI threshold search progress: 1/99 threshold=0.01"
-    assert progress_messages[1] == "AHI threshold search progress: 10/99 threshold=0.10"
-    assert progress_messages[-1] == "AHI threshold search progress: 99/99 threshold=0.99"
-    assert len(progress_messages) == 11
+    assert progress_messages[0] == "AHI threshold search progress: 10/99 threshold=0.10"
+    assert progress_messages[1] == "AHI threshold search progress: 20/99 threshold=0.20"
+    assert progress_messages[-1] == "AHI threshold search progress: 90/99 threshold=0.90"
+    assert len(progress_messages) == 9
 
 
 @dataclass

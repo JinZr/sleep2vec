@@ -281,9 +281,11 @@ def _resolve_ahi_search_mode(search_thresholds: tuple[float, ...]) -> str:
     return "custom"
 
 
-def _should_log_ahi_search_progress(index: int, total: int) -> bool:
+def _should_log_ahi_search_progress(index: int, total: int, *, threshold: float, mode: str) -> bool:
     if total <= 10:
         return True
+    if mode == "fine":
+        return int(round(float(threshold) * 100)) % 10 == 0
     return index == 1 or index == total or index % 10 == 0
 
 
@@ -548,7 +550,7 @@ def _select_best_ahi_threshold_from_prepared(
     started_at = time.perf_counter()
 
     for index, threshold in enumerate(thresholds, start=1):
-        if _should_log_ahi_search_progress(index, len(thresholds)):
+        if _should_log_ahi_search_progress(index, len(thresholds), threshold=threshold, mode=mode):
             logging.info(
                 "AHI threshold search progress: %d/%d threshold=%.2f",
                 index,
