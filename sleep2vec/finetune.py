@@ -5,10 +5,12 @@ import shutil
 import sys
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks.progress import RichProgressBar, TQDMProgressBar
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
+from pytorch_lightning.utilities.imports import _RICH_AVAILABLE
 import wandb
 
 # Make sure the repository root is importable when running this file directly
@@ -24,55 +26,16 @@ from sleep2vec.utils import get_finetune_dataloaders
 # from model.ahi_metric import AHIMetricsCollection
 
 
-def _trainer_rank_world(trainer) -> tuple[int, int]:
-    rank = int(getattr(trainer, "global_rank", 0))
-    world_size = int(getattr(trainer, "world_size", 1))
-    return rank, world_size
+class DistributedAHITQDMProgressBar(TQDMProgressBar):
+    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        # Skip rank-zero-only epoch-end UI work; batch-level progress stays intact.
+        return None
 
 
-class DebugEarlyStopping(EarlyStopping):
-    def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
-        rank, world_size = _trainer_rank_world(trainer)
-        metric = trainer.callback_metrics.get(self.monitor)
-        logging.info(
-            "EarlyStopping.on_validation_end start: rank=%d/%d monitor=%s has_metric=%s should_stop=%s",
-            rank,
-            world_size,
-            self.monitor,
-            metric is not None,
-            bool(getattr(trainer, "should_stop", False)),
-        )
-        super().on_validation_end(trainer, pl_module)
-        logging.info(
-            "EarlyStopping.on_validation_end done: rank=%d/%d monitor=%s should_stop=%s wait_count=%d",
-            rank,
-            world_size,
-            self.monitor,
-            bool(getattr(trainer, "should_stop", False)),
-            int(getattr(self, "wait_count", 0)),
-        )
-
-
-class DebugModelCheckpoint(ModelCheckpoint):
-    def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
-        rank, world_size = _trainer_rank_world(trainer)
-        metric = trainer.callback_metrics.get(self.monitor) if self.monitor is not None else None
-        logging.info(
-            "ModelCheckpoint.on_validation_end start: rank=%d/%d monitor=%s has_metric=%s last_global_step_saved=%s",
-            rank,
-            world_size,
-            self.monitor,
-            self.monitor is None or metric is not None,
-            getattr(self, "_last_global_step_saved", None),
-        )
-        super().on_validation_end(trainer, pl_module)
-        logging.info(
-            "ModelCheckpoint.on_validation_end done: rank=%d/%d monitor=%s best_model_path=%s",
-            rank,
-            world_size,
-            self.monitor,
-            getattr(self, "best_model_path", ""),
-        )
+class DistributedAHIRichProgressBar(RichProgressBar):
+    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        # Skip rank-zero-only epoch-end UI work; batch-level progress stays intact.
+        return None
 
 
 def prepare_dataloader(args):
@@ -93,37 +56,10 @@ def _is_distributed_ahi_finetune(args) -> bool:
     return getattr(args, "label_name", None) == "ahi" and world_size > 1
 
 
-class DistributedEpochEndProgressSync(Callback):
-    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
-        if trainer.world_size <= 1:
-            return
-        logging.info(
-            "Progress callback epoch-end barrier start: rank=%d/%d epoch=%d",
-            int(getattr(trainer, "global_rank", 0)),
-            int(getattr(trainer, "world_size", 1)),
-            int(getattr(trainer, "current_epoch", 0)),
-        )
-        trainer.strategy.barrier("progress_bar_train_epoch_end")
-        logging.info(
-            "Progress callback epoch-end barrier done: rank=%d/%d epoch=%d",
-            int(getattr(trainer, "global_rank", 0)),
-            int(getattr(trainer, "world_size", 1)),
-            int(getattr(trainer, "current_epoch", 0)),
-        )
-
-
-def _attach_progress_bar_epoch_sync_callback(trainer: "pl.Trainer", args) -> None:
+def _build_progress_bar_callback(args):
     if not _is_distributed_ahi_finetune(args):
-        return
-
-    progress_bar_callback = getattr(trainer, "progress_bar_callback", None)
-    callbacks = getattr(trainer, "callbacks", None)
-    if progress_bar_callback is None or not isinstance(callbacks, list):
-        return
-
-    progress_index = callbacks.index(progress_bar_callback)
-    callbacks.insert(progress_index + 1, DistributedEpochEndProgressSync())
-    logging.info("Inserted progress-bar epoch-end sync callback after %s", type(progress_bar_callback).__name__)
+        return None
+    return DistributedAHIRichProgressBar() if _RICH_AVAILABLE else DistributedAHITQDMProgressBar()
 
 
 def supervised(args, config_bundle):
@@ -154,14 +90,14 @@ def supervised(args, config_bundle):
         log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )
 
-    early_stop_callback = DebugEarlyStopping(
+    early_stop_callback = EarlyStopping(
         monitor=args.monitor,
         patience=args.patience,
         verbose=False,
         mode=args.monitor_mod,
     )
 
-    checkpoint_callback = DebugModelCheckpoint(
+    checkpoint_callback = ModelCheckpoint(
         dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
         monitor=args.monitor,  # 监控验证集 Cohen κ
         mode=args.monitor_mod,  # 越大越好
@@ -173,6 +109,9 @@ def supervised(args, config_bundle):
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
+    progress_bar_callback = _build_progress_bar_callback(args)
+    if progress_bar_callback is not None:
+        callbacks.append(progress_bar_callback)
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
@@ -202,7 +141,6 @@ def supervised(args, config_bundle):
         enable_checkpointing=enable_checkpointing,
         **trainer_kwargs,
     )
-    _attach_progress_bar_epoch_sync_callback(trainer, args)
 
     if args.epochs > 0:
         # train the model

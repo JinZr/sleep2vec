@@ -18,7 +18,6 @@ from sleep2vec.metrics import (
     _aggregate_prepared_ahi_records,
     _compute_ahi_event_metrics_from_prepared,
     _prepare_ahi_records,
-    compute_ahi_event_metrics,
     compute_ahi_pointwise_metrics,
     compute_downstream_metrics,
     extract_ahi_summary_scatter_arrays,
@@ -138,66 +137,15 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._shared_step(batch, stage="test", model=eval_model)
 
     def on_train_epoch_end(self):
-        rank, world_size = self._distributed_rank_world()
-        logging.info(
-            "Sleep2vecFinetuning.on_train_epoch_end start: rank=%d/%d epoch=%d local_outputs=%d",
-            rank,
-            world_size,
-            int(self.current_epoch),
-            len(self._stage_outputs["train"]),
-        )
         self._log_layer_mix_weights(stage="train", model=self.model)
         self._finalize_epoch(stage="train")
-        logging.info(
-            "Sleep2vecFinetuning.on_train_epoch_end done: rank=%d/%d epoch=%d remaining_outputs=%d",
-            rank,
-            world_size,
-            int(self.current_epoch),
-            len(self._stage_outputs["train"]),
-        )
-
-    def on_train_epoch_start(self):
-        super().on_train_epoch_start()
-        rank, world_size = self._distributed_rank_world()
-        logging.info(
-            "Sleep2vecFinetuning.on_train_epoch_start reached: rank=%d/%d epoch=%d",
-            rank,
-            world_size,
-            int(self.current_epoch),
-        )
 
     def on_validation_epoch_end(self):
-        rank, world_size = self._distributed_rank_world()
-        logging.info(
-            "Sleep2vecFinetuning.on_validation_epoch_end start: rank=%d/%d local_outputs=%d eval_loss_count=%d global_zero=%s",
-            rank,
-            world_size,
-            len(self._stage_outputs["val"]),
-            int(getattr(self, "_eval_loss_counts", {}).get("val", 0)),
-            bool(getattr(getattr(self, "trainer", None), "is_global_zero", False)),
-        )
         self._log_layer_mix_weights(stage="val", model=self._get_eval_model())
         self._finalize_epoch(stage="val")
-        logging.info(
-            "Sleep2vecFinetuning.on_validation_epoch_end done: rank=%d/%d remaining_outputs=%d eval_loss_count=%d",
-            rank,
-            world_size,
-            len(self._stage_outputs["val"]),
-            int(getattr(self, "_eval_loss_counts", {}).get("val", 0)),
-        )
 
     def on_test_epoch_end(self):
         self._finalize_epoch(stage="test")
-
-    def on_validation_end(self):
-        super().on_validation_end()
-        rank, world_size = self._distributed_rank_world()
-        logging.info(
-            "Sleep2vecFinetuning.on_validation_end reached: rank=%d/%d should_stop=%s",
-            rank,
-            world_size,
-            bool(getattr(getattr(self, "trainer", None), "should_stop", False)),
-        )
 
     def on_fit_start(self):
         super().on_fit_start()
@@ -396,12 +344,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _is_ahi_task(self) -> bool:
         return getattr(self.args, "label_name", None) == "ahi"
 
-    @staticmethod
-    def _distributed_rank_world() -> tuple[int, int]:
-        if dist.is_available() and dist.is_initialized():
-            return dist.get_rank(), dist.get_world_size()
-        return 0, 1
-
     def _accumulate_ahi_train_pointwise_counts(self, batch, logits) -> None:
         labels = self._get_targets(batch)
         valid_mask = labels != -1.0
@@ -417,34 +359,26 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._ahi_train_pointwise_counts["tn"] += int(((preds == 0) & (targets == 0)).sum().item())
         self._ahi_train_pointwise_counts["fn"] += int(((preds == 0) & (targets == 1)).sum().item())
 
-    def _compute_local_ahi_train_pointwise_metrics(self) -> dict[str, float]:
-        rank, world_size = self._distributed_rank_world()
+    def _compute_reduced_ahi_train_pointwise_metrics(self) -> dict[str, float]:
         counts = self._ahi_train_pointwise_counts
-        tp = int(counts["tp"])
-        fp = int(counts["fp"])
-        tn = int(counts["tn"])
-        fn = int(counts["fn"])
-        logging.info(
-            "AHI train local count finalize: rank=%d/%d tp=%d fp=%d tn=%d fn=%d",
-            rank,
-            world_size,
-            tp,
-            fp,
-            tn,
-            fn,
+        stats = torch.tensor(
+            [counts["tp"], counts["fp"], counts["tn"], counts["fn"]],
+            dtype=torch.float64,
+            device=torch.device(getattr(self.args, "device", "cpu")),
         )
+        trainer = getattr(self, "trainer", None)
+        if dist.is_available() and dist.is_initialized():
+            if trainer is not None and hasattr(trainer, "strategy"):
+                stats = trainer.strategy.reduce(stats, reduce_op="sum")
+            else:  # pragma: no cover - trainer-less distributed fallback
+                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+
+        tp, fp, tn, fn = [int(value) for value in stats.tolist()]
         total = tp + fp + tn + fn
         accuracy = (tp + tn) / total if total > 0 else 0.0
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        logging.info(
-            "AHI train local metric finalize: rank=%d/%d accuracy=%.6f f1=%.6f",
-            rank,
-            world_size,
-            accuracy,
-            f1,
-        )
         self._ahi_train_pointwise_counts = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
         return {
             "ahi_pointwise_accuracy": float(accuracy),
@@ -534,28 +468,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if trainer is None or not self._can_broadcast_ahi_metrics():
             return self._compute_ahi_metrics_for_stage(stage, records)
 
-        rank, world_size = self._distributed_rank_world()
-        logging.info(
-            "AHI metrics broadcast prep: stage=%s rank=%d/%d local_records=%d global_zero=%s",
-            stage,
-            rank,
-            world_size,
-            len(records),
-            bool(getattr(trainer, "is_global_zero", False)),
-        )
         payload: list[dict[str, object] | None] = [None]
         scatter_arrays: tuple[np.ndarray, np.ndarray] | None = None
         if trainer.is_global_zero:
             try:
                 metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
-                logging.info(
-                    "AHI metrics local compute done: stage=%s rank=%d/%d metric_keys=%d threshold=%.2f",
-                    stage,
-                    rank,
-                    world_size,
-                    len(metrics),
-                    float(eval_threshold),
-                )
                 payload[0] = {
                     "metrics": metrics,
                     "eval_threshold": float(eval_threshold),
@@ -570,16 +487,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     "error_message": str(exc),
                 }
 
-        logging.info("AHI metrics broadcast start: stage=%s rank=%d/%d", stage, rank, world_size)
         dist.broadcast_object_list(payload, src=0)
         result = payload[0] or {}
-        logging.info(
-            "AHI metrics broadcast done: stage=%s rank=%d/%d has_error=%s",
-            stage,
-            rank,
-            world_size,
-            result.get("error_message") is not None,
-        )
         error_message = result.get("error_message")
         if error_message is not None:
             if result.get("error_type") == "ValueError":
@@ -651,19 +560,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if stage not in eval_loss_sums or stage not in eval_loss_counts:
             return
 
-        rank, world_size = self._distributed_rank_world()
         loss_sum = float(eval_loss_sums[stage])
         loss_count = int(eval_loss_counts[stage])
         eval_loss_sums[stage] = 0.0
         eval_loss_counts[stage] = 0
-        logging.info(
-            "Eval loss reduce prep: stage=%s rank=%d/%d local_loss_sum=%.6f local_loss_count=%d",
-            stage,
-            rank,
-            world_size,
-            loss_sum,
-            loss_count,
-        )
 
         stats = torch.tensor(
             [loss_sum, float(loss_count)],
@@ -679,17 +579,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
         global_loss_count = int(stats[1].item())
         if global_loss_count == 0:
-            logging.info("Eval loss reduce done: stage=%s rank=%d/%d global_loss_count=0", stage, rank, world_size)
             return
-        logging.info(
-            "Eval loss reduce done: stage=%s rank=%d/%d global_loss_sum=%.6f global_loss_count=%d mean=%.6f",
-            stage,
-            rank,
-            world_size,
-            float(stats[0].item()),
-            global_loss_count,
-            float(stats[0].item()) / global_loss_count,
-        )
 
         self.log(
             f"{stage}_loss",
@@ -711,14 +601,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return
         if getattr(wandb, "run", None) is None:
             return
-        rank, world_size = self._distributed_rank_world()
-        logging.info(
-            "Layer-mix visualization start: stage=%s rank=%d/%d epoch=%d",
-            stage,
-            rank,
-            world_size,
-            int(self.current_epoch),
-        )
 
         layer_ids = [int(v) for v in snapshot.get("layer_indices", [])]
         effective = snapshot.get("effective_by_modality", {})
@@ -773,15 +655,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
             commit=False,
         )
         plt.close(fig)
-        logging.info(
-            "Layer-mix visualization done: stage=%s rank=%d/%d epoch=%d modalities=%d layers=%d",
-            stage,
-            rank,
-            world_size,
-            int(self.current_epoch),
-            len(modality_names),
-            len(layer_ids),
-        )
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]
@@ -789,19 +662,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self._log_eval_loss(stage)
 
         if self._is_ahi_task() and stage == "train":
-            metrics = self._compute_local_ahi_train_pointwise_metrics()
-            trainer = getattr(self, "trainer", None)
-            if trainer is not None and trainer.is_global_zero:
-                for k, v in metrics.items():
-                    self.log(
-                        f"{stage}_{k}",
-                        v,
-                        prog_bar=False,
-                        logger=True,
-                        sync_dist=False,
-                        rank_zero_only=True,
-                        on_epoch=True,
-                    )
+            metrics = self._compute_reduced_ahi_train_pointwise_metrics()
+            for k, v in metrics.items():
+                self.log(
+                    f"{stage}_{k}",
+                    v,
+                    prog_bar=False,
+                    logger=True,
+                    sync_dist=True,
+                    on_epoch=True,
+                )
             return None
 
         if self._is_ahi_task() and stage == "val" and not self._uses_full_ahi_validation():
@@ -843,12 +713,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 )
             trainer = getattr(self, "trainer", None)
             if trainer is not None and trainer.is_global_zero:
-                logging.info(
-                    "AHI summary scatter start: stage=%s samples=%d threshold=%.2f",
-                    stage,
-                    len(records),
-                    eval_threshold,
-                )
                 if scatter_arrays is None:
                     true_ahi, pred_ahi = extract_ahi_summary_scatter_arrays(records, threshold=eval_threshold)
                 else:
@@ -860,17 +724,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     label_name=self.args.label_name,
                     current_epoch=int(self.current_epoch),
                 )
-                logging.info(
-                    "AHI summary scatter done: stage=%s samples=%d threshold=%.2f",
-                    stage,
-                    len(true_ahi),
-                    eval_threshold,
-                )
             if trainer is not None and dist.is_available() and dist.is_initialized() and hasattr(trainer, "strategy"):
-                rank, world_size = self._distributed_rank_world()
-                logging.info("AHI epoch-end barrier start: stage=%s rank=%d/%d", stage, rank, world_size)
                 trainer.strategy.barrier(f"ahi_{stage}_epoch_end")
-                logging.info("AHI epoch-end barrier done: stage=%s rank=%d/%d", stage, rank, world_size)
             return records
 
         preds, gts = self._concat_epoch_outputs(outputs)

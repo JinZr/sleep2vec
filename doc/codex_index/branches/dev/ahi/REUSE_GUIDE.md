@@ -67,7 +67,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Keep trainer/callback/wandb/checkpoint behavior in `pretrain.py`, `finetune.py`, `infer.py`, or the Lightning modules.
 - Reuse `dump_cli_args_yaml`, `save_result_csv`, and checkpoint helpers instead of duplicating serialization and output logic.
-- For `ahi`, reuse `compute_ahi_pointwise_metrics` for lightweight-validation logging, and `compute_ahi_event_metrics` for full val/test/infer event evaluation. Train-time AHI pointwise metrics should stay on the local confusion-count path inside `Sleep2vecFinetuning` instead of rebuilding epoch-wide token arrays or adding a distributed train-epoch sync.
+- For `ahi`, reuse `compute_ahi_pointwise_metrics` for lightweight-validation logging, and `compute_ahi_event_metrics` for full val/test/infer event evaluation. Train-time AHI pointwise metrics should stay on the reduced confusion-count path inside `Sleep2vecFinetuning` instead of rebuilding epoch-wide token arrays; log accuracy/precision/recall/F1 from globally reduced counts and keep train ROC-AUC unsupported.
 
 ### If you are changing preprocessing
 
