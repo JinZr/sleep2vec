@@ -970,62 +970,19 @@ def test_supervised_sets_coarse_test_search_for_epochs_zero_lightweight_ahi(
     assert captured["ckpt_path"] == "manual.ckpt"
 
 
-def test_supervised_disables_progress_bar_for_distributed_ahi(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    captured: dict[str, object] = {}
+def test_attach_progress_bar_epoch_sync_callback_inserts_after_progress_bar():
+    from sleep2vec.finetune import DistributedEpochEndProgressSync, _attach_progress_bar_epoch_sync_callback
 
-    @dataclass
-    class _DummyBundle:
-        model: object
-        averaging: object = None
-        finetune: object = None
+    progress_bar = object()
+    sentinel = object()
+    trainer = argparse.Namespace(progress_bar_callback=progress_bar, callbacks=[sentinel, progress_bar])
+    args_ns = argparse.Namespace(label_name="ahi", devices=[0, 1, 2, 3])
 
-    class _DummyCheckpoint:
-        def __init__(self, *args, **kwargs):
-            self.best_model_path = str(tmp_path / "best.ckpt")
-            self.dirpath = str(tmp_path / "checkpoints")
+    _attach_progress_bar_epoch_sync_callback(trainer, args_ns)
 
-    class _DummyTrainer:
-        def __init__(self, *args, **kwargs):
-            captured["trainer_kwargs"] = kwargs
-            self.is_global_zero = True
-
-        def fit(self, *args, **kwargs):
-            return None
-
-        def test(self, *args, **kwargs):
-            return [{"ahi_pearson": 0.5}]
-
-    args_ns = argparse.Namespace(
-        version="unit-test",
-        monitor="val_ahi_pearson",
-        monitor_mod="max",
-        patience=1,
-        ckpt_every_n_epochs=1,
-        devices=[0, 1, 2, 3],
-        epochs=1,
-        gradient_clip_val=0.0,
-        precision=32,
-        check_val_every_n_epoch=1,
-        print_diagnostics=False,
-        ckpt_path="",
-        results_csv_path=tmp_path / "results.csv",
-        label_name="ahi",
-    )
-
-    monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
-    monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
-    monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
-    monkeypatch.setattr("sleep2vec.finetune.WandbLogger", lambda *args, **kwargs: object())
-    monkeypatch.setattr("sleep2vec.finetune.DebugEarlyStopping", lambda *args, **kwargs: object())
-    monkeypatch.setattr("sleep2vec.finetune.LearningRateMonitor", lambda *args, **kwargs: object())
-    monkeypatch.setattr("sleep2vec.finetune.DebugModelCheckpoint", _DummyCheckpoint)
-    monkeypatch.setattr("sleep2vec.finetune.pl.Trainer", _DummyTrainer)
-    monkeypatch.setattr("sleep2vec.finetune.shutil.copy2", lambda *args, **kwargs: None)
-    monkeypatch.setattr("sleep2vec.finetune.save_result_csv", lambda *args, **kwargs: None)
-
-    supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
-
-    assert captured["trainer_kwargs"]["enable_progress_bar"] is False
+    assert trainer.callbacks[0] is sentinel
+    assert trainer.callbacks[1] is progress_bar
+    assert isinstance(trainer.callbacks[2], DistributedEpochEndProgressSync)
 
 
 def test_ahi_test_epoch_search_falls_back_to_saved_threshold(monkeypatch: pytest.MonkeyPatch):

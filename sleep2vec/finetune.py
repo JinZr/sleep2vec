@@ -5,7 +5,7 @@ import shutil
 import sys
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
@@ -87,10 +87,43 @@ def prepare_dataloader(args):
     return train_loader, val_loader, test_loader
 
 
-def _should_disable_progress_bar(args) -> bool:
+def _is_distributed_ahi_finetune(args) -> bool:
     devices = getattr(args, "devices", None)
     world_size = len(devices) if isinstance(devices, (list, tuple)) else int(devices or 0)
     return getattr(args, "label_name", None) == "ahi" and world_size > 1
+
+
+class DistributedEpochEndProgressSync(Callback):
+    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        if trainer.world_size <= 1:
+            return
+        logging.info(
+            "Progress callback epoch-end barrier start: rank=%d/%d epoch=%d",
+            int(getattr(trainer, "global_rank", 0)),
+            int(getattr(trainer, "world_size", 1)),
+            int(getattr(trainer, "current_epoch", 0)),
+        )
+        trainer.strategy.barrier("progress_bar_train_epoch_end")
+        logging.info(
+            "Progress callback epoch-end barrier done: rank=%d/%d epoch=%d",
+            int(getattr(trainer, "global_rank", 0)),
+            int(getattr(trainer, "world_size", 1)),
+            int(getattr(trainer, "current_epoch", 0)),
+        )
+
+
+def _attach_progress_bar_epoch_sync_callback(trainer: "pl.Trainer", args) -> None:
+    if not _is_distributed_ahi_finetune(args):
+        return
+
+    progress_bar_callback = getattr(trainer, "progress_bar_callback", None)
+    callbacks = getattr(trainer, "callbacks", None)
+    if progress_bar_callback is None or not isinstance(callbacks, list):
+        return
+
+    progress_index = callbacks.index(progress_bar_callback)
+    callbacks.insert(progress_index + 1, DistributedEpochEndProgressSync())
+    logging.info("Inserted progress-bar epoch-end sync callback after %s", type(progress_bar_callback).__name__)
 
 
 def supervised(args, config_bundle):
@@ -141,12 +174,6 @@ def supervised(args, config_bundle):
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
     enable_checkpointing = True
-    enable_progress_bar = not _should_disable_progress_bar(args)
-    if not enable_progress_bar:
-        logging.info(
-            "Disabling Lightning progress bar for distributed AHI finetune to avoid rank-zero-only progress callbacks "
-            "delaying epoch-end synchronization."
-        )
     trainer_kwargs = dict(
         devices=args.devices,
         accelerator="gpu",
@@ -158,7 +185,6 @@ def supervised(args, config_bundle):
         gradient_clip_val=args.gradient_clip_val,
         precision=args.precision,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
-        enable_progress_bar=enable_progress_bar,
     )
     if args.print_diagnostics:
         callbacks = []
@@ -176,6 +202,7 @@ def supervised(args, config_bundle):
         enable_checkpointing=enable_checkpointing,
         **trainer_kwargs,
     )
+    _attach_progress_bar_epoch_sync_callback(trainer, args)
 
     if args.epochs > 0:
         # train the model
