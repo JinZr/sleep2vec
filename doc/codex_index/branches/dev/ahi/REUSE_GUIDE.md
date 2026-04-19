@@ -23,6 +23,7 @@ This page answers the practical question: when you need to add or change behavio
 | Runtime batch assembly | `DefaultDataset.dataloader` | Single source for collate-time NPZ reads, tokenization, metadata packing, `w/h` matrices, pair tagging, and ignore-value padding for runtime label channels | New collate functions outside `data/default_dataset.py` |
 | Missing-channel training batches | `PairFirstBatchSampler` | Canonical train-time sampler for pair-first missing-channel pretraining | Ad hoc pair scheduling loops |
 | Validation pair filtering | `sleep2vec.utils._filter_dataset_for_pair_support` | Canonical filter for per-pair validation loaders | Duplicated support checks |
+| Distributed AHI finetune progress bar | `sleep2vec.callbacks.progress_bar.build_distributed_ahi_progress_bar` | Keeps the built-in batch-level progress bar while skipping the rank-zero-only train-epoch-end UI work that skews later hooks under DDP | Re-embedding custom progress-bar subclasses in `finetune.py` or adding post-hoc barrier callbacks |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
 | Non-AHI downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Canonical reducer for multiclass classification and regression outputs | Per-task custom metric calculations in trainer code |
 | AHI lightweight val pointwise metrics | `sleep2vec.metrics.compute_ahi_pointwise_metrics` | Keeps lightweight-validation token metrics namespaced separately from final event-based AHI evaluation | Reusing generic binary metric names in the trainer |
@@ -66,6 +67,7 @@ This page answers the practical question: when you need to add or change behavio
 ### If you are changing runtime orchestration
 
 - Keep trainer/callback/wandb/checkpoint behavior in `pretrain.py`, `finetune.py`, `infer.py`, or the Lightning modules.
+- Keep reusable callback implementations in `sleep2vec/callbacks/`; entrypoints should only decide when to install them.
 - Reuse `dump_cli_args_yaml`, `save_result_csv`, and checkpoint helpers instead of duplicating serialization and output logic.
 - For `ahi`, reuse `compute_ahi_pointwise_metrics` for lightweight-validation logging, and `compute_ahi_event_metrics` for full val/test/infer event evaluation. Train-time AHI pointwise metrics should stay on the reduced confusion-count path inside `Sleep2vecFinetuning` instead of rebuilding epoch-wide token arrays; log accuracy/precision/recall/F1 from globally reduced counts and keep train ROC-AUC unsupported.
 

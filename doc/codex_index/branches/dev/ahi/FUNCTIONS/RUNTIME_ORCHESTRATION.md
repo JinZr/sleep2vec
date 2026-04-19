@@ -26,12 +26,23 @@
 
 - File: `sleep2vec/finetune.py`
 - Signature: `supervised(args, config_bundle) -> None`
-- Purpose and contract: canonical finetune orchestration routine; persists run artifacts, builds loaders, instantiates `Sleep2vecFinetuning`, trains, evaluates, and writes results. When running distributed built-in `ahi` finetune, it installs an explicit progress-bar callback that preserves batch-level updates while skipping the rank-zero-only train-epoch-end UI refresh/postfix work that would otherwise delay later epoch-end hooks relative to the other ranks.
+- Purpose and contract: canonical finetune orchestration routine; persists run artifacts, builds loaders, instantiates `Sleep2vecFinetuning`, trains, evaluates, and writes results. When running distributed built-in `ahi` finetune, it installs the reusable custom progress-bar callback from `sleep2vec.callbacks.progress_bar`.
 - Important inputs/outputs: CLI namespace and config bundle in; no direct return value.
 - Side effects: creates run directories, writes YAML snapshots, trains/tests models, copies `best.ckpt`, appends results CSV.
-- Key callers/callees: called from `__main__`; calls `prepare_dataloader`, `Sleep2vecFinetuning`, `persist_run_config_and_args`, and `save_result_csv`.
+- Key callers/callees: called from `__main__`; calls `prepare_dataloader`, `Sleep2vecFinetuning`, `persist_run_config_and_args`, `build_distributed_ahi_progress_bar`, and `save_result_csv`.
 - Reuse guidance: extend this routine instead of creating parallel finetune scripts.
-- Duplication risk notes: configuration-copy behavior overlaps with `pretrain.py`.
+- Duplication risk notes: keep callback implementations out of this entrypoint; configuration-copy behavior overlaps with `pretrain.py`.
+
+## `sleep2vec.callbacks.progress_bar.build_distributed_ahi_progress_bar`
+
+- File: `sleep2vec/callbacks/progress_bar.py`
+- Signature: `build_distributed_ahi_progress_bar() -> RichProgressBar | TQDMProgressBar`
+- Purpose and contract: construct the dedicated distributed-AHI progress bar callback, preserving batch-level updates while skipping the default rank-zero-only train-epoch-end UI refresh/postfix work that would otherwise delay later epoch-end hooks under DDP.
+- Important inputs/outputs: no inputs; returns the appropriate Lightning progress-bar callback for the current optional-rich availability.
+- Side effects: none.
+- Key callers/callees: caller is `sleep2vec.finetune.supervised`; instantiates `DistributedAHIRichProgressBar` or `DistributedAHITQDMProgressBar`.
+- Reuse guidance: use this factory for any future distributed built-in AHI finetune path instead of recreating callback subclasses in an entrypoint.
+- Duplication risk notes: post-hoc barrier callbacks are not a substitute for this callback because the skew originates inside Lightning's default progress-bar epoch-end hook.
 
 ## `sleep2vec.finetune.build_version_name`
 

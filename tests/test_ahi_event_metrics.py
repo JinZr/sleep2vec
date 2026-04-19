@@ -971,9 +971,10 @@ def test_supervised_sets_coarse_test_search_for_epochs_zero_lightweight_ahi(
 
 
 def test_supervised_uses_custom_progress_bar_for_distributed_ahi(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from sleep2vec.finetune import DistributedAHIRichProgressBar, DistributedAHITQDMProgressBar
     from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
     from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+
+    from sleep2vec.callbacks.progress_bar import DistributedAHIRichProgressBar, DistributedAHITQDMProgressBar
 
     captured: dict[str, object] = {}
 
@@ -1029,9 +1030,10 @@ def test_supervised_uses_custom_progress_bar_for_distributed_ahi(monkeypatch: py
 
 
 def test_supervised_leaves_nonahi_on_default_progress_bar_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from sleep2vec.finetune import DistributedAHIRichProgressBar, DistributedAHITQDMProgressBar
     from pytorch_lightning.callbacks import ModelCheckpoint
     from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+
+    from sleep2vec.callbacks.progress_bar import DistributedAHIRichProgressBar, DistributedAHITQDMProgressBar
 
     captured: dict[str, object] = {}
 
@@ -1423,6 +1425,29 @@ def test_ahi_train_epoch_nonzero_rank_still_logs_reduced_metrics(monkeypatch: py
     assert "train_ahi_pointwise_accuracy" in logged
     assert "train_ahi_pointwise_f1" in logged
     assert module._ahi_train_pointwise_counts == {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
+
+
+def test_ahi_train_epoch_omits_roc_auc_from_reduced_metric_set(monkeypatch: pytest.MonkeyPatch):
+    def fake_reduce(tensor, reduce_op="mean"):
+        return torch.tensor([1.0, 0.0, 1.0, 0.0], dtype=tensor.dtype)
+
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_available", lambda: True)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
+
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max", device="cpu")
+    module._stage_outputs = {"train": [], "val": [], "test": []}
+    module._eval_loss_sums = {"val": 0.0, "test": 0.0}
+    module._eval_loss_counts = {"val": 0, "test": 0}
+    module._ahi_train_pointwise_counts = {"tp": 1, "fp": 0, "tn": 1, "fn": 0}
+    logged: list[str] = []
+    module.log = lambda name, value, **kwargs: logged.append(name)
+    module.trainer = argparse.Namespace(is_global_zero=True, strategy=argparse.Namespace(reduce=fake_reduce))
+    module.current_epoch = 0
+
+    module._finalize_epoch("train")
+
+    assert all(name != "train_ahi_pointwise_roc_auc" for name in logged)
 
 
 def test_ahi_val_epoch_logs_reduced_eval_loss_before_event_metrics(monkeypatch: pytest.MonkeyPatch):

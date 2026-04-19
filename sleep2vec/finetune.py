@@ -6,11 +6,9 @@ import sys
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.callbacks.progress import RichProgressBar, TQDMProgressBar
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
-from pytorch_lightning.utilities.imports import _RICH_AVAILABLE
 import wandb
 
 # Make sure the repository root is importable when running this file directly
@@ -18,24 +16,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2vec.callbacks import build_distributed_ahi_progress_bar
 from sleep2vec.common import apply_finetune_config, persist_run_config_and_args
 from sleep2vec.metrics import AHI_COARSE_THRESHOLD_GRID, save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import get_finetune_dataloaders
 
 # from model.ahi_metric import AHIMetricsCollection
-
-
-class DistributedAHITQDMProgressBar(TQDMProgressBar):
-    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
-        # Skip rank-zero-only epoch-end UI work; batch-level progress stays intact.
-        return None
-
-
-class DistributedAHIRichProgressBar(RichProgressBar):
-    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
-        # Skip rank-zero-only epoch-end UI work; batch-level progress stays intact.
-        return None
 
 
 def prepare_dataloader(args):
@@ -54,12 +41,6 @@ def _is_distributed_ahi_finetune(args) -> bool:
     devices = getattr(args, "devices", None)
     world_size = len(devices) if isinstance(devices, (list, tuple)) else int(devices or 0)
     return getattr(args, "label_name", None) == "ahi" and world_size > 1
-
-
-def _build_progress_bar_callback(args):
-    if not _is_distributed_ahi_finetune(args):
-        return None
-    return DistributedAHIRichProgressBar() if _RICH_AVAILABLE else DistributedAHITQDMProgressBar()
 
 
 def supervised(args, config_bundle):
@@ -109,9 +90,8 @@ def supervised(args, config_bundle):
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
-    progress_bar_callback = _build_progress_bar_callback(args)
-    if progress_bar_callback is not None:
-        callbacks.append(progress_bar_callback)
+    if _is_distributed_ahi_finetune(args):
+        callbacks.append(build_distributed_ahi_progress_bar())
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
