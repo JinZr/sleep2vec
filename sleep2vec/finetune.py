@@ -24,6 +24,57 @@ from sleep2vec.utils import get_finetune_dataloaders
 # from model.ahi_metric import AHIMetricsCollection
 
 
+def _trainer_rank_world(trainer) -> tuple[int, int]:
+    rank = int(getattr(trainer, "global_rank", 0))
+    world_size = int(getattr(trainer, "world_size", 1))
+    return rank, world_size
+
+
+class DebugEarlyStopping(EarlyStopping):
+    def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        rank, world_size = _trainer_rank_world(trainer)
+        metric = trainer.callback_metrics.get(self.monitor)
+        logging.info(
+            "EarlyStopping.on_validation_end start: rank=%d/%d monitor=%s has_metric=%s should_stop=%s",
+            rank,
+            world_size,
+            self.monitor,
+            metric is not None,
+            bool(getattr(trainer, "should_stop", False)),
+        )
+        super().on_validation_end(trainer, pl_module)
+        logging.info(
+            "EarlyStopping.on_validation_end done: rank=%d/%d monitor=%s should_stop=%s wait_count=%d",
+            rank,
+            world_size,
+            self.monitor,
+            bool(getattr(trainer, "should_stop", False)),
+            int(getattr(self, "wait_count", 0)),
+        )
+
+
+class DebugModelCheckpoint(ModelCheckpoint):
+    def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        rank, world_size = _trainer_rank_world(trainer)
+        metric = trainer.callback_metrics.get(self.monitor) if self.monitor is not None else None
+        logging.info(
+            "ModelCheckpoint.on_validation_end start: rank=%d/%d monitor=%s has_metric=%s last_global_step_saved=%s",
+            rank,
+            world_size,
+            self.monitor,
+            self.monitor is None or metric is not None,
+            getattr(self, "_last_global_step_saved", None),
+        )
+        super().on_validation_end(trainer, pl_module)
+        logging.info(
+            "ModelCheckpoint.on_validation_end done: rank=%d/%d monitor=%s best_model_path=%s",
+            rank,
+            world_size,
+            self.monitor,
+            getattr(self, "best_model_path", ""),
+        )
+
+
 def prepare_dataloader(args):
     train_loader, val_loader, test_loader = get_finetune_dataloaders(args)
 
@@ -64,14 +115,14 @@ def supervised(args, config_bundle):
         log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )
 
-    early_stop_callback = EarlyStopping(
+    early_stop_callback = DebugEarlyStopping(
         monitor=args.monitor,
         patience=args.patience,
         verbose=False,
         mode=args.monitor_mod,
     )
 
-    checkpoint_callback = ModelCheckpoint(
+    checkpoint_callback = DebugModelCheckpoint(
         dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
         monitor=args.monitor,  # 监控验证集 Cohen κ
         mode=args.monitor_mod,  # 越大越好
