@@ -2,6 +2,8 @@
 
 This page answers the practical question: when you need to add or change behavior, which implementation should you reuse first?
 
+For narrow special-case behavior changes, patch the canonical implementation locally instead of creating a wrapper or parallel path; when the exception is not self-evident, add a short comment noting the intention.
+
 ## Highest-Value Reuse Hotspots
 
 | Responsibility | Canonical implementation to reuse | Why it is canonical | Do not bypass with |

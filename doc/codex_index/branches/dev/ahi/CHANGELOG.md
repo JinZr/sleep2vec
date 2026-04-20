@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-20
+
+- Added guidance to keep small special-case behavior changes as local patches in the canonical code path instead of new helpers or wrappers.
+- Recorded the matching reuse note that non-obvious exceptions should carry a short comment explaining the intention.
+
 ## 2026-04-18
 
 - Added single-channel PPG built-in `ahi` finetune recipe files for both medium and large backbone sizes, both using `cls.embedding_type: bert` with token-level downstream heads.
