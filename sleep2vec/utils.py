@@ -156,6 +156,13 @@ def _build_finetune_loader(
     is_train_set,
     few_shot=None,
 ):
+    def _append_unique(target_list, value):
+        if value not in target_list:
+            target_list.append(value)
+
+    def _uses_explicit_metadata_name(name: str) -> bool:
+        return name not in {"age", "sex", "source", "path"}
+
     is_seq_task = is_builtin_seq_task(args.label_name)
     if args.label_name == "ahi":
         meta_data_names = ["ahi", "tst"]
@@ -169,6 +176,13 @@ def _build_finetune_loader(
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
             "Extend metadata label encoding before using multiclass metadata targets."
         )
+    auxiliary_cfg = getattr(args, "auxiliary_task", None)
+    if auxiliary_cfg is not None:
+        aux_target = auxiliary_cfg.target
+        if _uses_explicit_metadata_name(aux_target):
+            _append_unique(meta_data_names, aux_target)
+        if auxiliary_cfg.type == "regression":
+            _append_unique(meta_data_regression_names, aux_target)
     dataset_channel_names = list(args.data_channel_names)
     dataset_channel_input_dims = dict(getattr(args, "channel_input_dims", {}) or {})
     label_source_name = getattr(args, "label_source_name", args.label_name)

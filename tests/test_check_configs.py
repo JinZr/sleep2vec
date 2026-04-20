@@ -103,6 +103,11 @@ def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_conv_config():
     check_config_file(path)
 
 
+def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_unet_aux_config():
+    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune_large_temporal_unet_aux.yaml"
+    check_config_file(path)
+
+
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
     _write_yaml(path, _ppg_finetune_payload(is_seq=True, preset_build=None))

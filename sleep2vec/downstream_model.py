@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import logging
 import typing as t
 
@@ -7,7 +8,7 @@ import torch.nn as nn
 import yaml
 
 from sleep2vec.checkpoints import load_checkpoint, load_pretrain_init_weights
-from sleep2vec.config import HeadConfig, LayerMixConfig, ModelConfig
+from sleep2vec.config import AuxiliaryTaskConfig, HeadConfig, LayerMixConfig, ModelConfig
 from sleep2vec.modules.layer_mix import LayerMix
 
 from .downstreams.head_registry import create_head
@@ -30,6 +31,12 @@ def _resolve_act(name: str | None):
     return mapping[key]
 
 
+@dataclass
+class DownstreamOutput:
+    main_logits: torch.Tensor
+    aux_logits: torch.Tensor | None = None
+
+
 class Sleep2vecDownstreamModel(nn.Module):
     def __init__(
         self,
@@ -45,6 +52,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         model_config: ModelConfig | None = None,
         layer_mix_cfg: LayerMixConfig | None = None,
         head_config: HeadConfig | None = None,
+        auxiliary_task_cfg: AuxiliaryTaskConfig | None = None,
     ):
         super().__init__()
         # core attributes
@@ -56,6 +64,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.is_classification = is_classification
         self.is_seq = is_seq
         self.target = target
+        self.auxiliary_task_cfg = auxiliary_task_cfg
 
         self.n_channels = len(self.channel_names)
         self.cls_embedding = getattr(self.backbone, "cls_embedding", None)
@@ -92,6 +101,32 @@ class Sleep2vecDownstreamModel(nn.Module):
             is_seq=self.is_seq,
             **head_kwargs,
         )
+        self.auxiliary_head: nn.Module | None = None
+        self.auxiliary_temporal_agg = None
+        if auxiliary_task_cfg is not None:
+            aux_head_kwargs: dict[str, t.Any] = {}
+            if auxiliary_task_cfg.head.act:
+                aux_head_kwargs.setdefault("act", _resolve_act(auxiliary_task_cfg.head.act))
+            aux_channel_cfg = auxiliary_task_cfg.head.channel_agg
+            aux_head_kwargs.setdefault("agg", aux_channel_cfg.name)
+            aux_head_kwargs.setdefault("hidden_dim", auxiliary_task_cfg.head.hidden_dim)
+            aux_head_kwargs.setdefault("dropout", auxiliary_task_cfg.head.dropout)
+            aux_head_kwargs.update(auxiliary_task_cfg.head.kwargs or {})
+            self.auxiliary_head = create_head(
+                auxiliary_task_cfg.head.name,
+                target=auxiliary_task_cfg.target,
+                feature_dim=self.backbone.transformer_hidden_size,
+                n_mods=self.n_channels,
+                output_dim=auxiliary_task_cfg.output_dim,
+                is_classification=auxiliary_task_cfg.type == "classification",
+                is_seq=False,
+                **aux_head_kwargs,
+            )
+            self.auxiliary_temporal_agg = build_temporal_aggregator(
+                auxiliary_task_cfg.temporal_agg.name,
+                hidden_size=self.backbone.transformer_hidden_size,
+                **dict(auxiliary_task_cfg.temporal_agg.kwargs or {}),
+            )
 
         self.separate_adapters = False  # default
         self._adapter_warning_logged = False
@@ -320,6 +355,7 @@ class Sleep2vecDownstreamModel(nn.Module):
                     token_mask = token_mask.to(torch.bool)
                 token_masks.append(token_mask)
 
+        merged_mask = None
         if self.is_seq and token_masks:
             merged_mask = token_masks[0]
             for mask in token_masks[1:]:
@@ -328,10 +364,14 @@ class Sleep2vecDownstreamModel(nn.Module):
                 if mask.shape != merged_mask.shape:
                     raise ValueError("Token masks must share the same shape for sequence heads.")
                 merged_mask = merged_mask & mask
-            output = self._call_head(feature_of_different_mods, merged_mask)
-        else:
-            output = self._call_head(feature_of_different_mods, None)
-        return output
+
+        main_output = self._call_head(feature_of_different_mods, merged_mask)
+        if not self._auxiliary_enabled():
+            return main_output
+
+        auxiliary_features = self._build_auxiliary_features(feature_of_different_mods, token_masks)
+        aux_output = self.auxiliary_head(auxiliary_features)
+        return DownstreamOutput(main_logits=main_output, aux_logits=aux_output)
 
     def _forward_seq(self, token_hidden, cls_hidden):
         if self.cls_usage == "cls":
@@ -372,10 +412,31 @@ class Sleep2vecDownstreamModel(nn.Module):
             self._head_accepts_token_mask = bool(getattr(self.head, "supports_token_mask", False))
         return self._head_accepts_token_mask
 
+    def _auxiliary_enabled(self) -> bool:
+        return self.auxiliary_task_cfg is not None and self.auxiliary_head is not None
+
     def _call_head(self, features: t.List[torch.Tensor], token_mask: torch.Tensor | None):
         if token_mask is not None and self._head_supports_token_mask():
             return self.head(features, token_mask=token_mask)
         return self.head(features)
+
+    def _build_auxiliary_features(
+        self,
+        features: t.List[torch.Tensor],
+        token_masks: t.List[torch.Tensor | None],
+    ) -> t.List[torch.Tensor]:
+        if not self._auxiliary_enabled():
+            return []
+
+        if not self.is_seq:
+            return list(features)
+
+        pooled_features: list[torch.Tensor] = []
+        for feature, token_mask in zip(features, token_masks):
+            if token_mask is None:
+                raise ValueError("Auxiliary metadata task requires token masks for sequence features.")
+            pooled_features.append(self.auxiliary_temporal_agg(feature, token_mask))
+        return pooled_features
 
     def load_pretrained_backbone(self, ckpt_path, use_ema: bool | str | None = True):
         logging.info(f"Loading pretrain-model init weights from {ckpt_path}")

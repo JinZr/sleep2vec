@@ -238,6 +238,60 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.finetune.task.output_dim == 2
 
 
+def test_load_finetune_config_parses_auxiliary_task_with_defaults(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["auxiliary_task"] = {
+        "enabled": True,
+        "target": "ahi",
+        "type": "regression",
+        "output_dim": 1,
+        "loss_weight": 0.2,
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.auxiliary_task is not None
+    assert bundle.finetune.auxiliary_task.target == "ahi"
+    assert bundle.finetune.auxiliary_task.type == "regression"
+    assert bundle.finetune.auxiliary_task.output_dim == 1
+    assert bundle.finetune.auxiliary_task.loss_weight == pytest.approx(0.2)
+    assert bundle.finetune.auxiliary_task.temporal_agg.name == "mean"
+    assert bundle.finetune.auxiliary_task.head.name == "regression"
+    assert bundle.finetune.auxiliary_task.head.channel_agg.name == "mean"
+
+
+def test_load_finetune_config_parses_auxiliary_task_custom_head(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["auxiliary_task"] = {
+        "enabled": True,
+        "target": "risk_flag",
+        "type": "classification",
+        "output_dim": 2,
+        "loss_weight": 0.3,
+        "temporal_agg": {"name": "attn", "kwargs": {"heads": 1, "temp": 1.0, "dropout": 0.0}},
+        "head": {
+            "name": "classification",
+            "channel_agg": {"name": "concat", "kwargs": {}},
+            "hidden_dim": 4,
+            "dropout": 0.2,
+            "act": "relu",
+            "kwargs": {},
+        },
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.auxiliary_task is not None
+    assert bundle.finetune.auxiliary_task.temporal_agg.name == "attn"
+    assert bundle.finetune.auxiliary_task.head.name == "classification"
+    assert bundle.finetune.auxiliary_task.head.channel_agg.name == "concat"
+    assert bundle.finetune.auxiliary_task.head.hidden_dim == 4
+    assert bundle.finetune.auxiliary_task.head.dropout == pytest.approx(0.2)
+    assert bundle.finetune.auxiliary_task.head.act == "relu"
+
+
 def test_load_finetune_config_parses_eval_visualizations(tmp_path: Path):
     payload = _finetune_payload()
     payload["finetune"]["eval_visualizations"] = {
@@ -367,6 +421,40 @@ def test_load_finetune_config_rejects_task_extra_fields(tmp_path: Path):
     config_path = _write_yaml(tmp_path, payload)
 
     with pytest.raises(ValueError, match="unsupported fields"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("aux_patch", "pattern"),
+    [
+        ({"type": "classification", "output_dim": 3}, "output_dim must be 2 for classification tasks in v1"),
+        ({"type": "regression", "output_dim": 2}, "output_dim must be 1 for regression tasks"),
+        ({"loss_weight": -0.1}, "loss_weight must be a non-negative number"),
+        ({"temporal_agg": {"name": "invalid"}}, "temporal_agg.name must be 'mean' or 'attn'"),
+        (
+            {"head": {"name": "temporal_conv", "channel_agg": {"name": "mean", "kwargs": {}}}},
+            "head.name must be 'classification' or 'regression' in v1",
+        ),
+        (
+            {"head": {"name": "regression", "channel_agg": {"name": "invalid", "kwargs": {}}}},
+            "head.channel_agg.name must be 'mean', 'concat', or 'gated_scalar'",
+        ),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_auxiliary_task(tmp_path: Path, aux_patch: dict, pattern: str):
+    payload = _finetune_payload()
+    auxiliary = {
+        "enabled": True,
+        "target": "ahi",
+        "type": "regression",
+        "output_dim": 1,
+        "loss_weight": 0.1,
+    }
+    auxiliary.update(aux_patch)
+    payload["finetune"]["auxiliary_task"] = auxiliary
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
         load_finetune_config(config_path)
 
 

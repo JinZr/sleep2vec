@@ -345,6 +345,40 @@ def test_apply_finetune_config_rejects_data_channel_mismatch(tmp_path: Path):
         apply_finetune_config(args)
 
 
+@pytest.mark.parametrize(
+    ("target", "pattern"),
+    [("source", "must resolve to tensor metadata"), ("path", "must resolve to tensor metadata")],
+)
+def test_apply_finetune_config_rejects_non_tensor_auxiliary_targets(tmp_path: Path, target: str, pattern: str):
+    payload = _finetune_payload()
+    payload["finetune"]["auxiliary_task"] = {
+        "enabled": True,
+        "target": target,
+        "type": "classification",
+        "output_dim": 2,
+    }
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    with pytest.raises(ValueError, match=pattern):
+        apply_finetune_config(args)
+
+
+def test_apply_finetune_config_rejects_age_auxiliary_classification(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["auxiliary_task"] = {
+        "enabled": True,
+        "target": "age",
+        "type": "classification",
+        "output_dim": 2,
+    }
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    with pytest.raises(ValueError, match="must match the built-in semantics"):
+        apply_finetune_config(args)
+
+
 def test_dump_cli_args_yaml_converts_namespace_and_paths(tmp_path: Path):
     args = argparse.Namespace(
         alpha=1,

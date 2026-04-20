@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "branch": "dev/aux",
+  "commit": "99d22deee69cc3cb9eae9229a8faaa4c33974824",
+  "generated_at": "2026-04-20T10:01:10Z",
+  "mode": "initialize-branch",
+  "source_of_truth": "checked-out branch",
+  "baseline": {
+    "main_commit": "99d22deee69cc3cb9eae9229a8faaa4c33974824",
+    "merge_base_with_main": "99d22deee69cc3cb9eae9229a8faaa4c33974824",
+    "commits_ahead_of_main": 0,
+    "main_index_available": true,
+    "notes": [
+      "dev/aux starts from the current main commit and diverges through working-tree edits that add temporal_unet plus a general metadata auxiliary-task path",
+      "the existing dev/ahi handbook was used as the closest feature baseline for the built-in ahi runtime pages",
+      "main handbook remains the baseline for branch-vs-main delta reporting"
+    ]
+  },
+  "tracked_roots": [
+    "sleep2vec/",
+    "data/",
+    "preprocess/",
+    "sleep2vec2/",
+    "sleep2vec_moe/",
+    "sleep2vec_hires/",
+    "configs/",
+    "tests/",
+    "utils/"
+  ],
+  "coverage": {
+    "tracked_file_counts": {
+      "sleep2vec": 79,
+      "data": 6,
+      "preprocess": 6,
+      "sleep2vec2": 0,
+      "sleep2vec_moe": 0,
+      "sleep2vec_hires": 0,
+      "configs": 33,
+      "tests": 25,
+      "utils": 2
+    },
+    "function_catalog_scope": [
+      "config parsing and CLI binding",
+      "registry and builder surfaces",
+      "runtime entrypoints and checkpoint utilities",
+      "core backbone and downstream model contracts",
+      "dataset, metadata, and sampler contracts",
+      "preprocessing and preset generation",
+      "diagnostics and visualization hooks"
+    ],
+    "workflow_scope": [
+      "pretrain",
+      "finetune",
+      "infer and checkpoint averaging",
+      "preprocessing and preset generation"
+    ]
+  },
+  "working_tree_dirty": true,
+  "working_tree_notes": [
+    "Pending working-tree edits add temporal_unet, a metadata auxiliary-task path, one new AHI config recipe, and focused tests."
+  ],
+  "refresh_notes": [
+    "Initialized dev/aux from the closest built-in-ahi handbook baseline.",
+    "Retargeted branch metadata and coverage counts to the current dev/aux working tree.",
+    "Documented temporal_unet plus the max-reuse metadata auxiliary-task path."
+  ],
+  "required_outputs": [
+    "README.md",
+    "MANIFEST.json",
+    "SYSTEM_OVERVIEW.md",
+    "MODULE_MAP.md",
+    "REUSE_GUIDE.md",
+    "CHANGELOG.md",
+    "DELTA_FROM_MAIN.md",
+    "FUNCTIONS/",
+    "WORKFLOWS/"
+  ],
+  "variant_status": {
+    "sleep2vec2": "no tracked source files on this branch",
+    "sleep2vec_moe": "no tracked source files on this branch",
+    "sleep2vec_hires": "no tracked source files on this branch"
+  },
+  "stale_entries_removed": [
+    "copied dev/ahi branch labels in README, MANIFEST, CHANGELOG, and DELTA_FROM_MAIN",
+    "stale branch-delta wording that implied dev/aux carried the committed dev/ahi history",
+    "reuse guidance that no longer matched the max-reuse auxiliary-task implementation"
+  ],
+  "unresolved_ambiguities": [
+    "pytest was unavailable in the local Python environment, so verification relied on compileall and targeted config checks rather than the full pytest suite."
+  ]
+}

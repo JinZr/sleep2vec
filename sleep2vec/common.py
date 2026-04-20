@@ -9,7 +9,7 @@ import typing as t
 
 import yaml
 
-from sleep2vec.config import ModelConfig, TaskConfig, load_finetune_config
+from sleep2vec.config import AuxiliaryTaskConfig, ModelConfig, TaskConfig, load_finetune_config
 
 _BUILTIN_TASK_SPECS = {
     "stage3": {
@@ -67,6 +67,8 @@ _BUILTIN_TASK_SPECS = {
         "monitor_mod": "min",
     },
 }
+
+_NON_TENSOR_METADATA_TARGETS = {"source", "path"}
 
 
 def is_builtin_seq_task(label_name: str | None) -> bool:
@@ -185,18 +187,65 @@ def persist_run_config_and_args(
         _write_cli_args(args, exp_dir / f"cli_args{suffix}.yaml")
 
 
+def _validate_metadata_target_support(
+    *,
+    target_name: str,
+    is_classification: bool,
+    output_dim: int,
+    allow_multiclass: bool,
+    context: str,
+) -> None:
+    """Fail fast for unsupported metadata-target classification semantics."""
+    if is_classification and int(output_dim) > 2 and not allow_multiclass:
+        raise ValueError(
+            f"{context} currently supports only binary labels (output_dim=2). "
+            f"Got target '{target_name}' with output_dim={output_dim}. "
+            "Extend metadata label encoding before using multiclass metadata targets."
+        )
+
+
 def _validate_metadata_label_support(args) -> None:
     """Fail fast for unsupported metadata task semantics."""
     if (
         getattr(args, "is_classification", False)
-        and int(getattr(args, "output_dim", 0)) > 2
         and not is_builtin_seq_task(getattr(args, "label_name", None))
     ):
-        raise ValueError(
-            "Metadata classification currently supports only binary labels (output_dim=2) for non-built-in sequence tasks. "
-            f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
-            "Extend metadata label encoding before using multiclass metadata targets."
+        _validate_metadata_target_support(
+            target_name=str(args.label_name),
+            is_classification=True,
+            output_dim=int(getattr(args, "output_dim", 0)),
+            allow_multiclass=False,
+            context="Metadata classification",
         )
+
+
+def _validate_auxiliary_task_cfg(aux_cfg: AuxiliaryTaskConfig) -> None:
+    if aux_cfg.target in _NON_TENSOR_METADATA_TARGETS:
+        raise ValueError(
+            "finetune.auxiliary_task.target must resolve to tensor metadata; "
+            f"string metadata target '{aux_cfg.target}' is not supported."
+        )
+    if is_builtin_stage_task(aux_cfg.target):
+        raise ValueError(
+            "finetune.auxiliary_task.target currently supports metadata targets only; "
+            f"built-in sequence target '{aux_cfg.target}' is not supported."
+        )
+    built_in_spec = _BUILTIN_TASK_SPECS.get(aux_cfg.target)
+    if built_in_spec is not None and not built_in_spec.get("is_seq", False):
+        expected_type = str(built_in_spec["type"])
+        expected_output_dim = int(built_in_spec["output_dim"])
+        if aux_cfg.type != expected_type or int(aux_cfg.output_dim) != expected_output_dim:
+            raise ValueError(
+                f"finetune.auxiliary_task for built-in metadata target '{aux_cfg.target}' must match "
+                f"the built-in semantics ({expected_type}, output_dim={expected_output_dim})."
+            )
+    _validate_metadata_target_support(
+        target_name=aux_cfg.target,
+        is_classification=aux_cfg.type == "classification",
+        output_dim=aux_cfg.output_dim,
+        allow_multiclass=False,
+        context="finetune.auxiliary_task classification",
+    )
 
 
 def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict[str, t.Any]) -> None:
@@ -319,6 +368,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
     args.eval_visualizations = finetune_cfg.eval_visualizations
     args.head_kwargs = {}
+    args.auxiliary_task = finetune_cfg.auxiliary_task
 
     # Fail fast if requested dataloader channels differ from model/backbone channels.
     if set(args.data_channel_names) != set(args.channel_names):
@@ -328,6 +378,8 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
         )
 
     apply_task_flags(args, config_bundle.finetune.task)
+    if finetune_cfg.auxiliary_task is not None:
+        _validate_auxiliary_task_cfg(finetune_cfg.auxiliary_task)
     return config_bundle, model_cfg
 
 

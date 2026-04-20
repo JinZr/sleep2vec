@@ -106,6 +106,27 @@ class ChannelAggConfig:
 
 
 @dataclass
+class AuxiliaryHeadConfig:
+    channel_agg: "ChannelAggConfig"
+    name: str
+    hidden_dim: int | None = None
+    dropout: float = 0.1
+    act: str | None = None
+    kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass
+class AuxiliaryTaskConfig:
+    target: str
+    type: str
+    output_dim: int
+    head: "AuxiliaryHeadConfig"
+    enabled: bool = True
+    loss_weight: float = 0.1
+    temporal_agg: "TemporalAggConfig" = field(default_factory=TemporalAggConfig)
+
+
+@dataclass
 class ModelConfig:
     channels: t.List[ChannelConfig]
     backbone: BackboneConfig = field(default_factory=BackboneConfig)
@@ -218,6 +239,7 @@ class FinetuneConfig:
     layer_mix: LayerMixConfig | None = None
     task: TaskConfig | None = None
     eval_visualizations: EvalVisualizationsConfig | None = None
+    auxiliary_task: "AuxiliaryTaskConfig | None" = None
 
 
 @dataclass
@@ -297,6 +319,10 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     )
 
     return HeadConfig(temporal_agg=temporal_cfg, channel_agg=channel_cfg, **head_raw)
+
+
+def _copy_channel_agg_config(cfg: ChannelAggConfig) -> ChannelAggConfig:
+    return ChannelAggConfig(name=cfg.name, kwargs=dict(cfg.kwargs or {}))
 
 
 def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfig:
@@ -423,6 +449,133 @@ def _build_eval_visualizations_config(raw: t.Any) -> EvalVisualizationsConfig | 
     )
 
 
+def _build_auxiliary_head_config(
+    raw: t.Any,
+    *,
+    task_type: str,
+    default_channel_agg: ChannelAggConfig,
+) -> AuxiliaryHeadConfig:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.auxiliary_task.head must be a mapping when provided.")
+
+    allowed = {"name", "channel_agg", "hidden_dim", "dropout", "act", "kwargs"}
+    extra = sorted(set(raw.keys()) - allowed)
+    if extra:
+        raise ValueError(f"finetune.auxiliary_task.head has unsupported fields: {extra}")
+
+    name = raw.get("name") or ("classification" if task_type == "classification" else "regression")
+    if not isinstance(name, str) or not name:
+        raise ValueError("finetune.auxiliary_task.head.name must be a non-empty string when provided.")
+    if name not in {"classification", "regression"}:
+        raise ValueError(
+            "finetune.auxiliary_task.head.name must be 'classification' or 'regression' in v1."
+        )
+    if task_type == "classification" and name != "classification":
+        raise ValueError("finetune.auxiliary_task.head.name must be 'classification' for classification tasks.")
+    if task_type == "regression" and name != "regression":
+        raise ValueError("finetune.auxiliary_task.head.name must be 'regression' for regression tasks.")
+
+    channel_block = raw.get("channel_agg")
+    if channel_block is None:
+        channel_cfg = _copy_channel_agg_config(default_channel_agg)
+    else:
+        channel_cfg = (
+            ChannelAggConfig(**channel_block) if isinstance(channel_block, dict) else ChannelAggConfig(name=channel_block)
+        )
+
+    hidden_dim = raw.get("hidden_dim")
+    if hidden_dim is not None and (not isinstance(hidden_dim, int) or hidden_dim < 1):
+        raise ValueError("finetune.auxiliary_task.head.hidden_dim must be a positive integer when provided.")
+
+    dropout = raw.get("dropout", 0.1)
+    if not isinstance(dropout, (int, float)) or float(dropout) < 0:
+        raise ValueError("finetune.auxiliary_task.head.dropout must be a non-negative number.")
+
+    act = raw.get("act")
+    if act is not None and (not isinstance(act, str) or not act):
+        raise ValueError("finetune.auxiliary_task.head.act must be a non-empty string when provided.")
+
+    kwargs = raw.get("kwargs") or {}
+    if not isinstance(kwargs, dict):
+        raise ValueError("finetune.auxiliary_task.head.kwargs must be a mapping when provided.")
+
+    return AuxiliaryHeadConfig(
+        name=name,
+        channel_agg=channel_cfg,
+        hidden_dim=hidden_dim,
+        dropout=float(dropout),
+        act=act,
+        kwargs=kwargs,
+    )
+
+
+def _build_auxiliary_task_config(
+    raw: t.Any,
+    *,
+    default_channel_agg: ChannelAggConfig,
+) -> AuxiliaryTaskConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.auxiliary_task must be a mapping when provided.")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("finetune.auxiliary_task.enabled must be a boolean.")
+    if not enabled:
+        return None
+
+    allowed = {"enabled", "target", "type", "output_dim", "loss_weight", "temporal_agg", "head"}
+    extra = sorted(set(raw.keys()) - allowed)
+    if extra:
+        raise ValueError(f"finetune.auxiliary_task has unsupported fields: {extra}")
+
+    target = raw.get("target")
+    if not isinstance(target, str) or not target:
+        raise ValueError("finetune.auxiliary_task.target must be a non-empty string.")
+
+    task_type = raw.get("type")
+    if task_type not in {"classification", "regression"}:
+        raise ValueError("finetune.auxiliary_task.type must be 'classification' or 'regression'.")
+
+    output_dim = raw.get("output_dim")
+    if not isinstance(output_dim, int) or output_dim < 1:
+        raise ValueError("finetune.auxiliary_task.output_dim must be a positive integer.")
+    if task_type == "classification" and output_dim != 2:
+        raise ValueError("finetune.auxiliary_task.output_dim must be 2 for classification tasks in v1.")
+    if task_type == "regression" and output_dim != 1:
+        raise ValueError("finetune.auxiliary_task.output_dim must be 1 for regression tasks.")
+
+    loss_weight = raw.get("loss_weight", 0.1)
+    if not isinstance(loss_weight, (int, float)) or float(loss_weight) < 0:
+        raise ValueError("finetune.auxiliary_task.loss_weight must be a non-negative number.")
+
+    temporal_block = raw.get("temporal_agg")
+    temporal_cfg = (
+        TemporalAggConfig(**temporal_block)
+        if isinstance(temporal_block, dict)
+        else TemporalAggConfig(name=temporal_block) if temporal_block is not None else TemporalAggConfig()
+    )
+
+    head_cfg = _build_auxiliary_head_config(
+        raw.get("head"),
+        task_type=task_type,
+        default_channel_agg=default_channel_agg,
+    )
+
+    return AuxiliaryTaskConfig(
+        enabled=True,
+        target=target,
+        type=task_type,
+        output_dim=output_dim,
+        loss_weight=float(loss_weight),
+        temporal_agg=temporal_cfg,
+        head=head_cfg,
+    )
+
+
 def _build_task_config(raw: t.Any) -> TaskConfig | None:
     if raw is None:
         return None
@@ -480,6 +633,17 @@ def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cf
         raise ValueError(
             f"layer_mix.layer_indices must be <= num_hidden_layers ({max_layers}); "
             f"got {layer_mix_cfg.layer_indices}."
+        )
+
+
+def _validate_auxiliary_task_runtime_config(aux_cfg: AuxiliaryTaskConfig | None) -> None:
+    if aux_cfg is None:
+        return
+    if aux_cfg.temporal_agg.name not in {"mean", "attn"}:
+        raise ValueError("finetune.auxiliary_task.temporal_agg.name must be 'mean' or 'attn'.")
+    if aux_cfg.head.channel_agg.name not in {"mean", "concat", "gated_scalar"}:
+        raise ValueError(
+            "finetune.auxiliary_task.head.channel_agg.name must be 'mean', 'concat', or 'gated_scalar'."
         )
 
 
@@ -677,7 +841,12 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
     eval_visualizations_cfg = _build_eval_visualizations_config(finetune_block.get("eval_visualizations"))
     task_cfg = _build_task_config(finetune_block.get("task"))
+    auxiliary_task_cfg = _build_auxiliary_task_config(
+        finetune_block.get("auxiliary_task"),
+        default_channel_agg=model_cfg.head.channel_agg,
+    )
     _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
+    _validate_auxiliary_task_runtime_config(auxiliary_task_cfg)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
     finetune_cfg = FinetuneConfig(
@@ -686,6 +855,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         layer_mix=layer_mix_cfg,
         task=task_cfg,
         eval_visualizations=eval_visualizations_cfg,
+        auxiliary_task=auxiliary_task_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
@@ -702,6 +872,8 @@ __all__ = [
     "AdaptPairSchedulePoint",
     "AdaptStage1Config",
     "AdaptStage2Config",
+    "AuxiliaryHeadConfig",
+    "AuxiliaryTaskConfig",
     "ChannelConfig",
     "HeadConfig",
     "LossConfig",

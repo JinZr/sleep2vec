@@ -94,6 +94,46 @@ def test_build_finetune_loader_uses_ahi_tokens_for_ahi(monkeypatch):
     assert _DummyDataset.last_init_kwargs["meta_data_regression_names"] == ["ahi", "tst"]
 
 
+def test_build_finetune_loader_keeps_builtin_ahi_metadata_deduped_with_aux_task(monkeypatch):
+    monkeypatch.setattr("sleep2vec.utils.PSGPretrainDataset", _DummyDataset)
+    args = _seq_args(
+        "ahi",
+        label_source_name="ahi",
+        output_dim=30,
+        is_multilabel=True,
+        auxiliary_label_source_names=["stage5"],
+    )
+    args.auxiliary_task = argparse.Namespace(target="ahi", type="regression")
+
+    _build_finetune_loader(
+        args,
+        split=["train"],
+        sources=["demo"],
+        shuffle=False,
+        is_train_set=False,
+    )
+
+    assert _DummyDataset.last_init_kwargs["meta_data_names"] == ["ahi", "tst"]
+    assert _DummyDataset.last_init_kwargs["meta_data_regression_names"] == ["ahi", "tst"]
+
+
+def test_build_finetune_loader_adds_custom_auxiliary_metadata_target(monkeypatch):
+    monkeypatch.setattr("sleep2vec.utils.PSGPretrainDataset", _DummyDataset)
+    args = _seq_args("stage3", label_source_name="stage5", output_dim=3)
+    args.auxiliary_task = argparse.Namespace(target="risk_flag", type="classification")
+
+    _build_finetune_loader(
+        args,
+        split=["train"],
+        sources=["demo"],
+        shuffle=False,
+        is_train_set=False,
+    )
+
+    assert _DummyDataset.last_init_kwargs["meta_data_names"] == ["risk_flag"]
+    assert _DummyDataset.last_init_kwargs["meta_data_regression_names"] == []
+
+
 def test_get_targets_remaps_stage_labels_and_preserves_ignore_index():
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
     module.args = argparse.Namespace(
@@ -230,6 +270,33 @@ def test_compute_loss_ignores_ahi_padding():
 
     assert valid_count == 5
     assert torch.isclose(loss, torch.tensor(math.log(2.0), dtype=torch.float32))
+
+
+def test_compute_auxiliary_loss_supports_regression_and_classification():
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    module.args = argparse.Namespace(device="cpu")
+    module._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    module._regression_loss = torch.nn.MSELoss()
+    module.finetune_config = argparse.Namespace(auxiliary_task=argparse.Namespace(target="ahi", type="regression"))
+
+    batch = {"metadata": {"ahi": torch.tensor([1.0, -1.0], dtype=torch.float32)}}
+    aux_logits = torch.tensor([[0.5], [0.25]], dtype=torch.float32)
+
+    loss, valid_count = module._compute_auxiliary_loss(aux_logits, batch)
+
+    assert valid_count == 1
+    assert torch.isclose(loss, torch.tensor(0.25, dtype=torch.float32))
+
+    module.finetune_config = argparse.Namespace(
+        auxiliary_task=argparse.Namespace(target="risk_flag", type="classification")
+    )
+    batch = {"metadata": {"risk_flag": torch.tensor([1, -1], dtype=torch.long)}}
+    aux_logits = torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32)
+
+    loss, valid_count = module._compute_auxiliary_loss(aux_logits, batch)
+
+    assert valid_count == 1
+    assert loss.item() > 0
 
 
 def test_compute_downstream_metrics_reports_stage_specific_scores_for_stage3_and_stage4():
