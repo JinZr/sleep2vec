@@ -32,8 +32,9 @@ Primary code path:
    - `avg_ckpts == 1`: use `ckpt_path` directly.
    - `avg_ckpts > 1`: choose candidate files from `avg_ckpt_dir` or checkpoint parent.
    - When using `best` or `last` with averaging, `avg_ckpt_dir` is required because the alias is not a concrete file.
+   - Built-in `ahi` rejects averaging because the stored threshold is checkpoint-specific.
 6. Run evaluation.
-7. Optionally append metrics to a CSV.
+7. Optionally append metrics to a CSV through `sleep2vec.results.save_result_csv`.
 
 ## Checkpoint Selection Policy
 
@@ -50,9 +51,10 @@ Primary code path:
 
 ## Important Runtime Decisions
 
-- `infer.py` is the only reviewed place that handles CPU precision fallback for `bf16`.
+- `infer.py` is the reviewed place that handles CPU precision fallback for `bf16`.
 - Inference can initialize W&B separately from training and only on rank zero.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
+- AHI inference requires `ahi_eval_threshold` to be present in the checkpoint state.
 
 ## Edit Hotspots
 
