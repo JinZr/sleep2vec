@@ -23,6 +23,7 @@ from sleep2vec.metrics import (
     filter_segments_by_stage,
     merge_intervals,
     select_best_ahi_threshold,
+    vectorized_event_stats,
 )
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 
@@ -92,6 +93,13 @@ def test_filter_segments_by_stage_keeps_sleep_overlap_at_segment_end():
 def test_filter_segments_by_duration_uses_inclusive_duration_semantics():
     filtered = filter_segments_by_duration([[0, 8], [0, 9], [0, 10], [20, 35]])
     assert filtered == [[0, 9], [0, 10], [20, 35]]
+
+
+def test_vectorized_event_stats_uses_one_to_one_matching():
+    tp, fp, fn = vectorized_event_stats([[0, 9], [14, 23]], [[0, 19]], threshold=0.1)
+    assert tp == 1.0
+    assert fp == 0.0
+    assert fn == 1.0
 
 
 def test_evaluate_single_ahi_record_summary_ahi_does_not_merge_close_predictions():

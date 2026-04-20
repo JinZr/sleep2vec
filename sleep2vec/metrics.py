@@ -175,9 +175,27 @@ def vectorized_event_stats(gt_segments, pred_segments, *, threshold: float = 0.5
     pre_lengths = (pre_seg[:, 1] - pre_seg[:, 0] + 1)[None, :]
     overlap = np.where(intersect_mask, gt_lengths + pre_lengths - union, 0.0)
     ratio = np.where(union > 0, overlap / union, 0.0)
-    matched = (ratio > threshold).any(axis=1).astype(np.float32)
+    matched = ratio > threshold
 
-    tp = float(matched.sum())
+    # IoU is computed for every GT/pred pair first, then we enforce a one-to-one
+    # assignment so a single predicted event cannot claim multiple GT events and
+    # drive FP negative.
+    matched_gt_by_pred = np.full(pre_seg.shape[0], -1, dtype=np.int32)
+
+    def _try_match(gt_idx: int, seen_pred: np.ndarray) -> bool:
+        for pred_idx in np.flatnonzero(matched[gt_idx]):
+            if seen_pred[pred_idx]:
+                continue
+            seen_pred[pred_idx] = True
+            current_gt = matched_gt_by_pred[pred_idx]
+            if current_gt == -1 or _try_match(current_gt, seen_pred):
+                matched_gt_by_pred[pred_idx] = gt_idx
+                return True
+        return False
+
+    tp = 0.0
+    for gt_idx in range(matched.shape[0]):
+        tp += float(_try_match(gt_idx, np.zeros(pre_seg.shape[0], dtype=bool)))
     fp = float(len(pred_segments) - tp)
     fn = float(len(gt_segments) - tp)
     return tp, fp, fn
