@@ -22,7 +22,7 @@ Primary code path:
 
 1. Load and bind finetune YAML.
    - Parse typed config bundle with `load_finetune_config`.
-   - Copy channels, data paths, task semantics, and LoRA flags into `args`.
+   - Copy channels, data paths, task semantics, LoRA flags, and eval-visualization config into `args`.
    - Reject mismatched `data.data_channel_names`.
 2. Resolve version name.
    - Prefer `--version-name`.
@@ -32,26 +32,32 @@ Primary code path:
    - `log-finetune/<version>/cli_args.yaml`
 4. Build train/val/test loaders.
    - Always uses `allow_missing_channels=False`.
-   - For `stage5`, adds `stage5` as a dataset-only pseudo-channel so token labels exist in the batch.
+   - Built-in sequence tasks append runtime label channels to `dataset_channel_names`.
+   - `stage3` and `stage4` still pull raw labels from `stage5`.
+   - `ahi` adds `ahi` as the primary token label source and `stage5` as an auxiliary label source.
 5. Instantiate `Sleep2vecFinetuning`.
    - Creates `Sleep2vecPretrainModel` backbone.
    - Wraps it in `Sleep2vecDownstreamModel`.
    - Optionally loads pretrained backbone checkpoint.
    - Optionally freezes backbone and inserts LoRA adapters.
    - Optionally freezes tokenizers.
-   - Optionally attaches model averager.
+   - Optionally attaches a model averager.
+   - Optionally enables downstream evaluation visualizations.
 6. Fit.
    - Monitor comes from task semantics in `apply_task_flags`.
    - Best checkpoint is copied to `best.ckpt` when available.
 7. Test.
    - Uses best model after training, or `--ckpt-path` when `epochs == 0`.
-   - Result metrics appended via `save_result_csv`.
+   - Result metrics append via `sleep2vec.results.save_result_csv`.
 
 ## Label Semantics
 
 Built-in labels:
 
+- `stage3`: classification, `output_dim=3`, sequence prediction, source labels from `stage5`
+- `stage4`: classification, `output_dim=4`, sequence prediction, source labels from `stage5`
 - `stage5`: classification, `output_dim=5`, sequence prediction
+- `ahi`: multilabel token prediction with `output_dim=30`, validation/test reduced through event-level AHI metrics and a fitted threshold
 - `sex`: classification, `output_dim=2`, non-sequence
 - `age`: regression, `output_dim=1`, non-sequence
 
@@ -62,18 +68,19 @@ Custom labels require `finetune.task` in YAML.
 - Task semantics are enforced before loaders are built.
 - CLS vs token downstream behavior is defined by `model.cls`, not by folder naming in `configs/`.
 - Layer mix is applied inside `Sleep2vecDownstreamModel`, not in the trainer.
-- Loss and metric reduction happen inside `Sleep2vecFinetuning`, not in heads.
+- AHI validation fits and stores an `ahi_eval_threshold` inside the checkpoint; test and inference require that threshold.
+- Confusion matrices, ROC curves, and regression scatter plots are logged from `Sleep2vecFinetuning`, not from entrypoints.
 
 ## Outputs
 
 - Checkpoints under `log-finetune/<version>/checkpoints/`
 - Stable `best.ckpt` copy when training ran and a best checkpoint exists
-- Optional results CSV row via `save_result_csv`
+- Optional results CSV row via `sleep2vec.results.save_result_csv`
 - W&B run under project `sleep2vec-finetune`
 
 ## Edit Hotspots
 
 - Change task semantics: `sleep2vec/common.py`, `sleep2vec/config.py`
 - Change head/layer-mix/LoRA behavior: `sleep2vec/downstream_model.py`, `sleep2vec/downstreams/`
-- Change per-stage loss/metrics aggregation: `sleep2vec/sleep2vec_finetuning.py`
-- Change finetune data loader or stage5 batching: `sleep2vec/utils.py`, `data/default_dataset.py`
+- Change per-stage loss/metrics aggregation or AHI threshold behavior: `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`
+- Change finetune data loader or built-in label-channel wiring: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`

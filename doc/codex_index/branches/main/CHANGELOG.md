@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-04-20
+
+- Refreshed the `main` branch engineering index for commit `99d22deee69cc3cb9eae9229a8faaa4c33974824`.
+- Updated tracked-file coverage counts to reflect the current branch:
+  - `sleep2vec/`: 78
+  - `configs/`: 32
+  - `tests/`: 24
+  - `utils/`: 2
+- Added workflow coverage for staged adaptation and config validation:
+  - `WORKFLOWS/ADAPT.md`
+  - `WORKFLOWS/CONFIG_VALIDATION.md`
+- Refreshed function catalogs to cover:
+  - built-in `stage3` / `stage4` / `ahi` task semantics
+  - adaptation config, phase validation, and optimizer grouping
+  - result CSV writes from `sleep2vec/results.py`
+  - downstream evaluation visualization hooks
+  - strict preset-build validation and required-channel prefiltering
+  - AHI event metrics and threshold-search flow
+- Updated the system overview and module map to reflect:
+  - a single validation loader with sequential pair evaluation in pretrain
+  - stage-specific adaptation checkpoint layout
+  - checkpoint-specific AHI thresholds during test/inference
+  - the config-policy tooling path in `utils/check_configs.py`
+- Stale entries removed or corrected:
+  - old claim that pretrain builds one validation loader per pair
+  - old claim that `stage5` was the only built-in sequence task
+  - old reuse hotspot pointing at `sleep2vec.metrics.save_result_csv`
+  - outdated workflow coverage that omitted `adapt`
+
 ## 2026-03-25
 
 - Created the initial `main` branch engineering index.
