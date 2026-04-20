@@ -298,6 +298,47 @@ def test_psg_dataset_loads_builtin_ahi_scalars_from_npz_for_old_finetune_preset_
     assert batch["metadata"]["tst"].tolist() == [4.5]
 
 
+def test_psg_dataset_loads_builtin_ahi_scalars_from_npz_for_csv_finetune_metadata(tmp_path: Path):
+    npz_path = tmp_path / "csv_sample.npz"
+    _write_ahi_npz(npz_path, np.arange(60, dtype=np.float32), ahi=9.5, tst=3.5)
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "train",
+                "duration": 60,
+                "age": 40,
+                "sex": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    dataset = PSGPretrainDataset(
+        channel_names=["ahi"],
+        channel_input_dims={},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["train"],
+        max_tokens=2,
+        token_sec=30,
+        mask_rate=0.0,
+        meta_data_names=["ahi", "tst"],
+        meta_data_regression_names=["ahi", "tst"],
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+
+    assert batch["metadata"]["ahi"].tolist() == [9.5]
+    assert batch["metadata"]["tst"].tolist() == [3.5]
+
+
 def test_psg_dataset_missing_channel_fallback_recognizes_builtin_ahi_for_legacy_preset(tmp_path: Path):
     npz_path = tmp_path / "preset_missing_channels.npz"
     _write_ahi_npz(npz_path, np.arange(60, dtype=np.float32), ahi=7.5, tst=4.0, stage5=[1.0, 2.0])

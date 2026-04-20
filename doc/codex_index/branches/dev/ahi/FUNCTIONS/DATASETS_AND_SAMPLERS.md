@@ -4,7 +4,7 @@
 
 - File: `data/psg_pretrain_dataset.py`
 - Signature: `PSGPretrainDataset.__init__(channel_names, save_preset_path, load_preset_path, index, split, max_tokens, token_sec=30, stride_tokens=0, mask_rate=0.15, ..., allow_missing_channels=False, bucket_by_available_channels=False, train_pair_sampling=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, **kwargs)`
-- Purpose and contract: canonical PSG dataset constructor. It either loads a preset or reads one or more CSV indexes, windows each row, builds the fixed channel registry, and delegates the rest to `DefaultDataset`.
+- Purpose and contract: canonical PSG dataset constructor. It either loads a preset or reads one or more CSV indexes, windows each row, builds the fixed channel registry, and delegates the rest to `DefaultDataset`. When built-in `ahi` requests summary metadata (`ahi`, `tst`), the CSV path does not require same-named index columns because those scalars come from NPZ backfill.
 - Important inputs/outputs: channel list, preset/index source, split, token windowing, and batching flags in; dataset instance out.
 - Side effects: when building from CSV, stamps `metadata["source"]` from the CSV path and expands each row into one or more `SampleIndex` windows.
 - Key callers/callees: callers are `sleep2vec.utils` and `preprocess/save_dataset_presets.py`; callees are `window`, `default_extractor`, `default_tokenizer`, `default_mlm_mask_generator`, and `DefaultDataset.__init__`.
@@ -37,12 +37,12 @@
 
 - File: `data/default_dataset.py`
 - Signature: `DefaultDataset.filter_with_metadata(self) -> list[SampleIndex]`
-- Purpose and contract: drop samples that lack requested metadata, do not match configured sources, or do not belong to requested splits. For built-in `ahi` runtime loading, missing serialized `ahi` / `tst` metadata on legacy presets is tolerated because those scalars are backfilled from NPZ during collate.
+- Purpose and contract: drop samples that lack requested metadata, do not match configured sources, or do not belong to requested splits. For built-in `ahi` runtime loading, missing serialized or CSV-indexed `ahi` / `tst` metadata is tolerated because those scalars are backfilled from NPZ during collate.
 - Important inputs/outputs: operates on `self.data`; returns the filtered list.
 - Side effects: mutates `self.data`.
 - Key callers/callees: called during dataset initialization.
 - Reuse guidance: use this path for metadata/source/split filtering rather than re-filtering in callers.
-- Duplication risk notes: filtering semantics belong at dataset-construction time, not in loaders or trainers. Do not add a second legacy-preset compatibility filter in finetune helpers.
+- Duplication risk notes: filtering semantics belong at dataset-construction time, not in loaders or trainers. Do not add a second AHI metadata-compatibility filter in finetune helpers.
 
 ## `DefaultDataset.select_few_shot`
 
@@ -158,7 +158,7 @@
 - Side effects: seed initialization in `get_finetune_dataloaders`.
 - Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callee is `PSGPretrainDataset.dataloader`.
 - Reuse guidance: use these helpers for any finetune or inference data-loading path.
-- Duplication risk notes: built-in seq label-channel insertion (`stage5`, `ahi`) and metadata label selection should not be duplicated in trainer code. `ahi` additionally requires scalar summary metadata (`ahi`, `tst`) to survive batch tensorization as regression-style metadata for event-based evaluation, and its preset-validation channel set now auto-expands to include `stage5`; legacy presets may still rely on collate-time NPZ backfill for serialized scalars.
+- Duplication risk notes: built-in seq label-channel insertion (`stage5`, `ahi`) and metadata label selection should not be duplicated in trainer code. `ahi` additionally requires scalar summary metadata (`ahi`, `tst`) to survive batch tensorization as regression-style metadata for event-based evaluation, and its preset-validation channel set now auto-expands to include `stage5`; CSV-backed finetune indexes and legacy presets may rely on collate-time NPZ backfill for those scalars.
 
 ## `preprocess.save_dataset_presets._resolve_effective_min_channels`
 

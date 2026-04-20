@@ -18,7 +18,7 @@ This page answers the practical question: when you need to add or change behavio
 | Pretrained backbone loading | `Sleep2vecDownstreamModel.load_pretrained_backbone` | Encodes prefix handling, EMA fallback, and CLS mismatch warnings | Custom checkpoint slicing logic |
 | LoRA insertion | `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora` | Centralizes freeze policy and adapter insertion | Direct `peft` calls in trainer code |
 | Pretrain data loaders | `sleep2vec.utils.get_pretrain_dataloader` | Owns missing-channel mode, pair-first training, and validation loader construction | Building `PSGPretrainDataset` loaders manually in entrypoints |
-| Finetune data loaders | `sleep2vec.utils.get_finetune_dataloaders` and `_build_finetune_loader` | Own split/source choices and built-in sequence pseudo-channel behavior (`stage5`, `ahi`) plus the built-in AHI summary metadata (`ahi`, `tst`) and required auxiliary `stage5` stream for final evaluation | Hand-rolled finetune loader creation |
+| Finetune data loaders | `sleep2vec.utils.get_finetune_dataloaders` and `_build_finetune_loader` | Own split/source choices and built-in sequence pseudo-channel behavior (`stage5`, `ahi`) plus the built-in AHI summary metadata (`ahi`, `tst`) from NPZ backfill and required auxiliary `stage5` stream for final evaluation | Hand-rolled finetune loader creation |
 | Sample validation | `data.utils.filter_valid_sample_indices` | Produces `payload["available_channels"]`, persists built-in AHI scalars, and drops broken or all-ignored built-in AHI samples early | Custom preset-building loops |
 | Runtime batch assembly | `DefaultDataset.dataloader` | Single source for collate-time NPZ reads, tokenization, metadata packing, `w/h` matrices, pair tagging, and ignore-value padding for runtime label channels | New collate functions outside `data/default_dataset.py` |
 | Missing-channel training batches | `PairFirstBatchSampler` | Canonical train-time sampler for pair-first missing-channel pretraining | Ad hoc pair scheduling loops |
@@ -50,7 +50,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Reuse the built-in task helper family in `sleep2vec.common`.
 - Keep sleep-stage remapping in `remap_stage_labels`.
-- Keep raw `ahi` handling separate from sleep-stage remaps; `ahi` consumes runtime `batch["tokens"]["ahi"]` built from NPZ `ah_event`, requires `batch["tokens"]["stage5"]` as an auxiliary runtime stream for final masking, uses scalar NPZ summaries `ahi` and `tst`, and always runs the full validation event-eval path so the fitted `ahi_eval_threshold` can be persisted into checkpoints.
+- Keep raw `ahi` handling separate from sleep-stage remaps; `ahi` consumes runtime `batch["tokens"]["ahi"]` built from NPZ `ah_event`, requires `batch["tokens"]["stage5"]` as an auxiliary runtime stream for final masking, uses scalar NPZ summaries `ahi` and `tst` instead of requiring same-named CSV columns, and always runs the full validation event-eval path so the fitted `ahi_eval_threshold` can be persisted into checkpoints.
 - Do not invent a second task registry in entrypoints or trainer code.
 
 ### If you are changing model construction

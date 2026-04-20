@@ -101,6 +101,7 @@ class PSGPretrainDataset(DefaultDataset):
         self.generative = generative
         self.is_train_set = is_train_set
         meta_data_names = meta_data_names or []
+        built_in_ahi_runtime_metadata = "ahi" in channel_names
         sources = sources or []
 
         split_list = [split] if isinstance(split, str) else list(split or [])
@@ -147,6 +148,9 @@ class PSGPretrainDataset(DefaultDataset):
                 }
 
                 for meta_data_name in meta_data_names:
+                    # Built-in AHI summary scalars come from NPZ backfill, not CSV columns.
+                    if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
+                        continue
                     metadata[meta_data_name] = row[meta_data_name]
 
                 # 需要划分为 n 个 token

@@ -33,7 +33,7 @@ Primary code path:
 4. Build train/val/test loaders.
    - Always uses `allow_missing_channels=False`.
    - For built-in sequence labels, adds the runtime label source as a dataset-only pseudo-channel so token labels exist in the batch.
-   - For `ahi`, also injects `stage5` as a required auxiliary runtime label channel for final sleep-stage masking, preserves scalar summary metadata `ahi` and `tst` through batch tensorization as regression-style metadata for final validation/test metrics, and carries per-window `second_valid_mask` so partially masked tokens remain aligned during event evaluation. Older presets may omit those scalars in serialized metadata and rely on collate-time NPZ backfill, but regenerated AHI presets are expected to validate `stage5` up front.
+   - For `ahi`, also injects `stage5` as a required auxiliary runtime label channel for final sleep-stage masking, preserves scalar summary metadata `ahi` and `tst` through batch tensorization as regression-style metadata for final validation/test metrics, and carries per-window `second_valid_mask` so partially masked tokens remain aligned during event evaluation. CSV-backed indexes and older presets may omit same-named serialized scalars because collate-time NPZ backfill supplies them, but regenerated AHI presets are expected to validate `stage5` up front.
 5. Instantiate `Sleep2vecFinetuning`.
    - Creates `Sleep2vecPretrainModel` backbone.
    - Wraps it in `Sleep2vecDownstreamModel`.
@@ -55,7 +55,7 @@ Built-in labels:
 - `stage3`: classification, `output_dim=3`, sequence prediction, raw labels from `stage5`
 - `stage4`: classification, `output_dim=4`, sequence prediction, raw labels from `stage5`
 - `stage5`: classification, `output_dim=5`, sequence prediction
-- `ahi`: seq multi-label classification, `output_dim=30`, raw labels from NPZ `ah_event`, required auxiliary runtime `stage5` tokens for final masking, per-window `second_valid_mask` alignment for partial-token padding, scalar NPZ summaries `ahi` / `tst` for metrics. Built-in AHI accepts only `val_ahi_pearson + max`, so validation always runs the same full event-eval path and fits a checkpoint-bound threshold.
+- `ahi`: seq multi-label classification, `output_dim=30`, raw labels from NPZ `ah_event`, required auxiliary runtime `stage5` tokens for final masking, per-window `second_valid_mask` alignment for partial-token padding, scalar NPZ summaries `ahi` / `tst` for metrics rather than required CSV columns. Built-in AHI accepts only `val_ahi_pearson + max`, so validation always runs the same full event-eval path and fits a checkpoint-bound threshold.
 - `sex`: classification, `output_dim=2`, non-sequence
 - `age`: regression, `output_dim=1`, non-sequence
 
