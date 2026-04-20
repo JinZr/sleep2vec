@@ -35,7 +35,7 @@
       "sleep2vec2": 0,
       "sleep2vec_moe": 0,
       "sleep2vec_hires": 0,
-      "configs": 26,
+      "configs": 27,
       "tests": 21,
       "utils": 2
     },

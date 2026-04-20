@@ -36,7 +36,7 @@ Tracked files indexed from this branch:
 - `sleep2vec/`: 75 tracked files
 - `data/`: 6 tracked files
 - `preprocess/`: 6 tracked files
-- `configs/`: 26 tracked files
+- `configs/`: 27 tracked files
 - `tests/`: 21 tracked files
 - `utils/`: 2 tracked files
 

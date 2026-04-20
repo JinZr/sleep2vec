@@ -2,6 +2,7 @@
 
 ## 2026-04-20
 
+- Added `configs/ppg_ahi_finetune_large_temporal_conv.yaml` as a large-backbone built-in `ahi` recipe that reuses the existing single-channel PPG AHI task contract with the registered `temporal_conv` head.
 - Added guidance to keep small special-case behavior changes as local patches in the canonical code path instead of new helpers or wrappers.
 - Recorded the matching reuse note that non-obvious exceptions should carry a short comment explaining the intention.
 
