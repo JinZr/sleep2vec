@@ -19,7 +19,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_SPLITS = ["test", "val", "train"]
-BUILTIN_CHANNEL_SPECS = {"stage5": {"input_dim": 1, "mask_column": "stage_mask"}}
+BUILTIN_CHANNEL_SPECS = {
+    "stage5": {"input_dim": 1, "mask_column": "stage_mask"},
+    "ahi": {"input_dim": 30, "mask_column": "ah_event_mask"},
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,7 +88,7 @@ def parse_args() -> argparse.Namespace:
         "--channels",
         nargs="+",
         default=None,
-        help="Optional subset of channels declared in YAML model.channels. Built-in validation channel 'stage5' is also allowed.",
+        help="Optional subset of channels declared in YAML model.channels. Built-in validation channels 'stage5' and 'ahi' are also allowed.",
     )
     parser.add_argument("--batch-size", type=int, default=16, help="Dataloader batch size in preset filtering.")
     parser.add_argument(
@@ -264,6 +267,8 @@ def _resolve_validation_channels(
         resolved = list(model_channels)
     else:
         resolved = _dedupe_keep_order(selected_channels)
+    if "ahi" in resolved and "stage5" not in resolved:
+        resolved = [*resolved, "stage5"]
 
     unknown = [name for name in resolved if name not in channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
     if unknown:
@@ -288,6 +293,8 @@ def _resolve_effective_min_channels(
     preset_min_channels: int | None,
 ) -> int:
     resolved = int(cli_min_channels if preset_min_channels is None else preset_min_channels)
+    if "ahi" in channel_names:
+        resolved = len(channel_names)
     if resolved < 1:
         raise ValueError("min_channels must be >= 1.")
     if resolved > len(channel_names):
@@ -339,6 +346,11 @@ def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: 
         return df
 
     mask_columns = {channel: _mask_column_for_channel(channel) for channel in required}
+    if "ahi" in required and "stage5" in required and mask_columns["stage5"] not in df.columns:
+        raise ValueError(
+            "Built-in AHI strict preset filtering requires index column 'stage_mask' "
+            "because validation channels include both 'ahi' and 'stage5'."
+        )
     available_mask_columns = [mask_columns[channel] for channel in required if mask_columns[channel] in df.columns]
     if not available_mask_columns:
         return df

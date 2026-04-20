@@ -29,11 +29,16 @@ def _build_channel_registry(
             default_extractor("stage5", 1),
             default_tokenizer(1),
             default_mlm_mask_generator(0.0),
-        )
+        ),
+        "ahi": (
+            default_extractor("ahi", 30, source_name="ah_event"),
+            default_tokenizer(30),
+            default_mlm_mask_generator(0.0),
+        ),
     }
     missing: list[str] = []
     for name in channel_names:
-        if name == "stage5":
+        if name in registry:
             continue
         frames_per_token = channel_input_dims.get(name)
         if frames_per_token is None:
@@ -48,7 +53,7 @@ def _build_channel_registry(
     if missing:
         raise ValueError(
             "Missing channel_input_dims for requested channels: "
-            f"{sorted(missing)}. Provide explicit YAML-driven widths for all non-stage5 channels."
+            f"{sorted(missing)}. Provide explicit YAML-driven widths for all non-built-in channels."
         )
     return registry
 
@@ -96,6 +101,7 @@ class PSGPretrainDataset(DefaultDataset):
         self.generative = generative
         self.is_train_set = is_train_set
         meta_data_names = meta_data_names or []
+        built_in_ahi_runtime_metadata = "ahi" in channel_names
         sources = sources or []
 
         split_list = [split] if isinstance(split, str) else list(split or [])
@@ -142,6 +148,9 @@ class PSGPretrainDataset(DefaultDataset):
                 }
 
                 for meta_data_name in meta_data_names:
+                    # Built-in AHI summary scalars come from NPZ backfill, not CSV columns.
+                    if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
+                        continue
                     metadata[meta_data_name] = row[meta_data_name]
 
                 # 需要划分为 n 个 token

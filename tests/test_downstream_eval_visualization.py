@@ -254,6 +254,36 @@ def test_downstream_eval_visualizer_logs_regression_scatter(monkeypatch):
     assert commit is False
 
 
+def test_downstream_eval_visualizer_logs_ahi_summary_scatter(monkeypatch):
+    logged = []
+    monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)
+    monkeypatch.setattr(downstream_eval.wandb, "Image", lambda fig: fig)
+    monkeypatch.setattr(downstream_eval.wandb, "log", lambda payload, commit=False: logged.append((payload, commit)))
+
+    visualizer = DownstreamEvalVisualizer(
+        EvalVisualizationsConfig(
+            enabled=True,
+            stages=["val", "test"],
+            confusion_matrix=ConfusionMatrixVisualizationConfig(enabled=False),
+            roc_curve=EvalVisualizationPlotConfig(enabled=False),
+            regression_scatter=EvalVisualizationPlotConfig(enabled=True),
+        )
+    )
+
+    visualizer.log_ahi_summary_scatter(
+        stage="val",
+        preds=np.array([12.0, 18.0], dtype=np.float32),
+        targets=np.array([10.0, 20.0], dtype=np.float32),
+        label_name="ahi",
+        current_epoch=4,
+    )
+
+    assert len(logged) == 1
+    payload, commit = logged[0]
+    assert list(payload) == ["val_eval/regression_scatter"]
+    assert commit is False
+
+
 def test_downstream_eval_visualizer_skips_roc_curve_when_targets_have_one_class(monkeypatch):
     logged = []
     monkeypatch.setattr(downstream_eval.wandb, "run", object(), raising=False)

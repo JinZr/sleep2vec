@@ -30,14 +30,9 @@ import typing as t
 import torch
 from torch.utils.data import Sampler
 
+from sleep2vec.distributed import get_rank_world_size
+
 Pair = tuple[str, str]
-
-
-def _get_dist_info() -> tuple[int, int]:
-    """Return (rank, world_size) for torch.distributed when initialized."""
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        return torch.distributed.get_rank(), torch.distributed.get_world_size()
-    return 0, 1
 
 
 def handles_distributed_sharding(batch_sampler: t.Any) -> bool:
@@ -199,7 +194,7 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
 
     def __len__(self) -> int:
         if self._shard_across_ranks:
-            _, world_size = _get_dist_info()
+            _, world_size = get_rank_world_size()
         else:
             world_size = 1
         total_batches = self._compute_total_batches(world_size)
@@ -207,7 +202,7 @@ class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):
 
     def __iter__(self):
         if self._shard_across_ranks:
-            rank, world_size = _get_dist_info()
+            rank, world_size = get_rank_world_size()
         else:
             rank, world_size = 0, 1
         total_batches = self._compute_total_batches(world_size)
@@ -339,12 +334,12 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
         return total_batches
 
     def __len__(self) -> int:
-        _, world_size = _get_dist_info()
+        _, world_size = get_rank_world_size()
         total_batches = self._compute_total_batches(world_size)
         return total_batches // world_size
 
     def __iter__(self):
-        rank, world_size = _get_dist_info()
+        rank, world_size = get_rank_world_size()
         total_batches = self._compute_total_batches(world_size)
         raw_total_batches = self._raw_total_batches()
         remainder = self._eligible_size % self._batch_size

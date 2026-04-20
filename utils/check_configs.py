@@ -111,6 +111,14 @@ def _validate_repo_policy(path: Path, config_data: dict[str, t.Any]) -> None:
 
     is_seq = bool(task_block.get("is_seq", False))
     if is_seq:
+        if path.name.startswith("ppg_ahi_finetune"):
+            if preset_required_channels != ["ppg", "ahi"]:
+                raise ValueError(
+                    "single-channel ppg ahi configs must set preset_build.required_channels to [ppg, ahi]."
+                )
+            if preset_min_channels != 2:
+                raise ValueError("single-channel ppg ahi configs must set preset_build.min_channels to 2.")
+            return
         if preset_required_channels != ["ppg", "stage5"]:
             raise ValueError(
                 "token-level ppg staging configs must set preset_build.required_channels to [ppg, stage5]."

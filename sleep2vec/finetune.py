@@ -16,8 +16,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2vec.callbacks import build_distributed_ahi_progress_bar
 from sleep2vec.common import apply_finetune_config, persist_run_config_and_args
-from sleep2vec.metrics import save_result_csv
+from sleep2vec.results import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import get_finetune_dataloaders
 
@@ -34,6 +35,12 @@ def prepare_dataloader(args):
         len(test_loader),
     )
     return train_loader, val_loader, test_loader
+
+
+def _is_distributed_ahi_finetune(args) -> bool:
+    devices = getattr(args, "devices", None)
+    world_size = len(devices) if isinstance(devices, (list, tuple)) else int(devices or 0)
+    return getattr(args, "label_name", None) == "ahi" and world_size > 1
 
 
 def supervised(args, config_bundle):
@@ -83,6 +90,8 @@ def supervised(args, config_bundle):
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
+    if _is_distributed_ahi_finetune(args):
+        callbacks.append(build_distributed_ahi_progress_bar())
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
@@ -198,7 +207,7 @@ if __name__ == "__main__":
         help="YAML file containing model and loss configuration.",
     )
     # ---------------- Optimization & training hyper-parameters ----------------
-    parser.add_argument("--epochs", type=int, default=200, help="number of fine-tuning epochs")
+    parser.add_argument("--epochs", type=int, default=30, help="number of fine-tuning epochs")
     parser.add_argument("--lr", type=float, default=1e-6, help="learning rate for AdamW")
     parser.add_argument(
         "--warmup-steps",
@@ -275,7 +284,7 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help=(
-            "downstream label to predict (built-ins: age, sex, stage3, stage4, stage5; "
+            "downstream label to predict (built-ins: age, sex, stage3, stage4, stage5, ahi; "
             "custom labels require finetune.task in the YAML config)"
         ),
     )
@@ -333,6 +342,7 @@ if __name__ == "__main__":
         help="save checkpoints every N epochs",
     )
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parser.parse_args()
 
     config_bundle, _ = apply_finetune_config(args)

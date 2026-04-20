@@ -31,6 +31,7 @@ bash utils/style_check.sh
 ## Coding Style & Naming Conventions
 - Python formatting is enforced by Black (line length 120), isort (Black profile), and Flake8.
 - Use 4-space indentation; follow snake_case for functions/variables/modules and PascalCase for classes.
+- For small special-case handling changes, patch the canonical code path in place instead of adding a helper or wrapper; when the exception is not obvious, leave a brief comment noting the intention.
 - Keep architecture and loss choices in YAML under `configs/`; training hyperparameters stay on the CLI.
 
 ## Codex Index Usage Policy

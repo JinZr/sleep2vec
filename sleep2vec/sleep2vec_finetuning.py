@@ -13,7 +13,15 @@ import yaml
 from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.common import remap_stage_labels
-from sleep2vec.metrics import compute_downstream_metrics
+from sleep2vec.distributed import get_rank_world_size, is_torch_distributed_ready
+from sleep2vec.metrics import (
+    AHI_FINE_THRESHOLD_GRID,
+    _aggregate_prepared_ahi_records,
+    _compute_ahi_event_metrics_from_prepared,
+    _prepare_ahi_records,
+    compute_downstream_metrics,
+    extract_ahi_summary_scatter_arrays,
+)
 from sleep2vec.visualization.downstream_eval import DownstreamEvalVisualizer
 from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
 
@@ -75,7 +83,12 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
+        self._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
         self._regression_loss = torch.nn.MSELoss()
+        self._ahi_eval_threshold: float | None = None
+        self._ahi_train_pointwise_counts = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
+        self._eval_loss_sums = {"val": 0.0, "test": 0.0}
+        self._eval_loss_counts = {"val": 0, "test": 0}
 
         # Optional tensor diagnostics (borrowed from icefall)
         self._diagnostic = None
@@ -108,6 +121,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
             eval_layer_mix = self._layer_mix_snapshot(eval_model)
             if eval_layer_mix is not None:
                 checkpoint["layer_mix_weights_eval"] = eval_layer_mix
+        if self._is_ahi_task() and self._ahi_eval_threshold is not None:
+            checkpoint["ahi_eval_threshold"] = float(self._ahi_eval_threshold)
 
     # ---------- Lightning hooks ----------
     def training_step(self, batch, batch_idx):
@@ -141,6 +156,17 @@ class Sleep2vecFinetuning(pl.LightningModule):
         super().on_load_checkpoint(checkpoint)
         if self.model_averager is not None:
             self.model_averager.on_load_checkpoint(checkpoint)
+        if self._is_ahi_task():
+            threshold = checkpoint.get("ahi_eval_threshold")
+            self._ahi_eval_threshold = None if threshold is None else float(threshold)
+
+    def on_test_start(self):
+        super().on_test_start()
+        if self._is_ahi_task() and self._ahi_eval_threshold is None:
+            raise ValueError(
+                "AHI test/inference requires a validation-fitted threshold stored in the checkpoint. "
+                "This checkpoint does not contain `ahi_eval_threshold`."
+            )
 
     def load_state_dict(self, state_dict, strict: bool = True):
         # Allow missing/extra layer-mix weights when loading older checkpoints.
@@ -176,24 +202,44 @@ class Sleep2vecFinetuning(pl.LightningModule):
             loss = None
         else:
             loss, valid_count = loss_info
-            self.log(
-                f"{stage}_loss",
-                loss,
-                prog_bar=True,
-                sync_dist=True,
-                on_step=(stage == "train"),
-                on_epoch=True,
-                batch_size=max(valid_count, 1),
-            )
+            eval_loss_sums = getattr(self, "_eval_loss_sums", {})
+            eval_loss_counts = getattr(self, "_eval_loss_counts", {})
+            if stage == "train":
+                self.log(
+                    f"{stage}_loss",
+                    loss,
+                    prog_bar=True,
+                    sync_dist=True,
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=max(valid_count, 1),
+                )
+            elif stage in eval_loss_sums and stage in eval_loss_counts:
+                eval_loss_sums[stage] += float(loss.detach().item()) * valid_count
+                eval_loss_counts[stage] += int(valid_count)
 
-        preds = self._extract_valid_predictions(batch, logits)
-        if preds is not None:
-            self._stage_outputs[stage].append(preds)
+        if self._is_ahi_task() and stage == "train":
+            self._accumulate_ahi_train_pointwise_counts(batch, logits)
+        elif self._is_ahi_task() and stage in {"val", "test"}:
+            records = self._extract_ahi_event_records(batch, logits)
+            if records:
+                self._stage_outputs[stage].extend(records)
+        else:
+            preds = self._extract_valid_predictions(batch, logits)
+            if preds is not None:
+                self._stage_outputs[stage].append(preds)
 
         return loss if stage == "train" else None
 
     def _compute_loss(self, logits, batch):
         targets = self._get_targets(batch)
+
+        if getattr(self.args, "is_multilabel", False):
+            valid_mask = targets != -1.0
+            if not valid_mask.any():
+                return None
+            loss = self._multilabel_loss(logits, targets.float())[valid_mask].mean()
+            return loss, int(valid_mask.sum().item())
 
         if self.args.is_classification:
             logits_flat = logits.view(-1, logits.size(-1))
@@ -216,6 +262,15 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _extract_valid_predictions(self, batch, logits):
         labels = self._get_targets(batch)
+
+        if getattr(self.args, "is_multilabel", False):
+            mask = labels != -1.0
+            if not mask.any():
+                return None
+
+            probs = torch.sigmoid(logits[mask]).to(torch.float32).detach().cpu().numpy()
+            labels_np = labels[mask].to(torch.int64).detach().cpu().numpy()
+            return probs, labels_np
 
         if self.args.is_classification:
             if logits.dim() == 3:
@@ -242,13 +297,181 @@ class Sleep2vecFinetuning(pl.LightningModule):
         labels_np = labels[mask].to(torch.float32).detach().cpu().numpy()
         return preds, labels_np
 
+    def _extract_ahi_event_records(self, batch, logits) -> list[dict[str, np.ndarray]]:
+        """Build per-sample AHI eval records.
+
+        Built-in ``ahi`` currently runs on whole-night inputs by default, so validation/test/infer
+        usually emit one logical record per path. ``token_start`` is still preserved because the
+        downstream AHI metric path can merge records when a caller explicitly evaluates windowed
+        samples or distributed gathering surfaces duplicate windows.
+        """
+        labels = batch["tokens"]["ahi"].detach().cpu()
+        probs = torch.sigmoid(logits).to(torch.float32).detach().cpu()
+        true_ahi = batch["metadata"]["ahi"].to(torch.float32).detach().cpu()
+        tst_hours = batch["metadata"]["tst"].to(torch.float32).detach().cpu()
+        token_start = batch["token_start"].to(torch.long).detach().cpu()
+        paths = list(batch["metadata"]["path"])
+        stage5 = batch["tokens"]["stage5"].detach().cpu()
+
+        records: list[dict[str, np.ndarray]] = []
+        for idx in range(labels.size(0)):
+            second_valid_mask = labels[idx].reshape(-1) != -1.0
+            if not second_valid_mask.any():
+                continue
+            stage5_tokens = stage5[idx].to(torch.int64).reshape(-1).numpy()
+            truth = labels[idx].reshape(-1)[second_valid_mask].to(torch.int64).numpy()
+            score = probs[idx].reshape(-1)[second_valid_mask].numpy()
+            record = {
+                "path": str(paths[idx]),
+                "token_start": int(token_start[idx].item()),
+                "truth": truth,
+                "score": score,
+                "true_ahi": float(true_ahi[idx].item()),
+                "tst_hours": float(tst_hours[idx].item()),
+                "stage5": stage5_tokens,
+                "second_valid_mask": second_valid_mask.numpy(),
+            }
+            records.append(record)
+        return records
+
     def _get_targets(self, batch):
         if not self.args.is_seq:
             return batch["metadata"][self.args.label_name].to(self.args.device)
 
         label_source_name = getattr(self.args, "label_source_name", self.args.label_name)
         labels = batch["tokens"][label_source_name].to(self.args.device)
+        if getattr(self.args, "is_multilabel", False):
+            return labels
         return remap_stage_labels(labels, self.args.label_name)
+
+    def _is_ahi_task(self) -> bool:
+        return getattr(self.args, "label_name", None) == "ahi"
+
+    def _accumulate_ahi_train_pointwise_counts(self, batch, logits) -> None:
+        labels = self._get_targets(batch)
+        valid_mask = labels != -1.0
+        if not valid_mask.any():
+            return
+
+        probs = torch.sigmoid(logits[valid_mask])
+        targets = labels[valid_mask].to(torch.int64)
+        preds = (probs >= 0.5).to(torch.int64)
+
+        self._ahi_train_pointwise_counts["tp"] += int(((preds == 1) & (targets == 1)).sum().item())
+        self._ahi_train_pointwise_counts["fp"] += int(((preds == 1) & (targets == 0)).sum().item())
+        self._ahi_train_pointwise_counts["tn"] += int(((preds == 0) & (targets == 0)).sum().item())
+        self._ahi_train_pointwise_counts["fn"] += int(((preds == 0) & (targets == 1)).sum().item())
+
+    def _compute_reduced_ahi_train_pointwise_metrics(self) -> dict[str, float]:
+        counts = self._ahi_train_pointwise_counts
+        stats = torch.tensor(
+            [counts["tp"], counts["fp"], counts["tn"], counts["fn"]],
+            dtype=torch.float64,
+            device=torch.device(getattr(self.args, "device", "cpu")),
+        )
+        trainer = getattr(self, "trainer", None)
+        if is_torch_distributed_ready():
+            if trainer is not None and hasattr(trainer, "strategy"):
+                stats = trainer.strategy.reduce(stats, reduce_op="sum")
+            else:  # pragma: no cover - trainer-less distributed fallback
+                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+
+        tp, fp, tn, fn = [int(value) for value in stats.tolist()]
+        total = tp + fp + tn + fn
+        accuracy = (tp + tn) / total if total > 0 else 0.0
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        self._ahi_train_pointwise_counts = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
+        return {
+            "ahi_pointwise_accuracy": float(accuracy),
+            "ahi_pointwise_precision": float(precision),
+            "ahi_pointwise_recall": float(recall),
+            "ahi_pointwise_f1": float(f1),
+        }
+
+    def _ahi_search_thresholds_for_stage(self, stage: str) -> tuple[float, ...] | None:
+        if stage != "val":
+            return None
+        thresholds = getattr(self.args, "ahi_val_search_thresholds", AHI_FINE_THRESHOLD_GRID)
+
+        if thresholds is None:
+            return None
+        return tuple(float(value) for value in thresholds)
+
+    @staticmethod
+    def _can_broadcast_ahi_metrics() -> bool:
+        return is_torch_distributed_ready() and hasattr(dist, "broadcast_object_list")
+
+    def _compute_ahi_metrics_for_stage(
+        self,
+        stage: str,
+        records: list[dict[str, np.ndarray]],
+    ) -> tuple[dict[str, float], float, tuple[np.ndarray, np.ndarray] | None]:
+        prepared_records = _prepare_ahi_records(records)
+
+        if stage == "val":
+            metrics, eval_threshold = _compute_ahi_event_metrics_from_prepared(
+                prepared_records,
+                threshold=None,
+                search_thresholds=self._ahi_search_thresholds_for_stage("val"),
+            )
+            self._ahi_eval_threshold = float(eval_threshold)
+            aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=float(eval_threshold))
+            return metrics, float(eval_threshold), (aggregate["true_ahi"], aggregate["pred_ahi"])
+
+        if self._ahi_eval_threshold is None:
+            raise ValueError(
+                "AHI evaluation requires a validation-fitted threshold. "
+                "No `ahi_eval_threshold` is available for test/inference."
+            )
+
+        eval_threshold = float(self._ahi_eval_threshold)
+        metrics, _ = _compute_ahi_event_metrics_from_prepared(prepared_records, threshold=eval_threshold)
+        aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=eval_threshold)
+        return metrics, eval_threshold, (aggregate["true_ahi"], aggregate["pred_ahi"])
+
+    def _compute_or_broadcast_ahi_metrics(
+        self,
+        stage: str,
+        records: list[dict[str, np.ndarray]],
+    ) -> tuple[dict[str, float], float, tuple[np.ndarray, np.ndarray] | None]:
+        trainer = getattr(self, "trainer", None)
+        if trainer is None or not self._can_broadcast_ahi_metrics():
+            return self._compute_ahi_metrics_for_stage(stage, records)
+
+        payload: list[dict[str, object] | None] = [None]
+        scatter_arrays: tuple[np.ndarray, np.ndarray] | None = None
+        if trainer.is_global_zero:
+            try:
+                metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
+                payload[0] = {
+                    "metrics": metrics,
+                    "eval_threshold": float(eval_threshold),
+                    "error_type": None,
+                    "error_message": None,
+                }
+            except Exception as exc:  # pragma: no cover - distributed error fan-out
+                payload[0] = {
+                    "metrics": None,
+                    "eval_threshold": None,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+
+        dist.broadcast_object_list(payload, src=0)
+        result = payload[0] or {}
+        error_message = result.get("error_message")
+        if error_message is not None:
+            if result.get("error_type") == "ValueError":
+                raise ValueError(str(error_message))
+            raise RuntimeError(str(error_message))
+
+        metrics = result["metrics"]
+        eval_threshold = float(result["eval_threshold"])
+        if stage == "val":
+            self._ahi_eval_threshold = eval_threshold
+        return metrics, eval_threshold, scatter_arrays
 
     @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):
@@ -258,6 +481,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return getter()
 
     def _empty_epoch_outputs(self):
+        if getattr(self.args, "is_multilabel", False):
+            return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.int64)
         if self.args.is_classification:
             output_dim = int(getattr(self.args, "output_dim", 0) or 0)
             return np.empty((0, output_dim), dtype=np.float32), np.empty((0,), dtype=np.int64)
@@ -271,10 +496,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return np.concatenate(preds, axis=0), np.concatenate(gts, axis=0)
 
     def _gather_eval_outputs(self, preds: np.ndarray, gts: np.ndarray):
-        if not dist.is_available() or not dist.is_initialized() or not hasattr(dist, "all_gather_object"):
+        if not is_torch_distributed_ready() or not hasattr(dist, "all_gather_object"):
             return preds, gts
 
-        world_size = dist.get_world_size()
+        _, world_size = get_rank_world_size()
         gathered_preds: list[np.ndarray | None] = [None] * world_size
         gathered_gts: list[np.ndarray | None] = [None] * world_size
         dist.all_gather_object(gathered_preds, preds)
@@ -286,6 +511,57 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return self._empty_epoch_outputs()
 
         return np.concatenate(gathered_preds, axis=0), np.concatenate(gathered_gts, axis=0)
+
+    def _gather_ahi_event_records(self, records: list[dict[str, np.ndarray]]) -> list[dict[str, np.ndarray]]:
+        if not is_torch_distributed_ready() or not hasattr(dist, "all_gather_object"):
+            return records
+
+        _, world_size = get_rank_world_size()
+        gathered: list[list[dict[str, np.ndarray]] | None] = [None] * world_size
+        dist.all_gather_object(gathered, records)
+
+        merged: list[dict[str, np.ndarray]] = []
+        for item in gathered:
+            if isinstance(item, list):
+                merged.extend(item)
+        return merged
+
+    def _log_eval_loss(self, stage: str) -> None:
+        eval_loss_sums = getattr(self, "_eval_loss_sums", {})
+        eval_loss_counts = getattr(self, "_eval_loss_counts", {})
+        if stage not in eval_loss_sums or stage not in eval_loss_counts:
+            return
+
+        loss_sum = float(eval_loss_sums[stage])
+        loss_count = int(eval_loss_counts[stage])
+        eval_loss_sums[stage] = 0.0
+        eval_loss_counts[stage] = 0
+
+        stats = torch.tensor(
+            [loss_sum, float(loss_count)],
+            dtype=torch.float64,
+            device=torch.device(getattr(self.args, "device", "cpu")),
+        )
+        trainer = getattr(self, "trainer", None)
+        if is_torch_distributed_ready():
+            if trainer is not None and hasattr(trainer, "strategy"):
+                stats = trainer.strategy.reduce(stats, reduce_op="sum")
+            else:  # pragma: no cover - trainer-less distributed fallback
+                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+
+        global_loss_count = int(stats[1].item())
+        if global_loss_count == 0:
+            return
+
+        self.log(
+            f"{stage}_loss",
+            float(stats[0].item()) / global_loss_count,
+            prog_bar=True,
+            logger=True,
+            sync_dist=False,
+            on_step=False,
+            on_epoch=True,
+        )
 
     def _log_layer_mix_weights(self, stage: str, model: torch.nn.Module) -> None:
         snapshot = self._layer_mix_snapshot(model)
@@ -354,6 +630,57 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]
+        if stage in getattr(self, "_eval_loss_sums", {}):
+            self._log_eval_loss(stage)
+
+        if self._is_ahi_task() and stage == "train":
+            metrics = self._compute_reduced_ahi_train_pointwise_metrics()
+            for k, v in metrics.items():
+                self.log(
+                    f"{stage}_{k}",
+                    v,
+                    prog_bar=False,
+                    logger=True,
+                    sync_dist=True,
+                    on_epoch=True,
+                )
+            return None
+
+        if self._is_ahi_task() and stage in {"val", "test"}:
+            records = list(outputs)
+            outputs.clear()
+            records = self._gather_ahi_event_records(records)
+            if not records:
+                return None
+
+            metrics, eval_threshold, scatter_arrays = self._compute_or_broadcast_ahi_metrics(stage, records)
+
+            for k, v in metrics.items():
+                self.log(
+                    f"{stage}_{k}",
+                    v,
+                    prog_bar=(stage != "train"),
+                    logger=True,
+                    sync_dist=False,
+                    on_epoch=True,
+                )
+            trainer = getattr(self, "trainer", None)
+            if trainer is not None and trainer.is_global_zero:
+                if scatter_arrays is None:
+                    true_ahi, pred_ahi = extract_ahi_summary_scatter_arrays(records, threshold=eval_threshold)
+                else:
+                    true_ahi, pred_ahi = scatter_arrays
+                self._eval_visualizer.log_ahi_summary_scatter(
+                    stage=stage,
+                    preds=pred_ahi,
+                    targets=true_ahi,
+                    label_name=self.args.label_name,
+                    current_epoch=int(self.current_epoch),
+                )
+            if trainer is not None and is_torch_distributed_ready() and hasattr(trainer, "strategy"):
+                trainer.strategy.barrier(f"ahi_{stage}_epoch_end")
+            return records
+
         preds, gts = self._concat_epoch_outputs(outputs)
         outputs.clear()
 
@@ -366,6 +693,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             gts,
             preds,
             is_classification=self.args.is_classification,
+            is_multilabel=getattr(self.args, "is_multilabel", False),
             output_dim=getattr(self.args, "output_dim", None),
             stage_names=getattr(self.args, "stage_names", None),
         )
@@ -380,7 +708,12 @@ class Sleep2vecFinetuning(pl.LightningModule):
             )
 
         trainer = getattr(self, "trainer", None)
-        if stage in {"val", "test"} and trainer is not None and trainer.is_global_zero:
+        if (
+            stage in {"val", "test"}
+            and trainer is not None
+            and trainer.is_global_zero
+            and not getattr(self.args, "is_multilabel", False)
+        ):
             self._eval_visualizer.log(
                 stage=stage,
                 preds=preds,
