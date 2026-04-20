@@ -1,12 +1,9 @@
-import copy
 from dataclasses import dataclass
 import logging
-import os
 import time
 from typing import Any, Mapping
 
 import numpy as np
-import pandas as pd
 from scipy.stats import pearsonr
 from sklearn.metrics import (
     accuracy_score,
@@ -65,41 +62,6 @@ def roc_auc_from_two_logits(gts, preds) -> float:
         return float(roc_auc_score(y_true, y_score))
     except Exception:
         return np.nan
-
-
-def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: Any | None = None):
-    """
-    将实验结果写入/追加到 CSV 文件中。
-    """
-    new_row: dict[str, Any] = dict(copy.deepcopy(pretrain_result))
-
-    if args is not None:
-        new_row["ckpt_path"] = getattr(args, "ckpt_path", None)
-        new_row["lr"] = getattr(args, "lr", None)
-        new_row["batch_size"] = getattr(args, "batch_size", None)
-        new_row["n_few_shot"] = getattr(args, "n_few_shot", None)
-        new_row["label_name"] = getattr(args, "label_name", None)
-        channel_names = getattr(args, "channel_names", None)
-        if isinstance(channel_names, (list, tuple)):
-            new_row["channel_names"] = ",".join(str(name) for name in channel_names)
-        elif isinstance(channel_names, str):
-            new_row["channel_names"] = channel_names
-        else:
-            new_row["channel_names"] = ""
-
-    df_new = pd.DataFrame([new_row])
-
-    if os.path.exists(csv_path):
-        df_old = pd.read_csv(csv_path)
-        df_merged = pd.concat([df_old, df_new], axis=0, join="outer", ignore_index=True)
-    else:
-        dir_name = os.path.dirname(csv_path)
-        if dir_name:
-            os.makedirs(dir_name, exist_ok=True)
-        df_merged = df_new
-
-    df_merged.to_csv(csv_path, index=False)
-    print(f"Results written to {csv_path}")
 
 
 def macro_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float:

@@ -179,13 +179,37 @@
 - Reuse guidance: use this as the only generic downstream metric reducer.
 - Duplication risk notes: `ahi` val/test/infer bypass this function by design.
 
-## `sleep2vec.metrics.save_result_csv`
+## `sleep2vec.results.save_result_csv`
 
-- File: `sleep2vec/metrics.py`
+- File: `sleep2vec/results.py`
 - Signature: `save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: Any | None = None) -> None`
-- Purpose and contract: append a metrics row plus selected run metadata to a CSV file, creating the file and parent directory as needed.
+- Purpose and contract: append a metrics row plus selected run metadata to a CSV file, creating the file and parent directory as needed, tagging each row with `experiment_version` / `result_source`, serializing concurrent writers with a lock file, and skipping writes on non-zero ranks under the current single-node assumption. Multi-node distributed correctness is not part of this helper's contract today.
 - Important inputs/outputs: metrics mapping and destination path in; no return value.
-- Side effects: creates directories and writes or appends to CSV.
+- Side effects: creates directories and writes or appends to CSV; may rewrite once when widening an existing CSV schema to add newly introduced columns.
 - Key callers/callees: callers are `finetune.supervised` and `infer.run_inference`.
 - Reuse guidance: reuse for any tabular experiment summary output.
-- Duplication risk notes: current column policy is encoded here; do not create parallel result-writer variants casually.
+- Duplication risk notes: current column policy, experiment tagging, lock-file coordination, empty-file recovery, and rank-zero-only DDP behavior are encoded here; do not create parallel result-writer variants casually.
+
+## `sleep2vec.distributed.is_rank_zero_process`
+
+- File: `sleep2vec/distributed.py`
+- Signature: `is_rank_zero_process() -> bool`
+- Purpose and contract: determine whether the current process should behave as rank zero by reading the process-level `RANK` / `LOCAL_RANK` environment variables; missing or invalid values fall back to `True`. This helper is intentionally single-node scoped and does not promise multi-node global-rank correctness.
+- Important inputs/outputs: no inputs; boolean result out.
+- Side effects: reads environment variables only.
+- Key callers/callees: callers are `sleep2vec.results.save_result_csv` and `sleep2vec.infer._init_wandb`.
+- Reuse guidance: use this only for env-based process-rank checks outside Lightning-owned `trainer` contexts.
+- Duplication risk notes: do not replace existing `trainer.is_global_zero` branches with this helper inside callbacks or Lightning modules.
+
+## `sleep2vec.distributed.is_torch_distributed_ready` and `get_rank_world_size`
+
+- File: `sleep2vec/distributed.py`
+- Signatures:
+  - `is_torch_distributed_ready() -> bool`
+  - `get_rank_world_size() -> tuple[int, int]`
+- Purpose and contract: provide one canonical check for whether `torch.distributed` is ready, plus one canonical `(rank, world_size)` lookup with `(0, 1)` fallback when distributed runtime is absent.
+- Important inputs/outputs: no inputs; readiness boolean or `(rank, world_size)` tuple out.
+- Side effects: reads torch.distributed runtime state only.
+- Key callers/callees: callers include `sleep2vec.sleep2vec_finetuning` and `data.samplers`.
+- Reuse guidance: use these for generic torch.distributed readiness and rank/world-size fallbacks; keep task-specific collectives and Lightning `trainer` branches at the call site.
+- Duplication risk notes: do not create more local `_get_dist_info()` helpers or repeat raw `dist.is_available() and dist.is_initialized()` checks when no extra logic is needed.

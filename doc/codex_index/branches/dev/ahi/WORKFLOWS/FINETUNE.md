@@ -46,7 +46,7 @@ Primary code path:
    - Best checkpoint is copied to `best.ckpt` when available.
 7. Test.
    - Uses best model after training, or `--ckpt-path` when `epochs == 0`.
-   - Result metrics appended via `save_result_csv`.
+   - Result metrics appended via `sleep2vec.results.save_result_csv`, which tags the row with the finetune `version` string, serializes concurrent writers, and only writes from global rank zero.
 
 ## Label Semantics
 
@@ -75,7 +75,7 @@ Custom labels require `finetune.task` in YAML.
 
 - Checkpoints under `log-finetune/<version>/checkpoints/`
 - Stable `best.ckpt` copy when training ran and a best checkpoint exists
-- Optional results CSV row via `save_result_csv`
+- Optional results CSV row via `sleep2vec.results.save_result_csv` with per-row `experiment_version`
 - W&B run under project `sleep2vec-finetune`
 
 ## Edit Hotspots

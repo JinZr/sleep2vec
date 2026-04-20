@@ -28,7 +28,7 @@ This page answers the practical question: when you need to add or change behavio
 | Non-AHI downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Canonical reducer for multiclass classification and regression outputs | Per-task custom metric calculations in trainer code |
 | AHI token-level pointwise metrics | `sleep2vec.metrics.compute_ahi_pointwise_metrics` | Keeps token-level AHI binary metrics namespaced when a caller explicitly needs array-based pointwise summaries | Reusing generic binary metric names in ad hoc callers |
 | AHI final validation/test/infer metrics | `sleep2vec.metrics.compute_ahi_event_metrics` | Centralizes event matching, validation threshold fitting, TST gating, and the split between detection-style event stats and NPZ-aligned scalar AHI summaries | Re-deriving AHI event logic inside `Sleep2vecFinetuning` |
-| Result CSV output | `sleep2vec.metrics.save_result_csv` | Preserves standard columns and append behavior | One-off CSV writers |
+| Result CSV output | `sleep2vec.results.save_result_csv` | Preserves accumulated rows in one CSV, stamps each row with `experiment_version`, keeps rank-zero-only write behavior under DDP, and serializes concurrent writers with a file lock | One-off CSV writers |
 | Preset validation channel resolution | `preprocess.save_dataset_presets._resolve_validation_channels` | Owns YAML-vs-built-in channel selection, including built-in `stage5` / `ahi` validation channels and automatic `ahi -> stage5` expansion | Duplicated channel subset logic in wrapper scripts |
 | AHI preset admission threshold | `preprocess.save_dataset_presets._resolve_effective_min_channels` | Forces built-in `ahi` presets to require every requested validation channel before serializing windows | Ad hoc `min_channels` overrides in preset scripts |
 | Preset required-mask prefilter | `preprocess.save_dataset_presets._filter_index_df_for_required_channels` | Applies strict mask-based CSV prefiltering with built-in `stage_mask` / `ah_event_mask` handling when missing channels are disallowed | Manual CSV filtering before preset generation |
@@ -69,6 +69,9 @@ This page answers the practical question: when you need to add or change behavio
 - Keep trainer/callback/wandb/checkpoint behavior in `pretrain.py`, `finetune.py`, `infer.py`, or the Lightning modules.
 - Keep reusable callback implementations in `sleep2vec/callbacks/`; entrypoints should only decide when to install them.
 - Reuse `dump_cli_args_yaml`, `save_result_csv`, and checkpoint helpers instead of duplicating serialization and output logic.
+- Keep experiment-row tagging and rank-zero gating inside `sleep2vec.results.save_result_csv`; do not scatter per-entrypoint CSV-write guards or ad hoc version columns. The current writer is single-node scoped; do not infer multi-node correctness from it.
+- Reuse `sleep2vec.distributed.is_rank_zero_process` only for single-node process-level env-based rank checks; keep `trainer.is_global_zero` branches local to Lightning runtime code.
+- Reuse `sleep2vec.distributed.is_torch_distributed_ready` and `get_rank_world_size` for generic torch.distributed readiness / `(rank, world_size)` fallbacks; do not keep cloning `dist.is_available() and dist.is_initialized()` or local `_get_dist_info()` helpers.
 - For `ahi`, reuse `compute_ahi_event_metrics` for val/test/infer event evaluation and checkpoint-threshold reuse. Train-time AHI pointwise metrics should stay on the reduced confusion-count path inside `Sleep2vecFinetuning` instead of rebuilding epoch-wide token arrays; log accuracy/precision/recall/F1 from globally reduced counts and keep train ROC-AUC unsupported.
 
 ### If you are changing preprocessing

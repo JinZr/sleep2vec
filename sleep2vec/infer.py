@@ -1,6 +1,5 @@
 import argparse
 import logging
-import os
 from pathlib import Path
 import random
 import sys
@@ -18,7 +17,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from sleep2vec.checkpoints import average_checkpoints, select_checkpoints
 from sleep2vec.common import apply_finetune_config
-from sleep2vec.metrics import save_result_csv
+from sleep2vec.distributed import is_rank_zero_process
+from sleep2vec.results import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import _build_finetune_loader
 
@@ -45,18 +45,10 @@ def _build_inference_loader(args):
     )
 
 
-def _is_rank_zero() -> bool:
-    rank = os.environ.get("RANK") or os.environ.get("LOCAL_RANK") or "0"
-    try:
-        return int(rank) == 0
-    except ValueError:
-        return True
-
-
 def _init_wandb(args):
     if not args.wandb:
         return None
-    if not _is_rank_zero():
+    if not is_rank_zero_process():
         return None
 
     init_kwargs = {

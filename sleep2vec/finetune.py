@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sleep2vec.callbacks import build_distributed_ahi_progress_bar
 from sleep2vec.common import apply_finetune_config, persist_run_config_and_args
-from sleep2vec.metrics import save_result_csv
+from sleep2vec.results import save_result_csv
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import get_finetune_dataloaders
 

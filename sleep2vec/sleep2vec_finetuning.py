@@ -13,6 +13,7 @@ import yaml
 from sleep2vec import diagnostics
 from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec.common import remap_stage_labels
+from sleep2vec.distributed import get_rank_world_size, is_torch_distributed_ready
 from sleep2vec.metrics import (
     AHI_FINE_THRESHOLD_GRID,
     _aggregate_prepared_ahi_records,
@@ -369,7 +370,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             device=torch.device(getattr(self.args, "device", "cpu")),
         )
         trainer = getattr(self, "trainer", None)
-        if dist.is_available() and dist.is_initialized():
+        if is_torch_distributed_ready():
             if trainer is not None and hasattr(trainer, "strategy"):
                 stats = trainer.strategy.reduce(stats, reduce_op="sum")
             else:  # pragma: no cover - trainer-less distributed fallback
@@ -400,7 +401,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     @staticmethod
     def _can_broadcast_ahi_metrics() -> bool:
-        return dist.is_available() and dist.is_initialized() and hasattr(dist, "broadcast_object_list")
+        return is_torch_distributed_ready() and hasattr(dist, "broadcast_object_list")
 
     def _compute_ahi_metrics_for_stage(
         self,
@@ -495,10 +496,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return np.concatenate(preds, axis=0), np.concatenate(gts, axis=0)
 
     def _gather_eval_outputs(self, preds: np.ndarray, gts: np.ndarray):
-        if not dist.is_available() or not dist.is_initialized() or not hasattr(dist, "all_gather_object"):
+        if not is_torch_distributed_ready() or not hasattr(dist, "all_gather_object"):
             return preds, gts
 
-        world_size = dist.get_world_size()
+        _, world_size = get_rank_world_size()
         gathered_preds: list[np.ndarray | None] = [None] * world_size
         gathered_gts: list[np.ndarray | None] = [None] * world_size
         dist.all_gather_object(gathered_preds, preds)
@@ -512,10 +513,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return np.concatenate(gathered_preds, axis=0), np.concatenate(gathered_gts, axis=0)
 
     def _gather_ahi_event_records(self, records: list[dict[str, np.ndarray]]) -> list[dict[str, np.ndarray]]:
-        if not dist.is_available() or not dist.is_initialized() or not hasattr(dist, "all_gather_object"):
+        if not is_torch_distributed_ready() or not hasattr(dist, "all_gather_object"):
             return records
 
-        world_size = dist.get_world_size()
+        _, world_size = get_rank_world_size()
         gathered: list[list[dict[str, np.ndarray]] | None] = [None] * world_size
         dist.all_gather_object(gathered, records)
 
@@ -542,7 +543,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             device=torch.device(getattr(self.args, "device", "cpu")),
         )
         trainer = getattr(self, "trainer", None)
-        if dist.is_available() and dist.is_initialized():
+        if is_torch_distributed_ready():
             if trainer is not None and hasattr(trainer, "strategy"):
                 stats = trainer.strategy.reduce(stats, reduce_op="sum")
             else:  # pragma: no cover - trainer-less distributed fallback
@@ -676,7 +677,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     label_name=self.args.label_name,
                     current_epoch=int(self.current_epoch),
                 )
-            if trainer is not None and dist.is_available() and dist.is_initialized() and hasattr(trainer, "strategy"):
+            if trainer is not None and is_torch_distributed_ready() and hasattr(trainer, "strategy"):
                 trainer.strategy.barrier(f"ahi_{stage}_epoch_end")
             return records
 
