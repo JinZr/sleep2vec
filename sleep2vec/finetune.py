@@ -64,99 +64,113 @@ def supervised(args, config_bundle):
 
     # logger and callbacks
     version = args.version
+    preexisting_wandb_run = wandb.run
     logger = WandbLogger(
         project="sleep2vec-finetune",  # 相当于 TensorBoard 的 log dir
         name=f"s2v-finetune-{version}",  # run 名称
         save_dir="./wandb_logs",  # 本地缓存目录，可选
         log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )
+    try:
+        early_stop_callback = EarlyStopping(
+            monitor=args.monitor,
+            patience=args.patience,
+            verbose=False,
+            mode=args.monitor_mod,
+        )
 
-    early_stop_callback = EarlyStopping(
-        monitor=args.monitor,
-        patience=args.patience,
-        verbose=False,
-        mode=args.monitor_mod,
-    )
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
+            monitor=args.monitor,  # 监控验证集 Cohen κ
+            mode=args.monitor_mod,  # 越大越好
+            save_top_k=-1,  # 保留全部 checkpoint
+            save_last=True,  # 额外保存 last.ckpt
+            every_n_epochs=args.ckpt_every_n_epochs,  # 控制保存频率
+            filename="{epoch:02d}",
+        )
 
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
-        monitor=args.monitor,  # 监控验证集 Cohen κ
-        mode=args.monitor_mod,  # 越大越好
-        save_top_k=-1,  # 保留全部 checkpoint
-        save_last=True,  # 额外保存 last.ckpt
-        every_n_epochs=args.ckpt_every_n_epochs,  # 控制保存频率
-        filename="{epoch:02d}",
-    )
-
-    lr_monitor = LearningRateMonitor(logging_interval="step")
-    callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
-    if _is_distributed_ahi_finetune(args):
-        callbacks.append(build_distributed_ahi_progress_bar())
-    enable_checkpointing = True
-    trainer_kwargs = dict(
-        devices=args.devices,
-        accelerator="gpu",
-        strategy=DDPStrategy(find_unused_parameters=True),
-        # strategy=DeepSpeedStrategy(config="ds_config.json"),  # ← 就这行！
-        benchmark=True,
-        logger=logger,
-        max_epochs=args.epochs,
-        gradient_clip_val=args.gradient_clip_val,
-        precision=args.precision,
-        check_val_every_n_epoch=args.check_val_every_n_epoch,
-    )
-    if args.print_diagnostics:
-        callbacks = []
-        enable_checkpointing = False
-        trainer_kwargs.update(
-            dict(
-                enable_progress_bar=False,
-                max_steps=args.diagnostics_steps,
-                limit_val_batches=0,
+        lr_monitor = LearningRateMonitor(logging_interval="step")
+        callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
+        if _is_distributed_ahi_finetune(args):
+            callbacks.append(build_distributed_ahi_progress_bar())
+        enable_checkpointing = True
+        trainer_kwargs = dict(
+            devices=args.devices,
+            accelerator="gpu",
+            strategy=DDPStrategy(find_unused_parameters=True),
+            # strategy=DeepSpeedStrategy(config="ds_config.json"),  # ← 就这行！
+            benchmark=True,
+            logger=logger,
+            max_epochs=args.epochs,
+            gradient_clip_val=args.gradient_clip_val,
+            precision=args.precision,
+            check_val_every_n_epoch=args.check_val_every_n_epoch,
+        )
+        if args.print_diagnostics:
+            callbacks = []
+            enable_checkpointing = False
+            trainer_kwargs.update(
+                dict(
+                    enable_progress_bar=False,
+                    max_steps=args.diagnostics_steps,
+                    limit_val_batches=0,
+                )
             )
+
+        trainer = pl.Trainer(
+            callbacks=callbacks,
+            enable_checkpointing=enable_checkpointing,
+            **trainer_kwargs,
         )
 
-    trainer = pl.Trainer(
-        callbacks=callbacks,
-        enable_checkpointing=enable_checkpointing,
-        **trainer_kwargs,
-    )
+        if args.epochs > 0:
+            # train the model
+            trainer.fit(
+                model,
+                train_dataloaders=train_loader,
+                val_dataloaders=val_loader,
+                ckpt_path=args.ckpt_path if args.ckpt_path != "" else None,
+            )
+            # Persist a stable best.ckpt for downstream convenience.
+            if enable_checkpointing and trainer.is_global_zero:
+                best_path = checkpoint_callback.best_model_path
+                if best_path:
+                    best_dest = Path(checkpoint_callback.dirpath) / "best.ckpt"
+                    try:
+                        if Path(best_path).resolve() != best_dest.resolve():
+                            shutil.copy2(best_path, best_dest)
+                    except Exception as exc:  # pragma: no cover - best-effort
+                        logging.warning(f"Failed to copy best checkpoint to {best_dest}: {exc}")
 
-    if args.epochs > 0:
-        # train the model
-        trainer.fit(
-            model,
-            train_dataloaders=train_loader,
-            val_dataloaders=val_loader,
-            ckpt_path=args.ckpt_path if args.ckpt_path != "" else None,
-        )
-        # Persist a stable best.ckpt for downstream convenience.
-        if enable_checkpointing and trainer.is_global_zero:
-            best_path = checkpoint_callback.best_model_path
-            if best_path:
-                best_dest = Path(checkpoint_callback.dirpath) / "best.ckpt"
-                try:
-                    if Path(best_path).resolve() != best_dest.resolve():
-                        shutil.copy2(best_path, best_dest)
-                except Exception as exc:  # pragma: no cover - best-effort
-                    logging.warning(f"Failed to copy best checkpoint to {best_dest}: {exc}")
+        if args.print_diagnostics:
+            # only collect diagnostics, skip evaluation
+            return
 
-    if args.print_diagnostics:
-        # only collect diagnostics, skip evaluation
-        return
-
-    # test the model
-    if args.epochs > 0:
-        ckpt_path = checkpoint_callback.best_model_path or "last"
-    else:
-        ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
-    pretrain_result = trainer.test(
-        model=model,
-        ckpt_path=ckpt_path,
-        dataloaders=test_loader,
-    )[0]
-    logging.info(pretrain_result)
-    save_result_csv(pretrain_result, args.results_csv_path, args)
+        # test the model
+        if args.epochs > 0:
+            ckpt_path = checkpoint_callback.best_model_path or "last"
+        else:
+            ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
+        pretrain_result = trainer.test(
+            model=model,
+            ckpt_path=ckpt_path,
+            dataloaders=test_loader,
+        )[0]
+        logging.info(pretrain_result)
+        save_result_csv(pretrain_result, args.results_csv_path, args)
+    finally:
+        # Finish only the run this call created, and do not let teardown hide
+        # the primary training / evaluation error if one is already active.
+        active_wandb_run = wandb.run
+        if active_wandb_run is not None and active_wandb_run is not preexisting_wandb_run:
+            primary_exc_active = sys.exc_info()[0] is not None
+            try:
+                wandb.finish()
+            except BaseException as exc:
+                if primary_exc_active:
+                    logging.warning("wandb.finish() failed during finetune cleanup: %s", exc)
+                else:
+                    raise
 
 
 def build_version_name(args) -> str:
