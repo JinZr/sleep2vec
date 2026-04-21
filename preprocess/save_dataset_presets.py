@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-import pickle
 import sys
 import tempfile
 import typing as t
@@ -336,7 +335,10 @@ def _resolve_single_index_path(index_paths: list[str]) -> Path:
 def _load_index_df(index_paths: list[str]) -> pd.DataFrame:
     path = _resolve_single_index_path(index_paths)
     df = pd.read_csv(path, low_memory=False)
-    df["source"] = str(path)
+    if "source" not in df.columns:
+        df["source"] = str(path)
+    else:
+        df["source"] = df["source"].where(df["source"].notna(), str(path))
     return df
 
 
@@ -363,22 +365,6 @@ def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: 
     return filtered
 
 
-def _restore_preset_source(output_path: Path, source_value: str) -> None:
-    if not output_path.exists():
-        return
-
-    with open(output_path, "rb") as f:
-        data = pickle.load(f)
-
-    for item in data:
-        metadata = getattr(item, "metadata", None)
-        if isinstance(metadata, dict):
-            metadata["source"] = source_value
-
-    with open(output_path, "wb") as f:
-        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-
 def _build_preset_job(
     *,
     output_path: Path,
@@ -398,8 +384,7 @@ def _build_preset_job(
 ) -> tuple[Path, int]:
     from data.psg_pretrain_dataset import PSGPretrainDataset
 
-    single_index_path = str(_resolve_single_index_path(index_paths))
-    index = [single_index_path]
+    index = [str(_resolve_single_index_path(index_paths))]
     filtered_index_path: str | None = None
     if not allow_missing_channels:
         filtered_index = _filter_index_df_for_required_channels(_load_index_df(index_paths), channel_names)
@@ -432,8 +417,6 @@ def _build_preset_job(
             shuffle=shuffle,
             filter_max_workers=filter_max_workers,
         )
-        if filtered_index_path is not None:
-            _restore_preset_source(output_path, single_index_path)
         return output_path, len(dataset)
     finally:
         if filtered_index_path is not None:

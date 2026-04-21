@@ -114,7 +114,10 @@ class PSGPretrainDataset(DefaultDataset):
                 # 单个路径
                 if isinstance(idx, (str, os.PathLike, Path)):
                     df = pd.read_csv(idx, low_memory=False)
-                    df["source"] = str(idx)  # 可选：标注来源文件
+                    if "source" not in df.columns:
+                        df["source"] = str(idx)
+                    else:
+                        df["source"] = df["source"].where(df["source"].notna(), str(idx))
                     return df
 
                 # 多个路径
@@ -122,7 +125,10 @@ class PSGPretrainDataset(DefaultDataset):
                     dfs = []
                     for p in idx:
                         dfi = pd.read_csv(p, low_memory=False)
-                        dfi["source"] = str(p)  # 可选：标注来源文件
+                        if "source" not in dfi.columns:
+                            dfi["source"] = str(p)
+                        else:
+                            dfi["source"] = dfi["source"].where(dfi["source"].notna(), str(p))
                         dfs.append(dfi)
                     if not dfs:
                         raise ValueError("index 列表为空。")
