@@ -427,6 +427,138 @@ def test_main_uses_auto_filter_workers_for_single_job_when_num_workers_is_omitte
     assert captured["filter_max_workers"] is None
 
 
+def test_main_uses_auto_filter_workers_for_multi_job_when_num_workers_is_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    submitted_jobs: list[dict[str, object]] = []
+    seen_max_workers: list[int] = []
+
+    class FakeFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class FakeExecutor:
+        def __init__(self, max_workers: int):
+            seen_max_workers.append(max_workers)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, /, **kwargs):
+            submitted_jobs.append(kwargs)
+            return FakeFuture((kwargs["output_path"], 1))
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "age": 40, "sex": 1},
+            {"path": "b.npz", "split": "val", "duration": 60, "age": 41, "sex": 0},
+        ]
+    ).to_csv(index_path, index=False)
+
+    monkeypatch.setattr("preprocess.save_dataset_presets.ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("preprocess.save_dataset_presets.as_completed", lambda futures: list(futures))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            "train",
+            "val",
+            "--min-channels",
+            "1",
+        ],
+    )
+
+    save_dataset_presets_main()
+
+    assert seen_max_workers == [2]
+    assert len(submitted_jobs) == 2
+    assert {job["split"] for job in submitted_jobs} == {"train", "val"}
+    assert all(job["filter_max_workers"] is None for job in submitted_jobs)
+
+
+def test_main_uses_explicit_filter_workers_for_multi_job_when_num_workers_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    submitted_jobs: list[dict[str, object]] = []
+    seen_max_workers: list[int] = []
+
+    class FakeFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class FakeExecutor:
+        def __init__(self, max_workers: int):
+            seen_max_workers.append(max_workers)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, /, **kwargs):
+            submitted_jobs.append(kwargs)
+            return FakeFuture((kwargs["output_path"], 1))
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "age": 40, "sex": 1},
+            {"path": "b.npz", "split": "val", "duration": 60, "age": 41, "sex": 0},
+        ]
+    ).to_csv(index_path, index=False)
+
+    monkeypatch.setattr("preprocess.save_dataset_presets.ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("preprocess.save_dataset_presets.as_completed", lambda futures: list(futures))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            "train",
+            "val",
+            "--min-channels",
+            "1",
+            "--num-workers",
+            "3",
+        ],
+    )
+
+    save_dataset_presets_main()
+
+    assert seen_max_workers == [2]
+    assert len(submitted_jobs) == 2
+    assert {job["split"] for job in submitted_jobs} == {"train", "val"}
+    assert all(job["filter_max_workers"] == 3 for job in submitted_jobs)
+
+
 def test_build_preset_job_prefilters_index_with_required_masks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
