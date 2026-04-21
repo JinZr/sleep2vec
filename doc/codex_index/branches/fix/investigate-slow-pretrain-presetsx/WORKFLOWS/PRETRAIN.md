@@ -12,41 +12,39 @@ Primary code path:
 
 1. `sleep2vec.pretrain.sleep2vec_pretrain`
 2. `sleep2vec.config.load_pretrain_config`
-3. `sleep2vec.common.apply_model_config_args`
-4. `sleep2vec.utils.get_pretrain_dataloader`
-5. `sleep2vec.sleep2vec_modelling.Sleep2vecPretraining`
-6. `sleep2vec.pretrain_model.Sleep2vecPretrainModel`
-7. `sleep2vec.losses.create_loss`
-8. Lightning `trainer.fit(...)`
+3. `sleep2vec.utils.get_pretrain_dataloader`
+4. `sleep2vec.sleep2vec_modelling.Sleep2vecPretraining`
+5. `sleep2vec.pretrain_model.Sleep2vecPretrainModel`
+6. `sleep2vec.losses.create_loss`
+7. Lightning `trainer.fit(...)`
 
 ## Detailed Flow
 
 1. Load YAML.
-   - Reads `model`, `loss`, `data`, optional `model_averaging`, and optional `adapt`.
+   - Reads `model`, `loss`, `data`, and optional `model_averaging`.
    - Requires `model.backbone`, `model.projection`, and `model.cls`.
 2. Copy selected config values into `args`.
    - `mask_rate`
    - `max_tokens`
    - `channel_names`
-   - `channel_input_dims`
-   - optionally `backbone_arch`
+   - `backbone_arch`
 3. Build train and validation loaders.
    - Train loader is a single `PSGPretrainDataset`.
-   - Validation is a single loader whose `SequentialPairEvalBatchSampler` iterates supported modality pairs.
-   - Missing-channel mode changes worker counts, sampler choice, and batch sharding.
+   - Validation is one loader per channel pair.
+   - Missing-channel mode changes worker counts, sampler choice, and pair filtering.
 4. Resolve experiment directory.
    - Resume path: infer experiment directory from `--ckpt-path`.
    - Fresh run: create `log-pretrain/<run-name>/checkpoints`.
 5. Persist artifacts.
    - Copy YAML to `config.yaml`.
-   - Dump the bound CLI namespace to `cli_args.yaml`.
+   - Dump bound CLI namespace to `cli_args.yaml`.
 6. Build Lightning module.
    - `Sleep2vecPretraining` creates `Sleep2vecPretrainModel`.
    - Loss is created from the registry.
    - Optional model averager is attached.
 7. Build trainer.
    - Standard mode: callbacks enabled.
-   - Diagnostics mode: progress bar, checkpointing, and validation are disabled.
+   - Diagnostics mode: progress bar, checkpointing, and validation disabled.
 8. Train.
    - `trainer.fit(model, train_dataloaders=..., val_dataloaders=..., ckpt_path=...)`
 
@@ -55,15 +53,14 @@ Primary code path:
 - `tokens`: channel tensors
 - `mlm_mask`: channel token masks
 - `length`: valid token counts
-- `token_start`: token offset used later by AHI event aggregation on downstream paths
 - `w`, `h`: only required for `weighted_info_nce`
-- `pair`: optional, mainly for sampler-aware logging and pair-eval batches
+- `pair`: optional, mainly for sampler-aware logging
 
 ## Important Runtime Decisions
 
 - Pair-first missing-channel training is selected inside `DefaultDataset.dataloader`, not in the entrypoint.
 - Lightning distributed sampler injection is disabled when the batch sampler already shards by rank.
-- Validation pair metrics are aggregated inside one callback-aware loader, not by spawning one loader object per pair.
+- Validation metrics are aggregated across per-pair loaders and then visualized by `PairAccLoggerCallback`.
 
 ## Outputs
 

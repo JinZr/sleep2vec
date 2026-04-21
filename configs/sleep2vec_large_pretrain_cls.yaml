@@ -59,6 +59,16 @@ model:
       tokenizer:
         name: sundial
         out_dim: 768
+    - name: ppg
+      input_dim: 3000
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: actigraphy
+      input_dim: 960
+      tokenizer:
+        name: sundial
+        out_dim: 768
 loss:
   name: info_nce
   temperature: 0.2
