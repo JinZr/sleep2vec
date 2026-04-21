@@ -1,0 +1,47 @@
+{
+  "branch": "fix/result-writing-issue",
+  "commit": "9ca2956cc9f4e5fa744d9ea5c5aab70e8762253a",
+  "generated_at": "2026-04-21T01:19:38Z",
+  "mode": "initialize-branch",
+  "coverage": {
+    "tracked_file_counts": {
+      "sleep2vec": 78,
+      "data": 6,
+      "preprocess": 6,
+      "sleep2vec2": 0,
+      "sleep2vec_moe": 0,
+      "sleep2vec_hires": 0,
+      "configs": 32,
+      "tests": 24,
+      "utils": 2
+    },
+    "function_catalog_scope": [
+      "config parsing, built-in task semantics, and run-artifact persistence",
+      "registry and builder entrypoints for backbones, tokenizers, projections, and CLS handling",
+      "runtime entrypoints for pretrain, adapt, finetune, and inference",
+      "checkpoint initialization, averaging, distributed helpers, and result CSV writes",
+      "core backbone, downstream, AHI-eval, layer-mix, and adaptation-freeze contracts",
+      "dataset, metadata, sampler, and missing-channel batching contracts",
+      "preset generation, split assignment, mask normalization, and WatchPAT conversion CLIs",
+      "downstream evaluation plots, pair-accuracy heatmaps, and diagnostics hooks"
+    ],
+    "workflow_scope": [
+      "pretrain",
+      "adapt",
+      "finetune",
+      "infer and checkpoint averaging",
+      "preprocessing and preset generation",
+      "config validation"
+    ]
+  },
+  "exclusions": [
+    "AGENTS.md is referenced for ownership context but not duplicated here",
+    "main is the baseline for DELTA_FROM_MAIN.md on this branch",
+    "preprocess/preprocess_pipeline.ipynb is summarized only at workflow level",
+    "sleep2vec2, sleep2vec_moe, and sleep2vec_hires have no tracked source files on this branch",
+    "tracked visualization font binaries are noted at directory level, not indexed function-by-function",
+    "__pycache__, .DS_Store, and ignored local artifacts are excluded",
+    "untracked workspaces such as index/ and new_index/ are excluded",
+    "product code outside doc/codex_index/branches/fix/result-writing-issue/ was not modified"
+  ]
+}
