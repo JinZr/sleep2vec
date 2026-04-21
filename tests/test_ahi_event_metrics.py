@@ -1807,3 +1807,59 @@ def test_run_inference_uses_single_ahi_checkpoint_without_search_injection(monke
     assert not hasattr(captured["args"], "ahi_test_search_thresholds")
     assert captured["ckpt_path"] == "/tmp/model.ckpt"
     assert captured["dataloaders"] == "loader"
+
+
+def test_run_inference_preserves_primary_error_when_wandb_finish_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    warnings: list[str] = []
+    created_run = object()
+
+    @dataclass
+    class _DummyBundle:
+        finetune: object = None
+        averaging: object = None
+
+    class _DummyModule:
+        def __init__(self, args, model_cfg, finetune_config=None, averaging_config=None):
+            pass
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def test(self, model=None, ckpt_path=None, dataloaders=None):
+            raise RuntimeError("primary inference failure")
+
+    monkeypatch.setattr("sleep2vec.infer.apply_finetune_config", lambda args: (_DummyBundle(), _DummyModelConfig()))
+    monkeypatch.setattr("sleep2vec.infer._build_inference_loader", lambda args: "loader")
+    monkeypatch.setattr("sleep2vec.infer.Sleep2vecFinetuning", _DummyModule)
+    monkeypatch.setattr("sleep2vec.infer.pl.Trainer", _DummyTrainer)
+    monkeypatch.setattr("sleep2vec.infer._init_wandb", lambda args: created_run)
+    monkeypatch.setattr(
+        "sleep2vec.infer.wandb.finish",
+        lambda: (_ for _ in ()).throw(RuntimeError("cleanup failure")),
+    )
+    monkeypatch.setattr(
+        "sleep2vec.infer.logging.warning",
+        lambda msg, *args: warnings.append(msg % args),
+    )
+
+    args = argparse.Namespace(
+        label_name="ahi",
+        avg_ckpts=1,
+        ckpt_path="/tmp/model.ckpt",
+        avg_ckpt_dir=None,
+        config=Path("dummy.yaml"),
+        precision=32,
+        accelerator="cpu",
+        devices=[0],
+        batch_size=4,
+        eval_split="test",
+        seed=4523,
+        wandb=True,
+        results_csv_path=tmp_path / "results.csv",
+    )
+
+    with pytest.raises(RuntimeError, match="primary inference failure"):
+        run_inference(args)
+
+    assert warnings == ["wandb.finish() failed during inference cleanup: cleanup failure"]

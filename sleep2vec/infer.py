@@ -133,7 +133,14 @@ def run_inference(args):
         logging.info("Inference metrics: %s", metrics)
     finally:
         if wandb_run is not None:
-            wandb.finish()
+            primary_exc_active = sys.exc_info()[0] is not None
+            try:
+                wandb.finish()
+            except BaseException as exc:
+                if primary_exc_active:
+                    logging.warning("wandb.finish() failed during inference cleanup: %s", exc)
+                else:
+                    raise
 
     if args.results_csv_path and metrics:
         save_result_csv(metrics, str(args.results_csv_path), args)

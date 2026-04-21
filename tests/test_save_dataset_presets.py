@@ -688,8 +688,9 @@ def test_build_preset_job_restores_original_source_after_strict_prefilter(
 ):
     class FakeDataset:
         def __init__(self, **kwargs):
+            filtered_df = pd.read_csv(kwargs["index"][0], low_memory=False)
             output_path = Path(kwargs["save_preset_path"])
-            samples = [types.SimpleNamespace(metadata={"source": "temp.csv"})]
+            samples = [types.SimpleNamespace(metadata={"source": filtered_df.loc[0, "source"]})]
             with open(output_path, "wb") as f:
                 pickle.dump(samples, f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -702,7 +703,16 @@ def test_build_preset_job_restores_original_source_after_strict_prefilter(
     index_path = tmp_path / "index.csv"
     pd.DataFrame(
         [
-            {"path": "a.npz", "split": "train", "duration": 2, "age": 40, "sex": 1, "ppg_mask": 1, "stage_mask": 1},
+            {
+                "path": "a.npz",
+                "split": "train",
+                "duration": 2,
+                "age": 40,
+                "sex": 1,
+                "source": "mesa",
+                "ppg_mask": 1,
+                "stage_mask": 1,
+            },
         ]
     ).to_csv(index_path, index=False)
 
@@ -727,7 +737,30 @@ def test_build_preset_job_restores_original_source_after_strict_prefilter(
     assert sample_count == 1
     with open(output_path, "rb") as f:
         saved = pickle.load(f)
-    assert saved[0].metadata["source"] == str(index_path)
+    assert saved[0].metadata["source"] == "mesa"
+
+
+def test_load_index_df_preserves_existing_source_column(tmp_path: Path):
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "source": "mesa"},
+            {"path": "b.npz", "source": "shhs"},
+        ]
+    ).to_csv(index_path, index=False)
+
+    loaded = _load_index_df([str(index_path)])
+
+    assert loaded["source"].tolist() == ["mesa", "shhs"]
+
+
+def test_load_index_df_backfills_missing_source_with_index_path(tmp_path: Path):
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": "a.npz"}, {"path": "b.npz"}]).to_csv(index_path, index=False)
+
+    loaded = _load_index_df([str(index_path)])
+
+    assert loaded["source"].tolist() == [str(index_path), str(index_path)]
 
 
 def test_load_index_df_rejects_multiple_index_paths(tmp_path: Path):
