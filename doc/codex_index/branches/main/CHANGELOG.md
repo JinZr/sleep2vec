@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-21
+
+- Cleaned up stale usage guidance in the `main` branch index:
+  - clarified that small, localized fixes only need a quick consult of `README.md` plus one relevant index page
+  - kept the full reading pass for broader behavior or contract changes
+- Cleaned up stale branch-scope metadata labels:
+  - `Commit` -> `Last full refresh commit`
+  - `Generated at` -> `Last full refresh at`
+  - this avoids implying that every docs-only tweak is a full index rebuild
+
 ## 2026-04-20
 
 - Refreshed the `main` branch engineering index for commit `99d22deee69cc3cb9eae9229a8faaa4c33974824`.

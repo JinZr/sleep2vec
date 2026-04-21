@@ -1,12 +1,12 @@
 # Main Branch Codex Engineering Index
 
-This directory is the branch-scoped engineering manual for `main`. It should be consulted before changing code in this repository.
+This directory is the branch-scoped engineering manual for `main`. Use it before broader code changes, and use a quick consult for small localized fixes.
 
 ## Branch Scope
 
 - Branch: `main`
-- Commit: `99d22deee69cc3cb9eae9229a8faaa4c33974824`
-- Generated at: `2026-04-20T11:49:16Z`
+- Last full refresh commit: `99d22deee69cc3cb9eae9229a8faaa4c33974824`
+- Last full refresh at: `2026-04-20T11:49:16Z`
 - Mode: `refresh`
 
 ## Purpose
@@ -27,6 +27,8 @@ The manual is intentionally biased toward contract-bearing, reuse-relevant APIs 
 3. [REUSE_GUIDE.md](./REUSE_GUIDE.md) for canonical implementations and duplication traps.
 4. Relevant workflow file under [WORKFLOWS/](./WORKFLOWS/).
 5. Relevant family catalog under [FUNCTIONS/](./FUNCTIONS/).
+
+For small, localized fixes or routine updates, it is enough to read this page plus the single most relevant page from `REUSE_GUIDE.md`, `MODULE_MAP.md`, `WORKFLOWS/`, or `FUNCTIONS/`.
 
 ## Coverage
 
@@ -53,6 +55,9 @@ Branch-state coverage only:
 - `AGENTS.md` is referenced for ownership context but is not reproduced here as an editable source of truth.
 
 ## How To Use This Index
+
+- For a small local fix, start here, then jump to one relevant section instead of doing the full handbook pass.
+- For a broader behavior or contract change, follow the full reading order above.
 
 - If you are changing YAML semantics, built-in task behavior, or config validation, start with [FUNCTIONS/CONFIG_AND_REGISTRIES.md](./FUNCTIONS/CONFIG_AND_REGISTRIES.md).
 - If you are changing pretrain, adapt, finetune, inference, checkpoint, or result-export orchestration, start with [FUNCTIONS/RUNTIME_ORCHESTRATION.md](./FUNCTIONS/RUNTIME_ORCHESTRATION.md) and the relevant workflow.
