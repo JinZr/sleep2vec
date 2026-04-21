@@ -19,8 +19,8 @@ if str(REPO_ROOT) not in sys.path:
 from wrist2vec.callbacks import build_distributed_ahi_progress_bar
 from wrist2vec.common import apply_finetune_config, persist_run_config_and_args
 from wrist2vec.results import save_result_csv
-from wrist2vec.wrist2vec_finetuning import Wrist2vecFinetuning
 from wrist2vec.utils import get_finetune_dataloaders
+from wrist2vec.wrist2vec_finetuning import Wrist2vecFinetuning
 
 # from model.ahi_metric import AHIMetricsCollection
 

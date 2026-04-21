@@ -1,9 +1,9 @@
 import wrist2vec
 import wrist2vec.adapt as adapt_module
+from wrist2vec.downstream_model import Wrist2vecDownstreamModel
 import wrist2vec.finetune as finetune_module
 import wrist2vec.infer as infer_module
 import wrist2vec.pretrain as pretrain_module
-from wrist2vec.downstream_model import Wrist2vecDownstreamModel
 from wrist2vec.pretrain_model import Wrist2vecPretrainModel
 from wrist2vec.wrist2vec_adaptation import Wrist2vecAdaptation
 from wrist2vec.wrist2vec_finetuning import Wrist2vecFinetuning

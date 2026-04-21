@@ -21,8 +21,8 @@ from wrist2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 from wrist2vec.checkpoints import load_pretrain_init_weights
 from wrist2vec.common import apply_model_config_args, persist_run_config_and_args
 from wrist2vec.config import load_pretrain_config
-from wrist2vec.wrist2vec_modelling import Wrist2vecPretraining
 from wrist2vec.utils import get_pretrain_dataloader
+from wrist2vec.wrist2vec_modelling import Wrist2vecPretraining
 
 
 def wrist2vec_pretrain(args):

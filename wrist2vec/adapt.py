@@ -21,8 +21,8 @@ from data.samplers import handles_distributed_sharding
 from wrist2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 from wrist2vec.common import apply_model_config_args, persist_run_config_and_args
 from wrist2vec.config import load_pretrain_config
-from wrist2vec.wrist2vec_adaptation import AdaptPairScheduleCallback, Wrist2vecAdaptation, initial_pair_probs_for_phase
 from wrist2vec.utils import get_pretrain_dataloader
+from wrist2vec.wrist2vec_adaptation import AdaptPairScheduleCallback, Wrist2vecAdaptation, initial_pair_probs_for_phase
 
 
 @dataclass(frozen=True)

@@ -19,8 +19,8 @@ from wrist2vec.checkpoints import average_checkpoints, select_checkpoints
 from wrist2vec.common import apply_finetune_config
 from wrist2vec.distributed import is_rank_zero_process
 from wrist2vec.results import save_result_csv
-from wrist2vec.wrist2vec_finetuning import Wrist2vecFinetuning
 from wrist2vec.utils import _build_finetune_loader
+from wrist2vec.wrist2vec_finetuning import Wrist2vecFinetuning
 
 
 def _build_inference_loader(args):
