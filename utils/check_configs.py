@@ -19,6 +19,11 @@ from preprocess.save_dataset_presets import (
     _resolve_validation_channels,
 )
 from sleep2vec.config import load_finetune_config, load_pretrain_config, validate_model_config
+from wrist2vec.config import (
+    load_finetune_config as load_wrist2vec_finetune_config,
+    load_pretrain_config as load_wrist2vec_pretrain_config,
+    validate_model_config as validate_wrist2vec_model_config,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,13 +62,18 @@ def _display_path(path: Path) -> str:
 
 
 def _validate_runtime_loader_contract(path: Path, config_data: dict[str, t.Any]) -> None:
+    is_wrist2vec_config = path.name.startswith("wrist2vec_")
+    load_finetune = load_wrist2vec_finetune_config if is_wrist2vec_config else load_finetune_config
+    load_pretrain = load_wrist2vec_pretrain_config if is_wrist2vec_config else load_pretrain_config
+    validate_model = validate_wrist2vec_model_config if is_wrist2vec_config else validate_model_config
+
     if isinstance(config_data.get("finetune"), dict):
-        bundle = load_finetune_config(path)
-        validate_model_config(bundle.model)
+        bundle = load_finetune(path)
+        validate_model(bundle.model)
         return
 
-    bundle = load_pretrain_config(path)
-    validate_model_config(bundle.model)
+    bundle = load_pretrain(path)
+    validate_model(bundle.model)
 
 
 def _validate_preset_build_contract(config_data: dict[str, t.Any]) -> tuple[list[str] | None, int | None]:
@@ -89,10 +99,12 @@ def _validate_preset_build_contract(config_data: dict[str, t.Any]) -> tuple[list
 
 
 def _is_ppg_finetune_config(path: Path) -> bool:
-    return path.name.startswith("ppg_") and "finetune" in path.name and path.suffix == ".yaml"
+    normalized_name = path.name.removeprefix("wrist2vec_")
+    return normalized_name.startswith("ppg_") and "finetune" in normalized_name and path.suffix == ".yaml"
 
 
 def _validate_repo_policy(path: Path, config_data: dict[str, t.Any]) -> None:
+    normalized_name = path.name.removeprefix("wrist2vec_")
     model_channels, _ = _load_model_channels(config_data)
     finetune_block = config_data.get("finetune")
     task_block = finetune_block.get("task") if isinstance(finetune_block, dict) else None
@@ -111,7 +123,7 @@ def _validate_repo_policy(path: Path, config_data: dict[str, t.Any]) -> None:
 
     is_seq = bool(task_block.get("is_seq", False))
     if is_seq:
-        if path.name.startswith("ppg_ahi_finetune"):
+        if normalized_name.startswith("ppg_ahi_finetune"):
             if preset_required_channels != ["ppg", "ahi"]:
                 raise ValueError(
                     "single-channel ppg ahi configs must set preset_build.required_channels to [ppg, ahi]."

@@ -8,7 +8,7 @@
 
 ---
 
-**Quick links** · `configs/` recipes · `sleep2vec/` source · `data/` datasets & loaders · `preprocess/` caching scripts · `utils/` helpers
+**Quick links** · `configs/` recipes · `sleep2vec/` source · `wrist2vec/` source · `data/` datasets & loaders · `preprocess/` caching scripts · `utils/` helpers
 
 ---
 
@@ -23,6 +23,7 @@
     - [Adaptation — staged wearable expansion](#adaptation--staged-wearable-expansion)
     - [Finetune — classification](#finetune--classification)
     - [Finetune — regression](#finetune--regression)
+    - [Parallel `wrist2vec` Namespace](#parallel-wrist2vec-namespace)
   - [Inference Only](#inference-only)
   - [Configuration Knobs](#configuration-knobs)
   - [Diagnostics Mode](#diagnostics-mode)
@@ -47,6 +48,7 @@
 - Authenticate to Weights & Biases before running (`WANDB_API_KEY=...` or `WANDB_MODE=offline`) because entrypoints call `wandb.login()`.
 - Default precision is bf16/bf16-mixed; pass `--precision 32` if your GPUs do not support bf16.
 - Main entrypoints: `python -m sleep2vec.pretrain ...`, `python -m sleep2vec.adapt --phase stage1|stage2 ...`, `python -m sleep2vec.finetune ...`, `python -m sleep2vec.infer ...`.
+- Parallel namespace: `python -m wrist2vec.pretrain ...`, `python -m wrist2vec.adapt --phase stage1|stage2 ...`, `python -m wrist2vec.finetune ...`, `python -m wrist2vec.infer ...`.
 
 ---
 
@@ -191,6 +193,51 @@ Custom metadata labels:
 
 > [!Note]
 > `--version-name` is required for pretraining/adaptation run naming; downstream runs auto-generate a version when omitted. Ensure your YAML `data.*` paths point to real preset pickles.
+
+### Parallel `wrist2vec` Namespace
+`wrist2vec/` is a side-by-side naming-parity fork of the base `sleep2vec/` runtime. Use it when you want the same behavior under wrist-branded module, config, W&B, and log-path names.
+
+Pretrain:
+```bash
+python -m wrist2vec.pretrain \
+  --config configs/write2vec/wrist2vec_dense_pretrain.yaml \
+  --pretrain-data-index /path/to/index.csv \
+  --pretrain-preset-path /path/to/pretrain_cache.pkl \
+  --version-name wrist-exp001
+```
+
+Adapt:
+```bash
+python -m wrist2vec.adapt \
+  --config configs/write2vec/wrist2vec_dense_adapt_ppg_actigraphy.yaml \
+  --phase stage1 \
+  --pretrained-backbone-path /path/to/base_pretrain.ckpt \
+  --pretrain-data-index /path/to/index.csv \
+  --pretrain-preset-path /path/to/wearable_cache.pkl \
+  --version-name wrist-wearable-v1
+```
+
+Finetune:
+```bash
+python -m wrist2vec.finetune \
+  --config configs/write2vec/wrist2vec_dense_finetune_cls.yaml \
+  --label-name stage5 --results-csv-path outputs.csv \
+  --version-name wrist-stage5
+```
+
+Infer:
+```bash
+python -m wrist2vec.infer \
+  --config configs/write2vec/wrist2vec_dense_finetune_cls.yaml \
+  --ckpt-path log-wrist2vec-finetune/wrist-stage5/checkpoints/best.ckpt \
+  --label-name stage5 --batch-size 12 --devices 0 \
+  --eval-split test --results-csv-path outputs.csv
+```
+
+Notes:
+- Every top-level example config under `configs/` now has a `configs/write2vec/wrist2vec_*.yaml` companion.
+- For generic wearable/downstream recipes, use files such as `configs/write2vec/wrist2vec_ppg_ahi_finetune.yaml` and `configs/write2vec/wrist2vec_heartbeat_breath_age_finetune_large.yaml`.
+- Wrist runs write to `log-wrist2vec-pretrain/`, `log-wrist2vec-adapt/`, and `log-wrist2vec-finetune/`.
 
 ---
 

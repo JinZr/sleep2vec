@@ -103,6 +103,15 @@ def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_conv_config():
     check_config_file(path)
 
 
+def test_check_config_file_accepts_all_repo_wrist2vec_configs():
+    config_dir = Path(__file__).resolve().parents[1] / "configs"
+    wrist2vec_paths = sorted(config_dir.rglob("write2vec/wrist2vec*.yaml"))
+
+    assert wrist2vec_paths
+    for path in wrist2vec_paths:
+        check_config_file(path)
+
+
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
     _write_yaml(path, _ppg_finetune_payload(is_seq=True, preset_build=None))
@@ -115,6 +124,18 @@ def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_pat
 
 def test_check_config_file_rejects_wrong_required_channels_for_ppg_stage_config(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
+    payload = _ppg_finetune_payload(
+        is_seq=True,
+        preset_build={"required_channels": ["ppg"], "min_channels": 1},
+    )
+    _write_yaml(path, payload)
+
+    with pytest.raises(ValueError, match="must set preset_build.required_channels to \\[ppg, stage5\\]"):
+        check_config_file(path)
+
+
+def test_check_config_file_rejects_wrong_required_channels_for_wrist2vec_ppg_stage_config(tmp_path: Path):
+    path = tmp_path / "configs" / "write2vec" / "wrist2vec_ppg_stage3_finetune.yaml"
     payload = _ppg_finetune_payload(
         is_seq=True,
         preset_build={"required_channels": ["ppg"], "min_channels": 1},

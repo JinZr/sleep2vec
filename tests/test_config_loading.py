@@ -21,6 +21,11 @@ from sleep2vec.config import (
     load_pretrain_config,
     validate_model_config,
 )
+from wrist2vec.config import (
+    load_finetune_config as load_wrist2vec_finetune_config,
+    load_pretrain_config as load_wrist2vec_pretrain_config,
+    validate_model_config as validate_wrist2vec_model_config,
+)
 
 
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "config.yaml") -> Path:
@@ -226,6 +231,30 @@ def test_ppg_actigraphy_adapt_configs_keep_uniform_final_stage_sampling(config_n
 
     assert final_ratio > 0.0
     assert final_ratio == pytest.approx(new_pair_count / len(all_pairs))
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "wrist2vec_dense_pretrain.yaml",
+        "wrist2vec_dense_adapt_ppg_actigraphy.yaml",
+    ],
+)
+def test_wrist2vec_repo_pretrain_configs_load(config_name: str):
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "write2vec" / config_name
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    validate_wrist2vec_model_config(bundle.model)
+    assert bundle.model.channels
+
+
+def test_wrist2vec_repo_finetune_config_loads():
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "write2vec" / "wrist2vec_dense_finetune_cls.yaml"
+    bundle = load_wrist2vec_finetune_config(config_path)
+
+    validate_wrist2vec_model_config(bundle.model)
+    assert bundle.model.head is not None
+    assert bundle.finetune.task is not None
 
 
 def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
