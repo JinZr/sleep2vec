@@ -383,6 +383,50 @@ def test_build_preset_job_passes_filter_workers(tmp_path: Path, monkeypatch: pyt
     assert captured["meta_data_names"] == ["ahi"]
 
 
+def test_main_uses_auto_filter_workers_for_single_job_when_num_workers_is_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    captured: dict[str, object] = {}
+
+    class FakeDataset:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __len__(self) -> int:
+            return 1
+
+    fake_module = types.SimpleNamespace(PSGPretrainDataset=FakeDataset)
+    monkeypatch.setitem(sys.modules, "data.psg_pretrain_dataset", fake_module)
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "age": 40, "sex": 1},
+        ]
+    ).to_csv(index_path, index=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            "train",
+        ],
+    )
+
+    save_dataset_presets_main()
+
+    assert captured["filter_max_workers"] is None
+
+
 def test_build_preset_job_prefilters_index_with_required_masks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
