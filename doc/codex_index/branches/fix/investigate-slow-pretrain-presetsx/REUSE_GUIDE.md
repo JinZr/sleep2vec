@@ -34,7 +34,7 @@ For narrow special-case behavior changes, patch the canonical implementation loc
 | Preset validation channel resolution | `preprocess.save_dataset_presets._resolve_validation_channels` | Owns YAML-vs-built-in channel selection, including built-in `stage5` / `ahi` validation channels and automatic `ahi -> stage5` expansion | Duplicated channel subset logic in wrapper scripts |
 | AHI preset admission threshold | `preprocess.save_dataset_presets._resolve_effective_min_channels` | Forces built-in `ahi` presets to require every requested validation channel before serializing windows | Ad hoc `min_channels` overrides in preset scripts |
 | Preset required-mask prefilter | `preprocess.save_dataset_presets._filter_index_df_for_required_channels` | Applies strict mask-based CSV prefiltering with built-in `stage_mask` / `ah_event_mask` handling when missing channels are disallowed | Manual CSV filtering before preset generation |
-| Preset generation | `preprocess.save_dataset_presets.main` and `_build_preset_job` | Canonical CLI path that exercises `PSGPretrainDataset`, preserves automatic validation-worker selection for single-job builds when `--num-workers` is omitted, and owns preset side effects | External scripts that pickle `SampleIndex` lists directly |
+| Preset generation | `preprocess.save_dataset_presets.main` and `_build_preset_job` | Canonical CLI path that exercises `PSGPretrainDataset`, preserves automatic validation-worker selection when `--num-workers` is omitted, forwards explicit `--num-workers` to each job's inner validation path, and owns preset side effects | External scripts that pickle `SampleIndex` lists directly |
 | Split generation | `preprocess/split_index_by_dataset.py` | Canonical dataset-group split policy | Manual split assignment notebooks |
 | Missing-mask statistics | `preprocess/mask_missing_stats.py` | Canonical `_mask == 1` presence semantics | New mask-summary scripts with different conventions |
 | WatchPAT conversion | `preprocess/watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
@@ -84,7 +84,7 @@ For narrow special-case behavior changes, patch the canonical implementation loc
   - `save_dataset_presets.py`
   - `merge_dataset_presets.py`
 - Keep built-in validation-channel logic in `save_dataset_presets.py`.
-- Keep the single-job preset-builder default on automatic validation-worker selection; only pin `--num-workers` when you actually want to override that budget.
+- Keep the preset-builder default on automatic validation-worker selection when `--num-workers` is omitted; when `--num-workers` is explicitly set, expect both outer job parallelism and each job's inner validation worker budget to follow that value.
 - Only touch `watchpat_zzp_to_edf.py` for WatchPAT-specific conversion work.
 
 ## Major Duplication Risks

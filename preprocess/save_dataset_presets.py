@@ -555,7 +555,7 @@ def main() -> None:
                     executor.submit(
                         _build_preset_job,
                         **job,
-                        filter_max_workers=1,
+                        filter_max_workers=args.num_workers,
                     ): job
                     for job in jobs
                 }
