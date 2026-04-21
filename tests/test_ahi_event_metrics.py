@@ -1040,7 +1040,7 @@ def test_supervised_does_not_finish_preexisting_wandb_run(monkeypatch: pytest.Mo
     assert events == ["csv"]
 
 
-def test_supervised_swallows_wandb_finish_failure_after_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_supervised_raises_wandb_finish_failure_after_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     events: list[str] = []
     created_run = object()
 
@@ -1107,9 +1107,10 @@ def test_supervised_swallows_wandb_finish_failure_after_success(monkeypatch: pyt
         lambda msg, *args: events.append(msg % args),
     )
 
-    supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
+    with pytest.raises(RuntimeError, match="cleanup failure"):
+        supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
 
-    assert events == ["csv", "finish", "wandb.finish() failed during finetune cleanup: cleanup failure"]
+    assert events == ["csv", "finish"]
 
 
 def test_supervised_preserves_primary_error_when_wandb_finish_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
