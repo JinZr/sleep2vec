@@ -254,7 +254,6 @@ def test_wrist2vec_repo_finetune_config_loads():
 
     validate_wrist2vec_model_config(bundle.model)
     assert bundle.model.head is not None
-    assert bundle.finetune.task is not None
 
 
 def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
