@@ -118,8 +118,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=1,
-        help="Total parallelism budget for preset generation.",
+        default=None,
+        help="Total parallelism budget for preset generation. Defaults to automatic worker selection.",
     )
     parser.add_argument(
         "--dry-run",
@@ -446,7 +446,7 @@ def main() -> None:
     args.config = args.config.expanduser()
     if not args.config.exists():
         raise FileNotFoundError(f"Config YAML not found: {args.config}")
-    if args.num_workers < 1:
+    if args.num_workers is not None and args.num_workers < 1:
         raise ValueError("--num-workers must be >= 1")
 
     index_paths = [Path(p).expanduser() for p in args.index]
@@ -488,7 +488,7 @@ def main() -> None:
     print(f"Splits: {splits}")
     print(f"Metadata variants: {[m if m else 'none' for m in meta_data_variants]}")
     print(f"n_tokens={args.n_tokens}, stride_tokens={stride_tokens}")
-    print(f"num_workers={args.num_workers}")
+    print(f"num_workers={args.num_workers if args.num_workers is not None else 'auto'}")
     if args.allow_missing_channels:
         print("Index mask prefilter: disabled (allow_missing_channels=True)")
     else:
@@ -549,7 +549,8 @@ def main() -> None:
                 print(f"  done: {output_path} ({sample_count} samples)")
                 created += 1
         else:
-            with ProcessPoolExecutor(max_workers=min(args.num_workers, len(jobs))) as executor:
+            process_workers = len(jobs) if args.num_workers is None else min(args.num_workers, len(jobs))
+            with ProcessPoolExecutor(max_workers=process_workers) as executor:
                 future_to_job = {
                     executor.submit(
                         _build_preset_job,
