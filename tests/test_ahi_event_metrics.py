@@ -1040,9 +1040,80 @@ def test_supervised_does_not_finish_preexisting_wandb_run(monkeypatch: pytest.Mo
     assert events == ["csv"]
 
 
-def test_supervised_preserves_primary_error_when_wandb_finish_fails(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_supervised_raises_wandb_finish_failure_after_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    events: list[str] = []
+    created_run = object()
+
+    @dataclass
+    class _DummyBundle:
+        model: object
+        averaging: object = None
+        finetune: object = None
+
+    class _DummyCheckpoint:
+        def __init__(self, *args, **kwargs):
+            self.best_model_path = str(tmp_path / "best.ckpt")
+            self.dirpath = str(tmp_path / "checkpoints")
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            self.is_global_zero = True
+
+        def fit(self, *args, **kwargs):
+            return None
+
+        def test(self, *args, **kwargs):
+            return [{"ahi_pearson": 0.5}]
+
+    args_ns = argparse.Namespace(
+        version="unit-test",
+        monitor="val_ahi_pearson",
+        monitor_mod="max",
+        patience=1,
+        ckpt_every_n_epochs=1,
+        devices=[0],
+        epochs=1,
+        gradient_clip_val=0.0,
+        precision=32,
+        check_val_every_n_epoch=1,
+        print_diagnostics=False,
+        ckpt_path="",
+        results_csv_path=tmp_path / "results.csv",
+        label_name="ahi",
+    )
+
+    def _build_logger(*args, **kwargs):
+        finetune.wandb.run = created_run
+        return object()
+
+    def _finish():
+        events.append("finish")
+        raise RuntimeError("cleanup failure")
+
+    monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
+    monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.WandbLogger", _build_logger)
+    monkeypatch.setattr("sleep2vec.finetune.EarlyStopping", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.LearningRateMonitor", lambda *args, **kwargs: object())
+    monkeypatch.setattr("sleep2vec.finetune.ModelCheckpoint", _DummyCheckpoint)
+    monkeypatch.setattr("sleep2vec.finetune.pl.Trainer", _DummyTrainer)
+    monkeypatch.setattr("sleep2vec.finetune.shutil.copy2", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sleep2vec.finetune.save_result_csv", lambda *args, **kwargs: events.append("csv"))
+    monkeypatch.setattr("sleep2vec.finetune.wandb.run", None, raising=False)
+    monkeypatch.setattr("sleep2vec.finetune.wandb.finish", _finish)
+    monkeypatch.setattr(
+        "sleep2vec.finetune.logging.warning",
+        lambda msg, *args: events.append(msg % args),
+    )
+
+    with pytest.raises(RuntimeError, match="cleanup failure"):
+        supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
+
+    assert events == ["csv", "finish"]
+
+
+def test_supervised_preserves_primary_error_when_wandb_finish_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     created_run = object()
 
     @dataclass
