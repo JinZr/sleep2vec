@@ -4,8 +4,8 @@
 
 - File: `preprocess/save_dataset_presets.py`
 - Signature: `main() -> None`
-- Purpose and contract: canonical preset-generation CLI. It resolves dataset name, split variants, metadata variants, channel validation policy, worker budget, and output paths, then instantiates `PSGPretrainDataset` with `save_preset_path` so preset validation and writing happen through the dataset layer, including built-in AHI rejection of samples whose tokenized `ah_event` labels are all ignore-valued. When a single preset is built and `--num-workers` is omitted, it preserves automatic validation-worker selection by passing `filter_max_workers=None`.
-- Important inputs/outputs: CLI args in; preset pickle files out. `--num-workers` is optional and only overrides the default worker budget when explicitly set.
+- Purpose and contract: canonical preset-generation CLI. It resolves dataset name, split variants, metadata variants, channel validation policy, worker budget, and output paths, then instantiates `PSGPretrainDataset` with `save_preset_path` so preset validation and writing happen through the dataset layer, including built-in AHI rejection of samples whose tokenized `ah_event` labels are all ignore-valued. When `--num-workers` is omitted, it preserves automatic validation-worker selection by passing `filter_max_workers=None` in both single-preset and multi-preset builds. When `--num-workers` is explicitly set, that same value is forwarded to each job's inner validation path.
+- Important inputs/outputs: CLI args in; preset pickle files out. `--num-workers` is optional; when set, it controls both outer job concurrency and each job's `filter_max_workers` value.
 - Side effects: creates parent directories, may create a temporary filtered CSV, writes preset files unless `--dry-run` is set.
 - Key callers/callees: called from `__main__`; callees include `_load_preset_build_block`, `_resolve_validation_channels`, `_build_preset_job`, and `PSGPretrainDataset`.
 - Reuse guidance: use this CLI path to generate preset pickles.

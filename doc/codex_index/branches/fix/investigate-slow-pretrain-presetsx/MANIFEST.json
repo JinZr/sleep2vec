@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
   "branch": "fix/investigate-slow-pretrain-presetsx",
-  "commit": "6e687f06f03ac4204da3f5c12107a63b4fb56593",
-  "generated_at": "2026-04-21T00:30:16Z",
-  "mode": "initialize-branch",
+  "commit": "e5d6e4ccb4fcf0d9e15ba5292ae00f7fba2f0955",
+  "generated_at": "2026-04-21T00:41:53Z",
+  "mode": "refresh",
   "source_of_truth": "checked-out branch",
   "baseline": {
     "main_commit": "6e687f06f03ac4204da3f5c12107a63b4fb56593",
     "merge_base_with_main": "6e687f06f03ac4204da3f5c12107a63b4fb56593",
-    "commits_ahead_of_main": 0,
+    "commits_ahead_of_main": 1,
     "main_index_available": true,
     "notes": [
-      "this branch currently differs from main only through working-tree edits",
-      "the branch handbook was initialized from the checked-out tree and refreshed for the preset worker-default path",
+      "this branch already carries one committed preset-worker investigation change on top of main",
+      "the branch handbook was initialized earlier from the checked-out tree and refreshed for the preset worker-default path",
       "main handbook was used only as a baseline for cross-branch delta documentation"
     ]
   },
@@ -61,8 +61,8 @@
     "The current preset-path change is a local worker-default adjustment plus a focused regression test."
   ],
   "refresh_notes": [
-    "Initialized the missing branch handbook for fix/investigate-slow-pretrain-presetsx.",
-    "Refreshed preset-generation and sample-validation entries for automatic single-job worker selection.",
+    "Refreshed branch metadata to the current committed branch tip.",
+    "Refreshed preset-generation and sample-validation entries for automatic worker selection when num-workers is omitted.",
     "Updated branch metadata, counts, and delta notes for the current working tree."
   ],
   "required_outputs": [

@@ -5,10 +5,10 @@ This directory is the branch-scoped engineering manual for `fix/investigate-slow
 ## Branch Scope
 
 - Branch: `fix/investigate-slow-pretrain-presetsx`
-- Commit: `6e687f06f03ac4204da3f5c12107a63b4fb56593`
-- Generated at: `2026-04-21T00:30:16Z`
-- Mode: `initialize-branch`
-- Main baseline: `6e687f06f03ac4204da3f5c12107a63b4fb56593` (`fix/investigate-slow-pretrain-presetsx` currently diverges from `main` through working-tree edits only)
+- Commit: `e5d6e4ccb4fcf0d9e15ba5292ae00f7fba2f0955`
+- Generated at: `2026-04-21T00:41:53Z`
+- Mode: `refresh`
+- Main baseline: `6e687f06f03ac4204da3f5c12107a63b4fb56593` (`fix/investigate-slow-pretrain-presetsx` is 1 commit ahead of `main` and also has working-tree edits)
 
 ## Purpose
 
