@@ -256,6 +256,28 @@ def test_wrist2vec_repo_finetune_config_loads():
     assert bundle.model.head is not None
 
 
+def test_wrist2vec_resnet1d_example_pretrain_config_loads():
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "write2vec"
+        / "wrist2vec_multilight_ppg_accgyro_pretrain_resnet1d.yaml"
+    )
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    validate_wrist2vec_model_config(bundle.model)
+    assert [channel.name for channel in bundle.model.channels] == [
+        "ppg_green",
+        "ppg_red",
+        "ppg_infrared",
+        "gyro_vm",
+        "acc_vm",
+    ]
+    assert all(channel.tokenizer.name == "resnet1d" for channel in bundle.model.channels)
+    assert bundle.model.channels[0].tokenizer.kwargs["block_counts"] == [2, 2, 2]
+    assert bundle.loss.name == "info_nce"
+
+
 def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _finetune_payload())
     bundle = load_finetune_config(config_path)
