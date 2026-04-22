@@ -387,7 +387,14 @@ class ResNet1dTokenizer(BaseTokenizer):
         act_cls = _resolve_activation(act)
         first_width = channel_schedule[0]
         self.front_end = nn.Sequential(
-            nn.Conv1d(1, first_width, kernel_size=front_kernel_size, stride=front_stride, padding=front_kernel_size // 2, bias=False),
+            nn.Conv1d(
+                1,
+                first_width,
+                kernel_size=front_kernel_size,
+                stride=front_stride,
+                padding=front_kernel_size // 2,
+                bias=False,
+            ),
             _build_conv_norm(norm, first_width, norm_groups=norm_groups),
             act_cls(),
             _build_front_pool(front_pool, stride=front_pool_stride),

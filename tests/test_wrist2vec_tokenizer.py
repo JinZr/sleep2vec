@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-import wrist2vec.registry as wrist_registry
 from wrist2vec.config import ChannelConfig, TokenizerConfig
 from wrist2vec.modules.tokenizers import ResNet1dTokenizer, build_tokenizer_from_channel
+import wrist2vec.registry as wrist_registry
 
 
 def _build_resnet1d_channel(**kwargs) -> ChannelConfig:
