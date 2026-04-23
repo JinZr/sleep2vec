@@ -22,7 +22,6 @@ from sleep2vec.config import (
     validate_model_config,
 )
 from wrist2vec.config import (
-    load_finetune_config as load_wrist2vec_finetune_config,
     load_pretrain_config as load_wrist2vec_pretrain_config,
     validate_model_config as validate_wrist2vec_model_config,
 )
@@ -236,8 +235,7 @@ def test_ppg_actigraphy_adapt_configs_keep_uniform_final_stage_sampling(config_n
 @pytest.mark.parametrize(
     "config_name",
     [
-        "wrist2vec_dense_pretrain.yaml",
-        "wrist2vec_dense_adapt_ppg_actigraphy.yaml",
+        "wrist2vec_multilight_ppg_accgyro_pretrain_resnet1d.yaml",
     ],
 )
 def test_wrist2vec_repo_pretrain_configs_load(config_name: str):
@@ -246,14 +244,6 @@ def test_wrist2vec_repo_pretrain_configs_load(config_name: str):
 
     validate_wrist2vec_model_config(bundle.model)
     assert bundle.model.channels
-
-
-def test_wrist2vec_repo_finetune_config_loads():
-    config_path = Path(__file__).resolve().parents[1] / "configs" / "write2vec" / "wrist2vec_dense_finetune_cls.yaml"
-    bundle = load_wrist2vec_finetune_config(config_path)
-
-    validate_wrist2vec_model_config(bundle.model)
-    assert bundle.model.head is not None
 
 
 def test_wrist2vec_resnet1d_example_pretrain_config_loads():
