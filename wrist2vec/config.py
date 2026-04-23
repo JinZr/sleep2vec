@@ -225,6 +225,11 @@ class FinetuneConfig:
 class PretrainDataConfig:
     mask_rate: float = 0.15
     max_tokens: int = 120
+    token_sec: int = 30
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token_sec, int) or isinstance(self.token_sec, bool) or self.token_sec <= 0:
+            raise ValueError("data.token_sec must be a positive integer.")
 
 
 def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:

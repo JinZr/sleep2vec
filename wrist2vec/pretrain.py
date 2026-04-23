@@ -33,6 +33,7 @@ def wrist2vec_pretrain(args):
     averaging_config = config_bundle.averaging
     args.mask_rate = config_bundle.data.mask_rate
     args.max_tokens = config_bundle.data.max_tokens
+    args.token_sec = config_bundle.data.token_sec
     apply_model_config_args(args, model_config, set_backbone_arch=True)
 
     # get data loaders

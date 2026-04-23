@@ -60,6 +60,43 @@ def test_psg_dataset_uses_explicit_input_dims_for_custom_channels(tmp_path: Path
     assert batch["tokens"]["wearable"].shape == (1, 2, 4)
 
 
+def test_psg_dataset_uses_token_sec_for_window_count(tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, wearable=np.arange(120, dtype=np.float32))
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "train",
+                "duration": 60,
+                "age": 40,
+                "sex": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    dataset = PSGPretrainDataset(
+        channel_names=["wearable"],
+        channel_input_dims={"wearable": 4},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["train"],
+        max_tokens=30,
+        token_sec=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+    assert batch["tokens"]["wearable"].shape == (1, 30, 4)
+
+
 def test_psg_dataset_requires_explicit_dims_for_non_stage5_channels(tmp_path: Path):
     npz_path = tmp_path / "sample.npz"
     np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))

@@ -85,6 +85,7 @@ def get_pretrain_dataloader(args):
         load_preset_path=args.pretrain_preset_path,
         index=args.pretrain_data_index,
         max_tokens=args.max_tokens,
+        token_sec=int(getattr(args, "token_sec", 30)),
         stride_tokens=args.max_tokens,  # 0 for truncation
         mask_rate=args.mask_rate,
         generative=False,

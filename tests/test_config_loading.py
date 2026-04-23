@@ -160,6 +160,25 @@ def test_load_pretrain_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.data.max_tokens == 4
 
 
+def test_load_wrist2vec_pretrain_config_parses_token_sec(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["data"]["token_sec"] = 2
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    assert bundle.data.token_sec == 2
+
+
+def test_load_wrist2vec_pretrain_config_rejects_non_positive_token_sec(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["data"]["token_sec"] = 0
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="data.token_sec must be a positive integer"):
+        load_wrist2vec_pretrain_config(config_path)
+
+
 def test_load_pretrain_config_parses_adapt_block(tmp_path: Path):
     payload = _pretrain_payload()
     payload["adapt"] = {
@@ -278,6 +297,7 @@ def test_wrist2vec_resnet1d_example_pretrain_config_loads():
     assert all(channel.tokenizer.out_dim == hidden_size for channel in bundle.model.channels)
     assert bundle.model.channels[0].tokenizer.kwargs["block_counts"] == [2, 2, 2]
     assert bundle.loss.name == "info_nce"
+    assert bundle.data.token_sec == 2
 
 
 def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):

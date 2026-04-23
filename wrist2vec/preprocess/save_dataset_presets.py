@@ -462,6 +462,7 @@ def _build_preset_job(
     split: str,
     meta_data_name: str | None,
     n_tokens: int,
+    token_sec: int,
     stride_tokens: int,
     mask_rate: float,
     allow_missing_channels: bool,
@@ -504,6 +505,7 @@ def _build_preset_job(
             meta_data_names=[meta_data_name] if meta_data_name else [],
             split=split,
             max_tokens=n_tokens,
+            token_sec=token_sec,
             stride_tokens=stride_tokens,
             mask_rate=mask_rate,
             allow_missing_channels=allow_missing_channels,
@@ -538,6 +540,12 @@ def main() -> None:
     config_data = _load_config_mapping(args.config)
     model_channels, model_channel_input_dims = _load_model_channels(config_data)
     model_channel_source_names = _load_model_channel_source_names(config_data, model_channels)
+    data_block = config_data.get("data") or {}
+    if not isinstance(data_block, dict):
+        raise ValueError("Top-level YAML data block must be a mapping when provided.")
+    token_sec = data_block.get("token_sec", 30)
+    if not isinstance(token_sec, int) or isinstance(token_sec, bool) or token_sec <= 0:
+        raise ValueError("data.token_sec must be a positive integer.")
     preset_required_channels, preset_min_channels = _load_preset_build_block(config_data)
     channel_names, channel_input_dims = _resolve_validation_channels(
         model_channels=model_channels,
@@ -579,6 +587,7 @@ def main() -> None:
     print(f"Splits: {splits}")
     print(f"Metadata variants: {[m if m else 'none' for m in meta_data_variants]}")
     print(f"n_tokens={args.n_tokens}, stride_tokens={stride_tokens}")
+    print(f"token_sec={token_sec}")
     print(f"num_workers={args.num_workers if args.num_workers is not None else 'auto'}")
     print(f"expand_source_branches={expand_source_branches}")
     if allow_missing_channels:
@@ -623,6 +632,7 @@ def main() -> None:
                     "split": split,
                     "meta_data_name": meta_data_name,
                     "n_tokens": args.n_tokens,
+                    "token_sec": token_sec,
                     "stride_tokens": stride_tokens,
                     "mask_rate": args.mask_rate,
                     "allow_missing_channels": allow_missing_channels,

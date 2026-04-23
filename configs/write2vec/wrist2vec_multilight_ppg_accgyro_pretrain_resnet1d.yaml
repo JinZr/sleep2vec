@@ -131,6 +131,7 @@ loss:
   temperature: 0.2
 data:
   mask_rate: 0.15
+  token_sec: 2
   max_tokens: 30  # 60 s clip with 2 s non-overlapping tokens
 model_averaging:
   name: ema
