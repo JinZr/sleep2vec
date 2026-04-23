@@ -273,7 +273,13 @@ def test_wrist2vec_resnet1d_example_pretrain_config_loads():
         "gyro_vm",
         "acc_vm",
     ]
-    assert all(channel.tokenizer.name == "resnet1d" for channel in bundle.model.channels)
+    assert [channel.tokenizer.name for channel in bundle.model.channels] == [
+        "resnet1d",
+        "resnet1d",
+        "resnet1d",
+        "sundial2",
+        "sundial2",
+    ]
     assert bundle.model.channels[0].tokenizer.kwargs["block_counts"] == [2, 2, 2]
     assert bundle.loss.name == "info_nce"
 
