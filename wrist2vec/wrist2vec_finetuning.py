@@ -55,6 +55,8 @@ class Wrist2vecFinetuning(pl.LightningModule):
             args.label_name,
             self.backbone,
             channel_names=[c.name for c in model_config.channels],
+            effective_channel_names=getattr(args, "effective_channel_names", None),
+            effective_channel_to_logical=getattr(args, "effective_channel_to_logical", None),
             output_dim=args.output_dim,
             is_classification=args.is_classification,
             is_seq=args.is_seq,

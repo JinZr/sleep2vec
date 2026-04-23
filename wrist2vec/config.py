@@ -19,6 +19,7 @@ class ChannelConfig:
     name: str
     input_dim: int
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
+    source_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -255,6 +256,16 @@ def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
         if tok_cfg.out_dim is None:
             raise ValueError(f"channel '{item.get('name', '?')}' must set tokenizer.out_dim.")
 
+        raw_source_names = item.get("source_names")
+        if raw_source_names is None:
+            item["source_names"] = []
+        elif not isinstance(raw_source_names, list) or not all(
+            isinstance(name, str) and name for name in raw_source_names
+        ):
+            raise ValueError(f"channel '{item.get('name', '?')}' source_names must be a list of non-empty strings.")
+        elif len(set(raw_source_names)) != len(raw_source_names):
+            raise ValueError(f"channel '{item.get('name', '?')}' source_names must not contain duplicates.")
+
         channels.append(ChannelConfig(tokenizer=tok_cfg, **item))
     return channels
 
@@ -314,13 +325,15 @@ def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfi
     projection = ProjectionConfig(**model_block.get("projection"))
     cls_cfg = _build_cls_config(model_block)
     head = _build_head_config(model_block, required=require_head)
-    return ModelConfig(
+    model_cfg = ModelConfig(
         channels=channels,
         backbone=backbone,
         projection=projection,
         cls=cls_cfg,
         head=head,
     )
+    validate_model_config(model_cfg)
+    return model_cfg
 
 
 def _build_layer_mix_config(raw: t.Any) -> LayerMixConfig | None:
@@ -608,6 +621,10 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
             raise ValueError("model.head.temporal_agg.name must be 'mean' or 'attn'.")
         if model_cfg.head.channel_agg.name not in {"mean", "concat", "gated_scalar"}:
             raise ValueError("model.head.channel_agg.name must be 'mean', 'concat', or 'gated_scalar'.")
+
+    for channel in model_cfg.channels:
+        if channel.name in {"stage5", "ahi"} and channel.source_names:
+            raise ValueError(f"channel '{channel.name}' cannot set source_names.")
     return next(iter(out_dims))
 
 

@@ -7,9 +7,9 @@ import typing as t
 import pytorch_lightning as pl
 import torch
 
-from data.channel_selection import build_all_pairs
 from wrist2vec.checkpoints import load_pretrain_init_weights
 from wrist2vec.config import AdaptConfig
+from wrist2vec.data.channel_selection import build_all_pairs
 from wrist2vec.wrist2vec_modelling import Wrist2vecPretraining
 
 Pair = tuple[str, str]

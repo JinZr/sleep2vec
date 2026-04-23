@@ -10,6 +10,7 @@ import typing as t
 import yaml
 
 from wrist2vec.config import ModelConfig, TaskConfig, load_finetune_config
+from wrist2vec.source_routing import build_effective_channel_mappings, normalize_channel_source_names
 
 _BUILTIN_TASK_SPECS = {
     "stage3": {
@@ -142,9 +143,24 @@ def channel_input_dims_from_model_config(model_cfg: ModelConfig) -> dict[str, in
     return {channel.name: int(channel.input_dim) for channel in model_cfg.channels}
 
 
+def channel_source_names_from_model_config(model_cfg: ModelConfig) -> dict[str, list[str]]:
+    return normalize_channel_source_names(
+        [channel.name for channel in model_cfg.channels],
+        {channel.name: channel.source_names for channel in model_cfg.channels},
+    )
+
+
 def apply_model_config_args(args, model_cfg: ModelConfig, *, set_backbone_arch: bool = False) -> None:
     args.channel_names = [c.name for c in model_cfg.channels]
     args.channel_input_dims = channel_input_dims_from_model_config(model_cfg)
+    args.channel_source_names = channel_source_names_from_model_config(model_cfg)
+    effective_names, effective_to_logical, effective_to_source = build_effective_channel_mappings(
+        args.channel_names,
+        args.channel_source_names,
+    )
+    args.effective_channel_names = effective_names
+    args.effective_channel_to_logical = effective_to_logical
+    args.effective_channel_to_source = effective_to_source
     if set_backbone_arch:
         args.backbone_arch = model_cfg.backbone.name
 

@@ -4,9 +4,9 @@ import random
 import numpy as np
 import torch
 
-from data.psg_pretrain_dataset import PSGPretrainDataset
-from data.samplers import SequentialPairEvalBatchSampler
 from wrist2vec.common import is_builtin_seq_task
+from wrist2vec.data.psg_pretrain_dataset import PSGPretrainDataset
+from wrist2vec.data.samplers import SequentialPairEvalBatchSampler
 
 
 def move_to_device(data, device="cuda"):
@@ -76,9 +76,11 @@ def get_pretrain_dataloader(args):
         "worker_init_fn": _seed_worker,
     }
     channel_input_dims = dict(getattr(args, "channel_input_dims", {}) or {})
+    channel_source_names = dict(getattr(args, "channel_source_names", {}) or {})
     base_dataset_kwargs = dict(
         channel_names=args.channel_names,
         channel_input_dims=channel_input_dims,
+        channel_source_names=channel_source_names,
         save_preset_path=None,
         load_preset_path=args.pretrain_preset_path,
         index=args.pretrain_data_index,
@@ -89,6 +91,7 @@ def get_pretrain_dataloader(args):
         allow_missing_channels=allow_missing_channels,
         min_channels=min_channels,
         bucket_by_available_channels=bucket_by_available_channels,
+        expand_source_branches=False,
     )
 
     def build_pretrain_dataset(
@@ -171,6 +174,7 @@ def _build_finetune_loader(
         )
     dataset_channel_names = list(args.data_channel_names)
     dataset_channel_input_dims = dict(getattr(args, "channel_input_dims", {}) or {})
+    dataset_channel_source_names = dict(getattr(args, "channel_source_names", {}) or {})
     label_source_name = getattr(args, "label_source_name", args.label_name)
     if is_seq_task and label_source_name not in dataset_channel_names:
         # Built-in sequence tasks consume runtime label channels from the NPZ batch.
@@ -182,6 +186,7 @@ def _build_finetune_loader(
     dataset_kwargs = dict(
         channel_names=dataset_channel_names,
         channel_input_dims=dataset_channel_input_dims,
+        channel_source_names=dataset_channel_source_names,
         save_preset_path=None,
         load_preset_path=args.finetune_preset_path,
         index=args.finetune_data_index,
@@ -195,6 +200,7 @@ def _build_finetune_loader(
         randomly_select_channels=False,
         allow_missing_channels=False,
         min_channels=len(dataset_channel_names),
+        expand_source_branches=True,
         is_train_set=is_train_set,
         batch_size=args.batch_size,
         shuffle=shuffle,

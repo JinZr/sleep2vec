@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 import torch
 import wandb
 
-from data.channel_selection import build_all_pairs
+from wrist2vec.data.channel_selection import build_all_pairs
 from wrist2vec.visualization.pair_acc import render_pair_acc_heatmap
 
 

@@ -1,8 +1,13 @@
 import wrist2vec
 import wrist2vec.adapt as adapt_module
+import wrist2vec.data as wrist_data
 from wrist2vec.downstream_model import Wrist2vecDownstreamModel
 import wrist2vec.finetune as finetune_module
 import wrist2vec.infer as infer_module
+import wrist2vec.preprocess.mask_missing_stats as mask_missing_stats_module
+import wrist2vec.preprocess.merge_dataset_presets as merge_dataset_presets_module
+import wrist2vec.preprocess.save_dataset_presets as save_dataset_presets_module
+import wrist2vec.preprocess.split_index_by_dataset as split_index_by_dataset_module
 import wrist2vec.pretrain as pretrain_module
 from wrist2vec.pretrain_model import Wrist2vecPretrainModel
 import wrist2vec.registry as wrist_registry
@@ -17,6 +22,11 @@ def test_wrist2vec_package_and_entrypoints_import():
     assert callable(adapt_module.wrist2vec_adapt)
     assert callable(finetune_module.supervised)
     assert callable(infer_module.run_inference)
+    assert hasattr(wrist_data, "PSGPretrainDataset")
+    assert callable(save_dataset_presets_module.main)
+    assert callable(merge_dataset_presets_module.main)
+    assert callable(split_index_by_dataset_module.main)
+    assert callable(mask_missing_stats_module.main)
 
 
 def test_wrist2vec_public_classes_resolve():

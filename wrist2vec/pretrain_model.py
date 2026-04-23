@@ -197,13 +197,21 @@ class Wrist2vecPretrainModel(nn.Module):
             for channel_name in list(tokens.keys())
         }
 
-    def _tokenize_all(self, tokens):
+    def _tokenize_all(
+        self,
+        tokens,
+        *,
+        channel_names: t.Sequence[str] | None = None,
+        channel_to_logical: t.Mapping[str, str] | None = None,
+    ):
         """
         对每个模态做tokenization
         """
+        ordered_names = list(channel_names or self.channel_names)
+        logical_lookup = dict(channel_to_logical or {})
         return {
-            channel_name: self.tokenizer_mapping[channel_name](tokens[channel_name])
-            for channel_name in self.channel_names
+            channel_name: self.tokenizer_mapping[logical_lookup.get(channel_name, channel_name)](tokens[channel_name])
+            for channel_name in ordered_names
         }
 
     def _mask_modalities(self, tokens, mlm_mask):

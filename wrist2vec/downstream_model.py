@@ -36,6 +36,8 @@ class Wrist2vecDownstreamModel(nn.Module):
         target: str,
         backbone: Wrist2vecPretrainModel,
         channel_names: t.List[str],
+        effective_channel_names: t.Sequence[str] | None,
+        effective_channel_to_logical: t.Mapping[str, str] | None,
         output_dim: int,
         is_classification: bool,
         is_seq: bool,
@@ -50,7 +52,9 @@ class Wrist2vecDownstreamModel(nn.Module):
         # core attributes
         self.model_config = model_config
         self.backbone = backbone
-        self.channel_names = [c.name for c in model_config.channels] if model_config else channel_names
+        self.logical_channel_names = [c.name for c in model_config.channels] if model_config else list(channel_names)
+        self.channel_names = list(effective_channel_names or self.logical_channel_names)
+        self.effective_channel_to_logical = dict(effective_channel_to_logical or {})
         self.device = device
         self.output_dim = output_dim
         self.is_classification = is_classification
@@ -244,7 +248,11 @@ class Wrist2vecDownstreamModel(nn.Module):
     def forward(self, batch):
         tokens = batch["tokens"]
 
-        token_embeddings = self.backbone._tokenize_all(tokens)
+        token_embeddings = self.backbone._tokenize_all(
+            tokens,
+            channel_names=self.channel_names,
+            channel_to_logical=self.effective_channel_to_logical,
+        )
         token_names, token_embeddings = list(token_embeddings.keys()), list(token_embeddings.values())
 
         feature_of_different_mods = []
