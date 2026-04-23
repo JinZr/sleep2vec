@@ -256,6 +256,11 @@ def test_wrist2vec_resnet1d_example_pretrain_config_loads():
     bundle = load_wrist2vec_pretrain_config(config_path)
 
     validate_wrist2vec_model_config(bundle.model)
+    hidden_size = bundle.model.backbone.hidden_size
+    assert hidden_size == 384
+    assert bundle.model.backbone.num_hidden_layers == 12
+    assert bundle.model.backbone.num_attention_heads == 16
+    assert bundle.model.projection.hidden_dim == hidden_size
     assert [channel.name for channel in bundle.model.channels] == [
         "ppg_green",
         "ppg_red",
@@ -270,6 +275,7 @@ def test_wrist2vec_resnet1d_example_pretrain_config_loads():
         "sundial2",
         "sundial2",
     ]
+    assert all(channel.tokenizer.out_dim == hidden_size for channel in bundle.model.channels)
     assert bundle.model.channels[0].tokenizer.kwargs["block_counts"] == [2, 2, 2]
     assert bundle.loss.name == "info_nce"
 
