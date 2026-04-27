@@ -89,9 +89,11 @@ def _finetune_payload() -> dict:
                 "output_dim": 3,
                 "is_classification": True,
                 "is_seq": True,
+                "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
+                "auxiliary_label_source_names": [],
                 "stage_names": ["W", "NREM", "REM"],
                 "class_labels": ["W", "NREM", "REM"],
             },
@@ -102,9 +104,11 @@ def _finetune_payload() -> dict:
                 "output_dim": 4,
                 "is_classification": True,
                 "is_seq": True,
+                "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
+                "auxiliary_label_source_names": [],
                 "stage_names": ["W", "N1N2", "N3", "REM"],
                 "class_labels": ["W", "N1N2", "N3", "REM"],
             },
@@ -115,11 +119,28 @@ def _finetune_payload() -> dict:
                 "output_dim": 5,
                 "is_classification": True,
                 "is_seq": True,
+                "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
                 "label_source_name": "stage5",
+                "auxiliary_label_source_names": [],
                 "stage_names": ["W", "N1", "N2", "N3", "REM"],
                 "class_labels": ["W", "N1", "N2", "N3", "REM"],
+            },
+        ),
+        (
+            "ahi",
+            {
+                "output_dim": 30,
+                "is_classification": True,
+                "is_seq": True,
+                "is_multilabel": True,
+                "monitor": "val_ahi_pearson",
+                "monitor_mod": "max",
+                "label_source_name": "ahi",
+                "auxiliary_label_source_names": ["stage5"],
+                "stage_names": None,
+                "class_labels": None,
             },
         ),
         (
@@ -128,8 +149,10 @@ def _finetune_payload() -> dict:
                 "output_dim": 2,
                 "is_classification": True,
                 "is_seq": False,
+                "is_multilabel": False,
                 "monitor": "val_accuracy",
                 "monitor_mod": "max",
+                "auxiliary_label_source_names": [],
                 "class_labels": ["female", "male"],
             },
         ),
@@ -139,8 +162,10 @@ def _finetune_payload() -> dict:
                 "output_dim": 1,
                 "is_classification": False,
                 "is_seq": False,
+                "is_multilabel": False,
                 "monitor": "val_mae",
                 "monitor_mod": "min",
+                "auxiliary_label_source_names": [],
                 "class_labels": None,
             },
         ),
@@ -186,6 +211,76 @@ def test_apply_task_flags_rejects_stage4_builtin_conflict_from_yaml_task():
     )
 
     with pytest.raises(ValueError, match="output_dim must be 4 when --label-name is 'stage4'"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_ahi_builtin_conflict_from_yaml_task():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=29,
+        is_seq=True,
+        monitor="val_ahi_pearson",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="output_dim must be 30 when --label-name is 'ahi'"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_ahi_val_loss_monitor():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=30,
+        is_seq=True,
+        monitor="val_loss",
+        monitor_mod="min",
+    )
+
+    with pytest.raises(ValueError, match="finetune.task.monitor must be one of"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_ahi_monitor_that_validation_never_logs():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=30,
+        is_seq=True,
+        monitor="val_f1",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="finetune.task.monitor must be one of"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_ahi_pointwise_monitor():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=30,
+        is_seq=True,
+        monitor="val_ahi_pointwise_f1",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="finetune.task.monitor must be one of"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_ahi_pointwise_roc_auc_monitor():
+    args = argparse.Namespace(label_name="ahi")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=30,
+        is_seq=True,
+        monitor="val_ahi_pointwise_roc_auc",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="finetune.task.monitor must be one of"):
         apply_task_flags(args, task_cfg)
 
 

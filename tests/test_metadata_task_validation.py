@@ -25,25 +25,37 @@ def test_apply_task_flags_rejects_multiclass_metadata_label():
 
 
 @pytest.mark.parametrize(
-    ("label_name", "output_dim", "stage_names", "class_labels"),
+    (
+        "label_name",
+        "output_dim",
+        "stage_names",
+        "class_labels",
+        "label_source_name",
+        "auxiliary_label_source_names",
+        "is_multilabel",
+    ),
     [
-        ("stage3", 3, ["W", "NREM", "REM"], ["W", "NREM", "REM"]),
-        ("stage4", 4, ["W", "N1N2", "N3", "REM"], ["W", "N1N2", "N3", "REM"]),
-        ("stage5", 5, ["W", "N1", "N2", "N3", "REM"], ["W", "N1", "N2", "N3", "REM"]),
+        ("stage3", 3, ["W", "NREM", "REM"], ["W", "NREM", "REM"], "stage5", [], False),
+        ("stage4", 4, ["W", "N1N2", "N3", "REM"], ["W", "N1N2", "N3", "REM"], "stage5", [], False),
+        ("stage5", 5, ["W", "N1", "N2", "N3", "REM"], ["W", "N1", "N2", "N3", "REM"], "stage5", [], False),
+        ("ahi", 30, None, None, "ahi", ["stage5"], True),
     ],
 )
-def test_apply_task_flags_allows_builtin_stage_multiclass(
+def test_apply_task_flags_allows_builtin_seq_labels(
     label_name: str,
     output_dim: int,
-    stage_names: list[str],
-    class_labels: list[str],
+    stage_names: list[str] | None,
+    class_labels: list[str] | None,
+    label_source_name: str,
+    auxiliary_label_source_names: list[str],
+    is_multilabel: bool,
 ):
     args = _args(label_name)
     task_cfg = TaskConfig(
         type="classification",
         output_dim=output_dim,
         is_seq=True,
-        monitor="val_accuracy",
+        monitor="val_ahi_pearson" if label_name == "ahi" else "val_accuracy",
         monitor_mod="max",
     )
 
@@ -52,9 +64,25 @@ def test_apply_task_flags_allows_builtin_stage_multiclass(
     assert args.is_classification is True
     assert args.output_dim == output_dim
     assert args.is_seq is True
-    assert args.label_source_name == "stage5"
+    assert args.label_source_name == label_source_name
+    assert args.auxiliary_label_source_names == auxiliary_label_source_names
     assert args.stage_names == stage_names
     assert args.class_labels == class_labels
+    assert args.is_multilabel is is_multilabel
+
+
+def test_apply_task_flags_rejects_custom_seq_label():
+    args = _args("custom_label")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=2,
+        is_seq=True,
+        monitor="val_accuracy",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="only supported for built-in sequence labels"):
+        apply_task_flags(args, task_cfg)
 
 
 def test_apply_task_flags_allows_binary_metadata_classification():

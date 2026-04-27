@@ -16,7 +16,7 @@ from data.metadata import (
     make_weighted_sampler_from_labels,
     process_metadata,
 )
-from data.utils import filter_valid_sample_indices, load_npz
+from data.utils import filter_valid_sample_indices, load_builtin_ahi_metadata, load_npz
 
 
 @dataclass
@@ -109,6 +109,11 @@ class DefaultDataset(BaseDataset):
                 tolerance=1,
                 max_workers=filter_max_workers,
             )
+            if "ahi" in channel_names and not self.data:
+                raise ValueError(
+                    "No valid samples remain for the built-in AHI contract. "
+                    "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
+                )
             if save_preset_path:
                 with open(save_preset_path, "wb") as f:
                     pickle.dump(self.data, f)
@@ -117,6 +122,11 @@ class DefaultDataset(BaseDataset):
 
         # 根据需要的 metadata 筛选数据
         self.filter_with_metadata()
+        if "ahi" in getattr(self, "channel_names", []) and not self.data:
+            raise ValueError(
+                "No valid samples remain for the built-in AHI contract. "
+                "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
+            )
 
         # few-shot 筛选
         if few_shot is not None:
@@ -130,10 +140,13 @@ class DefaultDataset(BaseDataset):
 
         random.seed(self.seed)
         selected = []
+        built_in_ahi_runtime_metadata = "ahi" in getattr(self, "channel_names", [])
 
         for d in self.data:
             keep = True
             for meta_data_name in self.meta_data_names:
+                if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
+                    continue
                 value = d.metadata.get(meta_data_name, None)
 
                 # 如果字段缺失 或 值为 NaN，则丢弃
@@ -274,7 +287,17 @@ class DefaultDataset(BaseDataset):
                         avail = payload["available_channels"]
                     else:
                         with load_npz(src.path) as npz:
-                            avail = [k for k in channel_names if k in npz]
+                            avail = []
+                            for channel_name in channel_names:
+                                if channel_name == "ahi":
+                                    try:
+                                        load_builtin_ahi_metadata(npz)
+                                    except Exception:
+                                        continue
+                                    avail.append(channel_name)
+                                    continue
+                                if channel_name in npz:
+                                    avail.append(channel_name)
                     return set([k for k in avail if k in channel_name_set])
 
                 avail_map = []
@@ -349,12 +372,18 @@ class DefaultDataset(BaseDataset):
                 selected_sources = resolved_indices
 
             samples = []
+            token_starts: list[int] = []
             for src in selected_sources:
 
                 with load_npz(src.path) as npz:
                     payload = {k: self.extractors[k](npz, src.start, src.end) for k in chosen}
                     tokens = {k: self.tokenizers[k](payload[k]) for k in chosen}
                     masks = {k: self.mask_generators[k](tokens[k]) for k in chosen}
+                    metadata = dict(src.metadata)
+                    if "ahi" in chosen:
+                        ahi_value, tst_value = load_builtin_ahi_metadata(npz)
+                        metadata["ahi"] = ahi_value
+                        metadata["tst"] = tst_value
                 payload.update(src.payload)
                 sample = Sample(
                     id=src.id,
@@ -362,9 +391,10 @@ class DefaultDataset(BaseDataset):
                     payload=payload,
                     tokens=tokens,
                     masks=masks,
-                    metadata=src.metadata,  # ✅ 传入 metadata
+                    metadata=metadata,
                 )
                 samples.append(sample)
+                token_starts.append(int(src.start))
 
             # 1️⃣ 逐样本检查每个通道的 token 长度，并裁剪到样本内的最小长度
             for s_idx, sample in enumerate(samples):
@@ -389,6 +419,7 @@ class DefaultDataset(BaseDataset):
                     [next(iter(s.tokens.values())).shape[0] for s in samples],
                     # device=device
                 ),
+                "token_start": torch.tensor(token_starts, dtype=torch.long),
                 "metadata": process_metadata(samples, disease_names, self.meta_data_regression_names),
             }
             if len(chosen) == 2:
@@ -409,7 +440,7 @@ class DefaultDataset(BaseDataset):
             tokens = {}
             for key in samples[0].tokens.keys():
                 token_seqs = [s.tokens[key] for s in samples]
-                pad_value = -1.0 if key == "stage5" else 0.0
+                pad_value = -1.0 if key in {"stage5", "ahi"} else 0.0
                 padded = pad_sequence(token_seqs, batch_first=True, padding_value=pad_value)
                 # padded = pad_sequence(token_seqs, batch_first=True, padding_value=0.0).to(device)
                 tokens[key] = padded

@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-import pickle
 import sys
 import tempfile
 import typing as t
@@ -19,7 +18,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_SPLITS = ["test", "val", "train"]
-BUILTIN_CHANNEL_SPECS = {"stage5": {"input_dim": 1, "mask_column": "stage_mask"}}
+BUILTIN_CHANNEL_SPECS = {
+    "stage5": {"input_dim": 1, "mask_column": "stage_mask"},
+    "ahi": {"input_dim": 30, "mask_column": "ah_event_mask"},
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,7 +87,7 @@ def parse_args() -> argparse.Namespace:
         "--channels",
         nargs="+",
         default=None,
-        help="Optional subset of channels declared in YAML model.channels. Built-in validation channel 'stage5' is also allowed.",
+        help="Optional subset of channels declared in YAML model.channels. Built-in validation channels 'stage5' and 'ahi' are also allowed.",
     )
     parser.add_argument("--batch-size", type=int, default=16, help="Dataloader batch size in preset filtering.")
     parser.add_argument(
@@ -115,8 +117,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=1,
-        help="Total parallelism budget for preset generation.",
+        default=None,
+        help="Total parallelism budget for preset generation. Defaults to automatic worker selection.",
     )
     parser.add_argument(
         "--dry-run",
@@ -264,6 +266,8 @@ def _resolve_validation_channels(
         resolved = list(model_channels)
     else:
         resolved = _dedupe_keep_order(selected_channels)
+    if "ahi" in resolved and "stage5" not in resolved:
+        resolved = [*resolved, "stage5"]
 
     unknown = [name for name in resolved if name not in channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
     if unknown:
@@ -288,6 +292,8 @@ def _resolve_effective_min_channels(
     preset_min_channels: int | None,
 ) -> int:
     resolved = int(cli_min_channels if preset_min_channels is None else preset_min_channels)
+    if "ahi" in channel_names:
+        resolved = len(channel_names)
     if resolved < 1:
         raise ValueError("min_channels must be >= 1.")
     if resolved > len(channel_names):
@@ -329,7 +335,10 @@ def _resolve_single_index_path(index_paths: list[str]) -> Path:
 def _load_index_df(index_paths: list[str]) -> pd.DataFrame:
     path = _resolve_single_index_path(index_paths)
     df = pd.read_csv(path, low_memory=False)
-    df["source"] = str(path)
+    if "source" not in df.columns:
+        df["source"] = str(path)
+    else:
+        df["source"] = df["source"].where(df["source"].notna(), str(path))
     return df
 
 
@@ -339,6 +348,11 @@ def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: 
         return df
 
     mask_columns = {channel: _mask_column_for_channel(channel) for channel in required}
+    if "ahi" in required and "stage5" in required and mask_columns["stage5"] not in df.columns:
+        raise ValueError(
+            "Built-in AHI strict preset filtering requires index column 'stage_mask' "
+            "because validation channels include both 'ahi' and 'stage5'."
+        )
     available_mask_columns = [mask_columns[channel] for channel in required if mask_columns[channel] in df.columns]
     if not available_mask_columns:
         return df
@@ -349,22 +363,6 @@ def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: 
     if filtered.empty:
         raise ValueError(f"No rows satisfy required mask columns for channels: {required}")
     return filtered
-
-
-def _restore_preset_source(output_path: Path, source_value: str) -> None:
-    if not output_path.exists():
-        return
-
-    with open(output_path, "rb") as f:
-        data = pickle.load(f)
-
-    for item in data:
-        metadata = getattr(item, "metadata", None)
-        if isinstance(metadata, dict):
-            metadata["source"] = source_value
-
-    with open(output_path, "wb") as f:
-        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def _build_preset_job(
@@ -386,8 +384,7 @@ def _build_preset_job(
 ) -> tuple[Path, int]:
     from data.psg_pretrain_dataset import PSGPretrainDataset
 
-    single_index_path = str(_resolve_single_index_path(index_paths))
-    index = [single_index_path]
+    index = [str(_resolve_single_index_path(index_paths))]
     filtered_index_path: str | None = None
     if not allow_missing_channels:
         filtered_index = _filter_index_df_for_required_channels(_load_index_df(index_paths), channel_names)
@@ -420,8 +417,6 @@ def _build_preset_job(
             shuffle=shuffle,
             filter_max_workers=filter_max_workers,
         )
-        if filtered_index_path is not None:
-            _restore_preset_source(output_path, single_index_path)
         return output_path, len(dataset)
     finally:
         if filtered_index_path is not None:
@@ -434,7 +429,7 @@ def main() -> None:
     args.config = args.config.expanduser()
     if not args.config.exists():
         raise FileNotFoundError(f"Config YAML not found: {args.config}")
-    if args.num_workers < 1:
+    if args.num_workers is not None and args.num_workers < 1:
         raise ValueError("--num-workers must be >= 1")
 
     index_paths = [Path(p).expanduser() for p in args.index]
@@ -476,7 +471,7 @@ def main() -> None:
     print(f"Splits: {splits}")
     print(f"Metadata variants: {[m if m else 'none' for m in meta_data_variants]}")
     print(f"n_tokens={args.n_tokens}, stride_tokens={stride_tokens}")
-    print(f"num_workers={args.num_workers}")
+    print(f"num_workers={args.num_workers if args.num_workers is not None else 'auto'}")
     if args.allow_missing_channels:
         print("Index mask prefilter: disabled (allow_missing_channels=True)")
     else:
@@ -537,12 +532,13 @@ def main() -> None:
                 print(f"  done: {output_path} ({sample_count} samples)")
                 created += 1
         else:
-            with ProcessPoolExecutor(max_workers=min(args.num_workers, len(jobs))) as executor:
+            process_workers = len(jobs) if args.num_workers is None else min(args.num_workers, len(jobs))
+            with ProcessPoolExecutor(max_workers=process_workers) as executor:
                 future_to_job = {
                     executor.submit(
                         _build_preset_job,
                         **job,
-                        filter_max_workers=1,
+                        filter_max_workers=args.num_workers,
                     ): job
                     for job in jobs
                 }

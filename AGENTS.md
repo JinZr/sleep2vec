@@ -31,17 +31,19 @@ bash utils/style_check.sh
 ## Coding Style & Naming Conventions
 - Python formatting is enforced by Black (line length 120), isort (Black profile), and Flake8.
 - Use 4-space indentation; follow snake_case for functions/variables/modules and PascalCase for classes.
+- For small special-case handling changes, patch the canonical code path in place instead of adding a helper or wrapper; when the exception is not obvious, leave a brief comment noting the intention.
 - Keep architecture and loss choices in YAML under `configs/`; training hyperparameters stay on the CLI.
 
 ## Codex Index Usage Policy
 - Before editing code, determine the current Git branch and consult the matching index under `doc/codex_index/branches/<branch>/`.
-- At minimum, review `README.md`, `REUSE_GUIDE.md`, `MODULE_MAP.md`, and the relevant files under `FUNCTIONS/` or `WORKFLOWS/` for the area being changed.
+- For small, localized fixes or routine updates, keep the consult lightweight: review `README.md` plus the single most relevant page from `REUSE_GUIDE.md`, `MODULE_MAP.md`, `FUNCTIONS/`, or `WORKFLOWS/` for the area being changed.
+- For broader changes that add or reshape behavior, review `README.md`, `REUSE_GUIDE.md`, `MODULE_MAP.md`, and the relevant files under `FUNCTIONS/` or `WORKFLOWS/` for the area being changed.
 - Before adding any new function, method, helper, wrapper, or utility, search the index for existing implementations with the same or overlapping responsibility.
 - Prefer reusing or minimally extending an indexed implementation over creating a new one.
 - New functions are allowed only when the indexed code does not satisfy the required contract; when creating one, briefly state why the indexed implementations were not suitable.
 - Avoid near-duplicate helpers, thin wrappers, renamed copies, and parallel implementations of already-indexed behavior.
-- If the relevant index is missing, stale, or branch-mismatched, refresh the relevant portion of the index before editing, or report the gap as a blocker.
-- After making changes, update the relevant files under `doc/codex_index/branches/<branch>/` whenever the change affects indexed responsibilities, reusable implementations, contracts, workflows, or duplication guidance; do this before declaring the task complete.
+- If the relevant index is missing, stale, or branch-mismatched, do a lightweight repo scan instead for small localized changes; refresh the relevant portion of the index before editing only when the task changes reusable contracts, workflows, or ownership boundaries.
+- After making changes, update the relevant files under `doc/codex_index/branches/<branch>/` only when the change affects indexed responsibilities, reusable implementations, contracts, workflows, or duplication guidance. Small local fixes, narrow bug fixes, and routine updates that stay within the existing contract do not require index maintenance.
 - In the first progress update before making edits, name the index files consulted.
 - In the final response, briefly state whether an indexed implementation was reused or a new one was intentionally introduced.
 

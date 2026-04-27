@@ -115,6 +115,15 @@ def test_resolve_channels_and_dims_accepts_builtin_stage5_subset(tmp_path: Path)
     assert dims == {"ppg": 8, "stage5": 1}
 
 
+def test_resolve_channels_and_dims_accepts_builtin_ahi_subset(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _model_payload())
+
+    channels, dims = _resolve_channels_and_dims(config_path, ["ppg", "ahi"])
+
+    assert channels == ["ppg", "ahi", "stage5"]
+    assert dims == {"ppg": 8, "ahi": 30, "stage5": 1}
+
+
 def test_load_preset_build_block_parses_explicit_contract(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "stage5"], min_channels=2))
     config_data = _load_config_mapping(config_path)
@@ -160,6 +169,23 @@ def test_resolve_validation_channels_uses_preset_build_required_channels(tmp_pat
     assert dims == {"ppg": 8, "stage5": 1}
 
 
+def test_resolve_validation_channels_auto_adds_stage5_for_ahi(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "ahi"], min_channels=2))
+    config_data = _load_config_mapping(config_path)
+    model_channels, channel_input_dims = _load_model_channels(config_data)
+    preset_required_channels, _ = _load_preset_build_block(config_data)
+
+    channels, dims = _resolve_validation_channels(
+        model_channels=model_channels,
+        channel_input_dims=channel_input_dims,
+        preset_required_channels=preset_required_channels,
+        selected_channels=None,
+    )
+
+    assert channels == ["ppg", "ahi", "stage5"]
+    assert dims == {"ppg": 8, "ahi": 30, "stage5": 1}
+
+
 def test_resolve_validation_channels_rejects_cli_channels_when_preset_build_required_channels_exist(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _preset_build_payload(required_channels=["ppg", "stage5"], min_channels=2))
     config_data = _load_config_mapping(config_path)
@@ -183,6 +209,26 @@ def test_resolve_effective_min_channels_prefers_preset_build_override():
     )
 
     assert effective_min_channels == 1
+
+
+def test_resolve_effective_min_channels_requires_all_channels_for_ahi():
+    effective_min_channels = _resolve_effective_min_channels(
+        channel_names=["ppg", "ahi", "stage5"],
+        cli_min_channels=2,
+        preset_min_channels=2,
+    )
+
+    assert effective_min_channels == 3
+
+
+def test_resolve_effective_min_channels_overrides_partial_config_for_ahi():
+    effective_min_channels = _resolve_effective_min_channels(
+        channel_names=["ppg", "spo2", "ahi", "stage5"],
+        cli_min_channels=2,
+        preset_min_channels=2,
+    )
+
+    assert effective_min_channels == 4
 
 
 def test_resolve_effective_min_channels_rejects_value_above_channel_count():
@@ -231,6 +277,32 @@ def test_filter_index_df_for_required_channels_uses_generic_and_builtin_masks():
     filtered = _filter_index_df_for_required_channels(df, ["ppg", "stage5"])
 
     assert filtered["path"].tolist() == ["a.npz", "d.npz"]
+
+
+def test_filter_index_df_for_required_channels_uses_ah_event_mask():
+    df = pd.DataFrame(
+        [
+            {"path": "a.npz", "ppg_mask": "1", "ah_event_mask": 1},
+            {"path": "b.npz", "ppg_mask": "1", "ah_event_mask": 0},
+            {"path": "c.npz", "ppg_mask": "0", "ah_event_mask": 1},
+        ]
+    )
+
+    filtered = _filter_index_df_for_required_channels(df, ["ppg", "ahi"])
+
+    assert filtered["path"].tolist() == ["a.npz"]
+
+
+def test_filter_index_df_for_required_channels_rejects_missing_stage_mask_for_ahi_contract():
+    df = pd.DataFrame(
+        [
+            {"path": "a.npz", "ppg_mask": "1", "ah_event_mask": 1},
+            {"path": "b.npz", "ppg_mask": "1", "ah_event_mask": 0},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="requires index column 'stage_mask'"):
+        _filter_index_df_for_required_channels(df, ["ppg", "ahi", "stage5"])
 
 
 def test_filter_index_df_for_required_channels_falls_back_when_some_masks_are_missing():
@@ -311,6 +383,182 @@ def test_build_preset_job_passes_filter_workers(tmp_path: Path, monkeypatch: pyt
     assert captured["meta_data_names"] == ["ahi"]
 
 
+def test_main_uses_auto_filter_workers_for_single_job_when_num_workers_is_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    captured: dict[str, object] = {}
+
+    class FakeDataset:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __len__(self) -> int:
+            return 1
+
+    fake_module = types.SimpleNamespace(PSGPretrainDataset=FakeDataset)
+    monkeypatch.setitem(sys.modules, "data.psg_pretrain_dataset", fake_module)
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "age": 40, "sex": 1},
+        ]
+    ).to_csv(index_path, index=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            "train",
+        ],
+    )
+
+    save_dataset_presets_main()
+
+    assert captured["filter_max_workers"] is None
+
+
+def test_main_uses_auto_filter_workers_for_multi_job_when_num_workers_is_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    submitted_jobs: list[dict[str, object]] = []
+    seen_max_workers: list[int] = []
+
+    class FakeFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class FakeExecutor:
+        def __init__(self, max_workers: int):
+            seen_max_workers.append(max_workers)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, /, **kwargs):
+            submitted_jobs.append(kwargs)
+            return FakeFuture((kwargs["output_path"], 1))
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "age": 40, "sex": 1},
+            {"path": "b.npz", "split": "val", "duration": 60, "age": 41, "sex": 0},
+        ]
+    ).to_csv(index_path, index=False)
+
+    monkeypatch.setattr("preprocess.save_dataset_presets.ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("preprocess.save_dataset_presets.as_completed", lambda futures: list(futures))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            "train",
+            "val",
+            "--min-channels",
+            "1",
+        ],
+    )
+
+    save_dataset_presets_main()
+
+    assert seen_max_workers == [2]
+    assert len(submitted_jobs) == 2
+    assert {job["split"] for job in submitted_jobs} == {"train", "val"}
+    assert all(job["filter_max_workers"] is None for job in submitted_jobs)
+
+
+def test_main_uses_explicit_filter_workers_for_multi_job_when_num_workers_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    submitted_jobs: list[dict[str, object]] = []
+    seen_max_workers: list[int] = []
+
+    class FakeFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class FakeExecutor:
+        def __init__(self, max_workers: int):
+            seen_max_workers.append(max_workers)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, /, **kwargs):
+            submitted_jobs.append(kwargs)
+            return FakeFuture((kwargs["output_path"], 1))
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "age": 40, "sex": 1},
+            {"path": "b.npz", "split": "val", "duration": 60, "age": 41, "sex": 0},
+        ]
+    ).to_csv(index_path, index=False)
+
+    monkeypatch.setattr("preprocess.save_dataset_presets.ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("preprocess.save_dataset_presets.as_completed", lambda futures: list(futures))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            "train",
+            "val",
+            "--min-channels",
+            "1",
+            "--num-workers",
+            "3",
+        ],
+    )
+
+    save_dataset_presets_main()
+
+    assert seen_max_workers == [2]
+    assert len(submitted_jobs) == 2
+    assert {job["split"] for job in submitted_jobs} == {"train", "val"}
+    assert all(job["filter_max_workers"] == 3 for job in submitted_jobs)
+
+
 def test_build_preset_job_prefilters_index_with_required_masks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
@@ -360,13 +608,89 @@ def test_build_preset_job_prefilters_index_with_required_masks(tmp_path: Path, m
     assert captured["filtered_paths"] == ["a.npz"]
 
 
+def test_build_preset_job_prefilters_index_with_ahi_and_stage5_masks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class FakeDataset:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            index_paths = kwargs["index"]
+            filtered_df = pd.read_csv(index_paths[0], low_memory=False)
+            captured["filtered_paths"] = filtered_df["path"].tolist()
+
+        def __len__(self) -> int:
+            return 1
+
+    fake_module = types.SimpleNamespace(PSGPretrainDataset=FakeDataset)
+    monkeypatch.setitem(sys.modules, "data.psg_pretrain_dataset", fake_module)
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": "a.npz",
+                "split": "train",
+                "duration": 60,
+                "age": 40,
+                "sex": 1,
+                "ppg_mask": 1,
+                "ah_event_mask": 1,
+                "stage_mask": 1,
+            },
+            {
+                "path": "b.npz",
+                "split": "train",
+                "duration": 60,
+                "age": 40,
+                "sex": 1,
+                "ppg_mask": 1,
+                "ah_event_mask": 1,
+                "stage_mask": 0,
+            },
+            {
+                "path": "c.npz",
+                "split": "train",
+                "duration": 60,
+                "age": 40,
+                "sex": 1,
+                "ppg_mask": 1,
+                "ah_event_mask": 0,
+                "stage_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_path, sample_count = _build_preset_job(
+        output_path=tmp_path / "preset.pkl",
+        index_paths=[str(index_path)],
+        channel_names=["ppg", "ahi", "stage5"],
+        channel_input_dims={"ppg": 8, "ahi": 30, "stage5": 1},
+        split="train",
+        meta_data_name=None,
+        n_tokens=128,
+        stride_tokens=64,
+        mask_rate=0.0,
+        allow_missing_channels=False,
+        min_channels=2,
+        batch_size=8,
+        shuffle=False,
+        filter_max_workers=1,
+    )
+
+    assert output_path == tmp_path / "preset.pkl"
+    assert sample_count == 1
+    assert captured["filtered_paths"] == ["a.npz"]
+    assert captured["channel_names"] == ["ppg", "ahi", "stage5"]
+
+
 def test_build_preset_job_restores_original_source_after_strict_prefilter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     class FakeDataset:
         def __init__(self, **kwargs):
+            filtered_df = pd.read_csv(kwargs["index"][0], low_memory=False)
             output_path = Path(kwargs["save_preset_path"])
-            samples = [types.SimpleNamespace(metadata={"source": "temp.csv"})]
+            samples = [types.SimpleNamespace(metadata={"source": filtered_df.loc[0, "source"]})]
             with open(output_path, "wb") as f:
                 pickle.dump(samples, f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -379,7 +703,16 @@ def test_build_preset_job_restores_original_source_after_strict_prefilter(
     index_path = tmp_path / "index.csv"
     pd.DataFrame(
         [
-            {"path": "a.npz", "split": "train", "duration": 2, "age": 40, "sex": 1, "ppg_mask": 1, "stage_mask": 1},
+            {
+                "path": "a.npz",
+                "split": "train",
+                "duration": 2,
+                "age": 40,
+                "sex": 1,
+                "source": "mesa",
+                "ppg_mask": 1,
+                "stage_mask": 1,
+            },
         ]
     ).to_csv(index_path, index=False)
 
@@ -404,7 +737,30 @@ def test_build_preset_job_restores_original_source_after_strict_prefilter(
     assert sample_count == 1
     with open(output_path, "rb") as f:
         saved = pickle.load(f)
-    assert saved[0].metadata["source"] == str(index_path)
+    assert saved[0].metadata["source"] == "mesa"
+
+
+def test_load_index_df_preserves_existing_source_column(tmp_path: Path):
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "source": "mesa"},
+            {"path": "b.npz", "source": "shhs"},
+        ]
+    ).to_csv(index_path, index=False)
+
+    loaded = _load_index_df([str(index_path)])
+
+    assert loaded["source"].tolist() == ["mesa", "shhs"]
+
+
+def test_load_index_df_backfills_missing_source_with_index_path(tmp_path: Path):
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": "a.npz"}, {"path": "b.npz"}]).to_csv(index_path, index=False)
+
+    loaded = _load_index_df([str(index_path)])
+
+    assert loaded["source"].tolist() == [str(index_path), str(index_path)]
 
 
 def test_load_index_df_rejects_multiple_index_paths(tmp_path: Path):

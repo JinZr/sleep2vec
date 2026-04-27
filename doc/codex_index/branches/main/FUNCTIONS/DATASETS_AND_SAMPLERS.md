@@ -1,31 +1,53 @@
 # Datasets And Samplers
 
+## `data.psg_pretrain_dataset._build_channel_registry`
+
+- File: `data/psg_pretrain_dataset.py`
+- Signature: `_build_channel_registry(*, channel_names: Sequence[str], channel_input_dims: Mapping[str, int], mask_rate: float) -> dict[str, tuple[Callable, Callable, Callable]]`
+- Purpose and contract: build the extractor/tokenizer/mask-generator registry for requested channels, including built-in `stage5` and `ahi` behavior.
+- Important inputs/outputs: requested channels and YAML-driven input dims in, per-channel registry out.
+- Side effects: none.
+- Key callers/callees: caller is `PSGPretrainDataset.__init__`; callees include `default_extractor`, `default_tokenizer`, and `default_mlm_mask_generator`.
+- Reuse guidance: use this registry path instead of constructing per-channel extractors ad hoc.
+- Duplication risk notes: built-in `ahi` and `stage5` registration rules belong here.
+
 ## `PSGPretrainDataset.__init__`
 
 - File: `data/psg_pretrain_dataset.py`
-- Signature: `PSGPretrainDataset.__init__(channel_names, save_preset_path, load_preset_path, index, split, max_tokens, token_sec=30, stride_tokens=0, mask_rate=0.15, ..., allow_missing_channels=False, bucket_by_available_channels=False, train_pair_sampling=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, **kwargs)`
-- Purpose and contract: canonical PSG dataset constructor. It either loads a preset or reads one or more CSV indexes, windows each row, builds the fixed channel registry, and delegates the rest to `DefaultDataset`.
-- Important inputs/outputs: channel list, preset/index source, split, token windowing, and batching flags in; dataset instance out.
+- Signature: `PSGPretrainDataset.__init__(channel_names, save_preset_path, load_preset_path, index, split, max_tokens, *, channel_input_dims, token_sec=30, stride_tokens=0, mask_rate=0.15, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, randomly_select_channels=True, min_channels=2, allow_missing_channels=False, bucket_by_available_channels=False, train_pair_probs=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, filter_max_workers=None, **kwargs)`
+- Purpose and contract: canonical PSG dataset constructor. It either loads a preset or reads CSV indexes, windows each row into `SampleIndex` records, builds the channel registry, and delegates the rest to `DefaultDataset`.
+- Important inputs/outputs: channel list, YAML-driven channel widths, preset/index source, split, token windowing, and batching flags in; dataset instance out.
 - Side effects: when building from CSV, stamps `metadata["source"]` from the CSV path and expands each row into one or more `SampleIndex` windows.
-- Key callers/callees: callers are `sleep2vec.utils` and `preprocess/save_dataset_presets.py`; callees are `window`, `default_extractor`, `default_tokenizer`, `default_mlm_mask_generator`, and `DefaultDataset.__init__`.
+- Key callers/callees: callers are `sleep2vec.utils` and `preprocess/save_dataset_presets.py`; callees are `window`, `_build_channel_registry`, and `DefaultDataset.__init__`.
 - Reuse guidance: use this class for PSG-style NPZ/preset loading instead of building `SampleIndex` lists manually.
-- Duplication risk notes: the hard-coded channel registry lives here and should not be replicated in caller code.
+- Duplication risk notes: the built-in label-channel registry lives here and should not be replicated in caller code.
+
+## `data.utils.load_builtin_ahi_metadata`
+
+- File: `data/utils.py`
+- Signature: `load_builtin_ahi_metadata(npz) -> tuple[float, float]`
+- Purpose and contract: validate the built-in AHI NPZ contract and return scalar `(ahi, tst)` values after requiring `ah_event`, scalar `ahi`, and scalar `tst`.
+- Important inputs/outputs: open NPZ handle in, `(ahi, tst)` floats out.
+- Side effects: none.
+- Key callers/callees: callers are `filter_valid_sample_indices` and `DefaultDataset.dataloader`; callee is `_load_scalar_npz_value`.
+- Reuse guidance: use this helper whenever built-in AHI metadata needs to be read from NPZ.
+- Duplication risk notes: scalar-key validation must stay centralized here.
 
 ## `data.utils.filter_valid_sample_indices`
 
 - File: `data/utils.py`
 - Signature: `filter_valid_sample_indices(data, extractors, tokenizers, *, allow_missing_channels, channel_names=None, min_channels=2, tolerance=1, max_workers=None) -> list`
-- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, and recording `payload["available_channels"]` in missing-channel mode.
+- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, validating built-in AHI metadata when needed, and recording `payload["available_channels"]` in missing-channel mode.
 - Important inputs/outputs: raw `SampleIndex` list in; filtered `SampleIndex` list out.
-- Side effects: mutates `sample_index.payload["available_channels"]` for retained samples in missing-channel mode.
-- Key callers/callees: caller is `DefaultDataset.__init__`; callees are `load_npz`, extractors, tokenizers.
+- Side effects: mutates `sample_index.payload["available_channels"]` for retained samples in missing-channel mode; may backfill `sample_index.metadata["ahi"]` and `["tst"]`.
+- Key callers/callees: caller is `DefaultDataset.__init__`; callees are `load_npz`, `load_builtin_ahi_metadata`, extractors, and tokenizers.
 - Reuse guidance: this is the canonical preset-validation step.
 - Duplication risk notes: pair-first samplers rely on its `available_channels` side effect.
 
 ## `DefaultDataset.__init__`
 
 - File: `data/default_dataset.py`
-- Signature: `DefaultDataset.__init__(save_preset_path, load_preset_path, data, split, extractors, tokenizers, mask_generators, dataloader_config, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, seed=42) -> None`
+- Signature: `DefaultDataset.__init__(save_preset_path, load_preset_path, data, split, extractors, tokenizers, mask_generators, dataloader_config, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, seed=42, filter_max_workers=None) -> None`
 - Purpose and contract: own the lifecycle for either loading a preset or validating raw `SampleIndex` entries, then applying metadata/split/source filtering and optional few-shot selection.
 - Important inputs/outputs: preset paths or raw `SampleIndex` records in; dataset state on `self`.
 - Side effects: loads or writes pickle presets, mutates `self.data`.
@@ -37,7 +59,7 @@
 
 - File: `data/default_dataset.py`
 - Signature: `DefaultDataset.filter_with_metadata(self) -> list[SampleIndex]`
-- Purpose and contract: drop samples that lack requested metadata, do not match configured sources, or do not belong to requested splits.
+- Purpose and contract: drop samples that lack requested metadata, do not match configured sources, or do not belong to requested splits, while allowing built-in AHI summary scalars to come from NPZ backfill instead of CSV columns.
 - Important inputs/outputs: operates on `self.data`; returns the filtered list.
 - Side effects: mutates `self.data`.
 - Key callers/callees: called during dataset initialization.
@@ -49,7 +71,7 @@
 - File: `data/default_dataset.py`
 - Signature: `DefaultDataset.select_few_shot(self) -> list[SampleIndex]`
 - Purpose and contract: deterministically subsample `self.data` by count or proportion using the dataset seed.
-- Important inputs/outputs: uses `self.few_shot`; returns selected sample list.
+- Important inputs/outputs: uses `self.few_shot`; returns the selected sample list.
 - Side effects: mutates `self.data`.
 - Key callers/callees: called during dataset initialization after metadata filtering.
 - Reuse guidance: use for standard few-shot contraction.
@@ -59,10 +81,10 @@
 
 - File: `data/default_dataset.py`
 - Signature: `DefaultDataset.dataloader(self, device: str = "cpu") -> DataLoader`
-- Purpose and contract: canonical runtime collate path. It decides channel choice, reads NPZ slices, tokenizes, builds masks, pads sequences, constructs metadata tensors and `w/h`, and selects the correct sampler.
+- Purpose and contract: canonical runtime collate path. It decides channel choice, reads NPZ slices, tokenizes, builds masks, pads sequences, constructs `token_start`, metadata tensors, `w/h`, and selects the correct sampler.
 - Important inputs/outputs: dataset state in; fully configured `DataLoader` out.
-- Side effects: nested `collate_fn` performs NPZ I/O on every batch and may select channels randomly.
-- Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `load_npz`, `process_metadata`, `build_w_h_age_sex_center`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
+- Side effects: nested `collate_fn` performs NPZ I/O on every batch, may select channels dynamically, and backfills built-in AHI metadata into sample-level metadata.
+- Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `load_npz`, `load_builtin_ahi_metadata`, `process_metadata`, `build_w_h_age_sex_center`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
 - Reuse guidance: this is the canonical place to change batch structure.
 - Duplication risk notes: avoid adding parallel collate implementations elsewhere in the repo.
 
@@ -84,7 +106,7 @@
 - Purpose and contract: convert sample metadata dictionaries into tensorized batch metadata, including binary-label normalization and regression handling.
 - Important inputs/outputs: sample list in; dict of tensors plus source/path lists out.
 - Side effects: none.
-- Key callers/callees: caller is `DefaultDataset.dataloader`; callees include `safe_cast`, `safe_cast_float`, `_encode_binary_label`.
+- Key callers/callees: caller is `DefaultDataset.dataloader`; callees include `safe_cast`, `safe_cast_float`, and `_encode_binary_label`.
 - Reuse guidance: this is the canonical metadata tensorization path.
 - Duplication risk notes: do not create independent metadata encoders in trainers.
 
@@ -99,7 +121,18 @@
 - Side effects: `RoundRobinPairSelector` mutates internal cursor state.
 - Key callers/callees: callers are `sleep2vec.utils.get_pretrain_dataloader`, `PairAccLoggerCallback`, and `DefaultDataset.dataloader`.
 - Reuse guidance: use these helpers instead of open-coding pair enumeration or scheduler state.
-- Duplication risk notes: pair enumeration is also open-coded inside `PairFirstBatchSampler`; avoid spreading that further.
+- Duplication risk notes: pair enumeration is also used in sampler initialization; avoid spreading more variants.
+
+## `data.samplers.handles_distributed_sharding`
+
+- File: `data/samplers.py`
+- Signature: `handles_distributed_sharding(batch_sampler: Any) -> bool`
+- Purpose and contract: report whether a batch sampler already shards batches across distributed ranks.
+- Important inputs/outputs: batch sampler in, boolean out.
+- Side effects: none.
+- Key callers/callees: callers are `sleep2vec.utils.get_pretrain_dataloader` and `sleep2vec.adapt.sleep2vec_adapt`.
+- Reuse guidance: use this helper when configuring Lightning `use_distributed_sampler`.
+- Duplication risk notes: sampler sharding detection should not be reimplemented in entrypoints.
 
 ## `AvailableChannelsBucketBatchSampler.__iter__`
 
@@ -120,32 +153,32 @@
   - `PairFirstBatchSampler.__iter__(self)`
 - Purpose and contract: precompute per-pair sample pools from `payload["available_channels"]`, reject empty configured pairs, and emit batches tagged with one chosen channel pair.
 - Important inputs/outputs: dataset records plus channel list in; `[(index, pair), ...]` batches out.
-- Side effects: caches last-epoch pair counts, optional unique-sample counts, and increments epoch counter unless manual epoch control is used.
-- Key callers/callees: caller is `DefaultDataset.dataloader`; observers are `PairAccLoggerCallback` and tests.
-- Reuse guidance: canonical sampler for missing-channel pretraining with explicit pair scheduling.
+- Side effects: caches last-epoch pair counts, optional unique-sample counts, supports target-distribution updates, and increments epoch counter unless manual epoch control is used.
+- Key callers/callees: caller is `DefaultDataset.dataloader`; observers are `PairAccLoggerCallback`, `AdaptPairScheduleCallback`, and tests.
+- Reuse guidance: canonical sampler for missing-channel pretraining and adaptation with explicit pair scheduling.
 - Duplication risk notes: relies on `filter_valid_sample_indices` having already populated `available_channels`.
+
+## `SequentialPairEvalBatchSampler`
+
+- File: `data/samplers.py`
+- Signature: `SequentialPairEvalBatchSampler(data: Sequence[Any], *, channel_names: Sequence[str], batch_size: int, min_channels: int = 2)`
+- Purpose and contract: build validation/test batches that iterate feasible modality pairs deterministically while still carrying the scheduled pair into `DefaultDataset.__getitem__`.
+- Important inputs/outputs: dataset records and channel list in; batches of `(index, pair)` tuples out.
+- Side effects: none beyond iterator state.
+- Key callers/callees: caller is `sleep2vec.utils.get_pretrain_dataloader`.
+- Reuse guidance: use this sampler for pair-aware evaluation rather than building one loader object per pair.
+- Duplication risk notes: pretrain validation now depends on this sampler instead of separate per-pair loaders.
 
 ## `sleep2vec.utils.get_pretrain_dataloader`
 
 - File: `sleep2vec/utils.py`
 - Signature: `get_pretrain_dataloader(args)`
-- Purpose and contract: build the standard pretrain train loader plus per-pair validation loaders from the current CLI namespace.
-- Important inputs/outputs: pretrain `args` in; `(train_loader, val_loaders)` out.
-- Side effects: seeds RNGs; may filter validation datasets for pair support in missing-channel mode.
-- Key callers/callees: caller is `pretrain.sleep2vec_pretrain`; callees include `PSGPretrainDataset`, `build_all_pairs`, `RoundRobinPairSelector`, and `_filter_dataset_for_pair_support`.
-- Reuse guidance: use for any standard pretrain runtime path.
+- Purpose and contract: build the standard pretrain/adapt train loader plus one sequential pair-eval validation loader from the current CLI namespace.
+- Important inputs/outputs: pretrain-style `args` in; `(train_loader, val_loader)` out.
+- Side effects: seeds RNGs and configures sampler behavior based on missing-channel flags.
+- Key callers/callees: callers are `pretrain.sleep2vec_pretrain` and `adapt.sleep2vec_adapt`; callees include `PSGPretrainDataset`, `build_all_pairs`, `RoundRobinPairSelector`, `PairFirstBatchSampler`, `AvailableChannelsBucketBatchSampler`, and `SequentialPairEvalBatchSampler`.
+- Reuse guidance: use for any standard pretrain or adaptation runtime path.
 - Duplication risk notes: keep missing-channel argument normalization here rather than in the entrypoint.
-
-## `sleep2vec.utils._filter_dataset_for_pair_support`
-
-- File: `sleep2vec/utils.py`
-- Signature: `_filter_dataset_for_pair_support(dataset, pair: tuple[str, str], channel_names: list[str]) -> None`
-- Purpose and contract: mutate a validation dataset so it contains only samples supporting a scheduled pair; fail fast when none remain.
-- Important inputs/outputs: dataset and required pair in; no return value.
-- Side effects: mutates `dataset.data`.
-- Key callers/callees: caller is `get_pretrain_dataloader`; helper `_resolve_available_channels` is its nearest dependency.
-- Reuse guidance: use for validation-only pair support filtering.
-- Duplication risk notes: available-channel probing partially overlaps with logic inside `DefaultDataset.dataloader`.
 
 ## `sleep2vec.utils._build_finetune_loader` and `get_finetune_dataloaders`
 
@@ -153,9 +186,9 @@
 - Signatures:
   - `_build_finetune_loader(args, *, split, sources, shuffle, is_train_set, few_shot=None)`
   - `get_finetune_dataloaders(args)`
-- Purpose and contract: build finetune train/val/test loaders with correct metadata label wiring and stage5 pseudo-channel handling.
+- Purpose and contract: build finetune train/val/test loaders with correct metadata label wiring, built-in sequence label-channel insertion, and AHI auxiliary `stage5` injection.
 - Important inputs/outputs: normalized finetune `args` in; one loader or three loaders out.
 - Side effects: seed initialization in `get_finetune_dataloaders`.
 - Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callee is `PSGPretrainDataset.dataloader`.
 - Reuse guidance: use these helpers for any finetune or inference data-loading path.
-- Duplication risk notes: stage5 label-channel insertion and metadata label selection should not be duplicated in trainer code.
+- Duplication risk notes: built-in label-channel insertion and metadata-label selection should not be duplicated in trainer code.
