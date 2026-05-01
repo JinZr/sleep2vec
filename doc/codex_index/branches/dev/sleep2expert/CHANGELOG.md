@@ -11,6 +11,7 @@
   - standalone RoFormer replacement under `sleep2vec2/backbones/roformer/`
 - Updated variant reuse guidance to keep `sleep2vec2` imports local and avoid implicit fallback to base `sleep2vec`, top-level `data`, or top-level `preprocess`.
 - Added `DELTA_FROM_MAIN.md` for the branch-specific surface.
+- Added branch delta coverage for the `sleep2expert` standalone recipe mirrored from `sleep2vec2`, including package-local runtime, configs, RoFormer, and namespace/parity tests.
 
 ## 2026-04-21
 

@@ -37,7 +37,7 @@ This page answers the practical question: when you need to add or change behavio
 | Split generation | `preprocess/split_index_by_dataset.py` | Canonical dataset-group split policy, mask normalization, and optional global pair-coverage checks | Manual split assignment notebooks |
 | Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness | One-off shell loops or YAML linters without repo semantics |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
-| sleep2vec2 standalone variant | `sleep2vec2/` plus `configs/sleep2vec2/` | Mirrors the base recipe while keeping data/preprocess imports package-local and replacing RoFormer with the copied standalone implementation | Falling back to top-level `data`, top-level `preprocess`, or base `sleep2vec.backbones.encoder_factory` |
+| standalone recipe variants | `sleep2vec2/` plus `configs/sleep2vec2/`; `sleep2expert/` plus `configs/sleep2expert/` | Mirror the base recipe while keeping data/preprocess imports package-local and replacing RoFormer with the copied standalone implementation | Falling back to top-level `data`, top-level `preprocess`, another variant namespace, or base `sleep2vec.backbones.encoder_factory` |
 
 ## Reuse Rules By Change Type
 
@@ -82,12 +82,12 @@ This page answers the practical question: when you need to add or change behavio
   - `utils/check_configs.py`
 - Only touch `watchpat_zzp_to_edf.py` for WatchPAT-specific conversion work.
 
-### If you are changing sleep2vec2
+### If you are changing sleep2vec2 or sleep2expert
 
-- Keep imports within `sleep2vec2` package-local: `sleep2vec2.*`, `sleep2vec2.data.*`, and `sleep2vec2.preprocess.*`.
-- Keep copied recipes under `configs/sleep2vec2/`.
-- Keep the `roformer` backbone registration in `sleep2vec2.backbones.encoder_factory` pointed at `sleep2vec2.backbones.roformer.RoFormerEncoderModel`.
-- Keep LoRA disabled for `sleep2vec2` until standalone RoFormer PEFT compatibility is explicitly implemented and tested.
+- Keep imports within the package-local namespace: `<variant>.*`, `<variant>.data.*`, and `<variant>.preprocess.*`.
+- Keep copied recipes under `configs/<variant>/`.
+- Keep the `roformer` backbone registration in `<variant>.backbones.encoder_factory` pointed at `<variant>.backbones.roformer.RoFormerEncoderModel`.
+- Keep LoRA disabled for standalone variants until RoFormer PEFT compatibility is explicitly implemented and tested.
 - Do not add HF checkpoint key translation unless checkpoint compatibility becomes an explicit requirement.
 
 ## Major Duplication Risks

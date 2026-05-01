@@ -20,7 +20,7 @@ These are the stable cross-file boundaries that matter before editing:
 | Config recipes | `configs/` | Encode model/head/task variants, preset-build policy, adapt recipes | Config parser + entrypoints | New recipe variants | Folder names are not always semantically authoritative |
 | Tests | `tests/` | Pin config, registry, AHI metric, checkpoint, result CSV, preset-build, pair-sampler, and visualization contracts | pytest | New contract coverage | Many important contracts live here now |
 | Formatting wrapper | `utils/style_check.sh` | Run `isort`, `black`, `flake8` over repo | Python env toolchain | None | Lint wrapper only |
-| Variant namespaces | `sleep2vec2/`, `sleep2vec_moe/`, `sleep2vec_hires/` | `sleep2vec2` is a standalone mirror recipe with local data/preprocess/configs and standalone RoFormer; the other roots remain placeholders | `sleep2vec2` local copies, Torch, optional Transformers for parity tests | Variant-specific backbones and recipe-local data/preprocess flows | Keep `sleep2vec2` imports package-local; do not route its RoFormer through base `sleep2vec` |
+| Variant namespaces | `sleep2vec2/`, `sleep2expert/`, `sleep2vec_moe/`, `sleep2vec_hires/` | `sleep2vec2` and `sleep2expert` are standalone mirror recipes with local data/preprocess/configs and standalone RoFormer; the other roots remain placeholders | variant-local copies, Torch, optional Transformers for parity tests | Variant-specific backbones and recipe-local data/preprocess flows | Keep variant imports package-local; do not route RoFormer through base `sleep2vec` or another variant |
 
 ## Key Dependencies
 
@@ -53,7 +53,7 @@ These are the stable cross-file boundaries that matter before editing:
 - Missing-channel pretraining edits usually span `data/default_dataset.py`, `data/utils.py`, `data/samplers.py`, and `sleep2vec/utils.py`.
 - Adaptation edits usually span `sleep2vec/adapt.py`, `sleep2vec/sleep2vec_adaptation.py`, `sleep2vec/pretrain_model.py`, and sampler/callback surfaces used by pair scheduling.
 - Preprocessing edits should stay in `preprocess/` unless the preset schema or `SampleIndex` payload changes.
-- `sleep2vec2` edits should stay inside `sleep2vec2/`, `configs/sleep2vec2/`, and matching tests unless a failing isolation/parity check proves a shared-base change is necessary.
+- `sleep2vec2` and `sleep2expert` edits should stay inside the matching package, matching `configs/<variant>/`, and matching tests unless a failing isolation/parity check proves a shared-base change is necessary.
 
 ## Ambiguities Worth Remembering
 

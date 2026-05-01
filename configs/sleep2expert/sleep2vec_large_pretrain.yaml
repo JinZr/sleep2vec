@@ -1,0 +1,84 @@
+model:
+  backbone:
+    name: roformer
+    hidden_size: 1024
+    num_hidden_layers: 16
+    num_attention_heads: 16
+    vocab_size: 1
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  cls:
+    embedding_type: null
+    downstream: tokens
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: breath
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eeg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: ecg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eog_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: emg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: spo2
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_nasal_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: ppg
+      input_dim: 3000
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: actigraphy
+      input_dim: 960
+      tokenizer:
+        name: sundial
+        out_dim: 768
+loss:
+  name: info_nce
+  temperature: 0.2
+data:
+  mask_rate: 0.15
+  max_tokens: 120
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

@@ -7,7 +7,7 @@ The repository is a config-driven multimodal sleep modeling system with five ope
 1. Schema and task semantics: `sleep2vec/config.py`, `sleep2vec/common.py`
 2. Construction and extension: `sleep2vec/registry.py`, `sleep2vec/builders.py`, `sleep2vec/backbones/`, `sleep2vec/modules/`, `sleep2vec/cls/`, `sleep2vec/downstreams/`
 3. Model and trainer runtime: `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/sleep2vec_adaptation.py`
-4. Data and preprocessing: `data/`, `preprocess/`, `sleep2vec/utils.py`, plus mirrored `sleep2vec2/data/` and `sleep2vec2/preprocess/`
+4. Data and preprocessing: `data/`, `preprocess/`, `sleep2vec/utils.py`, plus mirrored variant-local data and preprocessing packages
 5. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`
 
 Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task, head, evaluation-visualization, and adapt references; entrypoints still inject runtime-only values such as learning rate, devices, checkpoint paths, diagnostics mode, and experiment naming.
@@ -20,8 +20,9 @@ Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task,
 - `python -m sleep2vec.infer`
 - `python utils/check_configs.py`
 - Preprocessing CLIs under `preprocess/`
-- `python -m sleep2vec2.pretrain`, `adapt`, `finetune`, and `infer` for the standalone mirror recipe
-- Preprocessing CLIs under `sleep2vec2.preprocess`
+- `python -m sleep2vec2.pretrain`, `adapt`, `finetune`, and `infer` for the first standalone mirror recipe
+- `python -m sleep2expert.pretrain`, `adapt`, `finetune`, and `infer` for the sleep2expert standalone mirror recipe
+- Preprocessing CLIs under `sleep2vec2.preprocess` and `sleep2expert.preprocess`
 
 ## Runtime Stack
 
@@ -180,6 +181,6 @@ The canonical preset path is:
 
 ## Variant State On This Branch
 
-`sleep2vec2/` is active on this branch as a standalone mirror of the base recipe. It carries package-local copies of the base runtime, `data/`, and `preprocess/`, duplicated YAMLs under `configs/sleep2vec2/`, and a copied standalone RoFormer implementation under `sleep2vec2/backbones/roformer/`.
+`sleep2vec2/` and `sleep2expert/` are active on this branch as standalone mirrors of the base recipe. They carry package-local copies of the runtime, `data/`, and `preprocess/`, duplicated YAMLs under `configs/<variant>/`, and copied standalone RoFormer implementations under `<variant>/backbones/roformer/`.
 
 `sleep2vec_moe/` and `sleep2vec_hires/` remain branch-state placeholders with no tracked source files here.

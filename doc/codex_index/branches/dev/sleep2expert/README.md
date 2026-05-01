@@ -37,10 +37,11 @@ Tracked files indexed from this branch:
 - `sleep2vec/`: 78 tracked files
 - `data/`: 6 tracked files
 - `preprocess/`: 6 tracked files
-- `configs/`: 64 indexed files, including `configs/sleep2vec2/`
-- `tests/`: 26 indexed files
+- `configs/`: 96 indexed files, including `configs/sleep2vec2/` and `configs/sleep2expert/`
+- `tests/`: 28 indexed files
 - `utils/`: 2 tracked files
 - `sleep2vec2/`: 97 indexed files, including 87 Python source files and 9 visualization font assets
+- `sleep2expert/`: 97 indexed files, including 87 Python source files and 9 visualization font assets
 
 Branch-state coverage only:
 
@@ -50,7 +51,7 @@ Branch-state coverage only:
 ## Coverage Boundaries
 
 - Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result writing, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, preprocessing CLIs, downstream evaluation visualizations, and the tests that pin those contracts.
-- `sleep2vec2/` is an active standalone mirror of the base recipe, summarized in the variant-surface catalog. Its key branch delta is package-local `data/`, `preprocess/`, copied YAMLs under `configs/sleep2vec2/`, copied visualization font assets, and a standalone RoFormer backbone under `sleep2vec2/backbones/roformer/`.
+- `sleep2vec2/` and `sleep2expert/` are active standalone mirrors of the base recipe, summarized in the variant-surface catalog. Their key branch deltas are package-local `data/`, `preprocess/`, copied YAMLs under `configs/<variant>/`, copied visualization font assets, and standalone RoFormer backbones under `<variant>/backbones/roformer/`.
 - Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb` and tracked visualization font binaries under `sleep2vec/visualization/assets/fonts/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
 - `AGENTS.md` is referenced for ownership context but is not reproduced here as an editable source of truth.
@@ -66,7 +67,7 @@ Branch-state coverage only:
 - If you are changing dataset loading, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
 - If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, or WatchPAT conversion, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
 - If you are changing evaluation plots, pair-accuracy logging, or diagnostics, start with [FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md](./FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md).
-- If you think you need `sleep2vec2/`, `sleep2vec_moe/`, or `sleep2vec_hires/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first; on this branch `sleep2vec2/` is active and the other variant roots remain placeholders.
+- If you think you need `sleep2vec2/`, `sleep2expert/`, `sleep2vec_moe/`, or `sleep2vec_hires/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first; on this branch `sleep2vec2/` and `sleep2expert/` are active and the other variant roots remain placeholders.
 
 ## Deliverable Layout
 
