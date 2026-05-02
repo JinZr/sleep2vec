@@ -39,8 +39,6 @@ model:
         spo2: [shared, oxygenation, artifact]
         resp_original: [shared, respiratory, artifact]
         resp_nasal_original: [shared, respiratory, artifact]
-        ppg: [shared, cardiac, oxygenation, artifact]
-        actigraphy: [shared, wearable_activity, artifact]
       route_consistency_layers: [10]
   projection:
     name: simclr

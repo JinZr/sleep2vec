@@ -151,7 +151,7 @@ def test_sleep2expert_finetune_configs_disable_lora():
     ],
 )
 def test_sleep2expert_finetune_config_rejects_lora_flags(tmp_path: Path, flag: str):
-    source = REPO_ROOT / "configs" / "sleep2expert" / "ppg_ahi_finetune.yaml"
+    source = REPO_ROOT / "configs" / "sleep2expert" / "heartbeat_breath_ahi_finetune_large.yaml"
     data = yaml.safe_load(source.read_text())
     payload = deepcopy(data)
     payload["finetune"]["lora"][flag] = True

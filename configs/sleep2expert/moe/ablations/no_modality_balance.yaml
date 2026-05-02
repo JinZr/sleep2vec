@@ -39,8 +39,6 @@ model:
         spo2: [shared, oxygenation, artifact]
         resp_original: [shared, respiratory, artifact]
         resp_nasal_original: [shared, respiratory, artifact]
-        ppg: [shared, cardiac, oxygenation, artifact]
-        actigraphy: [shared, wearable_activity, artifact]
       route_consistency_layers: [10]
   projection:
     name: simclr
@@ -93,16 +91,6 @@ model:
         out_dim: 768
     - name: resp_nasal_original
       input_dim: 120
-      tokenizer:
-        name: sundial
-        out_dim: 768
-    - name: ppg
-      input_dim: 3000
-      tokenizer:
-        name: sundial
-        out_dim: 768
-    - name: actigraphy
-      input_dim: 960
       tokenizer:
         name: sundial
         out_dim: 768
