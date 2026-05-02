@@ -122,9 +122,7 @@ def test_build_routing_rows_groups_scalar_label_once_per_sample():
             "expert_group": "shared",
             "usage_count": 2,
             "mean_router_prob": pytest.approx(0.85),
-            "router_entropy": pytest.approx(
-                float((-(router_probs * router_probs.log()).sum(dim=-1)).mean().item())
-            ),
+            "router_entropy": pytest.approx(float((-(router_probs * router_probs.log()).sum(dim=-1)).mean().item())),
             "label_name": "age",
             "label_value_if_available": 63.0,
         }
