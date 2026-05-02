@@ -68,7 +68,7 @@ Primary code path:
 - Stage1 checkpoints under `log-adapt/<run>/checkpoints/`
 - Stage2 checkpoints under `log-adapt/<run>/checkpoints.stage2/`
 - Root and phase-specific copied configs / CLI snapshots
-- W&B run under project `sleep2vec-adapt`
+- W&B run under project `sleep2expert-adapt`
 
 ## Edit Hotspots
 

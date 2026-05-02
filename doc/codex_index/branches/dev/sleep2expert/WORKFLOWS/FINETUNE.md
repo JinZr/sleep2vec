@@ -76,7 +76,7 @@ Custom labels require `finetune.task` in YAML.
 - Checkpoints under `log-finetune/<version>/checkpoints/`
 - Stable `best.ckpt` copy when training ran and a best checkpoint exists
 - Optional results CSV row via `sleep2vec.results.save_result_csv`
-- W&B run under project `sleep2vec-finetune`
+- W&B run under project `sleep2expert-finetune`
 
 ## Edit Hotspots
 

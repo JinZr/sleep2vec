@@ -73,7 +73,7 @@ Primary code path:
 
 - Checkpoints under `log-pretrain/<run>/checkpoints/`
 - `config.yaml` and `cli_args.yaml` one directory above checkpoints
-- W&B run under project `sleep2vec-pretrain`
+- W&B run under project `sleep2expert-pretrain`
 
 ## Edit Hotspots
 
