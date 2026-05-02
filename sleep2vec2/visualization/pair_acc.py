@@ -23,7 +23,7 @@ def render_pair_acc_heatmap(
     for i in range(size):
         mat[i, i] = 1.0
 
-    return render_matrix_heatmap(
+    fig = render_matrix_heatmap(
         mat,
         modality_names,
         modality_names,
@@ -35,5 +35,11 @@ def render_pair_acc_heatmap(
         figsize=(12.0, 9.0),
         annotation_formatter=lambda value: f"{value:.3f}",
         colorbar_title="Accuracy",
-        subplots_adjust={"left": 0.16, "right": 0.91, "bottom": 0.16, "top": 0.90},
+        subplots_adjust={"left": 0.16, "right": 0.91, "bottom": 0.27, "top": 0.90},
     )
+    ax = fig.axes[0]
+    for label in ax.get_xticklabels():
+        label.set_rotation(45)
+        label.set_ha("right")
+        label.set_rotation_mode("anchor")
+    return fig
