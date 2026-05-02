@@ -1,5 +1,16 @@
 # Visualization And Diagnostics
 
+## `sleep2expert.routing_analysis.build_routing_rows`
+
+- File: `sleep2expert/routing_analysis.py`
+- Signature: `build_routing_rows(moe_aux, batch, args, expert_groups) -> list[dict[str, Any]]`
+- Purpose and contract: convert `Sleep2vecPretrainModel.last_moe_aux` records into sample/modality/layer/expert CSV rows, aggregating top-k expert usage and router diagnostics while respecting padding, optional CLS, and downstream label grouping.
+- Important inputs/outputs: MoE aux records, current batch, normalized task args, and expert-id-to-group lookup in; rows with the fixed routing CSV columns out. `usage_count` comes from top-k selections, while `mean_router_prob` comes from original router probabilities rather than renormalized top-k weights.
+- Side effects: none.
+- Key callers/callees: caller is `run_routing_analysis`; callees include local mask, label, token-axis alignment, entropy, and sample-context helpers.
+- Reuse guidance: reuse this helper for route-collapse, expert-usage, modality, label, and site/source diagnostic tables.
+- Duplication risk notes: keep routing analysis as CSV export; do not add a parallel plotting system or token-level dump path unless a later task explicitly needs it.
+
 ## `sleep2vec.diagnostics.attach_diagnostics`
 
 - File: `sleep2vec/diagnostics.py`

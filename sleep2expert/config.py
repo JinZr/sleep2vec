@@ -22,6 +22,28 @@ class ChannelConfig:
 
 
 @dataclass
+class MoeConfig:
+    enabled: bool = False
+    layer_indices: list[int] | None = None
+    num_experts: int = 16
+    top_k: int = 2
+    expert_hidden_size: int | None = None
+    router_type: str = "learned"
+    router_noise: float = 0.0
+    router_z_loss_coef: float = 0.0
+    router_entropy_coef: float = 0.0
+    load_balance_coef: float = 0.0
+    modality_balance_coef: float = 0.0
+    route_consistency_coef: float = 0.0
+    expert_diversity_coef: float = 0.0
+    expert_dropout_prob: float = 0.0
+    use_modality_group_mask: bool = True
+    expert_groups: dict[str, list[int]] = field(default_factory=dict)
+    modality_to_groups: dict[str, list[str]] = field(default_factory=dict)
+    route_consistency_layers: list[int] | None = None
+
+
+@dataclass
 class BackboneConfig:
     name: str = "roformer"
     hidden_size: int = 768
@@ -29,6 +51,134 @@ class BackboneConfig:
     num_attention_heads: int = 16
     vocab_size: int = 1
     config_overrides: dict[str, t.Any] = field(default_factory=dict)
+    moe: MoeConfig | None = None
+
+
+def _validate_moe_int_list(value: t.Any, field_name: str, *, required: bool = False) -> list[int] | None:
+    if value is None:
+        if required:
+            raise ValueError(f"backbone.moe.{field_name} must be a non-empty list when MoE is enabled.")
+        return None
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"backbone.moe.{field_name} must be a non-empty list when provided.")
+    if not all(type(idx) is int for idx in value):
+        raise ValueError(f"backbone.moe.{field_name} must contain only integers.")
+    if len(set(value)) != len(value):
+        raise ValueError(f"backbone.moe.{field_name} must not contain duplicates.")
+    return value
+
+
+def _validate_moe_nonnegative_number(value: t.Any, field_name: str) -> None:
+    if type(value) not in {int, float}:
+        raise ValueError(f"backbone.moe.{field_name} must be a number.")
+    if value < 0:
+        raise ValueError(f"backbone.moe.{field_name} must be >= 0.")
+
+
+def _validate_moe_config(
+    moe_cfg: MoeConfig,
+    backbone_cfg: BackboneConfig,
+    channel_names: t.Sequence[str] | None = None,
+) -> None:
+    if type(moe_cfg.router_type) is not str or moe_cfg.router_type not in {
+        "learned",
+        "random",
+        "hard_modality",
+        "hard_group",
+    }:
+        raise ValueError("backbone.moe.router_type must be one of learned, random, hard_modality, hard_group.")
+    if type(moe_cfg.enabled) is not bool:
+        raise ValueError("backbone.moe.enabled must be a boolean.")
+    if type(moe_cfg.use_modality_group_mask) is not bool:
+        raise ValueError("backbone.moe.use_modality_group_mask must be a boolean.")
+    if type(moe_cfg.num_experts) is not int:
+        raise ValueError("backbone.moe.num_experts must be an integer.")
+    if moe_cfg.num_experts <= 0:
+        raise ValueError("backbone.moe.num_experts must be > 0.")
+    if type(moe_cfg.top_k) is not int:
+        raise ValueError("backbone.moe.top_k must be an integer.")
+    if moe_cfg.top_k < 1:
+        raise ValueError("backbone.moe.top_k must be >= 1.")
+    if moe_cfg.top_k > moe_cfg.num_experts:
+        raise ValueError("backbone.moe.top_k must be <= backbone.moe.num_experts.")
+    if moe_cfg.expert_hidden_size is not None:
+        if type(moe_cfg.expert_hidden_size) is not int:
+            raise ValueError("backbone.moe.expert_hidden_size must be an integer when provided.")
+        if moe_cfg.expert_hidden_size <= 0:
+            raise ValueError("backbone.moe.expert_hidden_size must be positive when provided.")
+    for field_name in (
+        "router_noise",
+        "router_z_loss_coef",
+        "router_entropy_coef",
+        "load_balance_coef",
+        "modality_balance_coef",
+        "route_consistency_coef",
+        "expert_diversity_coef",
+    ):
+        _validate_moe_nonnegative_number(getattr(moe_cfg, field_name), field_name)
+    _validate_moe_nonnegative_number(moe_cfg.expert_dropout_prob, "expert_dropout_prob")
+    if moe_cfg.expert_dropout_prob > 1:
+        raise ValueError("backbone.moe.expert_dropout_prob must be <= 1.")
+    if moe_cfg.enabled and moe_cfg.expert_diversity_coef > 0:
+        raise ValueError("backbone.moe.expert_diversity_coef is not supported yet and must be 0.0.")
+
+    layer_indices = _validate_moe_int_list(
+        moe_cfg.layer_indices,
+        "layer_indices",
+        required=moe_cfg.enabled,
+    )
+    if layer_indices is not None and (min(layer_indices) < 1 or max(layer_indices) > backbone_cfg.num_hidden_layers):
+        raise ValueError("backbone.moe.layer_indices values must be within [1, backbone.num_hidden_layers].")
+
+    route_consistency_layers = _validate_moe_int_list(moe_cfg.route_consistency_layers, "route_consistency_layers")
+    if moe_cfg.enabled and moe_cfg.route_consistency_coef > 0 and route_consistency_layers is None:
+        raise ValueError("backbone.moe.route_consistency_layers is required when route_consistency_coef is positive.")
+    if route_consistency_layers is not None:
+        if layer_indices is None or not set(route_consistency_layers).issubset(set(layer_indices)):
+            raise ValueError("backbone.moe.route_consistency_layers must be a subset of backbone.moe.layer_indices.")
+
+    if not (moe_cfg.enabled and moe_cfg.use_modality_group_mask):
+        return
+
+    if not isinstance(moe_cfg.expert_groups, dict):
+        raise ValueError("backbone.moe.expert_groups must be a mapping.")
+    if not isinstance(moe_cfg.modality_to_groups, dict):
+        raise ValueError("backbone.moe.modality_to_groups must be a mapping.")
+    if not moe_cfg.expert_groups:
+        raise ValueError("backbone.moe.expert_groups is required when use_modality_group_mask is enabled.")
+    if not moe_cfg.modality_to_groups:
+        raise ValueError("backbone.moe.modality_to_groups is required when use_modality_group_mask is enabled.")
+    if channel_names is not None:
+        missing_modalities = sorted(set(channel_names) - set(moe_cfg.modality_to_groups))
+        if missing_modalities:
+            raise ValueError(
+                "backbone.moe.modality_to_groups must include every configured channel when "
+                f"use_modality_group_mask is enabled; missing: {missing_modalities}."
+            )
+
+    for group_name, expert_ids in moe_cfg.expert_groups.items():
+        if not isinstance(expert_ids, list) or not expert_ids:
+            raise ValueError(f"backbone.moe.expert_groups.{group_name} must be a non-empty list.")
+        if not all(type(expert_id) is int for expert_id in expert_ids):
+            raise ValueError(f"backbone.moe.expert_groups.{group_name} must contain only integer expert ids.")
+        if any(expert_id < 0 or expert_id >= moe_cfg.num_experts for expert_id in expert_ids):
+            raise ValueError(
+                f"backbone.moe.expert_groups.{group_name} expert ids must be within "
+                "[0, backbone.moe.num_experts - 1]."
+            )
+
+    valid_groups = set(moe_cfg.expert_groups)
+    for modality_name, group_names in moe_cfg.modality_to_groups.items():
+        if not isinstance(group_names, list) or not group_names:
+            raise ValueError(f"backbone.moe.modality_to_groups.{modality_name} must be a non-empty list.")
+        missing_groups = [group_name for group_name in group_names if group_name not in valid_groups]
+        if missing_groups:
+            raise ValueError(
+                f"backbone.moe.modality_to_groups.{modality_name} references unknown groups: {missing_groups}."
+            )
+        allowed_experts = {expert_id for group_name in group_names for expert_id in moe_cfg.expert_groups[group_name]}
+        if len(allowed_experts) < moe_cfg.top_k:
+            raise ValueError(f"backbone.moe.modality_to_groups.{modality_name} must expose at least top_k experts.")
 
 
 @dataclass
@@ -299,6 +449,32 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     return HeadConfig(temporal_agg=temporal_cfg, channel_agg=channel_cfg, **head_raw)
 
 
+def _build_backbone_config(raw: t.Any, *, channel_names: t.Sequence[str] | None = None) -> BackboneConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("model.backbone must be a mapping.")
+
+    config_overrides = raw.get("config_overrides") or {}
+    if not isinstance(config_overrides, dict):
+        raise ValueError("model.backbone.config_overrides must be a mapping when provided.")
+    if "moe" in config_overrides:
+        raise ValueError("model.backbone.config_overrides.moe is not supported; use model.backbone.moe.")
+
+    raw = dict(raw)
+    moe_raw = raw.pop("moe", None)
+    moe_cfg = None
+    if moe_raw is not None:
+        if not isinstance(moe_raw, dict):
+            raise ValueError("model.backbone.moe must be a mapping when provided.")
+        moe_cfg = MoeConfig(**moe_raw)
+
+    backbone = BackboneConfig(**raw, moe=moe_cfg)
+    if moe_cfg is not None:
+        if backbone.name != "roformer":
+            raise ValueError("model.backbone.moe is only supported for backbone.name='roformer'.")
+        _validate_moe_config(moe_cfg, backbone, channel_names=channel_names)
+    return backbone
+
+
 def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfig:
     if not isinstance(model_block, dict):
         raise ValueError("model block must be a mapping.")
@@ -310,7 +486,7 @@ def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfi
         raise ValueError("model.cls is required in YAML.")
 
     channels = _require_channels(model_block)
-    backbone = BackboneConfig(**model_block.get("backbone"))
+    backbone = _build_backbone_config(model_block.get("backbone"), channel_names=[channel.name for channel in channels])
     projection = ProjectionConfig(**model_block.get("projection"))
     cls_cfg = _build_cls_config(model_block)
     head = _build_head_config(model_block, required=require_head)
@@ -707,6 +883,7 @@ __all__ = [
     "ChannelConfig",
     "HeadConfig",
     "LossConfig",
+    "MoeConfig",
     "ModelConfig",
     "ClsConfig",
     "LayerMixConfig",

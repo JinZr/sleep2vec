@@ -1,0 +1,142 @@
+model:
+  backbone:
+    name: roformer
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 16
+    vocab_size: 1
+    moe:
+      enabled: true
+      layer_indices: [4, 6, 8, 10]
+      num_experts: 16
+      top_k: 2
+      expert_hidden_size: 1536
+      router_type: learned
+      router_noise: 0.0
+      router_z_loss_coef: 0.001
+      router_entropy_coef: 0.0
+      load_balance_coef: 0.01
+      modality_balance_coef: 0.01
+      route_consistency_coef: 0.01
+      expert_diversity_coef: 0.0
+      expert_dropout_prob: 0.0
+      use_modality_group_mask: true
+      expert_groups:
+        shared: [0, 1]
+        neuro: [2, 3, 4, 5]
+        cardiac: [6, 7, 8]
+        respiratory: [9, 10, 11]
+        oxygenation: [12, 13]
+        wearable_activity: [14]
+        artifact: [15]
+      modality_to_groups:
+        heartbeat: [shared, cardiac, artifact]
+        breath: [shared, respiratory, artifact]
+        eeg_original: [shared, neuro, artifact]
+        ecg_original: [shared, cardiac, artifact]
+        eog_original: [shared, neuro, artifact]
+        emg_original: [shared, neuro, artifact]
+        spo2: [shared, oxygenation, artifact]
+        resp_original: [shared, respiratory, artifact]
+        resp_nasal_original: [shared, respiratory, artifact]
+        ppg: [shared, cardiac, oxygenation, artifact]
+        actigraphy: [shared, wearable_activity, artifact]
+      route_consistency_layers: [10]
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  cls:
+    embedding_type: null
+    downstream: tokens
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: breath
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eeg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: ecg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eog_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: emg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: spo2
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_nasal_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+  head:
+    name: classification
+    dropout: 0.1
+    hidden_dim: null
+    channel_agg:
+      name: gated_scalar
+      kwargs: {}
+    temporal_agg:
+      name: mean
+      kwargs: {}
+data:
+  max_tokens: 120
+  data_channel_names: null
+  finetune_data_index: index/hsp_psg_pretrain.csv
+  finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
+  train_dataset_names: [shhs]
+  test_dataset_names: [shhs]
+  n_few_shot: 1280
+finetune:
+  freeze_tokenizer: true
+  layer_mix:
+    enabled: false
+    shared_across_modalities: false
+    layer_indices: null
+  lora:
+    freeze_backbone_and_insert_lora: false
+    insert_lora: false
+    separate_adapters: false
+  eval_visualizations:
+    enabled: true
+    stages: [val, test]
+    confusion_matrix:
+      enabled: true
+    roc_curve:
+      enabled: true
+    regression_scatter:
+      enabled: false
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

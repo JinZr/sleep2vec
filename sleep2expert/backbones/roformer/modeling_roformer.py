@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from .configuration import RoFormerConfig
+from .moe import MoERoutingOutput, SparseMoEFFN
 from .outputs import RoFormerModelOutput
 
 
@@ -266,11 +267,17 @@ class RoFormerOutput(nn.Module):
 class RoFormerLayer(nn.Module):
     """Single transformer encoder layer used by RoFormer."""
 
-    def __init__(self, config: RoFormerConfig) -> None:
+    def __init__(self, config: RoFormerConfig, layer_idx: int) -> None:
         super().__init__()
         self.attention = RoFormerAttention(config)
-        self.intermediate = RoFormerIntermediate(config)
-        self.output = RoFormerOutput(config)
+        self.layer_idx = layer_idx
+        moe_cfg = config.moe
+        self.is_moe_layer = bool(moe_cfg and moe_cfg.enabled and layer_idx in set(moe_cfg.layer_indices or []))
+        if self.is_moe_layer:
+            self.moe_ffn = SparseMoEFFN(config, layer_idx=layer_idx, activation_fn=get_activation_fn(config.hidden_act))
+        else:
+            self.intermediate = RoFormerIntermediate(config)
+            self.output = RoFormerOutput(config)
 
     def forward(
         self,
@@ -278,16 +285,28 @@ class RoFormerLayer(nn.Module):
         attention_mask: torch.Tensor | None = None,
         rotary_components: tuple[torch.Tensor, torch.Tensor] | None = None,
         output_attentions: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        modality_name: str | None = None,
+        collect_moe_aux: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, MoERoutingOutput | None]:
         attention_output, attention_probs = self.attention(
             hidden_states,
             attention_mask=attention_mask,
             rotary_components=rotary_components,
             output_attentions=output_attentions,
         )
+        if self.is_moe_layer:
+            layer_output, moe_aux = self.moe_ffn(
+                attention_output,
+                attention_output,
+                modality_name=modality_name,
+                attention_mask=attention_mask,
+                collect_aux=collect_moe_aux,
+            )
+            return layer_output, attention_probs, moe_aux
+
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
-        return layer_output, attention_probs
+        return layer_output, attention_probs, None
 
 
 class RoFormerEncoder(nn.Module):
@@ -298,7 +317,7 @@ class RoFormerEncoder(nn.Module):
         self.embed_positions = RoFormerSinusoidalPositionalEmbedding(
             config.max_position_embeddings, config.hidden_size // config.num_attention_heads
         )
-        self.layer = nn.ModuleList([RoFormerLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([RoFormerLayer(config, layer_idx=i + 1) for i in range(config.num_hidden_layers)])
 
     def forward(
         self,
@@ -307,9 +326,12 @@ class RoFormerEncoder(nn.Module):
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True,
+        modality_name: str | None = None,
+        collect_moe_aux: bool = False,
     ):
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
+        all_moe_aux = () if collect_moe_aux else None
 
         seq_len = hidden_states.size(1)
         sinusoidal_pos = self.embed_positions(
@@ -323,29 +345,37 @@ class RoFormerEncoder(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-            hidden_states, attention_probs = layer_module(
+            hidden_states, attention_probs, moe_aux = layer_module(
                 hidden_states,
                 attention_mask=attention_mask,
                 rotary_components=rotary_components,
                 output_attentions=output_attentions,
+                modality_name=modality_name,
+                collect_moe_aux=collect_moe_aux,
             )
 
             if output_attentions:
                 all_attentions = all_attentions + (attention_probs,)
+            if collect_moe_aux and moe_aux is not None:
+                all_moe_aux = all_moe_aux + (moe_aux,)
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
+        moe_aux = all_moe_aux if all_moe_aux else None
         if not return_dict:
             outputs = (hidden_states,)
             if output_hidden_states:
                 outputs = outputs + (all_hidden_states,)
             if output_attentions:
                 outputs = outputs + (all_attentions,)
+            if collect_moe_aux:
+                outputs = outputs + (moe_aux,)
             return outputs
 
         return RoFormerModelOutput(
             last_hidden_state=hidden_states,
             hidden_states=all_hidden_states,
             attentions=all_attentions,
+            moe_aux=moe_aux,
         )

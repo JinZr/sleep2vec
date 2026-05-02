@@ -8,6 +8,9 @@ Evaluate a downstream checkpoint on a selected split, optionally average multipl
 
 Canonical entrypoint: `python -m sleep2vec.infer --config ... --ckpt-path ... --label-name ...`
 
+Variant-local routing export entrypoint:
+`python -m sleep2expert.routing_analysis --config ... --ckpt-path ... --label-name ... --split test --output routing_summary.csv`
+
 Primary code path:
 
 1. `sleep2vec.infer.parse_args`
@@ -55,9 +58,12 @@ Primary code path:
 - Inference can initialize W&B separately from training and only on rank zero.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
 - AHI inference requires `ahi_eval_threshold` to be present in the checkpoint state.
+- `sleep2expert.routing_analysis` is evaluation-adjacent but intentionally bypasses Lightning metric reduction; it reuses the package-local inference loader and downstream eval model only to collect `backbone.last_moe_aux` into a fixed CSV schema.
+- Routing export accepts both `--split` and `--eval-split` for the same `eval_split` runtime field.
 
 ## Edit Hotspots
 
 - Change checkpoint averaging semantics: `sleep2vec/checkpoints.py`
 - Change eval loader or dataset override behavior: `sleep2vec/infer.py`, `sleep2vec/utils.py`
 - Change inference-only logging/W&B behavior: `sleep2vec/infer.py`
+- Change `sleep2expert` MoE route CSV fields or aggregation: `sleep2expert/routing_analysis.py`

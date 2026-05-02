@@ -99,6 +99,43 @@
 - Reuse guidance: extend here for inference-only behavior changes.
 - Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`, not in trainer code.
 
+## `sleep2expert.routing_analysis.run_routing_analysis`
+
+- File: `sleep2expert/routing_analysis.py`
+- Signature: `run_routing_analysis(args) -> list[dict[str, Any]]`
+- Purpose and contract: export sparse-MoE routing summaries from downstream evaluation batches to a stable CSV schema without running Lightning test reduction or adding plotting/UI behavior.
+- Important inputs/outputs: normalized CLI namespace with finetune config, concrete checkpoint path, label name, eval split, and output path in; aggregated routing rows out and CSV written to `args.output`.
+- Side effects: loads checkpoint weights, iterates the inference loader, runs `Sleep2vecFinetuning._get_eval_model()(batch)` in eval mode, and writes a CSV.
+- Key callers/callees: called from `python -m sleep2expert.routing_analysis`; calls `apply_finetune_config`, `sleep2expert.infer._build_inference_loader`, `Sleep2vecFinetuning`, `_get_eval_model`, `load_checkpoint`, `select_checkpoints`, `average_checkpoints`, and `build_routing_rows`.
+- Reuse guidance: use this for `sleep2expert` PHASE-MoE route usage, route-collapse, and site/source shortcut exports.
+- Duplication risk notes: this is the package-local route-export surface; do not create a separate token-dump, plotting, or metrics path for the same `last_moe_aux` contract.
+
+## `sleep2expert.model_stats` helper family
+
+- File: `sleep2expert/model_stats.py`
+- Functions:
+  - `count_total_parameters(model) -> int`
+  - `count_trainable_parameters(model) -> int`
+  - `estimate_active_parameters_per_token(model_config) -> int`
+  - `estimate_moe_ffn_active_flops(model_config, seq_len) -> int`
+  - `estimate_dense_equivalent_ffn_flops(model_config, seq_len) -> int`
+  - `summarize_expert_usage(moe_aux) -> dict[int, int]`
+- Purpose and contract: centralize lightweight PHASE-MoE parameter, active FFN compute, and expert-usage estimates for experiment logging and audit tables.
+- Important inputs/outputs: model or typed config in; scalar counts or expert-id usage counts out.
+- Side effects: none.
+- Key callers/callees: caller is `sleep2expert.pretrain.sleep2vec_pretrain` for W&B hparam logging; routing/diagnostic callers can reuse `summarize_expert_usage`.
+- Reuse guidance: use this module for active-compute accounting instead of adding one-off formulas in entrypoints or notebooks.
+
+## `sleep2expert.checkpoints.initialize_moe_from_dense_if_possible`
+
+- File: `sleep2expert/checkpoints.py`
+- Signature: `initialize_moe_from_dense_if_possible(module: torch.nn.Module, filtered_state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]`
+- Purpose and contract: expand compatible dense standalone RoFormer FFN tensors into MoE expert FFN keys before pretrain initialization, while leaving incompatible experts randomly initialized.
+- Important inputs/outputs: target module and prefix-stripped checkpoint state in; expanded state dict out.
+- Side effects: none.
+- Key callers/callees: caller is `sleep2expert.checkpoints.load_pretrain_init_weights`.
+- Reuse guidance: use this helper for sleep2expert dense-to-MoE init instead of adding legacy/HF key conversion.
+
 ## `sleep2vec.checkpoints.load_pretrain_init_weights`
 
 - File: `sleep2vec/checkpoints.py`

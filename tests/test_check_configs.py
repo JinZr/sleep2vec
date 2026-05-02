@@ -8,6 +8,8 @@ import yaml
 
 from utils.check_configs import check_config_file
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _write_yaml(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,27 +81,44 @@ def _ppg_finetune_payload(*, is_seq: bool, preset_build: dict | None, task_overr
 
 
 def test_check_config_file_accepts_repo_ppg_stage3_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_stage3_finetune.yaml"
+    path = REPO_ROOT / "configs" / "ppg_stage3_finetune.yaml"
     check_config_file(path)
 
 
 def test_check_config_file_accepts_repo_ppg_age_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_age_finetune_large.yaml"
+    path = REPO_ROOT / "configs" / "ppg_age_finetune_large.yaml"
     check_config_file(path)
 
 
 def test_check_config_file_accepts_repo_ppg_ahi_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune.yaml"
+    path = REPO_ROOT / "configs" / "ppg_ahi_finetune.yaml"
     check_config_file(path)
 
 
 def test_check_config_file_accepts_repo_ppg_ahi_large_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune_large.yaml"
+    path = REPO_ROOT / "configs" / "ppg_ahi_finetune_large.yaml"
     check_config_file(path)
 
 
 def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_conv_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune_large_temporal_conv.yaml"
+    path = REPO_ROOT / "configs" / "ppg_ahi_finetune_large_temporal_conv.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_pretrain_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_pretrain.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_does_not_use_base_loader_for_sleep2expert_moe(monkeypatch):
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate sleep2expert configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_base_loader)
+
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_pretrain.yaml"
     check_config_file(path)
 
 

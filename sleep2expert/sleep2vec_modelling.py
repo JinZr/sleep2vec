@@ -8,6 +8,7 @@ import yaml
 from sleep2expert import diagnostics
 from sleep2expert.averagings.base import BaseModelAverager, build_model_averager
 from sleep2expert.losses import create_loss
+from sleep2expert.losses.moe_regularization import compute_moe_regularization
 from sleep2expert.pretrain_model import Sleep2vecPretrainModel
 
 
@@ -126,9 +127,15 @@ class Sleep2vecPretraining(pl.LightningModule):
         first_hidden, second_hidden = model(batch, apply_mask=True)
 
         loss_out = self.loss_fn(first_hidden, second_hidden, batch)
-        total_loss = loss_out.loss
+        moe_out = compute_moe_regularization(
+            getattr(model, "last_moe_aux", None),
+            self.model_config.backbone.moe,
+            batch,
+        )
+        total_loss = loss_out.loss + moe_out.loss
         metrics = loss_out.metrics or {}
-        contrastive_loss = metrics.get("contrastive_loss", total_loss.detach())
+        moe_metrics = moe_out.metrics or {}
+        contrastive_loss = metrics.get("contrastive_loss", loss_out.loss.detach())
         acc_contrastive = metrics.get("contrastive_acc")
 
         # # ---- logging ----
@@ -160,6 +167,17 @@ class Sleep2vecPretraining(pl.LightningModule):
                 on_epoch=True,
                 batch_size=B,
             )
+
+            for metric_name, metric_value in moe_metrics.items():
+                self.log(
+                    f"{log_prefix}_{metric_name}",
+                    metric_value,
+                    prog_bar=False,
+                    sync_dist=True,
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=B,
+                )
 
             if acc_contrastive is not None:
                 self.log(

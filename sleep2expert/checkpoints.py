@@ -89,6 +89,7 @@ def load_pretrain_init_weights(
             "sleep2expert does not support loading legacy sleep2vec/HF RoFormer checkpoints into the standalone "
             f"RoFormer backbone. Train or convert a sleep2expert checkpoint instead. Legacy keys: {preview}"
         )
+    filtered_state_dict = initialize_moe_from_dense_if_possible(module, filtered_state_dict)
     load_info = module.load_state_dict(filtered_state_dict, strict=strict)
     return PretrainInitLoadResult(
         used_prefix=used_prefix,
@@ -96,6 +97,53 @@ def load_pretrain_init_weights(
         missing_keys=list(load_info.missing_keys),
         unexpected_keys=list(load_info.unexpected_keys),
     )
+
+
+def initialize_moe_from_dense_if_possible(
+    module: torch.nn.Module,
+    filtered_state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    target_state = module.state_dict()
+    expanded_state = dict(filtered_state_dict)
+
+    cloned_layer_prefixes: set[str] = set()
+    expert_pattern = re.compile(r"^(?P<layer_prefix>.*)moe_ffn\.experts\.(?P<expert_id>\d+)\.dense_in\.weight$")
+    for target_key in target_state:
+        match = expert_pattern.match(target_key)
+        if match is None:
+            continue
+        layer_prefix = match.group("layer_prefix")
+        expert_prefix = f"{layer_prefix}moe_ffn.experts.{match.group('expert_id')}."
+        mappings = [
+            (f"{expert_prefix}dense_in.weight", f"{layer_prefix}intermediate.dense.weight"),
+            (f"{expert_prefix}dense_in.bias", f"{layer_prefix}intermediate.dense.bias"),
+            (f"{expert_prefix}dense_out.weight", f"{layer_prefix}output.dense.weight"),
+            (f"{expert_prefix}dense_out.bias", f"{layer_prefix}output.dense.bias"),
+        ]
+        if not all(
+            target in target_state
+            and source in filtered_state_dict
+            and target_state[target].shape == filtered_state_dict[source].shape
+            for target, source in mappings
+        ):
+            continue
+        for target, source in mappings:
+            expanded_state.setdefault(target, filtered_state_dict[source].clone())
+        cloned_layer_prefixes.add(layer_prefix)
+
+    for target_key, target_tensor in target_state.items():
+        marker = "moe_ffn.layer_norm."
+        if marker not in target_key or target_key in expanded_state:
+            continue
+        layer_prefix, norm_suffix = target_key.split(marker, 1)
+        if layer_prefix not in cloned_layer_prefixes:
+            continue
+        source_key = f"{layer_prefix}output.layer_norm.{norm_suffix}"
+        source_tensor = filtered_state_dict.get(source_key)
+        if source_tensor is not None and source_tensor.shape == target_tensor.shape:
+            expanded_state[target_key] = source_tensor.clone()
+
+    return expanded_state
 
 
 def select_checkpoints(

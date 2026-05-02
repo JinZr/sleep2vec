@@ -127,12 +127,23 @@
 
 - File: `sleep2vec/sleep2vec_modelling.py`
 - Signature: `Sleep2vecPretraining._contrastive_step(batch, log_prefix=None, model=None)`
-- Purpose and contract: run the contrastive forward pass, apply the configured loss, log step/epoch metrics, and cache validation metrics for epoch-end aggregation.
+- Purpose and contract: run the contrastive forward pass, apply the configured loss, add any variant-local MoE regularization, log step/epoch metrics, and cache validation metrics for epoch-end aggregation.
 - Important inputs/outputs: batch in; returns `(total_loss, contrastive_acc)`.
 - Side effects: logs Lightning metrics and mutates validation caches.
-- Key callers/callees: callers are `training_step` and `validation_step`; callees are `self.model(...)` and `self.loss_fn(...)`.
+- Key callers/callees: callers are `training_step` and `validation_step`; callees are `self.model(...)`, `self.loss_fn(...)`, and for `sleep2expert` MoE configs `compute_moe_regularization(...)`.
 - Reuse guidance: reuse this helper for any pretrain stage that wants identical loss/logging semantics.
-- Duplication risk notes: pretrain metric naming and aggregation live here, not in the callback.
+- Duplication risk notes: pretrain metric naming and aggregation live here, not in the callback; keep auxiliary MoE losses outside the contrastive loss registry.
+
+## `sleep2expert.losses.moe_regularization.compute_moe_regularization`
+
+- File: `sleep2expert/losses/moe_regularization.py`
+- Signature: `compute_moe_regularization(moe_aux, moe_cfg, batch, *, prefix=None) -> LossOutput`
+- Purpose and contract: convert `Sleep2vecPretrainModel.last_moe_aux` routing records into MoE regularization losses and routing diagnostics without changing the contrastive loss API; enabled MoE must provide non-empty aux records.
+- Important inputs/outputs: MoE aux records plus `MoeConfig` and batch in; returns `LossOutput` with scalar auxiliary loss and `moe_*` metrics. Modality balance is computed as per-modality load balance over each modality's accessible experts, not by matching distributions across modalities.
+- Side effects: none.
+- Key callers/callees: caller is `sleep2expert.sleep2vec_modelling.Sleep2vecPretraining._contrastive_step`; callees are tensor reductions over router load, importance, entropy, z-loss, and route probabilities.
+- Reuse guidance: use this direct helper for `sleep2expert` MoE auxiliary losses; do not register it via `create_loss`.
+- Duplication risk notes: route consistency depends on the two-view `last_moe_aux` contract, requires configured consistency layers when its coefficient is positive, and excludes CLS when the aux sequence includes a prepended CLS token.
 
 ## `Sleep2vecPretraining.configure_optimizers`
 

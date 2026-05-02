@@ -14,3 +14,4 @@ class RoFormerModelOutput:
     last_hidden_state: torch.Tensor
     hidden_states: tuple[torch.Tensor, ...] | None = None
     attentions: tuple[torch.Tensor, ...] | None = None
+    moe_aux: object | None = None

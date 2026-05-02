@@ -21,6 +21,13 @@ from sleep2expert.checkpoints import load_pretrain_init_weights
 from sleep2expert.common import apply_model_config_args, persist_run_config_and_args
 from sleep2expert.config import load_pretrain_config
 from sleep2expert.data.samplers import handles_distributed_sharding
+from sleep2expert.model_stats import (
+    count_total_parameters,
+    count_trainable_parameters,
+    estimate_active_parameters_per_token,
+    estimate_dense_equivalent_ffn_flops,
+    estimate_moe_ffn_active_flops,
+)
 from sleep2expert.sleep2vec_modelling import Sleep2vecPretraining
 from sleep2expert.utils import get_pretrain_dataloader
 
@@ -71,6 +78,20 @@ def sleep2vec_pretrain(args):
     persist_run_config_and_args(args, exp_dir)
 
     model = Sleep2vecPretraining(args, model_config, loss_config, averaging_config=averaging_config)
+    moe_cfg = model_config.backbone.moe
+    model_stats = {
+        "total_params": count_total_parameters(model.model),
+        "trainable_params": count_trainable_parameters(model.model),
+        "estimated_active_params_per_token": estimate_active_parameters_per_token(model_config),
+        "estimated_moe_ffn_active_flops": estimate_moe_ffn_active_flops(model_config, args.max_tokens),
+        "estimated_dense_equivalent_ffn_flops": estimate_dense_equivalent_ffn_flops(model_config, args.max_tokens),
+        "moe_num_experts": moe_cfg.num_experts if moe_cfg and moe_cfg.enabled else None,
+        "moe_top_k": moe_cfg.top_k if moe_cfg and moe_cfg.enabled else None,
+        "moe_layers": moe_cfg.layer_indices if moe_cfg and moe_cfg.enabled else None,
+        "expert_hidden_size": moe_cfg.expert_hidden_size if moe_cfg and moe_cfg.enabled else None,
+    }
+    for stat_name, stat_value in model_stats.items():
+        logging.info("%s: %s", stat_name, stat_value)
     if args.pretrained_backbone_path and args.ckpt_path is None:
         load_info = load_pretrain_init_weights(model.model, args.pretrained_backbone_path, device="cpu", strict=False)
         logging.info(
@@ -93,6 +114,7 @@ def sleep2vec_pretrain(args):
         id=wandb_id,  # NEW：保持同一个 run
         resume="allow" if wandb_id else None,  # NEW：若 id 存在则追加
     )
+    logger.log_hyperparams(model_stats)
 
     monitor = "val_contrastive_acc"
     mode = "max"

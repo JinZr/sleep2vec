@@ -166,6 +166,8 @@ class Sleep2vecPretrainModel(nn.Module):
         logging.info(f"Trainable parameters: {self.trainable_params}")
         self._forced_eval_modules: list[nn.Module] = []
         self._forced_train_modules: list[nn.Module] = []
+        self.moe_enabled = bool(model_config and model_config.backbone.moe and model_config.backbone.moe.enabled)
+        self.last_moe_aux = None
 
     def _tokenize_two_random_channels(self, tokens):
         """
@@ -179,6 +181,7 @@ class Sleep2vecPretrainModel(nn.Module):
                 if len(available) < 2:
                     raise ValueError(f"可用通道不足 2 个：{available}")
                 chosen_channels = random.sample(available, 2)
+            chosen_channels = chosen_channels[:2]
         else:
             # 交集：只保留 tokens 里确实存在的通道（并保持原有顺序）
             available = [ch for ch in self.channel_names if ch in tokens]
@@ -249,7 +252,9 @@ class Sleep2vecPretrainModel(nn.Module):
         batch,
         *,
         return_hidden_states: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...] | None]:
+        modality_name: str | None = None,
+        return_moe_aux: bool = False,
+    ):
 
         # 3. 调整 token_embedding 维度为 transformer hidden_size
         token_embeddings = self.embedding_projection(token_embeddings)
@@ -259,30 +264,94 @@ class Sleep2vecPretrainModel(nn.Module):
 
         # 5. Transformer encoder
         if return_hidden_states:
-            hidden, hidden_states = self._run_encoder(token_embeddings, attention_mask, return_hidden_states=True)
+            if return_moe_aux:
+                hidden, hidden_states, moe_aux = self._run_encoder(
+                    token_embeddings,
+                    attention_mask,
+                    return_hidden_states=True,
+                    modality_name=modality_name,
+                    collect_moe_aux=True,
+                )
+            else:
+                hidden, hidden_states = self._run_encoder(
+                    token_embeddings,
+                    attention_mask,
+                    return_hidden_states=True,
+                    modality_name=modality_name,
+                )
+                moe_aux = None
         else:
-            hidden = self._run_encoder(token_embeddings, attention_mask)
+            if return_moe_aux:
+                hidden, moe_aux = self._run_encoder(
+                    token_embeddings,
+                    attention_mask,
+                    modality_name=modality_name,
+                    collect_moe_aux=True,
+                )
+            else:
+                hidden = self._run_encoder(token_embeddings, attention_mask, modality_name=modality_name)
+                moe_aux = None
             hidden_states = None
 
+        if return_moe_aux:
+            return hidden, attention_mask, hidden_states, moe_aux
         return hidden, attention_mask, hidden_states
 
-    def _run_encoder(self, token_embeddings, attention_mask, *, return_hidden_states: bool = False):
+    def _run_encoder(
+        self,
+        token_embeddings,
+        attention_mask,
+        *,
+        return_hidden_states: bool = False,
+        modality_name: str | None = None,
+        collect_moe_aux: bool = False,
+    ):
         """Routes embeddings through the selected encoder."""
         if self._custom_encoder_forward is not None:
             if return_hidden_states:
                 raise ValueError("Custom encoder forward does not support hidden states.")
+            if collect_moe_aux:
+                raise ValueError("Custom encoder forward does not support MoE auxiliary outputs.")
             return self._custom_encoder_forward(self.encoder, token_embeddings, attention_mask)
 
+        encoder_kwargs = {
+            "inputs_embeds": token_embeddings,
+            "attention_mask": attention_mask,
+            "output_hidden_states": return_hidden_states,
+        }
+        if modality_name is not None:
+            encoder_kwargs["modality_name"] = modality_name
+        if collect_moe_aux:
+            encoder_kwargs["collect_moe_aux"] = True
+
         try:
-            encoder_output = self.encoder(
-                inputs_embeds=token_embeddings,
-                attention_mask=attention_mask,
-                output_hidden_states=return_hidden_states,
-            )
+            encoder_output = self.encoder(**encoder_kwargs)
         except TypeError as exc:
-            if return_hidden_states:
-                raise ValueError(f"Encoder '{self.encoder_name}' does not support output_hidden_states.") from exc
-            encoder_output = self.encoder(inputs_embeds=token_embeddings, attention_mask=attention_mask)
+            if collect_moe_aux:
+                raise ValueError(f"Encoder '{self.encoder_name}' does not support MoE auxiliary outputs.") from exc
+            try:
+                encoder_output = self.encoder(
+                    inputs_embeds=token_embeddings,
+                    attention_mask=attention_mask,
+                    output_hidden_states=return_hidden_states,
+                )
+            except TypeError as fallback_exc:
+                if return_hidden_states:
+                    raise ValueError(
+                        f"Encoder '{self.encoder_name}' does not support output_hidden_states."
+                    ) from fallback_exc
+                encoder_output = self.encoder(inputs_embeds=token_embeddings, attention_mask=attention_mask)
+
+        def _extract_moe_aux(output):
+            if hasattr(output, "moe_aux"):
+                return output.moe_aux
+            if isinstance(output, (list, tuple)) and collect_moe_aux and output:
+                return output[-1]
+            return None
+
+        moe_aux = _extract_moe_aux(encoder_output)
+        if collect_moe_aux and isinstance(encoder_output, (list, tuple)) and moe_aux is encoder_output[0]:
+            moe_aux = None
 
         def _extract_last_hidden(output):
             if isinstance(output, torch.Tensor):
@@ -299,6 +368,8 @@ class Sleep2vecPretrainModel(nn.Module):
 
         last_hidden = _extract_last_hidden(encoder_output)
         if not return_hidden_states:
+            if collect_moe_aux:
+                return last_hidden, moe_aux
             return last_hidden
 
         hidden_states = getattr(encoder_output, "hidden_states", None)
@@ -309,6 +380,8 @@ class Sleep2vecPretrainModel(nn.Module):
                 f"Encoder '{self.encoder_name}' did not return hidden states. "
                 "Ensure output_hidden_states is supported by the backbone."
             )
+        if collect_moe_aux:
+            return last_hidden, hidden_states, moe_aux
         return last_hidden, hidden_states
 
     def get_encoder(self) -> nn.Module:
@@ -331,16 +404,41 @@ class Sleep2vecPretrainModel(nn.Module):
         if apply_mask:
             token_embeddings = self._mask_modalities(token_embeddings, batch["mlm_mask"])
 
-        # modality_names = list(token_embeddings.keys())
-        token_embeddings = list(token_embeddings.values())
-        first_mod_token_embeddings, second_mod_token_embeddings = (
-            token_embeddings[0],
-            token_embeddings[1],
+        (first_mod_name, first_mod_token_embeddings), (second_mod_name, second_mod_token_embeddings) = list(
+            token_embeddings.items()
         )
 
         # 3/4/5
-        first_hidden, _, _ = self._token_embeddings_to_hidden(first_mod_token_embeddings, batch)
-        second_hidden, _, _ = self._token_embeddings_to_hidden(second_mod_token_embeddings, batch)
+        collect_moe_aux = self.moe_enabled
+        if collect_moe_aux:
+            first_hidden, first_attention_mask, _, first_aux = self._token_embeddings_to_hidden(
+                first_mod_token_embeddings,
+                batch,
+                modality_name=first_mod_name,
+                return_moe_aux=True,
+            )
+            second_hidden, second_attention_mask, _, second_aux = self._token_embeddings_to_hidden(
+                second_mod_token_embeddings,
+                batch,
+                modality_name=second_mod_name,
+                return_moe_aux=True,
+            )
+            self.last_moe_aux = [
+                {"modality": first_mod_name, "aux": first_aux, "attention_mask": first_attention_mask},
+                {"modality": second_mod_name, "aux": second_aux, "attention_mask": second_attention_mask},
+            ]
+        else:
+            first_hidden, _, _ = self._token_embeddings_to_hidden(
+                first_mod_token_embeddings,
+                batch,
+                modality_name=first_mod_name,
+            )
+            second_hidden, _, _ = self._token_embeddings_to_hidden(
+                second_mod_token_embeddings,
+                batch,
+                modality_name=second_mod_name,
+            )
+            self.last_moe_aux = None
 
         # ★ 对所有 token 逐个投影：得到 [B, L, 128]
         if self.projection:
@@ -356,7 +454,17 @@ class Sleep2vecPretrainModel(nn.Module):
         token_embeddings = self.tokenizer_mapping[channel_name](tokens[channel_name])
 
         # 3/4/5
-        hidden, _, _ = self._token_embeddings_to_hidden(token_embeddings, batch)
+        if self.moe_enabled:
+            hidden, attention_mask, _, moe_aux = self._token_embeddings_to_hidden(
+                token_embeddings,
+                batch,
+                modality_name=channel_name,
+                return_moe_aux=True,
+            )
+            self.last_moe_aux = [{"modality": channel_name, "aux": moe_aux, "attention_mask": attention_mask}]
+        else:
+            hidden, _, _ = self._token_embeddings_to_hidden(token_embeddings, batch, modality_name=channel_name)
+            self.last_moe_aux = None
 
         # 对所有 token 逐个投影：得到 [B, L, 128]
         if self.projection:

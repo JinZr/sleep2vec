@@ -43,6 +43,8 @@ Primary code path:
 6. Build Lightning module.
    - `Sleep2vecPretraining` creates `Sleep2vecPretrainModel`.
    - Loss is created from the registry.
+   - `sleep2expert` MoE configs add local MoE regularization from `model.last_moe_aux` after contrastive loss; it is not a registry loss.
+   - `sleep2expert.model_stats` estimates total/trainable parameters and FFN active-compute stats, and `sleep2expert.pretrain` logs them to W&B hparams.
    - Optional model averager is attached.
 7. Build trainer.
    - Standard mode: callbacks enabled.
@@ -64,6 +66,8 @@ Primary code path:
 - Pair-first missing-channel training is selected inside `DefaultDataset.dataloader`, not in the entrypoint.
 - Lightning distributed sampler injection is disabled when the batch sampler already shards by rank.
 - Validation pair metrics are aggregated inside one callback-aware loader, not by spawning one loader object per pair.
+- `sleep2expert` MoE regularization logs `*_moe_*` diagnostics but keeps `val_contrastive_acc` as the checkpoint monitor.
+- `sleep2expert` MoE pretraining logs active params per token, MoE active FFN FLOPs, dense-equivalent FFN FLOPs, top-k, expert count, MoE layer ids, and expert hidden size.
 
 ## Outputs
 
@@ -77,4 +81,5 @@ Primary code path:
 - Change dataloader construction or missing-channel policy: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/samplers.py`
 - Change backbone forward contract: `sleep2vec/pretrain_model.py`
 - Change loss semantics: `sleep2vec/losses/`
+- Change `sleep2expert` MoE auxiliary loss semantics: `sleep2expert/losses/moe_regularization.py`
 - Change trainer/callback/checkpoint behavior: `sleep2vec/pretrain.py`, `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/callbacks/pair_acc_logger.py`

@@ -30,7 +30,7 @@
 - Purpose and contract: parse pretrain YAML into typed dataclasses; require `model.backbone`, `model.projection`, and `model.cls`; build channels, loss config, data config, optional model-averaging config, and optional `adapt` config.
 - Important inputs/outputs: filesystem path in, `PretrainConfigBundle` out.
 - Side effects: reads YAML from disk only.
-- Key callers/callees: callers are `sleep2vec.pretrain.sleep2vec_pretrain`, `sleep2vec.adapt.sleep2vec_adapt`, and `utils/check_configs.py`; callees include `_require_channels`, `_build_model_config`, `_build_loss`, `_build_model_averaging_config`, `_build_adapt_config`, and `_validate_adapt_config`.
+- Key callers/callees: callers are `sleep2vec.pretrain.sleep2vec_pretrain`, `sleep2vec.adapt.sleep2vec_adapt`, and `utils/check_configs.py` for base configs; variant-local mirrors are used by `utils/check_configs.py` for `configs/sleep2expert/**` and `configs/sleep2vec2/**`. Callees include `_require_channels`, `_build_model_config`, `_build_loss`, `_build_model_averaging_config`, `_build_adapt_config`, and `_validate_adapt_config`.
 - Reuse guidance: reuse for every pretrain or adaptation code path that needs model semantics from YAML.
 - Duplication risk notes: do not duplicate parse logic in `pretrain.py` or `adapt.py`; keep entrypoint code orchestration-only.
 
@@ -52,7 +52,7 @@
 - Purpose and contract: enforce cross-channel tokenizer output-dimension parity plus CLS/head option validity; returns the shared tokenizer feature dimension.
 - Important inputs/outputs: `ModelConfig` in, shared feature dimension out.
 - Side effects: none.
-- Key callers/callees: callers are `sleep2vec.builders.build_tokenizers_and_dim` and `utils/check_configs.py`.
+- Key callers/callees: callers are `sleep2vec.builders.build_tokenizers_and_dim` and `utils/check_configs.py` for base configs; variant-local mirrors are used by `utils/check_configs.py` for standalone variant configs.
 - Reuse guidance: call this before constructing tokenizers or downstream heads from a `ModelConfig`.
 - Duplication risk notes: tokenizer-dimension parity must not be rechecked differently elsewhere.
 

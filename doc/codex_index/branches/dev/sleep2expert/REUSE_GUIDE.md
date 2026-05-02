@@ -29,15 +29,18 @@ This page answers the practical question: when you need to add or change behavio
 | Missing-channel training batches | `PairFirstBatchSampler` | Canonical train-time sampler for pair-first missing-channel pretraining/adaptation | Ad hoc pair scheduling loops |
 | Missing-channel homogeneous eval/train fallback | `AvailableChannelsBucketBatchSampler` | Canonical bucketed sampler when pair-first is not active | New bucket logic in entrypoints |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
+| MoE routing export | `sleep2expert.routing_analysis.run_routing_analysis` and `build_routing_rows` | Reuses package-local finetune config, inference loader, checkpoint helpers, downstream eval model, and `last_moe_aux` while writing a stable CSV schema | Plot UIs, duplicate eval loops, or token-level dump scripts |
+| sleep2expert dense-to-MoE init | `sleep2expert.checkpoints.initialize_moe_from_dense_if_possible` | Expands compatible dense standalone RoFormer FFN tensors into MoE expert keys before `load_state_dict` | Legacy/HF RoFormer key translation or one-off checkpoint surgery |
+| MoE active-compute accounting | `sleep2expert.model_stats` | Centralizes total/trainable parameter counts, active FFN parameter/FLOP estimates, and expert usage summaries for PHASE-MoE logs and tables | One-off formulas in pretrain, notebooks, or routing scripts |
 | Generic downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Single metric reducer for classification, regression, multilabel AHI pointwise, and stage remap outputs | Per-stage custom metric calculations |
 | AHI threshold search and event metrics | `sleep2vec.metrics.compute_ahi_event_metrics`, `select_best_ahi_threshold`, and the prepared-record helpers | Single contract for validation threshold search, record merging, and event/summary metrics | New AHI evaluation branches in trainers or scripts |
 | Result CSV output | `sleep2vec.results.save_result_csv` | Preserves rank-zero gating, lockfile semantics, schema expansion, and standard metadata columns | One-off CSV writers or the removed `metrics.save_result_csv` path |
 | Downstream eval plotting | `sleep2vec.visualization.downstream_eval.DownstreamEvalVisualizer` | Centralizes confusion matrix, ROC, regression scatter, and AHI summary scatter logging | WandB logging logic inside trainer steps |
 | Preset generation | `preprocess/save_dataset_presets.py` | Canonical CLI path that exercises `PSGPretrainDataset` and YAML-driven `preset_build` side effects | External scripts that pickle `SampleIndex` lists directly |
 | Split generation | `preprocess/split_index_by_dataset.py` | Canonical dataset-group split policy, mask normalization, and optional global pair-coverage checks | Manual split assignment notebooks |
-| Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness | One-off shell loops or YAML linters without repo semantics |
+| Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness; selects package-local loaders for `configs/sleep2expert/**` and `configs/sleep2vec2/**` | One-off shell loops or YAML linters without repo semantics |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
-| standalone recipe variants | `sleep2vec2/` plus `configs/sleep2vec2/`; `sleep2expert/` plus `configs/sleep2expert/` | Mirror the base recipe while keeping data/preprocess imports package-local and replacing RoFormer with the copied standalone implementation | Falling back to top-level `data`, top-level `preprocess`, another variant namespace, or base `sleep2vec.backbones.encoder_factory` |
+| standalone recipe variants | `sleep2vec2/` plus `configs/sleep2vec2/`; `sleep2expert/` plus `configs/sleep2expert/` | Mirror the base recipe while keeping config/data/preprocess imports package-local and replacing RoFormer with the copied standalone implementation | Falling back to top-level `data`, top-level `preprocess`, another variant namespace, or base `sleep2vec.backbones.encoder_factory` |
 
 ## Reuse Rules By Change Type
 
@@ -71,6 +74,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Keep trainer, callback, wandb, checkpoint, and phase-transition behavior in `pretrain.py`, `adapt.py`, `finetune.py`, `infer.py`, or the Lightning modules.
 - Reuse `persist_run_config_and_args`, `save_result_csv`, and checkpoint helpers instead of duplicating serialization and output logic.
+- For `sleep2expert` MoE route diagnostics, reuse `sleep2expert.routing_analysis` instead of adding a second routing export or visualization-specific data path.
 
 ### If you are changing preprocessing or config policy
 
@@ -80,6 +84,7 @@ This page answers the practical question: when you need to add or change behavio
   - `save_dataset_presets.py`
   - `merge_dataset_presets.py`
   - `utils/check_configs.py`
+- For `configs/sleep2expert/**` and `configs/sleep2vec2/**`, keep config validation package-local through `utils/check_configs.py` instead of importing the base `sleep2vec` loader directly.
 - Only touch `watchpat_zzp_to_edf.py` for WatchPAT-specific conversion work.
 
 ### If you are changing sleep2vec2 or sleep2expert

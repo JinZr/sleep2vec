@@ -56,6 +56,7 @@ class TransformerEncoderFactory:
         num_hidden_layers: int,
         num_attention_heads: int,
         vocab_size: int = 1,
+        moe: t.Any | None = None,
         **config_overrides: t.Any,
     ) -> "TransformerEncoderFactory":
         config = RoFormerConfig(
@@ -63,6 +64,7 @@ class TransformerEncoderFactory:
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
+            moe=moe,
             **config_overrides,
         )
         return cls.from_hf_config(name="roformer", model_cls=RoFormerEncoderModel, config=config)
@@ -76,6 +78,7 @@ def build_roformer(cfg: BackboneConfig) -> TransformerEncoderFactory:
         num_hidden_layers=cfg.num_hidden_layers,
         num_attention_heads=cfg.num_attention_heads,
         vocab_size=cfg.vocab_size,
+        moe=cfg.moe,
         **overrides,
     )
 

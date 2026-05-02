@@ -66,6 +66,8 @@ class RoFormerEncoderModel(nn.Module):
         output_hidden_states: bool = False,
         output_attentions: bool = False,
         return_dict: bool = True,
+        modality_name: str | None = None,
+        collect_moe_aux: bool = False,
     ):
         if inputs_embeds is None:
             raise ValueError("inputs_embeds must be provided for RoFormerEncoderModel.forward")
@@ -86,4 +88,6 @@ class RoFormerEncoderModel(nn.Module):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            modality_name=modality_name,
+            collect_moe_aux=collect_moe_aux,
         )

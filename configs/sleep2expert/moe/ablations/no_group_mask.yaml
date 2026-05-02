@@ -1,0 +1,106 @@
+model:
+  backbone:
+    name: roformer
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 16
+    vocab_size: 1
+    moe:
+      enabled: true
+      layer_indices: [4, 6, 8, 10]
+      num_experts: 16
+      top_k: 2
+      expert_hidden_size: 1536
+      router_type: learned
+      router_noise: 0.0
+      router_z_loss_coef: 0.001
+      router_entropy_coef: 0.0
+      load_balance_coef: 0.01
+      modality_balance_coef: 0.01
+      route_consistency_coef: 0.01
+      expert_diversity_coef: 0.0
+      expert_dropout_prob: 0.0
+      use_modality_group_mask: false
+      expert_groups: {}
+      modality_to_groups: {}
+      route_consistency_layers: [10]
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  cls:
+    embedding_type: null
+    downstream: tokens
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: breath
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eeg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: ecg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eog_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: emg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: spo2
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_nasal_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: ppg
+      input_dim: 3000
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: actigraphy
+      input_dim: 960
+      tokenizer:
+        name: sundial
+        out_dim: 768
+loss:
+  name: weighted_info_nce
+  temperature: 0.2
+  params:
+    hard_scale: 0.10
+    pos_margin: 0.0
+data:
+  mask_rate: 0.15
+  max_tokens: 120
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

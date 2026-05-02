@@ -250,15 +250,31 @@ class Sleep2vecDownstreamModel(nn.Module):
         feature_of_different_mods = []
         token_masks: list[torch.Tensor | None] = []
         layer_mix_enabled = self._layer_mix_enabled()
+        collect_moe_aux = (not self.training) and bool(getattr(self.backbone, "moe_enabled", False))
+        moe_aux_records = [] if collect_moe_aux else None
+        self.backbone.last_moe_aux = moe_aux_records
         for mod_idx, (token_name, single_mod_token_embeddings) in enumerate(zip(token_names, token_embeddings)):
 
             if getattr(self, "separate_adapters", False):
                 self._set_active_adapter(f"ch_{token_name}")
 
             if layer_mix_enabled:
-                _, attn_mask, hidden_states = self.backbone._token_embeddings_to_hidden(
-                    single_mod_token_embeddings, batch, return_hidden_states=True
-                )
+                if collect_moe_aux:
+                    _, attn_mask, hidden_states, moe_aux = self.backbone._token_embeddings_to_hidden(
+                        single_mod_token_embeddings,
+                        batch,
+                        return_hidden_states=True,
+                        modality_name=token_name,
+                        return_moe_aux=True,
+                    )
+                    moe_aux_records.append({"modality": token_name, "aux": moe_aux, "attention_mask": attn_mask})
+                else:
+                    _, attn_mask, hidden_states = self.backbone._token_embeddings_to_hidden(
+                        single_mod_token_embeddings,
+                        batch,
+                        return_hidden_states=True,
+                        modality_name=token_name,
+                    )
                 layer_states = self._select_layer_states(hidden_states)
                 token_layers, cls_layers, token_mask = self._split_layer_states(layer_states, attn_mask)
 
@@ -298,7 +314,20 @@ class Sleep2vecDownstreamModel(nn.Module):
                     token_masks.append(token_mask)
                 continue
 
-            hidden, attn_mask, _ = self.backbone._token_embeddings_to_hidden(single_mod_token_embeddings, batch)
+            if collect_moe_aux:
+                hidden, attn_mask, _, moe_aux = self.backbone._token_embeddings_to_hidden(
+                    single_mod_token_embeddings,
+                    batch,
+                    modality_name=token_name,
+                    return_moe_aux=True,
+                )
+                moe_aux_records.append({"modality": token_name, "aux": moe_aux, "attention_mask": attn_mask})
+            else:
+                hidden, attn_mask, _ = self.backbone._token_embeddings_to_hidden(
+                    single_mod_token_embeddings,
+                    batch,
+                    modality_name=token_name,
+                )
 
             strategy = self.cls_embedding
             if strategy is None:

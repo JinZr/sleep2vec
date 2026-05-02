@@ -21,7 +21,11 @@ from sleep2expert.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2expert.common import apply_model_config_args, persist_run_config_and_args
 from sleep2expert.config import load_pretrain_config
 from sleep2expert.data.samplers import handles_distributed_sharding
-from sleep2expert.sleep2vec_adaptation import AdaptPairScheduleCallback, Sleep2vecAdaptation, initial_pair_probs_for_phase
+from sleep2expert.sleep2vec_adaptation import (
+    AdaptPairScheduleCallback,
+    Sleep2vecAdaptation,
+    initial_pair_probs_for_phase,
+)
 from sleep2expert.utils import get_pretrain_dataloader
 
 

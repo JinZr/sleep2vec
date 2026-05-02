@@ -3,6 +3,7 @@ from __future__ import annotations
 """Configuration for standalone RoFormer encoder."""
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -24,6 +25,7 @@ class RoFormerConfig:
     layer_norm_eps: float = 1e-12
     pad_token_id: int = 0
     rotary_value: bool = False
+    moe: Any | None = None
 
     def __post_init__(self) -> None:
         if self.embedding_size is None:
