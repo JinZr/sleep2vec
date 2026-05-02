@@ -233,8 +233,8 @@ def sleep2vec_adapt(args):
     )
 
     logger = WandbLogger(
-        project="sleep2vec-adapt",
-        name=f"s2v-adapt-{run_name}",
+        project="sleep2vec2-adapt",
+        name=f"sleep2vec2-adapt-{run_name}",
         save_dir=str(save_path.parent),
         id=wandb_id,
         resume="allow" if wandb_id else None,
