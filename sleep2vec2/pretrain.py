@@ -194,7 +194,7 @@ if __name__ == "__main__":
         "--warmup-steps",
         type=int,
         default=None,
-        help="Override warmup steps for LR schedule (default: 3% of total steps).",
+        help="Override warmup steps for LR schedule (default: 3%% of total steps).",
     )
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
     parser.add_argument("--batch-size", type=int, default=320, help="batch size")
