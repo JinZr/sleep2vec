@@ -209,9 +209,6 @@ def build_version_name(args) -> str:
 
 
 if __name__ == "__main__":
-    # Login to WandB only when running as a script
-    wandb.login()
-
     parser = argparse.ArgumentParser(description="Fine-tune sleep2vec downstream models on PSG data.")
 
     parser.add_argument(
@@ -367,4 +364,5 @@ if __name__ == "__main__":
     logging.info(args)
 
     # Run fine-tuning
+    wandb.login()
     supervised(args, config_bundle)
