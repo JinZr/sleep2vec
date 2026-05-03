@@ -150,7 +150,7 @@ class TopKRouter(nn.Module):
             token_weight_expanded = token_weight.unsqueeze(-1)
             load = (expert_mask.to(dtype=router_probs.dtype) * token_weight_expanded).sum(dim=(0, 1))
             importance = (router_probs * token_weight_expanded).sum(dim=(0, 1))
-            valid_tokens = token_weight.sum()
+            valid_tokens = token_weight.sum().clamp_min(torch.finfo(router_probs.dtype).eps)
             z_loss = (z_loss_per_token * token_weight).sum() / valid_tokens
             entropy = (entropy_per_token * token_weight).sum() / valid_tokens
         return MoERoutingOutput(
