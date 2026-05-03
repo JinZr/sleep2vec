@@ -34,10 +34,24 @@ ROUTING_CSV_COLUMNS = [
     "router_entropy",
     "label_name",
     "label_value_if_available",
+    "analysis_tag",
+    "split",
 ]
 
 
 def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
+    pretrained_only = bool(getattr(args, "pretrained_only", False))
+    if pretrained_only:
+        if getattr(args, "ckpt_path", None):
+            raise ValueError("--pretrained-only cannot be combined with --ckpt-path.")
+        pretrained_backbone_path = getattr(args, "pretrained_backbone_path", None)
+        if not pretrained_backbone_path:
+            raise ValueError("--pretrained-only requires --pretrained-backbone-path.")
+        if not Path(pretrained_backbone_path).exists():
+            raise FileNotFoundError(f"Pretrained backbone checkpoint not found: {pretrained_backbone_path}")
+    elif not getattr(args, "ckpt_path", None):
+        raise ValueError("Routing analysis requires --ckpt-path unless --pretrained-only is set.")
+
     config_bundle, model_cfg = apply_finetune_config(args)
     moe_cfg = getattr(model_cfg.backbone, "moe", None)
     if moe_cfg is None or not getattr(moe_cfg, "enabled", False):
@@ -50,7 +64,8 @@ def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
         finetune_config=config_bundle.finetune,
         averaging_config=config_bundle.averaging,
     )
-    _load_analysis_weights(module, args)
+    if not pretrained_only:
+        _load_analysis_weights(module, args)
     module = module.to(torch.device(args.device))
     module.eval()
 
@@ -183,6 +198,8 @@ def _build_aux_rows(
                         "router_entropy": float(selected_entropy[token_expert_mask].mean().item()),
                         "label_name": label_name,
                         "label_value_if_available": label_value,
+                        "analysis_tag": getattr(args, "analysis_tag", ""),
+                        "split": getattr(args, "eval_split", ""),
                     }
                 )
     return rows
@@ -383,7 +400,12 @@ def _write_rows(rows: list[dict[str, t.Any]], output: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export sleep2expert MoE routing summaries to CSV.")
     parser.add_argument("--config", type=Path, required=True, help="YAML config used for downstream finetuning.")
-    parser.add_argument("--ckpt-path", type=str, required=True, help="Concrete Lightning .ckpt path.")
+    parser.add_argument(
+        "--ckpt-path",
+        type=str,
+        default=None,
+        help="Concrete Lightning .ckpt path. Required unless --pretrained-only is set.",
+    )
     parser.add_argument(
         "--label-name",
         type=str,
@@ -403,6 +425,12 @@ def parse_args() -> argparse.Namespace:
         choices=["train", "val", "test"],
     )
     parser.add_argument("--override-dataset-names", type=str, nargs="+", default=None)
+    parser.add_argument("--analysis-tag", type=str, default="")
+    parser.add_argument(
+        "--pretrained-only",
+        action="store_true",
+        help="Export routing from the pretrained backbone without loading a downstream checkpoint.",
+    )
     parser.add_argument("--avg-ckpts", type=int, default=1, help="Average this many checkpoints before export.")
     parser.add_argument("--avg-ckpt-dir", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=4523)
@@ -415,7 +443,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
-    if args.ckpt_path not in {"best", "last"}:
+    if not args.pretrained_only and not args.ckpt_path:
+        raise ValueError("Routing analysis requires --ckpt-path unless --pretrained-only is set.")
+    if not args.pretrained_only and args.ckpt_path not in {"best", "last"}:
         ckpt_path = Path(args.ckpt_path)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")

@@ -48,7 +48,7 @@
 
 - File: `sleep2vec/finetune.py`
 - Signature: `supervised(args, config_bundle) -> None`
-- Purpose and contract: canonical finetune orchestration routine; persists run artifacts, builds loaders, instantiates `Sleep2vecFinetuning`, trains, evaluates, and writes results.
+- Purpose and contract: canonical finetune orchestration routine; persists run artifacts, builds loaders, instantiates `Sleep2vecFinetuning`, trains, evaluates, and writes results. For `sleep2expert`, downstream MoE tuning remains inside the Lightning module, not in this orchestration routine.
 - Important inputs/outputs: CLI namespace and config bundle in; no direct return value.
 - Side effects: creates run directories, writes YAML snapshots, trains/tests models, copies `best.ckpt`, appends results CSV.
 - Key callers/callees: called from `__main__`; calls `prepare_dataloader`, `Sleep2vecFinetuning`, `save_result_csv`, and `persist_run_config_and_args`.
@@ -104,8 +104,8 @@
 - File: `sleep2expert/routing_analysis.py`
 - Signature: `run_routing_analysis(args) -> list[dict[str, Any]]`
 - Purpose and contract: export sparse-MoE routing summaries from downstream evaluation batches to a stable CSV schema without running Lightning test reduction or adding plotting/UI behavior.
-- Important inputs/outputs: normalized CLI namespace with finetune config, concrete checkpoint path, label name, eval split, and output path in; aggregated routing rows out and CSV written to `args.output`.
-- Side effects: loads checkpoint weights, iterates the inference loader, runs `Sleep2vecFinetuning._get_eval_model()(batch)` in eval mode, and writes a CSV.
+- Important inputs/outputs: normalized CLI namespace with finetune config, concrete checkpoint path or `--pretrained-only` backbone path, label name, eval split, optional analysis tag, and output path in; aggregated routing rows out and CSV written to `args.output`.
+- Side effects: loads checkpoint weights unless `--pretrained-only` is set, iterates the inference loader, runs `Sleep2vecFinetuning._get_eval_model()(batch)` in eval mode, and writes a CSV with appended `analysis_tag` and `split` columns.
 - Key callers/callees: called from `python -m sleep2expert.routing_analysis`; calls `apply_finetune_config`, `sleep2expert.infer._build_inference_loader`, `Sleep2vecFinetuning`, `_get_eval_model`, `load_checkpoint`, `select_checkpoints`, `average_checkpoints`, and `build_routing_rows`.
 - Reuse guidance: use this for `sleep2expert` PHASE-MoE route usage, route-collapse, and site/source shortcut exports.
 - Duplication risk notes: this is the package-local route-export surface; do not create a separate token-dump, plotting, or metrics path for the same `last_moe_aux` contract.

@@ -69,6 +69,59 @@ def compute_moe_regularization(moe_aux, moe_cfg, batch, *, prefix: str | None = 
     return LossOutput(loss=total, metrics=metrics, extras=extras)
 
 
+def compute_downstream_moe_regularization(moe_aux, reg_cfg, batch, *, prefix: str | None = None) -> LossOutput:
+    device, dtype = _context_device_dtype(moe_aux, batch)
+    zero = torch.zeros((), device=device, dtype=dtype)
+    if reg_cfg is None or not getattr(reg_cfg, "enabled", False):
+        return LossOutput(loss=zero, metrics={}, extras={})
+    if not moe_aux:
+        raise ValueError("Downstream MoE regularization requires model.backbone.last_moe_aux.")
+
+    unsupported = {
+        "route_consistency_coef": "downstream route consistency is not supported yet",
+        "load_balance_coef": "downstream load balancing is not supported yet",
+        "modality_balance_coef": "downstream modality balancing is not supported yet",
+        "entropy_coef": "downstream entropy regularization is not supported yet",
+    }
+    for field_name, message in unsupported.items():
+        if float(getattr(reg_cfg, field_name, 0.0)) > 0:
+            raise ValueError(message)
+
+    records = _normalize_records(moe_aux)
+    if not records:
+        raise ValueError("Downstream MoE regularization received no valid routing aux records.")
+    routing_stats = [
+        {"record": record, "aux": aux, **_routing_stats(record, aux, batch)}
+        for record in records
+        for aux in record["aux"]
+    ]
+    if not routing_stats:
+        raise ValueError("Downstream MoE regularization received no MoE layer aux outputs.")
+
+    router_z_loss = _mean_scalars([stat["z_loss"] for stat in routing_stats], zero)
+    entropy = _mean_scalars([stat["entropy"] for stat in routing_stats], zero)
+    expert_usage_entropy = _expert_usage_entropy(routing_stats, zero)
+    active_experts_per_token = _active_experts_per_token(routing_stats, zero)
+    total = float(getattr(reg_cfg, "router_z_loss_coef", 0.0)) * router_z_loss
+
+    metrics = {
+        "downstream_moe_router_z_loss": router_z_loss.detach(),
+        "downstream_moe_entropy": entropy.detach(),
+        "downstream_moe_expert_usage_entropy": expert_usage_entropy.detach(),
+        "downstream_moe_active_experts_per_token": active_experts_per_token.detach(),
+    }
+    if prefix:
+        metrics = {f"{prefix}_{name}": value for name, value in metrics.items()}
+
+    extras = {
+        "router_z_loss": router_z_loss,
+        "entropy": entropy,
+        "expert_usage_entropy": expert_usage_entropy,
+        "active_experts_per_token": active_experts_per_token,
+    }
+    return LossOutput(loss=total, metrics=metrics, extras=extras)
+
+
 def _normalize_records(moe_aux) -> list[dict[str, t.Any]]:
     raw_records = [moe_aux] if isinstance(moe_aux, dict) else list(moe_aux)
     records: list[dict[str, t.Any]] = []

@@ -110,6 +110,33 @@ def test_check_config_file_accepts_sleep2expert_moe_pretrain_config():
     check_config_file(path)
 
 
+def test_check_config_file_accepts_sleep2expert_moe_finetune_cls_conservative_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_finetune_cls_conservative.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_finetune_reg_conservative_tokens_config():
+    path = (
+        REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_finetune_reg_conservative_tokens.yaml"
+    )
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_finetune_cls_head_only_fewshot_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_finetune_cls_head_only_fewshot.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_router_trainable_ablation_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "finetune_ablations" / "router_trainable.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_top_layer_expert_only_ablation_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "finetune_ablations" / "top_moe_layer_expert_only.yaml"
+    check_config_file(path)
+
+
 def test_check_config_file_does_not_use_base_loader_for_sleep2expert_moe(monkeypatch):
     import sleep2vec.config as base_config
 

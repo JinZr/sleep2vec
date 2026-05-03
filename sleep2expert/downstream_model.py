@@ -56,6 +56,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.is_classification = is_classification
         self.is_seq = is_seq
         self.target = target
+        self.collect_train_moe_aux = False
 
         self.n_channels = len(self.channel_names)
         self.cls_embedding = getattr(self.backbone, "cls_embedding", None)
@@ -250,7 +251,9 @@ class Sleep2vecDownstreamModel(nn.Module):
         feature_of_different_mods = []
         token_masks: list[torch.Tensor | None] = []
         layer_mix_enabled = self._layer_mix_enabled()
-        collect_moe_aux = (not self.training) and bool(getattr(self.backbone, "moe_enabled", False))
+        collect_moe_aux = ((not self.training) or bool(self.collect_train_moe_aux)) and bool(
+            getattr(self.backbone, "moe_enabled", False)
+        )
         moe_aux_records = [] if collect_moe_aux else None
         self.backbone.last_moe_aux = moe_aux_records
         for mod_idx, (token_name, single_mod_token_embeddings) in enumerate(zip(token_names, token_embeddings)):

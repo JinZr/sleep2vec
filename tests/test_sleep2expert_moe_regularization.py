@@ -11,6 +11,7 @@ from sleep2expert.config import (
     BackboneConfig,
     ChannelConfig,
     ClsConfig,
+    FinetuneMoeRegularizationConfig,
     LossConfig,
     ModelConfig,
     MoeConfig,
@@ -18,7 +19,7 @@ from sleep2expert.config import (
     TokenizerConfig,
 )
 from sleep2expert.losses.base import LossOutput
-from sleep2expert.losses.moe_regularization import compute_moe_regularization
+from sleep2expert.losses.moe_regularization import compute_downstream_moe_regularization, compute_moe_regularization
 
 
 def _moe_config(**updates) -> MoeConfig:
@@ -54,6 +55,17 @@ def _shared_support_moe_config(**updates) -> MoeConfig:
         modality_to_groups={"eeg": ["shared"], "ppg": ["shared"]},
         **updates,
     )
+
+
+def _downstream_reg(**updates) -> FinetuneMoeRegularizationConfig:
+    cfg = FinetuneMoeRegularizationConfig(
+        enabled=True,
+        collect_train_moe_aux=True,
+        router_z_loss_coef=0.1,
+    )
+    for key, value in updates.items():
+        setattr(cfg, key, value)
+    return cfg
 
 
 def _batch(*, batch_size: int = 2, seq_len: int = 3) -> dict:
@@ -141,6 +153,50 @@ def test_sleep2expert_moe_regularization_disabled_returns_zero_but_enabled_requi
     assert disabled.metrics == {}
     with pytest.raises(ValueError, match="requires model.last_moe_aux"):
         compute_moe_regularization(None, _moe_config(), _batch(), prefix=None)
+
+
+def test_sleep2expert_downstream_moe_regularization_disabled_returns_zero():
+    disabled = compute_downstream_moe_regularization(None, FinetuneMoeRegularizationConfig(), {}, prefix=None)
+
+    assert disabled.loss.item() == 0.0
+    assert disabled.metrics == {}
+
+
+def test_sleep2expert_downstream_moe_regularization_enabled_requires_aux():
+    with pytest.raises(ValueError, match="requires model.backbone.last_moe_aux"):
+        compute_downstream_moe_regularization(None, _downstream_reg(), _batch(), prefix=None)
+
+
+def test_sleep2expert_downstream_moe_regularization_zloss_only_is_finite():
+    out = compute_downstream_moe_regularization(_records(), _downstream_reg(router_z_loss_coef=0.3), _batch())
+
+    assert torch.isfinite(out.loss)
+    assert out.loss.item() == pytest.approx(0.3 * out.metrics["downstream_moe_router_z_loss"].item())
+    for key in [
+        "downstream_moe_router_z_loss",
+        "downstream_moe_entropy",
+        "downstream_moe_expert_usage_entropy",
+        "downstream_moe_active_experts_per_token",
+    ]:
+        assert key in out.metrics
+        assert torch.isfinite(out.metrics[key])
+
+
+@pytest.mark.parametrize(
+    ("field_name", "message"),
+    [
+        ("route_consistency_coef", "downstream route consistency is not supported yet"),
+        ("load_balance_coef", "downstream load balancing is not supported yet"),
+        ("modality_balance_coef", "downstream modality balancing is not supported yet"),
+        ("entropy_coef", "downstream entropy regularization is not supported yet"),
+    ],
+)
+def test_sleep2expert_downstream_moe_regularization_rejects_unsupported_losses(
+    field_name: str,
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        compute_downstream_moe_regularization(_records(), _downstream_reg(**{field_name: 0.1}), _batch())
 
 
 def test_sleep2expert_moe_regularization_reports_finite_components():

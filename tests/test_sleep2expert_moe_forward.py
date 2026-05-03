@@ -344,3 +344,31 @@ def test_sleep2expert_downstream_train_passes_modality_but_does_not_collect_moe_
 
     assert output.shape == (2, 2)
     assert backbone.last_moe_aux is None
+
+
+def test_sleep2expert_downstream_train_collects_moe_aux_when_enabled():
+    torch.manual_seed(0)
+    model_config = _sleep2expert_model_config(moe=_moe_config(), with_head=True)
+    backbone = Sleep2vecPretrainModel(model_config=model_config, device="cpu")
+    downstream = Sleep2vecDownstreamModel(
+        target="stage",
+        backbone=backbone,
+        channel_names=["eeg", "ppg"],
+        output_dim=2,
+        is_classification=True,
+        is_seq=False,
+        device="cpu",
+        model_config=model_config,
+        head_config=model_config.head,
+    ).train()
+    downstream.collect_train_moe_aux = True
+    batch = _sleep2expert_batch()
+
+    output = downstream(batch)
+
+    assert output.shape == (2, 2)
+    assert backbone.last_moe_aux is not None
+    assert [record["modality"] for record in backbone.last_moe_aux] == ["eeg", "ppg"]
+    for record in backbone.last_moe_aux:
+        assert record["aux"] is not None
+        assert [aux.layer_idx for aux in record["aux"]] == [1, 3]

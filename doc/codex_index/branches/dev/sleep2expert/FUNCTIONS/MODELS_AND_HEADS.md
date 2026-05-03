@@ -74,7 +74,7 @@
 - Signature: `Sleep2vecDownstreamModel.forward(batch)`
 - Purpose and contract: encode each modality through the shared backbone, then apply either sequence or pooled downstream logic, optional layer mixing, optional separate-adapter switching, and head prediction.
 - Important inputs/outputs: batch with `tokens` and `length`; returns logits or regression outputs.
-- Side effects: may switch active LoRA adapters when separate adapters are enabled.
+- Side effects: may switch active LoRA adapters when separate adapters are enabled; eval forwards collect `backbone.last_moe_aux` for MoE backbones, and train forwards collect it only when `collect_train_moe_aux` is enabled.
 - Key callers/callees: caller is `Sleep2vecFinetuning._shared_step`; callees include `Sleep2vecPretrainModel._tokenize_all`, `_token_embeddings_to_hidden`, `_forward_seq`, `_forward_nonseq`, and `_call_head`.
 - Reuse guidance: all downstream predictions should flow through this method.
 - Duplication risk notes: sequence/non-sequence branching and CLS behavior are easy to get wrong if reimplemented elsewhere.
@@ -145,6 +145,17 @@
 - Reuse guidance: use this direct helper for `sleep2expert` MoE auxiliary losses; do not register it via `create_loss`.
 - Duplication risk notes: route consistency depends on the two-view `last_moe_aux` contract, requires configured consistency layers when its coefficient is positive, and excludes CLS when the aux sequence includes a prepended CLS token.
 
+## `sleep2expert.losses.moe_regularization.compute_downstream_moe_regularization`
+
+- File: `sleep2expert/losses/moe_regularization.py`
+- Signature: `compute_downstream_moe_regularization(moe_aux, reg_cfg, batch, *, prefix=None) -> LossOutput`
+- Purpose and contract: convert downstream routing aux records into an opt-in router z-loss plus routing diagnostics for supervised finetuning.
+- Important inputs/outputs: downstream `backbone.last_moe_aux`, `finetune.moe_tuning.moe_regularization`, and batch in; returns `LossOutput` with scalar z-loss contribution and `downstream_moe_*` metrics.
+- Side effects: none.
+- Key callers/callees: caller is `Sleep2vecFinetuning._shared_step`; callees reuse the local MoE routing-stat helpers.
+- Reuse guidance: use this helper for supervised downstream MoE diagnostics instead of the pretraining helper.
+- Duplication risk notes: downstream route consistency, load balancing, modality balancing, and entropy losses are intentionally rejected for now because the pretraining route-consistency contract assumes two routing records.
+
 ## `Sleep2vecPretraining.configure_optimizers`
 
 - File: `sleep2vec/sleep2vec_modelling.py`
@@ -171,10 +182,10 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `Sleep2vecFinetuning._shared_step(batch, stage: str, model=None)`
-- Purpose and contract: run forward, compute loss if valid labels exist, log stage loss or accumulate eval loss, and cache either generic predictions or AHI event records for epoch-end metrics.
+- Purpose and contract: run forward, compute loss if valid labels exist, optionally add enabled downstream MoE router z-loss during train, log stage loss or accumulate eval loss, and cache either generic predictions or AHI event records for epoch-end metrics.
 - Important inputs/outputs: batch and stage name in; returns training loss for `train`, otherwise `None`.
 - Side effects: logs Lightning metrics and mutates `_stage_outputs`.
-- Key callers/callees: callers are `training_step`, `validation_step`, and `test_step`; callees are `self.model(...)`, `_compute_loss`, `_extract_valid_predictions`, and `_extract_ahi_event_records`.
+- Key callers/callees: callers are `training_step`, `validation_step`, and `test_step`; callees are `self.model(...)`, `_compute_loss`, optional `compute_downstream_moe_regularization`, `_extract_valid_predictions`, and `_extract_ahi_event_records`.
 - Reuse guidance: all downstream stage logic should continue to funnel through this helper.
 - Duplication risk notes: stage branching should not leak into entrypoints.
 
@@ -228,12 +239,12 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `Sleep2vecFinetuning.configure_optimizers(self)`
-- Purpose and contract: create AdamW parameter groups and a warmup-plus-cosine scheduler for finetuning.
+- Purpose and contract: create AdamW parameter groups and a warmup-plus-cosine scheduler for finetuning. In `sleep2expert`, optional `finetune.moe_tuning` switches optimizer grouping to semantic downstream MoE groups while preserving the same scheduler.
 - Important inputs/outputs: uses `self.args` and `self.trainer`; returns Lightning optimizer/scheduler structure.
 - Side effects: none beyond object creation.
 - Key callers/callees: called by Lightning.
-- Reuse guidance: use as the finetune optimizer reference path.
-- Duplication risk notes: this policy overlaps with pretrain and adaptation schedules; avoid creating additional variants casually.
+- Reuse guidance: use as the finetune optimizer reference path; downstream MoE freeze/LR policy stays class-local in `Sleep2vecFinetuning`.
+- Duplication risk notes: this policy overlaps with pretrain and adaptation schedules; avoid creating additional variants casually. Keep `moe_tuning=None` on the legacy two-group path.
 
 ## Loss factory family
 

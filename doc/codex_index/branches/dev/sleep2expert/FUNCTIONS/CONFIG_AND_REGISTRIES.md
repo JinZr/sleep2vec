@@ -7,6 +7,7 @@
   - `ModelConfig`, `ChannelConfig`, `TokenizerConfig`, `BackboneConfig`, `ProjectionConfig`, `ClsConfig`
   - `HeadConfig`, `TemporalAggConfig`, `ChannelAggConfig`, `LayerMixConfig`
   - `TaskConfig`, `FinetuneConfig`, `FinetuneDataConfig`, `EvalVisualizationsConfig`
+  - `FinetuneMoeTuningConfig`, `FinetuneLrScalesConfig`, `FinetuneMoeRegularizationConfig`
   - `AdaptConfig`, `AdaptStage1Config`, `AdaptStage2Config`, `AdaptLrScalesConfig`, `AdaptPairSchedulePoint`
   - `PretrainConfigBundle`, `FinetuneConfigBundle`
 - Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing.
@@ -38,11 +39,11 @@
 
 - File: `sleep2vec/config.py`
 - Signature: `load_finetune_config(path: str | Path) -> FinetuneConfigBundle`
-- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, layer-mix, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
+- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, layer-mix, evaluation-visualization, and optional downstream MoE tuning semantics, and return the typed bundle used by finetune and inference.
 - Important inputs/outputs: YAML path in, `FinetuneConfigBundle` out.
 - Side effects: reads YAML from disk only.
-- Key callers/callees: caller is `sleep2vec.common.apply_finetune_config`; callees include `_build_layer_mix_config`, `_build_task_config`, `_build_eval_visualizations_config`, `_validate_layer_mix_config`, and `_build_model_averaging_config`.
-- Reuse guidance: this is the canonical finetune schema boundary.
+- Key callers/callees: caller is `sleep2vec.common.apply_finetune_config`; callees include `_build_layer_mix_config`, `_build_task_config`, `_build_eval_visualizations_config`, `_build_finetune_moe_tuning_config`, `_validate_layer_mix_config`, `_validate_finetune_moe_tuning_config`, and `_build_model_averaging_config`.
+- Reuse guidance: this is the canonical finetune schema boundary; downstream MoE tuning policy must flow through `finetune.moe_tuning` instead of ad hoc YAML reads in trainer code.
 - Duplication risk notes: do not reimplement task/head/visualization parsing in trainers or CLI code.
 
 ## `sleep2vec.config.validate_model_config`

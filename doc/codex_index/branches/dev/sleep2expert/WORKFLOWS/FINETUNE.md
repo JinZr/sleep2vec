@@ -41,6 +41,7 @@ Primary code path:
    - Optionally loads pretrained backbone checkpoint.
    - Optionally freezes backbone and inserts LoRA adapters.
    - Optionally freezes tokenizers.
+   - For `sleep2expert` configs with `finetune.moe_tuning`, applies the downstream MoE trainability policy after checkpoint/LoRA/tokenizer setup and before model averaging.
    - Optionally attaches a model averager.
    - Optionally enables downstream evaluation visualizations.
 6. Fit.
@@ -68,6 +69,9 @@ Custom labels require `finetune.task` in YAML.
 - Task semantics are enforced before loaders are built.
 - CLS vs token downstream behavior is defined by `model.cls`, not by folder naming in `configs/`.
 - Layer mix is applied inside `Sleep2vecDownstreamModel`, not in the trainer.
+- `sleep2expert` downstream MoE tuning is opt-in through `finetune.moe_tuning`; absent configs retain the legacy finetune trainability and two-group optimizer behavior.
+- Canonical `sleep2expert` MoE downstream recipes live under `configs/sleep2expert/moe/`: conservative router-frozen classification/regression configs, a head-only few-shot probe, and `finetune_ablations/` for router-trainable and top-layer expert-only policies.
+- Downstream train-time MoE aux collection is off by default and turns on only for enabled `finetune.moe_tuning.moe_regularization`; the supported supervised auxiliary loss is router z-loss only.
 - AHI validation fits and stores an `ahi_eval_threshold` inside the checkpoint; test and inference require that threshold.
 - Confusion matrices, ROC curves, and regression scatter plots are logged from `Sleep2vecFinetuning`, not from entrypoints.
 
