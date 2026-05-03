@@ -149,6 +149,38 @@ def test_check_config_file_does_not_use_base_loader_for_sleep2expert_moe(monkeyp
     check_config_file(path)
 
 
+def test_check_config_file_accepts_out_of_tree_sleep2expert_moe_config(monkeypatch, tmp_path: Path):
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate copied sleep2expert configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_base_loader)
+    source = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_pretrain.yaml"
+    path = tmp_path / "copied.yaml"
+    path.write_text(source.read_text())
+
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_out_of_tree_sleep2vec2_config_with_path_hint(
+    monkeypatch,
+    tmp_path: Path,
+):
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate copied sleep2vec2 configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_base_loader)
+    source = REPO_ROOT / "configs" / "sleep2vec2" / "sleep2vec_dense_pretrain.yaml"
+    path = tmp_path / "sleep2vec2" / "sleep2vec_dense_pretrain.yaml"
+    path.parent.mkdir()
+    path.write_text(source.read_text())
+
+    check_config_file(path)
+
+
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
     _write_yaml(path, _ppg_finetune_payload(is_seq=True, preset_build=None))

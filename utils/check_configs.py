@@ -8,6 +8,8 @@ from pathlib import Path
 import sys
 import typing as t
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = REPO_ROOT / "configs"
 if str(REPO_ROOT) not in sys.path:
@@ -22,7 +24,6 @@ class ConfigVariant:
 
 @dataclass(frozen=True)
 class ConfigTools:
-    load_config_mapping: t.Callable[[Path], dict[str, t.Any]]
     load_model_channels: t.Callable[[dict[str, t.Any]], tuple[list[str], dict[str, int]]]
     load_preset_build_block: t.Callable[[dict[str, t.Any]], tuple[list[str] | None, int | None]]
     resolve_effective_min_channels: t.Callable[..., int]
@@ -74,22 +75,47 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
-def _resolve_config_variant(path: Path) -> ConfigVariant:
+def _load_config_mapping(path: Path) -> dict[str, t.Any]:
+    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"Config {path} must contain a YAML mapping.")
+    return data
+
+
+def _resolve_config_variant(path: Path, config_data: dict[str, t.Any] | None = None) -> ConfigVariant:
     try:
         rel_path = path.resolve().relative_to(CONFIG_ROOT.resolve())
     except ValueError:
-        return BASE_VARIANT
-    if not rel_path.parts:
-        return BASE_VARIANT
-    return CONFIG_VARIANTS.get(rel_path.parts[0], BASE_VARIANT)
+        rel_path = None
+    if rel_path is not None and rel_path.parts:
+        return CONFIG_VARIANTS.get(rel_path.parts[0], BASE_VARIANT)
+
+    parts = path.resolve().parts
+    for idx, part in enumerate(parts[:-1]):
+        if part == "configs" and parts[idx + 1] in CONFIG_VARIANTS:
+            return CONFIG_VARIANTS[parts[idx + 1]]
+    for part in parts:
+        if part in CONFIG_VARIANTS:
+            return CONFIG_VARIANTS[part]
+    for name, variant in CONFIG_VARIANTS.items():
+        if path.name.startswith(f"{name}_") or path.name.startswith(f"{name}-"):
+            return variant
+
+    model_block = config_data.get("model") if config_data is not None else None
+    backbone_block = model_block.get("backbone") if isinstance(model_block, dict) else None
+    finetune_block = config_data.get("finetune") if config_data is not None else None
+    has_moe_backbone = isinstance(backbone_block, dict) and "moe" in backbone_block
+    has_moe_tuning = isinstance(finetune_block, dict) and "moe_tuning" in finetune_block
+    if has_moe_backbone or has_moe_tuning:
+        return CONFIG_VARIANTS["sleep2expert"]
+    return BASE_VARIANT
 
 
-def _load_config_tools(path: Path) -> ConfigTools:
-    variant = _resolve_config_variant(path)
+def _load_config_tools(path: Path, config_data: dict[str, t.Any]) -> ConfigTools:
+    variant = _resolve_config_variant(path, config_data)
     config_module = import_module(variant.config_module)
     preset_module = import_module(variant.preset_module)
     return ConfigTools(
-        load_config_mapping=preset_module._load_config_mapping,
         load_model_channels=preset_module._load_model_channels,
         load_preset_build_block=preset_module._load_preset_build_block,
         resolve_effective_min_channels=preset_module._resolve_effective_min_channels,
@@ -183,8 +209,8 @@ def _validate_repo_policy(path: Path, config_data: dict[str, t.Any], tools: Conf
 
 
 def check_config_file(path: Path) -> None:
-    tools = _load_config_tools(path)
-    config_data = tools.load_config_mapping(path)
+    config_data = _load_config_mapping(path)
+    tools = _load_config_tools(path, config_data)
     _validate_runtime_loader_contract(path, config_data, tools)
     _validate_repo_policy(path, config_data, tools)
     _validate_preset_build_contract(config_data, tools)
