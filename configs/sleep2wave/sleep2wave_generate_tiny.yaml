@@ -52,7 +52,7 @@ diffusion:
     quality: true
   task_attention_mask: directional
   auxiliary_restoration_token: true
-  condition_dropout: 0.15
+  condition_dropout: 0.0
 
 inference:
   corruptions:
@@ -69,9 +69,9 @@ inference:
 
 sampler:
   name: ddim
-  steps: 10
+  steps: 20
   eta: 0.0
-  num_samples: 2
+  num_samples: 4
 
 export:
   output_dir: outputs/sleep2wave_generate_tiny

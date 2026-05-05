@@ -11,9 +11,12 @@ from sleep2wave.generative.config import load_sleep2wave_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTOENCODER_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_autoencoder_tiny.yaml"
-DIFFUSION_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_diffusion_tiny.yaml"
+DIFFUSION_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_diffusion_tiny_phase1.yaml"
 GENERATE_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_generate_tiny.yaml"
 EVAL_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_eval_tiny.yaml"
+AUTOENCODER_MEDIUM = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_autoencoder_medium.yaml"
+DIFFUSION_MEDIUM_PHASE1 = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_diffusion_medium_phase1.yaml"
+GENERATE_MEDIUM = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_generate_medium.yaml"
 MEDIUM_CONFIGS = sorted((REPO_ROOT / "configs" / "sleep2wave").glob("*medium*.yaml"))
 MEDIUM_DIFFUSION_CONFIGS = sorted(
     (REPO_ROOT / "configs" / "sleep2wave").glob("sleep2wave_diffusion_medium_phase*.yaml")
@@ -36,9 +39,10 @@ def test_sleep2wave_generative_config_loads_autoencoder_tiny():
     assert cfg.recipe == "sleep2wave"
     assert cfg.stage == "autoencoder"
     assert cfg.modalities.all == list(CANONICAL_MODALITIES)
-    assert cfg.data.context_epochs == 2
+    assert cfg.data.context_epochs == 15
     assert cfg.autoencoder is not None
     assert cfg.autoencoder.latent_dim == 64
+    assert cfg.autoencoder.losses.waveform_l2_weight == 0.1
     assert cfg.diffusion is None
     assert cfg.sampler is None
 
@@ -53,10 +57,15 @@ def test_sleep2wave_generative_config_loads_diffusion_tiny():
     assert cfg.diffusion.context_epochs == 15
     assert cfg.sampler is not None
     assert cfg.sampler.name == "ddim"
-    assert cfg.sampler.steps == 10
-    assert cfg.training.restoration_condition_counts == [1]
+    assert cfg.sampler.steps == 20
+    assert cfg.training.restoration_condition_counts == [1, 2, 3]
+    assert cfg.training.replay.enabled is True
     assert cfg.training.corruptions.restoration.default.name == "gaussian_noise"
+    assert cfg.training.corruptions.restoration.default.kwargs == {"std": 0.05}
     assert cfg.training.corruptions.imputation.default.name == "contiguous_window_mask"
+    assert cfg.training.corruptions.imputation.default.kwargs == {"window_frames": 120}
+    assert set(cfg.training.corruptions.restoration.by_modality) == set(CANONICAL_MODALITIES)
+    assert set(cfg.training.corruptions.imputation.by_modality) == set(CANONICAL_MODALITIES)
 
 
 def test_sleep2wave_generative_config_loads_inference_tiny():
@@ -71,7 +80,8 @@ def test_sleep2wave_generative_config_loads_inference_tiny():
     assert cfg.inference.corruptions.restoration.default.name == "gaussian_noise"
     assert cfg.inference.corruptions.imputation.default.name == "contiguous_window_mask"
     assert cfg.sampler is not None
-    assert cfg.sampler.num_samples == 2
+    assert cfg.sampler.steps == 20
+    assert cfg.sampler.num_samples == 4
 
 
 def test_sleep2wave_generative_config_loads_evaluation_tiny():
@@ -88,6 +98,54 @@ def test_sleep2wave_generative_config_loads_evaluation_tiny():
     assert cfg.evaluation.metric_families == ["waveform", "feature", "event", "efficiency", "downstream"]
     assert cfg.evaluation.max_shift_frames == 3
     assert cfg.evaluation.corruption_mask_policy == "exclude"
+
+
+def test_sleep2wave_tiny_configs_match_medium_non_size_specs():
+    tiny_autoencoder = _load_payload(AUTOENCODER_TINY)
+    medium_autoencoder = _load_payload(AUTOENCODER_MEDIUM)
+    assert tiny_autoencoder["data"]["context_epochs"] == medium_autoencoder["data"]["context_epochs"]
+    assert tiny_autoencoder["modalities"] == medium_autoencoder["modalities"]
+    assert tiny_autoencoder["autoencoder"]["losses"] == medium_autoencoder["autoencoder"]["losses"]
+    assert tiny_autoencoder["training"] == medium_autoencoder["training"]
+
+    tiny_diffusion = _load_payload(DIFFUSION_TINY)
+    medium_diffusion = _load_payload(DIFFUSION_MEDIUM_PHASE1)
+    assert tiny_diffusion["data"]["context_epochs"] == medium_diffusion["data"]["context_epochs"]
+    assert tiny_diffusion["modalities"] == medium_diffusion["modalities"]
+    assert tiny_diffusion["training"] == medium_diffusion["training"]
+    assert tiny_diffusion["sampler"] == medium_diffusion["sampler"]
+    for key in (
+        "diffusion_steps",
+        "beta_schedule",
+        "prediction_type",
+        "context_epochs",
+        "embeddings",
+        "task_attention_mask",
+        "auxiliary_restoration_token",
+        "condition_dropout",
+    ):
+        assert tiny_diffusion["diffusion"][key] == medium_diffusion["diffusion"][key]
+    tiny_transformer = tiny_diffusion["diffusion"]["transformer"]
+    medium_transformer = medium_diffusion["diffusion"]["transformer"]
+    assert tiny_transformer["mlp_ratio"] == medium_transformer["mlp_ratio"]
+
+    tiny_generate = _load_payload(GENERATE_TINY)
+    medium_generate = _load_payload(GENERATE_MEDIUM)
+    assert tiny_generate["data"]["context_epochs"] == medium_generate["data"]["context_epochs"]
+    assert tiny_generate["modalities"] == medium_generate["modalities"]
+    assert tiny_generate["inference"] == medium_generate["inference"]
+    assert tiny_generate["sampler"] == medium_generate["sampler"]
+    for key in (
+        "diffusion_steps",
+        "beta_schedule",
+        "prediction_type",
+        "context_epochs",
+        "embeddings",
+        "task_attention_mask",
+        "auxiliary_restoration_token",
+        "condition_dropout",
+    ):
+        assert tiny_generate["diffusion"][key] == medium_generate["diffusion"][key]
 
 
 def test_sleep2wave_generative_config_rejects_unknown_top_level_field(tmp_path: Path):

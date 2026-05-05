@@ -109,7 +109,7 @@ def test_check_config_file_accepts_sleep2wave_generative_autoencoder_config():
 
 
 def test_check_config_file_accepts_sleep2wave_generative_diffusion_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "sleep2wave" / "sleep2wave_diffusion_tiny.yaml"
+    path = Path(__file__).resolve().parents[1] / "configs" / "sleep2wave" / "sleep2wave_diffusion_tiny_phase1.yaml"
     check_config_file(path)
 
 

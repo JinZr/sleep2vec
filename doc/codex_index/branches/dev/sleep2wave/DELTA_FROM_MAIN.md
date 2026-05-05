@@ -33,7 +33,7 @@ The branch introduces sleep2wave as a branch-local package rather than extending
 ## New Workflow Paths
 
 - Autoencoder: `python -m sleep2wave.train_autoencoder --config configs/sleep2wave/sleep2wave_autoencoder_tiny.yaml ...`
-- Diffusion: `python -m sleep2wave.train_diffusion --config configs/sleep2wave/sleep2wave_diffusion_tiny.yaml ...`
+- Diffusion: `python -m sleep2wave.train_diffusion --config configs/sleep2wave/sleep2wave_diffusion_tiny_phase1.yaml ...`
 - Generation: `python -m sleep2wave.generate --config configs/sleep2wave/sleep2wave_generate_tiny.yaml ...`
 - Evaluation: `python -m sleep2wave.evaluate_generation --config configs/sleep2wave/sleep2wave_eval_tiny.yaml ...`
 
