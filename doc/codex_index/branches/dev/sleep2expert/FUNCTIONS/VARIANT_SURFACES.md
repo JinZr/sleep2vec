@@ -30,6 +30,7 @@ No file or directory symlinks were used for the `sleep2vec2` or `sleep2expert` m
 - Key active surface: `<variant>.backbones.encoder_factory.build_roformer` resolves `backbone.name: roformer` to `<variant>.backbones.roformer.RoFormerEncoderModel`.
 - Key isolation surface: copied runtime modules import `<variant>.*`, `<variant>.data.*`, and `<variant>.preprocess.*` instead of base `sleep2vec`, top-level `data`, top-level `preprocess`, or another variant namespace.
 - Key finetune limitation: standalone variant configs keep LoRA disabled, and each variant `config.load_finetune_config` rejects enabled LoRA flags because standalone RoFormer PEFT compatibility is not part of the current contract.
+- Key inference surface: `<variant>.infer` mirrors base `--inference-preset-path` behavior by overriding the effective finetune preset after YAML binding and recording the evaluated preset in `<variant>.results` CSV metadata.
 
 ## Reuse Guidance
 

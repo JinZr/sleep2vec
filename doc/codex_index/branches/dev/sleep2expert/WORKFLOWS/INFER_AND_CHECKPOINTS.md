@@ -6,7 +6,12 @@ Evaluate a downstream checkpoint on a selected split, optionally average multipl
 
 ## Entry Command
 
-Canonical entrypoint: `python -m sleep2vec.infer --config ... --ckpt-path ... --label-name ...`
+Canonical entrypoint:
+`python -m sleep2vec.infer --config ... --ckpt-path ... --label-name ... [--inference-preset-path ...]`
+
+Variant-local inference entrypoints:
+`python -m sleep2vec2.infer --config ... --ckpt-path ... --label-name ... [--inference-preset-path ...]`
+`python -m sleep2expert.infer --config ... --ckpt-path ... --label-name ... [--inference-preset-path ...]`
 
 Variant-local routing export entrypoint:
 `python -m sleep2expert.routing_analysis --config ... --ckpt-path ... --label-name ... --split test --output routing_summary.csv`
@@ -27,6 +32,7 @@ Primary code path:
    - Real file path must exist.
    - Aliases `best` and `last` are allowed.
 2. Bind finetune YAML into `args`.
+   - Optional `--inference-preset-path` overrides YAML `data.finetune_preset_path` for this evaluation run.
 3. Build a single evaluation loader.
    - `eval_split` selects `train`, `val`, or `test`.
    - `override_dataset_names` can replace configured dataset lists.
@@ -37,7 +43,8 @@ Primary code path:
    - When using `best` or `last` with averaging, `avg_ckpt_dir` is required because the alias is not a concrete file.
    - Built-in `ahi` rejects averaging because the stored threshold is checkpoint-specific.
 6. Run evaluation.
-7. Optionally append metrics to a CSV through `sleep2vec.results.save_result_csv`.
+7. Optionally append metrics to a CSV through the package-local `results.save_result_csv`.
+   - Result CSV metadata records the effective preset path in `preset_path`.
 
 ## Checkpoint Selection Policy
 
@@ -58,6 +65,7 @@ Primary code path:
 - Inference can initialize W&B separately from training and only on rank zero.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
 - AHI inference requires `ahi_eval_threshold` to be present in the checkpoint state.
+- Base and standalone variant inference CLIs share the same `--inference-preset-path` behavior.
 - `sleep2expert.routing_analysis` is evaluation-adjacent but intentionally bypasses Lightning metric reduction; it reuses the package-local inference loader and downstream eval model only to collect `backbone.last_moe_aux` into a fixed CSV schema.
 - Routing export accepts both `--split` and `--eval-split` for the same `eval_split` runtime field.
 
