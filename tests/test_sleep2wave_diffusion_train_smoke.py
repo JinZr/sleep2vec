@@ -127,9 +127,10 @@ def test_train_diffusion_dataloader_uses_train_split(tmp_path: Path):
         pickle.dump([train_sample, test_sample], f)
     config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
 
-    loader = build_dataloader(load_sleep2wave_config(config_path), num_workers=0)
+    loader = build_dataloader(load_sleep2wave_config(config_path), num_workers=0, seed=123)
 
     assert [sample.metadata["split"] for sample in loader.dataset.data] == ["train"]
+    assert loader.dataset.seed == 123
 
 
 def test_train_diffusion_smoke_writes_artifacts(tmp_path: Path, monkeypatch):

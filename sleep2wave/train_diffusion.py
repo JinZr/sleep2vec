@@ -42,7 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_dataloader(config, *, num_workers: int):
+def build_dataloader(config, *, num_workers: int, seed: int):
     if config.training is None:
         raise ValueError("training block is required for diffusion training.")
     if config.diffusion is None:
@@ -57,7 +57,7 @@ def build_dataloader(config, *, num_workers: int):
         task_type="translation",
         corruption_name="gaussian_noise",
         corruption_kwargs={"std": 0.01},
-        seed=0,
+        seed=seed,
     )
     return dataset.dataloader(
         batch_size=config.training.batch_size,
@@ -72,13 +72,14 @@ def train_diffusion(args: argparse.Namespace) -> Path:
         raise ValueError("train_diffusion requires stage=diffusion config.")
     if config.training is None or config.diffusion is None or config.export is None:
         raise ValueError("training, diffusion, and export blocks are required.")
+    pl.seed_everything(args.seed, workers=True)
 
     run_dir = Path(config.export.output_dir) / args.version_name
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     persist_run_config_and_args(args, run_dir)
 
-    train_loader = build_dataloader(config, num_workers=args.num_workers)
+    train_loader = build_dataloader(config, num_workers=args.num_workers, seed=args.seed)
     model = Sleep2WaveDiffusionLightning(config, seed=args.seed)
     if config.initialization is not None and config.initialization.sleep2vec2_checkpoint is not None:
         report = load_sleep2vec2_initialization(

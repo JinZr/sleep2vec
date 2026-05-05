@@ -370,11 +370,17 @@ def test_train_diffusion_calls_initializer_when_configured(tmp_path: Path, monke
     init_ckpt = _save_checkpoint(tmp_path / "init.ckpt", {"model.input_projection.weight": torch.ones(2, 2)})
     config_path = _write_diffusion_config(tmp_path, init_ckpt)
     calls = []
+    seed_calls = []
 
     monkeypatch.setattr(train_diffusion, "build_dataloader", lambda *args, **kwargs: object())
     monkeypatch.setattr(train_diffusion, "Sleep2WaveDiffusionLightning", _DummyLightning)
     monkeypatch.setattr(train_diffusion, "WandbLogger", _DummyLogger)
     monkeypatch.setattr(train_diffusion, "ModelCheckpoint", _DummyCheckpoint)
+    monkeypatch.setattr(
+        train_diffusion.pl,
+        "seed_everything",
+        lambda *args, **kwargs: seed_calls.append((args, kwargs)),
+    )
     monkeypatch.setattr(train_diffusion.pl, "Trainer", _DummyTrainer)
     monkeypatch.setattr(
         train_diffusion,
@@ -391,9 +397,10 @@ def test_train_diffusion_calls_initializer_when_configured(tmp_path: Path, monke
             precision=32,
             max_steps=0,
             num_workers=0,
-            seed=0,
+            seed=77,
         )
     )
 
     assert len(calls) == 1
     assert calls[0][1]["target_groups"] == {"diffusion_transformer"}
+    assert seed_calls == [((77,), {"workers": True})]
