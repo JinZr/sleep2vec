@@ -18,9 +18,7 @@ AUTOENCODER_MEDIUM = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_autoenco
 GENERATE_MEDIUM = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_generate_medium.yaml"
 EVAL_MEDIUM = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_eval_medium.yaml"
 TINY_CONFIGS = sorted((REPO_ROOT / "configs" / "sleep2wave").glob("*tiny*.yaml"))
-TINY_DIFFUSION_CONFIGS = sorted(
-    (REPO_ROOT / "configs" / "sleep2wave").glob("sleep2wave_diffusion_tiny_phase*.yaml")
-)
+TINY_DIFFUSION_CONFIGS = sorted((REPO_ROOT / "configs" / "sleep2wave").glob("sleep2wave_diffusion_tiny_phase*.yaml"))
 MEDIUM_CONFIGS = sorted((REPO_ROOT / "configs" / "sleep2wave").glob("*medium*.yaml"))
 MEDIUM_DIFFUSION_CONFIGS = sorted(
     (REPO_ROOT / "configs" / "sleep2wave").glob("sleep2wave_diffusion_medium_phase*.yaml")
@@ -165,9 +163,9 @@ def test_sleep2wave_generative_config_rejects_invalid_weighted_corruption_choice
 def test_sleep2wave_tiny_configs_match_medium_non_size_specs():
     tiny_autoencoder = _load_payload(AUTOENCODER_TINY)
     medium_autoencoder = _load_payload(AUTOENCODER_MEDIUM)
-    assert tiny_autoencoder["data"]["preset_path"].replace("_tiny", "_medium") == medium_autoencoder["data"][
-        "preset_path"
-    ]
+    assert (
+        tiny_autoencoder["data"]["preset_path"].replace("_tiny", "_medium") == medium_autoencoder["data"]["preset_path"]
+    )
     assert tiny_autoencoder["data"]["context_epochs"] == medium_autoencoder["data"]["context_epochs"]
     assert tiny_autoencoder["modalities"] == medium_autoencoder["modalities"]
     tiny_autoencoder_model = dict(tiny_autoencoder["autoencoder"])
@@ -176,18 +174,19 @@ def test_sleep2wave_tiny_configs_match_medium_non_size_specs():
     medium_autoencoder_model.pop("latent_dim")
     assert tiny_autoencoder_model == medium_autoencoder_model
     assert tiny_autoencoder["training"] == medium_autoencoder["training"]
-    assert tiny_autoencoder["export"]["output_dir"].replace("_tiny", "_medium") == medium_autoencoder["export"][
-        "output_dir"
-    ]
+    assert (
+        tiny_autoencoder["export"]["output_dir"].replace("_tiny", "_medium")
+        == medium_autoencoder["export"]["output_dir"]
+    )
 
     tiny_by_phase = {path.stem.rsplit("_phase", 1)[1]: _load_payload(path) for path in TINY_DIFFUSION_CONFIGS}
     medium_by_phase = {path.stem.rsplit("_phase", 1)[1]: _load_payload(path) for path in MEDIUM_DIFFUSION_CONFIGS}
     assert set(tiny_by_phase) == set(medium_by_phase)
     for phase, tiny_diffusion in tiny_by_phase.items():
         medium_diffusion = medium_by_phase[phase]
-        assert tiny_diffusion["data"]["preset_path"].replace("_tiny", "_medium") == medium_diffusion["data"][
-            "preset_path"
-        ]
+        assert (
+            tiny_diffusion["data"]["preset_path"].replace("_tiny", "_medium") == medium_diffusion["data"]["preset_path"]
+        )
         assert tiny_diffusion["data"]["context_epochs"] == medium_diffusion["data"]["context_epochs"]
         assert tiny_diffusion["modalities"] == medium_diffusion["modalities"]
         assert tiny_diffusion["sampler"] == medium_diffusion["sampler"]
@@ -195,18 +194,17 @@ def test_sleep2wave_tiny_configs_match_medium_non_size_specs():
         tiny_training = dict(tiny_diffusion["training"])
         medium_training = dict(medium_diffusion["training"])
         if "phase_checkpoint" in tiny_training:
-            assert tiny_training["phase_checkpoint"].replace("_tiny", "_medium") == medium_training[
-                "phase_checkpoint"
-            ]
+            assert tiny_training["phase_checkpoint"].replace("_tiny", "_medium") == medium_training["phase_checkpoint"]
             tiny_training.pop("phase_checkpoint")
             medium_training.pop("phase_checkpoint")
         assert tiny_training == medium_training
 
         tiny_diffusion_model = dict(tiny_diffusion["diffusion"])
         medium_diffusion_model = dict(medium_diffusion["diffusion"])
-        assert tiny_diffusion_model["autoencoder_checkpoint"].replace("_tiny", "_medium") == medium_diffusion_model[
-            "autoencoder_checkpoint"
-        ]
+        assert (
+            tiny_diffusion_model["autoencoder_checkpoint"].replace("_tiny", "_medium")
+            == medium_diffusion_model["autoencoder_checkpoint"]
+        )
         tiny_transformer = dict(tiny_diffusion_model.pop("transformer"))
         medium_transformer = dict(medium_diffusion_model.pop("transformer"))
         for key in ("latent_dim", "autoencoder_checkpoint"):
@@ -217,9 +215,10 @@ def test_sleep2wave_tiny_configs_match_medium_non_size_specs():
             medium_transformer.pop(key)
         assert tiny_diffusion_model == medium_diffusion_model
         assert tiny_transformer == medium_transformer
-        assert tiny_diffusion["export"]["output_dir"].replace("_tiny", "_medium") == medium_diffusion["export"][
-            "output_dir"
-        ]
+        assert (
+            tiny_diffusion["export"]["output_dir"].replace("_tiny", "_medium")
+            == medium_diffusion["export"]["output_dir"]
+        )
 
     tiny_generate = _load_payload(GENERATE_TINY)
     medium_generate = _load_payload(GENERATE_MEDIUM)
@@ -230,9 +229,10 @@ def test_sleep2wave_tiny_configs_match_medium_non_size_specs():
     assert tiny_generate["sampler"] == medium_generate["sampler"]
     tiny_generate_diffusion = dict(tiny_generate["diffusion"])
     medium_generate_diffusion = dict(medium_generate["diffusion"])
-    assert tiny_generate_diffusion["autoencoder_checkpoint"].replace("_tiny", "_medium") == medium_generate_diffusion[
-        "autoencoder_checkpoint"
-    ]
+    assert (
+        tiny_generate_diffusion["autoencoder_checkpoint"].replace("_tiny", "_medium")
+        == medium_generate_diffusion["autoencoder_checkpoint"]
+    )
     tiny_generate_transformer = dict(tiny_generate_diffusion.pop("transformer"))
     medium_generate_transformer = dict(medium_generate_diffusion.pop("transformer"))
     for key in ("latent_dim", "autoencoder_checkpoint"):
