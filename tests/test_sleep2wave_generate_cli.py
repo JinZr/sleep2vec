@@ -229,6 +229,32 @@ def test_generate_resolves_inference_corruption_from_config(tmp_path: Path):
     assert specs == {"eeg": ("contiguous_window_mask", {"window_frames": 120})}
 
 
+def test_generate_imputation_corruption_specs_target_only_with_extra_conditions(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt, _diffusion_ckpt = _write_checkpoints(tmp_path)
+    config = load_sleep2wave_config(_write_config(tmp_path, preset_path, autoencoder_ckpt))
+    task = build_generation_task(
+        "imputation",
+        condition_modalities=["eeg", "ecg"],
+        target_modalities=["eeg"],
+        auxiliary_restoration_token=True,
+    )
+
+    config_specs = _resolve_inference_corruption_specs(
+        config=config,
+        args=SimpleNamespace(corruption_name=None, corruption_kwargs=None),
+        task=task,
+    )
+    cli_specs = _resolve_inference_corruption_specs(
+        config=config,
+        args=SimpleNamespace(corruption_name="gaussian_noise", corruption_kwargs='{"std": 0.2}'),
+        task=task,
+    )
+
+    assert config_specs == {"eeg": ("contiguous_window_mask", {"window_frames": 120})}
+    assert cli_specs == {"eeg": ("gaussian_noise", {"std": 0.2})}
+
+
 def test_generate_resolves_inference_corruption_from_weighted_choices(tmp_path: Path):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt, _diffusion_ckpt = _write_checkpoints(tmp_path)

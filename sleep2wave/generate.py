@@ -155,6 +155,10 @@ def _resolve_inference_corruption_specs(
 ) -> dict[str, tuple[str, dict[str, t.Any]]]:
     corruption_name = getattr(args, "corruption_name", None)
     corruption_kwargs_raw = getattr(args, "corruption_kwargs", None)
+    if task.task_type in {"restoration", "imputation"}:
+        corruption_modalities = task.target_modalities
+    else:
+        corruption_modalities = task.condition_modalities
     if corruption_kwargs_raw is not None and corruption_name is None:
         raise ValueError("--corruption-kwargs requires --corruption-name.")
     if corruption_name is not None:
@@ -163,7 +167,7 @@ def _resolve_inference_corruption_specs(
         if corruption_name not in CORRUPTION_REGISTRY:
             raise ValueError(f"--corruption-name must be one of {sorted(CORRUPTION_REGISTRY)}. Got: {corruption_name}")
         kwargs = _parse_corruption_kwargs(corruption_kwargs_raw)
-        return {modality: (corruption_name, kwargs) for modality in task.condition_modalities}
+        return {modality: (corruption_name, kwargs) for modality in corruption_modalities}
 
     if config.inference is None:
         return {}
@@ -171,7 +175,7 @@ def _resolve_inference_corruption_specs(
     if policy is None:
         return {}
     specs: dict[str, tuple[str, dict[str, t.Any]]] = {}
-    for modality in task.condition_modalities:
+    for modality in corruption_modalities:
         spec = policy.for_modality(modality)
         if spec is not None:
             modality_offset = config.modalities.all.index(modality)
