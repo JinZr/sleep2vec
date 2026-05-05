@@ -51,7 +51,7 @@ def _init_wandb(args):
     if not is_rank_zero_process():
         return None
 
-    inference_preset_path = getattr(args, "inference_preset_path", None)
+    inference_preset_path = getattr(args, "inference_preset_path", None) or getattr(args, "finetune_preset_path", None)
     init_kwargs = {
         "project": args.wandb_project,
         "name": args.wandb_name,
