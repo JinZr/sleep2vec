@@ -22,11 +22,21 @@
 - File: `sleep2wave/data/generative_dataset.py`
 - Signature: `build_sample_indices_from_frame(df: pd.DataFrame, *, index_source: str, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = True) -> list[SampleIndex]`
 - Purpose and contract: convert an index DataFrame into schema-versioned fixed-context Sleep2Wave `SampleIndex` windows.
-- Important inputs/outputs: index rows with `path`, `duration`, `split`, `subject_id`, `night_id`, and modality mask columns in; `SampleIndex` list out.
+- Important inputs/outputs: sleep2vec-style index rows with `path`, `duration`, and `split` in; optional `subject_id`, `night_id`, and modality mask columns are preserved when present; `SampleIndex` list out.
 - Side effects: none.
-- Key callers/callees: `build_sample_indices_from_index`, `build_sleep2wave_presets`, `Sleep2WaveGenerativeDataset`; callees include `validate_subject_split_boundaries`, `resolve_modality_mask_columns`, and `normalize_mask_frame`.
+- Key callers/callees: `build_sample_indices_from_index`, `build_sleep2wave_presets`, `Sleep2WaveGenerativeDataset`; callees include `prepare_sleep2wave_index_frame`, `validate_subject_split_boundaries`, `resolve_modality_mask_columns`, and `normalize_mask_frame`.
 - Reuse guidance: use this for every index-to-preset path.
 - Duplication-risk notes: this is the canonical place for Sleep2Wave preset payload schema.
+
+## `sleep2wave.data.generative_dataset.prepare_sleep2wave_index_frame`
+
+- File: `sleep2wave/data/generative_dataset.py`
+- Signature: `prepare_sleep2wave_index_frame(df: pd.DataFrame, *, columns: IndexColumnConfig) -> tuple[pd.DataFrame, IndexColumnConfig]`
+- Purpose and contract: normalize the base sleep2vec index surface for Sleep2Wave preset building.
+- Important inputs/outputs: requires `path`, `duration`, and `split`; fills missing `subject_id` and `night_id` from `path`; when no Sleep2Wave modality masks are present, adds truthy masks for all canonical modalities.
+- Side effects: none; returns a copied DataFrame.
+- Key callers/callees: `build_sample_indices_from_frame` and `validate_sleep2wave_index`.
+- Reuse guidance: use this before validating or windowing Sleep2Wave index DataFrames.
 
 ## `sleep2wave.data.generative_dataset.build_sample_indices_from_index`
 

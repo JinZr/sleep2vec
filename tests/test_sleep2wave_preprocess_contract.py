@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from sleep2wave.data.derivations import plan_derivation_jobs
+from sleep2wave.data.generative_dataset import IndexColumnConfig
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS
 from sleep2wave.preprocess.build_sleep2wave_presets import build_sleep2wave_presets
 from sleep2wave.preprocess.validate_sleep2wave_index import validate_sleep2wave_index
@@ -53,6 +54,80 @@ def test_build_sleep2wave_presets_writes_schema_versioned_sample_indices(tmp_pat
     assert payload["frames_per_epoch"]["spo2"] == MODALITY_SPECS["spo2"].frames_per_epoch
     assert payload["subject_id"] == "s1"
     assert payload["night_id"] == "n1"
+
+
+def test_build_sleep2wave_presets_accepts_sleep2vec_style_index_and_implicit_masks(tmp_path: Path):
+    index_path = tmp_path / "index.csv"
+    sample_path = "/data/ywx/hsp_9_channels/sub-S0001111189075/ses-1.npz"
+    pd.DataFrame(
+        [
+            {
+                "path": sample_path,
+                "duration": 60,
+                "split": "train",
+                "age": 69.0,
+                "sex": "Female",
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    samples = build_sleep2wave_presets(
+        index_path=index_path,
+        output_path=tmp_path / "preset.pkl",
+        split=["train"],
+        context_epochs=2,
+        stride_epochs=2,
+        columns=None,
+        dry_run=True,
+    )
+
+    assert len(samples) == 1
+    assert samples[0].metadata["subject_id"] == sample_path
+    assert samples[0].metadata["night_id"] == sample_path
+    assert samples[0].payload["available_channels"] == list(CANONICAL_MODALITIES)
+
+
+def test_build_sleep2wave_presets_accepts_explicit_identity_columns(tmp_path: Path):
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": "/data/ywx/mesa_9_channels/mesa-sleep-0001.npz",
+                "session_id": "mesa-sleep-0001",
+                "duration": 60,
+                "split": "train",
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    samples = build_sleep2wave_presets(
+        index_path=index_path,
+        output_path=tmp_path / "preset.pkl",
+        split=["train"],
+        context_epochs=2,
+        stride_epochs=2,
+        columns=IndexColumnConfig(subject_id_col="session_id", night_id_col="session_id"),
+        dry_run=True,
+    )
+
+    assert len(samples) == 1
+    assert samples[0].metadata["subject_id"] == "mesa-sleep-0001"
+    assert samples[0].metadata["night_id"] == "mesa-sleep-0001"
+
+
+def test_validate_sleep2wave_index_accepts_sleep2vec_style_index_and_implicit_masks(tmp_path: Path):
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": "/data/ywx/hsp_9_channels/sub-S0001111189075/ses-1.npz",
+                "duration": 60,
+                "split": "train",
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    validate_sleep2wave_index(index_path)
 
 
 def test_validate_sleep2wave_index_accepts_valid_index(tmp_path: Path):

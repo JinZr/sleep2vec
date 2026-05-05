@@ -27,22 +27,17 @@ def validate_sleep2wave_index(
     import pandas as pd
 
     from sleep2wave.data.derivations import validate_subject_split_boundaries
-    from sleep2wave.data.generative_dataset import IndexColumnConfig, resolve_modality_mask_columns
+    from sleep2wave.data.generative_dataset import (
+        IndexColumnConfig,
+        prepare_sleep2wave_index_frame,
+        resolve_modality_mask_columns,
+    )
     from sleep2wave.preprocess.split_index_by_dataset import normalize_mask_frame
 
     if columns is None:
         columns = IndexColumnConfig()
     df = pd.read_csv(index_path, low_memory=False)
-    required = [
-        columns.path_col,
-        columns.duration_col,
-        columns.split_col,
-        columns.subject_id_col,
-        columns.night_id_col,
-    ]
-    missing = [col for col in required if col not in df.columns]
-    if missing:
-        raise ValueError(f"Sleep2Wave index missing required columns: {missing}")
+    df, columns = prepare_sleep2wave_index_frame(df, columns=columns)
     validate_subject_split_boundaries(
         df,
         subject_id_col=columns.subject_id_col,

@@ -6,13 +6,12 @@ Validate Sleep2Wave indexes and build schema-versioned generative preset pickles
 
 ## Canonical Path
 
-1. Prepare an index CSV with required columns:
+1. Prepare an index CSV with the same core columns used by the base sleep2vec preset path:
    - `path`
    - `duration`
    - `split`
-   - `subject_id`
-   - `night_id`
-   - modality mask columns such as `eeg_mask`, `eog_mask`, `spo2_mask`
+   Optional `subject_id` and `night_id` columns are preserved when present; otherwise Sleep2Wave uses `path` for both identifiers.
+   Optional modality mask columns such as `eeg_mask`, `eog_mask`, and `spo2_mask` are preserved when present; if no Sleep2Wave modality mask columns are present, all canonical modalities are treated as available.
 2. Validate the index:
    - `sleep2wave.preprocess.validate_sleep2wave_index`
 3. Build preset windows:

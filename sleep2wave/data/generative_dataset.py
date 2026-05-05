@@ -76,6 +76,44 @@ def resolve_modality_mask_columns(df: pd.DataFrame, *, require_all: bool = True)
     return resolved
 
 
+def _has_any_modality_mask(df: pd.DataFrame) -> bool:
+    return any(
+        candidate in df.columns
+        for modality in CANONICAL_MODALITIES
+        for candidate in modality_mask_candidates(modality)
+    )
+
+
+def prepare_sleep2wave_index_frame(
+    df: pd.DataFrame,
+    *,
+    columns: IndexColumnConfig,
+) -> tuple[pd.DataFrame, IndexColumnConfig]:
+    missing = [col for col in (columns.path_col, columns.duration_col, columns.split_col) if col not in df.columns]
+    if missing:
+        raise ValueError(f"Sleep2Wave index missing required columns: {missing}")
+
+    df = df.copy()
+    if columns.subject_id_col not in df.columns:
+        df[columns.subject_id_col] = df[columns.path_col]
+
+    if columns.night_id_col not in df.columns:
+        df[columns.night_id_col] = df[columns.path_col]
+
+    if not _has_any_modality_mask(df):
+        for modality in CANONICAL_MODALITIES:
+            df[f"{modality}_mask"] = 1
+
+    return df, IndexColumnConfig(
+        path_col=columns.path_col,
+        duration_col=columns.duration_col,
+        split_col=columns.split_col,
+        subject_id_col=columns.subject_id_col,
+        night_id_col=columns.night_id_col,
+        source_col=columns.source_col,
+    )
+
+
 def build_sample_indices_from_frame(
     df: pd.DataFrame,
     *,
@@ -92,16 +130,7 @@ def build_sample_indices_from_frame(
     if stride_epochs <= 0:
         raise ValueError("stride_epochs must be positive.")
 
-    required = [
-        columns.path_col,
-        columns.duration_col,
-        columns.split_col,
-        columns.subject_id_col,
-        columns.night_id_col,
-    ]
-    missing_cols = [col for col in required if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Sleep2Wave index missing required columns: {missing_cols}")
+    df, columns = prepare_sleep2wave_index_frame(df, columns=columns)
     validate_subject_split_boundaries(
         df,
         subject_id_col=columns.subject_id_col,
@@ -432,5 +461,6 @@ __all__ = [
     "collate_sleep2wave_generative",
     "modality_mask_candidates",
     "normalize_sample_index",
+    "prepare_sleep2wave_index_frame",
     "resolve_modality_mask_columns",
 ]
