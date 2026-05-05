@@ -105,6 +105,21 @@ def test_save_result_csv_builds_infer_experiment_version_when_version_is_missing
     assert df.loc[0, "experiment_version"] == "ppg_ahi_finetune_large-ahi-test-best"
 
 
+def test_save_result_csv_records_effective_preset_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "results.csv"
+    args = _infer_args()
+    args.finetune_preset_path = Path("config/preset.pkl")
+    args.inference_preset_path = Path("index_parallel/presets/ahi/cuhk_test_preset_1535.pickle")
+
+    save_result_csv({"test_loss": 0.1}, str(csv_path), args)
+
+    df = pd.read_csv(csv_path)
+
+    assert df.loc[0, "preset_path"] == "index_parallel/presets/ahi/cuhk_test_preset_1535.pickle"
+
+
 def test_is_rank_zero_process_defaults_true_without_rank_env(monkeypatch):
     monkeypatch.delenv("RANK", raising=False)
     monkeypatch.delenv("LOCAL_RANK", raising=False)
