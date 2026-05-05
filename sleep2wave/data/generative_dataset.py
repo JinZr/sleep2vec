@@ -75,10 +75,30 @@ def resolve_modality_mask_columns(df: pd.DataFrame, *, require_all: bool = True)
     return resolved
 
 
-def _has_any_modality_mask(df: pd.DataFrame) -> bool:
-    return any(
-        candidate in df.columns for modality in CANONICAL_MODALITIES for candidate in modality_mask_candidates(modality)
-    )
+def resolve_npz_key(npz, modality: str, canonical_channel_map: dict[str, str] | None = None) -> str | None:
+    mapped = (canonical_channel_map or {}).get(modality)
+    aliases = [alias for alias, target in MODALITY_ALIASES.items() if target == modality]
+    candidates = [mapped, modality, *aliases]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate in npz:
+            return candidate
+    return None
+
+
+def _channel_has_window(npz, key: str, modality: str, end_epoch: int) -> bool:
+    raw = np.asarray(npz[key])
+    right = end_epoch * MODALITY_SPECS[modality].frames_per_epoch
+    if raw.ndim == 1:
+        return raw.shape[0] >= right
+    if raw.ndim == 2 and raw.shape[1] == 1:
+        return raw.shape[0] >= right
+    if raw.ndim == 2:
+        return raw.shape[1] >= right
+    return False
 
 
 def prepare_sleep2wave_index_frame(
@@ -96,10 +116,6 @@ def prepare_sleep2wave_index_frame(
 
     if columns.night_id_col not in df.columns:
         df[columns.night_id_col] = df[columns.path_col]
-
-    if not _has_any_modality_mask(df):
-        for modality in CANONICAL_MODALITIES:
-            df[f"{modality}_mask"] = 1
 
     return df, IndexColumnConfig(
         path_col=columns.path_col,
@@ -119,7 +135,7 @@ def build_sample_indices_from_frame(
     context_epochs: int,
     stride_epochs: int | None = None,
     columns: IndexColumnConfig = IndexColumnConfig(),
-    require_all_masks: bool = True,
+    require_all_masks: bool = False,
 ) -> list[SampleIndex]:
     if context_epochs <= 0:
         raise ValueError("context_epochs must be positive.")
@@ -148,18 +164,6 @@ def build_sample_indices_from_frame(
         if night_epoch_count < context_epochs:
             continue
 
-        available_channels: list[str] = []
-        canonical_channel_map: dict[str, str] = {}
-        availability_mask_keys: dict[str, str] = {}
-        for modality, mask_col in mask_columns.items():
-            if bool(mask_frame.loc[row_number, mask_col]):
-                available_channels.append(modality)
-                npz_key = mask_col[: -len("_mask")]
-                canonical_channel_map[modality] = npz_key
-                availability_mask_keys[modality] = mask_col
-        if not available_channels:
-            raise ValueError(f"Row {row_number} has no available sleep2wave modalities.")
-
         if columns.source_col in row and pd.notna(row[columns.source_col]):
             source = row[columns.source_col]
         else:
@@ -171,33 +175,56 @@ def build_sample_indices_from_frame(
             "split": row[columns.split_col],
             "path": row[columns.path_col],
         }
+        for metadata_name in ("age", "sex"):
+            if metadata_name in row and pd.notna(row[metadata_name]):
+                metadata[metadata_name] = row[metadata_name]
         sample_id = row["id"] if "id" in row and pd.notna(row["id"]) else row_number
 
-        for start in range(0, night_epoch_count - context_epochs + 1, stride_epochs):
-            end = start + context_epochs
-            samples.append(
-                SampleIndex(
-                    id=sample_id,
-                    path=str(row[columns.path_col]),
-                    start=start,
-                    end=end,
-                    payload={
-                        "sleep2wave_schema_version": SLEEP2WAVE_SCHEMA_VERSION,
-                        "available_channels": available_channels,
-                        "quality_mask_keys": {},
-                        "availability_mask_keys": availability_mask_keys,
-                        "canonical_channel_map": canonical_channel_map,
-                        "derived_channels": {},
-                        "epoch_sec": EPOCH_SEC,
-                        "sample_rates": {name: spec.sample_rate_hz for name, spec in MODALITY_SPECS.items()},
-                        "frames_per_epoch": {name: spec.frames_per_epoch for name, spec in MODALITY_SPECS.items()},
-                        "subject_id": row[columns.subject_id_col],
-                        "night_id": row[columns.night_id_col],
-                        "night_epoch_count": night_epoch_count,
-                    },
-                    metadata=metadata,
+        if mask_columns and mask_frame.loc[row_number, list(mask_columns.values())].sum() == 0:
+            raise ValueError(f"Row {row_number} has no available sleep2wave modalities.")
+
+        with load_npz(str(row[columns.path_col])) as npz:
+            for start in range(0, night_epoch_count - context_epochs + 1, stride_epochs):
+                end = start + context_epochs
+                available_channels: list[str] = []
+                canonical_channel_map: dict[str, str] = {}
+                availability_mask_keys: dict[str, str] = {}
+                for modality in CANONICAL_MODALITIES:
+                    mask_col = mask_columns.get(modality)
+                    if mask_col is not None and not bool(mask_frame.loc[row_number, mask_col]):
+                        continue
+                    npz_key = resolve_npz_key(npz, modality)
+                    if npz_key is None or not _channel_has_window(npz, npz_key, modality, end):
+                        continue
+                    available_channels.append(modality)
+                    canonical_channel_map[modality] = npz_key
+                    if mask_col is not None:
+                        availability_mask_keys[modality] = mask_col
+                if not available_channels:
+                    continue
+                samples.append(
+                    SampleIndex(
+                        id=sample_id,
+                        path=str(row[columns.path_col]),
+                        start=start,
+                        end=end,
+                        payload={
+                            "sleep2wave_schema_version": SLEEP2WAVE_SCHEMA_VERSION,
+                            "available_channels": available_channels,
+                            "quality_mask_keys": {},
+                            "availability_mask_keys": availability_mask_keys,
+                            "canonical_channel_map": canonical_channel_map,
+                            "derived_channels": {},
+                            "epoch_sec": EPOCH_SEC,
+                            "sample_rates": {name: spec.sample_rate_hz for name, spec in MODALITY_SPECS.items()},
+                            "frames_per_epoch": {name: spec.frames_per_epoch for name, spec in MODALITY_SPECS.items()},
+                            "subject_id": row[columns.subject_id_col],
+                            "night_id": row[columns.night_id_col],
+                            "night_epoch_count": night_epoch_count,
+                        },
+                        metadata=metadata,
+                    )
                 )
-            )
 
     if not samples:
         split_hint = f" for split {sorted(split_values)}" if split_values else ""
@@ -212,7 +239,7 @@ def build_sample_indices_from_index(
     context_epochs: int,
     stride_epochs: int | None = None,
     columns: IndexColumnConfig = IndexColumnConfig(),
-    require_all_masks: bool = True,
+    require_all_masks: bool = False,
 ) -> list[SampleIndex]:
     path = Path(index_path)
     df = pd.read_csv(path, low_memory=False)
@@ -302,17 +329,7 @@ class Sleep2WaveGenerativeDataset(Dataset):
         return set(validate_modality_sequence(list(raw), allow_aliases=True))
 
     def _resolve_npz_key(self, npz, sample: SampleIndex, modality: str) -> str | None:
-        mapped = sample.payload.get("canonical_channel_map", {}).get(modality)
-        aliases = [alias for alias, target in MODALITY_ALIASES.items() if target == modality]
-        candidates = [mapped, modality, *aliases]
-        seen: set[str] = set()
-        for candidate in candidates:
-            if not candidate or candidate in seen:
-                continue
-            seen.add(candidate)
-            if candidate in npz:
-                return candidate
-        return None
+        return resolve_npz_key(npz, modality, sample.payload.get("canonical_channel_map", {}))
 
     def _zero_signal(self, modality: str) -> torch.Tensor:
         spec = MODALITY_SPECS[modality]
@@ -454,4 +471,5 @@ __all__ = [
     "normalize_sample_index",
     "prepare_sleep2wave_index_frame",
     "resolve_modality_mask_columns",
+    "resolve_npz_key",
 ]

@@ -46,12 +46,13 @@ def validate_sleep2wave_index(
     if durations.isna().any() or (~np.isfinite(durations)).any() or (durations <= 0).any():
         raise ValueError(f"sleep2wave index contains invalid {columns.duration_col} values.")
 
-    mask_columns = resolve_modality_mask_columns(df, require_all=True)
-    mask_frame = normalize_mask_frame(df, list(mask_columns.values()))
-    empty_rows = mask_frame[list(mask_columns.values())].sum(axis=1) == 0
-    if empty_rows.any():
-        offenders = empty_rows[empty_rows].index.astype(str).tolist()
-        raise ValueError(f"sleep2wave index rows have no available modalities: {offenders}")
+    mask_columns = resolve_modality_mask_columns(df, require_all=False)
+    if mask_columns:
+        mask_frame = normalize_mask_frame(df, list(mask_columns.values()))
+        empty_rows = mask_frame[list(mask_columns.values())].sum(axis=1) == 0
+        if empty_rows.any():
+            offenders = empty_rows[empty_rows].index.astype(str).tolist()
+            raise ValueError(f"sleep2wave index rows have no available modalities: {offenders}")
 
 
 def main() -> None:

@@ -49,7 +49,7 @@ def build_sleep2wave_presets(
         context_epochs=context_epochs,
         stride_epochs=stride_epochs,
         columns=columns,
-        require_all_masks=True,
+        require_all_masks=False,
     )
     if not dry_run:
         output_path.parent.mkdir(parents=True, exist_ok=True)

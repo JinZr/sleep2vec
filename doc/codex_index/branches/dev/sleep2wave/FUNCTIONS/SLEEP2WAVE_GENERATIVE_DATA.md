@@ -20,11 +20,11 @@
 ## `sleep2wave.data.generative_dataset.build_sample_indices_from_frame`
 
 - File: `sleep2wave/data/generative_dataset.py`
-- Signature: `build_sample_indices_from_frame(df: pd.DataFrame, *, index_source: str, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = True) -> list[SampleIndex]`
+- Signature: `build_sample_indices_from_frame(df: pd.DataFrame, *, index_source: str, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = False) -> list[SampleIndex]`
 - Purpose and contract: convert an index DataFrame into schema-versioned fixed-context sleep2wave `SampleIndex` windows.
-- Important inputs/outputs: sleep2vec-style index rows with `path`, `duration`, and `split` in; optional `subject_id`, `night_id`, and modality mask columns are preserved when present; `SampleIndex` list out.
-- Side effects: none.
-- Key callers/callees: `build_sample_indices_from_index`, `build_sleep2wave_presets`, `Sleep2WaveGenerativeDataset`; callees include `prepare_sleep2wave_index_frame`, `resolve_modality_mask_columns`, and `normalize_mask_frame`.
+- Important inputs/outputs: sleep2vec-style index rows with `path`, `duration`, and `split` in; optional `subject_id`, `night_id`, `age`, `sex`, and modality mask columns are preserved when present; `SampleIndex` list with true per-window `available_channels` out.
+- Side effects: reads NPZ files to resolve channel keys and usable window lengths.
+- Key callers/callees: `build_sample_indices_from_index`, `build_sleep2wave_presets`, `Sleep2WaveGenerativeDataset`; callees include `prepare_sleep2wave_index_frame`, `resolve_modality_mask_columns`, `resolve_npz_key`, `load_npz`, and `normalize_mask_frame`.
 - Reuse guidance: use this for every index-to-preset path.
 - Duplication-risk notes: this is the canonical place for sleep2wave preset payload schema.
 
@@ -33,15 +33,25 @@
 - File: `sleep2wave/data/generative_dataset.py`
 - Signature: `prepare_sleep2wave_index_frame(df: pd.DataFrame, *, columns: IndexColumnConfig) -> tuple[pd.DataFrame, IndexColumnConfig]`
 - Purpose and contract: normalize the base sleep2vec index surface for sleep2wave preset building.
-- Important inputs/outputs: requires `path`, `duration`, and `split`; fills missing `subject_id` and `night_id` from `path`; when no sleep2wave modality masks are present, adds truthy masks for all canonical modalities.
+- Important inputs/outputs: requires `path`, `duration`, and `split`; fills missing `subject_id` and `night_id` from `path`; leaves modality availability to NPZ inspection during preset building.
 - Side effects: none; returns a copied DataFrame.
 - Key callers/callees: `build_sample_indices_from_frame` and `validate_sleep2wave_index`.
 - Reuse guidance: use this before validating or windowing sleep2wave index DataFrames.
 
+## `sleep2wave.data.generative_dataset.resolve_npz_key`
+
+- File: `sleep2wave/data/generative_dataset.py`
+- Signature: `resolve_npz_key(npz, modality: str, canonical_channel_map: dict[str, str] | None = None) -> str | None`
+- Purpose and contract: resolve a canonical sleep2wave modality to the actual NPZ key, including aliases such as `eeg_original` and `resp_nasal_original`.
+- Important inputs/outputs: NPZ handle and canonical modality in; actual NPZ key or `None` out.
+- Side effects: none.
+- Key callers/callees: preset building and `Sleep2WaveGenerativeDataset.__getitem__`.
+- Reuse guidance: use this instead of duplicating modality alias lookup.
+
 ## `sleep2wave.data.generative_dataset.build_sample_indices_from_index`
 
 - File: `sleep2wave/data/generative_dataset.py`
-- Signature: `build_sample_indices_from_index(index_path: str | Path, *, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = True) -> list[SampleIndex]`
+- Signature: `build_sample_indices_from_index(index_path: str | Path, *, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = False) -> list[SampleIndex]`
 - Purpose and contract: read a CSV index and delegate window construction to `build_sample_indices_from_frame`.
 - Important inputs/outputs: CSV path in; `SampleIndex` list out.
 - Side effects: reads CSV.
