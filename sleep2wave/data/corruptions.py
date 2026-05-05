@@ -6,10 +6,10 @@ import typing as t
 import torch
 
 
-def _generator(seed: int | None) -> torch.Generator | None:
+def _generator(seed: int | None, *, device: torch.device | None = None) -> torch.Generator | None:
     if seed is None:
         return None
-    generator = torch.Generator()
+    generator = torch.Generator(device=device) if device is not None else torch.Generator()
     generator.manual_seed(int(seed))
     return generator
 
@@ -80,7 +80,15 @@ def gaussian_noise(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if std < 0:
         raise ValueError("std must be non-negative.")
-    noise = torch.randn(signal.shape, generator=_generator(seed), dtype=signal.dtype) * std
+    noise = (
+        torch.randn(
+            signal.shape,
+            generator=_generator(seed, device=signal.device),
+            dtype=signal.dtype,
+            device=signal.device,
+        )
+        * std
+    )
     return signal + noise, _full_mask(signal)
 
 
@@ -90,7 +98,7 @@ def baseline_drift(
     amplitude: float = 0.1,
     seed: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    drift = torch.linspace(0.0, float(amplitude), signal.shape[-1], dtype=signal.dtype)
+    drift = torch.linspace(0.0, float(amplitude), signal.shape[-1], dtype=signal.dtype, device=signal.device)
     view_shape = [1] * signal.dim()
     view_shape[-1] = signal.shape[-1]
     return signal + drift.view(view_shape), _full_mask(signal)
@@ -103,7 +111,13 @@ def line_noise(
     cycles: float = 10.0,
     seed: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    t_axis = torch.linspace(0.0, 2.0 * math.pi * float(cycles), signal.shape[-1], dtype=signal.dtype)
+    t_axis = torch.linspace(
+        0.0,
+        2.0 * math.pi * float(cycles),
+        signal.shape[-1],
+        dtype=signal.dtype,
+        device=signal.device,
+    )
     noise = torch.sin(t_axis) * float(amplitude)
     view_shape = [1] * signal.dim()
     view_shape[-1] = signal.shape[-1]
@@ -135,8 +149,8 @@ def spike_artifact(
     corrupted = signal.clone()
     mask = _empty_mask(signal)
     frames = signal.shape[-1]
-    generator = _generator(seed)
-    indices = torch.randperm(frames, generator=generator)[: min(num_spikes, frames)]
+    generator = _generator(seed, device=signal.device)
+    indices = torch.randperm(frames, generator=generator, device=signal.device)[: min(num_spikes, frames)]
     corrupted[..., indices] += float(magnitude)
     mask[..., indices] = True
     return corrupted, mask

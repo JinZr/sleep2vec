@@ -14,10 +14,11 @@ from sleep2wave.autoencoders.model import Sleep2WaveAutoencoder
 from sleep2wave.data.default_dataset import SampleIndex
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS
 from sleep2wave.data.samplers import AvailableChannelsBucketBatchSampler
+from sleep2wave.diffusion.latent_cache import Sleep2WaveLatentCacheDataset, write_latent_cache
 from sleep2wave.diffusion.lightning import Sleep2WaveDiffusionLightning
 from sleep2wave.diffusion.tasks import build_generation_task
 from sleep2wave.generative.config import load_sleep2wave_config
-from sleep2wave.train_diffusion import build_dataloader, main
+from sleep2wave.train_diffusion import _load_phase_checkpoint, build_dataloader, main
 from sleep2wave.training.task_sampler import Sleep2WaveTaskSampler
 
 
@@ -133,6 +134,7 @@ def test_train_diffusion_dataloader_uses_train_split(tmp_path: Path):
 
     assert [sample.metadata["split"] for sample in loader.dataset.data] == ["train"]
     assert loader.dataset.seed == 123
+    assert loader.dataset.corruption_name is None
 
 
 def test_train_diffusion_dataloader_buckets_mixed_availability(tmp_path: Path):
@@ -176,6 +178,37 @@ def test_train_diffusion_dataloader_buckets_mixed_availability(tmp_path: Path):
         ]
         assert len(common_available) >= 2
         task_sampler.sample(batch["availability_mask"])
+
+
+def test_train_diffusion_accepts_cache_only_translation(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    cache_path = tmp_path / "cache"
+    latents = {modality: torch.zeros(1, 2, 8) for modality in CANONICAL_MODALITIES}
+    masks = {modality: torch.ones(1, 2, dtype=torch.bool) for modality in CANONICAL_MODALITIES}
+    quality = {modality: torch.ones(1, 2) for modality in CANONICAL_MODALITIES}
+    write_latent_cache(
+        cache_path,
+        clean_latents=latents,
+        availability_mask=masks,
+        quality_mask=quality,
+        epoch_index=torch.tensor([[0, 1]]),
+        night_position=torch.tensor([[0.0, 1.0]]),
+        metadata_rows=[{"split": "train", "subject_id": "s1", "night_id": "n1"}],
+    )
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    payload = yaml.safe_load(config_path.read_text())
+    del payload["diffusion"]["autoencoder_checkpoint"]
+    payload["diffusion"]["latent_cache_path"] = str(cache_path)
+    payload["training"]["phase"] = 2
+    payload["training"]["task_mix"] = {"translation": 1.0}
+    config_path.write_text(yaml.safe_dump(payload))
+
+    loader = build_dataloader(load_sleep2wave_config(config_path), num_workers=0, seed=123)
+
+    assert isinstance(loader.dataset, Sleep2WaveLatentCacheDataset)
+    batch = next(iter(loader))
+    assert batch["clean_latents"]["eeg"].shape == (1, 2, 8)
 
 
 def test_train_diffusion_smoke_writes_artifacts(tmp_path: Path, monkeypatch):
@@ -225,3 +258,42 @@ def test_condition_dropout_keeps_nonempty_condition_set(tmp_path: Path):
 
     assert len(dropped.condition_modalities) == 1
     assert set(dropped.condition_modalities).issubset({"eeg", "ecg"})
+
+
+def test_task_corruption_is_applied_inside_diffusion_module(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["training"]["corruptions"] = {
+        "restoration": {"default": {"name": "gaussian_noise", "kwargs": {"std": 1.0}}},
+    }
+    config_path.write_text(yaml.safe_dump(payload))
+    module = Sleep2WaveDiffusionLightning(load_sleep2wave_config(config_path))
+    task = build_generation_task(
+        "restoration",
+        condition_modalities=["eeg"],
+        target_modalities=["eeg"],
+        auxiliary_restoration_token=True,
+    )
+    observed = {"eeg": torch.zeros(1, 2, 1, MODALITY_SPECS["eeg"].frames_per_epoch)}
+
+    corrupted = module._apply_task_corruption(observed, task)
+
+    assert not torch.equal(corrupted["eeg"], observed["eeg"])
+
+
+def test_phase_checkpoint_loads_diffusion_model_weights(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    module = Sleep2WaveDiffusionLightning(load_sleep2wave_config(config_path))
+    checkpoint_path = tmp_path / "phase.ckpt"
+    torch.save(
+        {"state_dict": {f"model.{key}": value for key, value in module.model.state_dict().items()}},
+        checkpoint_path,
+    )
+
+    loaded = _load_phase_checkpoint(module.model, checkpoint_path)
+
+    assert loaded == len(module.model.state_dict())

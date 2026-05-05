@@ -3,7 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from sleep2wave.evaluation.event_metrics import compute_event_metric_groups, compute_event_metrics, interval_iou
+from sleep2wave.evaluation.event_metrics import (
+    compute_event_metric_groups,
+    compute_event_metrics,
+    compute_generated_signal_event_groups,
+    interval_iou,
+)
 
 
 def test_interval_iou_uses_continuous_intervals():
@@ -45,3 +50,19 @@ def test_event_metric_groups_accept_truth_prediction_aliases():
 def test_event_metric_groups_reject_missing_intervals():
     with pytest.raises(ValueError, match="must define reference/generated intervals"):
         compute_event_metric_groups({"apnea": {"reference": []}}, iou_threshold=0.5)
+
+
+def test_generated_signal_event_adapter_detects_spo2_desaturation():
+    reference = np.full((1, 1, 40), 96.0, dtype=np.float32)
+    generated = reference.copy()
+    reference[..., 8:16] = 90.0
+    generated[..., 8:16] = 90.0
+
+    metrics = compute_generated_signal_event_groups(
+        {"spo2": reference},
+        {"spo2": generated},
+        sample_rates={"spo2": 4},
+        iou_threshold=0.5,
+    )
+
+    assert metrics["spo2_desaturation"]["f1"] == pytest.approx(1.0)

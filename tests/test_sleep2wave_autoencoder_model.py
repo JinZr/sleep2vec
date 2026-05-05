@@ -38,12 +38,22 @@ def test_autoencoder_rejects_wrong_epoch_length():
         model(batch)
 
 
-def test_autoencoder_rejects_multi_channel_input():
+def test_autoencoder_accepts_multi_channel_input_with_one_latent_per_epoch():
     model = Sleep2WaveAutoencoder(latent_dim=8, modalities=["eeg"])
     batch = {"eeg": torch.randn(2, 3, 2, MODALITY_SPECS["eeg"].frames_per_epoch)}
 
-    with pytest.raises(ValueError, match="supports only one channel"):
-        model(batch)
+    output = model(batch)
+
+    assert output.latents["eeg"].shape == (2, 3, 8)
+    assert output.reconstructions["eeg"].shape == batch["eeg"].shape
+
+
+def test_autoencoder_uses_convtranspose_decoder():
+    model = Sleep2WaveAutoencoder(latent_dim=8, modalities=["spo2"])
+
+    decoder = model.modality_autoencoders["spo2"].decoder
+
+    assert any(isinstance(module, torch.nn.ConvTranspose1d) for module in decoder.modules())
 
 
 def test_autoencoder_decode_latents_returns_waveform_with_channel_dim():

@@ -19,10 +19,11 @@ class Sleep2WaveTaskSampler:
         task_mix: dict[str, float] | None = None,
         condition_counts: t.Sequence[int] | None = None,
         auxiliary_restoration_token: bool = True,
+        replay_enabled: bool = True,
         seed: int = 0,
     ) -> None:
         self.modalities = tuple(validate_modality_sequence(list(modalities), allow_aliases=False))
-        self.schedule = build_phase_schedule(phase, task_mix)
+        self.schedule = build_phase_schedule(phase, task_mix, replay_enabled=replay_enabled)
         self.condition_counts = tuple(condition_counts or (1,))
         if any(not isinstance(count, int) or isinstance(count, bool) or count <= 0 for count in self.condition_counts):
             raise ValueError("condition_counts must contain positive integers.")

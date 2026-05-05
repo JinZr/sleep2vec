@@ -73,6 +73,7 @@ def test_generative_dataset_returns_30s_epoch_shapes_and_masks(tmp_path: Path):
     assert batch["availability_mask"]["eeg"].shape == (2, 2)
     assert batch["quality_mask"]["eeg"].shape == (2, 2)
     assert batch["corruption_mask"]["eeg"].shape == (2, 2, 1, 3840)
+    assert batch["channel_mask"]["eeg"].shape == (2, 2, 1)
     assert batch["availability_mask"]["resp"].all()
     assert batch["quality_mask"]["resp"].eq(1.0).all()
     assert batch["corruption_mask"]["eeg"].any()
@@ -82,6 +83,28 @@ def test_generative_dataset_returns_30s_epoch_shapes_and_masks(tmp_path: Path):
     assert batch["condition_modalities"] == ["ecg"]
     assert batch["target_modalities"] == ["eeg"]
     assert batch["task_type"] == "translation"
+
+
+def test_generative_dataset_reads_derived_sidecar_and_quality_mask(tmp_path: Path):
+    npz_path = tmp_path / "primary.npz"
+    sidecar_path = tmp_path / "derived.npz"
+    np.savez(npz_path, eeg=_signal(2 * MODALITY_SPECS["eeg"].frames_per_epoch, 0.0))
+    np.savez(
+        sidecar_path,
+        ibi=np.ones(2 * MODALITY_SPECS["ibi"].frames_per_epoch, dtype=np.float32),
+        ibi_quality_mask=np.array([1.0, 0.0], dtype=np.float32),
+    )
+    index_path = tmp_path / "index.csv"
+    row = _index_row(npz_path, subject_id="s1", night_id="n1")
+    row["derived_path"] = str(sidecar_path)
+    row["ibi_mask"] = 1
+    pd.DataFrame([row]).to_csv(index_path, index=False)
+
+    dataset = Sleep2WaveGenerativeDataset(index=index_path, split="train", context_epochs=2)
+    item = dataset[0]
+
+    assert item["clean_signals"]["ibi"].eq(1.0).all()
+    assert item["quality_mask"]["ibi"].tolist() == [1.0, 0.0]
 
 
 def test_generative_dataset_missing_modalities_are_zero_and_unavailable(tmp_path: Path):

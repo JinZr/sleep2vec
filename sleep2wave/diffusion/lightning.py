@@ -7,6 +7,7 @@ import torch
 import yaml
 
 from sleep2wave.autoencoders.checkpoints import load_sleep2wave_autoencoder_checkpoint
+from sleep2wave.data.corruptions import apply_corruption
 from sleep2wave.diffusion.losses import compute_diffusion_loss
 from sleep2wave.diffusion.model import Sleep2WaveDiffusionTransformer
 from sleep2wave.diffusion.schedule import DiffusionSchedule, build_diffusion_schedule
@@ -32,6 +33,7 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             task_mix=config.training.task_mix,
             condition_counts=config.training.condition_counts,
             auxiliary_restoration_token=config.diffusion.auxiliary_restoration_token,
+            replay_enabled=config.training.replay.enabled,
             seed=seed,
         )
 
@@ -50,6 +52,8 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
         )
 
     def _encode_signals(self, signals: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        if self.autoencoder is None:
+            raise ValueError("Signal encoding requires diffusion.autoencoder_checkpoint.")
         with torch.no_grad():
             return self.autoencoder(signals).latents
 
@@ -100,11 +104,56 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             allow_target_target_attention=task.allow_target_target_attention,
         )
 
+    def _corruption_kwargs(self, name: str, signal: torch.Tensor, kwargs: dict) -> dict:
+        parsed = dict(kwargs)
+        if "window_frames" not in parsed and name in {
+            "contiguous_window_mask",
+            "flatline_dropout",
+            "spo2_plateau_dropout",
+            "rpeak_drop_or_jitter_for_ibi",
+            "belt_failure",
+        }:
+            parsed["window_frames"] = max(1, signal.shape[-1] // 10)
+        return parsed
+
+    def _apply_task_corruption(
+        self,
+        observed_signals: dict[str, torch.Tensor],
+        task: GenerationTask,
+    ) -> dict[str, torch.Tensor]:
+        training_cfg = self.config_bundle.training
+        if training_cfg is None:
+            return observed_signals
+        policy = training_cfg.corruptions.for_task(task.task_type)
+        if policy is None:
+            return observed_signals
+
+        updated = dict(observed_signals)
+        for modality in task.condition_modalities:
+            spec = policy.for_modality(modality)
+            if spec is None:
+                continue
+            signal = observed_signals[modality]
+            modality_offset = self.config_bundle.modalities.all.index(modality)
+            corrupted, _mask = apply_corruption(
+                spec.name,
+                signal,
+                seed=int(self.global_step) * len(self.config_bundle.modalities.all) + modality_offset,
+                **self._corruption_kwargs(spec.name, signal, spec.kwargs),
+            )
+            updated[modality] = corrupted
+        return updated
+
     def training_step(self, batch, batch_idx):
         task = self.task_sampler.sample(availability_mask=batch.get("availability_mask"))
         task = self._apply_condition_dropout(task)
-        clean_latents = self._encode_signals(batch["clean_signals"])
-        observed_latents = self._encode_signals(batch["observed_signals"])
+        if self.autoencoder is None:
+            clean_latents = batch["clean_latents"]
+            observed_latents = batch.get("observed_latents", clean_latents)
+        else:
+            clean_latents = self._encode_signals(batch["clean_signals"])
+            observed_signals = self._apply_task_corruption(batch["observed_signals"], task)
+            observed_latents = self._encode_signals(observed_signals)
         condition_latents = {modality: observed_latents[modality] for modality in task.condition_modalities}
         noisy_targets, target_noise, timesteps = self._sample_noisy_targets(clean_latents, task)
         output = self.model(
@@ -158,7 +207,7 @@ def _load_autoencoder_for_diffusion(config: Sleep2WaveConfig):
         raise ValueError("diffusion config is required.")
     checkpoint_path = config.diffusion.autoencoder_checkpoint
     if checkpoint_path is None:
-        raise ValueError("diffusion.autoencoder_checkpoint is required for waveform-to-latent training.")
+        return None
     return load_sleep2wave_autoencoder_checkpoint(
         checkpoint_path,
         latent_dim=config.diffusion.latent_dim,

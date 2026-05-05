@@ -38,6 +38,17 @@ def test_autoencoder_spectral_loss_is_finite():
     assert torch.isfinite(losses["loss"])
 
 
+def test_autoencoder_loss_ignores_padded_channels():
+    target = {"eeg": torch.zeros(1, 1, 2, 4)}
+    reconstruction = {"eeg": torch.tensor([[[[1.0, 1.0, 1.0, 1.0], [100.0, 100.0, 100.0, 100.0]]]])}
+    channel_mask = {"eeg": torch.tensor([[[True, False]]])}
+    config = AutoencoderLossConfig(waveform_l1_weight=1.0, waveform_l2_weight=0.0, spectral_weight=0.0)
+
+    losses = compute_autoencoder_loss(reconstruction, target, channel_mask=channel_mask, config=config)
+
+    assert torch.isclose(losses["waveform_l1_loss"], torch.tensor(1.0))
+
+
 def test_autoencoder_loss_rejects_all_zero_weights():
     config = AutoencoderLossConfig(waveform_l1_weight=0.0, waveform_l2_weight=0.0, spectral_weight=0.0)
 

@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from sleep2wave.data.derivations import plan_derivation_jobs
+from sleep2wave.data.derivations import derive_record_channels, plan_derivation_jobs
 from sleep2wave.data.generative_dataset import IndexColumnConfig
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS
 from sleep2wave.preprocess.build_sleep2wave_presets import build_sleep2wave_presets
@@ -327,6 +327,28 @@ def test_derivation_planning_is_per_record_and_split_safe(tmp_path: Path):
     assert jobs[0].split == "train"
     assert jobs[1].subject_id == "s2"
     assert jobs[1].split == "test"
+
+
+def test_derive_sleep2wave_channels_writes_ibi_resp_and_quality_masks(tmp_path: Path):
+    sample_path = tmp_path / "sample.npz"
+    seconds = 60
+    ecg_rate = MODALITY_SPECS["ecg"].sample_rate_hz
+    resp_rate = MODALITY_SPECS["belt"].sample_rate_hz
+    ecg = np.zeros(seconds * ecg_rate, dtype=np.float32)
+    ecg[::ecg_rate] = 5.0
+    belt = np.sin(np.linspace(0.0, 12.0, seconds * resp_rate, dtype=np.float32))
+    np.savez(sample_path, ecg=ecg, belt=belt)
+    output_path = tmp_path / "derived.npz"
+
+    derive_record_channels(input_path=sample_path, output_path=output_path, derive=["ibi", "resp"])
+
+    with np.load(output_path) as derived:
+        assert derived["ibi"].shape[0] == seconds * MODALITY_SPECS["ibi"].sample_rate_hz
+        assert derived["resp"].shape[0] == seconds * MODALITY_SPECS["resp"].sample_rate_hz
+        assert derived["ibi_quality_mask"].shape == (seconds // 30,)
+        assert derived["resp_quality_mask"].shape == (seconds // 30,)
+        assert derived["ibi_quality_mask"].dtype == np.bool_
+        assert derived["resp_quality_mask"].dtype == np.bool_
 
 
 @pytest.mark.parametrize(

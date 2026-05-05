@@ -4,11 +4,11 @@
 
 - File: `sleep2wave/autoencoders/model.py`
 - Signature: `Sleep2WaveAutoencoder(*, latent_dim: int, encoder_type: str = "conv1d_epoch", decoder_type: str = "convtranspose1d_epoch", modalities: Sequence[str] = CANONICAL_MODALITIES)`
-- Purpose and contract: build modality-specific waveform autoencoders and return one latent vector per epoch for each modality.
+- Purpose and contract: build modality-specific waveform autoencoders and return one latent vector per epoch for each modality. Multi-channel inputs share the per-modality encoder and are averaged to the one-token diffusion contract.
 - Important inputs/outputs: `clean_signals` dict in; `Sleep2WaveAutoencoderOutput(latents, reconstructions)` out.
 - Side effects: module construction and forward computation.
 - Key callers/callees: `Sleep2WaveAutoencoderLightning`, diffusion autoencoder loading, generation decoding.
-- Reuse guidance: use this for all sleep2wave waveform latent encoding and decoding.
+- Reuse guidance: use this for all sleep2wave waveform latent encoding and decoding; padded channels should be masked through the autoencoder loss `channel_mask`.
 - Duplication-risk notes: do not create separate per-modality autoencoder classes outside this module.
 
 ## `sleep2wave.autoencoders.model.Sleep2WaveAutoencoder.decode_latents`
@@ -126,7 +126,7 @@
 - Important inputs/outputs: phase and optional override in; `PhaseSchedule` out.
 - Side effects: none.
 - Key callers/callees: `Sleep2WaveTaskSampler`.
-- Reuse guidance: use for curriculum changes instead of hardcoding task weights elsewhere.
+- Reuse guidance: use for curriculum changes instead of hardcoding task weights elsewhere; replay-enabled defaults include both restoration and imputation.
 
 ## `sleep2wave.training.task_sampler.Sleep2WaveTaskSampler`
 

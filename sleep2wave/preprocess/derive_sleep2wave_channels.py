@@ -23,7 +23,7 @@ def main() -> None:
     args = parse_args()
     import pandas as pd
 
-    from sleep2wave.data.derivations import plan_derivation_jobs, require_derivation_backend
+    from sleep2wave.data.derivations import plan_derivation_jobs, run_derivation_jobs
 
     df = pd.read_csv(args.index, low_memory=False)
     jobs = plan_derivation_jobs(
@@ -34,8 +34,8 @@ def main() -> None:
         subject_id_col=args.subject_id_col,
         night_id_col=args.night_id_col,
     )
-    require_derivation_backend(args.derive)
-    print(f"Planned {len(jobs)} split-safe sleep2wave derivation jobs.")
+    written = run_derivation_jobs(jobs, derive=args.derive)
+    print(f"Wrote {len(written)} split-safe sleep2wave derived-channel sidecars to {args.output_dir}.")
 
 
 if __name__ == "__main__":

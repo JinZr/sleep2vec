@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 from sleep2wave.common import persist_run_config_and_args
 from sleep2wave.data.generative_dataset import Sleep2WaveGenerativeDataset
 from sleep2wave.data.samplers import AvailableChannelsBucketBatchSampler, handles_distributed_sharding
+from sleep2wave.diffusion.latent_cache import Sleep2WaveLatentCacheDataset
 from sleep2wave.diffusion.lightning import Sleep2WaveDiffusionLightning
 from sleep2wave.generative.config import load_sleep2wave_config
 from sleep2wave.initialization.sleep2vec2 import load_sleep2vec2_initialization
@@ -41,6 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--resume-from-checkpoint", type=Path, default=None)
     return parser.parse_args(argv)
 
 
@@ -51,17 +53,27 @@ def build_dataloader(config, *, num_workers: int, seed: int):
         raise ValueError("diffusion block is required for diffusion training.")
     if config.data.context_epochs != config.diffusion.context_epochs:
         raise ValueError("data.context_epochs must match diffusion.context_epochs for diffusion training.")
-    dataset = Sleep2WaveGenerativeDataset(
-        preset_path=config.data.preset_path,
-        index=config.data.index,
-        split="train",
-        context_epochs=config.data.context_epochs,
-        task_type="translation",
-        corruption_name="gaussian_noise",
-        corruption_kwargs={"std": 0.01},
-        seed=seed,
+    if config.diffusion.autoencoder_checkpoint is None:
+        dataset = Sleep2WaveLatentCacheDataset(config.diffusion.latent_cache_path, split="train")
+        return dataset.dataloader(
+            batch_size=config.training.batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+        )
+    else:
+        dataset = Sleep2WaveGenerativeDataset(
+            preset_path=config.data.preset_path,
+            index=config.data.index,
+            split="train",
+            context_epochs=config.data.context_epochs,
+            task_type="translation",
+            seed=seed,
+        )
+    schedule = build_phase_schedule(
+        config.training.phase,
+        config.training.task_mix,
+        replay_enabled=config.training.replay.enabled,
     )
-    schedule = build_phase_schedule(config.training.phase, config.training.task_mix)
     min_channels = 1
     if schedule.task_mix.get("translation", 0.0) > 0 or schedule.task_mix.get("partial_full", 0.0) > 0:
         min_channels = 2
@@ -82,6 +94,31 @@ def build_dataloader(config, *, num_workers: int, seed: int):
     )
 
 
+def _load_phase_checkpoint(model, checkpoint_path: str | Path) -> int:
+    import torch
+
+    path = Path(checkpoint_path)
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"training.phase_checkpoint not found: {path}")
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    if not isinstance(state_dict, dict):
+        raise ValueError("training.phase_checkpoint must contain a state_dict mapping.")
+    target_keys = set(model.state_dict())
+    if any(key.startswith("model.") for key in state_dict):
+        filtered = {
+            key[len("model.") :]: value
+            for key, value in state_dict.items()
+            if key.startswith("model.") and key[len("model.") :] in target_keys
+        }
+    else:
+        filtered = {key: value for key, value in state_dict.items() if key in target_keys}
+    if not filtered:
+        raise ValueError("training.phase_checkpoint does not contain sleep2wave diffusion model weights.")
+    model.load_state_dict(filtered, strict=True)
+    return len(filtered)
+
+
 def train_diffusion(args: argparse.Namespace) -> Path:
     config = load_sleep2wave_config(args.config)
     if config.stage != "diffusion":
@@ -98,6 +135,13 @@ def train_diffusion(args: argparse.Namespace) -> Path:
     train_loader = build_dataloader(config, num_workers=args.num_workers, seed=args.seed)
     use_distributed_sampler = not handles_distributed_sharding(getattr(train_loader, "batch_sampler", None))
     model = Sleep2WaveDiffusionLightning(config, seed=args.seed)
+    if config.training.phase_checkpoint is not None:
+        loaded = _load_phase_checkpoint(model.model, config.training.phase_checkpoint)
+        logging.info(
+            "Loaded %d diffusion model keys from phase checkpoint %s.",
+            loaded,
+            config.training.phase_checkpoint,
+        )
     if config.initialization is not None and config.initialization.sleep2vec2_checkpoint is not None:
         report = load_sleep2vec2_initialization(
             model.model,
@@ -140,7 +184,9 @@ def train_diffusion(args: argparse.Namespace) -> Path:
         num_sanity_val_steps=0,
         use_distributed_sampler=use_distributed_sampler,
     )
-    trainer.fit(model, train_dataloaders=train_loader)
+    if args.resume_from_checkpoint is not None and not args.resume_from_checkpoint.is_file():
+        raise FileNotFoundError(f"--resume-from-checkpoint not found: {args.resume_from_checkpoint}")
+    trainer.fit(model, train_dataloaders=train_loader, ckpt_path=args.resume_from_checkpoint)
     trainer.save_checkpoint(checkpoint_dir / "last.ckpt")
     return run_dir
 

@@ -9,10 +9,11 @@ Train a latent diffusion transformer that generates target modality latents from
 1. Train or provide a compatible sleep2wave autoencoder checkpoint.
 2. Load `stage: diffusion` config with `load_sleep2wave_config`.
 3. Build train split DataLoader through `train_diffusion.build_dataloader`.
-4. `Sleep2WaveDiffusionLightning` loads the autoencoder checkpoint.
+4. `Sleep2WaveDiffusionLightning` loads the autoencoder checkpoint, or uses an existing latent cache for translation/partial-full-only training.
 5. `Sleep2WaveTaskSampler` samples phase-appropriate tasks.
-6. `Sleep2WaveDiffusionTransformer` predicts target noise.
-7. Save epoch checkpoints and `last.ckpt`.
+6. Restoration/imputation tasks apply task-aware waveform corruptions from `training.corruptions` before autoencoder encoding.
+7. `Sleep2WaveDiffusionTransformer` predicts target noise.
+8. Save epoch checkpoints and `last.ckpt`.
 
 ## Config Contract
 
@@ -29,10 +30,14 @@ Important constraints:
 
 - `training.phase` must be 1 through 5.
 - `data.context_epochs` must match `diffusion.context_epochs`.
-- `diffusion.autoencoder_checkpoint` is required.
+- `diffusion.autoencoder_checkpoint` is required for waveform-to-latent training.
+- `diffusion.latent_cache_path` can replace the autoencoder checkpoint only for translation/partial-full task mixes.
+- `training.phase_checkpoint` initializes the diffusion transformer from a previous Sleep2Wave phase while keeping the current config.
+- CLI `--resume-from-checkpoint` is reserved for Lightning crash recovery.
 - `diffusion.beta_schedule` is currently `cosine`.
 - `diffusion.prediction_type` is currently `epsilon`.
 - `diffusion.task_attention_mask` is currently `directional`.
+- `training.replay.enabled` selects replay-style default task mixtures when no explicit `task_mix` is provided; replay defaults train restoration and imputation before adding translation, two-condition, and partial-full tasks.
 
 ## Command
 
@@ -46,6 +51,15 @@ python -m sleep2wave.train_diffusion \
   --seed 0
 ```
 
+Build a latent cache:
+
+```bash
+python -m sleep2wave.cache_latents \
+  --config configs/sleep2wave/sleep2wave_diffusion_medium_phase2.yaml \
+  --autoencoder-ckpt checkpoints/sleep2wave_autoencoder_medium.ckpt \
+  --output-dir outputs/sleep2wave_latent_cache
+```
+
 ## Edit Hotspots
 
 - Task semantics: `sleep2wave/diffusion/tasks.py`
@@ -53,6 +67,7 @@ python -m sleep2wave.train_diffusion \
 - Model shape and embeddings: `sleep2wave/diffusion/model.py`
 - Schedule and samplers: `sleep2wave/diffusion/schedule.py`, `sleep2wave/diffusion/samplers.py`
 - Training step: `sleep2wave/diffusion/lightning.py`
+- Latent cache: `sleep2wave/diffusion/latent_cache.py`, `sleep2wave/cache_latents.py`
 - Curriculum: `sleep2wave/training/phase_schedule.py`, `sleep2wave/training/task_sampler.py`
 
 ## Tests

@@ -24,7 +24,7 @@
 
 - File: `sleep2wave/train_diffusion.py`
 - Signature: `build_dataloader(config, *, num_workers: int, seed: int)`
-- Purpose and contract: build train split DataLoader for diffusion-stage configs with translation task defaults, light Gaussian corruption, and available-modality bucketed batches compatible with the active diffusion task mix.
+- Purpose and contract: build train split DataLoader for diffusion-stage configs with available-modality bucketed waveform batches, or a latent-cache DataLoader when `diffusion.autoencoder_checkpoint` is omitted.
 - Important inputs/outputs: typed config and seed in; DataLoader out.
 - Side effects: dataset reads files during iteration.
 - Key callers/callees: `train_diffusion`; callee `AvailableChannelsBucketBatchSampler`.
@@ -36,7 +36,7 @@
 - Signature: `train_diffusion(args: argparse.Namespace) -> Path`
 - Purpose and contract: run sleep2wave latent diffusion training and write a run directory with checkpoints and config snapshots.
 - Important inputs/outputs: CLI args in; run directory path out.
-- Side effects: seeds Lightning, creates directories, persists config/args, initializes W&B logger, trains with Lightning, writes `last.ckpt`.
+- Side effects: seeds Lightning, creates directories, persists config/args, optionally initializes from `training.phase_checkpoint`, initializes W&B logger, trains with Lightning, writes `last.ckpt`.
 - Key callers/callees: `main`; callees include `load_sleep2wave_config`, `Sleep2WaveDiffusionLightning`, optional `load_sleep2vec2_initialization`.
 - Reuse guidance: use as the diffusion training entrypoint.
 
@@ -60,6 +60,15 @@
 - Key callers/callees: `main`; callees include `load_sleep2wave_config`, `build_generation_task`, `load_sleep2wave_autoencoder_checkpoint`, `_load_diffusion_model`, `_collect_generation_windows`, `_fuse_generated`, `_fuse_masks`, `compute_uncertainty`, `build_generation_manifest`, and `write_generation_artifacts`.
 - Reuse guidance: use as the only generation orchestration path.
 - Duplication-risk notes: keep artifact schema and evaluation compatibility here.
+
+## `sleep2wave.generate_batch.run_batch_generation`
+
+- File: `sleep2wave/generate_batch.py`
+- Signature: `run_batch_generation(args: argparse.Namespace) -> list[Path]`
+- Purpose and contract: group preset/index windows by subject/night and call the canonical one-night `run_generation` path once per group.
+- Important inputs/outputs: generation CLI args in; generated artifact directories out.
+- Side effects: writes temporary per-night preset pickles and generation artifacts.
+- Reuse guidance: keep batch generation as a wrapper; do not duplicate artifact or sampler logic.
 
 ## `sleep2wave.generate._collect_generation_windows`
 

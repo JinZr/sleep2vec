@@ -99,11 +99,24 @@
 - Side effects: reads arrays from NPZ.
 - Reuse guidance: keep mask fallback behavior here rather than duplicating it in datasets.
 
+## Derived-channel sidecars
+
+- File: `sleep2wave/data/derivations.py`
+- Symbols:
+  - `derive_record_channels`
+  - `derive_ibi_from_ecg`
+  - `derive_resp_from_signal`
+  - `run_derivation_jobs`
+- Purpose and contract: build split-safe deterministic `ibi` and `resp` sidecar NPZ files plus epoch-level `*_quality_mask` arrays for each record.
+- Important inputs/outputs: primary NPZ path plus requested derivations in; sidecar NPZ with derived channels and quality masks out.
+- Side effects: writes sidecar NPZ files.
+- Reuse guidance: use this sidecar path instead of deriving IBI/RESP inside training.
+
 ## `sleep2wave.data.derivations.validate_subject_split_boundaries`
 
 - File: `sleep2wave/data/derivations.py`
 - Signature: `validate_subject_split_boundaries(df: pd.DataFrame, *, subject_id_col: str = "subject_id", split_col: str = "split") -> None`
-- Purpose and contract: reject missing subject/split values and subjects appearing in multiple splits.
+- Purpose and contract: reject missing subject/split values and subjects appearing in multiple splits before derived sidecars are built.
 - Important inputs/outputs: index DataFrame in; raises on invalid split contract.
 - Side effects: none.
 - Key callers/callees: derivation planning.

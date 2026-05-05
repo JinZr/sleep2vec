@@ -59,6 +59,15 @@
 - Key callers/callees: `evaluate_generation.run_evaluation`.
 - Reuse guidance: use for event-family evaluation.
 
+## `sleep2wave.evaluation.event_metrics.compute_generated_signal_event_groups`
+
+- File: `sleep2wave/evaluation/event_metrics.py`
+- Signature: `compute_generated_signal_event_groups(reference_by_modality, generated_by_modality, *, sample_rates, iou_threshold) -> dict[str, Any]`
+- Purpose and contract: derive simple event intervals from generated/reference SpO2 and respiratory waveforms when no external events JSON is provided.
+- Important inputs/outputs: modality arrays in; desaturation and low-amplitude respiratory event metrics out.
+- Side effects: none.
+- Reuse guidance: use as the generated-signal adapter before adding heavier clinical event detectors.
+
 ## `sleep2wave.evaluation.efficiency.summarize_generation_efficiency`
 
 - File: `sleep2wave/evaluation/efficiency.py`

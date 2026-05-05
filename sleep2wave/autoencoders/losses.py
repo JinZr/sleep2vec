@@ -19,6 +19,7 @@ def _epoch_weights(
     target: torch.Tensor,
     availability_mask: dict[str, torch.Tensor] | None,
     quality_mask: dict[str, torch.Tensor] | None,
+    channel_mask: dict[str, torch.Tensor] | None,
 ) -> torch.Tensor:
     batch_size, epoch_count = target.shape[:2]
     weights = torch.ones((batch_size, epoch_count), dtype=target.dtype, device=target.device)
@@ -26,6 +27,11 @@ def _epoch_weights(
         weights = weights * availability_mask[modality].to(device=target.device, dtype=target.dtype)
     if quality_mask is not None and modality in quality_mask:
         weights = weights * quality_mask[modality].to(device=target.device, dtype=target.dtype)
+    if channel_mask is not None and modality in channel_mask:
+        channel_weights = channel_mask[modality].to(device=target.device, dtype=target.dtype)
+        if channel_weights.dim() != 3:
+            raise ValueError(f"channel_mask['{modality}'] must have shape [B, E, C].")
+        weights = weights.unsqueeze(-1) * channel_weights
     return weights
 
 
@@ -33,20 +39,23 @@ def _masked_waveform_mean(
     values: torch.Tensor,
     weights: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    denominator = weights.sum()
+    for dim in values.shape[weights.dim() :]:
+        denominator = denominator * dim
     broadcast_weights = weights
     while broadcast_weights.dim() < values.dim():
         broadcast_weights = broadcast_weights.unsqueeze(-1)
     weighted = values * broadcast_weights
-    denominator = broadcast_weights.sum() * values.shape[-1]
-    if values.dim() == 4:
-        denominator = denominator * values.shape[-2]
     return weighted.sum(), denominator
 
 
 def _masked_epoch_mean(values: torch.Tensor, weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    denominator = weights.sum()
+    for dim in values.shape[weights.dim() :]:
+        denominator = denominator * dim
     while weights.dim() < values.dim():
         weights = weights.unsqueeze(-1)
-    return (values * weights).sum(), weights.sum() * values.shape[-1]
+    return (values * weights).sum(), denominator
 
 
 def _safe_divide(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Tensor:
@@ -74,6 +83,7 @@ def compute_autoencoder_loss(
     *,
     availability_mask: dict[str, torch.Tensor] | None = None,
     quality_mask: dict[str, torch.Tensor] | None = None,
+    channel_mask: dict[str, torch.Tensor] | None = None,
     config: AutoencoderLossConfig,
 ) -> dict[str, torch.Tensor]:
     _validate_loss_weights(config)
@@ -98,7 +108,7 @@ def compute_autoencoder_loss(
             )
         target4d = _ensure_signal4d(target)
         reconstruction4d = _ensure_signal4d(reconstruction)
-        weights = _epoch_weights(modality, target4d, availability_mask, quality_mask)
+        weights = _epoch_weights(modality, target4d, availability_mask, quality_mask, channel_mask)
 
         l1_sum, l1_count = _masked_waveform_mean(torch.abs(reconstruction4d - target4d), weights)
         l2_sum, l2_count = _masked_waveform_mean((reconstruction4d - target4d).pow(2), weights)
@@ -141,12 +151,14 @@ class Sleep2WaveAutoencoderLoss(nn.Module):
         *,
         availability_mask: dict[str, torch.Tensor] | None = None,
         quality_mask: dict[str, torch.Tensor] | None = None,
+        channel_mask: dict[str, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
         return compute_autoencoder_loss(
             reconstructions,
             targets,
             availability_mask=availability_mask,
             quality_mask=quality_mask,
+            channel_mask=channel_mask,
             config=self.config,
         )
 

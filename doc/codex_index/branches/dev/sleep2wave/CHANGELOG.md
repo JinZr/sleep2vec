@@ -14,9 +14,16 @@
   - generation evaluation
   - sleep2wave config validation routing
 - No stale branch-index entries were removed because this was a new branch index.
+- Updated after the Sleep2Wave gap-closure implementation:
+  - task-aware restoration/imputation corruptions are configured under `training.corruptions`
+  - replay-enabled diffusion phase defaults include imputation tasks
+  - `training.phase_checkpoint` and `--resume-from-checkpoint` separate phase continuation from crash resume
+  - deterministic IBI/RESP sidecar derivation and epoch-level quality-mask discovery are implemented
+  - autoencoder decoding uses ConvTranspose1d and supports padded multi-channel inputs through `channel_mask`
+  - cache-only diffusion is supported for translation/partial-full task mixes
+  - medium Sleep2Wave YAMLs were added under `configs/sleep2wave`
+  - generated-signal event adapters and per-night batch generation wrappers were added
 
 ## Unresolved Ambiguities
 
-- Replay config and `sleep2wave/training/replay_buffer.py` exist, but replay is not wired into the inspected diffusion Lightning training path.
-- `diffusion.latent_cache_path` exists in config, but cache-only diffusion training is rejected.
 - Exact production data paths and real sleep2wave artifact conventions are unknown from tracked source alone.

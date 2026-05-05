@@ -2,7 +2,8 @@ recipe: sleep2wave
 stage: diffusion
 
 data:
-  preset_path: data/sleep2wave_tiny_preset.pkl
+  preset_path: data/sleep2wave_medium_preset.pkl
+  context_epochs: 15
 
 modalities:
   epoch_sec: 30
@@ -31,12 +32,12 @@ modalities:
     resp: 120
 
 diffusion:
-  latent_dim: 64
-  autoencoder_checkpoint: checkpoints/sleep2wave_autoencoder_tiny.ckpt
+  latent_dim: 768
+  autoencoder_checkpoint: checkpoints/sleep2wave_autoencoder_medium.ckpt
   transformer:
-    hidden_size: 64
-    num_layers: 2
-    num_heads: 4
+    hidden_size: 768
+    num_layers: 12
+    num_heads: 16
     mlp_ratio: 4
   diffusion_steps: 1000
   beta_schedule: cosine
@@ -55,36 +56,31 @@ diffusion:
 
 training:
   phase: 1
-  batch_size: 2
+  batch_size: 8
   lr: 0.0001
   weight_decay: 0.01
-  max_epochs: 1
+  max_epochs: 20
   gradient_clip_val: 1.0
-  task_mix:
-    restoration: 1.0
-    imputation: 0.0
-    translation: 0.0
-    partial_full: 0.0
   condition_counts: [1]
   replay:
-    enabled: false
+    enabled: true
   corruptions:
     restoration:
       default:
         name: gaussian_noise
         kwargs:
-          std: 0.01
+          std: 0.05
     imputation:
       default:
         name: contiguous_window_mask
         kwargs:
-          window_frames: 12
+          window_frames: 120
 
 sampler:
   name: ddim
-  steps: 10
+  steps: 20
   eta: 0.0
   num_samples: 1
 
 export:
-  output_dir: outputs/sleep2wave_diffusion_tiny
+  output_dir: outputs/sleep2wave_diffusion_medium_phase1

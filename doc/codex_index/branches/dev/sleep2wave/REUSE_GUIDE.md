@@ -19,6 +19,7 @@
 | Diffusion transformer | `Sleep2WaveDiffusionTransformer.from_config` | Constructs model from typed `DiffusionConfig` | Direct constructor calls from YAML dicts |
 | Diffusion schedule | `build_diffusion_schedule` | Single cosine schedule implementation and validation | Recomputing beta/alpha arrays locally |
 | Diffusion samplers | `build_sampler`, `DDIMSampler`, `DDPMSampler` | Encodes DDIM/DDPM step constraints and generated-latent shape | Sampling loops inside generation CLI |
+| Latent cache training | `Sleep2WaveLatentCacheDataset` and `write_latent_cache` | Defines cache manifest, latent arrays, masks, and metadata records | Ad hoc latent NPZ readers |
 | Training task sampling | `Sleep2WaveTaskSampler` and `build_phase_schedule` | Central phase/task mix and availability-aware task selection | Random task code in Lightning modules |
 | Autoencoder checkpoint loading | `load_sleep2wave_autoencoder_checkpoint` | Loads only compatible sleep2wave autoencoder weights | Raw `torch.load` in diffusion/generation code |
 | Sleep2Vec2 initialization | `load_sleep2vec2_initialization` | Groups compatible checkpoint keys and reports loaded/missing/skipped state | Unstructured state-dict copying |
@@ -83,4 +84,4 @@
 
 - `sleep2wave/preprocess/preprocess_pipeline.ipynb` is workflow history.
 - Tracked font assets are packaging assets, not reusable logic.
-- `sleep2wave/training/replay_buffer.py` should not be treated as active replay training until the Lightning path uses it.
+- `sleep2wave/training/replay_buffer.py` is only a record container; active replay behavior is represented by phase task mixtures selected through `training.replay.enabled`.

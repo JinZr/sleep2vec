@@ -94,6 +94,34 @@ class ReplayConfig:
 
 
 @dataclass(frozen=True)
+class CorruptionSpecConfig:
+    name: str
+    kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CorruptionPolicyConfig:
+    default: CorruptionSpecConfig | None = None
+    by_modality: dict[str, CorruptionSpecConfig] = field(default_factory=dict)
+
+    def for_modality(self, modality: str) -> CorruptionSpecConfig | None:
+        return self.by_modality.get(modality, self.default)
+
+
+@dataclass(frozen=True)
+class TrainingCorruptionsConfig:
+    restoration: CorruptionPolicyConfig = field(default_factory=CorruptionPolicyConfig)
+    imputation: CorruptionPolicyConfig = field(default_factory=CorruptionPolicyConfig)
+
+    def for_task(self, task_type: str) -> CorruptionPolicyConfig | None:
+        if task_type == "restoration":
+            return self.restoration
+        if task_type == "imputation":
+            return self.imputation
+        return None
+
+
+@dataclass(frozen=True)
 class TrainingConfig:
     phase: int
     batch_size: int
@@ -101,9 +129,11 @@ class TrainingConfig:
     weight_decay: float
     max_epochs: int
     gradient_clip_val: float
+    phase_checkpoint: str | None = None
     task_mix: dict[str, float] = field(default_factory=dict)
     condition_counts: list[int] = field(default_factory=list)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
+    corruptions: TrainingCorruptionsConfig = field(default_factory=TrainingCorruptionsConfig)
 
 
 @dataclass(frozen=True)
@@ -382,8 +412,8 @@ def _load_diffusion(raw: t.Any) -> DiffusionConfig:
 
     autoencoder_checkpoint = _optional_string(block, "autoencoder_checkpoint", "diffusion")
     latent_cache_path = _optional_string(block, "latent_cache_path", "diffusion")
-    if autoencoder_checkpoint is None:
-        raise ValueError("diffusion.autoencoder_checkpoint is required until latent cache training is implemented.")
+    if autoencoder_checkpoint is None and latent_cache_path is None:
+        raise ValueError("diffusion must define autoencoder_checkpoint or latent_cache_path.")
 
     beta_schedule = _require_string(block, "beta_schedule", "diffusion")
     if beta_schedule != "cosine":
@@ -451,6 +481,71 @@ def _load_replay(raw: t.Any) -> ReplayConfig:
     return ReplayConfig(enabled=_require_bool(block, "enabled", "training.replay"))
 
 
+def _load_corruption_kwargs(raw: t.Any, path: str) -> dict[str, t.Any]:
+    if raw is None:
+        return {}
+    block = _require_mapping(raw, path)
+    parsed: dict[str, t.Any] = {}
+    for key, value in block.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{path} keys must be non-empty strings.")
+        if isinstance(value, (dict, list)):
+            raise ValueError(f"{path}.{key} must be a scalar value.")
+        parsed[key] = value
+    return parsed
+
+
+def _validate_corruption_name(name: str, path: str) -> None:
+    from sleep2wave.data.corruptions import CORRUPTION_REGISTRY
+
+    if name not in CORRUPTION_REGISTRY:
+        raise ValueError(f"{path}.name must be one of {sorted(CORRUPTION_REGISTRY)}. Got: {name}")
+
+
+def _load_corruption_spec(raw: t.Any, path: str) -> CorruptionSpecConfig | None:
+    if raw is None:
+        return None
+    block = _require_mapping(raw, path)
+    _reject_extra(block, {"name", "kwargs"}, path)
+    name = _require_string(block, "name", path)
+    _validate_corruption_name(name, path)
+    return CorruptionSpecConfig(
+        name=name,
+        kwargs=_load_corruption_kwargs(block.get("kwargs"), f"{path}.kwargs"),
+    )
+
+
+def _load_corruption_policy(raw: t.Any, path: str) -> CorruptionPolicyConfig:
+    if raw is None:
+        return CorruptionPolicyConfig()
+    block = _require_mapping(raw, path)
+    _reject_extra(block, {"default", "by_modality"}, path)
+    by_modality_raw = block.get("by_modality", {})
+    by_modality_block = _require_mapping(by_modality_raw, f"{path}.by_modality")
+    by_modality: dict[str, CorruptionSpecConfig] = {}
+    for raw_modality, raw_spec in by_modality_block.items():
+        modality = validate_modality_sequence([raw_modality], allow_aliases=False)[0]
+        spec = _load_corruption_spec(raw_spec, f"{path}.by_modality.{modality}")
+        if spec is None:
+            raise ValueError(f"{path}.by_modality.{modality} must define a corruption spec.")
+        by_modality[modality] = spec
+    return CorruptionPolicyConfig(
+        default=_load_corruption_spec(block.get("default"), f"{path}.default"),
+        by_modality=by_modality,
+    )
+
+
+def _load_training_corruptions(raw: t.Any) -> TrainingCorruptionsConfig:
+    if raw is None:
+        return TrainingCorruptionsConfig()
+    block = _require_mapping(raw, "training.corruptions")
+    _reject_extra(block, {"restoration", "imputation"}, "training.corruptions")
+    return TrainingCorruptionsConfig(
+        restoration=_load_corruption_policy(block.get("restoration"), "training.corruptions.restoration"),
+        imputation=_load_corruption_policy(block.get("imputation"), "training.corruptions.imputation"),
+    )
+
+
 def _load_training(raw: t.Any) -> TrainingConfig:
     block = _require_mapping(raw, "training")
     allowed = {
@@ -460,9 +555,11 @@ def _load_training(raw: t.Any) -> TrainingConfig:
         "weight_decay",
         "max_epochs",
         "gradient_clip_val",
+        "phase_checkpoint",
         "task_mix",
         "condition_counts",
         "replay",
+        "corruptions",
     }
     _reject_extra(block, allowed, "training")
     phase = _require_int(block, "phase", "training", minimum=0)
@@ -475,9 +572,11 @@ def _load_training(raw: t.Any) -> TrainingConfig:
         weight_decay=_require_float(block, "weight_decay", "training", minimum=0.0),
         max_epochs=_require_int(block, "max_epochs", "training", minimum=1),
         gradient_clip_val=_require_float(block, "gradient_clip_val", "training", minimum=0.0),
+        phase_checkpoint=_optional_string(block, "phase_checkpoint", "training"),
         task_mix=_load_task_mix(block.get("task_mix")),
         condition_counts=_load_condition_counts(block.get("condition_counts")),
         replay=_load_replay(block.get("replay")),
+        corruptions=_load_training_corruptions(block.get("corruptions")),
     )
 
 
@@ -675,6 +774,20 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
         diffusion_cfg = _load_diffusion(data["diffusion"])
         if data_cfg is None or data_cfg.context_epochs != diffusion_cfg.context_epochs:
             raise ValueError("data.context_epochs must match diffusion.context_epochs.")
+        if diffusion_cfg.autoencoder_checkpoint is None:
+            from sleep2wave.training.phase_schedule import build_phase_schedule
+
+            schedule = build_phase_schedule(
+                training_cfg.phase,
+                training_cfg.task_mix,
+                replay_enabled=training_cfg.replay.enabled,
+            )
+            unsupported = sorted(set(schedule.task_mix) & {"restoration", "imputation"})
+            if unsupported:
+                raise ValueError(
+                    "diffusion.latent_cache_path without autoencoder_checkpoint supports only "
+                    f"translation/partial_full task mixes, got {unsupported}."
+                )
         sampler_cfg = _load_sampler(data["sampler"], diffusion_cfg)
     elif stage == "inference":
         if "training" in data:
@@ -726,6 +839,8 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
 __all__ = [
     "AutoencoderConfig",
     "AutoencoderLossConfig",
+    "CorruptionPolicyConfig",
+    "CorruptionSpecConfig",
     "DataConfig",
     "DiffusionConfig",
     "EvaluationConfig",
@@ -736,6 +851,7 @@ __all__ = [
     "Sleep2WaveConfig",
     "SUPPORTED_EVALUATION_METRIC_FAMILIES",
     "SUPPORTED_INITIALIZATION_GROUPS",
+    "TrainingCorruptionsConfig",
     "TrainingConfig",
     "load_sleep2wave_config",
 ]

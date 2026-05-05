@@ -14,6 +14,7 @@ AUTOENCODER_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_autoencode
 DIFFUSION_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_diffusion_tiny.yaml"
 GENERATE_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_generate_tiny.yaml"
 EVAL_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_eval_tiny.yaml"
+MEDIUM_CONFIGS = sorted((REPO_ROOT / "configs" / "sleep2wave").glob("*medium*.yaml"))
 
 
 def _load_payload(path: Path) -> dict:
@@ -50,6 +51,8 @@ def test_sleep2wave_generative_config_loads_diffusion_tiny():
     assert cfg.sampler is not None
     assert cfg.sampler.name == "ddim"
     assert cfg.sampler.steps == 10
+    assert cfg.training.corruptions.restoration.default.name == "gaussian_noise"
+    assert cfg.training.corruptions.imputation.default.name == "contiguous_window_mask"
 
 
 def test_sleep2wave_generative_config_loads_inference_tiny():
@@ -160,14 +163,38 @@ def test_sleep2wave_generative_config_rejects_inference_data_context_mismatch(tm
         load_sleep2wave_config(path)
 
 
-def test_sleep2wave_generative_config_rejects_cache_only_diffusion_config(tmp_path: Path):
+def test_sleep2wave_generative_config_rejects_cache_only_restoration_config(tmp_path: Path):
     payload = _load_payload(DIFFUSION_TINY)
     del payload["diffusion"]["autoencoder_checkpoint"]
     payload["diffusion"]["latent_cache_path"] = "latents"
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
-    with pytest.raises(ValueError, match="diffusion.autoencoder_checkpoint is required"):
+    with pytest.raises(ValueError, match="supports only translation/partial_full"):
         load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_accepts_cache_only_translation_config(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    del payload["diffusion"]["autoencoder_checkpoint"]
+    payload["diffusion"]["latent_cache_path"] = "latents"
+    payload["training"]["phase"] = 2
+    payload["training"]["task_mix"] = {"translation": 1.0}
+    path = _write_yaml(tmp_path / "good.yaml", payload)
+
+    cfg = load_sleep2wave_config(path)
+
+    assert cfg.diffusion.autoencoder_checkpoint is None
+    assert cfg.diffusion.latent_cache_path == "latents"
+
+
+def test_sleep2wave_generative_config_loads_phase_checkpoint(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    payload["training"]["phase_checkpoint"] = "previous.ckpt"
+    path = _write_yaml(tmp_path / "good.yaml", payload)
+
+    cfg = load_sleep2wave_config(path)
+
+    assert cfg.training.phase_checkpoint == "previous.ckpt"
 
 
 def test_sleep2wave_generative_config_rejects_non_finite_float(tmp_path: Path):
@@ -268,6 +295,18 @@ def test_sleep2wave_generative_config_accepts_two_condition_task_mix(tmp_path: P
 
     assert cfg.training is not None
     assert cfg.training.task_mix == {"two_condition": 1.0}
+
+
+@pytest.mark.parametrize("path", MEDIUM_CONFIGS)
+def test_sleep2wave_generative_config_loads_medium_bundle(path: Path):
+    cfg = load_sleep2wave_config(path)
+
+    assert cfg.recipe == "sleep2wave"
+    if cfg.diffusion is not None:
+        assert cfg.diffusion.latent_dim == 768
+        assert cfg.diffusion.transformer.hidden_size == 768
+        assert cfg.diffusion.transformer.num_layers == 12
+        assert cfg.diffusion.transformer.num_heads == 16
 
 
 def test_sleep2wave_generative_config_rejects_invalid_data_context_epochs(tmp_path: Path):

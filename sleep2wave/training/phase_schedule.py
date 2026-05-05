@@ -3,11 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 DEFAULT_PHASE_TASK_MIX: dict[int, dict[str, float]] = {
+    1: {"restoration": 0.5, "imputation": 0.5},
+    2: {"restoration": 0.25, "imputation": 0.25, "translation": 0.5},
+    3: {"restoration": 0.125, "imputation": 0.125, "translation": 0.25, "two_condition": 0.5},
+    4: {"restoration": 0.1, "imputation": 0.1, "translation": 0.2, "two_condition": 0.3, "partial_full": 0.3},
+    5: {"restoration": 0.2, "imputation": 0.2, "translation": 0.2, "two_condition": 0.2, "partial_full": 0.2},
+}
+CURRENT_PHASE_TASK_MIX: dict[int, dict[str, float]] = {
     1: {"restoration": 1.0},
-    2: {"restoration": 0.5, "translation": 0.5},
-    3: {"restoration": 0.25, "translation": 0.25, "two_condition": 0.5},
-    4: {"restoration": 0.2, "translation": 0.2, "two_condition": 0.3, "partial_full": 0.3},
-    5: {"restoration": 0.25, "translation": 0.25, "two_condition": 0.25, "partial_full": 0.25},
+    2: {"translation": 1.0},
+    3: {"two_condition": 1.0},
+    4: {"partial_full": 1.0},
+    5: {"partial_full": 1.0},
 }
 TASK_FAMILIES = {"restoration", "imputation", "translation", "two_condition", "partial_full"}
 
@@ -38,12 +45,17 @@ def _validate_task_mix(task_mix: dict[str, float]) -> dict[str, float]:
     return parsed
 
 
-def build_phase_schedule(phase: int, task_mix: dict[str, float] | None = None) -> PhaseSchedule:
+def build_phase_schedule(
+    phase: int,
+    task_mix: dict[str, float] | None = None,
+    *,
+    replay_enabled: bool = True,
+) -> PhaseSchedule:
     if not isinstance(phase, int) or isinstance(phase, bool) or phase < 1 or phase > 5:
         raise ValueError("phase must be an integer between 1 and 5 for diffusion training.")
-    default_mix = DEFAULT_PHASE_TASK_MIX[phase]
+    default_mix = DEFAULT_PHASE_TASK_MIX[phase] if replay_enabled else CURRENT_PHASE_TASK_MIX[phase]
     raw_mix = default_mix if not task_mix else task_mix
     return PhaseSchedule(phase=phase, task_mix=_validate_task_mix(raw_mix))
 
 
-__all__ = ["DEFAULT_PHASE_TASK_MIX", "PhaseSchedule", "build_phase_schedule"]
+__all__ = ["CURRENT_PHASE_TASK_MIX", "DEFAULT_PHASE_TASK_MIX", "PhaseSchedule", "build_phase_schedule"]

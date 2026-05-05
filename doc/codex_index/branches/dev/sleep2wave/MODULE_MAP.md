@@ -11,9 +11,9 @@
 | sleep2wave modality and dataset contract | `sleep2wave/data/modalities.py`, `generative_dataset.py`, `generative_batch.py`, `quality.py`, `corruptions.py`, `derivations.py` | Canonical modalities, index/preset windows, signal slicing, masks, corruption, and collation | pandas, NumPy, Torch | New modalities, masks, derivations, or data layout | Preset schema version lives here |
 | sleep2wave preprocessing | `sleep2wave/preprocess/build_sleep2wave_presets.py`, `validate_sleep2wave_index.py`, `derive_sleep2wave_channels.py`, copied split/preset utilities | Build and validate generative presets and indexes | `sleep2wave.data.generative_dataset`, pandas | New index columns or preset schema | `watchpat_zzp_to_edf.py` remains conversion-specific |
 | Autoencoder model | `sleep2wave/autoencoders/model.py`, `losses.py`, `lightning.py`, `checkpoints.py` | Modality-specific waveform autoencoding and training loop | Torch, Lightning | Autoencoder architecture or losses | One latent per 30-second epoch is the current contract |
-| Diffusion model | `sleep2wave/diffusion/model.py`, `schedule.py`, `samplers.py`, `tasks.py`, `task_masks.py`, `losses.py`, `lightning.py` | Latent diffusion transformer, task semantics, directional masks, sampling, training loop | autoencoder checkpoint, Torch, Lightning | Task families, mask semantics, sampler behavior | DDPM requires full schedule length; DDIM can use sparse steps |
+| Diffusion model | `sleep2wave/diffusion/model.py`, `schedule.py`, `samplers.py`, `tasks.py`, `task_masks.py`, `losses.py`, `lightning.py`, `latent_cache.py` | Latent diffusion transformer, task semantics, directional masks, sampling, cache loading, training loop | autoencoder checkpoint or latent cache, Torch, Lightning | Task families, mask semantics, sampler behavior | DDPM requires full schedule length; DDIM can use sparse steps |
 | Task curriculum | `sleep2wave/training/phase_schedule.py`, `task_sampler.py`, `replay_buffer.py`, `logging.py` | Phase-to-task mix defaults, random task sampling, run naming | diffusion tasks, availability masks | New phase schedule or sampling policy | Phases 1-5 are diffusion-only |
-| sleep2wave generation runtime | `sleep2wave/generate.py`, `inference/sliding_window.py`, `inference/uncertainty.py`, `export/artifacts.py`, `export/manifest.py` | CLI generation, checkpoint loading, sliding-window fusion, artifact export | autoencoder, diffusion sampler, config | Artifact schema, fusion mode, uncertainty policy | Currently supports one subject/night per run |
+| sleep2wave generation runtime | `sleep2wave/generate.py`, `generate_batch.py`, `inference/sliding_window.py`, `inference/uncertainty.py`, `export/artifacts.py`, `export/manifest.py` | CLI generation, batch per-night wrapper, checkpoint loading, sliding-window fusion, artifact export | autoencoder, diffusion sampler, config | Artifact schema, fusion mode, uncertainty policy | `generate.py` remains one subject/night per run |
 | sleep2wave evaluation runtime | `sleep2wave/evaluate_generation.py`, `evaluation/*.py` | Evaluate generated artifacts across metric families | NumPy, JSON, generated artifact schema | Metric families or output schema | Writes both JSON and CSV metrics |
 | Config validation tooling | `utils/check_configs.py`, `tests/test_check_configs.py` | Repo-wide YAML validation with sleep2wave variant routing | config loaders, importlib | New config variant roots | `CONFIG_VARIANTS` maps `configs/sleep2wave` to package-local loaders |
 | Tests | `tests/test_sleep2wave_*.py` plus modified `tests/test_check_configs.py` | Pin sleep2wave namespace, config, data, model, runtime, artifact, and metrics contracts | pytest, Torch, pandas, yaml | Contract coverage | Use these before calling branch changes complete |
@@ -24,7 +24,7 @@
 - `utils/check_configs.py` -> `sleep2wave.config` and `sleep2wave.preprocess.save_dataset_presets` for non-generative `configs/sleep2wave`
 - `train_autoencoder.py` -> `load_sleep2wave_config` -> `Sleep2WaveGenerativeDataset` -> `Sleep2WaveAutoencoderLightning`
 - `train_diffusion.py` -> `load_sleep2wave_config` -> `Sleep2WaveGenerativeDataset` -> `Sleep2WaveDiffusionLightning`
-- `Sleep2WaveDiffusionLightning` -> `load_sleep2wave_autoencoder_checkpoint` -> `Sleep2WaveTaskSampler` -> `Sleep2WaveDiffusionTransformer`
+- `Sleep2WaveDiffusionLightning` -> autoencoder checkpoint or `Sleep2WaveLatentCacheDataset` -> `Sleep2WaveTaskSampler` -> `Sleep2WaveDiffusionTransformer`
 - `generate.py` -> `load_sleep2wave_config` -> autoencoder checkpoint + diffusion checkpoint -> `build_sampler` -> sliding-window fusion -> artifact export
 - `evaluate_generation.py` -> generated artifact files -> metric family modules -> `metrics.json` and `metrics.csv`
 - `build_sleep2wave_presets.py` -> `build_sample_indices_from_frame` -> schema-versioned `SampleIndex` list
@@ -40,6 +40,5 @@
 ## Ambiguities Worth Remembering
 
 - `sleep2wave/preprocess/preprocess_pipeline.ipynb` is workflow history, not canonical library code.
-- `sleep2wave/training/replay_buffer.py` exists, but replay is not wired into `Sleep2WaveDiffusionLightning` beyond config presence in the inspected source.
-- `diffusion.latent_cache_path` exists in config but cache-only diffusion training is rejected until implemented.
+- Cache-only diffusion is intentionally limited to translation and partial-full task mixes because restoration/imputation need waveform-level corruption before encoding.
 - `sleep2wave` package-local runtime mirrors the base runtime, but the branch-specific reason to edit it should be explicit before diverging from base behavior.

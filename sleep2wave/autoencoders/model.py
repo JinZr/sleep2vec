@@ -5,6 +5,7 @@ import typing as t
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS, validate_modality_sequence
 
@@ -36,15 +37,30 @@ class _EpochConvEncoder(nn.Module):
 class _EpochDecoder(nn.Module):
     def __init__(self, *, frames_per_epoch: int, latent_dim: int) -> None:
         super().__init__()
-        hidden_dim = max(32, min(256, latent_dim * 2))
-        self.net = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, frames_per_epoch),
-        )
+        self.frames_per_epoch = int(frames_per_epoch)
+        width = 32 if frames_per_epoch >= 1000 else 16
+        init_length = 16 if frames_per_epoch >= 1000 else 8
+        layers: list[nn.Module] = []
+        length = init_length
+        while length < frames_per_epoch:
+            layers.extend(
+                [
+                    nn.ConvTranspose1d(width, width, kernel_size=4, stride=2, padding=1),
+                    nn.ReLU(),
+                ]
+            )
+            length *= 2
+        self.proj = nn.Linear(latent_dim, width * init_length)
+        self.init_length = init_length
+        self.width = width
+        self.net = nn.Sequential(*layers, nn.Conv1d(width, 1, kernel_size=3, padding=1))
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        return self.net(z).unsqueeze(1)
+        x = self.proj(z).reshape(z.shape[0], self.width, self.init_length)
+        x = self.net(x)
+        if x.shape[-1] != self.frames_per_epoch:
+            x = F.interpolate(x, size=self.frames_per_epoch, mode="linear", align_corners=False)
+        return x
 
 
 class _ModalityAutoencoder(nn.Module):
@@ -55,28 +71,36 @@ class _ModalityAutoencoder(nn.Module):
         self.encoder = _EpochConvEncoder(frames_per_epoch=frames_per_epoch, latent_dim=latent_dim)
         self.decoder = _EpochDecoder(frames_per_epoch=frames_per_epoch, latent_dim=latent_dim)
 
-    def _prepare_input(self, x: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int], bool]:
+    def _prepare_input(self, x: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int, int], bool]:
         if x.dim() == 3:
             batch_size, epoch_count, frames = x.shape
+            channels = 1
             channel_first = False
             x = x.unsqueeze(2)
         elif x.dim() == 4:
             batch_size, epoch_count, channels, frames = x.shape
             channel_first = True
-            if channels != 1:
-                raise ValueError(f"sleep2wave autoencoder PR3 supports only one channel, got C={channels}.")
         else:
             raise ValueError(f"Autoencoder input must be [B, E, S] or [B, E, C, S], got shape {tuple(x.shape)}.")
 
         if frames != self.frames_per_epoch:
             raise ValueError(f"Expected {self.frames_per_epoch} frames per epoch, got {frames}.")
 
-        return x.reshape(batch_size * epoch_count, 1, frames), (batch_size, epoch_count), channel_first
+        return (
+            x.reshape(batch_size * epoch_count * channels, 1, frames),
+            (batch_size, epoch_count, channels),
+            channel_first,
+        )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        prepared, (batch_size, epoch_count), channel_first = self._prepare_input(x)
-        latent = self.encoder(prepared).reshape(batch_size, epoch_count, -1)
+        prepared, (batch_size, epoch_count, channels), channel_first = self._prepare_input(x)
+        channel_latent = self.encoder(prepared).reshape(batch_size, epoch_count, channels, -1)
+        latent = channel_latent.mean(dim=2)
         reconstruction = self.decode(latent)
+        if channels > 1:
+            reconstruction = reconstruction.expand(
+                batch_size, epoch_count, channels, self.frames_per_epoch
+            ).contiguous()
         if not channel_first:
             reconstruction = reconstruction.squeeze(2)
         return latent, reconstruction

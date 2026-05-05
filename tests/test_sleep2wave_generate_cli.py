@@ -15,6 +15,7 @@ from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS
 from sleep2wave.diffusion.model import Sleep2WaveDiffusionTransformer
 from sleep2wave.diffusion.tasks import build_generation_task
 from sleep2wave.generate import _activate_requested_generation_targets, _resolve_generation_data_source, main
+from sleep2wave.generate_batch import run_batch_generation
 
 
 def _write_synthetic_preset(tmp_path: Path) -> Path:
@@ -237,3 +238,54 @@ def test_generate_smoke_writes_required_artifacts(tmp_path: Path):
     assert uncertainty["sample_count/eeg"].tolist() == [2]
     assert masks["condition/ecg"].tolist() == [True, True]
     assert masks["target/eeg"].tolist() == [True, True]
+
+
+def test_generate_batch_groups_by_subject_night(tmp_path: Path, monkeypatch):
+    preset_path = _write_synthetic_preset(tmp_path)
+    with preset_path.open("rb") as f:
+        first = pickle.load(f)[0]
+    second = SampleIndex(
+        id="synthetic-2",
+        path=first.path,
+        start=first.start,
+        end=first.end,
+        payload={**first.payload, "subject_id": "subject2", "night_id": "night2"},
+        metadata={**first.metadata, "subject_id": "subject2", "night_id": "night2"},
+    )
+    with preset_path.open("wb") as f:
+        pickle.dump([first, second], f)
+    autoencoder_ckpt, diffusion_ckpt = _write_checkpoints(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    calls = []
+
+    def fake_run_generation(args):
+        calls.append(args)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        return args.output_dir
+
+    monkeypatch.setattr("sleep2wave.generate.run_generation", fake_run_generation)
+
+    outputs = run_batch_generation(
+        SimpleNamespace(
+            config=config_path,
+            diffusion_ckpt=diffusion_ckpt,
+            autoencoder_ckpt=autoencoder_ckpt,
+            preset_path=preset_path,
+            index=None,
+            task="translation",
+            condition_modalities=["ecg"],
+            target_modalities=["eeg"],
+            num_samples=None,
+            output_dir=tmp_path / "batch_out",
+            stride_epochs=1,
+            overlap_fusion="mean",
+            batch_size=1,
+            num_workers=0,
+            device="cpu",
+            seed=0,
+        )
+    )
+
+    assert len(calls) == 2
+    assert len(outputs) == 2
+    assert all(call.preset_path.exists() for call in calls)

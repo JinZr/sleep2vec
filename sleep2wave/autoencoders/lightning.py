@@ -39,6 +39,7 @@ class Sleep2WaveAutoencoderLightning(pl.LightningModule):
             batch["clean_signals"],
             availability_mask=batch.get("availability_mask"),
             quality_mask=batch.get("quality_mask"),
+            channel_mask=batch.get("channel_mask"),
         )
         batch_size = next(iter(batch["clean_signals"].values())).shape[0]
         for name, value in losses.items():

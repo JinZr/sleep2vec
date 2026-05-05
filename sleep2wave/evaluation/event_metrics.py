@@ -118,9 +118,106 @@ def compute_event_metric_groups(
     return metrics
 
 
+def _contiguous_true_intervals(mask: np.ndarray, *, sample_rate_hz: int) -> list[list[float]]:
+    mask = np.asarray(mask, dtype=bool).reshape(-1)
+    intervals: list[list[float]] = []
+    start: int | None = None
+    for idx, value in enumerate(mask):
+        if value and start is None:
+            start = idx
+        elif not value and start is not None:
+            intervals.append([start / sample_rate_hz, idx / sample_rate_hz])
+            start = None
+    if start is not None:
+        intervals.append([start / sample_rate_hz, mask.size / sample_rate_hz])
+    return intervals
+
+
+def _flatten_signal(signal: t.Any) -> np.ndarray:
+    array = np.asarray(signal, dtype=np.float64)
+    if array.ndim == 1:
+        return array
+    if array.ndim == 2:
+        return array.reshape(-1)
+    if array.ndim >= 3:
+        return array[:, 0, :].reshape(-1)
+    raise ValueError("Signal must be at least 1D.")
+
+
+def detect_spo2_desaturation_events(signal: t.Any, *, sample_rate_hz: int, drop: float = 3.0) -> list[list[float]]:
+    values = _flatten_signal(signal)
+    finite = np.isfinite(values)
+    if not finite.any():
+        return []
+    baseline = float(np.nanmedian(values[finite]))
+    return _contiguous_true_intervals(values <= baseline - drop, sample_rate_hz=sample_rate_hz)
+
+
+def detect_low_amplitude_epoch_events(
+    signal: t.Any,
+    *,
+    sample_rate_hz: int,
+    epoch_sec: int = 30,
+    fraction: float = 0.5,
+) -> list[list[float]]:
+    array = np.asarray(signal, dtype=np.float64)
+    if array.ndim == 1:
+        frames_per_epoch = int(epoch_sec * sample_rate_hz)
+        array = array[: array.size // frames_per_epoch * frames_per_epoch].reshape(-1, frames_per_epoch)
+    elif array.ndim >= 3:
+        array = array[:, 0, :]
+    elif array.ndim != 2:
+        return []
+    if array.size == 0:
+        return []
+    amplitude = np.nanpercentile(array, 95, axis=-1) - np.nanpercentile(array, 5, axis=-1)
+    finite = np.isfinite(amplitude)
+    if not finite.any():
+        return []
+    threshold = float(np.nanmedian(amplitude[finite]) * fraction)
+    return [[idx * epoch_sec, (idx + 1) * epoch_sec] for idx, value in enumerate(amplitude) if value <= threshold]
+
+
+def compute_generated_signal_event_groups(
+    reference_by_modality: dict[str, t.Any],
+    generated_by_modality: dict[str, t.Any],
+    *,
+    sample_rates: dict[str, int],
+    iou_threshold: float,
+) -> dict[str, dict[str, float]]:
+    groups: dict[str, dict[str, t.Any]] = {}
+    if "spo2" in reference_by_modality and "spo2" in generated_by_modality:
+        groups["spo2_desaturation"] = {
+            "reference": detect_spo2_desaturation_events(
+                reference_by_modality["spo2"],
+                sample_rate_hz=sample_rates["spo2"],
+            ),
+            "generated": detect_spo2_desaturation_events(
+                generated_by_modality["spo2"],
+                sample_rate_hz=sample_rates["spo2"],
+            ),
+        }
+    for modality in ("airflow", "belt", "resp"):
+        if modality in reference_by_modality and modality in generated_by_modality:
+            groups[f"{modality}_low_amplitude"] = {
+                "reference": detect_low_amplitude_epoch_events(
+                    reference_by_modality[modality],
+                    sample_rate_hz=sample_rates[modality],
+                ),
+                "generated": detect_low_amplitude_epoch_events(
+                    generated_by_modality[modality],
+                    sample_rate_hz=sample_rates[modality],
+                ),
+            }
+    return compute_event_metric_groups(groups, iou_threshold=iou_threshold) if groups else {}
+
+
 __all__ = [
+    "compute_generated_signal_event_groups",
     "compute_event_metric_groups",
     "compute_event_metrics",
+    "detect_low_amplitude_epoch_events",
+    "detect_spo2_desaturation_events",
     "interval_iou",
     "match_intervals",
 ]

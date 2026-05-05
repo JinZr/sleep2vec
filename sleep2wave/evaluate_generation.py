@@ -199,7 +199,7 @@ def run_evaluation(args: argparse.Namespace) -> Path:
     from sleep2wave.data.modalities import MODALITY_SPECS
     from sleep2wave.evaluation.downstream_hooks import load_downstream_metrics
     from sleep2wave.evaluation.efficiency import summarize_generation_efficiency
-    from sleep2wave.evaluation.event_metrics import compute_event_metric_groups
+    from sleep2wave.evaluation.event_metrics import compute_event_metric_groups, compute_generated_signal_event_groups
     from sleep2wave.evaluation.feature_metrics import compute_feature_metrics
     from sleep2wave.evaluation.waveform_metrics import compute_waveform_metrics
     from sleep2wave.generative.config import load_sleep2wave_config
@@ -303,14 +303,28 @@ def run_evaluation(args: argparse.Namespace) -> Path:
 
     if "event" in metric_families:
         event_groups = _load_event_groups(Path(evaluation.events_json) if evaluation.events_json is not None else None)
-        metrics["event"] = (
-            compute_event_metric_groups(
+        if event_groups:
+            metrics["event"] = compute_event_metric_groups(
                 event_groups,
                 iou_threshold=evaluation.event_iou_threshold,
             )
-            if event_groups
-            else {}
-        )
+        elif reference_npz is not None:
+            reference_by_modality = {}
+            generated_by_modality = {}
+            for modality in generated_modalities:
+                reference = _load_reference(reference_npz, modality)
+                generated = _load_generated_mean(generated_npz, uncertainty_npz, modality)
+                if reference is not None and generated is not None:
+                    reference_by_modality[modality] = reference
+                    generated_by_modality[modality] = generated
+            metrics["event"] = compute_generated_signal_event_groups(
+                reference_by_modality,
+                generated_by_modality,
+                sample_rates={name: spec.sample_rate_hz for name, spec in MODALITY_SPECS.items()},
+                iou_threshold=evaluation.event_iou_threshold,
+            )
+        else:
+            metrics["event"] = {}
 
     if "efficiency" in metric_families:
         metrics["efficiency"] = summarize_generation_efficiency(manifest, generated_npz, uncertainty_npz)

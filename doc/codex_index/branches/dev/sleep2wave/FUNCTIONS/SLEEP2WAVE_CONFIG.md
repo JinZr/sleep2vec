@@ -6,7 +6,7 @@
 - Dataclasses:
   - `DataConfig`, `ModalitiesConfig`, `AutoencoderLossConfig`, `AutoencoderConfig`
   - `TransformerConfig`, `EmbeddingsConfig`, `DiffusionConfig`
-  - `ReplayConfig`, `TrainingConfig`, `SamplerConfig`
+  - `ReplayConfig`, `CorruptionSpecConfig`, `CorruptionPolicyConfig`, `TrainingCorruptionsConfig`, `TrainingConfig`, `SamplerConfig`
   - `InitializationConfig`, `ExportConfig`, `EvaluationConfig`, `Sleep2WaveConfig`
 - Purpose and contract: define the typed in-memory schema for `recipe: sleep2wave` YAML stages.
 - Important inputs/outputs: YAML mappings in; frozen dataclass tree out.
@@ -37,7 +37,7 @@
   - `_load_sampler(raw, diffusion_cfg) -> SamplerConfig`
   - `_load_initialization(raw) -> InitializationConfig | None`
   - `_load_evaluation(raw) -> EvaluationConfig`
-- Purpose and contract: parse individual schema blocks and reject unsupported fields.
+- Purpose and contract: parse individual schema blocks and reject unsupported fields, including task-aware corruption specs and phase checkpoint paths.
 - Important inputs/outputs: raw mapping in; typed config out.
 - Side effects: none.
 - Key callers/callees: called by `load_sleep2wave_config`.
