@@ -184,9 +184,10 @@ def train_diffusion(args: argparse.Namespace) -> Path:
         num_sanity_val_steps=0,
         use_distributed_sampler=use_distributed_sampler,
     )
-    if args.resume_from_checkpoint is not None and not args.resume_from_checkpoint.is_file():
-        raise FileNotFoundError(f"--resume-from-checkpoint not found: {args.resume_from_checkpoint}")
-    trainer.fit(model, train_dataloaders=train_loader, ckpt_path=args.resume_from_checkpoint)
+    resume_from_checkpoint = getattr(args, "resume_from_checkpoint", None)
+    if resume_from_checkpoint is not None and not resume_from_checkpoint.is_file():
+        raise FileNotFoundError(f"--resume-from-checkpoint not found: {resume_from_checkpoint}")
+    trainer.fit(model, train_dataloaders=train_loader, ckpt_path=resume_from_checkpoint)
     trainer.save_checkpoint(checkpoint_dir / "last.ckpt")
     return run_dir
 
