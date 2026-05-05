@@ -1,0 +1,64 @@
+recipe: sleep2wave
+stage: inference
+
+data:
+  preset_path: data/sleep2wave_tiny_preset.pkl
+  context_epochs: 15
+
+modalities:
+  epoch_sec: 30
+  all: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
+  high_frequency: [eeg, eog, emg, ecg]
+  low_frequency: [airflow, belt, spo2, ibi, resp]
+  sample_rates:
+    eeg: 128
+    eog: 128
+    emg: 128
+    ecg: 128
+    airflow: 4
+    belt: 4
+    spo2: 4
+    ibi: 4
+    resp: 4
+  frames_per_epoch:
+    eeg: 3840
+    eog: 3840
+    emg: 3840
+    ecg: 3840
+    airflow: 120
+    belt: 120
+    spo2: 120
+    ibi: 120
+    resp: 120
+
+diffusion:
+  latent_dim: 64
+  autoencoder_checkpoint: checkpoints/sleep2wave_autoencoder_tiny.ckpt
+  transformer:
+    hidden_size: 64
+    num_layers: 2
+    num_heads: 4
+    mlp_ratio: 4
+  diffusion_steps: 1000
+  beta_schedule: cosine
+  prediction_type: epsilon
+  context_epochs: 15
+  embeddings:
+    diffusion_step: true
+    modality: true
+    epoch_position: true
+    sleep_night_position: true
+    availability: true
+    quality: true
+  task_attention_mask: directional
+  auxiliary_restoration_token: true
+  condition_dropout: 0.15
+
+sampler:
+  name: ddim
+  steps: 10
+  eta: 0.0
+  num_samples: 2
+
+export:
+  output_dir: outputs/sleep2wave_generate_tiny

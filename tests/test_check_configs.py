@@ -103,6 +103,34 @@ def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_conv_config():
     check_config_file(path)
 
 
+def test_check_config_file_accepts_sleep2wave_generative_autoencoder_config():
+    path = Path(__file__).resolve().parents[1] / "configs" / "sleep2wave" / "sleep2wave_autoencoder_tiny.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2wave_generative_diffusion_config():
+    path = Path(__file__).resolve().parents[1] / "configs" / "sleep2wave" / "sleep2wave_diffusion_tiny.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2wave_generative_inference_config():
+    path = Path(__file__).resolve().parents[1] / "configs" / "sleep2wave" / "sleep2wave_generate_tiny.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2wave_generative_evaluation_config():
+    path = Path(__file__).resolve().parents[1] / "configs" / "sleep2wave" / "sleep2wave_eval_tiny.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_copied_sleep2wave_generative_config(tmp_path: Path):
+    source = Path(__file__).resolve().parents[1] / "configs" / "sleep2wave" / "sleep2wave_autoencoder_tiny.yaml"
+    payload = yaml.safe_load(source.read_text())
+    path = _write_yaml(tmp_path / "configs" / "sleep2wave" / "copied_autoencoder.yaml", payload)
+
+    check_config_file(path)
+
+
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
     _write_yaml(path, _ppg_finetune_payload(is_seq=True, preset_build=None))
