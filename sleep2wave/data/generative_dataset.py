@@ -78,9 +78,7 @@ def resolve_modality_mask_columns(df: pd.DataFrame, *, require_all: bool = True)
 
 def _has_any_modality_mask(df: pd.DataFrame) -> bool:
     return any(
-        candidate in df.columns
-        for modality in CANONICAL_MODALITIES
-        for candidate in modality_mask_candidates(modality)
+        candidate in df.columns for modality in CANONICAL_MODALITIES for candidate in modality_mask_candidates(modality)
     )
 
 
