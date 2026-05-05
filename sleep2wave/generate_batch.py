@@ -27,6 +27,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--condition-modalities", nargs="+", required=True)
     parser.add_argument("--target-modalities", nargs="+", required=True)
+    parser.add_argument("--corruption-name", type=str, default=None)
+    parser.add_argument("--corruption-kwargs", type=str, default=None)
+    parser.add_argument("--condition-mask-npz", type=Path, default=None)
     parser.add_argument("--num-samples", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--stride-epochs", type=int, default=1)
@@ -105,6 +108,9 @@ def run_batch_generation(args: argparse.Namespace) -> list[Path]:
             task=args.task,
             condition_modalities=args.condition_modalities,
             target_modalities=args.target_modalities,
+            corruption_name=getattr(args, "corruption_name", None),
+            corruption_kwargs=getattr(args, "corruption_kwargs", None),
+            condition_mask_npz=getattr(args, "condition_mask_npz", None),
             num_samples=args.num_samples,
             output_dir=args.output_dir / group_name,
             stride_epochs=args.stride_epochs,

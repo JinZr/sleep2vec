@@ -137,6 +137,11 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class InferenceConfig:
+    corruptions: TrainingCorruptionsConfig = field(default_factory=TrainingCorruptionsConfig)
+
+
+@dataclass(frozen=True)
 class SamplerConfig:
     name: str
     steps: int
@@ -167,6 +172,7 @@ class EvaluationConfig:
     metric_families: list[str] = field(default_factory=list)
     max_shift_frames: int = 0
     event_iou_threshold: float = 0.5
+    corruption_mask_policy: str = "exclude"
 
 
 @dataclass(frozen=True)
@@ -178,6 +184,7 @@ class Sleep2WaveConfig:
     autoencoder: AutoencoderConfig | None = None
     diffusion: DiffusionConfig | None = None
     training: TrainingConfig | None = None
+    inference: InferenceConfig | None = None
     sampler: SamplerConfig | None = None
     initialization: InitializationConfig | None = None
     export: ExportConfig | None = None
@@ -535,15 +542,25 @@ def _load_corruption_policy(raw: t.Any, path: str) -> CorruptionPolicyConfig:
     )
 
 
-def _load_training_corruptions(raw: t.Any) -> TrainingCorruptionsConfig:
+def _load_task_corruptions(raw: t.Any, path: str) -> TrainingCorruptionsConfig:
     if raw is None:
         return TrainingCorruptionsConfig()
-    block = _require_mapping(raw, "training.corruptions")
-    _reject_extra(block, {"restoration", "imputation"}, "training.corruptions")
+    block = _require_mapping(raw, path)
+    _reject_extra(block, {"restoration", "imputation"}, path)
     return TrainingCorruptionsConfig(
-        restoration=_load_corruption_policy(block.get("restoration"), "training.corruptions.restoration"),
-        imputation=_load_corruption_policy(block.get("imputation"), "training.corruptions.imputation"),
+        restoration=_load_corruption_policy(block.get("restoration"), f"{path}.restoration"),
+        imputation=_load_corruption_policy(block.get("imputation"), f"{path}.imputation"),
     )
+
+
+def _load_training_corruptions(raw: t.Any) -> TrainingCorruptionsConfig:
+    return _load_task_corruptions(raw, "training.corruptions")
+
+
+def _load_inference(raw: t.Any) -> InferenceConfig:
+    block = _require_mapping(raw, "inference")
+    _reject_extra(block, {"corruptions"}, "inference")
+    return InferenceConfig(corruptions=_load_task_corruptions(block.get("corruptions"), "inference.corruptions"))
 
 
 def _load_training(raw: t.Any) -> TrainingConfig:
@@ -680,8 +697,19 @@ def _load_evaluation(raw: t.Any) -> EvaluationConfig:
         "metric_families",
         "max_shift_frames",
         "event_iou_threshold",
+        "corruption_mask_policy",
     }
     _reject_extra(block, allowed, "evaluation")
+    corruption_mask_policy = block.get("corruption_mask_policy", "exclude")
+    if not isinstance(corruption_mask_policy, str) or corruption_mask_policy not in {
+        "exclude",
+        "include",
+        "only_corrupted",
+    }:
+        raise ValueError(
+            "evaluation.corruption_mask_policy must be one of "
+            "['exclude', 'include', 'only_corrupted']."
+        )
     return EvaluationConfig(
         generated_dir=_require_string(block, "generated_dir", "evaluation"),
         reference_npz=_optional_string(block, "reference_npz", "evaluation"),
@@ -697,6 +725,7 @@ def _load_evaluation(raw: t.Any) -> EvaluationConfig:
             minimum=0.0,
             maximum=1.0,
         ),
+        corruption_mask_policy=corruption_mask_policy,
     )
 
 
@@ -710,6 +739,7 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
         "autoencoder",
         "diffusion",
         "training",
+        "inference",
         "sampler",
         "initialization",
         "export",
@@ -741,6 +771,7 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
 
     autoencoder_cfg: AutoencoderConfig | None = None
     diffusion_cfg: DiffusionConfig | None = None
+    inference_cfg: InferenceConfig | None = None
     sampler_cfg: SamplerConfig | None = None
     evaluation_cfg: EvaluationConfig | None = None
 
@@ -757,6 +788,8 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
             raise ValueError("stage=autoencoder does not support a sampler block.")
         if "evaluation" in data:
             raise ValueError("stage=autoencoder does not support an evaluation block.")
+        if "inference" in data:
+            raise ValueError("stage=autoencoder does not support an inference block.")
         autoencoder_cfg = _load_autoencoder(data["autoencoder"])
     elif stage == "diffusion":
         if training_cfg is None:
@@ -771,6 +804,8 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
             raise ValueError("sampler block is required for stage=diffusion.")
         if "evaluation" in data:
             raise ValueError("stage=diffusion does not support an evaluation block.")
+        if "inference" in data:
+            raise ValueError("stage=diffusion does not support an inference block.")
         diffusion_cfg = _load_diffusion(data["diffusion"])
         if data_cfg is None or data_cfg.context_epochs != diffusion_cfg.context_epochs:
             raise ValueError("data.context_epochs must match diffusion.context_epochs.")
@@ -796,6 +831,7 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
             raise ValueError("stage=inference does not support an autoencoder block.")
         if "evaluation" in data:
             raise ValueError("stage=inference does not support an evaluation block.")
+        inference_cfg = _load_inference(data.get("inference", {}))
         if "diffusion" not in data:
             raise ValueError("diffusion block is required for stage=inference.")
         if "sampler" not in data:
@@ -817,6 +853,8 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
             raise ValueError("stage=evaluation does not support a sampler block.")
         if "initialization" in data:
             raise ValueError("stage=evaluation does not support an initialization block.")
+        if "inference" in data:
+            raise ValueError("stage=evaluation does not support an inference block.")
         if "evaluation" not in data:
             raise ValueError("evaluation block is required for stage=evaluation.")
         evaluation_cfg = _load_evaluation(data["evaluation"])
@@ -829,6 +867,7 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
         autoencoder=autoencoder_cfg,
         diffusion=diffusion_cfg,
         training=training_cfg,
+        inference=inference_cfg,
         sampler=sampler_cfg,
         initialization=initialization_cfg,
         export=export_cfg,
@@ -846,6 +885,7 @@ __all__ = [
     "EvaluationConfig",
     "ExportConfig",
     "InitializationConfig",
+    "InferenceConfig",
     "ModalitiesConfig",
     "SamplerConfig",
     "Sleep2WaveConfig",

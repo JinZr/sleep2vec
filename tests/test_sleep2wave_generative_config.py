@@ -63,6 +63,9 @@ def test_sleep2wave_generative_config_loads_inference_tiny():
     assert cfg.training is None
     assert cfg.autoencoder is None
     assert cfg.diffusion is not None
+    assert cfg.inference is not None
+    assert cfg.inference.corruptions.restoration.default.name == "gaussian_noise"
+    assert cfg.inference.corruptions.imputation.default.name == "contiguous_window_mask"
     assert cfg.sampler is not None
     assert cfg.sampler.num_samples == 2
 
@@ -80,6 +83,7 @@ def test_sleep2wave_generative_config_loads_evaluation_tiny():
     assert cfg.evaluation is not None
     assert cfg.evaluation.metric_families == ["waveform", "feature", "event", "efficiency", "downstream"]
     assert cfg.evaluation.max_shift_frames == 3
+    assert cfg.evaluation.corruption_mask_policy == "exclude"
 
 
 def test_sleep2wave_generative_config_rejects_unknown_top_level_field(tmp_path: Path):
@@ -286,6 +290,15 @@ def test_sleep2wave_generative_config_rejects_inference_missing_diffusion(tmp_pa
         load_sleep2wave_config(path)
 
 
+def test_sleep2wave_generative_config_rejects_diffusion_inference_block(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    payload["inference"] = {"corruptions": {}}
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="stage=diffusion does not support an inference block"):
+        load_sleep2wave_config(path)
+
+
 def test_sleep2wave_generative_config_accepts_two_condition_task_mix(tmp_path: Path):
     payload = _load_payload(DIFFUSION_TINY)
     payload["training"]["task_mix"] = {"two_condition": 1.0}
@@ -440,4 +453,24 @@ def test_sleep2wave_generative_config_rejects_unknown_evaluation_metric_family(t
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
     with pytest.raises(ValueError, match="evaluation.metric_families entries must be one of"):
+        load_sleep2wave_config(path)
+
+
+@pytest.mark.parametrize("policy", ["exclude", "include", "only_corrupted"])
+def test_sleep2wave_generative_config_accepts_evaluation_corruption_mask_policy(tmp_path: Path, policy: str):
+    payload = _load_payload(EVAL_TINY)
+    payload["evaluation"]["corruption_mask_policy"] = policy
+    path = _write_yaml(tmp_path / "good.yaml", payload)
+
+    cfg = load_sleep2wave_config(path)
+
+    assert cfg.evaluation.corruption_mask_policy == policy
+
+
+def test_sleep2wave_generative_config_rejects_unknown_evaluation_corruption_mask_policy(tmp_path: Path):
+    payload = _load_payload(EVAL_TINY)
+    payload["evaluation"]["corruption_mask_policy"] = "unknown"
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="evaluation.corruption_mask_policy must be one of"):
         load_sleep2wave_config(path)

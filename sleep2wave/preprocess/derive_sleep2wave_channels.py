@@ -7,7 +7,7 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plan split-safe sleep2wave derived-channel jobs.",
+        description="Plan sleep2wave derived-channel jobs.",
     )
     parser.add_argument("--index", required=True, type=Path, help="Input index CSV.")
     parser.add_argument("--output-dir", required=True, type=Path, help="Directory for derived sidecar NPZ files.")
@@ -35,7 +35,7 @@ def main() -> None:
         night_id_col=args.night_id_col,
     )
     written = run_derivation_jobs(jobs, derive=args.derive)
-    print(f"Wrote {len(written)} split-safe sleep2wave derived-channel sidecars to {args.output_dir}.")
+    print(f"Wrote {len(written)} sleep2wave derived-channel sidecars to {args.output_dir}.")
 
 
 if __name__ == "__main__":

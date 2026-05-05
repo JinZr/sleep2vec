@@ -8,13 +8,14 @@ Generate target PSG modalities from incomplete recordings using a trained sleep2
 
 1. Load `stage: inference` config with `load_sleep2wave_config`.
 2. Build a `GenerationTask` from CLI task and modality arguments.
-3. Load autoencoder and diffusion checkpoints.
-4. Iterate `Sleep2WaveGenerativeDataset` windows.
-5. Sample target latents with DDIM or DDPM.
-6. Decode latents to waveform space.
-7. Fuse overlapping windows and masks.
-8. Compute uncertainty.
-9. Write generation artifacts.
+3. Resolve inference condition corruption from CLI overrides or `inference.corruptions`.
+4. Load autoencoder and diffusion checkpoints.
+5. Iterate `Sleep2WaveGenerativeDataset` windows, applying optional condition masks from `--condition-mask-npz`.
+6. Sample target latents with DDIM or DDPM.
+7. Decode latents to waveform space.
+8. Fuse overlapping windows and masks.
+9. Compute uncertainty.
+10. Write generation artifacts.
 
 ## Command
 
@@ -28,6 +29,8 @@ python -m sleep2wave.generate \
   --output-dir outputs/sleep2wave_generate_run \
   --device cpu
 ```
+
+For restoration/imputation, use `--corruption-name` with JSON `--corruption-kwargs` to override YAML defaults for a run, or pass `--condition-mask-npz` with per-modality mask arrays such as `eeg_mask`.
 
 ## Artifact Contract
 

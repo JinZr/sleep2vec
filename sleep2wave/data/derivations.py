@@ -22,28 +22,6 @@ class DerivationJob:
     output_path: str
 
 
-def validate_subject_split_boundaries(
-    df: pd.DataFrame,
-    *,
-    subject_id_col: str = "subject_id",
-    split_col: str = "split",
-) -> None:
-    missing = [col for col in (subject_id_col, split_col) if col not in df.columns]
-    if missing:
-        raise ValueError(f"Derivation index missing required columns: {missing}")
-    if df[subject_id_col].isna().any():
-        offenders = df.index[df[subject_id_col].isna()].astype(str).tolist()
-        raise ValueError(f"Derivation index contains missing {subject_id_col} values: {offenders}")
-    if df[split_col].isna().any():
-        offenders = df.index[df[split_col].isna()].astype(str).tolist()
-        raise ValueError(f"Derivation index contains missing {split_col} values: {offenders}")
-
-    split_counts = df.groupby(subject_id_col)[split_col].nunique(dropna=False)
-    offenders = sorted(str(subject_id) for subject_id, count in split_counts.items() if count > 1)
-    if offenders:
-        raise ValueError(f"Subjects appear in multiple splits: {offenders}")
-
-
 def plan_derivation_jobs(
     df: pd.DataFrame,
     *,
@@ -57,7 +35,6 @@ def plan_derivation_jobs(
     missing = [col for col in required if col not in df.columns]
     if missing:
         raise ValueError(f"Derivation index missing required columns: {missing}")
-    validate_subject_split_boundaries(df, subject_id_col=subject_id_col, split_col=split_col)
 
     output_root = Path(output_dir)
     jobs: list[DerivationJob] = []
@@ -230,5 +207,4 @@ __all__ = [
     "plan_derivation_jobs",
     "require_derivation_backend",
     "run_derivation_jobs",
-    "validate_subject_split_boundaries",
 ]

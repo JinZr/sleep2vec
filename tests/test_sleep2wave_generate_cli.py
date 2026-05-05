@@ -14,8 +14,14 @@ from sleep2wave.data.default_dataset import SampleIndex
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS
 from sleep2wave.diffusion.model import Sleep2WaveDiffusionTransformer
 from sleep2wave.diffusion.tasks import build_generation_task
-from sleep2wave.generate import _activate_requested_generation_targets, _resolve_generation_data_source, main
+from sleep2wave.generate import (
+    _activate_requested_generation_targets,
+    _resolve_generation_data_source,
+    _resolve_inference_corruption_specs,
+    main,
+)
 from sleep2wave.generate_batch import run_batch_generation
+from sleep2wave.generative.config import load_sleep2wave_config
 
 
 def _write_synthetic_preset(tmp_path: Path) -> Path:
@@ -107,6 +113,12 @@ def _write_config(tmp_path: Path, preset_path: Path, autoencoder_ckpt: Path) -> 
             "auxiliary_restoration_token": True,
             "condition_dropout": 0.15,
         },
+        "inference": {
+            "corruptions": {
+                "restoration": {"default": {"name": "gaussian_noise", "kwargs": {"std": 0.05}}},
+                "imputation": {"default": {"name": "contiguous_window_mask", "kwargs": {"window_frames": 120}}},
+            }
+        },
         "sampler": {"name": "ddim", "steps": 2, "eta": 0.0, "num_samples": 1},
         "export": {"output_dir": str(tmp_path / "generated")},
     }
@@ -197,6 +209,46 @@ def test_generate_activates_unavailable_translation_targets_for_sampling():
     assert availability["eeg"].tolist() == [[False, False], [False, False]]
 
 
+def test_generate_resolves_inference_corruption_from_config(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt, _diffusion_ckpt = _write_checkpoints(tmp_path)
+    config = load_sleep2wave_config(_write_config(tmp_path, preset_path, autoencoder_ckpt))
+    task = build_generation_task(
+        "imputation",
+        condition_modalities=["eeg"],
+        target_modalities=["eeg"],
+        auxiliary_restoration_token=True,
+    )
+
+    specs = _resolve_inference_corruption_specs(
+        config=config,
+        args=SimpleNamespace(corruption_name=None, corruption_kwargs=None),
+        task=task,
+    )
+
+    assert specs == {"eeg": ("contiguous_window_mask", {"window_frames": 120})}
+
+
+def test_generate_cli_corruption_overrides_config(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt, _diffusion_ckpt = _write_checkpoints(tmp_path)
+    config = load_sleep2wave_config(_write_config(tmp_path, preset_path, autoencoder_ckpt))
+    task = build_generation_task(
+        "imputation",
+        condition_modalities=["eeg"],
+        target_modalities=["eeg"],
+        auxiliary_restoration_token=True,
+    )
+
+    specs = _resolve_inference_corruption_specs(
+        config=config,
+        args=SimpleNamespace(corruption_name="gaussian_noise", corruption_kwargs='{"std": 0.2}'),
+        task=task,
+    )
+
+    assert specs == {"eeg": ("gaussian_noise", {"std": 0.2})}
+
+
 def test_generate_smoke_writes_required_artifacts(tmp_path: Path):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt, diffusion_ckpt = _write_checkpoints(tmp_path)
@@ -275,6 +327,9 @@ def test_generate_batch_groups_by_subject_night(tmp_path: Path, monkeypatch):
             task="translation",
             condition_modalities=["ecg"],
             target_modalities=["eeg"],
+            corruption_name=None,
+            corruption_kwargs=None,
+            condition_mask_npz=None,
             num_samples=None,
             output_dir=tmp_path / "batch_out",
             stride_epochs=1,

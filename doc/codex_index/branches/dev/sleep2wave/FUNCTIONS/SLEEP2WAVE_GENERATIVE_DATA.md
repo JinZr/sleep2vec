@@ -60,11 +60,11 @@
 ## `sleep2wave.data.generative_dataset.Sleep2WaveGenerativeDataset`
 
 - File: `sleep2wave/data/generative_dataset.py`
-- Signature: `Sleep2WaveGenerativeDataset(*, preset_path=None, index=None, split=None, context_epochs=15, stride_epochs=None, condition_modalities=None, target_modalities=None, task_type="translation", corruption_name=None, corruption_kwargs=None, seed=0)`
-- Purpose and contract: materialize sleep2wave waveform windows and masks from either a preset or index.
+- Signature: `Sleep2WaveGenerativeDataset(*, preset_path=None, index=None, split=None, context_epochs=15, stride_epochs=None, condition_modalities=None, target_modalities=None, task_type="translation", corruption_name=None, corruption_kwargs=None, corruption_specs=None, condition_mask_npz=None, seed=0)`
+- Purpose and contract: materialize sleep2wave waveform windows and masks from either a preset or index, with optional condition-only inference corruptions and externally supplied condition masks.
 - Important inputs/outputs: exactly one data source in; batch samples with `clean_signals`, `observed_signals`, `availability_mask`, `quality_mask`, `corruption_mask`, `epoch_index`, `night_position`, `metadata`, and task modality fields out.
 - Side effects: reads preset pickle, CSV, and NPZ files.
-- Key callers/callees: training entrypoints and generation; callees include `load_npz`, `resolve_availability_mask`, `resolve_quality_mask`, and `apply_corruption`.
+- Key callers/callees: training entrypoints and generation; callees include `load_npz`, `resolve_availability_mask`, `resolve_quality_mask`, external condition-mask slicing, and `apply_corruption`.
 - Reuse guidance: use this dataset for autoencoder, diffusion, and generation data loading.
 - Duplication-risk notes: do not add NPZ slicing logic in entrypoints.
 
@@ -107,20 +107,10 @@
   - `derive_ibi_from_ecg`
   - `derive_resp_from_signal`
   - `run_derivation_jobs`
-- Purpose and contract: build split-safe deterministic `ibi` and `resp` sidecar NPZ files plus epoch-level `*_quality_mask` arrays for each record.
+- Purpose and contract: build deterministic per-record `ibi` and `resp` sidecar NPZ files plus epoch-level `*_quality_mask` arrays.
 - Important inputs/outputs: primary NPZ path plus requested derivations in; sidecar NPZ with derived channels and quality masks out.
 - Side effects: writes sidecar NPZ files.
 - Reuse guidance: use this sidecar path instead of deriving IBI/RESP inside training.
-
-## `sleep2wave.data.derivations.validate_subject_split_boundaries`
-
-- File: `sleep2wave/data/derivations.py`
-- Signature: `validate_subject_split_boundaries(df: pd.DataFrame, *, subject_id_col: str = "subject_id", split_col: str = "split") -> None`
-- Purpose and contract: reject missing subject/split values and subjects appearing in multiple splits before derived sidecars are built.
-- Important inputs/outputs: index DataFrame in; raises on invalid split contract.
-- Side effects: none.
-- Key callers/callees: derivation planning.
-- Reuse guidance: call before split-safe derived-channel sidecar planning, not before the shared sleep2vec-style preset path.
 
 ## `sleep2wave.preprocess.build_sleep2wave_presets.build_sleep2wave_presets`
 

@@ -54,6 +54,19 @@ diffusion:
   auxiliary_restoration_token: true
   condition_dropout: 0.15
 
+inference:
+  corruptions:
+    restoration:
+      default:
+        name: gaussian_noise
+        kwargs:
+          std: 0.05
+    imputation:
+      default:
+        name: contiguous_window_mask
+        kwargs:
+          window_frames: 120
+
 sampler:
   name: ddim
   steps: 10

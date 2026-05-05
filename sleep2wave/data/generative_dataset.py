@@ -350,6 +350,8 @@ class Sleep2WaveGenerativeDataset(Dataset):
         task_type: str = "translation",
         corruption_name: str | None = None,
         corruption_kwargs: dict[str, t.Any] | None = None,
+        corruption_specs: dict[str, tuple[str, dict[str, t.Any]]] | None = None,
+        condition_mask_npz: str | Path | None = None,
         seed: int = 0,
     ) -> None:
         if context_epochs <= 0:
@@ -371,6 +373,16 @@ class Sleep2WaveGenerativeDataset(Dataset):
         self.task_type = task_type
         self.corruption_name = corruption_name
         self.corruption_kwargs = dict(corruption_kwargs or {})
+        self.corruption_specs = {
+            validate_modality_sequence([modality], allow_aliases=False)[0]: (name, dict(kwargs))
+            for modality, (name, kwargs) in (corruption_specs or {}).items()
+        }
+        if corruption_name is not None:
+            for modality in self.condition_modalities or CANONICAL_MODALITIES:
+                self.corruption_specs.setdefault(modality, (corruption_name, dict(self.corruption_kwargs)))
+        self.condition_mask_npz = Path(condition_mask_npz) if condition_mask_npz is not None else None
+        if self.condition_mask_npz is not None and not self.condition_mask_npz.exists():
+            raise FileNotFoundError(f"Condition mask NPZ not found: {self.condition_mask_npz}")
         self.seed = int(seed)
 
         if preset_path is not None:
@@ -453,12 +465,14 @@ class Sleep2WaveGenerativeDataset(Dataset):
         tensor = torch.as_tensor(segment, dtype=torch.float32)
         return tensor.reshape(tensor.shape[0], self.context_epochs, spec.frames_per_epoch).permute(1, 0, 2)
 
-    def _maybe_corrupt(self, signal: torch.Tensor, modality_index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.corruption_name is None:
+    def _maybe_corrupt(self, signal: torch.Tensor, modality: str, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
+        spec = self.corruption_specs.get(modality)
+        if spec is None:
             return signal.clone(), torch.zeros_like(signal, dtype=torch.bool)
 
-        kwargs = dict(self.corruption_kwargs)
-        if "window_frames" not in kwargs and self.corruption_name in {
+        name, kwargs = spec
+        kwargs = dict(kwargs)
+        if "window_frames" not in kwargs and name in {
             "contiguous_window_mask",
             "flatline_dropout",
             "spo2_plateau_dropout",
@@ -466,8 +480,80 @@ class Sleep2WaveGenerativeDataset(Dataset):
             "belt_failure",
         }:
             kwargs["window_frames"] = max(1, signal.shape[-1] // 10)
-        seed = self.seed + modality_index
-        return apply_corruption(self.corruption_name, signal, seed=seed, **kwargs)
+        return apply_corruption(name, signal, seed=self.seed + seed, **kwargs)
+
+    def _condition_mask_key(self, mask_npz, modality: str) -> str | None:
+        candidates = (
+            f"{modality}_mask",
+            modality,
+            f"condition/{modality}_mask",
+            f"condition/{modality}",
+        )
+        return next((candidate for candidate in candidates if candidate in mask_npz), None)
+
+    def _reshape_condition_mask(
+        self,
+        raw: np.ndarray,
+        sample: SampleIndex,
+        modality: str,
+        clean: torch.Tensor,
+    ) -> torch.Tensor:
+        frames_per_epoch = MODALITY_SPECS[modality].frames_per_epoch
+        frame_left = sample.start * frames_per_epoch
+        frame_right = sample.end * frames_per_epoch
+        epoch_count, channel_count = clean.shape[:2]
+        array = np.asarray(raw)
+
+        if array.ndim == 1:
+            if array.shape[0] >= frame_right:
+                segment = array[frame_left:frame_right].reshape(epoch_count, 1, frames_per_epoch)
+            elif array.shape[0] >= sample.end:
+                segment = array[sample.start : sample.end].reshape(epoch_count, 1, 1)
+            else:
+                raise ValueError(
+                    f"Condition mask for '{modality}' is too short for epochs {sample.start}:{sample.end}."
+                )
+        elif array.ndim == 2:
+            if array.shape == (epoch_count, frames_per_epoch):
+                segment = array[:, None, :]
+            elif array.shape[0] >= frame_right and array.shape[1] == 1:
+                segment = array[frame_left:frame_right, 0].reshape(epoch_count, 1, frames_per_epoch)
+            elif array.shape[1] >= frame_right:
+                segment = array[:, frame_left:frame_right].reshape(array.shape[0], epoch_count, frames_per_epoch)
+                segment = segment.transpose(1, 0, 2)
+            elif array.shape[0] >= sample.end:
+                segment = array[sample.start : sample.end, :, None]
+            else:
+                raise ValueError(f"Condition mask for '{modality}' has unsupported shape {array.shape}.")
+        elif array.ndim == 3 and array.shape[0] >= sample.end:
+            segment = array[sample.start : sample.end]
+        else:
+            raise ValueError(f"Condition mask for '{modality}' has unsupported shape {array.shape}.")
+
+        mask = torch.as_tensor(segment, dtype=torch.bool)
+        if mask.shape[0] != epoch_count:
+            raise ValueError(f"Condition mask for '{modality}' must span {epoch_count} epochs.")
+        if mask.shape[1] == 1 and channel_count != 1:
+            mask = mask.expand(epoch_count, channel_count, mask.shape[2])
+        elif mask.shape[1] != channel_count:
+            raise ValueError(f"Condition mask for '{modality}' must have 1 or {channel_count} channels.")
+        if mask.shape[2] == 1 and frames_per_epoch != 1:
+            mask = mask.expand(epoch_count, channel_count, frames_per_epoch)
+        elif mask.shape[2] != frames_per_epoch:
+            raise ValueError(f"Condition mask for '{modality}' must have {frames_per_epoch} frames per epoch.")
+        return mask
+
+    def _load_condition_mask(
+        self,
+        mask_npz,
+        sample: SampleIndex,
+        modality: str,
+        clean: torch.Tensor,
+    ) -> torch.Tensor | None:
+        key = self._condition_mask_key(mask_npz, modality)
+        if key is None:
+            return None
+        return self._reshape_condition_mask(mask_npz[key], sample, modality, clean)
 
     def __getitem__(self, idx: int) -> dict[str, t.Any]:
         sample = self.data[idx]
@@ -484,7 +570,13 @@ class Sleep2WaveGenerativeDataset(Dataset):
         quality_mask: dict[str, torch.Tensor] = {}
         corruption_mask: dict[str, torch.Tensor] = {}
 
-        with load_npz(sample.path) as npz:
+        with ExitStack() as stack:
+            npz = stack.enter_context(load_npz(sample.path))
+            condition_mask_npz = (
+                stack.enter_context(load_npz(str(self.condition_mask_npz)))
+                if self.condition_mask_npz is not None
+                else None
+            )
             for modality_index, modality in enumerate(CANONICAL_MODALITIES):
                 if declared_available is not None and modality not in declared_available:
                     clean = self._zero_signal(modality)
@@ -522,7 +614,13 @@ class Sleep2WaveGenerativeDataset(Dataset):
                         )
                 if available:
                     corrupt_seed = idx * len(CANONICAL_MODALITIES) + modality_index
-                    observed, corrupt_mask = self._maybe_corrupt(clean, corrupt_seed)
+                    observed, corrupt_mask = self._maybe_corrupt(clean, modality, corrupt_seed)
+                    if condition_mask_npz is not None and modality in self.condition_modalities:
+                        external_mask = self._load_condition_mask(condition_mask_npz, sample, modality, clean)
+                        if external_mask is not None:
+                            observed = observed.clone()
+                            observed[external_mask] = 0.0
+                            corrupt_mask = corrupt_mask | external_mask
                 else:
                     observed = clean.clone()
                     corrupt_mask = torch.zeros_like(clean, dtype=torch.bool)

@@ -180,15 +180,51 @@ def test_evaluate_metric_mask_combines_target_availability_quality_and_corruptio
         **{
             "target/eeg": np.array([True, True, True, False]),
             "availability/eeg": np.array([True, False, True, True]),
-            "quality/eeg": np.array([1.0, 1.0, 0.0, 1.0]),
+            "quality/eeg": np.array([1.0, 1.0, 1.0, 1.0]),
             "corruption/eeg": np.array([False, False, True, False]),
         },
     )
 
     with np.load(masks_path) as masks:
-        mask = _load_metric_epoch_mask(masks, "eeg", epoch_count=4)
+        mask = _load_metric_epoch_mask(masks, "eeg", epoch_count=4, corruption_mask_policy="exclude")
 
     assert mask.tolist() == [True, False, False, False]
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        ("exclude", [True, False, True]),
+        ("include", [True, True, True]),
+        ("only_corrupted", [False, True, False]),
+    ],
+)
+def test_evaluate_metric_mask_corruption_policies(tmp_path: Path, policy: str, expected: list[bool]):
+    masks_path = tmp_path / "masks.npz"
+    np.savez(
+        masks_path,
+        **{
+            "target/eeg": np.ones(3, dtype=bool),
+            "availability/eeg": np.ones(3, dtype=bool),
+            "quality/eeg": np.ones(3, dtype=np.float32),
+            "corruption/eeg": np.array([False, True, False]),
+        },
+    )
+
+    with np.load(masks_path) as masks:
+        mask = _load_metric_epoch_mask(masks, "eeg", epoch_count=3, corruption_mask_policy=policy)
+
+    assert mask.tolist() == expected
+
+
+def test_evaluate_metric_mask_only_corrupted_without_corruption_mask_is_empty(tmp_path: Path):
+    masks_path = tmp_path / "masks.npz"
+    np.savez(masks_path, **{"target/eeg": np.ones(3, dtype=bool)})
+
+    with np.load(masks_path) as masks:
+        mask = _load_metric_epoch_mask(masks, "eeg", epoch_count=3, corruption_mask_policy="only_corrupted")
+
+    assert mask.tolist() == [False, False, False]
 
 
 def test_evaluate_metrics_json_sanitizes_non_finite_values(tmp_path: Path):

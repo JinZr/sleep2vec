@@ -57,7 +57,7 @@
 - Purpose and contract: generate missing or target PSG modalities from incomplete recordings.
 - Important inputs/outputs: CLI args in; output artifact directory path out.
 - Side effects: reads config, checkpoints, preset/index and NPZ data; writes generated artifacts.
-- Key callers/callees: `main`; callees include `load_sleep2wave_config`, `build_generation_task`, `load_sleep2wave_autoencoder_checkpoint`, `_load_diffusion_model`, `_collect_generation_windows`, `_fuse_generated`, `_fuse_masks`, `compute_uncertainty`, `build_generation_manifest`, and `write_generation_artifacts`.
+- Key callers/callees: `main`; callees include `load_sleep2wave_config`, `build_generation_task`, `_resolve_inference_corruption_specs`, `load_sleep2wave_autoencoder_checkpoint`, `_load_diffusion_model`, `_collect_generation_windows`, `_fuse_generated`, `_fuse_masks`, `compute_uncertainty`, `build_generation_manifest`, and `write_generation_artifacts`.
 - Reuse guidance: use as the only generation orchestration path.
 - Duplication-risk notes: keep artifact schema and evaluation compatibility here.
 
@@ -74,7 +74,7 @@
 
 - File: `sleep2wave/generate.py`
 - Signature: `_collect_generation_windows(*, config, args, model, autoencoder, sampler_config, task, device) -> tuple[dict[str, torch.Tensor], dict[str, dict[str, torch.Tensor]], list[int], list[dict[str, Any]]]`
-- Purpose and contract: iterate dataset windows, sample target latents, decode them, collect masks, and record metadata.
+- Purpose and contract: iterate dataset windows, apply inference condition corruptions or externally supplied condition masks, sample target latents, decode them, collect masks, and record metadata.
 - Important inputs/outputs: model/data/task context in; generated windows, mask windows, start epochs, metadata rows out.
 - Side effects: reads data and runs model inference.
 - Key callers/callees: `run_generation`; callee `validate_single_night` currently limits generation to one subject/night.

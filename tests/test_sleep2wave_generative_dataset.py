@@ -76,7 +76,10 @@ def test_generative_dataset_returns_30s_epoch_shapes_and_masks(tmp_path: Path):
     assert batch["channel_mask"]["eeg"].shape == (2, 2, 1)
     assert batch["availability_mask"]["resp"].all()
     assert batch["quality_mask"]["resp"].eq(1.0).all()
-    assert batch["corruption_mask"]["eeg"].any()
+    assert not batch["corruption_mask"]["eeg"].any()
+    assert batch["corruption_mask"]["ecg"].any()
+    assert torch.equal(batch["clean_signals"]["eeg"], batch["observed_signals"]["eeg"])
+    assert not torch.equal(batch["clean_signals"]["ecg"], batch["observed_signals"]["ecg"])
     assert batch["epoch_index"].tolist() == [[0, 1], [0, 1]]
     assert batch["metadata"]["subject_id"] == ["s1", "s2"]
     assert batch["metadata"]["night_id"] == ["n1", "n2"]
@@ -137,6 +140,47 @@ def test_generative_dataset_missing_modalities_are_zero_and_unavailable(tmp_path
     assert item["clean_signals"]["spo2"].shape == (2, 1, 120)
     assert item["clean_signals"]["spo2"].eq(0.0).all()
     assert item["quality_mask"]["spo2"].eq(0.0).all()
+
+
+def test_generative_dataset_applies_external_condition_mask(tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=_signal(2 * MODALITY_SPECS["eeg"].frames_per_epoch, 1.0))
+    preset_path = tmp_path / "preset.pkl"
+    sample = SampleIndex(
+        id="sample",
+        path=str(npz_path),
+        start=0,
+        end=2,
+        payload={
+            "available_channels": ["eeg"],
+            "canonical_channel_map": {"eeg": "eeg"},
+            "quality_mask_keys": {},
+            "availability_mask_keys": {},
+            "subject_id": "s1",
+            "night_id": "n1",
+            "night_epoch_count": 2,
+        },
+        metadata={"split": "train", "source": "synthetic"},
+    )
+    with preset_path.open("wb") as f:
+        pickle.dump([sample], f)
+    mask_path = tmp_path / "condition_masks.npz"
+    np.savez(mask_path, eeg_mask=np.array([0, 1], dtype=np.int64))
+
+    item = Sleep2WaveGenerativeDataset(
+        preset_path=preset_path,
+        split="train",
+        context_epochs=2,
+        condition_modalities=["eeg"],
+        target_modalities=["eeg"],
+        task_type="imputation",
+        condition_mask_npz=mask_path,
+    )[0]
+
+    assert not item["corruption_mask"]["eeg"][0].any()
+    assert item["corruption_mask"]["eeg"][1].all()
+    assert torch.equal(item["observed_signals"]["eeg"][0], item["clean_signals"]["eeg"][0])
+    assert item["observed_signals"]["eeg"][1].eq(0.0).all()
 
 
 def test_generative_dataset_rejects_wrong_context_epoch_span(tmp_path: Path):

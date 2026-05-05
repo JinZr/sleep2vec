@@ -288,7 +288,7 @@ def test_validate_sleep2wave_index_rejects_zero_available_modality_rows(tmp_path
         validate_sleep2wave_index(index_path)
 
 
-def test_derivation_planning_rejects_subject_split_leakage(tmp_path: Path):
+def test_derivation_planning_accepts_subjects_in_multiple_splits(tmp_path: Path):
     df = pd.DataFrame(
         [
             {"path": "a.npz", "split": "train", "subject_id": "s1", "night_id": "n1"},
@@ -296,23 +296,16 @@ def test_derivation_planning_rejects_subject_split_leakage(tmp_path: Path):
         ]
     )
 
-    with pytest.raises(ValueError, match="Subjects appear in multiple splits"):
-        plan_derivation_jobs(df, output_dir=tmp_path)
+    jobs = plan_derivation_jobs(df, output_dir=tmp_path)
+
+    assert len(jobs) == 2
+    assert jobs[0].subject_id == "s1"
+    assert jobs[0].split == "train"
+    assert jobs[1].subject_id == "s1"
+    assert jobs[1].split == "test"
 
 
-def test_derivation_planning_rejects_missing_subject_id(tmp_path: Path):
-    df = pd.DataFrame(
-        [
-            {"path": "a.npz", "split": "train", "subject_id": None, "night_id": "n1"},
-            {"path": "b.npz", "split": "test", "subject_id": "s2", "night_id": "n1"},
-        ]
-    )
-
-    with pytest.raises(ValueError, match="missing subject_id values"):
-        plan_derivation_jobs(df, output_dir=tmp_path)
-
-
-def test_derivation_planning_is_per_record_and_split_safe(tmp_path: Path):
+def test_derivation_planning_is_per_record(tmp_path: Path):
     df = pd.DataFrame(
         [
             {"path": "a.npz", "split": "train", "subject_id": "s1", "night_id": "n1"},

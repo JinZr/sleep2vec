@@ -12,9 +12,9 @@ Validate sleep2wave indexes and build schema-versioned generative preset pickles
    - `split`
    Optional `subject_id` and `night_id` columns are preserved when present; otherwise sleep2wave uses `path` for both identifiers.
    Optional modality mask columns such as `eeg_mask`, `eog_mask`, and `spo2_mask` are used as row-level availability hints when present.
-2. Optionally derive split-safe sidecar channels:
+2. Optionally derive sidecar channels:
    - `sleep2wave.preprocess.derive_sleep2wave_channels`
-   This writes deterministic per-record `ibi`, `resp`, and matching epoch-level quality masks without crossing subject split boundaries.
+   This writes deterministic per-record `ibi`, `resp`, and matching epoch-level quality masks.
 3. Validate the index:
    - `sleep2wave.preprocess.validate_sleep2wave_index`
 4. Build preset windows:
@@ -56,7 +56,7 @@ python -m sleep2wave.preprocess.build_sleep2wave_presets \
 - Index column and mask semantics: `sleep2wave/data/generative_dataset.py`
 - CLI preset writing: `sleep2wave/preprocess/build_sleep2wave_presets.py`
 - Index validation: `sleep2wave/preprocess/validate_sleep2wave_index.py`
-- Subject split safety and deterministic derived sidecars: `sleep2wave/data/derivations.py`
+- Deterministic derived sidecars: `sleep2wave/data/derivations.py`
 
 ## Tests
 

@@ -5,7 +5,7 @@
 - File: `sleep2wave/evaluate_generation.py`
 - Signature: `run_evaluation(args: argparse.Namespace) -> Path`
 - Purpose and contract: evaluate generated sleep2wave artifact directories and write metrics output.
-- Important inputs/outputs: evaluation-stage config and optional CLI overrides in; output directory path out.
+- Important inputs/outputs: evaluation-stage config and optional CLI overrides in, including `evaluation.corruption_mask_policy`; output directory path out.
 - Side effects: reads config, artifact NPZ/JSON files, optional reference/baseline/events/downstream files, and writes `metrics.json` and `metrics.csv`.
 - Key callers/callees: `main`; callees include `_require_artifact_dir`, `_load_generated_mean`, `_load_metric_epoch_mask`, waveform/feature/event/efficiency/downstream metric helpers, and `_write_metrics`.
 - Reuse guidance: use this as the evaluation orchestration path.
@@ -14,8 +14,8 @@
 ## `sleep2wave.evaluate_generation._load_metric_epoch_mask`
 
 - File: `sleep2wave/evaluate_generation.py`
-- Signature: `_load_metric_epoch_mask(masks_npz: np.lib.npyio.NpzFile, modality: str, epoch_count: int) -> np.ndarray`
-- Purpose and contract: derive the epoch mask used for metric computation from target, availability, quality, and corruption masks.
+- Signature: `_load_metric_epoch_mask(masks_npz: np.lib.npyio.NpzFile, modality: str, epoch_count: int, *, corruption_mask_policy: str = "exclude") -> np.ndarray`
+- Purpose and contract: derive the epoch mask used for metric computation from target, availability, quality, and corruption masks. `exclude` keeps translation-style behavior, `include` ignores corruption masks, and `only_corrupted` scores only corrupted epochs.
 - Important inputs/outputs: masks NPZ and modality in; bool epoch mask out.
 - Side effects: none.
 - Reuse guidance: keep metric masking policy here.

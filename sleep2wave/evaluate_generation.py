@@ -96,7 +96,13 @@ def _load_baseline(npz: np.lib.npyio.NpzFile | None, modality: str) -> np.ndarra
     return _npz_get(npz, modality, families=["", "baseline", "observed", "degraded"])
 
 
-def _load_metric_epoch_mask(masks_npz: np.lib.npyio.NpzFile, modality: str, epoch_count: int) -> np.ndarray:
+def _load_metric_epoch_mask(
+    masks_npz: np.lib.npyio.NpzFile,
+    modality: str,
+    epoch_count: int,
+    *,
+    corruption_mask_policy: str = "exclude",
+) -> np.ndarray:
     mask = np.ones((epoch_count,), dtype=bool)
     target = _npz_get(masks_npz, modality, families=["target"])
     availability = _npz_get(masks_npz, modality, families=["availability"])
@@ -109,8 +115,14 @@ def _load_metric_epoch_mask(masks_npz: np.lib.npyio.NpzFile, modality: str, epoc
         mask &= _epoch_bool_mask(availability, epoch_count, name=f"availability/{modality}")
     if quality is not None:
         mask &= _epoch_bool_mask(np.asarray(quality) > 0, epoch_count, name=f"quality/{modality}")
+    if corruption_mask_policy == "only_corrupted" and corruption is None:
+        return np.zeros((epoch_count,), dtype=bool)
     if corruption is not None:
-        mask &= ~_epoch_bool_mask(corruption, epoch_count, name=f"corruption/{modality}")
+        corruption_mask = _epoch_bool_mask(corruption, epoch_count, name=f"corruption/{modality}")
+        if corruption_mask_policy == "exclude":
+            mask &= ~corruption_mask
+        elif corruption_mask_policy == "only_corrupted":
+            mask &= corruption_mask
     return mask
 
 
@@ -260,7 +272,12 @@ def run_evaluation(args: argparse.Namespace) -> Path:
                 reference,
                 generated,
                 _load_baseline(baseline_npz, modality),
-                _load_metric_epoch_mask(masks_npz, modality, generated.shape[0]),
+                _load_metric_epoch_mask(
+                    masks_npz,
+                    modality,
+                    generated.shape[0],
+                    corruption_mask_policy=evaluation.corruption_mask_policy,
+                ),
             )
             if masked is None:
                 continue
@@ -286,7 +303,12 @@ def run_evaluation(args: argparse.Namespace) -> Path:
                 reference,
                 generated,
                 None,
-                _load_metric_epoch_mask(masks_npz, modality, generated.shape[0]),
+                _load_metric_epoch_mask(
+                    masks_npz,
+                    modality,
+                    generated.shape[0],
+                    corruption_mask_policy=evaluation.corruption_mask_policy,
+                ),
             )
             if masked is None:
                 continue

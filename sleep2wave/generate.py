@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import json
 from pathlib import Path
 import sys
 import typing as t
@@ -33,6 +34,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--condition-modalities", nargs="+", required=True)
     parser.add_argument("--target-modalities", nargs="+", required=True)
+    parser.add_argument("--corruption-name", type=str, default=None)
+    parser.add_argument("--corruption-kwargs", type=str, default=None)
+    parser.add_argument("--condition-mask-npz", type=Path, default=None)
     parser.add_argument("--num-samples", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--stride-epochs", type=int, default=1)
@@ -119,6 +123,54 @@ def _resolve_generation_data_source(
     return preset_path, index
 
 
+def _parse_corruption_kwargs(raw: str | None) -> dict[str, t.Any]:
+    if raw is None:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("--corruption-kwargs must be a JSON object.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("--corruption-kwargs must be a JSON object.")
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("--corruption-kwargs keys must be non-empty strings.")
+        if isinstance(value, (dict, list)):
+            raise ValueError(f"--corruption-kwargs field '{key}' must be a scalar value.")
+    return parsed
+
+
+def _resolve_inference_corruption_specs(
+    *,
+    config: Sleep2WaveConfig,
+    args: argparse.Namespace,
+    task,
+) -> dict[str, tuple[str, dict[str, t.Any]]]:
+    corruption_name = getattr(args, "corruption_name", None)
+    corruption_kwargs_raw = getattr(args, "corruption_kwargs", None)
+    if corruption_kwargs_raw is not None and corruption_name is None:
+        raise ValueError("--corruption-kwargs requires --corruption-name.")
+    if corruption_name is not None:
+        from sleep2wave.data.corruptions import CORRUPTION_REGISTRY
+
+        if corruption_name not in CORRUPTION_REGISTRY:
+            raise ValueError(f"--corruption-name must be one of {sorted(CORRUPTION_REGISTRY)}. Got: {corruption_name}")
+        kwargs = _parse_corruption_kwargs(corruption_kwargs_raw)
+        return {modality: (corruption_name, kwargs) for modality in task.condition_modalities}
+
+    if config.inference is None:
+        return {}
+    policy = config.inference.corruptions.for_task(task.task_type)
+    if policy is None:
+        return {}
+    specs: dict[str, tuple[str, dict[str, t.Any]]] = {}
+    for modality in task.condition_modalities:
+        spec = policy.for_modality(modality)
+        if spec is not None:
+            specs[modality] = (spec.name, dict(spec.kwargs))
+    return specs
+
+
 def _activate_requested_generation_targets(
     availability_mask: dict[str, torch.Tensor],
     task,
@@ -162,6 +214,7 @@ def _collect_generation_windows(
         raise ValueError("--batch-size must be positive.")
     if args.stride_epochs <= 0:
         raise ValueError("--stride-epochs must be positive.")
+    corruption_specs = _resolve_inference_corruption_specs(config=config, args=args, task=task)
 
     dataset = Sleep2WaveGenerativeDataset(
         preset_path=preset_path,
@@ -171,6 +224,8 @@ def _collect_generation_windows(
         condition_modalities=task.condition_modalities,
         target_modalities=task.target_modalities,
         task_type=task.task_type,
+        corruption_specs=corruption_specs,
+        condition_mask_npz=getattr(args, "condition_mask_npz", None),
         seed=args.seed,
     )
     loader = dataset.dataloader(batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)

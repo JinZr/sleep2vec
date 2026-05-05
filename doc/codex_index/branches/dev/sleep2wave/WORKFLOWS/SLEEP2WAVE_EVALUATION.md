@@ -15,7 +15,7 @@ Evaluate generated sleep2wave artifact directories across waveform, feature, eve
    - `masks.npz`
    - `metadata.jsonl`
 4. Load optional reference, baseline, event, and downstream metrics files.
-5. Compute requested metric families.
+5. Compute requested metric families, applying `evaluation.corruption_mask_policy` to waveform/feature epoch masks.
 6. Write `metrics.json` and `metrics.csv`.
 
 ## Command
@@ -34,6 +34,12 @@ python -m sleep2wave.evaluate_generation \
 - `event`: interval overlap/event metrics from events JSON
 - `efficiency`: artifact/sample-count summary
 - `downstream`: optional downstream metrics JSON passthrough
+
+## Corruption Mask Policy
+
+- `exclude`: default translation-style behavior; corrupted epochs are not scored.
+- `include`: corruption masks do not affect metric masks.
+- `only_corrupted`: only corrupted epochs are scored; missing corruption masks produce no scored epochs.
 
 ## Edit Hotspots
 
