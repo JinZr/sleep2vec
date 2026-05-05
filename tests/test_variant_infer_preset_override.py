@@ -1,11 +1,10 @@
 import argparse
-import importlib
 from dataclasses import dataclass
+import importlib
 from pathlib import Path
 
 import pandas as pd
 import pytest
-
 
 VARIANT_PACKAGES = ("sleep2vec2", "sleep2expert")
 
