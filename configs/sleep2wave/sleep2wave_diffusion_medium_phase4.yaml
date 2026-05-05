@@ -32,7 +32,7 @@ training:
   batch_size: 8
   lr: 0.00001
   weight_decay: 0.01
-  max_epochs: 20
+  max_epochs: 160
   gradient_clip_val: 1.0
   condition_counts: [1, 2, 3, 4]
   restoration_condition_counts: [1, 2, 3]
