@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-06
+
+- Updated dataset and preprocessing docs for stage/AHI-only preset generation without mandatory `age`/`sex` CSV columns.
+- Recorded that built-in `age` and `sex` loader paths now reject presets/indexes without valid labels after split/source filtering.
+
 ## 2026-04-21
 
 - Cleaned up stale usage guidance in the `main` branch index:

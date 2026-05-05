@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from sleep2vec.metrics import compute_ahi_pointwise_metrics, compute_downstream_metrics
@@ -18,6 +19,18 @@ class _DummyDataset:
 
     def __init__(self, **kwargs):
         type(self).last_init_kwargs = kwargs
+
+    def dataloader(self, device="cpu"):
+        type(self).last_device = device
+        return {"device": device}
+
+
+class _DummyDatasetWithSamples:
+    samples = []
+    last_device = None
+
+    def __init__(self, **kwargs):
+        self.data = type(self).samples
 
     def dataloader(self, device="cpu"):
         type(self).last_device = device
@@ -50,6 +63,22 @@ def _seq_args(
     )
 
 
+def _metadata_args(label_name: str, *, is_classification: bool) -> argparse.Namespace:
+    return argparse.Namespace(
+        label_name=label_name,
+        data_channel_names=["eeg"],
+        channel_input_dims={"eeg": 4},
+        finetune_preset_path=Path("preset.pkl"),
+        finetune_data_index=None,
+        max_tokens=2,
+        batch_size=1,
+        num_workers=0,
+        device="cpu",
+        is_classification=is_classification,
+        output_dim=2 if is_classification else 1,
+    )
+
+
 def test_build_finetune_loader_uses_stage5_tokens_for_stage3(monkeypatch):
     monkeypatch.setattr("sleep2vec.utils.PSGPretrainDataset", _DummyDataset)
     args = _seq_args("stage3", label_source_name="stage5", output_dim=3)
@@ -67,6 +96,63 @@ def test_build_finetune_loader_uses_stage5_tokens_for_stage3(monkeypatch):
     assert _DummyDataset.last_init_kwargs["channel_names"] == ["eeg", "stage5"]
     assert _DummyDataset.last_init_kwargs["meta_data_names"] == []
     assert _DummyDataset.last_init_kwargs["meta_data_regression_names"] == []
+
+
+@pytest.mark.parametrize(
+    ("label_name", "is_classification", "metadata"),
+    [
+        ("age", False, {}),
+        ("age", False, {"age": float("nan")}),
+        ("sex", True, {}),
+        ("sex", True, {"sex": float("nan")}),
+    ],
+)
+def test_build_finetune_loader_rejects_missing_builtin_metadata_labels(
+    monkeypatch,
+    label_name: str,
+    is_classification: bool,
+    metadata: dict,
+):
+    _DummyDatasetWithSamples.samples = [argparse.Namespace(metadata=metadata)]
+    monkeypatch.setattr("sleep2vec.utils.PSGPretrainDataset", _DummyDatasetWithSamples)
+    args = _metadata_args(label_name, is_classification=is_classification)
+
+    with pytest.raises(ValueError, match=f"invalid or missing '{label_name}' labels"):
+        _build_finetune_loader(
+            args,
+            split=["test"],
+            sources=[],
+            shuffle=False,
+            is_train_set=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        _seq_args("stage5", label_source_name="stage5", output_dim=5),
+        _seq_args(
+            "ahi",
+            label_source_name="ahi",
+            output_dim=30,
+            is_multilabel=True,
+            auxiliary_label_source_names=["stage5"],
+        ),
+    ],
+)
+def test_build_finetune_loader_allows_sequence_tasks_without_age_or_sex(monkeypatch, args):
+    _DummyDatasetWithSamples.samples = [argparse.Namespace(metadata={})]
+    monkeypatch.setattr("sleep2vec.utils.PSGPretrainDataset", _DummyDatasetWithSamples)
+
+    loader = _build_finetune_loader(
+        args,
+        split=["test"],
+        sources=[],
+        shuffle=False,
+        is_train_set=False,
+    )
+
+    assert loader == {"device": "cpu"}
 
 
 def test_build_finetune_loader_uses_ahi_tokens_for_ahi(monkeypatch):

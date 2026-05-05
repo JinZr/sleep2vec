@@ -97,6 +97,115 @@ def test_psg_dataset_uses_token_sec_for_window_count(tmp_path: Path):
     assert batch["tokens"]["wearable"].shape == (1, 30, 4)
 
 
+def test_psg_dataset_allows_stage5_index_without_age_or_sex(tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, stage5=np.array([0.0, 1.0], dtype=np.float32))
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "test",
+                "duration": 60,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    dataset = PSGPretrainDataset(
+        channel_names=["stage5"],
+        channel_input_dims={},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["test"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+    assert "age" not in dataset.data[0].metadata
+    assert "sex" not in dataset.data[0].metadata
+    assert torch.equal(batch["tokens"]["stage5"], torch.tensor([[[0.0], [1.0]]]))
+
+
+def test_psg_dataset_allows_ahi_index_without_age_or_sex(tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    _write_ahi_npz(npz_path, np.arange(60, dtype=np.float32), ahi=9.5, tst=3.5, stage5=[1.0, 2.0])
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "test",
+                "duration": 60,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    dataset = PSGPretrainDataset(
+        channel_names=["ahi", "stage5"],
+        channel_input_dims={},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["test"],
+        max_tokens=2,
+        mask_rate=0.0,
+        meta_data_names=["ahi", "tst"],
+        meta_data_regression_names=["ahi", "tst"],
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+    assert "age" not in dataset.data[0].metadata
+    assert "sex" not in dataset.data[0].metadata
+    assert batch["metadata"]["ahi"].tolist() == [9.5]
+    assert batch["metadata"]["tst"].tolist() == [3.5]
+
+
+@pytest.mark.parametrize("metadata_name", ["age", "sex"])
+def test_psg_dataset_requires_explicit_requested_metadata_columns(tmp_path: Path, metadata_name: str):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, stage5=np.array([0.0, 1.0], dtype=np.float32))
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "test",
+                "duration": 60,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    with pytest.raises(ValueError, match=f"Required metadata column '{metadata_name}' is missing"):
+        PSGPretrainDataset(
+            channel_names=["stage5"],
+            channel_input_dims={},
+            save_preset_path=None,
+            load_preset_path=None,
+            index=str(index_path),
+            split=["test"],
+            max_tokens=2,
+            mask_rate=0.0,
+            meta_data_names=[metadata_name],
+            randomly_select_channels=False,
+            batch_size=1,
+            shuffle=False,
+            num_workers=0,
+        )
+
+
 def test_psg_dataset_requires_explicit_dims_for_non_stage5_channels(tmp_path: Path):
     npz_path = tmp_path / "sample.npz"
     np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))

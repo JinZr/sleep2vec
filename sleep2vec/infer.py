@@ -51,6 +51,7 @@ def _init_wandb(args):
     if not is_rank_zero_process():
         return None
 
+    inference_preset_path = getattr(args, "inference_preset_path", None) or getattr(args, "finetune_preset_path", None)
     init_kwargs = {
         "project": args.wandb_project,
         "name": args.wandb_name,
@@ -69,6 +70,7 @@ def _init_wandb(args):
             "accelerator": args.accelerator,
             "precision": args.precision,
             "avg_ckpts": args.avg_ckpts,
+            "inference_preset_path": str(inference_preset_path) if inference_preset_path is not None else None,
         },
     }
     init_kwargs = {k: v for k, v in init_kwargs.items() if v is not None}
@@ -77,6 +79,9 @@ def _init_wandb(args):
 
 def run_inference(args):
     config_bundle, model_cfg = apply_finetune_config(args)
+    inference_preset_path = getattr(args, "inference_preset_path", None)
+    if inference_preset_path is not None:
+        args.finetune_preset_path = Path(inference_preset_path)
     if args.label_name == "ahi" and args.avg_ckpts > 1:
         raise ValueError(
             "AHI inference does not support average checkpoints because `ahi_eval_threshold` is checkpoint-specific."
@@ -207,6 +212,12 @@ def parse_args():
         nargs="+",
         default=None,
         help="Optional dataset name list to override YAML train/test lists.",
+    )
+    parser.add_argument(
+        "--inference-preset-path",
+        type=Path,
+        default=None,
+        help="Optional preset pickle path for this inference run; overrides data.finetune_preset_path from YAML.",
     )
     parser.add_argument(
         "--results-csv-path",
