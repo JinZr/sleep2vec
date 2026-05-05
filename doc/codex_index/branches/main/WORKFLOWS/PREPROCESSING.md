@@ -62,6 +62,8 @@ This is the canonical split policy before preset generation.
 6. instantiates `PSGPretrainDataset` for each `(metadata, split)` pair
 7. relies on `DefaultDataset` side effects to validate samples and write the preset pickle
 
+Stage/AHI-only test indexes may omit `age` and `sex`. Those fields are copied into presets only when present, while explicitly requested metadata such as `--meta-data-names age` or `--meta-data-names sex` still requires the matching CSV column.
+
 The preset schema is still implicitly a pickled `list[SampleIndex]`, but the branch now treats `preset_build` as part of the contract for reproducible preset generation.
 
 ## Preset Merge
