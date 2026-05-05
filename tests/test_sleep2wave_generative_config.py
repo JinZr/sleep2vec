@@ -15,6 +15,9 @@ DIFFUSION_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_diffusion_ti
 GENERATE_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_generate_tiny.yaml"
 EVAL_TINY = REPO_ROOT / "configs" / "sleep2wave" / "sleep2wave_eval_tiny.yaml"
 MEDIUM_CONFIGS = sorted((REPO_ROOT / "configs" / "sleep2wave").glob("*medium*.yaml"))
+MEDIUM_DIFFUSION_CONFIGS = sorted(
+    (REPO_ROOT / "configs" / "sleep2wave").glob("sleep2wave_diffusion_medium_phase*.yaml")
+)
 
 
 def _load_payload(path: Path) -> dict:
@@ -330,6 +333,23 @@ def test_sleep2wave_generative_config_loads_medium_bundle(path: Path):
         assert cfg.diffusion.transformer.hidden_size == 768
         assert cfg.diffusion.transformer.num_layers == 12
         assert cfg.diffusion.transformer.num_heads == 16
+
+
+@pytest.mark.parametrize("path", MEDIUM_DIFFUSION_CONFIGS)
+def test_sleep2wave_medium_diffusion_configs_use_modality_specific_corruptions(path: Path):
+    cfg = load_sleep2wave_config(path)
+
+    restoration = cfg.training.corruptions.restoration.by_modality
+    imputation = cfg.training.corruptions.imputation.by_modality
+
+    assert set(restoration) == set(CANONICAL_MODALITIES)
+    assert set(imputation) == set(CANONICAL_MODALITIES)
+    assert restoration["eeg"].name == "high_frequency_contamination"
+    assert restoration["airflow"].name == "airflow_cannula_displacement"
+    assert restoration["spo2"].name == "saturation_clipping"
+    assert imputation["eeg"].kwargs == {"window_frames": 384}
+    assert imputation["belt"].name == "belt_failure"
+    assert imputation["spo2"].name == "spo2_plateau_dropout"
 
 
 def test_sleep2wave_generative_config_rejects_invalid_data_context_epochs(tmp_path: Path):

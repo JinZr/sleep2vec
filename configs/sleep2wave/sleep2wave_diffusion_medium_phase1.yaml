@@ -71,11 +71,31 @@ training:
         name: gaussian_noise
         kwargs:
           std: 0.05
+      by_modality:
+        eeg: {name: high_frequency_contamination, kwargs: {amplitude: 0.10, cycles: 40.0}}
+        eog: {name: spike_artifact, kwargs: {num_spikes: 8, magnitude: 3.0}}
+        emg: {name: high_frequency_contamination, kwargs: {amplitude: 0.15, cycles: 50.0}}
+        ecg: {name: baseline_drift, kwargs: {amplitude: 0.10}}
+        airflow: {name: airflow_cannula_displacement, kwargs: {attenuation: 0.25}}
+        belt: {name: amplitude_attenuation, kwargs: {factor: 0.35}}
+        spo2: {name: saturation_clipping, kwargs: {min_value: 80.0, max_value: 100.0}}
+        ibi: {name: rpeak_drop_or_jitter_for_ibi, kwargs: {window_frames: 12}}
+        resp: {name: baseline_drift, kwargs: {amplitude: 0.10}}
     imputation:
       default:
         name: contiguous_window_mask
         kwargs:
           window_frames: 120
+      by_modality:
+        eeg: {name: contiguous_window_mask, kwargs: {window_frames: 384}}
+        eog: {name: contiguous_window_mask, kwargs: {window_frames: 384}}
+        emg: {name: contiguous_window_mask, kwargs: {window_frames: 384}}
+        ecg: {name: contiguous_window_mask, kwargs: {window_frames: 384}}
+        airflow: {name: contiguous_window_mask, kwargs: {window_frames: 24}}
+        belt: {name: belt_failure, kwargs: {window_frames: 24}}
+        spo2: {name: spo2_plateau_dropout, kwargs: {window_frames: 24}}
+        ibi: {name: rpeak_drop_or_jitter_for_ibi, kwargs: {window_frames: 12}}
+        resp: {name: contiguous_window_mask, kwargs: {window_frames: 24}}
 
 sampler:
   name: ddim
