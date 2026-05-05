@@ -36,7 +36,6 @@ evaluation:
   metric_families: [waveform, feature, event, efficiency, downstream]
   max_shift_frames: 3
   event_iou_threshold: 0.5
-  corruption_mask_policy: exclude
 
 export:
   output_dir: outputs/sleep2wave_eval_tiny
