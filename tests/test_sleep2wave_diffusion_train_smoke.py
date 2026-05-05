@@ -13,10 +13,12 @@ import yaml
 from sleep2wave.autoencoders.model import Sleep2WaveAutoencoder
 from sleep2wave.data.default_dataset import SampleIndex
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS
+from sleep2wave.data.samplers import AvailableChannelsBucketBatchSampler
 from sleep2wave.diffusion.lightning import Sleep2WaveDiffusionLightning
 from sleep2wave.diffusion.tasks import build_generation_task
 from sleep2wave.generative.config import load_sleep2wave_config
 from sleep2wave.train_diffusion import build_dataloader, main
+from sleep2wave.training.task_sampler import Sleep2WaveTaskSampler
 
 
 def _write_synthetic_preset(tmp_path: Path) -> Path:
@@ -131,6 +133,49 @@ def test_train_diffusion_dataloader_uses_train_split(tmp_path: Path):
 
     assert [sample.metadata["split"] for sample in loader.dataset.data] == ["train"]
     assert loader.dataset.seed == 123
+
+
+def test_train_diffusion_dataloader_buckets_mixed_availability(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    with preset_path.open("rb") as f:
+        base_sample = pickle.load(f)[0]
+    samples = []
+    for sample_id, available in (("hf", ["eeg", "ecg"]), ("low", ["spo2", "ibi"])):
+        payload = dict(base_sample.payload)
+        payload["available_channels"] = available
+        payload["canonical_channel_map"] = {modality: modality for modality in available}
+        samples.append(
+            SampleIndex(
+                id=sample_id,
+                path=base_sample.path,
+                start=base_sample.start,
+                end=base_sample.end,
+                payload=payload,
+                metadata={**base_sample.metadata, "split": "train"},
+            )
+        )
+    with preset_path.open("wb") as f:
+        pickle.dump(samples, f)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["training"]["phase"] = 2
+    payload["training"]["batch_size"] = 2
+    payload["training"]["task_mix"] = {"translation": 1.0}
+    config_path.write_text(yaml.safe_dump(payload))
+
+    loader = build_dataloader(load_sleep2wave_config(config_path), num_workers=0, seed=123)
+
+    assert isinstance(loader.batch_sampler, AvailableChannelsBucketBatchSampler)
+    task_sampler = Sleep2WaveTaskSampler(phase=2, task_mix={"translation": 1.0}, seed=123)
+    for batch in loader:
+        common_available = [
+            modality
+            for modality in CANONICAL_MODALITIES
+            if torch.as_tensor(batch["availability_mask"][modality]).any(dim=1).all()
+        ]
+        assert len(common_available) >= 2
+        task_sampler.sample(batch["availability_mask"])
 
 
 def test_train_diffusion_smoke_writes_artifacts(tmp_path: Path, monkeypatch):

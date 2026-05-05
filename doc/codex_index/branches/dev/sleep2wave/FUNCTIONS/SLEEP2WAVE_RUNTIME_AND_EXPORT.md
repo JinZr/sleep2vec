@@ -24,10 +24,10 @@
 
 - File: `sleep2wave/train_diffusion.py`
 - Signature: `build_dataloader(config, *, num_workers: int, seed: int)`
-- Purpose and contract: build train split DataLoader for diffusion-stage configs with translation task defaults and light Gaussian corruption.
+- Purpose and contract: build train split DataLoader for diffusion-stage configs with translation task defaults, light Gaussian corruption, and available-modality bucketed batches compatible with the active diffusion task mix.
 - Important inputs/outputs: typed config and seed in; DataLoader out.
 - Side effects: dataset reads files during iteration.
-- Key callers/callees: `train_diffusion`.
+- Key callers/callees: `train_diffusion`; callee `AvailableChannelsBucketBatchSampler`.
 - Reuse guidance: keep diffusion train data-loader setup here.
 
 ## `sleep2wave.train_diffusion.train_diffusion`

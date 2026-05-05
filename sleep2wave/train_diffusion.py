@@ -15,10 +15,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from sleep2wave.common import persist_run_config_and_args
 from sleep2wave.data.generative_dataset import Sleep2WaveGenerativeDataset
+from sleep2wave.data.samplers import AvailableChannelsBucketBatchSampler, handles_distributed_sharding
 from sleep2wave.diffusion.lightning import Sleep2WaveDiffusionLightning
 from sleep2wave.generative.config import load_sleep2wave_config
 from sleep2wave.initialization.sleep2vec2 import load_sleep2vec2_initialization
 from sleep2wave.training.logging import SLEEP2WAVE_DIFFUSION_PROJECT, build_diffusion_run_name
+from sleep2wave.training.phase_schedule import build_phase_schedule
 
 
 def _parse_devices(raw: str):
@@ -59,9 +61,23 @@ def build_dataloader(config, *, num_workers: int, seed: int):
         corruption_kwargs={"std": 0.01},
         seed=seed,
     )
-    return dataset.dataloader(
+    schedule = build_phase_schedule(config.training.phase, config.training.task_mix)
+    min_channels = 1
+    if schedule.task_mix.get("translation", 0.0) > 0 or schedule.task_mix.get("partial_full", 0.0) > 0:
+        min_channels = 2
+    if schedule.task_mix.get("two_condition", 0.0) > 0:
+        min_channels = 3
+    batch_sampler = AvailableChannelsBucketBatchSampler(
+        dataset.data,
         batch_size=config.training.batch_size,
+        min_channels=min_channels,
         shuffle=True,
+        drop_last=False,
+        shard_across_ranks=True,
+        seed=seed,
+    )
+    return dataset.dataloader(
+        batch_sampler=batch_sampler,
         num_workers=num_workers,
     )
 
@@ -80,6 +96,7 @@ def train_diffusion(args: argparse.Namespace) -> Path:
     persist_run_config_and_args(args, run_dir)
 
     train_loader = build_dataloader(config, num_workers=args.num_workers, seed=args.seed)
+    use_distributed_sampler = not handles_distributed_sharding(getattr(train_loader, "batch_sampler", None))
     model = Sleep2WaveDiffusionLightning(config, seed=args.seed)
     if config.initialization is not None and config.initialization.sleep2vec2_checkpoint is not None:
         report = load_sleep2vec2_initialization(
@@ -121,6 +138,7 @@ def train_diffusion(args: argparse.Namespace) -> Path:
         callbacks=[checkpoint_callback],
         log_every_n_steps=1,
         num_sanity_val_steps=0,
+        use_distributed_sampler=use_distributed_sampler,
     )
     trainer.fit(model, train_dataloaders=train_loader)
     trainer.save_checkpoint(checkpoint_dir / "last.ckpt")
