@@ -173,22 +173,22 @@ def test_evaluate_cli_applies_exported_epoch_masks(tmp_path: Path):
     assert metrics["metrics"]["waveform"]["eeg"]["rmse"] == pytest.approx(0.0)
 
 
-def test_evaluate_metric_mask_prefers_target_mask_over_observed_availability(tmp_path: Path):
+def test_evaluate_metric_mask_combines_target_availability_quality_and_corruption(tmp_path: Path):
     masks_path = tmp_path / "masks.npz"
     np.savez(
         masks_path,
         **{
-            "target/eeg": np.array([True, True]),
-            "availability/eeg": np.array([False, False]),
-            "quality/eeg": np.array([0.0, 0.0]),
-            "corruption/eeg": np.array([True, True]),
+            "target/eeg": np.array([True, True, True, False]),
+            "availability/eeg": np.array([True, False, True, True]),
+            "quality/eeg": np.array([1.0, 1.0, 0.0, 1.0]),
+            "corruption/eeg": np.array([False, False, True, False]),
         },
     )
 
     with np.load(masks_path) as masks:
-        mask = _load_metric_epoch_mask(masks, "eeg", epoch_count=2)
+        mask = _load_metric_epoch_mask(masks, "eeg", epoch_count=4)
 
-    assert mask.tolist() == [True, True]
+    assert mask.tolist() == [True, False, False, False]
 
 
 def test_evaluate_metrics_json_sanitizes_non_finite_values(tmp_path: Path):

@@ -105,7 +105,6 @@ def _load_metric_epoch_mask(masks_npz: np.lib.npyio.NpzFile, modality: str, epoc
 
     if target is not None:
         mask &= _epoch_bool_mask(target, epoch_count, name=f"target/{modality}")
-        return mask
     if availability is not None:
         mask &= _epoch_bool_mask(availability, epoch_count, name=f"availability/{modality}")
     if quality is not None:
