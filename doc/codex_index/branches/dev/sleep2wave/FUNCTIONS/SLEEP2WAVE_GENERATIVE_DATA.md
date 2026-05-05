@@ -99,19 +99,6 @@
 - Side effects: reads arrays from NPZ.
 - Reuse guidance: keep mask fallback behavior here rather than duplicating it in datasets.
 
-## Derived-channel sidecars
-
-- File: `sleep2wave/data/derivations.py`
-- Symbols:
-  - `derive_record_channels`
-  - `derive_ibi_from_ecg`
-  - `derive_resp_from_signal`
-  - `run_derivation_jobs`
-- Purpose and contract: build deterministic per-record `ibi` and `resp` sidecar NPZ files plus epoch-level `*_quality_mask` arrays.
-- Important inputs/outputs: primary NPZ path plus requested derivations in; sidecar NPZ with derived channels and quality masks out.
-- Side effects: writes sidecar NPZ files.
-- Reuse guidance: use this sidecar path instead of deriving IBI/RESP inside training.
-
 ## `sleep2wave.preprocess.build_sleep2wave_presets.build_sleep2wave_presets`
 
 - File: `sleep2wave/preprocess/build_sleep2wave_presets.py`

@@ -88,18 +88,15 @@ def test_generative_dataset_returns_30s_epoch_shapes_and_masks(tmp_path: Path):
     assert batch["task_type"] == "translation"
 
 
-def test_generative_dataset_reads_derived_sidecar_and_quality_mask(tmp_path: Path):
+def test_generative_dataset_reads_given_ibi_channel_and_quality_mask(tmp_path: Path):
     npz_path = tmp_path / "primary.npz"
-    sidecar_path = tmp_path / "derived.npz"
-    np.savez(npz_path, eeg=_signal(2 * MODALITY_SPECS["eeg"].frames_per_epoch, 0.0))
     np.savez(
-        sidecar_path,
+        npz_path,
         ibi=np.ones(2 * MODALITY_SPECS["ibi"].frames_per_epoch, dtype=np.float32),
         ibi_quality_mask=np.array([1.0, 0.0], dtype=np.float32),
     )
     index_path = tmp_path / "index.csv"
     row = _index_row(npz_path, subject_id="s1", night_id="n1")
-    row["derived_path"] = str(sidecar_path)
     row["ibi_mask"] = 1
     pd.DataFrame([row]).to_csv(index_path, index=False)
 

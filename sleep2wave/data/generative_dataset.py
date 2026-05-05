@@ -92,17 +92,6 @@ def resolve_npz_key(npz, modality: str, canonical_channel_map: dict[str, str] | 
     return None
 
 
-def _row_path_value(row: pd.Series, column: str) -> str | None:
-    if column not in row or pd.isna(row[column]):
-        return None
-    value = str(row[column])
-    return value if value else None
-
-
-def _derived_path_for_row(row: pd.Series, modality: str) -> str | None:
-    return _row_path_value(row, f"{modality}_derived_path") or _row_path_value(row, "derived_path")
-
-
 def _resolve_quality_key(npz, modality: str) -> str | None:
     candidates = (
         f"{modality}_quality_mask",
@@ -212,46 +201,26 @@ def build_sample_indices_from_frame(
         row_samples: list[SampleIndex] = []
         with ExitStack() as stack:
             npz = stack.enter_context(load_npz(str(row[columns.path_col])))
-            derived_npzs: dict[str, t.Any] = {}
-            for modality in CANONICAL_MODALITIES:
-                derived_path = _derived_path_for_row(row, modality)
-                if derived_path and derived_path not in derived_npzs and Path(derived_path).exists():
-                    derived_npzs[derived_path] = stack.enter_context(load_npz(derived_path))
             for start in range(0, night_epoch_count - context_epochs + 1, stride_epochs):
                 end = start + context_epochs
                 available_channels: list[str] = []
                 canonical_channel_map: dict[str, str] = {}
-                derived_channels: dict[str, str] = {}
                 availability_mask_keys: dict[str, str] = {}
                 quality_mask_keys: dict[str, str] = {}
-                quality_mask_sources: dict[str, str] = {}
                 for modality in CANONICAL_MODALITIES:
                     mask_col = mask_columns.get(modality)
                     if mask_col is not None and not bool(mask_frame.loc[row_number, mask_col]):
                         continue
                     npz_key = resolve_npz_key(npz, modality)
-                    source_npz = npz
-                    source_name = "primary"
-                    derived_path = _derived_path_for_row(row, modality)
-                    if (npz_key is None or not _channel_has_window(npz, npz_key, modality, end)) and derived_path:
-                        derived_npz = derived_npzs.get(derived_path)
-                        if derived_npz is not None:
-                            derived_key = resolve_npz_key(derived_npz, modality)
-                            if derived_key is not None and _channel_has_window(derived_npz, derived_key, modality, end):
-                                npz_key = derived_key
-                                source_npz = derived_npz
-                                source_name = "derived"
-                                derived_channels[modality] = derived_path
-                    if npz_key is None or not _channel_has_window(source_npz, npz_key, modality, end):
+                    if npz_key is None or not _channel_has_window(npz, npz_key, modality, end):
                         continue
                     available_channels.append(modality)
                     canonical_channel_map[modality] = npz_key
                     if mask_col is not None:
                         availability_mask_keys[modality] = mask_col
-                    quality_key = _resolve_quality_key(source_npz, modality)
+                    quality_key = _resolve_quality_key(npz, modality)
                     if quality_key is not None:
                         quality_mask_keys[modality] = quality_key
-                        quality_mask_sources[modality] = source_name
                 if not available_channels:
                     continue
                 row_samples.append(
@@ -264,10 +233,8 @@ def build_sample_indices_from_frame(
                             "sleep2wave_schema_version": SLEEP2WAVE_SCHEMA_VERSION,
                             "available_channels": available_channels,
                             "quality_mask_keys": quality_mask_keys,
-                            "quality_mask_sources": quality_mask_sources,
                             "availability_mask_keys": availability_mask_keys,
                             "canonical_channel_map": canonical_channel_map,
-                            "derived_channels": derived_channels,
                             "epoch_sec": EPOCH_SEC,
                             "sample_rates": {name: spec.sample_rate_hz for name, spec in MODALITY_SPECS.items()},
                             "frames_per_epoch": {name: spec.frames_per_epoch for name, spec in MODALITY_SPECS.items()},
@@ -422,19 +389,11 @@ class Sleep2WaveGenerativeDataset(Dataset):
         primary_npz,
         sample: SampleIndex,
         modality: str,
-    ) -> tuple[torch.Tensor, bool, str]:
+    ) -> tuple[torch.Tensor, bool]:
         key = self._resolve_npz_key(primary_npz, sample, modality)
         if key is not None:
-            return self._slice_signal(primary_npz, key, modality, sample.start, sample.end), True, "primary"
-
-        derived_path = sample.payload.get("derived_channels", {}).get(modality)
-        if derived_path is None:
-            return self._zero_signal(modality), False, "primary"
-        with load_npz(derived_path) as derived_npz:
-            derived_key = self._resolve_npz_key(derived_npz, sample, modality)
-            if derived_key is None:
-                return self._zero_signal(modality), False, "primary"
-            return self._slice_signal(derived_npz, derived_key, modality, sample.start, sample.end), True, "derived"
+            return self._slice_signal(primary_npz, key, modality, sample.start, sample.end), True
+        return self._zero_signal(modality), False
 
     def _zero_signal(self, modality: str) -> torch.Tensor:
         spec = MODALITY_SPECS[modality]
@@ -581,9 +540,8 @@ class Sleep2WaveGenerativeDataset(Dataset):
                 if declared_available is not None and modality not in declared_available:
                     clean = self._zero_signal(modality)
                     available = False
-                    source_name = "primary"
                 else:
-                    clean, available, source_name = self._load_modality_signal(npz, sample, modality)
+                    clean, available = self._load_modality_signal(npz, sample, modality)
 
                 availability_key = sample.payload.get("availability_mask_keys", {}).get(modality)
                 quality_key = sample.payload.get("quality_mask_keys", {}).get(modality)
@@ -595,23 +553,13 @@ class Sleep2WaveGenerativeDataset(Dataset):
                     sample.end,
                     available=available,
                 )
-                if source_name != "derived":
-                    quality_mask[modality] = resolve_quality_mask(
-                        npz,
-                        quality_key if quality_key is not None and quality_key in npz else None,
-                        sample.start,
-                        sample.end,
-                        available=available,
-                    )
-                else:
-                    with load_npz(sample.payload.get("derived_channels", {}).get(modality)) as mask_npz:
-                        quality_mask[modality] = resolve_quality_mask(
-                            mask_npz,
-                            quality_key if quality_key is not None and quality_key in mask_npz else None,
-                            sample.start,
-                            sample.end,
-                            available=available,
-                        )
+                quality_mask[modality] = resolve_quality_mask(
+                    npz,
+                    quality_key if quality_key is not None and quality_key in npz else None,
+                    sample.start,
+                    sample.end,
+                    available=available,
+                )
                 if available:
                     corrupt_seed = idx * len(CANONICAL_MODALITIES) + modality_index
                     observed, corrupt_mask = self._maybe_corrupt(clean, modality, corrupt_seed)

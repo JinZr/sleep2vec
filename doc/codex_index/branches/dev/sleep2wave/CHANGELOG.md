@@ -18,7 +18,7 @@
   - task-aware restoration/imputation corruptions are configured under `training.corruptions`
   - replay-enabled diffusion phase defaults include imputation tasks
   - `training.phase_checkpoint` and `--resume-from-checkpoint` separate phase continuation from crash resume
-  - deterministic IBI/RESP sidecar derivation and epoch-level quality-mask discovery are implemented
+  - IBI/RESP are treated as given primary channels; sidecar derivation and `derived_path` fallback were removed
   - autoencoder decoding uses ConvTranspose1d and supports padded multi-channel inputs through `channel_mask`
   - cache-only diffusion is supported for translation/partial-full task mixes
   - medium Sleep2Wave YAMLs were added under `configs/sleep2wave`
