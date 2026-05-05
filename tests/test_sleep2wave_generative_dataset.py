@@ -22,7 +22,7 @@ def _npz_payload(num_epochs: int, *, aliases: bool = False) -> dict[str, np.ndar
     alias_by_target = {target: alias for alias, target in MODALITY_ALIASES.items()}
     for idx, modality in enumerate(CANONICAL_MODALITIES):
         spec = MODALITY_SPECS[modality]
-        key = alias_by_target[modality] if aliases else modality
+        key = alias_by_target.get(modality, modality) if aliases else modality
         payload[key] = _signal(num_epochs * spec.frames_per_epoch, offset=float(idx))
     return payload
 
