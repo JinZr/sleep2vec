@@ -17,7 +17,7 @@
 - Signature: `PSGPretrainDataset.__init__(channel_names, save_preset_path, load_preset_path, index, split, max_tokens, *, channel_input_dims, token_sec=30, stride_tokens=0, mask_rate=0.15, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, randomly_select_channels=True, min_channels=2, allow_missing_channels=False, bucket_by_available_channels=False, train_pair_probs=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, filter_max_workers=None, **kwargs)`
 - Purpose and contract: canonical PSG dataset constructor. It either loads a preset or reads CSV indexes, windows each row into `SampleIndex` records, builds the channel registry, and delegates the rest to `DefaultDataset`.
 - Important inputs/outputs: channel list, YAML-driven channel widths, preset/index source, split, token windowing, and batching flags in; dataset instance out.
-- Side effects: when building from CSV, stamps `metadata["source"]` from the CSV path and expands each row into one or more `SampleIndex` windows.
+- Side effects: when building from CSV, stamps `metadata["source"]` from the CSV path, keeps `source`/`path`/`split`, copies optional `age`/`sex` only when present, and expands each row into one or more `SampleIndex` windows. Explicit `meta_data_names` remain strict except built-in AHI `ahi`/`tst` scalars, which come from NPZ backfill.
 - Key callers/callees: callers are `sleep2vec.utils` and `preprocess/save_dataset_presets.py`; callees are `window`, `_build_channel_registry`, and `DefaultDataset.__init__`.
 - Reuse guidance: use this class for PSG-style NPZ/preset loading instead of building `SampleIndex` lists manually.
 - Duplication risk notes: the built-in label-channel registry lives here and should not be replicated in caller code.
@@ -186,9 +186,9 @@
 - Signatures:
   - `_build_finetune_loader(args, *, split, sources, shuffle, is_train_set, few_shot=None)`
   - `get_finetune_dataloaders(args)`
-- Purpose and contract: build finetune train/val/test loaders with correct metadata label wiring, built-in sequence label-channel insertion, and AHI auxiliary `stage5` injection.
+- Purpose and contract: build finetune train/val/test loaders with correct metadata label wiring, built-in sequence label-channel insertion, AHI auxiliary `stage5` injection, and fail-fast validation for missing or invalid built-in `age`/`sex` labels.
 - Important inputs/outputs: normalized finetune `args` in; one loader or three loaders out.
 - Side effects: seed initialization in `get_finetune_dataloaders`.
 - Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callee is `PSGPretrainDataset.dataloader`.
 - Reuse guidance: use these helpers for any finetune or inference data-loading path.
-- Duplication risk notes: built-in label-channel insertion and metadata-label selection should not be duplicated in trainer code.
+- Duplication risk notes: built-in label-channel insertion, metadata-label selection, and built-in `age`/`sex` label validation should not be duplicated in trainer code.

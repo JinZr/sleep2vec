@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from sleep2vec2.common import is_builtin_seq_task
+from sleep2vec2.data.metadata import _encode_binary_label, safe_cast
 from sleep2vec2.data.psg_pretrain_dataset import PSGPretrainDataset
 from sleep2vec2.data.samplers import SequentialPairEvalBatchSampler
 
@@ -204,7 +205,26 @@ def _build_finetune_loader(
     if few_shot is not None:
         dataset_kwargs["few_shot"] = few_shot
 
-    return PSGPretrainDataset(**dataset_kwargs).dataloader(device=args.device)
+    dataset = PSGPretrainDataset(**dataset_kwargs)
+    if args.label_name in {"age", "sex"}:
+        invalid = 0
+        for sample in getattr(dataset, "data", []):
+            metadata = getattr(sample, "metadata", {}) or {}
+            value = metadata.get(args.label_name, None)
+            if args.label_name == "age":
+                valid = safe_cast(value, -1) != -1
+            else:
+                valid = _encode_binary_label(value) != -1
+            if not valid:
+                invalid += 1
+        if invalid:
+            total = len(getattr(dataset, "data", []))
+            raise ValueError(
+                f"Loaded preset/index has invalid or missing '{args.label_name}' labels for "
+                f"{invalid}/{total} samples after split/source filtering. Regenerate the preset from "
+                f"an index CSV with real '{args.label_name}' values before running --label-name {args.label_name}."
+            )
+    return dataset.dataloader(device=args.device)
 
 
 def get_finetune_dataloaders(args):

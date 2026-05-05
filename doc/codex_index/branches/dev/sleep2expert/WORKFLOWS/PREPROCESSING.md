@@ -62,6 +62,8 @@ This is the canonical split policy before preset generation.
 6. instantiates `PSGPretrainDataset` for each `(metadata, split)` pair
 7. relies on `DefaultDataset` side effects to validate samples and write the preset pickle
 
+Stage/AHI-only test indexes need `path`, `split`, `duration`, task channels/masks, and corresponding NPZ contents, but they do not need `age` or `sex`. Explicit metadata variants requested through `--meta-data-names` still require the matching CSV columns, except built-in AHI `ahi`/`tst` summaries loaded from NPZ.
+
 The preset schema is still implicitly a pickled `list[SampleIndex]`, but the branch now treats `preset_build` as part of the contract for reproducible preset generation.
 
 ## Preset Merge

@@ -62,6 +62,8 @@ Built-in labels:
 - `sex`: classification, `output_dim=2`, non-sequence
 - `age`: regression, `output_dim=1`, non-sequence
 
+Built-in `age` and `sex` loaders reject presets/indexes missing valid labels after split/source filtering. This prevents stage/AHI-only presets with omitted or dummy `age`/`sex` metadata from being used for those tasks.
+
 Custom labels require `finetune.task` in YAML.
 
 ## Important Runtime Decisions

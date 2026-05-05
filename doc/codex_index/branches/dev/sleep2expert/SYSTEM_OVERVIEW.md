@@ -106,7 +106,7 @@ The runtime assumes a batch dictionary with these keys:
 | `token_start` | `DefaultDataset.dataloader` | AHI event aggregation | Preserves window offset for later record merging |
 | `tokens` | `DefaultDataset.dataloader` | backbone, finetune loss, AHI eval | Channel-name keyed padded token tensors |
 | `mlm_mask` | `DefaultDataset.dataloader` | pretrain backbone | Channel-name keyed boolean mask tensors |
-| `metadata` | `DefaultDataset.dataloader` | finetune loss, metrics, negative weighting | Includes `age`, `sex`, `source`, `path`, and requested labels; built-in AHI also backfills `ahi` and `tst` |
+| `metadata` | `DefaultDataset.dataloader` | finetune loss, metrics, negative weighting | Always carries `source`, `path`, and `split`; carries `age`/`sex` only when present in the index/preset; requested labels remain strict; built-in AHI also backfills `ahi` and `tst` |
 | `w` | `DefaultDataset.dataloader` | `WeightedInfoNCELoss` | Negative-sample weight matrix |
 | `h` | `DefaultDataset.dataloader` | `WeightedInfoNCELoss` | Same-path hardness mask |
 | `pair` | `DefaultDataset.dataloader` | callbacks/logging | Present for pair-first or sequential pair-eval batches |
@@ -118,6 +118,7 @@ The runtime assumes a batch dictionary with these keys:
 - Built-in sequence tasks are `stage3`, `stage4`, `stage5`, and `ahi` only.
 - `stage3` and `stage4` are runtime remaps over raw `stage5` tokens; their source labels still come from `stage5`.
 - Built-in `ahi` requires NPZ key `ah_event` plus scalar NPZ keys `ahi` and `tst`; evaluation also expects `stage5` tokens as an auxiliary label source.
+- Built-in `age` and `sex` runs reject presets/indexes without valid labels after split/source filtering; stage/AHI-only presets may omit those metadata columns.
 - Non-sequence metadata classification remains binary-only.
 - Pair-first missing-channel pretraining requires `payload["available_channels"]` on every retained sample.
 - Weighted InfoNCE requires both `w` and `h` in the batch.
@@ -181,6 +182,6 @@ The canonical preset path is:
 
 ## Variant State On This Branch
 
-`sleep2vec2/` and `sleep2expert/` are active on this branch as standalone mirrors of the base recipe. They carry package-local copies of the runtime, `data/`, and `preprocess/`, duplicated YAMLs under `configs/<variant>/`, and copied standalone RoFormer implementations under `<variant>/backbones/roformer/`.
+`sleep2vec2/` and `sleep2expert/` are active on this branch as standalone mirrors of the base recipe. They carry package-local copies of the runtime, `data/`, and `preprocess/`, duplicated YAMLs under `configs/<variant>/`, and copied standalone RoFormer implementations under `<variant>/backbones/roformer/`. Data-contract changes such as optional `age`/`sex` metadata must be synchronized into those package-local copies rather than falling back to the root implementation.
 
 `sleep2vec_moe/` and `sleep2vec_hires/` remain branch-state placeholders with no tracked source files here.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-06
+
+- Synchronized the optional `age`/`sex` preset metadata contract into `sleep2vec2/` and `sleep2expert/` package-local dataset and finetune loader copies.
+- Documented that stage/AHI-only presets may omit `age`/`sex`, while built-in `age`/`sex` tasks fail fast on missing or invalid labels.
+
 ## 2026-05-01
 
 - Initialized the `dev/sleep2expert` branch index from the current `main` baseline at commit `21bbd67bc7b69dce4b119141cd201779688f016c`.
