@@ -6,9 +6,15 @@ from pathlib import Path
 import sys
 import typing as t
 
+import torch
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from sleep2wave.autoencoders.model import Sleep2WaveAutoencoder
+from sleep2wave.diffusion.model import Sleep2WaveDiffusionTransformer
+from sleep2wave.generative.config import SamplerConfig, Sleep2WaveConfig
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -49,10 +55,6 @@ def _load_diffusion_model(
     *,
     device: torch.device,
 ) -> Sleep2WaveDiffusionTransformer:
-    import torch
-
-    from sleep2wave.diffusion.model import Sleep2WaveDiffusionTransformer
-
     if config.diffusion is None:
         raise ValueError("diffusion block is required for generation.")
     if not checkpoint_path.exists():
@@ -121,8 +123,6 @@ def _activate_requested_generation_targets(
     availability_mask: dict[str, torch.Tensor],
     task,
 ) -> dict[str, torch.Tensor]:
-    import torch
-
     if task.task_type not in {"translation", "partial_full"}:
         return availability_mask
     adjusted = dict(availability_mask)
@@ -152,8 +152,6 @@ def _collect_generation_windows(
     task,
     device: torch.device,
 ) -> tuple[dict[str, torch.Tensor], dict[str, dict[str, torch.Tensor]], list[int], list[dict[str, t.Any]]]:
-    import torch
-
     from sleep2wave.data.generative_dataset import Sleep2WaveGenerativeDataset
     from sleep2wave.data.modalities import CANONICAL_MODALITIES
     from sleep2wave.diffusion.samplers import build_sampler
@@ -234,8 +232,6 @@ def _fuse_generated(
     *,
     mode: str,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    import torch
-
     from sleep2wave.inference.sliding_window import fuse_overlapping_windows
 
     fused: dict[str, torch.Tensor] = {}
@@ -260,8 +256,6 @@ def _fuse_masks(
     condition_modalities: t.Sequence[str],
     target_modalities: t.Sequence[str],
 ) -> dict[str, dict[str, torch.Tensor]]:
-    import torch
-
     from sleep2wave.data.modalities import CANONICAL_MODALITIES
     from sleep2wave.inference.sliding_window import fuse_mask_windows
 
@@ -296,8 +290,6 @@ def _fuse_masks(
 
 
 def run_generation(args: argparse.Namespace) -> Path:
-    import torch
-
     from sleep2wave.autoencoders.checkpoints import load_sleep2wave_autoencoder_checkpoint
     from sleep2wave.data.modalities import validate_modality_sequence
     from sleep2wave.diffusion.tasks import build_generation_task
