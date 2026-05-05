@@ -16,7 +16,7 @@ Validate sleep2wave indexes and build schema-versioned generative preset pickles
    - `sleep2wave.preprocess.validate_sleep2wave_index`
 3. Build preset windows:
    - `sleep2wave.preprocess.build_sleep2wave_presets`
-   Preset building opens each NPZ and stores the true per-window `available_channels` plus `canonical_channel_map`; rows/windows with no usable canonical modalities are skipped.
+   Preset building opens each NPZ with a row-level progress bar and stores the true per-window `available_channels` plus `canonical_channel_map`; rows/windows with no usable canonical modalities are skipped.
 4. Train or generate through `Sleep2WaveGenerativeDataset`.
 
 ## Data Contract
@@ -39,7 +39,8 @@ python -m sleep2wave.preprocess.build_sleep2wave_presets \
   --index index.csv \
   --output data/sleep2wave_preset.pkl \
   --split train val test \
-  --context-epochs 15
+  --context-epochs 15 \
+  --num-workers 8
 ```
 
 ## Edit Hotspots

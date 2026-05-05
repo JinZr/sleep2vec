@@ -231,6 +231,32 @@ def test_build_sleep2wave_presets_accepts_subjects_in_multiple_splits(tmp_path: 
     assert len(samples) == 1
 
 
+def test_build_sleep2wave_presets_supports_num_workers(tmp_path: Path):
+    index_path = tmp_path / "index.csv"
+    rows = []
+    for idx in range(2):
+        sample_path = tmp_path / f"sample{idx}.npz"
+        _write_npz(sample_path, modalities=("eeg",))
+        row = _index_frame(sample_path).iloc[0].to_dict()
+        row["subject_id"] = f"s{idx}"
+        row["night_id"] = f"n{idx}"
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(index_path, index=False)
+
+    samples = build_sleep2wave_presets(
+        index_path=index_path,
+        output_path=tmp_path / "preset.pkl",
+        split=["train"],
+        context_epochs=2,
+        stride_epochs=2,
+        columns=None,
+        num_workers=2,
+        dry_run=True,
+    )
+
+    assert [sample.metadata["subject_id"] for sample in samples] == ["s0", "s1"]
+
+
 def test_build_sleep2wave_presets_accepts_missing_subject_id(tmp_path: Path):
     index_path = tmp_path / "index.csv"
     sample_path = tmp_path / "sample.npz"

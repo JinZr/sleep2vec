@@ -20,10 +20,10 @@
 ## `sleep2wave.data.generative_dataset.build_sample_indices_from_frame`
 
 - File: `sleep2wave/data/generative_dataset.py`
-- Signature: `build_sample_indices_from_frame(df: pd.DataFrame, *, index_source: str, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = False) -> list[SampleIndex]`
+- Signature: `build_sample_indices_from_frame(df: pd.DataFrame, *, index_source: str, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = False, num_workers: int = 1) -> list[SampleIndex]`
 - Purpose and contract: convert an index DataFrame into schema-versioned fixed-context sleep2wave `SampleIndex` windows.
 - Important inputs/outputs: sleep2vec-style index rows with `path`, `duration`, and `split` in; optional `subject_id`, `night_id`, `age`, `sex`, and modality mask columns are preserved when present; `SampleIndex` list with true per-window `available_channels` out.
-- Side effects: reads NPZ files to resolve channel keys and usable window lengths.
+- Side effects: reads NPZ files to resolve channel keys and usable window lengths; shows a row-level progress bar.
 - Key callers/callees: `build_sample_indices_from_index`, `build_sleep2wave_presets`, `Sleep2WaveGenerativeDataset`; callees include `prepare_sleep2wave_index_frame`, `resolve_modality_mask_columns`, `resolve_npz_key`, `load_npz`, and `normalize_mask_frame`.
 - Reuse guidance: use this for every index-to-preset path.
 - Duplication-risk notes: this is the canonical place for sleep2wave preset payload schema.
@@ -51,7 +51,7 @@
 ## `sleep2wave.data.generative_dataset.build_sample_indices_from_index`
 
 - File: `sleep2wave/data/generative_dataset.py`
-- Signature: `build_sample_indices_from_index(index_path: str | Path, *, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = False) -> list[SampleIndex]`
+- Signature: `build_sample_indices_from_index(index_path: str | Path, *, split: str | Sequence[str] | None = None, context_epochs: int, stride_epochs: int | None = None, columns: IndexColumnConfig = IndexColumnConfig(), require_all_masks: bool = False, num_workers: int = 1) -> list[SampleIndex]`
 - Purpose and contract: read a CSV index and delegate window construction to `build_sample_indices_from_frame`.
 - Important inputs/outputs: CSV path in; `SampleIndex` list out.
 - Side effects: reads CSV.
@@ -112,10 +112,10 @@
 ## `sleep2wave.preprocess.build_sleep2wave_presets.build_sleep2wave_presets`
 
 - File: `sleep2wave/preprocess/build_sleep2wave_presets.py`
-- Signature: `build_sleep2wave_presets(*, index_path: Path, output_path: Path, split: list[str] | None, context_epochs: int, stride_epochs: int | None, columns, dry_run: bool = False) -> list`
+- Signature: `build_sleep2wave_presets(*, index_path: Path, output_path: Path, split: list[str] | None, context_epochs: int, stride_epochs: int | None, columns, num_workers: int = 1, dry_run: bool = False) -> list`
 - Purpose and contract: build and optionally write schema-versioned sleep2wave generative preset pickles.
 - Important inputs/outputs: CSV index path and output path in; generated samples out.
-- Side effects: reads CSV, writes pickle unless `dry_run=True`.
+- Side effects: reads CSV, scans NPZ rows with optional worker threads and progress output, writes pickle unless `dry_run=True`.
 - Key callers/callees: CLI `main`; callee is `build_sample_indices_from_frame`.
 - Reuse guidance: use this for reproducible preset generation.
 

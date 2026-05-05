@@ -21,6 +21,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subject-id-col", default="subject_id")
     parser.add_argument("--night-id-col", default="night_id")
     parser.add_argument("--source-col", default="source")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Row workers for NPZ inspection during preset build.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate and print count without writing.")
     return parser.parse_args()
 
@@ -33,6 +39,7 @@ def build_sleep2wave_presets(
     context_epochs: int,
     stride_epochs: int | None,
     columns,
+    num_workers: int = 1,
     dry_run: bool = False,
 ) -> list:
     import pandas as pd
@@ -50,6 +57,7 @@ def build_sleep2wave_presets(
         stride_epochs=stride_epochs,
         columns=columns,
         require_all_masks=False,
+        num_workers=num_workers,
     )
     if not dry_run:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +84,7 @@ def main() -> None:
             night_id_col=args.night_id_col,
             source_col=args.source_col,
         ),
+        num_workers=args.num_workers,
         dry_run=args.dry_run,
     )
     action = "Would write" if args.dry_run else "Wrote"

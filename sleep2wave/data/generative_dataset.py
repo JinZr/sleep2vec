@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 import pickle
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 from sleep2wave.data.corruptions import apply_corruption
 from sleep2wave.data.default_dataset import SampleIndex
@@ -136,12 +138,16 @@ def build_sample_indices_from_frame(
     stride_epochs: int | None = None,
     columns: IndexColumnConfig = IndexColumnConfig(),
     require_all_masks: bool = False,
+    num_workers: int = 1,
 ) -> list[SampleIndex]:
     if context_epochs <= 0:
         raise ValueError("context_epochs must be positive.")
     stride_epochs = context_epochs if stride_epochs is None else int(stride_epochs)
     if stride_epochs <= 0:
         raise ValueError("stride_epochs must be positive.")
+    num_workers = int(num_workers)
+    if num_workers < 1:
+        raise ValueError("num_workers must be >= 1.")
 
     df, columns = prepare_sleep2wave_index_frame(df, columns=columns)
     split_values = None
@@ -153,16 +159,15 @@ def build_sample_indices_from_frame(
 
     mask_columns = resolve_modality_mask_columns(df, require_all=require_all_masks)
     mask_frame = normalize_mask_frame(df, list(mask_columns.values()))
-    samples: list[SampleIndex] = []
 
-    for row_number, row in df.reset_index(drop=True).iterrows():
+    def process_row(row_number: int, row: pd.Series) -> list[SampleIndex]:
         duration = float(row[columns.duration_col])
         if not np.isfinite(duration) or duration <= 0:
             raise ValueError(f"Row {row_number} has invalid duration: {duration!r}")
 
         night_epoch_count = int(duration // EPOCH_SEC)
         if night_epoch_count < context_epochs:
-            continue
+            return []
 
         if columns.source_col in row and pd.notna(row[columns.source_col]):
             source = row[columns.source_col]
@@ -183,6 +188,7 @@ def build_sample_indices_from_frame(
         if mask_columns and mask_frame.loc[row_number, list(mask_columns.values())].sum() == 0:
             raise ValueError(f"Row {row_number} has no available sleep2wave modalities.")
 
+        row_samples: list[SampleIndex] = []
         with load_npz(str(row[columns.path_col])) as npz:
             for start in range(0, night_epoch_count - context_epochs + 1, stride_epochs):
                 end = start + context_epochs
@@ -202,7 +208,7 @@ def build_sample_indices_from_frame(
                         availability_mask_keys[modality] = mask_col
                 if not available_channels:
                     continue
-                samples.append(
+                row_samples.append(
                     SampleIndex(
                         id=sample_id,
                         path=str(row[columns.path_col]),
@@ -225,6 +231,25 @@ def build_sample_indices_from_frame(
                         metadata=metadata,
                     )
                 )
+        return row_samples
+
+    rows = list(df.reset_index(drop=True).iterrows())
+    samples: list[SampleIndex] = []
+    progress_desc = "Building sleep2wave preset"
+
+    if num_workers == 1:
+        iterator = tqdm(rows, total=len(rows), desc=progress_desc, unit="row")
+        for row_number, row in iterator:
+            samples.extend(process_row(row_number, row))
+    else:
+        row_results: list[tuple[int, list[SampleIndex]]] = []
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            future_to_row = {executor.submit(process_row, row_number, row): row_number for row_number, row in rows}
+            iterator = tqdm(as_completed(future_to_row), total=len(future_to_row), desc=progress_desc, unit="row")
+            for future in iterator:
+                row_results.append((future_to_row[future], future.result()))
+        for _, row_samples in sorted(row_results, key=lambda item: item[0]):
+            samples.extend(row_samples)
 
     if not samples:
         split_hint = f" for split {sorted(split_values)}" if split_values else ""
@@ -240,6 +265,7 @@ def build_sample_indices_from_index(
     stride_epochs: int | None = None,
     columns: IndexColumnConfig = IndexColumnConfig(),
     require_all_masks: bool = False,
+    num_workers: int = 1,
 ) -> list[SampleIndex]:
     path = Path(index_path)
     df = pd.read_csv(path, low_memory=False)
@@ -251,6 +277,7 @@ def build_sample_indices_from_index(
         stride_epochs=stride_epochs,
         columns=columns,
         require_all_masks=require_all_masks,
+        num_workers=num_workers,
     )
 
 
