@@ -131,7 +131,8 @@ class Sleep2WaveTaskSampler:
             condition_count = 2
             task_type = "translation"
         elif family == "partial_full":
-            condition_count = min(max(self.condition_counts), len(available) - 1)
+            valid_counts = [count for count in self.condition_counts if count <= len(available) - 1]
+            condition_count = self.rng.choice(valid_counts)
             task_type = "partial_full"
         else:
             condition_count = min(self.rng.choice(self.condition_counts), len(available) - 1)

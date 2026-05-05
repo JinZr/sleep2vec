@@ -132,7 +132,7 @@
 
 - File: `sleep2wave/training/task_sampler.py`
 - Signature: `Sleep2WaveTaskSampler(*, modalities=CANONICAL_MODALITIES, phase: int, task_mix=None, condition_counts=None, auxiliary_restoration_token=True, seed=0)`
-- Purpose and contract: sample availability-aware generation tasks from the phase schedule.
+- Purpose and contract: sample availability-aware generation tasks from the phase schedule. `partial_full` draws from configured `condition_counts` that fit the currently available modalities instead of always using the largest configured count.
 - Important inputs/outputs: optional availability mask in; `GenerationTask` out.
 - Side effects: uses internal seeded random generator.
 - Key callers/callees: `Sleep2WaveDiffusionLightning.training_step`.

@@ -707,8 +707,7 @@ def _load_evaluation(raw: t.Any) -> EvaluationConfig:
         "only_corrupted",
     }:
         raise ValueError(
-            "evaluation.corruption_mask_policy must be one of "
-            "['exclude', 'include', 'only_corrupted']."
+            "evaluation.corruption_mask_policy must be one of " "['exclude', 'include', 'only_corrupted']."
         )
     return EvaluationConfig(
         generated_dir=_require_string(block, "generated_dir", "evaluation"),

@@ -113,6 +113,36 @@ def test_task_sampler_accepts_partial_epoch_availability():
     assert set(task.condition_modalities + task.target_modalities).issubset({"eeg", "ecg"})
 
 
+def test_task_sampler_partial_full_samples_configured_condition_counts():
+    sampler = Sleep2WaveTaskSampler(
+        phase=4,
+        task_mix={"partial_full": 1.0},
+        condition_counts=[1, 2, 3, 4],
+        seed=7,
+    )
+
+    counts = {len(sampler.sample(_availability()).condition_modalities) for _ in range(200)}
+
+    assert {1, 2, 3, 4}.issubset(counts)
+
+
+def test_task_sampler_partial_full_bounds_condition_counts_by_availability():
+    sampler = Sleep2WaveTaskSampler(
+        phase=4,
+        task_mix={"partial_full": 1.0},
+        condition_counts=[1, 2, 3, 4],
+        seed=8,
+    )
+    availability = {modality: torch.zeros(2, 2, dtype=torch.bool) for modality in CANONICAL_MODALITIES}
+    availability["eeg"] = torch.ones(2, 2, dtype=torch.bool)
+    availability["ecg"] = torch.ones(2, 2, dtype=torch.bool)
+    availability["spo2"] = torch.ones(2, 2, dtype=torch.bool)
+
+    counts = {len(sampler.sample(availability).condition_modalities) for _ in range(100)}
+
+    assert counts == {1, 2}
+
+
 def test_task_sampler_rejects_batches_without_common_translation_pair():
     sampler = Sleep2WaveTaskSampler(
         phase=1,
