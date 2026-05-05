@@ -21,6 +21,7 @@ RESULT_METADATA_COLUMNS = (
     "batch_size",
     "n_few_shot",
     "channel_names",
+    "preset_path",
 )
 
 
@@ -53,6 +54,8 @@ def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: A
             new_row["channel_names"] = channel_names
         else:
             new_row["channel_names"] = ""
+        preset_path = getattr(args, "inference_preset_path", None) or getattr(args, "finetune_preset_path", None)
+        new_row["preset_path"] = _stringify_optional_path(preset_path)
 
     df_new = pd.DataFrame([new_row])
     csv_file = Path(csv_path)
