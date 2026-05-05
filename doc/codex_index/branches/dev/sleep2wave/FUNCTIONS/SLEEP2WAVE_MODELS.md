@@ -112,7 +112,7 @@
 
 - File: `sleep2wave/diffusion/lightning.py`
 - Signature: `Sleep2WaveDiffusionLightning(config: Sleep2WaveConfig, *, seed: int = 0)`
-- Purpose and contract: Lightning wrapper for latent diffusion training with frozen autoencoder encoding, sampled task curriculum, condition dropout, and AdamW optimization. For `partial_full`, condition dropout recomputes targets from the original task modalities so dropped conditions remain training targets.
+- Purpose and contract: Lightning wrapper for latent diffusion training with frozen autoencoder encoding, sampled task curriculum, condition dropout, and AdamW optimization. For `partial_full`, condition dropout recomputes targets from the original task modalities so dropped conditions remain training targets. For restoration/imputation, task corruption is applied only to target modalities so auxiliary condition modalities stay clean.
 - Important inputs/outputs: diffusion-stage config in; training loss out.
 - Side effects: loads autoencoder checkpoint, logs metrics, saves config into checkpoint.
 - Key callers/callees: `train_diffusion.train_diffusion`.
@@ -132,7 +132,7 @@
 
 - File: `sleep2wave/training/task_sampler.py`
 - Signature: `Sleep2WaveTaskSampler(*, modalities=CANONICAL_MODALITIES, phase: int, task_mix=None, condition_counts=None, auxiliary_restoration_token=True, seed=0)`
-- Purpose and contract: sample availability-aware generation tasks from the phase schedule. `partial_full` draws from configured `condition_counts` that fit the currently available modalities instead of always using the largest configured count.
+- Purpose and contract: sample availability-aware generation tasks from the phase schedule. `partial_full` draws from configured `condition_counts` that fit the currently available modalities instead of always using the largest configured count. Restoration/imputation draw from `restoration_condition_counts`, always including the target modality plus optional auxiliary condition modalities.
 - Important inputs/outputs: optional availability mask in; `GenerationTask` out.
 - Side effects: uses internal seeded random generator.
 - Key callers/callees: `Sleep2WaveDiffusionLightning.training_step`.

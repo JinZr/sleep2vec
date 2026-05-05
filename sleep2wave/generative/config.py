@@ -132,6 +132,7 @@ class TrainingConfig:
     phase_checkpoint: str | None = None
     task_mix: dict[str, float] = field(default_factory=dict)
     condition_counts: list[int] = field(default_factory=list)
+    restoration_condition_counts: list[int] = field(default_factory=list)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
     corruptions: TrainingCorruptionsConfig = field(default_factory=TrainingCorruptionsConfig)
 
@@ -467,15 +468,15 @@ def _load_task_mix(raw: t.Any) -> dict[str, float]:
     return parsed
 
 
-def _load_condition_counts(raw: t.Any) -> list[int]:
+def _load_condition_counts(raw: t.Any, path: str = "training.condition_counts") -> list[int]:
     if raw is None:
         return []
     if not isinstance(raw, list) or not raw:
-        raise ValueError("training.condition_counts must be a non-empty list when provided.")
+        raise ValueError(f"{path} must be a non-empty list when provided.")
     counts: list[int] = []
     for value in raw:
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise ValueError("training.condition_counts must contain positive integers.")
+            raise ValueError(f"{path} must contain positive integers.")
         counts.append(value)
     return counts
 
@@ -575,6 +576,7 @@ def _load_training(raw: t.Any) -> TrainingConfig:
         "phase_checkpoint",
         "task_mix",
         "condition_counts",
+        "restoration_condition_counts",
         "replay",
         "corruptions",
     }
@@ -592,6 +594,10 @@ def _load_training(raw: t.Any) -> TrainingConfig:
         phase_checkpoint=_optional_string(block, "phase_checkpoint", "training"),
         task_mix=_load_task_mix(block.get("task_mix")),
         condition_counts=_load_condition_counts(block.get("condition_counts")),
+        restoration_condition_counts=_load_condition_counts(
+            block.get("restoration_condition_counts"),
+            "training.restoration_condition_counts",
+        ),
         replay=_load_replay(block.get("replay")),
         corruptions=_load_training_corruptions(block.get("corruptions")),
     )

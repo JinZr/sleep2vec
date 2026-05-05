@@ -51,6 +51,7 @@ def test_sleep2wave_generative_config_loads_diffusion_tiny():
     assert cfg.sampler is not None
     assert cfg.sampler.name == "ddim"
     assert cfg.sampler.steps == 10
+    assert cfg.training.restoration_condition_counts == [1]
     assert cfg.training.corruptions.restoration.default.name == "gaussian_noise"
     assert cfg.training.corruptions.imputation.default.name == "contiguous_window_mask"
 
@@ -225,6 +226,15 @@ def test_sleep2wave_generative_config_rejects_all_zero_task_mix(tmp_path: Path):
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
     with pytest.raises(ValueError, match="training.task_mix must include at least one positive task weight"):
+        load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_rejects_invalid_restoration_condition_counts(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    payload["training"]["restoration_condition_counts"] = [0]
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="training.restoration_condition_counts must contain positive integers"):
         load_sleep2wave_config(path)
 
 

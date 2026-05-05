@@ -32,6 +32,7 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             phase=config.training.phase,
             task_mix=config.training.task_mix,
             condition_counts=config.training.condition_counts,
+            restoration_condition_counts=config.training.restoration_condition_counts,
             auxiliary_restoration_token=config.diffusion.auxiliary_restoration_token,
             replay_enabled=config.training.replay.enabled,
             seed=seed,
@@ -133,7 +134,8 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             return observed_signals
 
         updated = dict(observed_signals)
-        for modality in task.condition_modalities:
+        corruption_modalities = task.target_modalities if is_restoration_task(task) else task.condition_modalities
+        for modality in corruption_modalities:
             spec = policy.for_modality(modality)
             if spec is None:
                 continue

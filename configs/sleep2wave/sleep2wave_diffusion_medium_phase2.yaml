@@ -35,6 +35,7 @@ training:
   max_epochs: 20
   gradient_clip_val: 1.0
   condition_counts: [1]
+  restoration_condition_counts: [1, 2, 3]
   replay: {enabled: true}
   corruptions:
     restoration: {default: {name: gaussian_noise, kwargs: {std: 0.05}}}

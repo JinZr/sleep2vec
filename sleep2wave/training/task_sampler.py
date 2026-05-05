@@ -18,6 +18,7 @@ class Sleep2WaveTaskSampler:
         phase: int,
         task_mix: dict[str, float] | None = None,
         condition_counts: t.Sequence[int] | None = None,
+        restoration_condition_counts: t.Sequence[int] | None = None,
         auxiliary_restoration_token: bool = True,
         replay_enabled: bool = True,
         seed: int = 0,
@@ -27,6 +28,12 @@ class Sleep2WaveTaskSampler:
         self.condition_counts = tuple(condition_counts or (1,))
         if any(not isinstance(count, int) or isinstance(count, bool) or count <= 0 for count in self.condition_counts):
             raise ValueError("condition_counts must contain positive integers.")
+        self.restoration_condition_counts = tuple(restoration_condition_counts or (1,))
+        if any(
+            not isinstance(count, int) or isinstance(count, bool) or count <= 0
+            for count in self.restoration_condition_counts
+        ):
+            raise ValueError("restoration_condition_counts must contain positive integers.")
         self.auxiliary_restoration_token = bool(auxiliary_restoration_token)
         self.rng = random.Random(seed)
 
@@ -119,9 +126,14 @@ class Sleep2WaveTaskSampler:
 
         if family in {"restoration", "imputation"}:
             target = self._choice(available)
+            valid_counts = [count for count in self.restoration_condition_counts if count <= len(available)]
+            if not valid_counts:
+                raise ValueError("Not enough available modalities to sample a restoration condition set.")
+            condition_count = self.rng.choice(valid_counts)
+            condition = [target, *self._sample_condition_set(available, target, condition_count - 1)]
             return build_generation_task(
                 family,
-                condition_modalities=[target],
+                condition_modalities=condition,
                 target_modalities=[target],
                 auxiliary_restoration_token=self.auxiliary_restoration_token,
             )

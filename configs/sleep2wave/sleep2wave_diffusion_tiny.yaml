@@ -66,6 +66,7 @@ training:
     translation: 0.0
     partial_full: 0.0
   condition_counts: [1]
+  restoration_condition_counts: [1]
   replay:
     enabled: false
   corruptions:

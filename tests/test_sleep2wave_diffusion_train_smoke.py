@@ -305,6 +305,33 @@ def test_task_corruption_is_applied_inside_diffusion_module(tmp_path: Path):
     assert not torch.equal(corrupted["eeg"], observed["eeg"])
 
 
+def test_task_corruption_keeps_restoration_auxiliary_conditions_clean(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["training"]["corruptions"] = {
+        "restoration": {"default": {"name": "gaussian_noise", "kwargs": {"std": 1.0}}},
+    }
+    config_path.write_text(yaml.safe_dump(payload))
+    module = Sleep2WaveDiffusionLightning(load_sleep2wave_config(config_path))
+    task = build_generation_task(
+        "restoration",
+        condition_modalities=["eeg", "ecg"],
+        target_modalities=["eeg"],
+        auxiliary_restoration_token=True,
+    )
+    observed = {
+        "eeg": torch.zeros(1, 2, 1, MODALITY_SPECS["eeg"].frames_per_epoch),
+        "ecg": torch.zeros(1, 2, 1, MODALITY_SPECS["ecg"].frames_per_epoch),
+    }
+
+    corrupted = module._apply_task_corruption(observed, task)
+
+    assert not torch.equal(corrupted["eeg"], observed["eeg"])
+    assert torch.equal(corrupted["ecg"], observed["ecg"])
+
+
 def test_phase_checkpoint_loads_diffusion_model_weights(tmp_path: Path):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)

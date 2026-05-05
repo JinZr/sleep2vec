@@ -58,6 +58,43 @@ def test_task_sampler_uses_aux_for_restoration():
     assert task.condition_modalities == task.target_modalities
 
 
+def test_task_sampler_restoration_samples_auxiliary_condition_modalities():
+    sampler = Sleep2WaveTaskSampler(
+        phase=1,
+        task_mix={"restoration": 1.0},
+        restoration_condition_counts=[1, 2, 3],
+        auxiliary_restoration_token=True,
+        seed=9,
+    )
+
+    counts = set()
+    for _ in range(100):
+        task = sampler.sample(_availability())
+        counts.add(len(task.condition_modalities))
+        assert task.task_type == "restoration"
+        assert len(task.target_modalities) == 1
+        assert task.target_modalities[0] in task.condition_modalities
+
+    assert {1, 2, 3}.issubset(counts)
+
+
+def test_task_sampler_imputation_samples_auxiliary_condition_modalities():
+    sampler = Sleep2WaveTaskSampler(
+        phase=1,
+        task_mix={"imputation": 1.0},
+        restoration_condition_counts=[3],
+        auxiliary_restoration_token=True,
+        seed=10,
+    )
+
+    task = sampler.sample(_availability())
+
+    assert task.task_type == "imputation"
+    assert len(task.condition_modalities) == 3
+    assert len(task.target_modalities) == 1
+    assert task.target_modalities[0] in task.condition_modalities
+
+
 def test_task_sampler_requires_enough_modalities_for_two_condition_task():
     sampler = Sleep2WaveTaskSampler(
         phase=3,

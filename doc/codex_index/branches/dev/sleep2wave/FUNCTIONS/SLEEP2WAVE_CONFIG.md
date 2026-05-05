@@ -38,7 +38,7 @@
   - `_load_sampler(raw, diffusion_cfg) -> SamplerConfig`
   - `_load_initialization(raw) -> InitializationConfig | None`
   - `_load_evaluation(raw) -> EvaluationConfig`
-- Purpose and contract: parse individual schema blocks and reject unsupported fields, including task-aware training/inference corruption specs, evaluation corruption mask policy, and phase checkpoint paths.
+- Purpose and contract: parse individual schema blocks and reject unsupported fields, including task-aware training/inference corruption specs, restoration condition-count sampling, evaluation corruption mask policy, and phase checkpoint paths.
 - Important inputs/outputs: raw mapping in; typed config out.
 - Side effects: none.
 - Key callers/callees: called by `load_sleep2wave_config`.
