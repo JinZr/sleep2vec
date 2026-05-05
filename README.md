@@ -233,12 +233,14 @@ python -m wrist2vec.infer \
   --config configs/write2vec/wrist2vec_dense_finetune_cls.yaml \
   --ckpt-path log-wrist2vec-finetune/wrist-stage5/checkpoints/best.ckpt \
   --label-name stage5 --batch-size 12 --devices 0 \
+  --inference-preset-path /path/to/test_preset_1535.pickle \
   --eval-split test --results-csv-path outputs.csv
 ```
 
 Notes:
 - Every top-level example config under `configs/` now has a `configs/write2vec/wrist2vec_*.yaml` companion.
 - For generic wearable/downstream recipes, use files such as `configs/write2vec/wrist2vec_ppg_ahi_finetune.yaml` and `configs/write2vec/wrist2vec_heartbeat_breath_age_finetune_large.yaml`.
+- `wrist2vec.infer` supports `--inference-preset-path`; result CSV rows record the effective preset in `preset_path`.
 - Wrist runs write to `log-wrist2vec-pretrain/`, `log-wrist2vec-adapt/`, and `log-wrist2vec-finetune/`.
 
 ---
