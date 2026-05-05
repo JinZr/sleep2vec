@@ -4,11 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from sleep2wave.inference.sliding_window import (
-    fuse_mask_windows,
-    fuse_overlapping_windows,
-    validate_single_night,
-)
+from sleep2wave.inference.sliding_window import fuse_mask_windows, fuse_overlapping_windows, validate_single_night
 
 
 def test_sliding_window_mean_fusion_covers_contiguous_night():
