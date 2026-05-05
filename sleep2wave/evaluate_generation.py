@@ -17,13 +17,23 @@ if str(REPO_ROOT) not in sys.path:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate sleep2wave generated PSG artifacts.")
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--generated-dir", type=Path, default=None)
-    parser.add_argument("--reference-npz", type=Path, default=None)
-    parser.add_argument("--baseline-npz", type=Path, default=None)
-    parser.add_argument("--events-json", type=Path, default=None)
-    parser.add_argument("--downstream-metrics-json", type=Path, default=None)
-    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--config", type=Path, required=True, help="Sleep2Wave evaluation YAML config.")
+    parser.add_argument("--generated-dir", type=Path, default=None, help="Generated artifact directory to evaluate.")
+    parser.add_argument("--reference-npz", type=Path, default=None, help="Reference waveform NPZ path.")
+    parser.add_argument(
+        "--baseline-npz",
+        type=Path,
+        default=None,
+        help="Optional degraded or baseline waveform NPZ path.",
+    )
+    parser.add_argument("--events-json", type=Path, default=None, help="Optional event annotations JSON path.")
+    parser.add_argument(
+        "--downstream-metrics-json",
+        type=Path,
+        default=None,
+        help="Optional downstream metrics JSON path.",
+    )
+    parser.add_argument("--output-dir", type=Path, default=None, help="Directory for evaluation outputs.")
     return parser.parse_args(argv)
 
 

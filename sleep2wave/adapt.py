@@ -441,7 +441,13 @@ if __name__ == "__main__":
         default=0.1,
         help="Warn when unique sampled indices / pair pool size falls below this threshold.",
     )
-    parser.add_argument("--strategy", type=str, default="ddp", choices=["ddp", "deepspeed", "auto"])
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="ddp",
+        choices=["ddp", "deepspeed", "auto"],
+        help="Distributed training strategy.",
+    )
     parser.add_argument("--deepspeed-config", type=Path, default=None, help="DeepSpeed config path when used.")
     parser.add_argument(
         "--print-diagnostics",

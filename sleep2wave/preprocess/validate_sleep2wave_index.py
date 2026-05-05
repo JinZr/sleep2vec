@@ -10,11 +10,11 @@ def parse_args() -> argparse.Namespace:
         description="Validate a sleep2wave generative index CSV contract.",
     )
     parser.add_argument("--index", required=True, type=Path, help="Input index CSV.")
-    parser.add_argument("--path-col", default="path")
-    parser.add_argument("--duration-col", default="duration")
-    parser.add_argument("--split-col", default="split")
-    parser.add_argument("--subject-id-col", default="subject_id")
-    parser.add_argument("--night-id-col", default="night_id")
+    parser.add_argument("--path-col", default="path", help="Index column containing waveform NPZ paths.")
+    parser.add_argument("--duration-col", default="duration", help="Index column containing recording duration.")
+    parser.add_argument("--split-col", default="split", help="Index column containing split labels.")
+    parser.add_argument("--subject-id-col", default="subject_id", help="Index column containing subject ids.")
+    parser.add_argument("--night-id-col", default="night_id", help="Index column containing night ids.")
     return parser.parse_args()
 
 

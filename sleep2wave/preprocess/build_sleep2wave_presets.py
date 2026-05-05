@@ -15,12 +15,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", nargs="*", default=None, help="Optional split values to keep.")
     parser.add_argument("--context-epochs", type=int, default=15, help="Fixed 30-second context window length.")
     parser.add_argument("--stride-epochs", type=int, default=None, help="Stride in 30-second epochs.")
-    parser.add_argument("--path-col", default="path")
-    parser.add_argument("--duration-col", default="duration")
-    parser.add_argument("--split-col", default="split")
-    parser.add_argument("--subject-id-col", default="subject_id")
-    parser.add_argument("--night-id-col", default="night_id")
-    parser.add_argument("--source-col", default="source")
+    parser.add_argument("--path-col", default="path", help="Index column containing waveform NPZ paths.")
+    parser.add_argument("--duration-col", default="duration", help="Index column containing recording duration.")
+    parser.add_argument("--split-col", default="split", help="Index column containing split labels.")
+    parser.add_argument("--subject-id-col", default="subject_id", help="Index column containing subject ids.")
+    parser.add_argument("--night-id-col", default="night_id", help="Index column containing night ids.")
+    parser.add_argument("--source-col", default="source", help="Index column containing source dataset names.")
     parser.add_argument(
         "--num-workers",
         type=int,

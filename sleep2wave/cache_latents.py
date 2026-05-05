@@ -13,12 +13,12 @@ if str(REPO_ROOT) not in sys.path:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a sleep2wave latent cache from waveform windows.")
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--autoencoder-ckpt", type=Path, default=None)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--config", type=Path, required=True, help="Sleep2Wave diffusion YAML config.")
+    parser.add_argument("--autoencoder-ckpt", type=Path, default=None, help="Optional autoencoder checkpoint override.")
+    parser.add_argument("--output-dir", type=Path, required=True, help="Output latent-cache directory.")
+    parser.add_argument("--batch-size", type=int, default=1, help="Latent-cache dataloader batch size.")
+    parser.add_argument("--num-workers", type=int, default=0, help="Latent-cache dataloader workers.")
+    parser.add_argument("--device", type=str, default="cpu", help="Torch device used for autoencoder encoding.")
     return parser.parse_args(argv)
 
 

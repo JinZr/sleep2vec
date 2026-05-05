@@ -20,36 +20,43 @@ from sleep2wave.generative.config import SamplerConfig, Sleep2WaveConfig
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate sleep2wave PSG channels from incomplete recordings.")
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--diffusion-ckpt", type=Path, required=True)
-    parser.add_argument("--autoencoder-ckpt", type=Path, default=None)
+    parser.add_argument("--config", type=Path, required=True, help="Sleep2Wave inference YAML config.")
+    parser.add_argument("--diffusion-ckpt", type=Path, required=True, help="Sleep2Wave diffusion checkpoint path.")
+    parser.add_argument("--autoencoder-ckpt", type=Path, default=None, help="Optional autoencoder checkpoint override.")
     data_group = parser.add_mutually_exclusive_group()
-    data_group.add_argument("--preset-path", type=Path, default=None)
-    data_group.add_argument("--index", type=Path, default=None)
+    data_group.add_argument("--preset-path", type=Path, default=None, help="Generation preset pickle path.")
+    data_group.add_argument("--index", type=Path, default=None, help="Generation index CSV path.")
     parser.add_argument(
         "--task",
         type=str,
         required=True,
         choices=["restoration", "imputation", "translation", "partial_full"],
+        help="Generation task type.",
     )
-    parser.add_argument("--condition-modalities", nargs="+", required=True)
-    parser.add_argument("--target-modalities", nargs="+", required=True)
-    parser.add_argument("--corruption-name", type=str, default=None)
-    parser.add_argument("--corruption-kwargs", type=str, default=None)
-    parser.add_argument("--condition-mask-npz", type=Path, default=None)
-    parser.add_argument("--num-samples", type=int, default=None)
-    parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--stride-epochs", type=int, default=1)
+    parser.add_argument(
+        "--condition-modalities",
+        nargs="+",
+        required=True,
+        help="Observed modalities used as conditions.",
+    )
+    parser.add_argument("--target-modalities", nargs="+", required=True, help="Modalities to generate.")
+    parser.add_argument("--corruption-name", type=str, default=None, help="Optional inference corruption name.")
+    parser.add_argument("--corruption-kwargs", type=str, default=None, help="JSON object of corruption parameters.")
+    parser.add_argument("--condition-mask-npz", type=Path, default=None, help="Optional external condition mask NPZ.")
+    parser.add_argument("--num-samples", type=int, default=None, help="Number of generated samples per window.")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Output artifact directory.")
+    parser.add_argument("--stride-epochs", type=int, default=1, help="Sliding-window stride in 30-second epochs.")
     parser.add_argument(
         "--overlap-fusion",
         type=str,
         default="mean",
         choices=["mean", "median", "uncertainty_weighted"],
+        help="Method used to fuse overlapping generated windows.",
     )
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--batch-size", type=int, default=1, help="Generation dataloader batch size.")
+    parser.add_argument("--num-workers", type=int, default=0, help="Generation dataloader workers.")
+    parser.add_argument("--device", type=str, default="cpu", help="Torch device used for generation.")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed for generation sampling.")
     return parser.parse_args(argv)
 
 

@@ -34,15 +34,25 @@ def _parse_devices(raw: str):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the sleep2wave latent diffusion model.")
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--version-name", type=str, required=True)
-    parser.add_argument("--accelerator", type=str, default="auto")
-    parser.add_argument("--devices", type=str, default="auto")
-    parser.add_argument("--precision", type=int, default=32)
-    parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--resume-from-checkpoint", type=Path, default=None)
+    parser.add_argument("--config", type=Path, required=True, help="Sleep2Wave diffusion YAML config.")
+    parser.add_argument("--version-name", type=str, required=True, help="Version name for logging and outputs.")
+    parser.add_argument("--accelerator", type=str, default="auto", help="Lightning accelerator setting.")
+    parser.add_argument("--devices", type=str, default="auto", help="Lightning device ids, comma list, or 'auto'.")
+    parser.add_argument(
+        "--precision",
+        type=int,
+        default=32,
+        help="Mixed precision setting passed to Lightning Trainer.",
+    )
+    parser.add_argument("--max-steps", type=int, default=None, help="Optional max training steps override.")
+    parser.add_argument("--num-workers", type=int, default=0, help="Training dataloader workers.")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed for data sampling and Lightning.")
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        type=Path,
+        default=None,
+        help="Optional Lightning checkpoint to resume diffusion training.",
+    )
     return parser.parse_args(argv)
 
 
