@@ -227,7 +227,7 @@ def apply_corruption(
     **kwargs: t.Any,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if name not in CORRUPTION_REGISTRY:
-        raise ValueError(f"Unknown Sleep2Wave corruption: {name}")
+        raise ValueError(f"Unknown sleep2wave corruption: {name}")
     return CORRUPTION_REGISTRY[name](signal, seed=seed, **kwargs)
 
 

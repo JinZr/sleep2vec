@@ -24,7 +24,7 @@ def test_phase_schedule_normalizes_custom_mix():
 
 
 def test_phase_schedule_rejects_unknown_task_family():
-    with pytest.raises(ValueError, match="Unsupported Sleep2Wave task family"):
+    with pytest.raises(ValueError, match="Unsupported sleep2wave task family"):
         build_phase_schedule(1, {"unknown": 1.0})
 
 

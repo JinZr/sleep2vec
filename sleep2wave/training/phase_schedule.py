@@ -28,7 +28,7 @@ def _validate_task_mix(task_mix: dict[str, float]) -> dict[str, float]:
     parsed: dict[str, float] = {}
     for name, value in task_mix.items():
         if name not in TASK_FAMILIES:
-            raise ValueError(f"Unsupported Sleep2Wave task family: {name}")
+            raise ValueError(f"Unsupported sleep2wave task family: {name}")
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
             raise ValueError(f"Task weight for '{name}' must be a non-negative number.")
         if value > 0:

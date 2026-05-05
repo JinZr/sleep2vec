@@ -61,7 +61,7 @@ def test_generation_task_rejects_unknown_modality():
 
 
 def test_generation_task_rejects_duplicate_modality():
-    with pytest.raises(ValueError, match="Duplicate Sleep2Wave modality"):
+    with pytest.raises(ValueError, match="Duplicate sleep2wave modality"):
         build_generation_task("translation", condition_modalities=["ecg", "ecg"], target_modalities=["eeg"])
 
 

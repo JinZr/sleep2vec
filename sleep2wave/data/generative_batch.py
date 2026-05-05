@@ -43,7 +43,7 @@ def _stack_mask_dict(samples: list[dict[str, t.Any]], key: str) -> SignalDict:
 
 def collate_sleep2wave_generative(samples: list[dict[str, t.Any]]) -> dict[str, t.Any]:
     if not samples:
-        raise ValueError("Cannot collate an empty Sleep2Wave generative batch.")
+        raise ValueError("Cannot collate an empty sleep2wave generative batch.")
 
     metadata_keys = samples[0]["metadata"].keys()
     metadata = {key: [sample["metadata"].get(key) for sample in samples] for key in metadata_keys}

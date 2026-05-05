@@ -616,13 +616,13 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
         "export",
         "evaluation",
     }
-    _reject_extra(data, allowed, "top-level Sleep2Wave config")
+    _reject_extra(data, allowed, "top-level sleep2wave config")
 
-    recipe = _require_string(data, "recipe", "top-level Sleep2Wave config")
+    recipe = _require_string(data, "recipe", "top-level sleep2wave config")
     if recipe != "sleep2wave":
         raise ValueError("recipe must be 'sleep2wave'.")
 
-    stage = _require_string(data, "stage", "top-level Sleep2Wave config")
+    stage = _require_string(data, "stage", "top-level sleep2wave config")
     if stage not in SUPPORTED_STAGES:
         raise ValueError(f"stage must be one of {sorted(SUPPORTED_STAGES)}.")
 

@@ -62,5 +62,5 @@ def test_corruptions_return_signal_and_mask(name: str, kwargs: dict):
 def test_unknown_corruption_raises():
     signal = torch.zeros((1, 1, 8), dtype=torch.float32)
 
-    with pytest.raises(ValueError, match="Unknown Sleep2Wave corruption"):
+    with pytest.raises(ValueError, match="Unknown sleep2wave corruption"):
         corruptions.apply_corruption("unknown", signal)

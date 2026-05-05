@@ -1,10 +1,10 @@
-# Sleep2Wave Evaluation Functions
+# sleep2wave Evaluation Functions
 
 ## `sleep2wave.evaluate_generation.run_evaluation`
 
 - File: `sleep2wave/evaluate_generation.py`
 - Signature: `run_evaluation(args: argparse.Namespace) -> Path`
-- Purpose and contract: evaluate generated Sleep2Wave artifact directories and write metrics output.
+- Purpose and contract: evaluate generated sleep2wave artifact directories and write metrics output.
 - Important inputs/outputs: evaluation-stage config and optional CLI overrides in; output directory path out.
 - Side effects: reads config, artifact NPZ/JSON files, optional reference/baseline/events/downstream files, and writes `metrics.json` and `metrics.csv`.
 - Key callers/callees: `main`; callees include `_require_artifact_dir`, `_load_generated_mean`, `_load_metric_epoch_mask`, waveform/feature/event/efficiency/downstream metric helpers, and `_write_metrics`.

@@ -142,64 +142,64 @@ def test_validate_sleep2wave_index_rejects_missing_modality_mask(tmp_path: Path)
     frame = _index_frame(tmp_path / "sample.npz").drop(columns=["resp_mask"])
     frame.to_csv(index_path, index=False)
 
-    with pytest.raises(ValueError, match="Missing Sleep2Wave modality mask columns"):
+    with pytest.raises(ValueError, match="Missing sleep2wave modality mask columns"):
         validate_sleep2wave_index(index_path)
 
 
-def test_validate_sleep2wave_index_rejects_subject_split_leakage(tmp_path: Path):
+def test_validate_sleep2wave_index_accepts_subjects_in_multiple_splits(tmp_path: Path):
     index_path = tmp_path / "index.csv"
     first = _index_frame(tmp_path / "a.npz").iloc[0].to_dict()
     second = _index_frame(tmp_path / "b.npz").iloc[0].to_dict()
     second["split"] = "test"
     pd.DataFrame([first, second]).to_csv(index_path, index=False)
 
-    with pytest.raises(ValueError, match="Subjects appear in multiple splits"):
-        validate_sleep2wave_index(index_path)
+    validate_sleep2wave_index(index_path)
 
 
-def test_validate_sleep2wave_index_rejects_missing_subject_id(tmp_path: Path):
+def test_validate_sleep2wave_index_accepts_missing_subject_id(tmp_path: Path):
     index_path = tmp_path / "index.csv"
     frame = _index_frame(tmp_path / "sample.npz")
     frame.loc[0, "subject_id"] = None
     frame.to_csv(index_path, index=False)
 
-    with pytest.raises(ValueError, match="missing subject_id values"):
-        validate_sleep2wave_index(index_path)
+    validate_sleep2wave_index(index_path)
 
 
-def test_build_sleep2wave_presets_rejects_subject_split_leakage(tmp_path: Path):
+def test_build_sleep2wave_presets_accepts_subjects_in_multiple_splits(tmp_path: Path):
     index_path = tmp_path / "index.csv"
     first = _index_frame(tmp_path / "a.npz").iloc[0].to_dict()
     second = _index_frame(tmp_path / "b.npz").iloc[0].to_dict()
     second["split"] = "test"
     pd.DataFrame([first, second]).to_csv(index_path, index=False)
 
-    with pytest.raises(ValueError, match="Subjects appear in multiple splits"):
-        build_sleep2wave_presets(
-            index_path=index_path,
-            output_path=tmp_path / "preset.pkl",
-            split=["train"],
-            context_epochs=2,
-            stride_epochs=2,
-            columns=None,
-        )
+    samples = build_sleep2wave_presets(
+        index_path=index_path,
+        output_path=tmp_path / "preset.pkl",
+        split=["train"],
+        context_epochs=2,
+        stride_epochs=2,
+        columns=None,
+    )
+
+    assert len(samples) == 1
 
 
-def test_build_sleep2wave_presets_rejects_missing_subject_id(tmp_path: Path):
+def test_build_sleep2wave_presets_accepts_missing_subject_id(tmp_path: Path):
     index_path = tmp_path / "index.csv"
     frame = _index_frame(tmp_path / "sample.npz")
     frame.loc[0, "subject_id"] = None
     frame.to_csv(index_path, index=False)
 
-    with pytest.raises(ValueError, match="missing subject_id values"):
-        build_sleep2wave_presets(
-            index_path=index_path,
-            output_path=tmp_path / "preset.pkl",
-            split=["train"],
-            context_epochs=2,
-            stride_epochs=2,
-            columns=None,
-        )
+    samples = build_sleep2wave_presets(
+        index_path=index_path,
+        output_path=tmp_path / "preset.pkl",
+        split=["train"],
+        context_epochs=2,
+        stride_epochs=2,
+        columns=None,
+    )
+
+    assert len(samples) == 1
 
 
 def test_validate_sleep2wave_index_rejects_zero_available_modality_rows(tmp_path: Path):

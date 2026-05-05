@@ -73,7 +73,7 @@ class Sleep2WaveTaskSampler:
             ]
         if len(common_available) < min_size:
             if min_size <= 1:
-                raise ValueError("No modalities are available for Sleep2Wave task sampling.")
+                raise ValueError("No modalities are available for sleep2wave task sampling.")
             if min_size > 2:
                 raise ValueError("Not enough available modalities to sample a disjoint condition set.")
             raise ValueError("Translation and partial_full tasks require at least two available modalities.")

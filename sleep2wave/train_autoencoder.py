@@ -29,7 +29,7 @@ def _parse_devices(raw: str):
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train Sleep2Wave modality-specific waveform autoencoders.")
+    parser = argparse.ArgumentParser(description="Train sleep2wave modality-specific waveform autoencoders.")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--version-name", type=str, required=True)
     parser.add_argument("--accelerator", type=str, default="auto")
@@ -80,7 +80,7 @@ def train_autoencoder(args: argparse.Namespace) -> Path:
             device="cpu",
         )
         logging.info(
-            "Sleep2Wave autoencoder initialization loaded %d keys from %s.",
+            "sleep2wave autoencoder initialization loaded %d keys from %s.",
             len(report.loaded_keys),
             config.initialization.sleep2vec2_checkpoint,
         )

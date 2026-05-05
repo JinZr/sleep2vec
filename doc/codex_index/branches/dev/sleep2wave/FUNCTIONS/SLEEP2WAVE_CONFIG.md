@@ -1,4 +1,4 @@
-# Sleep2Wave Config Functions
+# sleep2wave Config Functions
 
 ## Generative config bundle family
 
@@ -18,11 +18,11 @@
 
 - File: `sleep2wave/generative/config.py`
 - Signature: `load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig`
-- Purpose and contract: parse a strict Sleep2Wave YAML file with `recipe: sleep2wave` and one of `autoencoder`, `diffusion`, `inference`, or `evaluation` stages.
+- Purpose and contract: parse a strict sleep2wave YAML file with `recipe: sleep2wave` and one of `autoencoder`, `diffusion`, `inference`, or `evaluation` stages.
 - Important inputs/outputs: config path in; `Sleep2WaveConfig` out.
 - Side effects: reads YAML from disk.
 - Key callers/callees: callers include `train_autoencoder.py`, `train_diffusion.py`, `generate.py`, `evaluate_generation.py`, `utils/check_configs.py`, and tests. Callees include `_load_data`, `_load_modalities`, `_load_autoencoder`, `_load_diffusion`, `_load_training`, `_load_sampler`, `_load_initialization`, `_load_export`, and `_load_evaluation`.
-- Reuse guidance: use this for every Sleep2Wave stage config instead of parsing YAML in entrypoints.
+- Reuse guidance: use this for every sleep2wave stage config instead of parsing YAML in entrypoints.
 - Duplication-risk notes: do not repeat required/disallowed stage block logic elsewhere.
 
 ## Stage loaders
@@ -48,7 +48,7 @@
 
 - File: `sleep2wave/config.py`
 - Signature: `load_pretrain_config(path: str | Path) -> PretrainConfigBundle`
-- Purpose and contract: package-local parser for legacy-style Sleep2Vec pretrain/adapt YAML under the Sleep2Wave namespace.
+- Purpose and contract: package-local parser for legacy-style Sleep2Vec pretrain/adapt YAML under the sleep2wave namespace.
 - Important inputs/outputs: YAML path in; local `PretrainConfigBundle` out.
 - Side effects: reads YAML only.
 - Key callers/callees: used by package-local pretrain/adapt code and `utils/check_configs.py` for non-generative `configs/sleep2wave` recipes.
@@ -63,7 +63,7 @@
 - Important inputs/outputs: YAML path in; local `FinetuneConfigBundle` out.
 - Side effects: reads YAML only.
 - Key callers/callees: used by package-local finetune/infer code, `utils/check_configs.py`, and `tests/test_sleep2wave_namespace.py`.
-- Reuse guidance: use for every non-generative Sleep2Wave finetune config.
+- Reuse guidance: use for every non-generative sleep2wave finetune config.
 - Duplication-risk notes: do not bypass its LoRA rejection with direct `LoraConfig` construction.
 
 ## `sleep2wave.config.validate_model_config`
@@ -86,7 +86,7 @@
 - Side effects: imports package modules dynamically.
 - Key callers/callees: `check_config_file`.
 - Reuse guidance: add variant roots here only when they have package-local loaders.
-- Duplication-risk notes: do not special-case Sleep2Wave config paths in shell scripts.
+- Duplication-risk notes: do not special-case sleep2wave config paths in shell scripts.
 
 ## `utils.check_configs._validate_sleep2wave_generative_config`
 
@@ -97,7 +97,7 @@
 - Side effects: dynamic import and YAML read.
 - Key callers/callees: called by `check_config_file` when `_is_sleep2wave_generative_config` is true.
 - Reuse guidance: keep generative-stage validation delegated to the canonical parser.
-- Duplication-risk notes: avoid duplicating Sleep2Wave stage validation in `utils/check_configs.py`.
+- Duplication-risk notes: avoid duplicating sleep2wave stage validation in `utils/check_configs.py`.
 
 ## Tests
 

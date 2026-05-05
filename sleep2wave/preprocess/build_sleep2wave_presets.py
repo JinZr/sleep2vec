@@ -8,7 +8,7 @@ import pickle
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build Sleep2Wave generative preset pickles from an index CSV.",
+        description="Build sleep2wave generative preset pickles from an index CSV.",
     )
     parser.add_argument("--index", required=True, type=Path, help="Input index CSV.")
     parser.add_argument("--output", required=True, type=Path, help="Output preset pickle path.")
@@ -79,7 +79,7 @@ def main() -> None:
         dry_run=args.dry_run,
     )
     action = "Would write" if args.dry_run else "Wrote"
-    print(f"{action} {len(samples)} Sleep2Wave generative samples to {args.output}")
+    print(f"{action} {len(samples)} sleep2wave generative samples to {args.output}")
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ def test_sleep2wave_aliases_resolve_to_canonical_names():
 
 
 def test_sleep2wave_validate_modality_sequence_rejects_duplicates():
-    with pytest.raises(ValueError, match="Duplicate Sleep2Wave modality: eeg"):
+    with pytest.raises(ValueError, match="Duplicate sleep2wave modality: eeg"):
         validate_modality_sequence(["eeg", "eeg"])
 
 
@@ -64,5 +64,5 @@ def test_sleep2wave_validate_modality_sequence_rejects_unknown_names():
     with pytest.raises(ValueError, match="canonical modality names"):
         validate_modality_sequence(["eeg_original"])
 
-    with pytest.raises(ValueError, match="Unknown Sleep2Wave modality"):
+    with pytest.raises(ValueError, match="Unknown sleep2wave modality"):
         validate_modality_sequence(["unknown"], allow_aliases=True)

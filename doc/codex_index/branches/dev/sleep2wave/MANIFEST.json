@@ -63,21 +63,21 @@
     },
     "function_catalog_scope": [
       "base sleep2vec runtime inherited from the main branch index",
-      "Sleep2Wave config parsing for legacy runtime recipes and generative stage recipes",
-      "Sleep2Wave modality schema, index-to-window conversion, dataset materialization, corruption, masks, and collation",
-      "Sleep2Wave autoencoder, diffusion transformer, generation task masks, diffusion schedules, samplers, and task sampler",
-      "Sleep2Wave runtime entrypoints for autoencoder training, diffusion training, generation, generation evaluation, and package-local copied sleep2vec runtime",
-      "Sleep2Wave artifact export, sliding-window fusion, uncertainty summaries, and metric families",
+      "sleep2wave config parsing for legacy runtime recipes and generative stage recipes",
+      "sleep2wave modality schema, index-to-window conversion, dataset materialization, corruption, masks, and collation",
+      "sleep2wave autoencoder, diffusion transformer, generation task masks, diffusion schedules, samplers, and task sampler",
+      "sleep2wave runtime entrypoints for autoencoder training, diffusion training, generation, generation evaluation, and package-local copied sleep2vec runtime",
+      "sleep2wave artifact export, sliding-window fusion, uncertainty summaries, and metric families",
       "config validation routing for configs/sleep2wave"
     ],
     "workflow_scope": [
       "base pretrain/adapt/finetune/infer runtime",
-      "Sleep2Wave config validation",
-      "Sleep2Wave preprocessing and preset generation",
-      "Sleep2Wave autoencoder training",
-      "Sleep2Wave diffusion training",
-      "Sleep2Wave generation",
-      "Sleep2Wave evaluation"
+      "sleep2wave config validation",
+      "sleep2wave preprocessing and preset generation",
+      "sleep2wave autoencoder training",
+      "sleep2wave diffusion training",
+      "sleep2wave generation",
+      "sleep2wave evaluation"
     ]
   },
   "exclusions": [

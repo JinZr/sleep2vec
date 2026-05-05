@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Use this page when a change on `dev/sleep2wave` touches the inherited base `sleep2vec` runtime rather than the additive Sleep2Wave generative stack.
+Use this page when a change on `dev/sleep2wave` touches the inherited base `sleep2vec` runtime rather than the additive sleep2wave generative stack.
 
 ## Canonical Reference
 
@@ -18,8 +18,8 @@ The source for base runtime guidance is still the main branch index:
 ## Branch Rule
 
 - For base configs and base source, use `sleep2vec.*`, top-level `data.*`, and top-level `preprocess.*`.
-- For package-local Sleep2Wave configs or runtime, use `sleep2wave.*`.
-- Do not mix base and package-local imports in new Sleep2Wave code.
+- For package-local sleep2wave configs or runtime, use `sleep2wave.*`.
+- Do not mix base and package-local imports in new sleep2wave code.
 
 ## Validation
 
@@ -31,4 +31,4 @@ Base workflow validation remains the same as main unless the branch changes base
 - `python -m sleep2vec.adapt ...`
 - `python utils/check_configs.py`
 
-For Sleep2Wave package-local runtime changes, add the relevant `tests/test_sleep2wave_*.py` coverage instead of relying only on base tests.
+For sleep2wave package-local runtime changes, add the relevant `tests/test_sleep2wave_*.py` coverage instead of relying only on base tests.

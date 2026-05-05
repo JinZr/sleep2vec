@@ -1,8 +1,8 @@
-# Sleep2Wave Generation Workflow
+# sleep2wave Generation Workflow
 
 ## Purpose
 
-Generate target PSG modalities from incomplete recordings using a trained Sleep2Wave autoencoder and diffusion checkpoint.
+Generate target PSG modalities from incomplete recordings using a trained sleep2wave autoencoder and diffusion checkpoint.
 
 ## Canonical Path
 

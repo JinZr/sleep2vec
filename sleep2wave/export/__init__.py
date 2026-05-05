@@ -1,1 +1,1 @@
-"""Sleep2Wave generated-artifact export helpers."""
+"""sleep2wave generated-artifact export helpers."""

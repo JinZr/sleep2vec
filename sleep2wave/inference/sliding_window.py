@@ -24,7 +24,7 @@ def validate_single_night(metadata_rows: t.Sequence[dict[str, t.Any]]) -> None:
         for row in metadata_rows
     }
     if len(night_keys) != 1:
-        raise ValueError("Sleep2Wave generation currently supports one subject/night per run.")
+        raise ValueError("sleep2wave generation currently supports one subject/night per run.")
 
 
 def _prepare_starts(start_epochs: t.Sequence[int], window_count: int, device: torch.device) -> torch.Tensor:

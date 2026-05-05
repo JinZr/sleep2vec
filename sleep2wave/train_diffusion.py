@@ -32,7 +32,7 @@ def _parse_devices(raw: str):
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the Sleep2Wave latent diffusion model.")
+    parser = argparse.ArgumentParser(description="Train the sleep2wave latent diffusion model.")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--version-name", type=str, required=True)
     parser.add_argument("--accelerator", type=str, default="auto")
@@ -107,7 +107,7 @@ def train_diffusion(args: argparse.Namespace) -> Path:
             device="cpu",
         )
         logging.info(
-            "Sleep2Wave diffusion initialization loaded %d keys from %s.",
+            "sleep2wave diffusion initialization loaded %d keys from %s.",
             len(report.loaded_keys),
             config.initialization.sleep2vec2_checkpoint,
         )

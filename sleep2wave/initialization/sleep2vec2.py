@@ -86,10 +86,10 @@ def load_sleep2vec2_initialization(
 
     unknown_target_groups = sorted(set(target_groups) - INITIALIZATION_GROUPS)
     if unknown_target_groups:
-        raise ValueError(f"Unknown Sleep2Wave initialization target groups: {unknown_target_groups}")
+        raise ValueError(f"Unknown sleep2wave initialization target groups: {unknown_target_groups}")
     unknown_load_groups = sorted(set(config.load_groups) - INITIALIZATION_GROUPS)
     if unknown_load_groups:
-        raise ValueError(f"Unknown Sleep2Wave initialization load groups: {unknown_load_groups}")
+        raise ValueError(f"Unknown sleep2wave initialization load groups: {unknown_load_groups}")
 
     ckpt = load_checkpoint(resolved_checkpoint_path, device)
     source_state_dict = get_state_dict_from_checkpoint(ckpt)
@@ -121,7 +121,7 @@ def load_sleep2vec2_initialization(
 
     if config.strict_compatible and report.skipped_shape_mismatch:
         preview = ", ".join(report.skipped_shape_mismatch[:5])
-        raise ValueError(f"Sleep2Wave initialization shape mismatch for enabled groups: {preview}")
+        raise ValueError(f"sleep2wave initialization shape mismatch for enabled groups: {preview}")
 
     if compatible_state_dict:
         target.load_state_dict(compatible_state_dict, strict=False)
@@ -130,7 +130,7 @@ def load_sleep2vec2_initialization(
 
     if config.require_any_loaded and not report.loaded_keys:
         raise ValueError(
-            "Sleep2Wave initialization did not load any compatible sleep2vec2 checkpoint keys. "
+            "sleep2wave initialization did not load any compatible sleep2vec2 checkpoint keys. "
             f"Used prefix: {report.used_prefix!r}."
         )
 

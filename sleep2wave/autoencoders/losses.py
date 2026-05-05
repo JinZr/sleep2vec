@@ -65,7 +65,7 @@ def _spectral_epoch_error(reconstruction: torch.Tensor, target: torch.Tensor) ->
 def _validate_loss_weights(config: AutoencoderLossConfig) -> None:
     total = config.waveform_l1_weight + config.waveform_l2_weight + config.spectral_weight
     if total <= 0:
-        raise ValueError("At least one Sleep2Wave autoencoder loss weight must be positive.")
+        raise ValueError("At least one sleep2wave autoencoder loss weight must be positive.")
 
 
 def compute_autoencoder_loss(

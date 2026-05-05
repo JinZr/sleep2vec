@@ -1,4 +1,4 @@
-# Sleep2Wave Autoencoder Workflow
+# sleep2wave Autoencoder Workflow
 
 ## Purpose
 

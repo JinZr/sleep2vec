@@ -1,13 +1,13 @@
-# Sleep2Wave Config Validation Workflow
+# sleep2wave Config Validation Workflow
 
 ## Purpose
 
-Validate both Sleep2Wave generative-stage configs and package-local legacy-style runtime configs.
+Validate both sleep2wave generative-stage configs and package-local legacy-style runtime configs.
 
 ## Canonical Paths
 
 - Generative configs: `sleep2wave.generative.config.load_sleep2wave_config`
-- Legacy-style Sleep2Wave runtime configs: `sleep2wave.config.load_pretrain_config` or `sleep2wave.config.load_finetune_config`
+- Legacy-style sleep2wave runtime configs: `sleep2wave.config.load_pretrain_config` or `sleep2wave.config.load_finetune_config`
 - Repo-wide validation: `utils/check_configs.py`
 
 ## Config Types
@@ -31,7 +31,7 @@ Any non-generative YAML under `configs/sleep2wave/` should be routed through pac
 - `modalities` must match `sleep2wave.data.modalities`.
 - Diffusion and inference configs must keep `data.context_epochs == diffusion.context_epochs`.
 - `sampler.steps` must be compatible with diffusion steps and DDPM/DDIM rules.
-- Sleep2Wave finetune configs must keep LoRA flags disabled unless the standalone RoFormer support changes.
+- sleep2wave finetune configs must keep LoRA flags disabled unless the standalone RoFormer support changes.
 
 ## Commands
 

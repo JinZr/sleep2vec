@@ -13,7 +13,7 @@ The base `sleep2vec/`, top-level `data/`, and top-level `preprocess/` source sur
 
 ## Branch-Specific Reuse Rule
 
-When editing base behavior, consult the main index first. When editing Sleep2Wave behavior, prefer the package-local `sleep2wave.*` implementation and this branch index. Do not import base `sleep2vec`, top-level `data`, or top-level `preprocess` from new `sleep2wave` code unless the namespace boundary is intentionally changed.
+When editing base behavior, consult the main index first. When editing sleep2wave behavior, prefer the package-local `sleep2wave.*` implementation and this branch index. Do not import base `sleep2vec`, top-level `data`, or top-level `preprocess` from new `sleep2wave` code unless the namespace boundary is intentionally changed.
 
 ## Package-Local Mirror
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate a Sleep2Wave generative index CSV contract.",
+        description="Validate a sleep2wave generative index CSV contract.",
     )
     parser.add_argument("--index", required=True, type=Path, help="Input index CSV.")
     parser.add_argument("--path-col", default="path")
@@ -26,7 +26,6 @@ def validate_sleep2wave_index(
     import numpy as np
     import pandas as pd
 
-    from sleep2wave.data.derivations import validate_subject_split_boundaries
     from sleep2wave.data.generative_dataset import (
         IndexColumnConfig,
         prepare_sleep2wave_index_frame,
@@ -38,26 +37,21 @@ def validate_sleep2wave_index(
         columns = IndexColumnConfig()
     df = pd.read_csv(index_path, low_memory=False)
     df, columns = prepare_sleep2wave_index_frame(df, columns=columns)
-    validate_subject_split_boundaries(
-        df,
-        subject_id_col=columns.subject_id_col,
-        split_col=columns.split_col,
-    )
     if df[columns.path_col].isna().any():
-        raise ValueError(f"Sleep2Wave index contains missing {columns.path_col} values.")
+        raise ValueError(f"sleep2wave index contains missing {columns.path_col} values.")
     if df[columns.split_col].isna().any():
-        raise ValueError(f"Sleep2Wave index contains missing {columns.split_col} values.")
+        raise ValueError(f"sleep2wave index contains missing {columns.split_col} values.")
 
     durations = pd.to_numeric(df[columns.duration_col], errors="coerce")
     if durations.isna().any() or (~np.isfinite(durations)).any() or (durations <= 0).any():
-        raise ValueError(f"Sleep2Wave index contains invalid {columns.duration_col} values.")
+        raise ValueError(f"sleep2wave index contains invalid {columns.duration_col} values.")
 
     mask_columns = resolve_modality_mask_columns(df, require_all=True)
     mask_frame = normalize_mask_frame(df, list(mask_columns.values()))
     empty_rows = mask_frame[list(mask_columns.values())].sum(axis=1) == 0
     if empty_rows.any():
         offenders = empty_rows[empty_rows].index.astype(str).tolist()
-        raise ValueError(f"Sleep2Wave index rows have no available modalities: {offenders}")
+        raise ValueError(f"sleep2wave index rows have no available modalities: {offenders}")
 
 
 def main() -> None:
@@ -74,7 +68,7 @@ def main() -> None:
             night_id_col=args.night_id_col,
         ),
     )
-    print(f"Sleep2Wave index is valid: {args.index}")
+    print(f"sleep2wave index is valid: {args.index}")
 
 
 if __name__ == "__main__":

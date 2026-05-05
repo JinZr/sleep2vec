@@ -37,7 +37,7 @@ def _build_spec(name: str) -> ModalitySpec:
         sample_rate_hz = 4
         frequency_group = "low_frequency"
     else:
-        raise ValueError(f"Unknown Sleep2Wave modality: {name}")
+        raise ValueError(f"Unknown sleep2wave modality: {name}")
     return ModalitySpec(
         name=name,
         sample_rate_hz=sample_rate_hz,
@@ -67,7 +67,7 @@ def normalize_modality_name(name: str) -> str:
         return name
     if name in MODALITY_ALIASES:
         return MODALITY_ALIASES[name]
-    raise ValueError(f"Unknown Sleep2Wave modality: {name}")
+    raise ValueError(f"Unknown sleep2wave modality: {name}")
 
 
 def get_modality_spec(name: str) -> ModalitySpec:
@@ -85,10 +85,10 @@ def validate_modality_sequence(modalities: list[str] | tuple[str, ...], *, allow
             canonical = normalize_modality_name(name)
         else:
             if name not in MODALITY_SPECS:
-                raise ValueError(f"Sleep2Wave configs must use canonical modality names. Got: {name}")
+                raise ValueError(f"sleep2wave configs must use canonical modality names. Got: {name}")
             canonical = name
         if canonical in seen:
-            raise ValueError(f"Duplicate Sleep2Wave modality: {canonical}")
+            raise ValueError(f"Duplicate sleep2wave modality: {canonical}")
         seen.add(canonical)
         normalized.append(canonical)
     return normalized

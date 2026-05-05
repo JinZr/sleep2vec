@@ -15,9 +15,9 @@ class Sleep2WaveAutoencoderLightning(pl.LightningModule):
     def __init__(self, config: Sleep2WaveConfig) -> None:
         super().__init__()
         if config.autoencoder is None:
-            raise ValueError("Sleep2WaveAutoencoderLightning requires an autoencoder config.")
+            raise ValueError("sleep2wave autoencoder training requires an autoencoder config.")
         if config.training is None:
-            raise ValueError("Sleep2WaveAutoencoderLightning requires a training config.")
+            raise ValueError("sleep2wave autoencoder training requires a training config.")
         self.config_bundle = config
         self.model = Sleep2WaveAutoencoder(
             latent_dim=config.autoencoder.latent_dim,
@@ -55,7 +55,7 @@ class Sleep2WaveAutoencoderLightning(pl.LightningModule):
     def configure_optimizers(self):
         training_cfg = self.config_bundle.training
         if training_cfg is None:
-            raise ValueError("Sleep2WaveAutoencoderLightning requires a training config.")
+            raise ValueError("sleep2wave autoencoder training requires a training config.")
 
         decay: list[torch.nn.Parameter] = []
         no_decay: list[torch.nn.Parameter] = []

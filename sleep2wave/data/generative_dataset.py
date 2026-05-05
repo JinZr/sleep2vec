@@ -12,7 +12,6 @@ from torch.utils.data import DataLoader, Dataset
 
 from sleep2wave.data.corruptions import apply_corruption
 from sleep2wave.data.default_dataset import SampleIndex
-from sleep2wave.data.derivations import validate_subject_split_boundaries
 from sleep2wave.data.generative_batch import collate_sleep2wave_generative
 from sleep2wave.data.modalities import (
     CANONICAL_MODALITIES,
@@ -72,7 +71,7 @@ def resolve_modality_mask_columns(df: pd.DataFrame, *, require_all: bool = True)
             continue
         resolved[modality] = match
     if require_all and missing:
-        raise ValueError(f"Missing Sleep2Wave modality mask columns for: {missing}")
+        raise ValueError(f"Missing sleep2wave modality mask columns for: {missing}")
     return resolved
 
 
@@ -89,7 +88,7 @@ def prepare_sleep2wave_index_frame(
 ) -> tuple[pd.DataFrame, IndexColumnConfig]:
     missing = [col for col in (columns.path_col, columns.duration_col, columns.split_col) if col not in df.columns]
     if missing:
-        raise ValueError(f"Sleep2Wave index missing required columns: {missing}")
+        raise ValueError(f"sleep2wave index missing required columns: {missing}")
 
     df = df.copy()
     if columns.subject_id_col not in df.columns:
@@ -129,12 +128,6 @@ def build_sample_indices_from_frame(
         raise ValueError("stride_epochs must be positive.")
 
     df, columns = prepare_sleep2wave_index_frame(df, columns=columns)
-    validate_subject_split_boundaries(
-        df,
-        subject_id_col=columns.subject_id_col,
-        split_col=columns.split_col,
-    )
-
     split_values = None
     if split is not None:
         split_values = {split} if isinstance(split, str) else set(split)
@@ -165,7 +158,7 @@ def build_sample_indices_from_frame(
                 canonical_channel_map[modality] = npz_key
                 availability_mask_keys[modality] = mask_col
         if not available_channels:
-            raise ValueError(f"Row {row_number} has no available Sleep2Wave modalities.")
+            raise ValueError(f"Row {row_number} has no available sleep2wave modalities.")
 
         if columns.source_col in row and pd.notna(row[columns.source_col]):
             source = row[columns.source_col]
@@ -208,7 +201,7 @@ def build_sample_indices_from_frame(
 
     if not samples:
         split_hint = f" for split {sorted(split_values)}" if split_values else ""
-        raise ValueError(f"No Sleep2Wave generative windows were produced{split_hint}.")
+        raise ValueError(f"No sleep2wave generative windows were produced{split_hint}.")
     return samples
 
 
@@ -238,7 +231,7 @@ def _load_preset(path: str | Path) -> list[SampleIndex]:
     with Path(path).open("rb") as f:
         loaded = pickle.load(f)
     if not isinstance(loaded, list):
-        raise ValueError("Sleep2Wave preset must contain a list of SampleIndex objects.")
+        raise ValueError("sleep2wave preset must contain a list of SampleIndex objects.")
     return [normalize_sample_index(item) for item in loaded]
 
 
@@ -293,7 +286,7 @@ class Sleep2WaveGenerativeDataset(Dataset):
             )
 
         if not data:
-            raise ValueError("No Sleep2Wave generative samples are available.")
+            raise ValueError("No sleep2wave generative samples are available.")
         self.data = data
 
     def __len__(self) -> int:

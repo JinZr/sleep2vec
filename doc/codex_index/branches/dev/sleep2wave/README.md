@@ -1,4 +1,4 @@
-# Dev Sleep2Wave Branch Codex Engineering Index
+# Dev sleep2wave Branch Codex Engineering Index
 
 This directory is the branch-scoped engineering manual for `dev/sleep2wave`.
 
@@ -15,7 +15,7 @@ This directory is the branch-scoped engineering manual for `dev/sleep2wave`.
 Use this index before changing branch behavior to answer:
 
 1. Whether the behavior belongs to the inherited `sleep2vec` runtime or the additive `sleep2wave` namespace.
-2. Which package-local implementation is canonical for Sleep2Wave data, model, generation, or evaluation work.
+2. Which package-local implementation is canonical for sleep2wave data, model, generation, or evaluation work.
 3. Which config loader and workflow exercise the change.
 4. Which tests already pin the contract.
 
@@ -40,7 +40,7 @@ Tracked files indexed from this branch:
 - `sleep2wave/`: 144 tracked files, indexed in this branch manual
 - `configs/`: 36 tracked files, including 4 `configs/sleep2wave/*.yaml`
 - `tests/`: 52 tracked files, including 28 `tests/test_sleep2wave_*.py`
-- `utils/`: 2 tracked files, with `utils/check_configs.py` extended for Sleep2Wave configs
+- `utils/`: 2 tracked files, with `utils/check_configs.py` extended for sleep2wave configs
 - `sleep2vec2/`, `sleep2vec_moe/`, `sleep2vec_hires/`: no tracked source files on this branch
 
 ## Branch-Specific Surface
@@ -49,8 +49,8 @@ Tracked files indexed from this branch:
 
 - a package-local mirror of core `sleep2vec` pretrain/adapt/finetune/infer contracts
 - a standalone RoFormer backbone implementation used instead of legacy HF RoFormer checkpoint keys
-- a new Sleep2Wave generative stack for waveform autoencoding, latent diffusion, generation artifacts, and evaluation
-- Sleep2Wave-specific preprocessing and schema-versioned generative presets
+- a new sleep2wave generative stack for waveform autoencoding, latent diffusion, generation artifacts, and evaluation
+- sleep2wave-specific preprocessing and schema-versioned generative presets
 
 ## Deliverable Layout
 
@@ -78,5 +78,5 @@ Tracked files indexed from this branch:
 
 - Product code was not modified while building this index.
 - The inherited base runtime is referenced through `doc/codex_index/branches/main/` where the branch did not change the source.
-- Sleep2Wave claims in this index were checked against tracked branch code.
+- sleep2wave claims in this index were checked against tracked branch code.
 - Unknown behavior is marked as `unknown` rather than inferred.

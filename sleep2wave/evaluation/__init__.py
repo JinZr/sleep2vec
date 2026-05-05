@@ -1,4 +1,4 @@
-"""Sleep2Wave generation evaluation helpers."""
+"""sleep2wave generation evaluation helpers."""
 
 from sleep2wave.evaluation.efficiency import summarize_generation_efficiency
 from sleep2wave.evaluation.event_metrics import compute_event_metrics

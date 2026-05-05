@@ -1,4 +1,4 @@
-# Sleep2Wave Model Functions
+# sleep2wave Model Functions
 
 ## `sleep2wave.autoencoders.model.Sleep2WaveAutoencoder`
 
@@ -8,7 +8,7 @@
 - Important inputs/outputs: `clean_signals` dict in; `Sleep2WaveAutoencoderOutput(latents, reconstructions)` out.
 - Side effects: module construction and forward computation.
 - Key callers/callees: `Sleep2WaveAutoencoderLightning`, diffusion autoencoder loading, generation decoding.
-- Reuse guidance: use this for all Sleep2Wave waveform latent encoding and decoding.
+- Reuse guidance: use this for all sleep2wave waveform latent encoding and decoding.
 - Duplication-risk notes: do not create separate per-modality autoencoder classes outside this module.
 
 ## `sleep2wave.autoencoders.model.Sleep2WaveAutoencoder.decode_latents`
@@ -142,7 +142,7 @@
 
 - File: `sleep2wave/initialization/sleep2vec2.py`
 - Signature: `load_sleep2vec2_initialization(module: nn.Module, checkpoint_path: str | Path, config: InitializationConfig, *, target_groups: set[str], device: str | torch.device = "cpu") -> Sleep2Vec2InitializationReport`
-- Purpose and contract: selectively load compatible Sleep2Vec2 checkpoint groups into Sleep2Wave modules and report loaded, missing, skipped, and incompatible keys.
+- Purpose and contract: selectively load compatible Sleep2Vec2 checkpoint groups into sleep2wave modules and report loaded, missing, skipped, and incompatible keys.
 - Important inputs/outputs: module/checkpoint/config/group set in; report out.
 - Side effects: reads checkpoint and loads module weights.
 - Key callers/callees: `train_autoencoder.py`, `train_diffusion.py`, tests.

@@ -19,9 +19,9 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
     def __init__(self, config: Sleep2WaveConfig, *, seed: int = 0) -> None:
         super().__init__()
         if config.diffusion is None:
-            raise ValueError("Sleep2WaveDiffusionLightning requires a diffusion config.")
+            raise ValueError("sleep2wave diffusion training requires a diffusion config.")
         if config.training is None:
-            raise ValueError("Sleep2WaveDiffusionLightning requires a training config.")
+            raise ValueError("sleep2wave diffusion training requires a training config.")
         self.config_bundle = config
         self.model = Sleep2WaveDiffusionTransformer.from_config(config.diffusion, modalities=config.modalities.all)
         self.schedule = build_diffusion_schedule(config.diffusion.diffusion_steps, config.diffusion.beta_schedule)
@@ -134,7 +134,7 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
     def configure_optimizers(self):
         training_cfg = self.config_bundle.training
         if training_cfg is None:
-            raise ValueError("Sleep2WaveDiffusionLightning requires a training config.")
+            raise ValueError("sleep2wave diffusion training requires a training config.")
         decay: list[torch.nn.Parameter] = []
         no_decay: list[torch.nn.Parameter] = []
         for name, param in self.model.named_parameters():

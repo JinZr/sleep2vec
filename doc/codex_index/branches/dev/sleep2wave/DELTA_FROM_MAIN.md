@@ -9,7 +9,7 @@
 
 ## Summary
 
-The branch is primarily additive. It adds a standalone `sleep2wave` namespace, four Sleep2Wave configs, Sleep2Wave tests, and config-check routing. Existing base `sleep2vec`, top-level `data`, and top-level `preprocess` source remains covered by the main branch index.
+The branch is primarily additive. It adds a standalone `sleep2wave` namespace, four sleep2wave configs, sleep2wave tests, and config-check routing. Existing base `sleep2vec`, top-level `data`, and top-level `preprocess` source remains covered by the main branch index.
 
 ## Added Surfaces
 
@@ -21,14 +21,14 @@ The branch is primarily additive. It adds a standalone `sleep2wave` namespace, f
 
 - `pyproject.toml`: adds `sleep2wave` to `known_first_party`.
 - `utils/check_configs.py`: adds `CONFIG_VARIANTS` routing for `configs/sleep2wave`, detects `recipe: sleep2wave` generative configs, and validates them through `sleep2wave.generative.config.load_sleep2wave_config`.
-- `tests/test_check_configs.py`: adds acceptance checks for Sleep2Wave generative configs.
+- `tests/test_check_configs.py`: adds acceptance checks for sleep2wave generative configs.
 
 ## Runtime Meaning
 
-The branch introduces Sleep2Wave as a branch-local package rather than extending the base `sleep2vec` namespace. New work should be explicit about which side it touches:
+The branch introduces sleep2wave as a branch-local package rather than extending the base `sleep2vec` namespace. New work should be explicit about which side it touches:
 
 - Base sleep representation learning: keep using `sleep2vec/` and the main index guidance.
-- Sleep2Wave standalone runtime or generation: use `sleep2wave/`, `configs/sleep2wave/`, and this branch index.
+- sleep2wave standalone runtime or generation: use `sleep2wave/`, `configs/sleep2wave/`, and this branch index.
 
 ## New Workflow Paths
 
@@ -39,7 +39,7 @@ The branch introduces Sleep2Wave as a branch-local package rather than extending
 
 ## New Tests
 
-Key Sleep2Wave test groups:
+Key sleep2wave test groups:
 
 - namespace and standalone RoFormer parity: `tests/test_sleep2wave_namespace.py`, `tests/test_sleep2wave_roformer_parity.py`
 - generative config: `tests/test_sleep2wave_generative_config.py`

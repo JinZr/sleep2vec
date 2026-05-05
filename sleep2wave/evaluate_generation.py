@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate Sleep2Wave generated PSG artifacts.")
+    parser = argparse.ArgumentParser(description="Evaluate sleep2wave generated PSG artifacts.")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--generated-dir", type=Path, default=None)
     parser.add_argument("--reference-npz", type=Path, default=None)
@@ -44,7 +44,7 @@ def _require_artifact_dir(path: Path) -> dict[str, Path]:
         "metadata": path / "metadata.jsonl",
     }
     for name, artifact_path in required.items():
-        _require_file(artifact_path, description=f"Sleep2Wave {name} artifact")
+        _require_file(artifact_path, description=f"sleep2wave {name} artifact")
     return required
 
 

@@ -1,1 +1,1 @@
-"""Sleep2Wave generation-time helpers."""
+"""sleep2wave generation-time helpers."""

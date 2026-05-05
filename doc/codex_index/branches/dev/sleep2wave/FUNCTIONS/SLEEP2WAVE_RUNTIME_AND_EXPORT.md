@@ -1,4 +1,4 @@
-# Sleep2Wave Runtime And Export Functions
+# sleep2wave Runtime And Export Functions
 
 ## `sleep2wave.train_autoencoder.build_dataloader`
 
@@ -14,7 +14,7 @@
 
 - File: `sleep2wave/train_autoencoder.py`
 - Signature: `train_autoencoder(args: argparse.Namespace) -> Path`
-- Purpose and contract: run Sleep2Wave autoencoder training and write a run directory with checkpoints and config snapshots.
+- Purpose and contract: run sleep2wave autoencoder training and write a run directory with checkpoints and config snapshots.
 - Important inputs/outputs: CLI args with config and version name in; run directory path out.
 - Side effects: creates output/checkpoint directories, persists config/args, initializes W&B logger, trains with Lightning, writes `last.ckpt`.
 - Key callers/callees: `main`; callees include `load_sleep2wave_config`, `persist_run_config_and_args`, `Sleep2WaveAutoencoderLightning`, optional `load_sleep2vec2_initialization`.
@@ -34,7 +34,7 @@
 
 - File: `sleep2wave/train_diffusion.py`
 - Signature: `train_diffusion(args: argparse.Namespace) -> Path`
-- Purpose and contract: run Sleep2Wave latent diffusion training and write a run directory with checkpoints and config snapshots.
+- Purpose and contract: run sleep2wave latent diffusion training and write a run directory with checkpoints and config snapshots.
 - Important inputs/outputs: CLI args in; run directory path out.
 - Side effects: seeds Lightning, creates directories, persists config/args, initializes W&B logger, trains with Lightning, writes `last.ckpt`.
 - Key callers/callees: `main`; callees include `load_sleep2wave_config`, `Sleep2WaveDiffusionLightning`, optional `load_sleep2vec2_initialization`.
@@ -44,7 +44,7 @@
 
 - File: `sleep2wave/generate.py`
 - Signature: `_load_diffusion_model(checkpoint_path: Path, config: Sleep2WaveConfig, *, device: torch.device) -> Sleep2WaveDiffusionTransformer`
-- Purpose and contract: load a Sleep2Wave diffusion checkpoint into a config-built transformer.
+- Purpose and contract: load a sleep2wave diffusion checkpoint into a config-built transformer.
 - Important inputs/outputs: checkpoint path and config in; eval-mode model out.
 - Side effects: reads checkpoint and loads state dict.
 - Key callers/callees: `run_generation`.
@@ -129,7 +129,7 @@
   - `sleep2wave/finetune.py`
   - `sleep2wave/infer.py`
 - Purpose and contract: run package-local equivalents of base pretrain/adapt/finetune/infer flows.
-- Reuse guidance: use only when running Sleep2Wave-local runtime configs; for base `sleep2vec` configs use base entrypoints.
+- Reuse guidance: use only when running sleep2wave-local runtime configs; for base `sleep2vec` configs use base entrypoints.
 - Duplication-risk notes: do not mix base and package-local imports.
 
 ## Tests

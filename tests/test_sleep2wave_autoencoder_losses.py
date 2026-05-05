@@ -41,5 +41,5 @@ def test_autoencoder_spectral_loss_is_finite():
 def test_autoencoder_loss_rejects_all_zero_weights():
     config = AutoencoderLossConfig(waveform_l1_weight=0.0, waveform_l2_weight=0.0, spectral_weight=0.0)
 
-    with pytest.raises(ValueError, match="At least one Sleep2Wave autoencoder loss weight"):
+    with pytest.raises(ValueError, match="At least one sleep2wave autoencoder loss weight"):
         Sleep2WaveAutoencoderLoss(config)

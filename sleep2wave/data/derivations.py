@@ -76,7 +76,7 @@ def plan_derivation_jobs(
 def require_derivation_backend(enabled_derivations: t.Sequence[str]) -> None:
     if enabled_derivations:
         raise NotImplementedError(
-            "Clinical-grade Sleep2Wave IBI/RESP derivation is not implemented in PR 2. "
+            "Clinical-grade sleep2wave IBI/RESP derivation is not implemented in PR 2. "
             "This stage only validates split-safe per-record derivation planning."
         )
 

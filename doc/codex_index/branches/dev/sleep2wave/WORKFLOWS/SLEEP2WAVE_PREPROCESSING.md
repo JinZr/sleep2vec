@@ -1,8 +1,8 @@
-# Sleep2Wave Preprocessing Workflow
+# sleep2wave Preprocessing Workflow
 
 ## Purpose
 
-Validate Sleep2Wave indexes and build schema-versioned generative preset pickles.
+Validate sleep2wave indexes and build schema-versioned generative preset pickles.
 
 ## Canonical Path
 
@@ -10,8 +10,8 @@ Validate Sleep2Wave indexes and build schema-versioned generative preset pickles
    - `path`
    - `duration`
    - `split`
-   Optional `subject_id` and `night_id` columns are preserved when present; otherwise Sleep2Wave uses `path` for both identifiers.
-   Optional modality mask columns such as `eeg_mask`, `eog_mask`, and `spo2_mask` are preserved when present; if no Sleep2Wave modality mask columns are present, all canonical modalities are treated as available.
+   Optional `subject_id` and `night_id` columns are preserved when present; otherwise sleep2wave uses `path` for both identifiers.
+   Optional modality mask columns such as `eeg_mask`, `eog_mask`, and `spo2_mask` are preserved when present; if no sleep2wave modality mask columns are present, all canonical modalities are treated as available.
 2. Validate the index:
    - `sleep2wave.preprocess.validate_sleep2wave_index`
 3. Build preset windows:
@@ -46,7 +46,7 @@ python -m sleep2wave.preprocess.build_sleep2wave_presets \
 - Index column and mask semantics: `sleep2wave/data/generative_dataset.py`
 - CLI preset writing: `sleep2wave/preprocess/build_sleep2wave_presets.py`
 - Index validation: `sleep2wave/preprocess/validate_sleep2wave_index.py`
-- Subject split safety: `sleep2wave/data/derivations.py`
+- Subject split safety for derived-channel sidecar planning only: `sleep2wave/data/derivations.py`
 
 ## Tests
 

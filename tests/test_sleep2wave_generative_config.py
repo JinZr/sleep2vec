@@ -84,7 +84,7 @@ def test_sleep2wave_generative_config_rejects_unknown_top_level_field(tmp_path: 
     payload["unexpected"] = True
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
-    with pytest.raises(ValueError, match="top-level Sleep2Wave config has unsupported fields"):
+    with pytest.raises(ValueError, match="top-level sleep2wave config has unsupported fields"):
         load_sleep2wave_config(path)
 
 

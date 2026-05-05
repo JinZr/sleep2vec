@@ -1,4 +1,4 @@
-# Sleep2Wave Diffusion Workflow
+# sleep2wave Diffusion Workflow
 
 ## Purpose
 
@@ -6,7 +6,7 @@ Train a latent diffusion transformer that generates target modality latents from
 
 ## Canonical Path
 
-1. Train or provide a compatible Sleep2Wave autoencoder checkpoint.
+1. Train or provide a compatible sleep2wave autoencoder checkpoint.
 2. Load `stage: diffusion` config with `load_sleep2wave_config`.
 3. Build train split DataLoader through `train_diffusion.build_dataloader`.
 4. `Sleep2WaveDiffusionLightning` loads the autoencoder checkpoint.

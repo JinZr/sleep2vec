@@ -1,8 +1,8 @@
-# Sleep2Wave Evaluation Workflow
+# sleep2wave Evaluation Workflow
 
 ## Purpose
 
-Evaluate generated Sleep2Wave artifact directories across waveform, feature, event, efficiency, and downstream metric families.
+Evaluate generated sleep2wave artifact directories across waveform, feature, event, efficiency, and downstream metric families.
 
 ## Canonical Path
 

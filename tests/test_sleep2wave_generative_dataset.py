@@ -173,5 +173,5 @@ def test_generative_dataset_rejects_index_rows_with_no_available_modalities(tmp_
         row[f"{modality}_mask"] = 0
     pd.DataFrame([row]).to_csv(index_path, index=False)
 
-    with pytest.raises(ValueError, match="no available Sleep2Wave modalities"):
+    with pytest.raises(ValueError, match="no available sleep2wave modalities"):
         Sleep2WaveGenerativeDataset(index=index_path, split="train", context_epochs=2)

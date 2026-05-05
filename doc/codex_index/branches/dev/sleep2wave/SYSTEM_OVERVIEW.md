@@ -7,9 +7,9 @@
 The branch has two active code surfaces:
 
 - Inherited surface: `sleep2vec/`, top-level `data/`, top-level `preprocess/`, and base `configs/` behave as documented in `doc/codex_index/branches/main/`.
-- Branch surface: `sleep2wave/`, `configs/sleep2wave/`, Sleep2Wave tests, and `utils/check_configs.py` additions implement and validate the new Sleep2Wave workflow.
+- Branch surface: `sleep2wave/`, `configs/sleep2wave/`, sleep2wave tests, and `utils/check_configs.py` additions implement and validate the new sleep2wave workflow.
 
-## Sleep2Wave Runtime Layers
+## sleep2wave Runtime Layers
 
 ### Package-Local Sleep2Vec Mirror
 
@@ -20,9 +20,9 @@ The branch has two active code surfaces:
 - `sleep2wave.pretrain_model`, `downstream_model`, `sleep2vec_modelling`, `sleep2vec_finetuning`, `sleep2vec_adaptation`
 - `sleep2wave.data.*`, `losses`, `metrics`, `callbacks`, `visualization`
 
-The package-local mirror exists so Sleep2Wave can evolve without importing the base `sleep2vec`, top-level `data`, or top-level `preprocess` namespaces. `tests/test_sleep2wave_namespace.py` checks this namespace boundary.
+The package-local mirror exists so sleep2wave can evolve without importing the base `sleep2vec`, top-level `data`, or top-level `preprocess` namespaces. `tests/test_sleep2wave_namespace.py` checks this namespace boundary.
 
-### Generative Sleep2Wave Stack
+### Generative sleep2wave Stack
 
 The new generative stack is separate from the copied pretrain/finetune runtime:
 
@@ -46,7 +46,7 @@ The new generative stack is separate from the copied pretrain/finetune runtime:
 
 ## Modality Contract
 
-Canonical Sleep2Wave modalities live in `sleep2wave.data.modalities`:
+Canonical sleep2wave modalities live in `sleep2wave.data.modalities`:
 
 - high-frequency, 128 Hz: `eeg`, `eog`, `emg`, `ecg`
 - low-frequency, 4 Hz: `airflow`, `belt`, `spo2`, `ibi`, `resp`
@@ -57,7 +57,7 @@ Configs must use canonical names. Dataset/index loading may resolve known aliase
 
 ## Data Contract
 
-Sleep2Wave generative presets are pickled `list[SampleIndex]` objects with payload fields including:
+sleep2wave generative presets are pickled `list[SampleIndex]` objects with payload fields including:
 
 - `sleep2wave_schema_version`
 - `available_channels`
@@ -101,7 +101,7 @@ Evaluation:
 
 ## Branch Constraints
 
-- Sleep2Wave finetune configs reject LoRA flags. `sleep2wave.config.load_finetune_config` raises if `freeze_backbone_and_insert_lora`, `insert_lora`, or `separate_adapters` is true.
-- Sleep2Wave uses a standalone RoFormer implementation. `sleep2wave.checkpoints.load_pretrain_init_weights` rejects legacy HF-style RoFormer checkpoint keys when loading into the standalone target.
+- sleep2wave finetune configs reject LoRA flags. `sleep2wave.config.load_finetune_config` raises if `freeze_backbone_and_insert_lora`, `insert_lora`, or `separate_adapters` is true.
+- sleep2wave uses a standalone RoFormer implementation. `sleep2wave.checkpoints.load_pretrain_init_weights` rejects legacy HF-style RoFormer checkpoint keys when loading into the standalone target.
 - `utils/check_configs.py` routes `configs/sleep2wave/**` through package-local `sleep2wave` config and preset helpers.
 - `sleep2vec2/`, `sleep2vec_moe/`, and `sleep2vec_hires/` have no tracked source files on this branch.

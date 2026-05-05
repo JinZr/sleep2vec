@@ -64,7 +64,7 @@ class _ModalityAutoencoder(nn.Module):
             batch_size, epoch_count, channels, frames = x.shape
             channel_first = True
             if channels != 1:
-                raise ValueError(f"Sleep2Wave autoencoder PR3 supports only one channel, got C={channels}.")
+                raise ValueError(f"sleep2wave autoencoder PR3 supports only one channel, got C={channels}.")
         else:
             raise ValueError(f"Autoencoder input must be [B, E, S] or [B, E, C, S], got shape {tuple(x.shape)}.")
 
@@ -102,9 +102,9 @@ class Sleep2WaveAutoencoder(nn.Module):
     ) -> None:
         super().__init__()
         if encoder_type != "conv1d_epoch":
-            raise ValueError("Sleep2Wave autoencoder currently supports encoder_type='conv1d_epoch'.")
+            raise ValueError("sleep2wave autoencoder currently supports encoder_type='conv1d_epoch'.")
         if decoder_type != "convtranspose1d_epoch":
-            raise ValueError("Sleep2Wave autoencoder currently supports decoder_type='convtranspose1d_epoch'.")
+            raise ValueError("sleep2wave autoencoder currently supports decoder_type='convtranspose1d_epoch'.")
         if latent_dim <= 0:
             raise ValueError("latent_dim must be positive.")
 

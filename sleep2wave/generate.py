@@ -18,7 +18,7 @@ from sleep2wave.generative.config import SamplerConfig, Sleep2WaveConfig
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate Sleep2Wave PSG channels from incomplete recordings.")
+    parser = argparse.ArgumentParser(description="Generate sleep2wave PSG channels from incomplete recordings.")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--diffusion-ckpt", type=Path, required=True)
     parser.add_argument("--autoencoder-ckpt", type=Path, default=None)
@@ -76,7 +76,7 @@ def _load_diffusion_model(
     else:
         filtered_state = {key: value for key, value in state_dict.items() if key in target_keys}
     if not filtered_state:
-        raise ValueError("Diffusion checkpoint does not contain Sleep2Wave diffusion model weights.")
+        raise ValueError("Diffusion checkpoint does not contain sleep2wave diffusion model weights.")
     model.load_state_dict(filtered_state, strict=True)
     model.to(device)
     model.eval()
