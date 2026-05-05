@@ -204,9 +204,11 @@ python -m sleep2vec.infer \
   --config configs/sleep2vec_dense_finetune_cls.yaml \
   --ckpt-path log-finetune/exp001-stage5/checkpoints/epoch=49.ckpt \
   --label-name stage5 --batch-size 12 --devices 0 \
+  --inference-preset-path /path/to/test_preset_1535.pickle \
   --eval-split test --results-csv-path outputs.csv
 ```
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
+Use `--inference-preset-path` to evaluate the same config/checkpoint against a different preset pickle without editing YAML; result CSV rows record the effective preset in `preset_path`.
 Use the same `--label-name` that was used for fine-tuning; it is required.
 To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
 Use `--pretrained-backbone-path` if you want to preload a pretrain/adaptation initialization checkpoint before applying downstream weights.
