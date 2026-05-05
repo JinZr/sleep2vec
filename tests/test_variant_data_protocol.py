@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-
 VARIANT_PACKAGES = ["sleep2vec2", "sleep2expert"]
 
 
