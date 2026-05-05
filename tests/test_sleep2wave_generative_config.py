@@ -66,6 +66,10 @@ def test_sleep2wave_generative_config_loads_diffusion_tiny():
     assert cfg.training.corruptions.imputation.default.kwargs == {"window_frames": 120}
     assert set(cfg.training.corruptions.restoration.by_modality) == set(CANONICAL_MODALITIES)
     assert set(cfg.training.corruptions.imputation.by_modality) == set(CANONICAL_MODALITIES)
+    assert [choice.name for choice in cfg.training.corruptions.restoration.by_modality["eeg"].choices] == [
+        "high_frequency_contamination",
+        "gaussian_noise",
+    ]
 
 
 def test_sleep2wave_generative_config_loads_inference_tiny():
@@ -98,6 +102,60 @@ def test_sleep2wave_generative_config_loads_evaluation_tiny():
     assert cfg.evaluation.metric_families == ["waveform", "feature", "event", "efficiency", "downstream"]
     assert cfg.evaluation.max_shift_frames == 3
     assert cfg.evaluation.corruption_mask_policy == "exclude"
+
+
+def test_sleep2wave_generative_config_loads_weighted_corruption_choices(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    payload["training"]["corruptions"]["restoration"]["default"] = {
+        "choices": [
+            {"weight": 0.7, "name": "gaussian_noise", "kwargs": {"std": 0.1}},
+            {"weight": 0.3, "name": "baseline_drift", "kwargs": {"amplitude": 0.2}},
+        ]
+    }
+    path = _write_yaml(tmp_path / "good.yaml", payload)
+
+    cfg = load_sleep2wave_config(path)
+    spec = cfg.training.corruptions.restoration.default
+
+    assert [(choice.weight, choice.name, choice.kwargs) for choice in spec.choices] == [
+        (0.7, "gaussian_noise", {"std": 0.1}),
+        (0.3, "baseline_drift", {"amplitude": 0.2}),
+    ]
+    assert spec.select(seed=1).name == "gaussian_noise"
+    assert spec.select(seed=0).name == "baseline_drift"
+
+
+@pytest.mark.parametrize(
+    ("spec", "match"),
+    [
+        ({"choices": []}, "choices must be a non-empty list"),
+        ({"choices": [{"name": "gaussian_noise"}]}, "weight must be a positive finite number"),
+        ({"choices": [{"weight": 0.0, "name": "gaussian_noise"}]}, "weight must be a positive finite number"),
+        ({"choices": [{"weight": 1.0, "name": "unknown"}]}, "name must be one of"),
+        (
+            {"choices": [{"weight": 1.0, "name": "gaussian_noise", "kwargs": {"nested": {"std": 0.1}}}]},
+            "must be a scalar value",
+        ),
+        (
+            {
+                "name": "gaussian_noise",
+                "choices": [{"weight": 1.0, "name": "baseline_drift"}],
+            },
+            "must define exactly one of 'name' or 'choices'",
+        ),
+    ],
+)
+def test_sleep2wave_generative_config_rejects_invalid_weighted_corruption_choices(
+    tmp_path: Path,
+    spec: dict,
+    match: str,
+):
+    payload = _load_payload(DIFFUSION_TINY)
+    payload["training"]["corruptions"]["restoration"]["default"] = spec
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match=match):
+        load_sleep2wave_config(path)
 
 
 def test_sleep2wave_tiny_configs_match_medium_non_size_specs():
@@ -274,7 +332,7 @@ def test_sleep2wave_generative_config_rejects_non_finite_float(tmp_path: Path):
 
 def test_sleep2wave_generative_config_rejects_non_finite_task_mix(tmp_path: Path):
     payload = _load_payload(DIFFUSION_TINY)
-    payload["training"]["task_mix"]["restoration"] = float("nan")
+    payload["training"]["task_mix"] = {"restoration": float("nan")}
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
     with pytest.raises(ValueError, match="training.task_mix.restoration must be a non-negative finite number"):
@@ -403,6 +461,7 @@ def test_sleep2wave_medium_diffusion_configs_use_modality_specific_corruptions(p
     assert set(restoration) == set(CANONICAL_MODALITIES)
     assert set(imputation) == set(CANONICAL_MODALITIES)
     assert restoration["eeg"].name == "high_frequency_contamination"
+    assert [choice.weight for choice in restoration["eeg"].choices] == [0.7, 0.3]
     assert restoration["airflow"].name == "airflow_cannula_displacement"
     assert restoration["spo2"].name == "saturation_clipping"
     assert imputation["eeg"].kwargs == {"window_frames": 384}

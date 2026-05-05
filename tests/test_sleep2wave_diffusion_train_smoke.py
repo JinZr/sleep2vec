@@ -305,6 +305,38 @@ def test_task_corruption_is_applied_inside_diffusion_module(tmp_path: Path):
     assert not torch.equal(corrupted["eeg"], observed["eeg"])
 
 
+def test_task_corruption_samples_weighted_choices_inside_diffusion_module(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["training"]["corruptions"] = {
+        "restoration": {
+            "default": {
+                "choices": [
+                    {"weight": 0.5, "name": "amplitude_attenuation", "kwargs": {"factor": 1.0}},
+                    {"weight": 0.5, "name": "amplitude_attenuation", "kwargs": {"factor": 0.0}},
+                ]
+            }
+        },
+    }
+    config_path.write_text(yaml.safe_dump(payload))
+    module = Sleep2WaveDiffusionLightning(load_sleep2wave_config(config_path))
+    spec = module.config_bundle.training.corruptions.restoration.default
+    task = build_generation_task(
+        "restoration",
+        condition_modalities=["eeg"],
+        target_modalities=["eeg"],
+        auxiliary_restoration_token=True,
+    )
+    observed = {"eeg": torch.ones(1, 2, 1, MODALITY_SPECS["eeg"].frames_per_epoch)}
+
+    corrupted = module._apply_task_corruption(observed, task)
+
+    assert {spec.select(seed=seed).kwargs["factor"] for seed in range(10)} == {0.0, 1.0}
+    assert torch.equal(corrupted["eeg"], torch.zeros_like(observed["eeg"]))
+
+
 def test_task_corruption_keeps_restoration_auxiliary_conditions_clean(tmp_path: Path):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)

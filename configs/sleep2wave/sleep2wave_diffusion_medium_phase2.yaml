@@ -41,7 +41,10 @@ training:
     restoration:
       default: {name: gaussian_noise, kwargs: {std: 0.05}}
       by_modality:
-        eeg: {name: high_frequency_contamination, kwargs: {amplitude: 0.10, cycles: 40.0}}
+        eeg:
+          choices:
+            - {weight: 0.7, name: high_frequency_contamination, kwargs: {amplitude: 0.10, cycles: 40.0}}
+            - {weight: 0.3, name: gaussian_noise, kwargs: {std: 0.05}}
         eog: {name: spike_artifact, kwargs: {num_spikes: 8, magnitude: 3.0}}
         emg: {name: high_frequency_contamination, kwargs: {amplitude: 0.15, cycles: 50.0}}
         ecg: {name: baseline_drift, kwargs: {amplitude: 0.10}}

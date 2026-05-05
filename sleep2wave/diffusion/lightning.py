@@ -141,11 +141,13 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
                 continue
             signal = observed_signals[modality]
             modality_offset = self.config_bundle.modalities.all.index(modality)
+            seed = int(self.global_step) * len(self.config_bundle.modalities.all) + modality_offset
+            choice = spec.select(seed=seed)
             corrupted, _mask = apply_corruption(
-                spec.name,
+                choice.name,
                 signal,
-                seed=int(self.global_step) * len(self.config_bundle.modalities.all) + modality_offset,
-                **self._corruption_kwargs(spec.name, signal, spec.kwargs),
+                seed=seed,
+                **self._corruption_kwargs(choice.name, signal, choice.kwargs),
             )
             updated[modality] = corrupted
         return updated

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
+import random
 import typing as t
 
 import yaml
@@ -94,9 +95,36 @@ class ReplayConfig:
 
 
 @dataclass(frozen=True)
-class CorruptionSpecConfig:
+class CorruptionChoiceConfig:
+    weight: float
     name: str
     kwargs: dict[str, t.Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CorruptionSpecConfig:
+    choices: tuple[CorruptionChoiceConfig, ...]
+
+    @property
+    def name(self) -> str:
+        return self.choices[0].name
+
+    @property
+    def kwargs(self) -> dict[str, t.Any]:
+        return self.choices[0].kwargs
+
+    def select(self, *, seed: int | None = None) -> CorruptionChoiceConfig:
+        if len(self.choices) == 1:
+            return self.choices[0]
+        total = sum(choice.weight for choice in self.choices)
+        rng = random.Random(seed) if seed is not None else random
+        threshold = rng.random() * total
+        cumulative = 0.0
+        for choice in self.choices:
+            cumulative += choice.weight
+            if threshold <= cumulative:
+                return choice
+        return self.choices[-1]
 
 
 @dataclass(frozen=True)
@@ -510,16 +538,48 @@ def _validate_corruption_name(name: str, path: str) -> None:
         raise ValueError(f"{path}.name must be one of {sorted(CORRUPTION_REGISTRY)}. Got: {name}")
 
 
+def _load_corruption_name_and_kwargs(block: dict[str, t.Any], path: str) -> tuple[str, dict[str, t.Any]]:
+    name = _require_string(block, "name", path)
+    _validate_corruption_name(name, path)
+    kwargs = _load_corruption_kwargs(block.get("kwargs"), f"{path}.kwargs")
+    return name, kwargs
+
+
+def _load_corruption_choice(raw: t.Any, path: str) -> CorruptionChoiceConfig:
+    block = _require_mapping(raw, path)
+    _reject_extra(block, {"weight", "name", "kwargs"}, path)
+    weight = block.get("weight")
+    if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+        raise ValueError(f"{path}.weight must be a positive finite number.")
+    weight = float(weight)
+    if not math.isfinite(weight) or weight <= 0.0:
+        raise ValueError(f"{path}.weight must be a positive finite number.")
+    name, kwargs = _load_corruption_name_and_kwargs(block, path)
+    return CorruptionChoiceConfig(weight=weight, name=name, kwargs=kwargs)
+
+
 def _load_corruption_spec(raw: t.Any, path: str) -> CorruptionSpecConfig | None:
     if raw is None:
         return None
     block = _require_mapping(raw, path)
-    _reject_extra(block, {"name", "kwargs"}, path)
-    name = _require_string(block, "name", path)
-    _validate_corruption_name(name, path)
+    has_name = "name" in block
+    has_choices = "choices" in block
+    if has_name == has_choices:
+        raise ValueError(f"{path} must define exactly one of 'name' or 'choices'.")
+    if has_name:
+        _reject_extra(block, {"name", "kwargs"}, path)
+        name, kwargs = _load_corruption_name_and_kwargs(block, path)
+        return CorruptionSpecConfig(choices=(CorruptionChoiceConfig(weight=1.0, name=name, kwargs=kwargs),))
+
+    _reject_extra(block, {"choices"}, path)
+    raw_choices = block["choices"]
+    if not isinstance(raw_choices, list) or not raw_choices:
+        raise ValueError(f"{path}.choices must be a non-empty list.")
     return CorruptionSpecConfig(
-        name=name,
-        kwargs=_load_corruption_kwargs(block.get("kwargs"), f"{path}.kwargs"),
+        choices=tuple(
+            _load_corruption_choice(raw_choice, f"{path}.choices[{index}]")
+            for index, raw_choice in enumerate(raw_choices)
+        )
     )
 
 
@@ -883,6 +943,7 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
 __all__ = [
     "AutoencoderConfig",
     "AutoencoderLossConfig",
+    "CorruptionChoiceConfig",
     "CorruptionPolicyConfig",
     "CorruptionSpecConfig",
     "DataConfig",

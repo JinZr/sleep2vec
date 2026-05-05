@@ -167,7 +167,10 @@ def _resolve_inference_corruption_specs(
     for modality in task.condition_modalities:
         spec = policy.for_modality(modality)
         if spec is not None:
-            specs[modality] = (spec.name, dict(spec.kwargs))
+            modality_offset = config.modalities.all.index(modality)
+            seed = int(getattr(args, "seed", 0)) * len(config.modalities.all) + modality_offset
+            choice = spec.select(seed=seed)
+            specs[modality] = (choice.name, dict(choice.kwargs))
     return specs
 
 
