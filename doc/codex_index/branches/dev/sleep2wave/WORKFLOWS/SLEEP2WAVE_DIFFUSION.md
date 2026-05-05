@@ -39,6 +39,7 @@ Important constraints:
 - `diffusion.task_attention_mask` is currently `directional`.
 - `training.replay.enabled` selects replay-style default task mixtures when no explicit `task_mix` is provided; replay defaults train restoration and imputation before adding translation, two-condition, and partial-full tasks.
 - `training.condition_counts` controls translation and partial-full condition-set sizes; partial-full samples among configured counts that fit the available modalities.
+- `diffusion.condition_dropout` preserves partial-full coverage by moving dropped condition modalities into the target set.
 
 ## Command
 

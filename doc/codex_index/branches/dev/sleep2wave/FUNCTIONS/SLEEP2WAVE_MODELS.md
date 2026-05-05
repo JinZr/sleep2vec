@@ -112,7 +112,7 @@
 
 - File: `sleep2wave/diffusion/lightning.py`
 - Signature: `Sleep2WaveDiffusionLightning(config: Sleep2WaveConfig, *, seed: int = 0)`
-- Purpose and contract: Lightning wrapper for latent diffusion training with frozen autoencoder encoding, sampled task curriculum, condition dropout, and AdamW optimization.
+- Purpose and contract: Lightning wrapper for latent diffusion training with frozen autoencoder encoding, sampled task curriculum, condition dropout, and AdamW optimization. For `partial_full`, condition dropout recomputes targets from the original task modalities so dropped conditions remain training targets.
 - Important inputs/outputs: diffusion-stage config in; training loss out.
 - Side effects: loads autoencoder checkpoint, logs metrics, saves config into checkpoint.
 - Key callers/callees: `train_diffusion.train_diffusion`.

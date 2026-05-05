@@ -260,6 +260,28 @@ def test_condition_dropout_keeps_nonempty_condition_set(tmp_path: Path):
     assert set(dropped.condition_modalities).issubset({"eeg", "ecg"})
 
 
+def test_condition_dropout_moves_partial_full_dropped_conditions_to_targets(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["diffusion"]["condition_dropout"] = 1.0
+    config_path.write_text(yaml.safe_dump(payload))
+    module = Sleep2WaveDiffusionLightning(load_sleep2wave_config(config_path))
+    task = build_generation_task(
+        "partial_full",
+        condition_modalities=["eeg", "ecg"],
+        target_modalities=["spo2"],
+    )
+
+    dropped = module._apply_condition_dropout(task)
+
+    assert len(dropped.condition_modalities) == 1
+    assert set(dropped.condition_modalities).issubset({"eeg", "ecg"})
+    assert set(dropped.condition_modalities).isdisjoint(dropped.target_modalities)
+    assert set(dropped.condition_modalities + dropped.target_modalities) == {"eeg", "ecg", "spo2"}
+
+
 def test_task_corruption_is_applied_inside_diffusion_module(tmp_path: Path):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)

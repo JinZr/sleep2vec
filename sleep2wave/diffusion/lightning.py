@@ -96,10 +96,14 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
                     torch.randint(len(task.condition_modalities), (1,), device=self.device).item()
                 ]
             ]
+        target_modalities = task.target_modalities
+        if task.task_type == "partial_full":
+            original_modalities = [*task.condition_modalities, *task.target_modalities]
+            target_modalities = [modality for modality in original_modalities if modality not in kept]
         return build_generation_task(
             task.task_type,
             condition_modalities=kept,
-            target_modalities=task.target_modalities,
+            target_modalities=target_modalities,
             auxiliary_restoration_token=task.use_auxiliary_token,
             allow_target_target_attention=task.allow_target_target_attention,
         )
