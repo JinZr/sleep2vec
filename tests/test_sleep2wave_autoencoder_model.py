@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-torch = pytest.importorskip("torch")
+import torch
 
 from sleep2wave.autoencoders.model import Sleep2WaveAutoencoder
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS

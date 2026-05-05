@@ -6,7 +6,9 @@ from pathlib import Path
 import pickle
 import re
 
+import pandas  # noqa: F401
 import pytest
+import torch
 import yaml
 
 from sleep2wave.config import load_finetune_config, load_pretrain_config, validate_model_config
@@ -28,9 +30,6 @@ def test_sleep2wave_copied_runtime_uses_local_namespace():
 
 
 def test_sleep2wave_data_and_preprocess_modules_import_independently():
-    pytest.importorskip("torch")
-    pytest.importorskip("pandas")
-
     modules = [
         "sleep2wave.data.default_dataset",
         "sleep2wave.data.psg_pretrain_dataset",
@@ -44,8 +43,6 @@ def test_sleep2wave_data_and_preprocess_modules_import_independently():
 
 
 def test_sleep2wave_loads_base_sampleindex_preset(tmp_path: Path):
-    pytest.importorskip("torch")
-
     base_dataset = importlib.import_module("data.default_dataset")
     variant_dataset = importlib.import_module("sleep2wave.data.default_dataset")
     preset_path = tmp_path / "legacy_preset.pkl"
@@ -77,7 +74,6 @@ def test_sleep2wave_loads_base_sampleindex_preset(tmp_path: Path):
 
 
 def test_sleep2wave_rejects_legacy_roformer_checkpoint_keys(tmp_path: Path):
-    torch = pytest.importorskip("torch")
     from sleep2wave.backbones.roformer import RoFormerConfig, RoFormerEncoderModel
     from sleep2wave.checkpoints import load_pretrain_init_weights
 

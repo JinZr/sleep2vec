@@ -5,11 +5,10 @@ import pickle
 
 import numpy as np
 import pytest
+import pytorch_lightning  # noqa: F401
+import torch
+import wandb  # noqa: F401
 import yaml
-
-torch = pytest.importorskip("torch")
-pytest.importorskip("pytorch_lightning")
-pytest.importorskip("wandb")
 
 from sleep2wave.autoencoders.model import Sleep2WaveAutoencoder
 from sleep2wave.data.default_dataset import SampleIndex

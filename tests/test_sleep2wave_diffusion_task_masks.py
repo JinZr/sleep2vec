@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import pytest
-
-torch = pytest.importorskip("torch")
+import torch
 
 from sleep2wave.data.modalities import CANONICAL_MODALITIES
 from sleep2wave.diffusion.task_masks import TokenLayout, build_directional_task_attention_mask

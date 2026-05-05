@@ -5,10 +5,11 @@ from pathlib import Path
 import types
 
 import pytest
-import yaml
-
-torch = pytest.importorskip("torch")
+import pytorch_lightning  # noqa: F401
+import torch
 import torch.nn as nn
+import wandb  # noqa: F401
+import yaml
 
 from sleep2wave.generative.config import InitializationConfig
 from sleep2wave.initialization.sleep2vec2 import load_sleep2vec2_initialization
@@ -327,8 +328,6 @@ class _DummyLightning:
 
 
 def test_train_autoencoder_calls_initializer_when_configured(tmp_path: Path, monkeypatch):
-    pytest.importorskip("pytorch_lightning")
-    pytest.importorskip("wandb")
     import sleep2wave.train_autoencoder as train_autoencoder
 
     init_ckpt = _save_checkpoint(
@@ -366,8 +365,6 @@ def test_train_autoencoder_calls_initializer_when_configured(tmp_path: Path, mon
 
 
 def test_train_diffusion_calls_initializer_when_configured(tmp_path: Path, monkeypatch):
-    pytest.importorskip("pytorch_lightning")
-    pytest.importorskip("wandb")
     import sleep2wave.train_diffusion as train_diffusion
 
     init_ckpt = _save_checkpoint(tmp_path / "init.ckpt", {"model.input_projection.weight": torch.ones(2, 2)})

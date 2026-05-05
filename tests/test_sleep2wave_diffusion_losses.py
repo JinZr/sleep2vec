@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-torch = pytest.importorskip("torch")
+import torch
 
 from sleep2wave.diffusion.losses import compute_diffusion_loss
 from sleep2wave.diffusion.tasks import build_generation_task

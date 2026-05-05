@@ -4,13 +4,12 @@ from pathlib import Path
 import pickle
 
 import numpy as np
+import pandas  # noqa: F401
 import pytest
+import pytorch_lightning  # noqa: F401
+import torch  # noqa: F401
+import wandb  # noqa: F401
 import yaml
-
-pytest.importorskip("torch")
-pytest.importorskip("pytorch_lightning")
-pytest.importorskip("pandas")
-pytest.importorskip("wandb")
 
 from sleep2wave.data.default_dataset import SampleIndex
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS

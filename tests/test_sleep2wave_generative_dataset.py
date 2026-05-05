@@ -6,8 +6,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import pytest
-
-torch = pytest.importorskip("torch")
+import torch
 
 from sleep2wave.data.default_dataset import SampleIndex
 from sleep2wave.data.generative_dataset import Sleep2WaveGenerativeDataset

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-torch = pytest.importorskip("torch")
-pytest.importorskip("transformers")
-
+import torch
 import transformers.utils as transformers_utils
 
 from sleep2wave.backbones.encoder_factory import build_roformer

@@ -6,9 +6,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 import yaml
-
-torch = pytest.importorskip("torch")
 
 from sleep2wave.autoencoders.model import Sleep2WaveAutoencoder
 from sleep2wave.data.default_dataset import SampleIndex

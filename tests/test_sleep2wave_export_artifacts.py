@@ -5,10 +5,8 @@ import json
 from pathlib import Path
 
 import numpy as np
-import pytest
+import torch
 import yaml
-
-torch = pytest.importorskip("torch")
 
 from sleep2wave.export.artifacts import write_generation_artifacts
 from sleep2wave.export.manifest import GENERATED_SIGNAL_PROVENANCE, build_generation_manifest

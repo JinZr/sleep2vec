@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-torch = pytest.importorskip("torch")
+import torch
 
 from sleep2wave.autoencoders.losses import Sleep2WaveAutoencoderLoss, compute_autoencoder_loss
 from sleep2wave.generative.config import AutoencoderLossConfig

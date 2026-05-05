@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-torch = pytest.importorskip("torch")
+import torch
 
 from sleep2wave.diffusion.schedule import build_diffusion_schedule, cosine_beta_schedule
 
