@@ -8,6 +8,7 @@ import sys
 import typing as t
 
 import torch
+from tqdm import tqdm
 
 # Make sure the repository root is importable when running this file directly.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -72,7 +73,7 @@ def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
     expert_groups = _build_expert_group_lookup(moe_cfg)
     rows: list[dict[str, t.Any]] = []
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc=f"Exporting routing ({args.eval_split})", unit="batch"):
             batch = move_to_device(batch, args.device)
             eval_model = module._get_eval_model()
             eval_model(batch)
