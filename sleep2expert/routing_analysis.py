@@ -434,10 +434,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--avg-ckpts", type=int, default=1, help="Average this many checkpoints before export.")
     parser.add_argument("--avg-ckpt-dir", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=4523)
-    parser.add_argument("--lr", type=float, default=1e-6)
-    parser.add_argument("--weight-decay", dest="weight_decay", type=float, default=1e-5)
     parser.add_argument("--pretrained-backbone-path", type=str, default=None)
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Sleep2vecFinetuning expects optimizer fields on args, but routing export never trains or builds an optimizer.
+    args.lr = 1e-6
+    args.weight_decay = 1e-5
+    return args
 
 
 def main() -> int:

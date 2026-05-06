@@ -493,6 +493,31 @@ def test_parse_args_accepts_analysis_tag(monkeypatch, tmp_path):
     args = routing_analysis.parse_args()
 
     assert args.analysis_tag == "post_finetune"
+    assert args.lr == 1e-6
+    assert args.weight_decay == 1e-5
+
+
+def test_parse_args_rejects_optimizer_placeholders(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        routing_analysis.sys,
+        "argv",
+        [
+            "routing_analysis.py",
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--ckpt-path",
+            str(tmp_path / "model.ckpt"),
+            "--label-name",
+            "age",
+            "--output",
+            str(tmp_path / "routing.csv"),
+            "--lr",
+            "1e-4",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        routing_analysis.parse_args()
 
 
 def test_parse_args_accepts_pretrained_only_without_ckpt(monkeypatch, tmp_path):
