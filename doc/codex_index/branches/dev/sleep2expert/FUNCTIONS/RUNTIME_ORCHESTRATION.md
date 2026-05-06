@@ -130,7 +130,7 @@
 
 - File: `sleep2expert/checkpoints.py`
 - Signature: `initialize_moe_from_dense_if_possible(module: torch.nn.Module, filtered_state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]`
-- Purpose and contract: expand compatible dense standalone RoFormer FFN tensors into MoE expert FFN keys before pretrain initialization, while leaving incompatible experts randomly initialized.
+- Purpose and contract: expand compatible dense standalone RoFormer FFN tensors into MoE expert FFN keys before pretrain initialization; complete MoE expert/layer-norm checkpoint tensors load directly, while missing or shape-incompatible dense-to-MoE init fails fast instead of leaving random experts.
 - Important inputs/outputs: target module and prefix-stripped checkpoint state in; expanded state dict out.
 - Side effects: none.
 - Key callers/callees: caller is `sleep2expert.checkpoints.load_pretrain_init_weights`.

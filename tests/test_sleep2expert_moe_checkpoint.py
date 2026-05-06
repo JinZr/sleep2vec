@@ -78,16 +78,39 @@ def test_sleep2expert_dense_ffn_weights_clone_into_compatible_moe_experts(tmp_pa
     assert torch.equal(layer.moe_ffn.layer_norm.bias, dense_state["encoder.encoder.layer.0.output.layer_norm.bias"])
 
 
-def test_sleep2expert_dense_ffn_weights_do_not_clone_when_shapes_differ(tmp_path: Path):
-    module = _TinyMoeModule(intermediate_size=2)
-    original_weight = module.encoder.encoder.layer[0].moe_ffn.experts[0].dense_in.weight.detach().clone()
-    ckpt_path = tmp_path / "dense.ckpt"
-    _save_pretrain_ckpt(ckpt_path, _dense_ffn_state())
+def test_sleep2expert_full_moe_checkpoint_loads_without_dense_sources(tmp_path: Path):
+    module = _TinyMoeModule()
+    ckpt_path = tmp_path / "moe.ckpt"
+    moe_state = {
+        key: torch.full_like(value, float(idx + 1))
+        for idx, (key, value) in enumerate(module.state_dict().items())
+        if "moe_ffn.experts." in key or "moe_ffn.layer_norm." in key
+    }
+    assert all("intermediate.dense" not in key and "output.dense" not in key for key in moe_state)
+    _save_pretrain_ckpt(ckpt_path, moe_state)
 
     result = load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
 
-    assert "encoder.encoder.layer.0.moe_ffn.experts.0.dense_in.weight" in result.missing_keys
-    assert torch.equal(module.encoder.encoder.layer[0].moe_ffn.experts[0].dense_in.weight, original_weight)
+    assert result.missing_keys == []
+    layer = module.encoder.encoder.layer[0]
+    assert torch.equal(
+        layer.moe_ffn.experts[0].dense_in.weight,
+        moe_state["encoder.encoder.layer.0.moe_ffn.experts.0.dense_in.weight"],
+    )
+    assert torch.equal(layer.moe_ffn.layer_norm.weight, moe_state["encoder.encoder.layer.0.moe_ffn.layer_norm.weight"])
+
+
+def test_sleep2expert_dense_ffn_weights_fail_when_shapes_differ(tmp_path: Path):
+    module = _TinyMoeModule(intermediate_size=2)
+    ckpt_path = tmp_path / "dense.ckpt"
+    _save_pretrain_ckpt(ckpt_path, _dense_ffn_state())
+
+    with pytest.raises(ValueError, match="Cannot initialize MoE layer") as exc:
+        load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
+
+    message = str(exc.value)
+    assert "encoder.encoder.layer.0.moe_ffn.experts.0.dense_in.weight" in message
+    assert "encoder.encoder.layer.0.intermediate.dense.weight" in message
 
 
 def test_sleep2expert_checkpoint_loader_still_rejects_legacy_hf_roformer_keys(tmp_path: Path):

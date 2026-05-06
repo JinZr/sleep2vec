@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -275,6 +277,22 @@ def test_configure_optimizers_uses_semantic_lr_multipliers():
     assert groups["backbone/decay"] == pytest.approx(module.args.lr * 0.1)
     assert groups["experts/decay"] == pytest.approx(module.args.lr * 0.1)
     assert groups["routers/decay"] == pytest.approx(module.args.lr * 0.01)
+
+
+def test_sleep2expert_finetune_cli_default_lr_is_sleep_staging_scale():
+    tree = ast.parse((Path(__file__).parents[1] / "sleep2expert" / "finetune.py").read_text())
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or getattr(node.func, "attr", None) != "add_argument":
+            continue
+        if not node.args or not isinstance(node.args[0], ast.Constant) or node.args[0].value != "--lr":
+            continue
+        default = next(keyword.value for keyword in node.keywords if keyword.arg == "default")
+        assert isinstance(default, ast.Constant)
+        assert default.value == pytest.approx(1e-4)
+        return
+
+    pytest.fail("sleep2expert.finetune --lr argument not found")
 
 
 def test_zero_lr_groups_are_not_in_optimizer():

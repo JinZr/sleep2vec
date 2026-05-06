@@ -74,6 +74,7 @@ Custom labels require `finetune.task` in YAML.
 - Layer mix is applied inside `Sleep2vecDownstreamModel`, not in the trainer.
 - `sleep2expert` downstream MoE tuning is opt-in through `finetune.moe_tuning`; absent configs retain the legacy finetune trainability and two-group optimizer behavior.
 - Canonical `sleep2expert` MoE downstream recipes live under `configs/sleep2expert/moe/`: conservative router-frozen classification/regression configs, a head-only few-shot probe, and `finetune_ablations/` for router-trainable and top-layer expert-only policies.
+- `sleep2expert.finetune` defaults the base `--lr` to `1e-4`; downstream MoE `lr_scales` multiply that base, so conservative recipes use head LR `1e-4` and backbone/expert LR `1e-5` unless overridden on the CLI.
 - Downstream train-time MoE aux collection is off by default and turns on only for enabled `finetune.moe_tuning.moe_regularization`; the supported supervised auxiliary loss is router z-loss only.
 - `sleep2expert` fine-tune logs a run-start MoE status snapshot to W&B and local JSON, including MoE architecture, tuning mode, LR scales, aux settings, and actual group trainability.
 - Validation/test forwards reuse eval-time `last_moe_aux` to log scalar `*_downstream_moe_*` diagnostics; detailed token-level routing stays in `python -m sleep2expert.routing_analysis`.

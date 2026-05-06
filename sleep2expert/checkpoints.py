@@ -106,7 +106,7 @@ def initialize_moe_from_dense_if_possible(
     target_state = module.state_dict()
     expanded_state = dict(filtered_state_dict)
 
-    cloned_layer_prefixes: set[str] = set()
+    layer_mappings: dict[str, list[tuple[str, str]]] = {}
     expert_pattern = re.compile(r"^(?P<layer_prefix>.*)moe_ffn\.experts\.(?P<expert_id>\d+)\.dense_in\.weight$")
     for target_key in target_state:
         match = expert_pattern.match(target_key)
@@ -114,34 +114,57 @@ def initialize_moe_from_dense_if_possible(
             continue
         layer_prefix = match.group("layer_prefix")
         expert_prefix = f"{layer_prefix}moe_ffn.experts.{match.group('expert_id')}."
-        mappings = [
-            (f"{expert_prefix}dense_in.weight", f"{layer_prefix}intermediate.dense.weight"),
-            (f"{expert_prefix}dense_in.bias", f"{layer_prefix}intermediate.dense.bias"),
-            (f"{expert_prefix}dense_out.weight", f"{layer_prefix}output.dense.weight"),
-            (f"{expert_prefix}dense_out.bias", f"{layer_prefix}output.dense.bias"),
-        ]
-        if not all(
-            target in target_state
-            and source in filtered_state_dict
-            and target_state[target].shape == filtered_state_dict[source].shape
-            for target, source in mappings
-        ):
-            continue
-        for target, source in mappings:
-            expanded_state.setdefault(target, filtered_state_dict[source].clone())
-        cloned_layer_prefixes.add(layer_prefix)
+        layer_mappings.setdefault(layer_prefix, []).extend(
+            [
+                (f"{expert_prefix}dense_in.weight", f"{layer_prefix}intermediate.dense.weight"),
+                (f"{expert_prefix}dense_in.bias", f"{layer_prefix}intermediate.dense.bias"),
+                (f"{expert_prefix}dense_out.weight", f"{layer_prefix}output.dense.weight"),
+                (f"{expert_prefix}dense_out.bias", f"{layer_prefix}output.dense.bias"),
+            ]
+        )
 
-    for target_key, target_tensor in target_state.items():
-        marker = "moe_ffn.layer_norm."
-        if marker not in target_key or target_key in expanded_state:
+    marker = "moe_ffn.layer_norm."
+    for target_key in target_state:
+        if marker not in target_key:
             continue
         layer_prefix, norm_suffix = target_key.split(marker, 1)
-        if layer_prefix not in cloned_layer_prefixes:
+        if layer_prefix in layer_mappings:
+            layer_mappings[layer_prefix].append((target_key, f"{layer_prefix}output.layer_norm.{norm_suffix}"))
+
+    for layer_prefix, mappings in layer_mappings.items():
+        present_moe_targets = [target for target, _ in mappings if target in filtered_state_dict]
+        if len(present_moe_targets) == len(mappings):
+            for target, _ in mappings:
+                if target_state[target].shape != filtered_state_dict[target].shape:
+                    raise ValueError(
+                        f"MoE checkpoint key shape mismatch in layer '{layer_prefix}': "
+                        f"target '{target}' has shape {tuple(target_state[target].shape)}, "
+                        f"checkpoint '{target}' has shape {tuple(filtered_state_dict[target].shape)}."
+                    )
             continue
-        source_key = f"{layer_prefix}output.layer_norm.{norm_suffix}"
-        source_tensor = filtered_state_dict.get(source_key)
-        if source_tensor is not None and source_tensor.shape == target_tensor.shape:
-            expanded_state[target_key] = source_tensor.clone()
+
+        if present_moe_targets:
+            missing_target = next(target for target, _ in mappings if target not in filtered_state_dict)
+            raise ValueError(
+                f"Incomplete MoE checkpoint for layer '{layer_prefix}': missing MoE key '{missing_target}'."
+            )
+
+        for target, source in mappings:
+            if source not in filtered_state_dict:
+                raise ValueError(
+                    f"Cannot initialize MoE layer '{layer_prefix}' from dense checkpoint: "
+                    f"target '{target}' has shape {tuple(target_state[target].shape)}, "
+                    f"but dense source '{source}' is missing."
+                )
+            if target_state[target].shape != filtered_state_dict[source].shape:
+                raise ValueError(
+                    f"Cannot initialize MoE layer '{layer_prefix}' from dense checkpoint: "
+                    f"target '{target}' has shape {tuple(target_state[target].shape)}, "
+                    f"source '{source}' has shape {tuple(filtered_state_dict[source].shape)}."
+                )
+
+        for target, source in mappings:
+            expanded_state.setdefault(target, filtered_state_dict[source].clone())
 
     return expanded_state
 

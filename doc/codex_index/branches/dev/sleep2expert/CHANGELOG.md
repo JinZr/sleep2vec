@@ -2,6 +2,8 @@
 
 ## 2026-05-06
 
+- Tightened `sleep2expert` dense-to-MoE checkpoint initialization so missing or shape-incompatible expert/layer-norm tensors fail fast instead of entering fine-tune randomly initialized.
+- Updated `sleep2expert.finetune` default base LR from `1e-6` to `1e-4`; downstream MoE semantic LR multipliers still apply on top of the base CLI value.
 - Synchronized the optional `age`/`sex` preset metadata contract into `sleep2vec2/` and `sleep2expert/` package-local dataset and finetune loader copies.
 - Documented that stage/AHI-only presets may omit `age`/`sex`, while built-in `age`/`sex` tasks fail fast on missing or invalid labels.
 
