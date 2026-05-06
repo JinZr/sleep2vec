@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from matplotlib.patches import FancyBboxPatch
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -63,8 +64,64 @@ def test_render_confusion_matrix_heatmap_normalizes_binary_rows():
         ),
         atol=1e-4,
     )
-    assert {text.get_text() for text in ax.texts} >= {"33.3%", "66.7%", "50%"}
+    assert {text.get_text() for text in ax.texts} >= {"33%", "67%", "50%"}
+    assert {tick.get_rotation() for tick in ax.get_xticklabels()} == {90.0}
+    assert {tick.get_ha() for tick in ax.get_xticklabels()} == {"right"}
+    axis_box = ax.get_position()
+    title_boxes = [patch for patch in fig.patches if isinstance(patch, FancyBboxPatch)]
+    assert len(title_boxes) == 2
+    assert any(np.isclose(box.get_width(), axis_box.width) for box in title_boxes)
+    assert any(np.isclose(box.get_height(), axis_box.height) for box in title_boxes)
+    x_title_box = next(box for box in title_boxes if np.isclose(box.get_width(), axis_box.width))
+    y_title_box = next(box for box in title_boxes if np.isclose(box.get_height(), axis_box.height))
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    x_tick_bottom = min(
+        label.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted()).y0
+        for label in ax.get_xticklabels()
+    )
+    assert np.isclose(x_title_box.get_y() + x_title_box.get_height(), x_tick_bottom - 0.018)
+    assert x_title_box.get_y() >= 0.018
+    y_tick_left = min(
+        label.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted()).x0
+        for label in ax.get_yticklabels()
+    )
+    assert np.isclose(y_title_box.get_x() + y_title_box.get_width(), y_tick_left - 0.018)
+    assert y_title_box.get_x() >= 0.018
+    assert {text.get_text() for text in fig.texts} >= {"Predicted Label", "True Label"}
     assert fig.axes[1].get_title(loc="left") == "Percent"
+    plt.close(fig)
+
+
+def test_render_confusion_matrix_heatmap_keeps_axis_boxes_clear_of_long_labels():
+    fig = render_confusion_matrix_heatmap(
+        np.array([0, 0, 1, 1], dtype=np.int64),
+        np.array([0, 1, 1, 0], dtype=np.int64),
+        ["very-long-wake-label", "very-long-nrem-label"],
+        title="demo",
+        normalize_rows=True,
+    )
+
+    ax = fig.axes[0]
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    axis_box = ax.get_position()
+    title_boxes = [patch for patch in fig.patches if isinstance(patch, FancyBboxPatch)]
+    x_title_box = next(box for box in title_boxes if np.isclose(box.get_width(), axis_box.width))
+    y_title_box = next(box for box in title_boxes if np.isclose(box.get_height(), axis_box.height))
+    x_tick_bottom = min(
+        label.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted()).y0
+        for label in ax.get_xticklabels()
+    )
+    y_tick_left = min(
+        label.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted()).x0
+        for label in ax.get_yticklabels()
+    )
+
+    assert x_title_box.get_y() + x_title_box.get_height() <= x_tick_bottom - 0.017
+    assert y_title_box.get_x() + y_title_box.get_width() <= y_tick_left - 0.017
+    assert x_title_box.get_y() >= 0.018
+    assert y_title_box.get_x() >= 0.018
     plt.close(fig)
 
 
@@ -92,7 +149,7 @@ def test_render_confusion_matrix_heatmap_normalizes_stage_rows_and_can_show_coun
         ),
         atol=1e-4,
     )
-    assert {text.get_text() for text in ax.texts} >= {"33.3%\n(1)", "66.7%\n(2)", "100%\n(1)"}
+    assert {text.get_text() for text in ax.texts} >= {"33%\n(1)", "67%\n(2)", "100%\n(1)"}
     assert fig.axes[1].get_title(loc="left") == "Percent"
     plt.close(fig)
 
