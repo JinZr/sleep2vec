@@ -64,7 +64,7 @@ def test_render_confusion_matrix_heatmap_normalizes_binary_rows():
         ),
         atol=1e-4,
     )
-    assert {text.get_text() for text in ax.texts} >= {"33%", "67%", "50%"}
+    assert {text.get_text() for text in ax.texts} >= {"33.3%", "66.7%", "50%"}
     assert {tick.get_rotation() for tick in ax.get_xticklabels()} == {90.0}
     assert {tick.get_ha() for tick in ax.get_xticklabels()} == {"right"}
     axis_box = ax.get_position()
@@ -90,6 +90,23 @@ def test_render_confusion_matrix_heatmap_normalizes_binary_rows():
     assert y_title_box.get_x() >= 0.018
     assert {text.get_text() for text in fig.texts} >= {"Predicted Label", "True Label"}
     assert fig.axes[1].get_title(loc="left") == "Percent"
+    plt.close(fig)
+
+
+def test_render_confusion_matrix_heatmap_preserves_fractional_rare_percentages():
+    y_true = np.zeros(1000, dtype=np.int64)
+    y_pred = np.zeros(1000, dtype=np.int64)
+    y_pred[-1] = 1
+
+    fig = render_confusion_matrix_heatmap(
+        y_true,
+        y_pred,
+        ["negative", "positive"],
+        title="demo",
+        normalize_rows=True,
+    )
+
+    assert {text.get_text() for text in fig.axes[0].texts} >= {"99.9%", "0.1%"}
     plt.close(fig)
 
 
@@ -149,7 +166,7 @@ def test_render_confusion_matrix_heatmap_normalizes_stage_rows_and_can_show_coun
         ),
         atol=1e-4,
     )
-    assert {text.get_text() for text in ax.texts} >= {"33%\n(1)", "67%\n(2)", "100%\n(1)"}
+    assert {text.get_text() for text in ax.texts} >= {"33.3%\n(1)", "66.7%\n(2)", "100%\n(1)"}
     assert fig.axes[1].get_title(loc="left") == "Percent"
     plt.close(fig)
 

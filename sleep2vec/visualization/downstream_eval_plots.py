@@ -14,7 +14,7 @@ from sleep2vec.visualization.theme import _OPENAI_BLUE_CMAP, use_openai_like_the
 
 
 def _format_percentage(value: float) -> str:
-    return f"{value:.0f}%"
+    return f"{value:.1f}".rstrip("0").rstrip(".") + "%"
 
 
 def render_confusion_matrix_heatmap(
