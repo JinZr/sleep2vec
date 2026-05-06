@@ -6,7 +6,7 @@ from matplotlib.colors import PowerNorm
 import matplotlib.pyplot as plt
 import numpy as np
 
-from sleep2vec.visualization.heatmaps import render_matrix_heatmap
+from sleep2vec.visualization.heatmaps import add_axis_title_boxes, render_matrix_heatmap
 from sleep2vec.visualization.theme import _OPENAI_BLUE_CMAP
 
 
@@ -42,4 +42,5 @@ def render_pair_acc_heatmap(
         label.set_rotation(45)
         label.set_ha("right")
         label.set_rotation_mode("anchor")
+    add_axis_title_boxes(fig, ax, xlabel="Gallery Modality", ylabel="Query Modality")
     return fig
