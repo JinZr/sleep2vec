@@ -51,7 +51,7 @@
 ---
 
 ## Data Format & Caches
-- **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set. For the built-in `sex` task, the normalized contract is `sex=female|male`, encoded as `0=female`, `1=male`. If your source metadata uses `sexM`, convert it to `sex` with `1 -> male`, `0 -> female` during preprocessing.
+- **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), and `duration` (seconds). `age` and `sex` are optional for stage/AHI-only workflows, but built-in `age`/`sex` tasks require valid labels after split/source filtering; generate those presets from indexes carrying the corresponding real column. Optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set. For the built-in `sex` task, the normalized contract is `sex=female|male`, encoded as `0=female`, `1=male`. If your source metadata uses `sexM`, convert it to `sex` with `1 -> male`, `0 -> female` during preprocessing.
 - **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy`. In this repo, `actigraphy` stores vector magnitude (VM). `stage5` remains a special per-token label channel and always uses width `1`. Built-in `ahi` additionally requires a flat 1 Hz `ah_event` array plus scalar NPZ keys `ahi` and `tst`.
 - **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided. Preset generation now requires a YAML config so the script can resolve channel names and `input_dim` values from `model.channels`.
 - `preprocess/save_dataset_presets.py` also honors an optional top-level `preset_build` block. Use it when preset validation must differ from runtime input modalities, for example token-level PPG staging should validate both `ppg` and `stage5`.
@@ -67,6 +67,7 @@
     --split train val test
   ```
   Optional flags: `--channels eeg_original ecg_original`, `--meta-data-names hypertension diabetes`, `--include-no-metadata`, `--output-template 'data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle'`, `--dry-run`, `--overwrite`.
+  Explicit `--meta-data-names` values remain strict: the CSV must contain each requested metadata column except built-in AHI summaries, which come from NPZ.
 - `--channels` is now an optional ordered subset of YAML `model.channels`; any requested channel that is missing from the YAML or lacks `input_dim` fails fast.
 - **Missing-channel pretrain**: if you enable `--allow-missing-channels`, presets must carry `payload["available_channels"]` (auto-populated during preset creation) so the bucketed sampler can group by montage.
 - **WatchPAT `.zzp` conversion**: `preprocess/watchpat_zzp_to_edf.py` converts a WatchPAT archive (`Sleep.dat`, `Patient.dat`, `log.dat`) into EDF for downstream inspection or external preprocessing. Example:
@@ -168,7 +169,7 @@ Notes:
 - Built-in sleep-staging labels are `stage3`, `stage4`, and `stage5`. They are all **per-token sequence labeling** tasks (`is_seq=True`) and use token-level downstream (`model.cls.downstream: tokens`).
 - `stage3` merges raw `stage5` labels into `W / NREM / REM`; `stage4` merges raw `stage5` labels into `W / N1N2 / N3 / REM`.
 - Do **not** add `stage5` or `ahi` to `data.data_channel_names`; built-in sequence labels are loaded automatically into `batch["tokens"][...]` whenever `--label-name` is `stage3`, `stage4`, `stage5`, or `ahi`.
-- Built-in `sex` classification is a metadata task with class order `["female", "male"]`, so targets are encoded as `0=female`, `1=male`.
+- Built-in `sex` classification is a metadata task with class order `["female", "male"]`, so targets are encoded as `0=female`, `1=male`; presets missing valid `sex` labels are rejected.
 - `--pretrained-backbone-path /path/to/pretrain_or_adapt.ckpt` can be used to bootstrap downstream training from a pretrain/adaptation checkpoint; loader prefers `ema_model.` and falls back to `model.`.
 
 ### Finetune — regression
@@ -181,6 +182,7 @@ python -m sleep2vec.finetune \
 ```
 
 Custom metadata labels:
+- Built-in `age` regression requires valid `age` metadata; stage/AHI-only presets that omit or carry dummy `age`/`sex` labels are not valid for `--label-name age|sex`.
 - Set `--label-name` to the CSV column name (e.g., `bmi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
 - Use the same `--label-name` for `sleep2vec.infer` (required) when evaluating custom tasks.
 - Token-level labels (`is_seq: true`) are only supported for built-in sequence labels (`stage3`, `stage4`, `stage5`, `ahi`) unless you extend the dataloader.
@@ -202,9 +204,11 @@ python -m sleep2vec.infer \
   --config configs/sleep2vec_dense_finetune_cls.yaml \
   --ckpt-path log-finetune/exp001-stage5/checkpoints/epoch=49.ckpt \
   --label-name stage5 --batch-size 12 --devices 0 \
+  --inference-preset-path /path/to/test_preset_1535.pickle \
   --eval-split test --results-csv-path outputs.csv
 ```
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
+Use `--inference-preset-path` to evaluate the same config/checkpoint against a different preset pickle without editing YAML; result CSV rows record the effective preset in `preset_path`.
 Use the same `--label-name` that was used for fine-tuning; it is required.
 To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
 Use `--pretrained-backbone-path` if you want to preload a pretrain/adaptation initialization checkpoint before applying downstream weights.
