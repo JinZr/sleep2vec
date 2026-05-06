@@ -7,6 +7,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("pytorch_lightning")
 
+from sleep2expert.backbones.roformer.moe import MoERoutingOutput
 from sleep2expert.config import (
     BackboneConfig,
     ChannelAggConfig,
@@ -172,6 +173,29 @@ def _set_fake_trainer(module: Sleep2vecFinetuning) -> None:
     module._trainer = SimpleNamespace(estimated_stepping_batches=100)
 
 
+def _routing_aux(router_probs: torch.Tensor, *, layer_idx: int = 1) -> MoERoutingOutput:
+    topk_probs, topk_indices = torch.topk(router_probs, k=2, dim=-1)
+    topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(router_probs.dtype).eps)
+    expert_mask = torch.zeros_like(router_probs, dtype=torch.bool)
+    expert_mask.scatter_(-1, topk_indices, True)
+    load = expert_mask.float().sum(dim=(0, 1))
+    importance = router_probs.sum(dim=(0, 1))
+    entropy = -(router_probs * router_probs.clamp_min(torch.finfo(router_probs.dtype).eps).log()).sum(dim=-1)
+    return MoERoutingOutput(
+        router_logits=router_probs.clamp_min(torch.finfo(router_probs.dtype).eps).log(),
+        router_probs=router_probs,
+        topk_indices=topk_indices,
+        topk_probs=topk_probs,
+        expert_mask=expert_mask,
+        load=load,
+        importance=importance,
+        z_loss=torch.tensor(0.25),
+        entropy=entropy.mean(),
+        modality_name="eeg",
+        layer_idx=layer_idx,
+    )
+
+
 def test_head_only_freezes_entire_backbone():
     module = _module("head_only")
 
@@ -278,6 +302,63 @@ def test_no_moe_tuning_uses_legacy_two_groups():
     assert all(group["lr"] == pytest.approx(module.args.lr) for group in optimizer_groups)
 
 
+def test_moe_status_snapshot_records_conservative_trainability():
+    module = _module("conservative_full_router_frozen")
+    status = module.moe_finetune_status
+    groups = status["param_groups"]
+
+    assert status["moe_enabled"] is True
+    assert status["moe_layer_indices"] == [1, 3]
+    assert status["num_experts"] == 4
+    assert status["top_k"] == 2
+    assert status["router_type"] == "learned"
+    assert status["moe_tuning_present"] is True
+    assert status["moe_tuning_mode"] == "conservative_full_router_frozen"
+    assert status["collect_train_moe_aux"] is False
+    assert groups["routers"]["trainable_params"] == 0
+    assert groups["routers"]["total_params"] > 0
+    assert groups["experts"]["trainable_params"] > 0
+    assert groups["backbone"]["trainable_params"] > 0
+    assert groups["routers"]["lr_scale"] == pytest.approx(0.0)
+
+    hparams = module.moe_finetune_hparams()
+    assert hparams["moe_finetune/moe_tuning_present"] is True
+    assert hparams["moe_finetune/moe_layer_indices"] == "1,3"
+    assert any(row[0] == "routers" for row in module.moe_finetune_param_group_rows())
+
+
+def test_moe_status_snapshot_records_router_trainable_regularized_mode():
+    reg_cfg = FinetuneMoeRegularizationConfig(
+        enabled=True,
+        collect_train_moe_aux=True,
+        router_z_loss_coef=0.1,
+    )
+    module = _module("conservative_full_router_trainable", moe_regularization=reg_cfg)
+    status = module.moe_finetune_status
+    groups = status["param_groups"]
+
+    assert status["moe_tuning_mode"] == "conservative_full_router_trainable"
+    assert status["collect_train_moe_aux"] is True
+    assert status["moe_regularization"]["enabled"] is True
+    assert status["moe_regularization"]["collect_train_moe_aux"] is True
+    assert groups["routers"]["trainable_params"] > 0
+    assert groups["routers"]["lr_scale"] == pytest.approx(0.01)
+
+
+def test_moe_status_snapshot_records_legacy_no_tuning_path():
+    module = _module(None, freeze_tokenizer=False)
+    status = module.moe_finetune_status
+
+    assert status["moe_enabled"] is True
+    assert status["moe_tuning_present"] is False
+    assert status["moe_tuning_mode"] is None
+    assert status["lr_scales"] == {}
+    assert status["moe_regularization"] == {}
+    assert status["collect_train_moe_aux"] is False
+    assert set(status["param_groups"]) == {"legacy"}
+    assert status["param_groups"]["legacy"]["trainable_params"] == status["trainable_params"]
+
+
 def test_shared_step_adds_downstream_moe_zloss_only_when_enabled(monkeypatch):
     reg_cfg = FinetuneMoeRegularizationConfig(
         enabled=True,
@@ -318,6 +399,44 @@ def test_shared_step_adds_downstream_moe_zloss_only_when_enabled(monkeypatch):
     assert logged["train_supervised_loss"].item() == pytest.approx(2.0)
     assert logged["train_downstream_moe_router_z_loss"].item() == pytest.approx(1.0)
     assert logged["train_loss"].item() == pytest.approx(2.5)
+
+
+def test_eval_steps_log_downstream_moe_metrics_when_aux_is_available(monkeypatch):
+    module = _module("conservative_full_router_frozen")
+    router_probs = torch.tensor(
+        [
+            [[0.70, 0.20, 0.05, 0.05], [0.10, 0.70, 0.10, 0.10], [0.25, 0.25, 0.25, 0.25]],
+            [[0.05, 0.05, 0.80, 0.10], [0.40, 0.20, 0.20, 0.20], [0.10, 0.20, 0.30, 0.40]],
+        ],
+        dtype=torch.float32,
+    )
+    moe_aux = [{"modality": "eeg", "aux": (_routing_aux(router_probs),), "attention_mask": None}]
+    batch = {
+        "tokens": {"eeg": torch.zeros(2, 3, 1)},
+        "length": torch.tensor([3, 3]),
+    }
+
+    class DummyEvalModel:
+        def __init__(self):
+            self.backbone = SimpleNamespace(last_moe_aux=None)
+
+        def __call__(self, batch):
+            self.backbone.last_moe_aux = moe_aux
+            return torch.zeros(2, 5)
+
+    logged = {}
+    monkeypatch.setattr(module, "log", lambda name, value, **kwargs: logged.setdefault(name, value.detach()))
+    monkeypatch.setattr(module, "_compute_loss", lambda logits, batch: (torch.tensor(2.0), 6))
+    monkeypatch.setattr(module, "_extract_valid_predictions", lambda batch, logits: None)
+
+    assert module._shared_step(batch, stage="val", model=DummyEvalModel()) is None
+    assert module._shared_step(batch, stage="test", model=DummyEvalModel()) is None
+
+    assert logged["val_downstream_moe_router_z_loss"].item() == pytest.approx(0.25)
+    assert "val_downstream_moe_entropy" in logged
+    assert "val_downstream_moe_expert_usage_entropy" in logged
+    assert "val_downstream_moe_active_experts_per_token" in logged
+    assert logged["test_downstream_moe_router_z_loss"].item() == pytest.approx(0.25)
 
 
 def test_main_conservative_mode_does_not_collect_train_aux_or_add_moe_loss(monkeypatch):

@@ -14,7 +14,7 @@ from sleep2expert import diagnostics
 from sleep2expert.averagings.base import BaseModelAverager, build_model_averager
 from sleep2expert.common import remap_stage_labels
 from sleep2expert.distributed import get_rank_world_size, is_torch_distributed_ready
-from sleep2expert.losses.moe_regularization import compute_downstream_moe_regularization
+from sleep2expert.losses.moe_regularization import compute_downstream_moe_metrics, compute_downstream_moe_regularization
 from sleep2expert.metrics import (
     AHI_FINE_THRESHOLD_GRID,
     _aggregate_prepared_ahi_records,
@@ -92,6 +92,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self.model.collect_train_moe_aux = bool(
                 getattr(moe_reg, "enabled", False) and getattr(moe_reg, "collect_train_moe_aux", False)
             )
+        self.moe_finetune_status = self._build_moe_finetune_status()
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
@@ -269,6 +270,94 @@ class Sleep2vecFinetuning(pl.LightningModule):
             total_params,
         )
 
+    def _build_moe_finetune_status(self) -> dict:
+        moe_cfg = getattr(self.model_config.backbone, "moe", None)
+        moe_tuning = getattr(self.finetune_config, "moe_tuning", None) if self.finetune_config is not None else None
+        if moe_tuning is None:
+            param_groups = {"legacy": self._legacy_param_group_summary()}
+            lr_scales = {}
+            moe_regularization = {}
+            mode = None
+        else:
+            param_groups = {
+                group: {
+                    "total_params": int(summary["total_params"]),
+                    "trainable_params": int(summary["trainable_params"]),
+                    "total_tensors": int(summary["total_tensors"]),
+                    "trainable_tensors": int(summary["trainable_tensors"]),
+                    "lr_scale": float(self._finetune_lr_scales[group]),
+                }
+                for group, summary in self._finetune_group_summary.items()
+            }
+            lr_scales = dict(self._finetune_lr_scales)
+            moe_regularization = asdict(moe_tuning.moe_regularization)
+            mode = moe_tuning.mode
+
+        return {
+            "moe_enabled": bool(moe_cfg is not None and getattr(moe_cfg, "enabled", False)),
+            "moe_layer_indices": list(getattr(moe_cfg, "layer_indices", None) or []),
+            "num_experts": getattr(moe_cfg, "num_experts", None),
+            "top_k": getattr(moe_cfg, "top_k", None),
+            "router_type": getattr(moe_cfg, "router_type", None),
+            "moe_tuning_present": moe_tuning is not None,
+            "moe_tuning_mode": mode,
+            "lr_scales": lr_scales,
+            "collect_train_moe_aux": bool(getattr(self.model, "collect_train_moe_aux", False)),
+            "moe_regularization": moe_regularization,
+            "param_groups": param_groups,
+            "total_params": int(sum(group["total_params"] for group in param_groups.values())),
+            "trainable_params": int(sum(group["trainable_params"] for group in param_groups.values())),
+        }
+
+    def _legacy_param_group_summary(self) -> dict[str, int | float]:
+        summary = {
+            "total_params": 0,
+            "trainable_params": 0,
+            "total_tensors": 0,
+            "trainable_tensors": 0,
+            "lr_scale": 1.0,
+        }
+        for _, param in self.model.named_parameters():
+            param_count = int(param.numel())
+            summary["total_params"] += param_count
+            summary["total_tensors"] += 1
+            if param.requires_grad:
+                summary["trainable_params"] += param_count
+                summary["trainable_tensors"] += 1
+        return summary
+
+    def moe_finetune_hparams(self) -> dict[str, bool | int | float | str]:
+        flat: dict[str, bool | int | float | str] = {}
+        self._flatten_moe_status("moe_finetune", self.moe_finetune_status, flat)
+        return flat
+
+    def moe_finetune_param_group_rows(self) -> list[list[bool | int | float | str | None]]:
+        rows = []
+        for group, summary in self.moe_finetune_status.get("param_groups", {}).items():
+            rows.append(
+                [
+                    group,
+                    summary["total_params"],
+                    summary["trainable_params"],
+                    summary["total_tensors"],
+                    summary["trainable_tensors"],
+                    summary.get("lr_scale"),
+                ]
+            )
+        return rows
+
+    def _flatten_moe_status(self, prefix: str, value, flat: dict[str, bool | int | float | str]) -> None:
+        if prefix.endswith("param_groups"):
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                self._flatten_moe_status(f"{prefix}/{key}", item, flat)
+            return
+        if isinstance(value, (list, tuple)):
+            flat[prefix] = ",".join(str(item) for item in value)
+            return
+        flat[prefix] = "" if value is None else value
+
     def on_save_checkpoint(self, checkpoint):
         super().on_save_checkpoint(checkpoint)
         checkpoint["model_config"] = asdict(self.model_config)
@@ -394,6 +483,21 @@ class Sleep2vecFinetuning(pl.LightningModule):
                         prog_bar=False,
                         sync_dist=True,
                         on_step=True,
+                        on_epoch=True,
+                        batch_size=max(valid_count, 1),
+                    )
+            if stage in {"val", "test"}:
+                for name, value in compute_downstream_moe_metrics(
+                    getattr(model.backbone, "last_moe_aux", None),
+                    batch,
+                    prefix=stage,
+                ).items():
+                    self.log(
+                        name,
+                        value,
+                        prog_bar=False,
+                        sync_dist=True,
+                        on_step=False,
                         on_epoch=True,
                         batch_size=max(valid_count, 1),
                     )

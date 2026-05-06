@@ -145,12 +145,14 @@
 - Reuse guidance: use this direct helper for `sleep2expert` MoE auxiliary losses; do not register it via `create_loss`.
 - Duplication risk notes: route consistency depends on the two-view `last_moe_aux` contract, requires configured consistency layers when its coefficient is positive, and excludes CLS when the aux sequence includes a prepended CLS token.
 
-## `sleep2expert.losses.moe_regularization.compute_downstream_moe_regularization`
+## `sleep2expert.losses.moe_regularization.compute_downstream_moe_regularization` and `compute_downstream_moe_metrics`
 
 - File: `sleep2expert/losses/moe_regularization.py`
 - Signature: `compute_downstream_moe_regularization(moe_aux, reg_cfg, batch, *, prefix=None) -> LossOutput`
-- Purpose and contract: convert downstream routing aux records into an opt-in router z-loss plus routing diagnostics for supervised finetuning.
+- Signature: `compute_downstream_moe_metrics(moe_aux, batch, *, prefix=None) -> dict[str, Tensor]`
+- Purpose and contract: convert downstream routing aux records into opt-in router z-loss plus routing diagnostics for supervised finetuning, or metrics-only eval diagnostics when no loss should be added.
 - Important inputs/outputs: downstream `backbone.last_moe_aux`, `finetune.moe_tuning.moe_regularization`, and batch in; returns `LossOutput` with scalar z-loss contribution and `downstream_moe_*` metrics.
+- Important inputs/outputs: metrics-only eval path returns an empty dict when no aux is available, and otherwise returns scalar `downstream_moe_*` tensors without collecting routing rows.
 - Side effects: none.
 - Key callers/callees: caller is `Sleep2vecFinetuning._shared_step`; callees reuse the local MoE routing-stat helpers.
 - Reuse guidance: use this helper for supervised downstream MoE diagnostics instead of the pretraining helper.
@@ -182,7 +184,7 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `Sleep2vecFinetuning._shared_step(batch, stage: str, model=None)`
-- Purpose and contract: run forward, compute loss if valid labels exist, optionally add enabled downstream MoE router z-loss during train, log stage loss or accumulate eval loss, and cache either generic predictions or AHI event records for epoch-end metrics.
+- Purpose and contract: run forward, compute loss if valid labels exist, optionally add enabled downstream MoE router z-loss during train, log train/val/test scalar MoE diagnostics when aux is available, log stage loss or accumulate eval loss, and cache either generic predictions or AHI event records for epoch-end metrics.
 - Important inputs/outputs: batch and stage name in; returns training loss for `train`, otherwise `None`.
 - Side effects: logs Lightning metrics and mutates `_stage_outputs`.
 - Key callers/callees: callers are `training_step`, `validation_step`, and `test_step`; callees are `self.model(...)`, `_compute_loss`, optional `compute_downstream_moe_regularization`, `_extract_valid_predictions`, and `_extract_ahi_event_records`.

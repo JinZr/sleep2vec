@@ -30,6 +30,7 @@ Primary code path:
 3. Persist run artifacts.
    - `log-finetune/<version>/config.yaml`
    - `log-finetune/<version>/cli_args.yaml`
+   - `log-finetune/<version>/moe_finetune_status.json` for `sleep2expert` MoE fine-tune status.
 4. Build train/val/test loaders.
    - Always uses `allow_missing_channels=False`.
    - Built-in sequence tasks append runtime label channels to `dataset_channel_names`.
@@ -74,6 +75,8 @@ Custom labels require `finetune.task` in YAML.
 - `sleep2expert` downstream MoE tuning is opt-in through `finetune.moe_tuning`; absent configs retain the legacy finetune trainability and two-group optimizer behavior.
 - Canonical `sleep2expert` MoE downstream recipes live under `configs/sleep2expert/moe/`: conservative router-frozen classification/regression configs, a head-only few-shot probe, and `finetune_ablations/` for router-trainable and top-layer expert-only policies.
 - Downstream train-time MoE aux collection is off by default and turns on only for enabled `finetune.moe_tuning.moe_regularization`; the supported supervised auxiliary loss is router z-loss only.
+- `sleep2expert` fine-tune logs a run-start MoE status snapshot to W&B and local JSON, including MoE architecture, tuning mode, LR scales, aux settings, and actual group trainability.
+- Validation/test forwards reuse eval-time `last_moe_aux` to log scalar `*_downstream_moe_*` diagnostics; detailed token-level routing stays in `python -m sleep2expert.routing_analysis`.
 - AHI validation fits and stores an `ahi_eval_threshold` inside the checkpoint; test and inference require that threshold.
 - Confusion matrices, ROC curves, and regression scatter plots are logged from `Sleep2vecFinetuning`, not from entrypoints.
 
@@ -81,6 +84,7 @@ Custom labels require `finetune.task` in YAML.
 
 - Checkpoints under `log-finetune/<version>/checkpoints/`
 - Stable `best.ckpt` copy when training ran and a best checkpoint exists
+- MoE fine-tune status JSON at `log-finetune/<version>/moe_finetune_status.json`
 - Optional results CSV row via `sleep2vec.results.save_result_csv`
 - W&B run under project `sleep2expert-finetune`
 

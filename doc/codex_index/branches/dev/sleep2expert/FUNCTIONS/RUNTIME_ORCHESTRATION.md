@@ -50,7 +50,7 @@
 - Signature: `supervised(args, config_bundle) -> None`
 - Purpose and contract: canonical finetune orchestration routine; persists run artifacts, builds loaders, instantiates `Sleep2vecFinetuning`, trains, evaluates, and writes results. For `sleep2expert`, downstream MoE tuning remains inside the Lightning module, not in this orchestration routine.
 - Important inputs/outputs: CLI namespace and config bundle in; no direct return value.
-- Side effects: creates run directories, writes YAML snapshots, trains/tests models, copies `best.ckpt`, appends results CSV.
+- Side effects: creates run directories, writes YAML snapshots and `moe_finetune_status.json`, logs MoE fine-tune status to W&B, trains/tests models, copies `best.ckpt`, appends results CSV.
 - Key callers/callees: called from `__main__`; calls `prepare_dataloader`, `Sleep2vecFinetuning`, `save_result_csv`, and `persist_run_config_and_args`.
 - Reuse guidance: extend this routine instead of creating parallel finetune scripts.
 - Duplication risk notes: distributed AHI progress-bar selection is centralized here.

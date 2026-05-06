@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 from pathlib import Path
 import shutil
@@ -18,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sleep2expert.callbacks import build_distributed_ahi_progress_bar
 from sleep2expert.common import apply_finetune_config, persist_run_config_and_args
+from sleep2expert.distributed import is_rank_zero_process
 from sleep2expert.results import save_result_csv
 from sleep2expert.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2expert.utils import get_finetune_dataloaders
@@ -71,6 +73,27 @@ def supervised(args, config_bundle):
         save_dir="./wandb_logs",  # 本地缓存目录，可选
         log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )
+    if is_rank_zero_process():
+        status_path = exp_root / "moe_finetune_status.json"
+        status_path.write_text(json.dumps(model.moe_finetune_status, indent=2, sort_keys=True) + "\n")
+    logger.log_hyperparams(model.moe_finetune_hparams())
+    if is_rank_zero_process():
+        logger.experiment.log(
+            {
+                "moe_finetune/param_groups": wandb.Table(
+                    columns=[
+                        "group",
+                        "total_params",
+                        "trainable_params",
+                        "total_tensors",
+                        "trainable_tensors",
+                        "lr_scale",
+                    ],
+                    data=model.moe_finetune_param_group_rows(),
+                )
+            },
+            commit=False,
+        )
     try:
         early_stop_callback = EarlyStopping(
             monitor=args.monitor,
