@@ -103,6 +103,7 @@ def train_autoencoder(args: argparse.Namespace) -> Path:
         save_on_train_epoch_end=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
+    validation_cfg = config.training.validation
     trainer = pl.Trainer(
         accelerator=args.accelerator,
         devices=_parse_devices(args.devices),
@@ -114,6 +115,9 @@ def train_autoencoder(args: argparse.Namespace) -> Path:
         callbacks=[checkpoint_callback, lr_monitor],
         log_every_n_steps=1,
         num_sanity_val_steps=0,
+        val_check_interval=validation_cfg.interval_steps,
+        check_val_every_n_epoch=None,
+        limit_val_batches=validation_cfg.max_batches_per_modality,
     )
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
     trainer.save_checkpoint(checkpoint_dir / "last.ckpt")

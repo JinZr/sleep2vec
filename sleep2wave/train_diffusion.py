@@ -135,6 +135,17 @@ def _load_phase_checkpoint(model, checkpoint_path: str | Path) -> int:
     return len(filtered)
 
 
+def _limit_val_batches(config) -> int:
+    validation_cfg = config.training.validation
+    schedule = build_phase_schedule(
+        config.training.phase,
+        config.training.task_mix,
+        replay_enabled=config.training.replay.enabled,
+    )
+    active_task_families = sum(1 for weight in schedule.task_mix.values() if weight > 0)
+    return validation_cfg.max_batches_per_modality * len(validation_cfg.examples.modalities) * active_task_families
+
+
 def train_diffusion(args: argparse.Namespace) -> Path:
     config = load_sleep2wave_config(args.config)
     if config.stage != "diffusion":
@@ -201,6 +212,9 @@ def train_diffusion(args: argparse.Namespace) -> Path:
         log_every_n_steps=1,
         num_sanity_val_steps=0,
         use_distributed_sampler=use_distributed_sampler,
+        val_check_interval=config.training.validation.interval_steps,
+        check_val_every_n_epoch=None,
+        limit_val_batches=_limit_val_batches(config),
     )
     resume_from_checkpoint = getattr(args, "resume_from_checkpoint", None)
     if resume_from_checkpoint is not None and not resume_from_checkpoint.is_file():

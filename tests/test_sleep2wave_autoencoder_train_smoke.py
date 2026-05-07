@@ -71,8 +71,16 @@ def _write_config(
             "spectral_weight": 0.0,
         },
     }
+    training = {
+        "phase": 0,
+        "batch_size": batch_size,
+        "lr": 0.0001,
+        "weight_decay": 0.01,
+        "max_epochs": 1,
+        "gradient_clip_val": 1.0,
+    }
     if validation_examples is not None:
-        autoencoder["validation_examples"] = validation_examples
+        training["validation"] = {"examples": validation_examples}
     payload = {
         "recipe": "sleep2wave",
         "stage": "autoencoder",
@@ -88,14 +96,7 @@ def _write_config(
             },
         },
         "autoencoder": autoencoder,
-        "training": {
-            "phase": 0,
-            "batch_size": batch_size,
-            "lr": 0.0001,
-            "weight_decay": 0.01,
-            "max_epochs": 1,
-            "gradient_clip_val": 1.0,
-        },
+        "training": training,
         "export": {"output_dir": str(tmp_path / "outputs")},
     }
     config_path = tmp_path / "autoencoder.yaml"
@@ -238,3 +239,6 @@ def test_train_autoencoder_registers_step_lr_monitor(tmp_path: Path, monkeypatch
     )
 
     assert lr_monitor in trainer_kwargs["callbacks"]
+    assert trainer_kwargs["val_check_interval"] == 1000
+    assert trainer_kwargs["check_val_every_n_epoch"] is None
+    assert trainer_kwargs["limit_val_batches"] == 1

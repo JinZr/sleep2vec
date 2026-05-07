@@ -30,10 +30,12 @@ Current autoencoder architecture constraints:
 
 Optional logging config:
 
-- `autoencoder.validation_examples.num_examples`
-- `autoencoder.validation_examples.modalities`
+- `training.validation.interval_steps`
+- `training.validation.max_batches_per_modality`
+- `training.validation.examples.num_examples`
+- `training.validation.examples.modalities`
 
-If omitted, validation logs one W&B clean/reconstruction waveform example for every configured modality.
+If omitted, validation logs one W&B clean/reconstruction waveform example for every configured modality and runs capped validation every 1000 training steps.
 
 ## Command
 

@@ -91,10 +91,10 @@ class Sleep2WaveAutoencoderLightning(pl.LightningModule):
             return
         if getattr(wandb, "run", None) is None:
             return
-        if self.config_bundle.autoencoder is None:
+        if self.config_bundle.training is None:
             return
 
-        example_cfg = self.config_bundle.autoencoder.validation_examples
+        example_cfg = self.config_bundle.training.validation.examples
         batch_size = next(iter(batch["clean_signals"].values())).shape[0]
         example_count = min(example_cfg.num_examples, batch_size)
         metadata = batch.get("metadata", {})

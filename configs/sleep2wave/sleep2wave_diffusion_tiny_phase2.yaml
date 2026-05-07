@@ -25,9 +25,6 @@ diffusion:
   task_attention_mask: directional
   auxiliary_restoration_token: true
   condition_dropout: 0.15
-  validation_examples:
-    num_examples: 5
-    modalities: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
 
 training:
   phase: 2
@@ -37,6 +34,12 @@ training:
   weight_decay: 0.01
   max_epochs: 160
   gradient_clip_val: 1.0
+  validation:
+    interval_steps: 1000
+    max_batches_per_modality: 5
+    examples:
+      num_examples: 5
+      modalities: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
   condition_counts: [1]
   restoration_condition_counts: [1, 2, 3]
   replay: {enabled: true}

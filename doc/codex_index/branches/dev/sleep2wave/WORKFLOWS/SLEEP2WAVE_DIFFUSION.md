@@ -41,7 +41,8 @@ Important constraints:
 - `training.replay.enabled` selects replay-style default task mixtures when no explicit `task_mix` is provided; replay defaults train restoration and imputation before adding translation, two-condition, and partial-full tasks.
 - `training.condition_counts` controls translation and partial-full condition-set sizes; partial-full samples among configured counts that fit the available modalities.
 - `training.restoration_condition_counts` controls restoration/imputation condition-set sizes; the target modality is always included and extra modalities act as clean auxiliary context.
-- `diffusion.validation_examples` controls W&B validation example count and target-modality candidates for diffusion phases; examples use the configured sampler and are logged per active task family.
+- `training.validation.interval_steps` controls step-based validation cadence; `training.validation.max_batches_per_modality` is expanded across configured example modalities and active task families before being passed to Lightning as the validation batch cap.
+- `training.validation.examples` controls W&B validation example count and target-modality candidates for diffusion phases; examples use the configured sampler and are logged per active task family.
 - Tiny and medium diffusion phase recipes use `training.corruptions.*.by_modality` for physiologic restoration/imputation corruptions, and selected entries can define weighted `choices`.
 - `diffusion.condition_dropout` preserves partial-full coverage by moving dropped condition modalities into the target set.
 

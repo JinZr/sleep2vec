@@ -16,7 +16,7 @@
 - Signature: `train_autoencoder(args: argparse.Namespace) -> Path`
 - Purpose and contract: run sleep2wave autoencoder training/validation and write a run directory with checkpoints and config snapshots.
 - Important inputs/outputs: CLI args with config and version name in; run directory path out.
-- Side effects: creates output/checkpoint directories, persists config/args, initializes W&B logger, trains/validates with Lightning, logs validation waveform examples, writes `last.ckpt`.
+- Side effects: creates output/checkpoint directories, persists config/args, initializes W&B logger, trains with step-based capped validation from `training.validation`, logs validation waveform examples, writes `last.ckpt`.
 - Key callers/callees: `main`; callees include `load_sleep2wave_config`, `persist_run_config_and_args`, `Sleep2WaveAutoencoderLightning`, optional `load_sleep2vec2_initialization`.
 - Reuse guidance: use as the autoencoder training entrypoint.
 
@@ -36,7 +36,7 @@
 - Signature: `train_diffusion(args: argparse.Namespace) -> Path`
 - Purpose and contract: run sleep2wave latent diffusion training/validation and write a run directory with checkpoints and config snapshots.
 - Important inputs/outputs: CLI args in; run directory path out.
-- Side effects: seeds Lightning, creates directories, persists config/args, optionally initializes from `training.phase_checkpoint`, initializes W&B logger, trains/validates with Lightning, logs validation waveform examples, writes `last.ckpt`.
+- Side effects: seeds Lightning, creates directories, persists config/args, optionally initializes from `training.phase_checkpoint`, initializes W&B logger, trains with step-based capped validation from `training.validation`, logs validation waveform examples, writes `last.ckpt`.
 - Key callers/callees: `main`; callees include `load_sleep2wave_config`, `Sleep2WaveDiffusionLightning`, optional `load_sleep2vec2_initialization`.
 - Reuse guidance: use as the diffusion training entrypoint.
 

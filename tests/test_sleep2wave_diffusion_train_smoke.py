@@ -20,7 +20,7 @@ import sleep2wave.diffusion.lightning as diffusion_lightning
 from sleep2wave.diffusion.lightning import Sleep2WaveDiffusionLightning
 from sleep2wave.diffusion.tasks import build_generation_task
 from sleep2wave.generative.config import load_sleep2wave_config
-from sleep2wave.train_diffusion import _load_phase_checkpoint, build_dataloader, main
+from sleep2wave.train_diffusion import _limit_val_batches, _load_phase_checkpoint, build_dataloader, main
 from sleep2wave.training.task_sampler import Sleep2WaveTaskSampler
 
 
@@ -93,8 +93,19 @@ def _write_config(
         "auxiliary_restoration_token": True,
         "condition_dropout": 0.15,
     }
+    training = {
+        "phase": 1,
+        "batch_size": 1,
+        "lr": 0.0001,
+        "weight_decay": 0.01,
+        "max_epochs": 1,
+        "gradient_clip_val": 1.0,
+        "task_mix": {"restoration": 1.0},
+        "condition_counts": [1],
+        "replay": {"enabled": False},
+    }
     if validation_examples is not None:
-        diffusion["validation_examples"] = validation_examples
+        training["validation"] = {"examples": validation_examples}
     payload = {
         "recipe": "sleep2wave",
         "stage": "diffusion",
@@ -110,17 +121,7 @@ def _write_config(
             },
         },
         "diffusion": diffusion,
-        "training": {
-            "phase": 1,
-            "batch_size": 1,
-            "lr": 0.0001,
-            "weight_decay": 0.01,
-            "max_epochs": 1,
-            "gradient_clip_val": 1.0,
-            "task_mix": {"restoration": 1.0},
-            "condition_counts": [1],
-            "replay": {"enabled": False},
-        },
+        "training": training,
         "sampler": {"name": "ddim", "steps": 2, "eta": 0.0, "num_samples": 1},
         "export": {"output_dir": str(tmp_path / "outputs")},
     }
@@ -312,6 +313,112 @@ def test_train_diffusion_registers_step_lr_monitor(tmp_path: Path, monkeypatch):
     )
 
     assert lr_monitor in trainer_kwargs["callbacks"]
+    assert trainer_kwargs["val_check_interval"] == 1000
+    assert trainer_kwargs["check_val_every_n_epoch"] is None
+    assert trainer_kwargs["limit_val_batches"] == len(CANONICAL_MODALITIES)
+
+
+def test_diffusion_validation_batch_limit_scales_by_modality_and_task(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(
+        tmp_path,
+        preset_path,
+        autoencoder_ckpt,
+        validation_examples={"num_examples": 1, "modalities": ["eeg", "spo2"]},
+    )
+    payload = yaml.safe_load(config_path.read_text())
+    payload["training"]["phase"] = 3
+    payload["training"]["task_mix"] = {"restoration": 1.0, "translation": 1.0, "two_condition": 1.0}
+    payload["training"]["validation"]["max_batches_per_modality"] = 3
+    config_path.write_text(yaml.safe_dump(payload))
+
+    assert _limit_val_batches(load_sleep2wave_config(config_path)) == 18
+
+
+def test_diffusion_validation_step_rotates_configured_modalities(tmp_path: Path, monkeypatch):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(
+        tmp_path,
+        preset_path,
+        autoencoder_ckpt,
+        validation_examples={"num_examples": 1, "modalities": ["eeg", "spo2"]},
+    )
+    payload = yaml.safe_load(config_path.read_text())
+    payload["training"]["phase"] = 2
+    payload["training"]["task_mix"] = {"translation": 1.0}
+    payload["training"]["validation"]["max_batches_per_modality"] = 1
+    config_path.write_text(yaml.safe_dump(payload))
+    config = load_sleep2wave_config(config_path)
+    loader = build_dataloader(config, num_workers=0, seed=123, split="val")
+    batch = next(iter(loader))
+    model = Sleep2WaveDiffusionLightning(config, seed=123)
+    logged_scalars = {}
+
+    def fake_lightning_log(name, value, **kwargs):
+        logged_scalars[name] = (value, kwargs)
+
+    monkeypatch.setattr(model, "log", fake_lightning_log)
+    monkeypatch.setattr(wandb, "run", None)
+
+    losses = model.validation_step(batch, 0)
+
+    assert losses is not None
+    assert {name for name in logged_scalars if name.startswith("val_") and name.endswith("_mse")} == {"val_eeg_mse"}
+    logged_scalars.clear()
+
+    losses = model.validation_step(batch, 1)
+
+    assert losses is not None
+    assert {name for name in logged_scalars if name.startswith("val_") and name.endswith("_mse")} == {"val_spo2_mse"}
+
+
+def test_diffusion_validation_task_selection_rotates_families_and_falls_back(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(
+        tmp_path,
+        preset_path,
+        autoencoder_ckpt,
+        validation_examples={"num_examples": 1, "modalities": ["eeg", "spo2"]},
+    )
+    payload = yaml.safe_load(config_path.read_text())
+    payload["training"]["phase"] = 3
+    payload["training"]["task_mix"] = {"restoration": 1.0, "translation": 1.0, "two_condition": 1.0}
+    payload["training"]["validation"]["max_batches_per_modality"] = 1
+    config_path.write_text(yaml.safe_dump(payload))
+    config = load_sleep2wave_config(config_path)
+    loader = build_dataloader(config, num_workers=0, seed=123, split="val")
+    batch = next(iter(loader))
+    model = Sleep2WaveDiffusionLightning(config, seed=123)
+
+    expected = [
+        ("restoration", "eeg"),
+        ("restoration", "spo2"),
+        ("translation", "eeg"),
+        ("translation", "spo2"),
+        ("two_condition", "eeg"),
+        ("two_condition", "spo2"),
+    ]
+    for batch_idx, (expected_family, expected_target) in enumerate(expected):
+        selected = model._validation_task_for_batch(batch, batch_idx)
+        assert selected is not None
+        task_family, task = selected
+        assert task_family == expected_family
+        assert expected_target in task.target_modalities
+
+    batch["availability_mask"]["eeg"] = torch.zeros_like(batch["availability_mask"]["eeg"])
+    selected = model._validation_task_for_batch(batch, 0)
+    assert selected is not None
+    _task_family, task = selected
+    assert task.target_modalities == ("spo2",)
+
+    for modality in CANONICAL_MODALITIES:
+        batch["availability_mask"][modality] = torch.zeros_like(batch["availability_mask"][modality])
+    batch["availability_mask"]["ecg"] = torch.ones_like(batch["availability_mask"]["ecg"])
+
+    assert model._validation_task_for_batch(batch, 0) is None
 
 
 def test_diffusion_validation_step_logs_task_examples(tmp_path: Path, monkeypatch):
@@ -350,7 +457,7 @@ def test_diffusion_validation_step_logs_task_examples(tmp_path: Path, monkeypatc
 
     assert "loss" in losses
     assert "val_loss" in logged_scalars
-    assert any(name.startswith("val_") and name.endswith("_mse") for name in logged_scalars)
+    assert {name for name in logged_scalars if name.startswith("val_") and name.endswith("_mse")} == {"val_eeg_mse"}
     assert len(logged_payloads) == 1
     payload, commit = logged_payloads[0]
     assert commit is False

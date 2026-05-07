@@ -166,11 +166,40 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             updated[modality] = corrupted
         return updated
 
-    def _compute_step_losses(self, batch, *, apply_condition_dropout: bool):
+    def _validation_task_for_batch(self, batch, batch_idx: int):
+        validation_cfg = self.config_bundle.training.validation
+        modalities = tuple(validation_cfg.examples.modalities)
+        families = self._active_task_families()
+        if not modalities or not families:
+            return None
+
+        modality_span = len(modalities) * validation_cfg.max_batches_per_modality
+        family = families[(batch_idx // modality_span) % len(families)]
+        modality_index = (batch_idx % modality_span) // validation_cfg.max_batches_per_modality
+        for offset in range(len(modalities)):
+            modality = modalities[(modality_index + offset) % len(modalities)]
+            try:
+                task = self.validation_task_sampler.sample_family(
+                    family,
+                    batch.get("availability_mask"),
+                    target_modalities=[modality],
+                )
+            except ValueError:
+                continue
+            return family, task
+        return None
+
+    def _compute_step_losses(self, batch, *, apply_condition_dropout: bool, batch_idx: int | None = None):
         sampler = self.task_sampler if apply_condition_dropout else self.validation_task_sampler
-        sampled = sampler.sample_with_family(availability_mask=batch.get("availability_mask"))
-        task_family = sampled.task_family
-        task = sampled.task
+        if apply_condition_dropout:
+            sampled = sampler.sample_with_family(availability_mask=batch.get("availability_mask"))
+            task_family = sampled.task_family
+            task = sampled.task
+        else:
+            selected = self._validation_task_for_batch(batch, 0 if batch_idx is None else batch_idx)
+            if selected is None:
+                return None
+            task_family, task = selected
         if apply_condition_dropout:
             task = self._apply_condition_dropout(task)
         if self.autoencoder is None:
@@ -211,7 +240,10 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
         return losses["loss"]
 
     def validation_step(self, batch, batch_idx):
-        losses, task_family, _task = self._compute_step_losses(batch, apply_condition_dropout=False)
+        step_losses = self._compute_step_losses(batch, apply_condition_dropout=False, batch_idx=batch_idx)
+        if step_losses is None:
+            return None
+        losses, task_family, _task = step_losses
         batch_size = next(iter(batch["clean_signals"].values())).shape[0]
         self.log("val_loss", losses["loss"], prog_bar=True, on_step=False, on_epoch=True, batch_size=batch_size)
         self.log(
@@ -261,10 +293,11 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             return
         diffusion_cfg = self.config_bundle.diffusion
         sampler_cfg = self.config_bundle.sampler
-        if diffusion_cfg is None or diffusion_cfg.validation_examples is None or sampler_cfg is None:
+        training_cfg = self.config_bundle.training
+        if diffusion_cfg is None or sampler_cfg is None or training_cfg is None:
             return
 
-        example_cfg = diffusion_cfg.validation_examples
+        example_cfg = training_cfg.validation.examples
         batch_size = next(iter(batch["clean_signals"].values())).shape[0]
         example_count = min(example_cfg.num_examples, batch_size)
         metadata = batch.get("metadata", {})

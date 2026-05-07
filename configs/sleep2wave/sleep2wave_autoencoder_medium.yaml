@@ -41,9 +41,6 @@ autoencoder:
     waveform_l1_weight: 1.0
     waveform_l2_weight: 0.1
     spectral_weight: 0.1
-  validation_examples:
-    num_examples: 5
-    modalities: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
 
 training:
   phase: 0
@@ -52,6 +49,12 @@ training:
   weight_decay: 0.01
   max_epochs: 50
   gradient_clip_val: 1.0
+  validation:
+    interval_steps: 1000
+    max_batches_per_modality: 5
+    examples:
+      num_examples: 5
+      modalities: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
 
 export:
   output_dir: outputs/sleep2wave_autoencoder_medium
