@@ -19,9 +19,10 @@ def test_render_pair_acc_heatmap_tilts_x_labels(render_heatmap):
         plt.close(fig)
 
 
-def test_render_pair_acc_heatmap_draws_full_axis_title_boxes_clear_of_long_labels():
+@pytest.mark.parametrize("render_heatmap", [render_sleep_pair_acc_heatmap, render_wrist_pair_acc_heatmap])
+def test_render_pair_acc_heatmap_draws_full_axis_title_boxes_clear_of_long_labels(render_heatmap):
     matrix = np.zeros((2, 2), dtype=np.float32)
-    fig = render_sleep_pair_acc_heatmap(matrix, ["very-long-heartbeat-label", "very-long-respiration-label"])
+    fig = render_heatmap(matrix, ["very-long-heartbeat-label", "very-long-respiration-label"])
 
     try:
         ax = fig.axes[0]
