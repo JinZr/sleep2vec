@@ -191,3 +191,50 @@ def test_train_autoencoder_smoke_writes_artifacts(tmp_path: Path, monkeypatch):
     assert (run_dir / "config.yaml").exists()
     assert (run_dir / "cli_args.yaml").exists()
     assert (run_dir / "checkpoints" / "last.ckpt").exists()
+
+
+def test_train_autoencoder_registers_step_lr_monitor(tmp_path: Path, monkeypatch):
+    import sleep2wave.train_autoencoder as train_autoencoder
+
+    preset_path = _write_synthetic_preset(tmp_path)
+    config_path = _write_config(tmp_path, preset_path)
+    trainer_kwargs = {}
+    lr_monitor = object()
+
+    class DummyTrainer:
+        def __init__(self, **kwargs):
+            trainer_kwargs.update(kwargs)
+
+        def fit(self, *args, **kwargs):
+            pass
+
+        def save_checkpoint(self, path):
+            Path(path).write_text("checkpoint")
+
+    monkeypatch.setattr(train_autoencoder, "WandbLogger", lambda *args, **kwargs: object())
+    monkeypatch.setattr(train_autoencoder, "ModelCheckpoint", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        train_autoencoder,
+        "LearningRateMonitor",
+        lambda *args, **kwargs: lr_monitor if kwargs == {"logging_interval": "step"} else None,
+    )
+    monkeypatch.setattr(train_autoencoder.pl, "Trainer", DummyTrainer)
+
+    train_autoencoder.main(
+        [
+            "--config",
+            str(config_path),
+            "--version-name",
+            "lr-monitor",
+            "--accelerator",
+            "cpu",
+            "--devices",
+            "1",
+            "--max-steps",
+            "0",
+            "--precision",
+            "32",
+        ]
+    )
+
+    assert lr_monitor in trainer_kwargs["callbacks"]

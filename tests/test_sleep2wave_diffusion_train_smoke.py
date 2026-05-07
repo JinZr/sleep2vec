@@ -266,6 +266,54 @@ def test_train_diffusion_smoke_writes_artifacts(tmp_path: Path, monkeypatch):
     assert (run_dir / "checkpoints" / "last.ckpt").exists()
 
 
+def test_train_diffusion_registers_step_lr_monitor(tmp_path: Path, monkeypatch):
+    import sleep2wave.train_diffusion as train_diffusion
+
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    trainer_kwargs = {}
+    lr_monitor = object()
+
+    class DummyTrainer:
+        def __init__(self, **kwargs):
+            trainer_kwargs.update(kwargs)
+
+        def fit(self, *args, **kwargs):
+            pass
+
+        def save_checkpoint(self, path):
+            Path(path).write_text("checkpoint")
+
+    monkeypatch.setattr(train_diffusion, "WandbLogger", lambda *args, **kwargs: object())
+    monkeypatch.setattr(train_diffusion, "ModelCheckpoint", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        train_diffusion,
+        "LearningRateMonitor",
+        lambda *args, **kwargs: lr_monitor if kwargs == {"logging_interval": "step"} else None,
+    )
+    monkeypatch.setattr(train_diffusion.pl, "Trainer", DummyTrainer)
+
+    train_diffusion.main(
+        [
+            "--config",
+            str(config_path),
+            "--version-name",
+            "lr-monitor",
+            "--accelerator",
+            "cpu",
+            "--devices",
+            "1",
+            "--max-steps",
+            "0",
+            "--precision",
+            "32",
+        ]
+    )
+
+    assert lr_monitor in trainer_kwargs["callbacks"]
+
+
 def test_diffusion_validation_step_logs_task_examples(tmp_path: Path, monkeypatch):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)

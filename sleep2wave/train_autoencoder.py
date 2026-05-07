@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -102,6 +102,7 @@ def train_autoencoder(args: argparse.Namespace) -> Path:
         every_n_epochs=1,
         save_on_train_epoch_end=True,
     )
+    lr_monitor = LearningRateMonitor(logging_interval="step")
     trainer = pl.Trainer(
         accelerator=args.accelerator,
         devices=_parse_devices(args.devices),
@@ -110,7 +111,7 @@ def train_autoencoder(args: argparse.Namespace) -> Path:
         max_steps=args.max_steps if args.max_steps is not None else -1,
         gradient_clip_val=config.training.gradient_clip_val,
         logger=logger,
-        callbacks=[checkpoint_callback],
+        callbacks=[checkpoint_callback, lr_monitor],
         log_every_n_steps=1,
         num_sanity_val_steps=0,
     )
