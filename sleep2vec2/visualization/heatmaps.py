@@ -3,6 +3,7 @@ from __future__ import annotations
 import typing as t
 
 import matplotlib as mpl
+from matplotlib.patches import FancyBboxPatch
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -147,4 +148,82 @@ def render_matrix_heatmap(
     return fig
 
 
-__all__ = ["render_matrix_heatmap"]
+def add_axis_title_boxes(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    *,
+    xlabel: str,
+    ylabel: str,
+    x_box_height: float = 0.045,
+    y_box_width: float = 0.045,
+    label_gap: float = 0.018,
+    figure_margin: float = 0.018,
+) -> None:
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+
+    def _measure_positions() -> tuple[mpl.transforms.Bbox, float, float]:
+        bbox = ax.get_position()
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        x_tick_boxes = [
+            label.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
+            for label in ax.get_xticklabels()
+            if label.get_visible()
+        ]
+        y_tick_boxes = [
+            label.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
+            for label in ax.get_yticklabels()
+            if label.get_visible()
+        ]
+        x_tick_bottom = min((box.y0 for box in x_tick_boxes), default=bbox.y0)
+        y_tick_left = min((box.x0 for box in y_tick_boxes), default=bbox.x0)
+        return bbox, x_tick_bottom - x_box_height - label_gap, y_tick_left - y_box_width - label_gap
+
+    for _ in range(3):
+        _, x_box_y, y_box_x = _measure_positions()
+        needed_bottom = max(0.0, figure_margin - x_box_y)
+        needed_left = max(0.0, figure_margin - y_box_x)
+        if needed_bottom <= 1e-4 and needed_left <= 1e-4:
+            break
+        fig.subplots_adjust(
+            left=min(fig.subplotpars.left + needed_left, fig.subplotpars.right - 0.08),
+            bottom=min(fig.subplotpars.bottom + needed_bottom, fig.subplotpars.top - 0.08),
+        )
+
+    bbox, x_box_y, y_box_x = _measure_positions()
+    box_style = {
+        "boxstyle": "round,pad=0.008,rounding_size=0.012",
+        "facecolor": "none",
+        "edgecolor": _TEXT_COLOR,
+        "linestyle": (0, (3, 3)),
+        "linewidth": 1.0,
+        "transform": fig.transFigure,
+        "clip_on": False,
+    }
+    fig.patches.extend(
+        [
+            FancyBboxPatch((bbox.x0, x_box_y), bbox.width, x_box_height, **box_style),
+            FancyBboxPatch((y_box_x, bbox.y0), y_box_width, bbox.height, **box_style),
+        ]
+    )
+    fig.text(
+        bbox.x0 + bbox.width / 2,
+        x_box_y + x_box_height / 2,
+        xlabel,
+        ha="center",
+        va="center",
+        clip_on=False,
+    )
+    fig.text(
+        y_box_x + y_box_width / 2,
+        bbox.y0 + bbox.height / 2,
+        ylabel,
+        ha="center",
+        va="center",
+        rotation=90,
+        clip_on=False,
+    )
+
+
+__all__ = ["add_axis_title_boxes", "render_matrix_heatmap"]
