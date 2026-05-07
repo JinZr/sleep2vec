@@ -20,8 +20,7 @@ python -m sleep2wave.train_autoencoder \
   --version-name ae-medium-v1 \
   --accelerator gpu \
   --devices 4,5 \
-  --precision 16 \
-  --num-workers 8
+  --num-workers 16
 
 ln -sf "$(pwd)/outputs/sleep2wave_autoencoder_medium/ae-medium-v1/checkpoints/last.ckpt" \
   checkpoints/sleep2wave_autoencoder_medium.ckpt
@@ -32,7 +31,6 @@ for phase in 1 2 3 4 5; do
     --version-name phase${phase} \
     --accelerator gpu \
     --devices 4,5 \
-    --precision 16 \
-    --num-workers 8 \
+    --num-workers 16 \
     --seed 0
 done
