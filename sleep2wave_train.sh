@@ -19,7 +19,7 @@ python -m sleep2wave.train_autoencoder \
   --config configs/sleep2wave/sleep2wave_autoencoder_medium.yaml \
   --version-name ae-medium-v1 \
   --accelerator gpu \
-  --devices 0,1 \
+  --devices 4,5 \
   --precision 16 \
   --num-workers 8
 
@@ -31,7 +31,7 @@ for phase in 1 2 3 4 5; do
     --config configs/sleep2wave/sleep2wave_diffusion_medium_phase${phase}.yaml \
     --version-name phase${phase} \
     --accelerator gpu \
-    --devices 0,1 \
+    --devices 4,5 \
     --precision 16 \
     --num-workers 8 \
     --seed 0
