@@ -32,7 +32,7 @@ diffusion:
 training:
   phase: 5
   phase_checkpoint: outputs/sleep2wave_diffusion_medium_phase4/phase4/checkpoints/last.ckpt
-  batch_size: 8
+  batch_size: 128
   lr: 0.00001
   weight_decay: 0.01
   max_epochs: 160
