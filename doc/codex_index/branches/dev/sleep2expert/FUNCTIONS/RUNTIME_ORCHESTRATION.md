@@ -103,12 +103,12 @@
 
 - File: `sleep2expert/routing_analysis.py`
 - Signature: `run_routing_analysis(args) -> list[dict[str, Any]]`
-- Purpose and contract: export sparse-MoE routing summaries from downstream evaluation batches to a stable CSV schema without running Lightning test reduction or adding plotting/UI behavior.
-- Important inputs/outputs: normalized CLI namespace with finetune config, concrete checkpoint path or `--pretrained-only` backbone path, label name, eval split, optional analysis tag, and output path in; aggregated routing rows out and CSV written to `args.output`.
-- Side effects: loads checkpoint weights unless `--pretrained-only` is set, iterates the inference loader, runs `Sleep2vecFinetuning._get_eval_model()(batch)` in eval mode, and writes a CSV with appended `analysis_tag` and `split` columns.
+- Purpose and contract: export sparse-MoE routing summaries from downstream evaluation batches to a stable CSV schema, with optional derived per-modality heatmap PNGs and W&B image logging.
+- Important inputs/outputs: normalized CLI namespace with finetune config, concrete checkpoint path or `--pretrained-only` backbone path, label name, eval split, optional analysis tag, output path, optional heatmap output directory, and optional W&B settings in; aggregated routing rows out and CSV written to `args.output`.
+- Side effects: loads checkpoint weights unless `--pretrained-only` is set, iterates the inference loader, runs `Sleep2vecFinetuning._get_eval_model()(batch)` in eval mode, writes a CSV with appended `analysis_tag` and `split` columns, and may write/log heatmap images.
 - Key callers/callees: called from `python -m sleep2expert.routing_analysis`; calls `apply_finetune_config`, `sleep2expert.infer._build_inference_loader`, `Sleep2vecFinetuning`, `_get_eval_model`, `load_checkpoint`, `select_checkpoints`, `average_checkpoints`, and `build_routing_rows`.
-- Reuse guidance: use this for `sleep2expert` PHASE-MoE route usage, route-collapse, and site/source shortcut exports.
-- Duplication risk notes: this is the package-local route-export surface; do not create a separate token-dump, plotting, or metrics path for the same `last_moe_aux` contract.
+- Reuse guidance: use this for `sleep2expert` PHASE-MoE route usage, route-collapse, site/source shortcut exports, and derived routing usage heatmaps.
+- Duplication risk notes: this is the package-local route-export surface; do not create a separate token-dump or metrics path for the same `last_moe_aux` contract.
 
 ## `sleep2expert.model_stats` helper family
 

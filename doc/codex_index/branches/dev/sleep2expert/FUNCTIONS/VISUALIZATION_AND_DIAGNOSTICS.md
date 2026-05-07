@@ -9,7 +9,29 @@
 - Side effects: none.
 - Key callers/callees: caller is `run_routing_analysis`; callees include local mask, label, token-axis alignment, entropy, and sample-context helpers.
 - Reuse guidance: reuse this helper for route-collapse, expert-usage, modality, label, and site/source diagnostic tables.
-- Duplication risk notes: keep routing analysis as CSV export; do not add a parallel plotting system or token-level dump path unless a later task explicitly needs it.
+- Duplication risk notes: keep routing analysis on the existing summary-row contract; optional heatmaps should be derived from these rows rather than adding a parallel token-dump path.
+
+## `sleep2expert.routing_analysis.build_routing_usage_matrices`
+
+- File: `sleep2expert/routing_analysis.py`
+- Signature: `build_routing_usage_matrices(rows, moe_cfg) -> dict[str, np.ndarray]`
+- Purpose and contract: aggregate routing CSV-style rows into one expert-usage-share matrix per modality, with rows ordered by configured MoE layer and columns ordered by expert id.
+- Important inputs/outputs: routing rows and MoE config in; modality-to-matrix mapping out. Values are row-normalized usage shares over allowed experts, allowed-but-unused experts are zero, and unavailable experts are `NaN` for masked rendering.
+- Side effects: none.
+- Key callers/callees: caller is `write_routing_heatmaps`; callee is `_allowed_experts_for_modality`.
+- Reuse guidance: use this when deriving MoE routing usage heatmaps from exported rows.
+- Duplication risk notes: do not recompute routing usage from raw `last_moe_aux` in plotting code.
+
+## `sleep2expert.routing_analysis.write_routing_heatmaps`
+
+- File: `sleep2expert/routing_analysis.py`
+- Signature: `write_routing_heatmaps(rows, moe_cfg, output_dir, *, split, analysis_tag, log_to_wandb=False) -> dict[str, Path]`
+- Purpose and contract: render and save per-modality MoE routing usage heatmap PNGs, optionally logging the same images to W&B.
+- Important inputs/outputs: routing rows, MoE config, output directory, split/tag metadata in; written PNG paths keyed by modality out.
+- Side effects: creates the output directory, writes PNG files, and may log W&B images.
+- Key callers/callees: caller is `run_routing_analysis`; callees include `build_routing_usage_matrices` and `sleep2expert.visualization.routing_heatmap.render_routing_usage_heatmap`.
+- Reuse guidance: use this as the only routing heatmap output path.
+- Duplication risk notes: keep W&B keys and file naming centralized here.
 
 ## `sleep2vec.diagnostics.attach_diagnostics`
 
@@ -120,6 +142,17 @@
 - Key callers/callees: caller is `Sleep2vecFinetuning._log_layer_mix_weights`.
 - Reuse guidance: use for layer-mix visualization rather than open-coding heatmaps.
 - Duplication risk notes: shape validation is part of the tested contract.
+
+## `sleep2vec.visualization.routing_heatmap.render_routing_usage_heatmap`
+
+- File: `sleep2vec/visualization/routing_heatmap.py` with package-local mirrors in `sleep2vec2/` and `sleep2expert/`
+- Signature: `render_routing_usage_heatmap(matrix, layer_labels, expert_labels, *, title, colorbar_label="Expert usage share") -> plt.Figure`
+- Purpose and contract: render white-background OpenAI-style MoE routing usage heatmaps with fixed `0..1` color range and gray masked cells for unavailable experts.
+- Important inputs/outputs: matrix plus row/column labels in; matplotlib figure out. Matrix shape must match the labels, and `NaN` cells are rendered as masked unavailable expert cells.
+- Side effects: none beyond figure creation.
+- Key callers/callees: caller is `sleep2expert.routing_analysis.write_routing_heatmaps`; callee uses package-local visualization theme title/text styling, colors, colormap, and font selection.
+- Reuse guidance: use this renderer for MoE routing heatmaps in each namespace instead of adapting confusion-matrix or layer-mix heatmaps.
+- Duplication risk notes: preserve package-local copies for standalone variant boundaries.
 
 ## `sleep2vec.visualization.layer_mix.build_layer_mix_rows`
 

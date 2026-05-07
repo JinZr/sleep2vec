@@ -29,7 +29,7 @@ This page answers the practical question: when you need to add or change behavio
 | Missing-channel training batches | `PairFirstBatchSampler` | Canonical train-time sampler for pair-first missing-channel pretraining/adaptation | Ad hoc pair scheduling loops |
 | Missing-channel homogeneous eval/train fallback | `AvailableChannelsBucketBatchSampler` | Canonical bucketed sampler when pair-first is not active | New bucket logic in entrypoints |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
-| MoE routing export | `sleep2expert.routing_analysis.run_routing_analysis` and `build_routing_rows` | Reuses package-local finetune config, inference loader, checkpoint helpers or pretrained-backbone init, downstream eval model, and `last_moe_aux` while writing a stable CSV schema with optional analysis tags | Plot UIs, duplicate eval loops, or token-level dump scripts |
+| MoE routing export | `sleep2expert.routing_analysis.run_routing_analysis` and `build_routing_rows` | Reuses package-local finetune config, inference loader, checkpoint helpers or pretrained-backbone init, downstream eval model, and `last_moe_aux` while writing a stable CSV schema with optional analysis tags and derived heatmaps | Duplicate eval loops or token-level dump scripts |
 | sleep2expert dense-to-MoE init | `sleep2expert.checkpoints.initialize_moe_from_dense_if_possible` | Expands compatible dense standalone RoFormer FFN tensors into MoE expert keys before `load_state_dict`, and fails fast when target MoE expert/layer-norm tensors cannot be loaded or cloned safely | Legacy/HF RoFormer key translation or one-off checkpoint surgery |
 | MoE active-compute accounting | `sleep2expert.model_stats` | Centralizes total/trainable parameter counts, active FFN parameter/FLOP estimates, and expert usage summaries for PHASE-MoE logs and tables | One-off formulas in pretrain, notebooks, or routing scripts |
 | Generic downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Single metric reducer for classification, regression, multilabel AHI pointwise, and stage remap outputs | Per-stage custom metric calculations |
@@ -74,7 +74,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Keep trainer, callback, wandb, checkpoint, and phase-transition behavior in `pretrain.py`, `adapt.py`, `finetune.py`, `infer.py`, or the Lightning modules.
 - Reuse `persist_run_config_and_args`, `save_result_csv`, and checkpoint helpers instead of duplicating serialization and output logic.
-- For `sleep2expert` MoE route diagnostics, reuse `sleep2expert.routing_analysis` instead of adding a second routing export or visualization-specific data path.
+- For `sleep2expert` MoE route diagnostics and usage heatmaps, reuse `sleep2expert.routing_analysis` instead of adding a second routing export or visualization-specific data path.
 
 ### If you are changing preprocessing or config policy
 

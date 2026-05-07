@@ -23,6 +23,10 @@ _PRIMARY_MID = "#7889D1"
 _PRIMARY_LIGHT = "#AEB9EA"
 _PRIMARY_PALE = "#D8DFF5"
 
+_ROUTING_BG = "#FFFFFF"
+_ROUTING_TEXT = "#171717"
+_ROUTING_MASK = "#9EA19A"
+
 _TITLE_PAD = 16
 _LABEL_PAD = 12
 _TICK_PAD = 8
@@ -31,6 +35,12 @@ _OPENAI_BLUE_CMAP = LinearSegmentedColormap.from_list(
     "openai_like_eval_blues",
     ["#F7F8FC", "#E2E7F7", "#B7C2ED", "#7B8CD1", "#43508F"],
 )
+
+
+def build_routing_usage_cmap() -> mpl.colors.Colormap:
+    cmap = mpl.colormaps["viridis"].copy()
+    cmap.set_bad(_ROUTING_MASK)
+    return cmap
 
 
 @lru_cache(maxsize=1)

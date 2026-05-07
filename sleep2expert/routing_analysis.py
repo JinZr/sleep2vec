@@ -7,8 +7,11 @@ from pathlib import Path
 import sys
 import typing as t
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from tqdm import tqdm
+import wandb
 
 # Make sure the repository root is importable when running this file directly.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -20,6 +23,7 @@ from sleep2expert.common import apply_finetune_config, remap_stage_labels
 from sleep2expert.infer import _build_inference_loader
 from sleep2expert.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2expert.utils import move_to_device
+from sleep2expert.visualization.routing_heatmap import render_routing_usage_heatmap
 
 ROUTING_CSV_COLUMNS = [
     "sample_id",
@@ -41,50 +45,69 @@ ROUTING_CSV_COLUMNS = [
 
 
 def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
+    wandb_run = None
+    created_wandb_run = False
     pretrained_only = bool(getattr(args, "pretrained_only", False))
-    if pretrained_only:
-        if getattr(args, "ckpt_path", None):
-            raise ValueError("--pretrained-only cannot be combined with --ckpt-path.")
-        pretrained_backbone_path = getattr(args, "pretrained_backbone_path", None)
-        if not pretrained_backbone_path:
-            raise ValueError("--pretrained-only requires --pretrained-backbone-path.")
-        if not Path(pretrained_backbone_path).exists():
-            raise FileNotFoundError(f"Pretrained backbone checkpoint not found: {pretrained_backbone_path}")
-    elif not getattr(args, "ckpt_path", None):
-        raise ValueError("Routing analysis requires --ckpt-path unless --pretrained-only is set.")
+    try:
+        if pretrained_only:
+            if getattr(args, "ckpt_path", None):
+                raise ValueError("--pretrained-only cannot be combined with --ckpt-path.")
+            pretrained_backbone_path = getattr(args, "pretrained_backbone_path", None)
+            if not pretrained_backbone_path:
+                raise ValueError("--pretrained-only requires --pretrained-backbone-path.")
+            if not Path(pretrained_backbone_path).exists():
+                raise FileNotFoundError(f"Pretrained backbone checkpoint not found: {pretrained_backbone_path}")
+        elif not getattr(args, "ckpt_path", None):
+            raise ValueError("Routing analysis requires --ckpt-path unless --pretrained-only is set.")
 
-    config_bundle, model_cfg = apply_finetune_config(args)
-    moe_cfg = getattr(model_cfg.backbone, "moe", None)
-    if moe_cfg is None or not getattr(moe_cfg, "enabled", False):
-        raise ValueError("Routing analysis requires model.backbone.moe.enabled=true.")
+        config_bundle, model_cfg = apply_finetune_config(args)
+        moe_cfg = getattr(model_cfg.backbone, "moe", None)
+        if moe_cfg is None or not getattr(moe_cfg, "enabled", False):
+            raise ValueError("Routing analysis requires model.backbone.moe.enabled=true.")
 
-    dataloader = _build_inference_loader(args)
-    module = Sleep2vecFinetuning(
-        args,
-        model_cfg,
-        finetune_config=config_bundle.finetune,
-        averaging_config=config_bundle.averaging,
-    )
-    if not pretrained_only:
-        _load_analysis_weights(module, args)
-    module = module.to(torch.device(args.device))
-    module.eval()
+        wandb_run, created_wandb_run = _init_wandb(args)
+        dataloader = _build_inference_loader(args)
+        module = Sleep2vecFinetuning(
+            args,
+            model_cfg,
+            finetune_config=config_bundle.finetune,
+            averaging_config=config_bundle.averaging,
+        )
+        if not pretrained_only:
+            _load_analysis_weights(module, args)
+        module = module.to(torch.device(args.device))
+        module.eval()
 
-    expert_groups = _build_expert_group_lookup(moe_cfg)
-    rows: list[dict[str, t.Any]] = []
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc=f"Exporting routing ({args.eval_split})", unit="batch"):
-            batch = move_to_device(batch, args.device)
-            eval_model = module._get_eval_model()
-            eval_model(batch)
-            moe_aux = getattr(eval_model.backbone, "last_moe_aux", None)
-            if not moe_aux:
-                raise ValueError("MoE routing analysis expected backbone.last_moe_aux after downstream eval forward.")
-            rows.extend(build_routing_rows(moe_aux, batch, args, expert_groups))
+        expert_groups = _build_expert_group_lookup(moe_cfg)
+        rows: list[dict[str, t.Any]] = []
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc=f"Exporting routing ({args.eval_split})", unit="batch"):
+                batch = move_to_device(batch, args.device)
+                eval_model = module._get_eval_model()
+                eval_model(batch)
+                moe_aux = getattr(eval_model.backbone, "last_moe_aux", None)
+                if not moe_aux:
+                    raise ValueError(
+                        "MoE routing analysis expected backbone.last_moe_aux after downstream eval forward."
+                    )
+                rows.extend(build_routing_rows(moe_aux, batch, args, expert_groups))
 
-    _write_rows(rows, Path(args.output))
-    logging.info("Wrote %d routing rows to %s", len(rows), args.output)
-    return rows
+        _write_rows(rows, Path(args.output))
+        logging.info("Wrote %d routing rows to %s", len(rows), args.output)
+        heatmap_output_dir = getattr(args, "heatmap_output_dir", None)
+        if heatmap_output_dir is not None:
+            write_routing_heatmaps(
+                rows,
+                moe_cfg,
+                Path(heatmap_output_dir),
+                split=getattr(args, "eval_split", ""),
+                analysis_tag=getattr(args, "analysis_tag", ""),
+                log_to_wandb=wandb_run is not None,
+            )
+        return rows
+    finally:
+        if created_wandb_run:
+            wandb.finish()
 
 
 def build_routing_rows(
@@ -241,6 +264,137 @@ def _build_expert_group_lookup(moe_cfg) -> dict[int, str]:
         for expert_id in expert_ids:
             names_by_expert.setdefault(int(expert_id), []).append(str(group_name))
     return {expert_id: "|".join(sorted(group_names)) for expert_id, group_names in names_by_expert.items()}
+
+
+def build_routing_usage_matrices(rows: t.Sequence[dict[str, t.Any]], moe_cfg) -> dict[str, np.ndarray]:
+    layer_ids = [int(layer_idx) for layer_idx in getattr(moe_cfg, "layer_indices", [])]
+    num_experts = int(getattr(moe_cfg, "num_experts", 0))
+    if not layer_ids or num_experts <= 0:
+        return {}
+
+    modalities = sorted({str(row.get("modality", "")) for row in rows if str(row.get("modality", ""))})
+    layer_to_row = {layer_idx: row_idx for row_idx, layer_idx in enumerate(layer_ids)}
+    matrices: dict[str, np.ndarray] = {}
+    for modality in modalities:
+        allowed_experts = _allowed_experts_for_modality(moe_cfg, modality, num_experts=num_experts)
+        matrix = np.full((len(layer_ids), num_experts), np.nan, dtype=np.float32)
+        for expert_id in allowed_experts:
+            matrix[:, expert_id] = 0.0
+        matrices[modality] = matrix
+
+    for row in rows:
+        modality = str(row.get("modality", ""))
+        matrix = matrices.get(modality)
+        if matrix is None:
+            continue
+        try:
+            layer_idx = int(row.get("layer_idx", ""))
+            expert_id = int(row.get("expert_id", ""))
+            usage_count = float(row.get("usage_count", 0))
+        except (TypeError, ValueError):
+            continue
+        if expert_id < 0 or expert_id >= num_experts or layer_idx not in layer_to_row:
+            continue
+        row_idx = layer_to_row[layer_idx]
+        if np.isnan(matrix[row_idx, expert_id]):
+            continue
+        matrix[row_idx, expert_id] += usage_count
+
+    for matrix in matrices.values():
+        for row_idx in range(matrix.shape[0]):
+            row_total = float(np.nansum(matrix[row_idx]))
+            if row_total > 0:
+                matrix[row_idx] = matrix[row_idx] / row_total
+    return matrices
+
+
+def write_routing_heatmaps(
+    rows: t.Sequence[dict[str, t.Any]],
+    moe_cfg,
+    output_dir: Path,
+    *,
+    split: str,
+    analysis_tag: str,
+    log_to_wandb: bool = False,
+) -> dict[str, Path]:
+    matrices = build_routing_usage_matrices(rows, moe_cfg)
+    if not matrices:
+        return {}
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    layer_labels = [str(layer_idx) for layer_idx in getattr(moe_cfg, "layer_indices", [])]
+    expert_labels = [str(expert_id) for expert_id in range(int(getattr(moe_cfg, "num_experts", 0)))]
+    payload: dict[str, t.Any] = {}
+    written_paths: dict[str, Path] = {}
+    for modality, matrix in matrices.items():
+        title = _routing_heatmap_title(modality, split=split, analysis_tag=analysis_tag)
+        fig = render_routing_usage_heatmap(matrix, layer_labels, expert_labels, title=title)
+        path = output_dir / f"routing_heatmap_{modality}.png"
+        fig.savefig(path, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
+        written_paths[modality] = path
+        if log_to_wandb:
+            payload[f"routing_heatmap/{modality}"] = wandb.Image(str(path))
+        plt.close(fig)
+
+    if payload:
+        wandb.log(payload, commit=False)
+    logging.info("Wrote %d routing heatmaps to %s", len(written_paths), output_dir)
+    return written_paths
+
+
+def _allowed_experts_for_modality(moe_cfg, modality: str, *, num_experts: int) -> set[int]:
+    if not getattr(moe_cfg, "use_modality_group_mask", False):
+        return set(range(num_experts))
+
+    expert_groups = getattr(moe_cfg, "expert_groups", {})
+    modality_to_groups = getattr(moe_cfg, "modality_to_groups", {})
+    allowed: set[int] = set()
+    for group_name in modality_to_groups.get(modality, []):
+        allowed.update(int(expert_id) for expert_id in expert_groups.get(group_name, []))
+    return {expert_id for expert_id in allowed if 0 <= expert_id < num_experts}
+
+
+def _routing_heatmap_title(modality: str, *, split: str, analysis_tag: str) -> str:
+    suffix_parts = [value for value in (split, analysis_tag) if value]
+    suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
+    return f"MoE routing usage: {modality}{suffix}"
+
+
+def _init_wandb(args: argparse.Namespace):
+    if not getattr(args, "wandb", False):
+        return None, False
+    if getattr(wandb, "run", None) is not None:
+        return wandb.run, False
+
+    output_path = Path(getattr(args, "output", "routing"))
+    init_kwargs = {
+        "project": getattr(args, "wandb_project", None) or "sleep2expert-routing-analysis",
+        "name": getattr(args, "wandb_name", None)
+        or f"routing-{getattr(args, 'eval_split', 'test')}-{output_path.stem}",
+        "entity": getattr(args, "wandb_entity", None),
+        "group": getattr(args, "wandb_group", None),
+        "id": getattr(args, "wandb_id", None),
+        "resume": "allow" if getattr(args, "wandb_id", None) else None,
+        "mode": getattr(args, "wandb_mode", None),
+        "config": {
+            "config": str(getattr(args, "config", "")),
+            "ckpt_path": getattr(args, "ckpt_path", None),
+            "pretrained_only": bool(getattr(args, "pretrained_only", False)),
+            "pretrained_backbone_path": getattr(args, "pretrained_backbone_path", None),
+            "label_name": getattr(args, "label_name", None),
+            "eval_split": getattr(args, "eval_split", None),
+            "analysis_tag": getattr(args, "analysis_tag", ""),
+            "output": str(output_path),
+            "heatmap_output_dir": (
+                str(getattr(args, "heatmap_output_dir"))
+                if getattr(args, "heatmap_output_dir", None) is not None
+                else None
+            ),
+            "avg_ckpts": getattr(args, "avg_ckpts", None),
+        },
+    }
+    init_kwargs = {key: value for key, value in init_kwargs.items() if value is not None}
+    return wandb.init(**init_kwargs), True
 
 
 def _valid_attention_mask(attention_mask, router_probs: torch.Tensor, batch: dict[str, t.Any]) -> torch.Tensor:
@@ -428,6 +582,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--override-dataset-names", type=str, nargs="+", default=None)
     parser.add_argument("--analysis-tag", type=str, default="")
     parser.add_argument(
+        "--heatmap-output-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for per-modality MoE routing usage heatmap PNGs.",
+    )
+    parser.add_argument(
         "--pretrained-only",
         action="store_true",
         help="Export routing from the pretrained backbone without loading a downstream checkpoint.",
@@ -436,6 +596,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--avg-ckpt-dir", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=4523)
     parser.add_argument("--pretrained-backbone-path", type=str, default=None)
+    parser.add_argument("--wandb", action="store_true", help="Enable W&B logging for routing heatmaps.")
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default="sleep2expert-routing-analysis",
+        help="W&B project name for routing analysis.",
+    )
+    parser.add_argument("--wandb-name", type=str, default=None, help="W&B run name.")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="W&B entity/team.")
+    parser.add_argument("--wandb-group", type=str, default=None, help="W&B group name.")
+    parser.add_argument("--wandb-id", type=str, default=None, help="W&B run id (for resume).")
+    parser.add_argument(
+        "--wandb-mode",
+        type=str,
+        default=None,
+        choices=["online", "offline", "disabled"],
+        help="W&B mode override (online/offline/disabled).",
+    )
     args = parser.parse_args()
 
     # Sleep2vecFinetuning expects optimizer fields on args, but routing export never trains or builds an optimizer.
