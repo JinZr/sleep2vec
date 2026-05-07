@@ -35,11 +35,21 @@
 
 - File: `sleep2wave/autoencoders/lightning.py`
 - Signature: `Sleep2WaveAutoencoderLightning(config: Sleep2WaveConfig)`
-- Purpose and contract: Lightning wrapper for autoencoder training, checkpoint config persistence, optimizer grouping, and train-step logging.
-- Important inputs/outputs: typed autoencoder-stage config in; training loss out.
-- Side effects: logs metrics and writes config into checkpoints.
+- Purpose and contract: Lightning wrapper for autoencoder training/validation, checkpoint config persistence, optimizer grouping, train/val loss logging, and validation waveform example logging for available sample/modality pairs.
+- Important inputs/outputs: typed autoencoder-stage config in; train loss or validation losses out.
+- Side effects: logs metrics and W&B validation example images, and writes config into checkpoints.
 - Key callers/callees: `train_autoencoder.train_autoencoder`.
 - Reuse guidance: use for autoencoder training; keep trainer wiring in `train_autoencoder.py`.
+
+## `sleep2wave.visualization.downstream_eval_plots.render_waveform_example_plot`
+
+- File: `sleep2wave/visualization/downstream_eval_plots.py`
+- Signature: `render_waveform_example_plot(clean, generated, *, sample_rate_hz: int, title: str, generated_label: str, observed=None) -> plt.Figure`
+- Purpose and contract: render clean/reference waveform overlays for validation examples using the same downstream plot theme and legend style as other W&B figures.
+- Important inputs/outputs: waveform arrays in; Matplotlib figure out.
+- Side effects: none.
+- Key callers/callees: autoencoder and diffusion Lightning validation example logging.
+- Reuse guidance: use for waveform example plots instead of creating ad hoc legends or package-local one-off renderers.
 
 ## `sleep2wave.diffusion.tasks.GenerationTask`
 
@@ -112,9 +122,9 @@
 
 - File: `sleep2wave/diffusion/lightning.py`
 - Signature: `Sleep2WaveDiffusionLightning(config: Sleep2WaveConfig, *, seed: int = 0)`
-- Purpose and contract: Lightning wrapper for latent diffusion training with frozen autoencoder encoding, sampled task curriculum, condition dropout, and AdamW optimization. For `partial_full`, condition dropout recomputes targets from the original task modalities so dropped conditions remain training targets. For restoration/imputation, task corruption is applied only to target modalities so auxiliary condition modalities stay clean.
+- Purpose and contract: Lightning wrapper for latent diffusion training/validation with frozen autoencoder encoding, sampled task curriculum, condition dropout, AdamW optimization, validation losses, and task-family W&B validation waveform examples. For `partial_full`, condition dropout recomputes targets from the original task modalities so dropped conditions remain training targets. For restoration/imputation, task corruption is applied only to target modalities so auxiliary condition modalities stay clean.
 - Important inputs/outputs: diffusion-stage config in; training loss out.
-- Side effects: loads autoencoder checkpoint, logs metrics, saves config into checkpoint.
+- Side effects: loads autoencoder checkpoint, logs metrics and W&B validation example images, saves config into checkpoint.
 - Key callers/callees: `train_diffusion.train_diffusion`.
 - Reuse guidance: keep diffusion train-step behavior here and trainer setup in `train_diffusion.py`.
 
@@ -132,7 +142,7 @@
 
 - File: `sleep2wave/training/task_sampler.py`
 - Signature: `Sleep2WaveTaskSampler(*, modalities=CANONICAL_MODALITIES, phase: int, task_mix=None, condition_counts=None, auxiliary_restoration_token=True, seed=0)`
-- Purpose and contract: sample availability-aware generation tasks from the phase schedule. `partial_full` draws from configured `condition_counts` that fit the currently available modalities instead of always using the largest configured count. Restoration/imputation draw from `restoration_condition_counts`, always including the target modality plus optional auxiliary condition modalities.
+- Purpose and contract: sample availability-aware generation tasks from the phase schedule, with optional task-family reporting and direct active-family sampling for validation examples. `partial_full` draws from configured `condition_counts` that fit the currently available modalities instead of always using the largest configured count. Restoration/imputation draw from `restoration_condition_counts`, always including the target modality plus optional auxiliary condition modalities.
 - Important inputs/outputs: optional availability mask in; `GenerationTask` out.
 - Side effects: uses internal seeded random generator.
 - Key callers/callees: `Sleep2WaveDiffusionLightning.training_step`.

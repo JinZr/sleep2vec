@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import pickle
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import pytorch_lightning  # noqa: F401
@@ -15,6 +16,7 @@ from sleep2wave.data.default_dataset import SampleIndex
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS
 from sleep2wave.data.samplers import AvailableChannelsBucketBatchSampler
 from sleep2wave.diffusion.latent_cache import Sleep2WaveLatentCacheDataset, write_latent_cache
+import sleep2wave.diffusion.lightning as diffusion_lightning
 from sleep2wave.diffusion.lightning import Sleep2WaveDiffusionLightning
 from sleep2wave.diffusion.tasks import build_generation_task
 from sleep2wave.generative.config import load_sleep2wave_config
@@ -31,24 +33,29 @@ def _write_synthetic_preset(tmp_path: Path) -> Path:
     np.savez(npz_path, **npz_payload)
 
     preset_path = tmp_path / "preset.pkl"
-    sample = SampleIndex(
-        id="synthetic",
-        path=str(npz_path),
-        start=0,
-        end=2,
-        payload={
-            "available_channels": list(CANONICAL_MODALITIES),
-            "canonical_channel_map": {modality: modality for modality in CANONICAL_MODALITIES},
-            "quality_mask_keys": {},
-            "availability_mask_keys": {},
-            "subject_id": "subject",
-            "night_id": "night",
-            "night_epoch_count": 2,
-        },
-        metadata={"split": "train", "source": "synthetic"},
-    )
+    payload = {
+        "available_channels": list(CANONICAL_MODALITIES),
+        "canonical_channel_map": {modality: modality for modality in CANONICAL_MODALITIES},
+        "quality_mask_keys": {},
+        "availability_mask_keys": {},
+        "subject_id": "subject",
+        "night_id": "night",
+        "night_epoch_count": 2,
+    }
+    samples = [
+        SampleIndex(
+            id=f"synthetic-{split}-{index}",
+            path=str(npz_path),
+            start=0,
+            end=2,
+            payload=payload,
+            metadata={"split": split, "source": "synthetic"},
+        )
+        for split, count in (("train", 1), ("val", 2))
+        for index in range(count)
+    ]
     with preset_path.open("wb") as f:
-        pickle.dump([sample], f)
+        pickle.dump(samples, f)
     return preset_path
 
 
@@ -59,7 +66,35 @@ def _write_autoencoder_checkpoint(tmp_path: Path) -> Path:
     return checkpoint_path
 
 
-def _write_config(tmp_path: Path, preset_path: Path, autoencoder_ckpt: Path) -> Path:
+def _write_config(
+    tmp_path: Path,
+    preset_path: Path,
+    autoencoder_ckpt: Path,
+    *,
+    validation_examples: dict | None = None,
+) -> Path:
+    diffusion = {
+        "latent_dim": 8,
+        "autoencoder_checkpoint": str(autoencoder_ckpt),
+        "transformer": {"hidden_size": 8, "num_layers": 1, "num_heads": 2, "mlp_ratio": 2},
+        "diffusion_steps": 8,
+        "beta_schedule": "cosine",
+        "prediction_type": "epsilon",
+        "context_epochs": 2,
+        "embeddings": {
+            "diffusion_step": True,
+            "modality": True,
+            "epoch_position": True,
+            "sleep_night_position": True,
+            "availability": True,
+            "quality": True,
+        },
+        "task_attention_mask": "directional",
+        "auxiliary_restoration_token": True,
+        "condition_dropout": 0.15,
+    }
+    if validation_examples is not None:
+        diffusion["validation_examples"] = validation_examples
     payload = {
         "recipe": "sleep2wave",
         "stage": "diffusion",
@@ -74,26 +109,7 @@ def _write_config(tmp_path: Path, preset_path: Path, autoencoder_ckpt: Path) -> 
                 modality: MODALITY_SPECS[modality].frames_per_epoch for modality in CANONICAL_MODALITIES
             },
         },
-        "diffusion": {
-            "latent_dim": 8,
-            "autoencoder_checkpoint": str(autoencoder_ckpt),
-            "transformer": {"hidden_size": 8, "num_layers": 1, "num_heads": 2, "mlp_ratio": 2},
-            "diffusion_steps": 8,
-            "beta_schedule": "cosine",
-            "prediction_type": "epsilon",
-            "context_epochs": 2,
-            "embeddings": {
-                "diffusion_step": True,
-                "modality": True,
-                "epoch_position": True,
-                "sleep_night_position": True,
-                "availability": True,
-                "quality": True,
-            },
-            "task_attention_mask": "directional",
-            "auxiliary_restoration_token": True,
-            "condition_dropout": 0.15,
-        },
+        "diffusion": diffusion,
         "training": {
             "phase": 1,
             "batch_size": 1,
@@ -135,6 +151,16 @@ def test_train_diffusion_dataloader_uses_train_split(tmp_path: Path):
     assert [sample.metadata["split"] for sample in loader.dataset.data] == ["train"]
     assert loader.dataset.seed == 123
     assert loader.dataset.corruption_name is None
+
+
+def test_train_diffusion_dataloader_uses_val_split(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+
+    loader = build_dataloader(load_sleep2wave_config(config_path), num_workers=0, seed=123, split="val")
+
+    assert [sample.metadata["split"] for sample in loader.dataset.data] == ["val", "val"]
 
 
 def test_train_diffusion_dataloader_buckets_mixed_availability(tmp_path: Path):
@@ -238,6 +264,93 @@ def test_train_diffusion_smoke_writes_artifacts(tmp_path: Path, monkeypatch):
     assert (run_dir / "config.yaml").exists()
     assert (run_dir / "cli_args.yaml").exists()
     assert (run_dir / "checkpoints" / "last.ckpt").exists()
+
+
+def test_diffusion_validation_step_logs_task_examples(tmp_path: Path, monkeypatch):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(
+        tmp_path,
+        preset_path,
+        autoencoder_ckpt,
+        validation_examples={"num_examples": 1, "modalities": ["eeg"]},
+    )
+    payload = yaml.safe_load(config_path.read_text())
+    payload["training"]["phase"] = 3
+    payload["training"]["task_mix"] = {"restoration": 1.0, "translation": 1.0, "two_condition": 1.0}
+    config_path.write_text(yaml.safe_dump(payload))
+    config = load_sleep2wave_config(config_path)
+    loader = build_dataloader(config, num_workers=0, seed=123, split="val")
+    batch = next(iter(loader))
+    model = Sleep2WaveDiffusionLightning(config, seed=123)
+    logged_scalars = {}
+    logged_payloads = []
+
+    def fake_lightning_log(name, value, **kwargs):
+        logged_scalars[name] = (value, kwargs)
+
+    def fake_wandb_log(payload, commit=True):
+        logged_payloads.append((payload, commit))
+
+    monkeypatch.setattr(model, "log", fake_lightning_log)
+    monkeypatch.setattr(wandb, "run", object())
+    monkeypatch.setattr(wandb, "Image", lambda fig: fig)
+    monkeypatch.setattr(wandb, "log", fake_wandb_log)
+    monkeypatch.setattr(diffusion_lightning, "render_waveform_example_plot", lambda *args, **kwargs: plt.figure())
+
+    losses = model.validation_step(batch, 0)
+
+    assert "loss" in losses
+    assert "val_loss" in logged_scalars
+    assert any(name.startswith("val_") and name.endswith("_mse") for name in logged_scalars)
+    assert len(logged_payloads) == 1
+    payload, commit = logged_payloads[0]
+    assert commit is False
+    assert set(payload) == {
+        "val_diffusion_examples/restoration/eeg_sample_0",
+        "val_diffusion_examples/translation/eeg_sample_0",
+        "val_diffusion_examples/two_condition/eeg_sample_0",
+    }
+
+
+def test_diffusion_validation_step_skips_examples_for_latent_cache(tmp_path: Path, monkeypatch):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    cache_path = tmp_path / "cache"
+    latents = {modality: torch.zeros(1, 2, 8) for modality in CANONICAL_MODALITIES}
+    masks = {modality: torch.ones(1, 2, dtype=torch.bool) for modality in CANONICAL_MODALITIES}
+    quality = {modality: torch.ones(1, 2) for modality in CANONICAL_MODALITIES}
+    write_latent_cache(
+        cache_path,
+        clean_latents=latents,
+        availability_mask=masks,
+        quality_mask=quality,
+        epoch_index=torch.tensor([[0, 1]]),
+        night_position=torch.tensor([[0.0, 1.0]]),
+        metadata_rows=[{"split": "train", "subject_id": "s1", "night_id": "n1"}],
+    )
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    payload = yaml.safe_load(config_path.read_text())
+    del payload["diffusion"]["autoencoder_checkpoint"]
+    payload["diffusion"]["latent_cache_path"] = str(cache_path)
+    payload["training"]["phase"] = 2
+    payload["training"]["task_mix"] = {"translation": 1.0}
+    config_path.write_text(yaml.safe_dump(payload))
+    config = load_sleep2wave_config(config_path)
+    loader = build_dataloader(config, num_workers=0, seed=123, split="val")
+    batch = next(iter(loader))
+    assert batch["metadata"]["split"] == ["train"]
+    model = Sleep2WaveDiffusionLightning(config, seed=123)
+    logged_payloads = []
+
+    monkeypatch.setattr(model, "log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wandb, "run", object())
+    monkeypatch.setattr(wandb, "log", lambda payload, commit=True: logged_payloads.append((payload, commit)))
+
+    losses = model.validation_step(batch, 0)
+
+    assert "loss" in losses
+    assert logged_payloads == []
 
 
 def test_condition_dropout_keeps_nonempty_condition_set(tmp_path: Path):

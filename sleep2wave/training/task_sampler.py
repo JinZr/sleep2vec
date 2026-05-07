@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import random
 import typing as t
 
@@ -8,6 +9,12 @@ import torch
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, validate_modality_sequence
 from sleep2wave.diffusion.tasks import GenerationTask, build_generation_task
 from sleep2wave.training.phase_schedule import build_phase_schedule
+
+
+@dataclass(frozen=True)
+class SampledGenerationTask:
+    task_family: str
+    task: GenerationTask
 
 
 class Sleep2WaveTaskSampler:
@@ -115,17 +122,50 @@ class Sleep2WaveTaskSampler:
             raise ValueError("No available target modalities remain after condition sampling.")
         return candidates
 
-    def sample(self, availability_mask: dict[str, torch.Tensor] | None = None) -> GenerationTask:
+    def _target_candidates(
+        self,
+        available: list[str],
+        target_modalities: t.Sequence[str] | None,
+    ) -> list[str]:
+        if target_modalities is None:
+            return available
+        configured = validate_modality_sequence(list(target_modalities), allow_aliases=False)
+        candidates = [modality for modality in configured if modality in available]
+        if not candidates:
+            raise ValueError("No configured target modalities are available for sleep2wave task sampling.")
+        return candidates
+
+    def sample_with_family(
+        self,
+        availability_mask: dict[str, torch.Tensor] | None = None,
+        *,
+        target_modalities: t.Sequence[str] | None = None,
+    ) -> SampledGenerationTask:
         family = self._weighted_family()
+        return SampledGenerationTask(
+            task_family=family,
+            task=self.sample_family(family, availability_mask, target_modalities=target_modalities),
+        )
+
+    def sample_family(
+        self,
+        family: str,
+        availability_mask: dict[str, torch.Tensor] | None = None,
+        *,
+        target_modalities: t.Sequence[str] | None = None,
+    ) -> GenerationTask:
+        if family not in self.schedule.task_mix:
+            raise ValueError(f"Task family '{family}' is not active for this sleep2wave phase.")
         if family == "two_condition":
             available = self._choose_available_set(availability_mask, min_size=3)
         elif family in {"restoration", "imputation"}:
             available = self._choose_available_set(availability_mask, min_size=1)
         else:
             available = self._choose_available_set(availability_mask, min_size=2)
+        target_candidates = self._target_candidates(available, target_modalities)
 
         if family in {"restoration", "imputation"}:
-            target = self._choice(available)
+            target = self._choice(target_candidates)
             valid_counts = [count for count in self.restoration_condition_counts if count <= len(available)]
             if not valid_counts:
                 raise ValueError("Not enough available modalities to sample a restoration condition set.")
@@ -138,7 +178,7 @@ class Sleep2WaveTaskSampler:
                 auxiliary_restoration_token=self.auxiliary_restoration_token,
             )
 
-        target = self._choice(available)
+        target = self._choice(target_candidates)
         if family == "two_condition":
             condition_count = 2
             task_type = "translation"
@@ -151,14 +191,23 @@ class Sleep2WaveTaskSampler:
             task_type = "translation"
         condition = self._sample_condition_set(available, target, condition_count)
         if task_type == "partial_full":
-            target_modalities = self._sample_target_set(available, condition)
+            if target_modalities is None:
+                sampled_targets = self._sample_target_set(available, condition)
+            else:
+                condition_set = set(condition)
+                sampled_targets = [modality for modality in target_candidates if modality not in condition_set]
+                if not sampled_targets:
+                    sampled_targets = [target]
         else:
-            target_modalities = [target]
+            sampled_targets = [target]
         return build_generation_task(
             task_type,
             condition_modalities=condition,
-            target_modalities=target_modalities,
+            target_modalities=sampled_targets,
         )
 
+    def sample(self, availability_mask: dict[str, torch.Tensor] | None = None) -> GenerationTask:
+        return self.sample_with_family(availability_mask).task
 
-__all__ = ["Sleep2WaveTaskSampler"]
+
+__all__ = ["SampledGenerationTask", "Sleep2WaveTaskSampler"]

@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import torch
+import wandb
 import yaml
 
 from sleep2wave.autoencoders.checkpoints import load_sleep2wave_autoencoder_checkpoint
 from sleep2wave.data.corruptions import apply_corruption
 from sleep2wave.diffusion.losses import compute_diffusion_loss
 from sleep2wave.diffusion.model import Sleep2WaveDiffusionTransformer
+from sleep2wave.diffusion.samplers import build_sampler
 from sleep2wave.diffusion.schedule import DiffusionSchedule, build_diffusion_schedule
 from sleep2wave.diffusion.tasks import GenerationTask, build_generation_task, is_restoration_task
 from sleep2wave.generative.config import Sleep2WaveConfig
 from sleep2wave.training.task_sampler import Sleep2WaveTaskSampler
+from sleep2wave.visualization.downstream_eval_plots import render_waveform_example_plot
 
 
 class Sleep2WaveDiffusionLightning(pl.LightningModule):
@@ -36,6 +40,16 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             auxiliary_restoration_token=config.diffusion.auxiliary_restoration_token,
             replay_enabled=config.training.replay.enabled,
             seed=seed,
+        )
+        self.validation_task_sampler = Sleep2WaveTaskSampler(
+            modalities=config.modalities.all,
+            phase=config.training.phase,
+            task_mix=config.training.task_mix,
+            condition_counts=config.training.condition_counts,
+            restoration_condition_counts=config.training.restoration_condition_counts,
+            auxiliary_restoration_token=config.diffusion.auxiliary_restoration_token,
+            replay_enabled=config.training.replay.enabled,
+            seed=seed + 1,
         )
 
     def on_save_checkpoint(self, checkpoint):
@@ -152,9 +166,13 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             updated[modality] = corrupted
         return updated
 
-    def training_step(self, batch, batch_idx):
-        task = self.task_sampler.sample(availability_mask=batch.get("availability_mask"))
-        task = self._apply_condition_dropout(task)
+    def _compute_step_losses(self, batch, *, apply_condition_dropout: bool):
+        sampler = self.task_sampler if apply_condition_dropout else self.validation_task_sampler
+        sampled = sampler.sample_with_family(availability_mask=batch.get("availability_mask"))
+        task_family = sampled.task_family
+        task = sampled.task
+        if apply_condition_dropout:
+            task = self._apply_condition_dropout(task)
         if self.autoencoder is None:
             clean_latents = batch["clean_latents"]
             observed_latents = batch.get("observed_latents", clean_latents)
@@ -180,13 +198,141 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             target_mask=batch.get("availability_mask"),
             quality_mask=batch.get("quality_mask"),
         )
+        return losses, task_family, task
+
+    def training_step(self, batch, batch_idx):
+        losses, task_family, _task = self._compute_step_losses(batch, apply_condition_dropout=True)
         batch_size = next(iter(batch["clean_signals"].values())).shape[0]
         self.log("train_loss", losses["loss"], prog_bar=True, on_step=True, on_epoch=True, batch_size=batch_size)
-        self.log(f"train_task_{task.task_type}", torch.tensor(1.0, device=losses["loss"].device), on_step=True)
+        self.log(f"train_task_{task_family}", torch.tensor(1.0, device=losses["loss"].device), on_step=True)
         for name, value in losses.items():
             if name != "loss":
                 self.log(f"train_{name}", value, on_step=True, on_epoch=False, batch_size=batch_size)
         return losses["loss"]
+
+    def validation_step(self, batch, batch_idx):
+        losses, task_family, _task = self._compute_step_losses(batch, apply_condition_dropout=False)
+        batch_size = next(iter(batch["clean_signals"].values())).shape[0]
+        self.log("val_loss", losses["loss"], prog_bar=True, on_step=False, on_epoch=True, batch_size=batch_size)
+        self.log(
+            f"val_task_{task_family}",
+            torch.tensor(1.0, device=losses["loss"].device),
+            on_step=False,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+        for name, value in losses.items():
+            if name != "loss":
+                self.log(f"val_{name}", value, on_step=False, on_epoch=True, batch_size=batch_size)
+        self._log_validation_examples(batch, batch_idx)
+        return losses
+
+    def _select_example_channel(self, tensor: torch.Tensor, channel_mask, sample_idx: int):
+        if tensor.dim() == 3:
+            return tensor[sample_idx]
+        channel_idx = 0
+        if channel_mask is not None:
+            sample_mask = channel_mask[sample_idx]
+            valid_channels = sample_mask.any(dim=0)
+            valid_indices = valid_channels.nonzero(as_tuple=False).flatten()
+            if valid_indices.numel() == 0:
+                return None
+            channel_idx = int(valid_indices[0].item())
+        return tensor[sample_idx, :, channel_idx, :]
+
+    def _active_task_families(self) -> list[str]:
+        return [family for family, weight in self.validation_task_sampler.schedule.task_mix.items() if weight > 0]
+
+    def _decode_first_generated_sample(self, generated_latents: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        first_sample = {modality: values[0] for modality, values in generated_latents.items()}
+        if self.autoencoder is None:
+            raise ValueError("Signal decoding requires diffusion.autoencoder_checkpoint.")
+        return self.autoencoder.decode_latents(first_sample)
+
+    def _log_validation_examples(self, batch, batch_idx: int) -> None:
+        if batch_idx != 0:
+            return
+        trainer = getattr(self, "_trainer", None)
+        if trainer is not None and not trainer.is_global_zero:
+            return
+        if getattr(wandb, "run", None) is None:
+            return
+        if self.autoencoder is None:
+            return
+        diffusion_cfg = self.config_bundle.diffusion
+        sampler_cfg = self.config_bundle.sampler
+        if diffusion_cfg is None or diffusion_cfg.validation_examples is None or sampler_cfg is None:
+            return
+
+        example_cfg = diffusion_cfg.validation_examples
+        batch_size = next(iter(batch["clean_signals"].values())).shape[0]
+        example_count = min(example_cfg.num_examples, batch_size)
+        metadata = batch.get("metadata", {})
+        sample_ids = metadata.get("id", [])
+        sampler = build_sampler(
+            sampler_cfg,
+            diffusion_steps=diffusion_cfg.diffusion_steps,
+            beta_schedule=diffusion_cfg.beta_schedule,
+        )
+        payload = {}
+        with torch.no_grad():
+            for task_family in self._active_task_families():
+                try:
+                    task = self.validation_task_sampler.sample_family(
+                        task_family,
+                        batch.get("availability_mask"),
+                        target_modalities=example_cfg.modalities,
+                    )
+                except ValueError:
+                    continue
+                observed_signals = self._apply_task_corruption(batch["observed_signals"], task)
+                observed_latents = self._encode_signals(observed_signals)
+                condition_latents = {modality: observed_latents[modality] for modality in task.condition_modalities}
+                output = sampler.sample(
+                    self.model,
+                    condition_latents=condition_latents,
+                    task=task,
+                    availability_mask=batch["availability_mask"],
+                    quality_mask=batch["quality_mask"],
+                    night_position=batch["night_position"],
+                )
+                decoded = self._decode_first_generated_sample(output.generated_latents)
+                target_modality = next(
+                    modality for modality in example_cfg.modalities if modality in task.target_modalities
+                )
+                clean_signal = batch["clean_signals"][target_modality]
+                generated_signal = decoded[target_modality]
+                observed_signal = (
+                    observed_signals[target_modality] if target_modality in task.condition_modalities else None
+                )
+                channel_mask = batch.get("channel_mask", {}).get(target_modality)
+                sample_rate_hz = self.config_bundle.modalities.sample_rates[target_modality]
+                for sample_idx in range(example_count):
+                    clean_example = self._select_example_channel(clean_signal, channel_mask, sample_idx)
+                    generated_example = self._select_example_channel(generated_signal, None, sample_idx)
+                    if clean_example is None or generated_example is None:
+                        continue
+                    observed_example = None
+                    if observed_signal is not None:
+                        observed_example = self._select_example_channel(observed_signal, channel_mask, sample_idx)
+                    sample_id = sample_ids[sample_idx] if sample_idx < len(sample_ids) else sample_idx
+                    fig = render_waveform_example_plot(
+                        clean_example.detach().cpu().numpy(),
+                        generated_example.detach().cpu().numpy(),
+                        observed=(observed_example.detach().cpu().numpy() if observed_example is not None else None),
+                        sample_rate_hz=sample_rate_hz,
+                        title=(
+                            f"Val Diffusion {task_family} {target_modality} "
+                            f"sample {sample_id} (epoch {self.current_epoch})"
+                        ),
+                        generated_label="Generated",
+                    )
+                    payload[f"val_diffusion_examples/{task_family}/{target_modality}_sample_{sample_idx}"] = (
+                        wandb.Image(fig)
+                    )
+                    plt.close(fig)
+        if payload:
+            wandb.log(payload, commit=False)
 
     def configure_optimizers(self):
         training_cfg = self.config_bundle.training

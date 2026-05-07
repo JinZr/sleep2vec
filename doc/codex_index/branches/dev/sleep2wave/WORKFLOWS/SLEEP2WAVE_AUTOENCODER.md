@@ -8,7 +8,7 @@ Train modality-specific waveform autoencoders that produce one latent vector per
 
 1. Load `stage: autoencoder` config with `load_sleep2wave_config`.
 2. Build train split DataLoader through `train_autoencoder.build_dataloader`.
-3. Train `Sleep2WaveAutoencoderLightning`.
+3. Train and validate `Sleep2WaveAutoencoderLightning`.
 4. Save epoch checkpoints and `last.ckpt`.
 
 ## Config Contract
@@ -28,6 +28,13 @@ Current autoencoder architecture constraints:
 - `one_latent_per_epoch: true`
 - `modality_specific: true`
 
+Optional logging config:
+
+- `autoencoder.validation_examples.num_examples`
+- `autoencoder.validation_examples.modalities`
+
+If omitted, validation logs one W&B clean/reconstruction waveform example for every configured modality.
+
 ## Command
 
 ```bash
@@ -46,6 +53,7 @@ python -m sleep2wave.train_autoencoder \
 - copied config and CLI args through `persist_run_config_and_args`
 - Lightning checkpoints under `<export.output_dir>/<version-name>/checkpoints/`
 - `last.ckpt`
+- W&B validation waveform examples when a run is active
 
 ## Edit Hotspots
 

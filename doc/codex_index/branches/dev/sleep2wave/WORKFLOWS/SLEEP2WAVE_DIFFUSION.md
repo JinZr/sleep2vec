@@ -8,12 +8,13 @@ Train a latent diffusion transformer that generates target modality latents from
 
 1. Train or provide a compatible sleep2wave autoencoder checkpoint.
 2. Load `stage: diffusion` config with `load_sleep2wave_config`.
-3. Build train split DataLoader through `train_diffusion.build_dataloader`.
+3. Build train and val split DataLoaders through `train_diffusion.build_dataloader`; cache-only validation can reuse train rows when the cache artifact has no val split.
 4. `Sleep2WaveDiffusionLightning` loads the autoencoder checkpoint, or uses an existing latent cache for translation/partial-full-only training.
 5. `Sleep2WaveTaskSampler` samples phase-appropriate tasks.
 6. Restoration/imputation tasks apply task-aware waveform corruptions from `training.corruptions` before autoencoder encoding.
 7. `Sleep2WaveDiffusionTransformer` predicts target noise.
-8. Save epoch checkpoints and `last.ckpt`.
+8. Validation logs epoch losses and task-family waveform examples when W&B is active.
+9. Save epoch checkpoints and `last.ckpt`.
 
 ## Config Contract
 
@@ -40,6 +41,7 @@ Important constraints:
 - `training.replay.enabled` selects replay-style default task mixtures when no explicit `task_mix` is provided; replay defaults train restoration and imputation before adding translation, two-condition, and partial-full tasks.
 - `training.condition_counts` controls translation and partial-full condition-set sizes; partial-full samples among configured counts that fit the available modalities.
 - `training.restoration_condition_counts` controls restoration/imputation condition-set sizes; the target modality is always included and extra modalities act as clean auxiliary context.
+- `diffusion.validation_examples` controls W&B validation example count and target-modality candidates for diffusion phases; examples use the configured sampler and are logged per active task family.
 - Tiny and medium diffusion phase recipes use `training.corruptions.*.by_modality` for physiologic restoration/imputation corruptions, and selected entries can define weighted `choices`.
 - `diffusion.condition_dropout` preserves partial-full coverage by moving dropped condition modalities into the target set.
 

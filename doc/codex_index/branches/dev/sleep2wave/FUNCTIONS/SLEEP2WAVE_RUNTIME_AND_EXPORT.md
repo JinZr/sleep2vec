@@ -3,8 +3,8 @@
 ## `sleep2wave.train_autoencoder.build_dataloader`
 
 - File: `sleep2wave/train_autoencoder.py`
-- Signature: `build_dataloader(config, *, num_workers: int)`
-- Purpose and contract: build the train split DataLoader for autoencoder-stage configs.
+- Signature: `build_dataloader(config, *, num_workers: int, split: str = "train")`
+- Purpose and contract: build a split-specific DataLoader for autoencoder-stage configs.
 - Important inputs/outputs: typed config in; DataLoader out.
 - Side effects: dataset reads preset/index and NPZ files during iteration.
 - Key callers/callees: `train_autoencoder`.
@@ -14,17 +14,17 @@
 
 - File: `sleep2wave/train_autoencoder.py`
 - Signature: `train_autoencoder(args: argparse.Namespace) -> Path`
-- Purpose and contract: run sleep2wave autoencoder training and write a run directory with checkpoints and config snapshots.
+- Purpose and contract: run sleep2wave autoencoder training/validation and write a run directory with checkpoints and config snapshots.
 - Important inputs/outputs: CLI args with config and version name in; run directory path out.
-- Side effects: creates output/checkpoint directories, persists config/args, initializes W&B logger, trains with Lightning, writes `last.ckpt`.
+- Side effects: creates output/checkpoint directories, persists config/args, initializes W&B logger, trains/validates with Lightning, logs validation waveform examples, writes `last.ckpt`.
 - Key callers/callees: `main`; callees include `load_sleep2wave_config`, `persist_run_config_and_args`, `Sleep2WaveAutoencoderLightning`, optional `load_sleep2vec2_initialization`.
 - Reuse guidance: use as the autoencoder training entrypoint.
 
 ## `sleep2wave.train_diffusion.build_dataloader`
 
 - File: `sleep2wave/train_diffusion.py`
-- Signature: `build_dataloader(config, *, num_workers: int, seed: int)`
-- Purpose and contract: build train split DataLoader for diffusion-stage configs with available-modality bucketed waveform batches, or a latent-cache DataLoader when `diffusion.autoencoder_checkpoint` is omitted.
+- Signature: `build_dataloader(config, *, num_workers: int, seed: int, split: str = "train")`
+- Purpose and contract: build a split-specific DataLoader for diffusion-stage configs with available-modality bucketed waveform batches, or a latent-cache DataLoader when `diffusion.autoencoder_checkpoint` is omitted; cache-only validation falls back to train rows for train-only cache artifacts.
 - Important inputs/outputs: typed config and seed in; DataLoader out.
 - Side effects: dataset reads files during iteration.
 - Key callers/callees: `train_diffusion`; callee `AvailableChannelsBucketBatchSampler`.
@@ -34,9 +34,9 @@
 
 - File: `sleep2wave/train_diffusion.py`
 - Signature: `train_diffusion(args: argparse.Namespace) -> Path`
-- Purpose and contract: run sleep2wave latent diffusion training and write a run directory with checkpoints and config snapshots.
+- Purpose and contract: run sleep2wave latent diffusion training/validation and write a run directory with checkpoints and config snapshots.
 - Important inputs/outputs: CLI args in; run directory path out.
-- Side effects: seeds Lightning, creates directories, persists config/args, optionally initializes from `training.phase_checkpoint`, initializes W&B logger, trains with Lightning, writes `last.ckpt`.
+- Side effects: seeds Lightning, creates directories, persists config/args, optionally initializes from `training.phase_checkpoint`, initializes W&B logger, trains/validates with Lightning, logs validation waveform examples, writes `last.ckpt`.
 - Key callers/callees: `main`; callees include `load_sleep2wave_config`, `Sleep2WaveDiffusionLightning`, optional `load_sleep2vec2_initialization`.
 - Reuse guidance: use as the diffusion training entrypoint.
 

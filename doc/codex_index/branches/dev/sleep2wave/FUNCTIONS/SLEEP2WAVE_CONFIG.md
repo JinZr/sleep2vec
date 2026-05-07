@@ -4,8 +4,8 @@
 
 - File: `sleep2wave/generative/config.py`
 - Dataclasses:
-  - `DataConfig`, `ModalitiesConfig`, `AutoencoderLossConfig`, `AutoencoderConfig`
-  - `TransformerConfig`, `EmbeddingsConfig`, `DiffusionConfig`
+  - `DataConfig`, `ModalitiesConfig`, `AutoencoderLossConfig`, `AutoencoderValidationExamplesConfig`, `AutoencoderConfig`
+  - `DiffusionValidationExamplesConfig`, `TransformerConfig`, `EmbeddingsConfig`, `DiffusionConfig`
   - `ReplayConfig`, `CorruptionChoiceConfig`, `CorruptionSpecConfig`, `CorruptionPolicyConfig`, `TrainingCorruptionsConfig`, `TrainingConfig`, `InferenceConfig`, `SamplerConfig`
   - `InitializationConfig`, `ExportConfig`, `EvaluationConfig`, `Sleep2WaveConfig`
 - Purpose and contract: define the typed in-memory schema for `recipe: sleep2wave` YAML stages.
@@ -31,14 +31,14 @@
 - Functions:
   - `_load_data(raw) -> DataConfig`
   - `_load_modalities(raw) -> ModalitiesConfig`
-  - `_load_autoencoder(raw) -> AutoencoderConfig`
+  - `_load_autoencoder(raw, configured_modalities) -> AutoencoderConfig`
   - `_load_diffusion(raw) -> DiffusionConfig`
   - `_load_training(raw) -> TrainingConfig`
   - `_load_inference(raw) -> InferenceConfig`
   - `_load_sampler(raw, diffusion_cfg) -> SamplerConfig`
   - `_load_initialization(raw) -> InitializationConfig | None`
   - `_load_evaluation(raw) -> EvaluationConfig`
-- Purpose and contract: parse individual schema blocks and reject unsupported fields, including task-aware training/inference corruption specs with optional weighted choices, restoration condition-count sampling, evaluation corruption mask policy, and phase checkpoint paths.
+- Purpose and contract: parse individual schema blocks and reject unsupported fields, including autoencoder and diffusion validation example logging config, task-aware training/inference corruption specs with optional weighted choices, restoration condition-count sampling, evaluation corruption mask policy, and phase checkpoint paths.
 - Important inputs/outputs: raw mapping in; typed config out.
 - Side effects: none.
 - Key callers/callees: called by `load_sleep2wave_config`.

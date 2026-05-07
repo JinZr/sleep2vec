@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import typing as t
 
+import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import auc, confusion_matrix, roc_curve
 
@@ -9,7 +11,33 @@ from sleep2wave.metrics import binary_positive_scores_from_two_logits
 from sleep2wave.visualization.curves import render_binary_roc_curve
 from sleep2wave.visualization.heatmaps import render_matrix_heatmap
 from sleep2wave.visualization.scatter import render_prediction_scatter
-from sleep2wave.visualization.theme import _OPENAI_BLUE_CMAP, use_openai_like_theme
+from sleep2wave.visualization.theme import (
+    _FIGURE_BG,
+    _OPENAI_BLUE_CMAP,
+    _PRIMARY,
+    _PRIMARY_DARK,
+    _PRIMARY_LIGHT,
+    _PRIMARY_MID,
+    add_openai_legend,
+    apply_plot_layout,
+    style_axes,
+    style_plot_text,
+    use_openai_like_theme,
+)
+
+_MAX_RENDER_POINTS = 2000
+
+
+def _flatten_waveform(values: np.ndarray) -> np.ndarray:
+    return np.asarray(values, dtype=np.float32).reshape(-1)
+
+
+def _downsample_for_display(*arrays: np.ndarray) -> tuple[np.ndarray, ...]:
+    length = max((array.size for array in arrays), default=0)
+    if length <= _MAX_RENDER_POINTS:
+        return arrays
+    stride = int(math.ceil(length / _MAX_RENDER_POINTS))
+    return tuple(array[::stride] for array in arrays)
 
 
 def _format_percentage(value: float) -> str:
@@ -124,9 +152,73 @@ def render_binary_roc_curve_plot(
     )
 
 
+def render_waveform_example_plot(
+    clean: np.ndarray,
+    generated: np.ndarray,
+    *,
+    sample_rate_hz: int,
+    title: str,
+    generated_label: str,
+    observed: np.ndarray | None = None,
+) -> plt.Figure:
+    use_openai_like_theme()
+
+    clean_values = _flatten_waveform(clean)
+    generated_values = _flatten_waveform(generated)
+    time_sec = np.arange(clean_values.size, dtype=np.float32) / float(sample_rate_hz)
+    if observed is None:
+        time_sec, clean_values, generated_values = _downsample_for_display(
+            time_sec,
+            clean_values,
+            generated_values,
+        )
+        observed_values = None
+    else:
+        observed_values = _flatten_waveform(observed)
+        time_sec, clean_values, observed_values, generated_values = _downsample_for_display(
+            time_sec,
+            clean_values,
+            observed_values,
+            generated_values,
+        )
+
+    fig, ax = plt.subplots(figsize=(10.5, 4.4), facecolor=_FIGURE_BG)
+    style_axes(ax, show_grid=True)
+    ax.plot(time_sec, clean_values, color=_PRIMARY_DARK, linewidth=1.25, linestyle="solid", label="Clean")
+    if observed_values is not None:
+        ax.plot(
+            time_sec,
+            observed_values,
+            color=_PRIMARY_LIGHT,
+            linewidth=1.0,
+            linestyle="solid",
+            alpha=0.9,
+            label="Observed",
+        )
+    generated_color = _PRIMARY if generated_label == "Reconstruction" else _PRIMARY_MID
+    ax.plot(
+        time_sec,
+        generated_values,
+        color=generated_color,
+        linewidth=1.1,
+        linestyle="solid",
+        alpha=0.9,
+        label=generated_label,
+    )
+    style_plot_text(ax, title=title, xlabel="Time (s)", ylabel="Amplitude")
+    add_openai_legend(
+        ax,
+        loc="upper right",
+        bbox_to_anchor=(0.98, 0.98),
+    )
+    apply_plot_layout(fig, defaults={"left": 0.08, "right": 0.98, "bottom": 0.16, "top": 0.86})
+    return fig
+
+
 __all__ = [
     "use_openai_like_theme",
     "render_binary_roc_curve_plot",
     "render_confusion_matrix_heatmap",
     "render_regression_scatter_plot",
+    "render_waveform_example_plot",
 ]

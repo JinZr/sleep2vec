@@ -46,6 +46,18 @@ class AutoencoderLossConfig:
 
 
 @dataclass(frozen=True)
+class AutoencoderValidationExamplesConfig:
+    num_examples: int = 1
+    modalities: list[str] = field(default_factory=lambda: list(CANONICAL_MODALITIES))
+
+
+@dataclass(frozen=True)
+class DiffusionValidationExamplesConfig:
+    num_examples: int = 1
+    modalities: list[str] = field(default_factory=lambda: list(CANONICAL_MODALITIES))
+
+
+@dataclass(frozen=True)
 class AutoencoderConfig:
     latent_dim: int
     encoder_type: str
@@ -53,6 +65,7 @@ class AutoencoderConfig:
     one_latent_per_epoch: bool
     modality_specific: bool
     losses: AutoencoderLossConfig
+    validation_examples: AutoencoderValidationExamplesConfig
 
 
 @dataclass(frozen=True)
@@ -87,6 +100,7 @@ class DiffusionConfig:
     condition_dropout: float
     autoencoder_checkpoint: str | None = None
     latent_cache_path: str | None = None
+    validation_examples: DiffusionValidationExamplesConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -372,9 +386,57 @@ def _load_autoencoder_losses(raw: t.Any) -> AutoencoderLossConfig:
     )
 
 
-def _load_autoencoder(raw: t.Any) -> AutoencoderConfig:
+def _load_autoencoder_validation_examples(
+    raw: t.Any,
+    configured_modalities: t.Sequence[str],
+) -> AutoencoderValidationExamplesConfig:
+    if raw is None:
+        return AutoencoderValidationExamplesConfig(modalities=list(configured_modalities))
+    block = _require_mapping(raw, "autoencoder.validation_examples")
+    allowed = {"num_examples", "modalities"}
+    _reject_extra(block, allowed, "autoencoder.validation_examples")
+    num_examples = block.get("num_examples", 1)
+    if not isinstance(num_examples, int) or isinstance(num_examples, bool) or num_examples < 1:
+        raise ValueError("autoencoder.validation_examples.num_examples must be an integer >= 1.")
+    raw_modalities = block.get("modalities", list(configured_modalities))
+    modalities = validate_modality_sequence(raw_modalities, allow_aliases=False)
+    unknown = sorted(set(modalities) - set(configured_modalities))
+    if unknown:
+        raise ValueError("autoencoder.validation_examples.modalities must be a subset of modalities.all.")
+    return AutoencoderValidationExamplesConfig(num_examples=num_examples, modalities=modalities)
+
+
+def _load_diffusion_validation_examples(
+    raw: t.Any,
+    configured_modalities: t.Sequence[str],
+) -> DiffusionValidationExamplesConfig:
+    if raw is None:
+        return DiffusionValidationExamplesConfig(modalities=list(configured_modalities))
+    block = _require_mapping(raw, "diffusion.validation_examples")
+    allowed = {"num_examples", "modalities"}
+    _reject_extra(block, allowed, "diffusion.validation_examples")
+    num_examples = block.get("num_examples", 1)
+    if not isinstance(num_examples, int) or isinstance(num_examples, bool) or num_examples < 1:
+        raise ValueError("diffusion.validation_examples.num_examples must be an integer >= 1.")
+    raw_modalities = block.get("modalities", list(configured_modalities))
+    modalities = validate_modality_sequence(raw_modalities, allow_aliases=False)
+    unknown = sorted(set(modalities) - set(configured_modalities))
+    if unknown:
+        raise ValueError("diffusion.validation_examples.modalities must be a subset of modalities.all.")
+    return DiffusionValidationExamplesConfig(num_examples=num_examples, modalities=modalities)
+
+
+def _load_autoencoder(raw: t.Any, configured_modalities: t.Sequence[str]) -> AutoencoderConfig:
     block = _require_mapping(raw, "autoencoder")
-    allowed = {"latent_dim", "encoder_type", "decoder_type", "one_latent_per_epoch", "modality_specific", "losses"}
+    allowed = {
+        "latent_dim",
+        "encoder_type",
+        "decoder_type",
+        "one_latent_per_epoch",
+        "modality_specific",
+        "losses",
+        "validation_examples",
+    }
     _reject_extra(block, allowed, "autoencoder")
     encoder_type = _require_string(block, "encoder_type", "autoencoder")
     decoder_type = _require_string(block, "decoder_type", "autoencoder")
@@ -395,6 +457,10 @@ def _load_autoencoder(raw: t.Any) -> AutoencoderConfig:
         one_latent_per_epoch=one_latent_per_epoch,
         modality_specific=modality_specific,
         losses=_load_autoencoder_losses(block.get("losses")),
+        validation_examples=_load_autoencoder_validation_examples(
+            block.get("validation_examples"),
+            configured_modalities,
+        ),
     )
 
 
@@ -428,7 +494,12 @@ def _load_embeddings(raw: t.Any) -> EmbeddingsConfig:
     )
 
 
-def _load_diffusion(raw: t.Any) -> DiffusionConfig:
+def _load_diffusion(
+    raw: t.Any,
+    configured_modalities: t.Sequence[str],
+    *,
+    load_validation_examples: bool,
+) -> DiffusionConfig:
     block = _require_mapping(raw, "diffusion")
     allowed = {
         "latent_dim",
@@ -444,6 +515,8 @@ def _load_diffusion(raw: t.Any) -> DiffusionConfig:
         "auxiliary_restoration_token",
         "condition_dropout",
     }
+    if load_validation_examples:
+        allowed = {*allowed, "validation_examples"}
     _reject_extra(block, allowed, "diffusion")
 
     autoencoder_checkpoint = _optional_string(block, "autoencoder_checkpoint", "diffusion")
@@ -474,6 +547,11 @@ def _load_diffusion(raw: t.Any) -> DiffusionConfig:
         task_attention_mask=task_attention_mask,
         auxiliary_restoration_token=_require_bool(block, "auxiliary_restoration_token", "diffusion"),
         condition_dropout=_require_float(block, "condition_dropout", "diffusion", minimum=0.0, maximum=1.0),
+        validation_examples=(
+            _load_diffusion_validation_examples(block.get("validation_examples"), configured_modalities)
+            if load_validation_examples
+            else None
+        ),
     )
 
 
@@ -855,7 +933,7 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
             raise ValueError("stage=autoencoder does not support an evaluation block.")
         if "inference" in data:
             raise ValueError("stage=autoencoder does not support an inference block.")
-        autoencoder_cfg = _load_autoencoder(data["autoencoder"])
+        autoencoder_cfg = _load_autoencoder(data["autoencoder"], modalities_cfg.all)
     elif stage == "diffusion":
         if training_cfg is None:
             raise ValueError("training block is required for stage=diffusion.")
@@ -871,7 +949,11 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
             raise ValueError("stage=diffusion does not support an evaluation block.")
         if "inference" in data:
             raise ValueError("stage=diffusion does not support an inference block.")
-        diffusion_cfg = _load_diffusion(data["diffusion"])
+        diffusion_cfg = _load_diffusion(
+            data["diffusion"],
+            modalities_cfg.all,
+            load_validation_examples=True,
+        )
         if data_cfg is None or data_cfg.context_epochs != diffusion_cfg.context_epochs:
             raise ValueError("data.context_epochs must match diffusion.context_epochs.")
         if diffusion_cfg.autoencoder_checkpoint is None:
@@ -901,7 +983,11 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
             raise ValueError("diffusion block is required for stage=inference.")
         if "sampler" not in data:
             raise ValueError("sampler block is required for stage=inference.")
-        diffusion_cfg = _load_diffusion(data["diffusion"])
+        diffusion_cfg = _load_diffusion(
+            data["diffusion"],
+            modalities_cfg.all,
+            load_validation_examples=False,
+        )
         if data_cfg is None or data_cfg.context_epochs != diffusion_cfg.context_epochs:
             raise ValueError("data.context_epochs must match diffusion.context_epochs.")
         sampler_cfg = _load_sampler(data["sampler"], diffusion_cfg)
@@ -943,11 +1029,13 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
 __all__ = [
     "AutoencoderConfig",
     "AutoencoderLossConfig",
+    "AutoencoderValidationExamplesConfig",
     "CorruptionChoiceConfig",
     "CorruptionPolicyConfig",
     "CorruptionSpecConfig",
     "DataConfig",
     "DiffusionConfig",
+    "DiffusionValidationExamplesConfig",
     "EvaluationConfig",
     "ExportConfig",
     "InitializationConfig",

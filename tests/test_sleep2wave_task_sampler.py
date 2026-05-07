@@ -110,6 +110,50 @@ def test_task_sampler_requires_enough_modalities_for_two_condition_task():
         sampler.sample(availability)
 
 
+def test_task_sampler_sample_with_family_reports_two_condition_family():
+    sampler = Sleep2WaveTaskSampler(
+        phase=3,
+        task_mix={"two_condition": 1.0},
+        condition_counts=[2],
+        seed=5,
+    )
+
+    sampled = sampler.sample_with_family(_availability())
+
+    assert sampled.task_family == "two_condition"
+    assert sampled.task.task_type == "translation"
+    assert len(sampled.task.condition_modalities) == 2
+
+
+def test_task_sampler_sample_family_respects_target_candidates():
+    sampler = Sleep2WaveTaskSampler(
+        phase=2,
+        task_mix={"translation": 1.0},
+        condition_counts=[1],
+        seed=6,
+    )
+
+    task = sampler.sample_family("translation", _availability(), target_modalities=["spo2"])
+
+    assert task.target_modalities == ("spo2",)
+    assert "spo2" not in task.condition_modalities
+
+
+def test_task_sampler_sample_family_restoration_keeps_target_as_condition():
+    sampler = Sleep2WaveTaskSampler(
+        phase=1,
+        task_mix={"restoration": 1.0},
+        restoration_condition_counts=[2],
+        auxiliary_restoration_token=True,
+        seed=11,
+    )
+
+    task = sampler.sample_family("restoration", _availability(), target_modalities=["eeg"])
+
+    assert task.target_modalities == ("eeg",)
+    assert "eeg" in task.condition_modalities
+
+
 def test_task_sampler_uses_only_common_modalities_for_mixed_availability_batches():
     sampler = Sleep2WaveTaskSampler(
         phase=1,

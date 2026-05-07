@@ -45,19 +45,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_dataloader(config, *, num_workers: int):
+def build_dataloader(config, *, num_workers: int, split: str = "train"):
     if config.training is None:
         raise ValueError("training block is required for autoencoder training.")
     dataset = Sleep2WaveGenerativeDataset(
         preset_path=config.data.preset_path,
         index=config.data.index,
-        split="train",
+        split=split,
         context_epochs=config.data.context_epochs,
         task_type="restoration",
     )
     return dataset.dataloader(
         batch_size=config.training.batch_size,
-        shuffle=True,
+        shuffle=(split == "train"),
         num_workers=num_workers,
     )
 
@@ -74,7 +74,8 @@ def train_autoencoder(args: argparse.Namespace) -> Path:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     persist_run_config_and_args(args, run_dir)
 
-    train_loader = build_dataloader(config, num_workers=args.num_workers)
+    train_loader = build_dataloader(config, num_workers=args.num_workers, split="train")
+    val_loader = build_dataloader(config, num_workers=args.num_workers, split="val")
     model = Sleep2WaveAutoencoderLightning(config)
     if config.initialization is not None and config.initialization.sleep2vec2_checkpoint is not None:
         report = load_sleep2vec2_initialization(
@@ -113,7 +114,7 @@ def train_autoencoder(args: argparse.Namespace) -> Path:
         log_every_n_steps=1,
         num_sanity_val_steps=0,
     )
-    trainer.fit(model, train_dataloaders=train_loader)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
     trainer.save_checkpoint(checkpoint_dir / "last.ckpt")
     return run_dir
 

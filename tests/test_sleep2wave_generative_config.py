@@ -45,8 +45,43 @@ def test_sleep2wave_generative_config_loads_autoencoder_tiny():
     assert cfg.autoencoder is not None
     assert cfg.autoencoder.latent_dim == 64
     assert cfg.autoencoder.losses.waveform_l2_weight == 0.1
+    assert cfg.autoencoder.validation_examples.num_examples == 1
+    assert cfg.autoencoder.validation_examples.modalities == list(CANONICAL_MODALITIES)
     assert cfg.diffusion is None
     assert cfg.sampler is None
+
+
+def test_sleep2wave_autoencoder_validation_examples_default_to_all_modalities(tmp_path: Path):
+    payload = _load_payload(AUTOENCODER_TINY)
+    payload["autoencoder"].pop("validation_examples")
+    path = _write_yaml(tmp_path / "autoencoder.yaml", payload)
+
+    cfg = load_sleep2wave_config(path)
+
+    assert cfg.autoencoder.validation_examples.num_examples == 1
+    assert cfg.autoencoder.validation_examples.modalities == list(CANONICAL_MODALITIES)
+
+
+@pytest.mark.parametrize(
+    ("validation_examples", "match"),
+    [
+        ({"num_examples": 0, "modalities": ["eeg"]}, "num_examples must be an integer >= 1"),
+        ({"num_examples": 1, "modalities": []}, "Modality sequence must be a non-empty list"),
+        ({"num_examples": 1, "modalities": ["eeg", "eeg"]}, "Duplicate sleep2wave modality"),
+        ({"num_examples": 1, "modalities": ["unknown"]}, "canonical modality names"),
+    ],
+)
+def test_sleep2wave_autoencoder_validation_examples_reject_invalid_values(
+    tmp_path: Path,
+    validation_examples: dict,
+    match: str,
+):
+    payload = _load_payload(AUTOENCODER_TINY)
+    payload["autoencoder"]["validation_examples"] = validation_examples
+    path = _write_yaml(tmp_path / "autoencoder.yaml", payload)
+
+    with pytest.raises(ValueError, match=match):
+        load_sleep2wave_config(path)
 
 
 def test_sleep2wave_generative_config_loads_diffusion_tiny():
@@ -60,6 +95,8 @@ def test_sleep2wave_generative_config_loads_diffusion_tiny():
     assert cfg.sampler is not None
     assert cfg.sampler.name == "ddim"
     assert cfg.sampler.steps == 20
+    assert cfg.diffusion.validation_examples.num_examples == 1
+    assert cfg.diffusion.validation_examples.modalities == list(CANONICAL_MODALITIES)
     assert cfg.training.restoration_condition_counts == [1, 2, 3]
     assert cfg.training.replay.enabled is True
     assert cfg.training.corruptions.restoration.default.name == "gaussian_noise"
@@ -74,6 +111,39 @@ def test_sleep2wave_generative_config_loads_diffusion_tiny():
     ]
 
 
+def test_sleep2wave_diffusion_validation_examples_default_to_all_modalities(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    payload["diffusion"].pop("validation_examples")
+    path = _write_yaml(tmp_path / "diffusion.yaml", payload)
+
+    cfg = load_sleep2wave_config(path)
+
+    assert cfg.diffusion.validation_examples.num_examples == 1
+    assert cfg.diffusion.validation_examples.modalities == list(CANONICAL_MODALITIES)
+
+
+@pytest.mark.parametrize(
+    ("validation_examples", "match"),
+    [
+        ({"num_examples": 0, "modalities": ["eeg"]}, "num_examples must be an integer >= 1"),
+        ({"num_examples": 1, "modalities": []}, "Modality sequence must be a non-empty list"),
+        ({"num_examples": 1, "modalities": ["eeg", "eeg"]}, "Duplicate sleep2wave modality"),
+        ({"num_examples": 1, "modalities": ["unknown"]}, "canonical modality names"),
+    ],
+)
+def test_sleep2wave_diffusion_validation_examples_reject_invalid_values(
+    tmp_path: Path,
+    validation_examples: dict,
+    match: str,
+):
+    payload = _load_payload(DIFFUSION_TINY)
+    payload["diffusion"]["validation_examples"] = validation_examples
+    path = _write_yaml(tmp_path / "diffusion.yaml", payload)
+
+    with pytest.raises(ValueError, match=match):
+        load_sleep2wave_config(path)
+
+
 def test_sleep2wave_generative_config_loads_inference_tiny():
     cfg = load_sleep2wave_config(GENERATE_TINY)
 
@@ -82,6 +152,7 @@ def test_sleep2wave_generative_config_loads_inference_tiny():
     assert cfg.training is None
     assert cfg.autoencoder is None
     assert cfg.diffusion is not None
+    assert cfg.diffusion.validation_examples is None
     assert cfg.inference is not None
     assert cfg.inference.corruptions.restoration.default.name == "gaussian_noise"
     assert cfg.inference.corruptions.imputation.default.name == "contiguous_window_mask"
@@ -472,6 +543,15 @@ def test_sleep2wave_generative_config_rejects_inference_missing_sampler(tmp_path
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
     with pytest.raises(ValueError, match="sampler block is required for stage=inference"):
+        load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_rejects_inference_validation_examples(tmp_path: Path):
+    payload = _load_payload(GENERATE_TINY)
+    payload["diffusion"]["validation_examples"] = {"num_examples": 1, "modalities": ["eeg"]}
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="diffusion has unsupported fields"):
         load_sleep2wave_config(path)
 
 
