@@ -154,6 +154,17 @@
 - Reuse guidance: use this renderer for MoE routing heatmaps in each namespace instead of adapting confusion-matrix or layer-mix heatmaps.
 - Duplication risk notes: preserve package-local copies for standalone variant boundaries.
 
+## `sleep2vec.visualization.boxplot.render_routing_entropy_boxplot`
+
+- File: `sleep2vec/visualization/boxplot.py` with package-local mirrors in `sleep2vec2/` and `sleep2expert/`
+- Signature: `render_routing_entropy_boxplot(rows, *, entropy_normalizer_by_modality, title="Router entropy by layer and modality") -> plt.Figure`
+- Purpose and contract: render vertical grouped boxplots for routing entropy diagnostics from routing CSV-style rows, with layer on the x-axis, normalized entropy on the y-axis, and modality as the grouping legend.
+- Important inputs/outputs: rows with `layer_idx`, `modality`, and `router_entropy` plus caller-supplied modality normalizers in; matplotlib figure out. The y-axis is fixed to `0..1`, boxes use subtle rounded corners, fliers are visible, and a dashed line marks the overall mean normalized entropy.
+- Side effects: none beyond figure creation.
+- Key callers/callees: no runtime caller is wired by default; callee uses package-local visualization theme colors, text styling, and font selection.
+- Reuse guidance: use this renderer for ad hoc MoE routing entropy diagnostics rather than adding a generic downstream `eval_visualizations.boxplot` path.
+- Duplication risk notes: keep the renderer package-local across standalone namespaces and keep routing CLI/W&B wiring separate unless a later task explicitly asks for it.
+
 ## `sleep2vec.visualization.layer_mix.build_layer_mix_rows`
 
 - File: `sleep2vec/visualization/layer_mix.py`
