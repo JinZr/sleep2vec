@@ -54,7 +54,7 @@ diffusion:
   auxiliary_restoration_token: true
   condition_dropout: 0.15
   validation_examples:
-    num_examples: 1
+    num_examples: 5
     modalities: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
 
 training:

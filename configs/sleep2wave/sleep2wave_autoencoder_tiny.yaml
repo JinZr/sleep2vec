@@ -42,7 +42,7 @@ autoencoder:
     waveform_l2_weight: 0.1
     spectral_weight: 0.1
   validation_examples:
-    num_examples: 1
+    num_examples: 5
     modalities: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
 
 training:
