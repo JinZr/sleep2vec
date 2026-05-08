@@ -41,7 +41,7 @@
 ---
 
 ## Setup
-- Python 3.10+ with CUDA GPUs recommended; PyTorch/Lightning versions are pinned in `requirements.txt` (`torch==2.5.1`, `pytorch-lightning==2.6.1`).
+- Python 3.10+ with CUDA GPUs recommended; PyTorch/Lightning versions are pinned in `requirements.txt` (`torch==2.7.0`, `pytorch-lightning==2.6.1`).
 - Install: `pip install -r requirements.txt` (choose the correct PyTorch wheel for your CUDA version).
 - Pair-accuracy heatmap logging uses `matplotlib` + `seaborn` (already included in `requirements.txt`).
 - Authenticate to Weights & Biases before running (`WANDB_API_KEY=...` or `WANDB_MODE=offline`) because entrypoints call `wandb.login()`.
