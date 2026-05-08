@@ -26,17 +26,21 @@ from sleep2wave.visualization.theme import (
 )
 
 _MAX_RENDER_POINTS = 2000
+_BASE_WAVEFORM_WIDTH = 10.5
+_MAX_WAVEFORM_WIDTH = 28.0
+_WAVEFORM_HEIGHT = 4.4
+_MIN_EXPANDED_WAVEFORM_SAMPLE_RATE_HZ = 32
 
 
 def _flatten_waveform(values: np.ndarray) -> np.ndarray:
     return np.asarray(values, dtype=np.float32).reshape(-1)
 
 
-def _downsample_for_display(*arrays: np.ndarray) -> tuple[np.ndarray, ...]:
+def _downsample_for_display(*arrays: np.ndarray, max_points: int = _MAX_RENDER_POINTS) -> tuple[np.ndarray, ...]:
     length = max((array.size for array in arrays), default=0)
-    if length <= _MAX_RENDER_POINTS:
+    if length <= max_points:
         return arrays
-    stride = int(math.ceil(length / _MAX_RENDER_POINTS))
+    stride = int(math.ceil(length / max_points))
     return tuple(array[::stride] for array in arrays)
 
 
@@ -165,24 +169,40 @@ def render_waveform_example_plot(
 
     clean_values = _flatten_waveform(clean)
     generated_values = _flatten_waveform(generated)
+    observed_values = None if observed is None else _flatten_waveform(observed)
+    point_count = max(
+        clean_values.size,
+        generated_values.size,
+        0 if observed_values is None else observed_values.size,
+    )
+    if sample_rate_hz > _MIN_EXPANDED_WAVEFORM_SAMPLE_RATE_HZ:
+        fig_width = min(
+            _MAX_WAVEFORM_WIDTH,
+            max(_BASE_WAVEFORM_WIDTH, _BASE_WAVEFORM_WIDTH * math.sqrt(point_count / _MAX_RENDER_POINTS)),
+        )
+        max_render_points = int(_MAX_RENDER_POINTS * fig_width / _BASE_WAVEFORM_WIDTH)
+    else:
+        fig_width = _BASE_WAVEFORM_WIDTH
+        max_render_points = _MAX_RENDER_POINTS
     time_sec = np.arange(clean_values.size, dtype=np.float32) / float(sample_rate_hz)
     if observed is None:
         time_sec, clean_values, generated_values = _downsample_for_display(
             time_sec,
             clean_values,
             generated_values,
+            max_points=max_render_points,
         )
         observed_values = None
     else:
-        observed_values = _flatten_waveform(observed)
         time_sec, clean_values, observed_values, generated_values = _downsample_for_display(
             time_sec,
             clean_values,
             observed_values,
             generated_values,
+            max_points=max_render_points,
         )
 
-    fig, ax = plt.subplots(figsize=(10.5, 4.4), facecolor=_FIGURE_BG)
+    fig, ax = plt.subplots(figsize=(fig_width, _WAVEFORM_HEIGHT), facecolor=_FIGURE_BG)
     style_axes(ax, show_grid=True)
     ax.plot(time_sec, clean_values, color=_PRIMARY_DARK, linewidth=1.25, linestyle="solid", label="Clean")
     if observed_values is not None:
