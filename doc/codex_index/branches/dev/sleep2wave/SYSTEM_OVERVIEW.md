@@ -28,8 +28,8 @@ The new generative stack is separate from the copied pretrain/finetune runtime:
 
 - `sleep2wave.generative.config.load_sleep2wave_config` parses stage-specific `recipe: sleep2wave` YAML.
 - `sleep2wave.data.generative_dataset.Sleep2WaveGenerativeDataset` produces clean and observed waveform windows plus availability, quality, and corruption masks.
-- `sleep2wave.autoencoders.model.Sleep2WaveAutoencoder` encodes each modality independently into one latent per epoch.
-- `sleep2wave.diffusion.model.Sleep2WaveDiffusionTransformer` denoises latent targets conditioned on available modality latents.
+- `sleep2wave.autoencoders.model.Sleep2WaveAutoencoder` encodes each modality into channel-specific temporal latent maps.
+- `sleep2wave.diffusion.model.Sleep2WaveDiffusionTransformer` denoises padded multi-channel temporal latent maps with modality/epoch/channel/patch tokens.
 - `sleep2wave.generate.run_generation` samples, decodes, fuses sliding windows, and writes artifacts.
 - `sleep2wave.evaluate_generation.run_evaluation` scores generated artifacts against waveform, feature, event, efficiency, and downstream metric families.
 
@@ -76,8 +76,8 @@ sleep2wave generative presets are pickled `list[SampleIndex]` objects with paylo
 Autoencoder training:
 
 1. `Sleep2WaveGenerativeDataset` returns `clean_signals`.
-2. `Sleep2WaveAutoencoder` reconstructs each modality and returns one latent per epoch.
-3. `Sleep2WaveAutoencoderLoss` combines masked waveform L1/L2 and spectral losses.
+2. `Sleep2WaveAutoencoder` reconstructs each modality and returns `[B, E, C, L, D]` latent maps.
+3. `Sleep2WaveAutoencoderLoss` combines masked waveform L1/L2, spectral, derivative, and MR-STFT losses.
 
 Diffusion training:
 
@@ -85,7 +85,7 @@ Diffusion training:
 2. `Sleep2WaveTaskSampler` samples a generation task from the configured phase schedule.
 3. The autoencoder encodes clean and observed signals into latents.
 4. Noise is added to target latents through `build_diffusion_schedule`.
-5. `Sleep2WaveDiffusionTransformer` predicts target noise under a directional task attention mask.
+5. `Sleep2WaveDiffusionTransformer` predicts `[B, E, C, L, D]` target noise under a directional channel-patch-token task attention mask.
 
 Generation:
 
@@ -104,4 +104,5 @@ Evaluation:
 - sleep2wave finetune configs reject LoRA flags. `sleep2wave.config.load_finetune_config` raises if `freeze_backbone_and_insert_lora`, `insert_lora`, or `separate_adapters` is true.
 - sleep2wave uses a standalone RoFormer implementation. `sleep2wave.checkpoints.load_pretrain_init_weights` rejects legacy HF-style RoFormer checkpoint keys when loading into the standalone target.
 - `utils/check_configs.py` routes `configs/sleep2wave/**` through package-local `sleep2wave` config and preset helpers.
+- Phase 2B diffusion supports padded multi-channel temporal latents through `channel_mask`; cache-only `[N, E, D]` latent configs are still rejected until cache migration.
 - `sleep2vec2/`, `sleep2vec_moe/`, and `sleep2vec_hires/` have no tracked source files on this branch.

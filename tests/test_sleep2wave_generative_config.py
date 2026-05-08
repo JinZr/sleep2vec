@@ -44,7 +44,13 @@ def test_sleep2wave_generative_config_loads_autoencoder_tiny():
     assert cfg.data.context_epochs == 15
     assert cfg.autoencoder is not None
     assert cfg.autoencoder.latent_dim == 64
+    assert cfg.autoencoder.encoder_type == "temporal_conv"
+    assert cfg.autoencoder.decoder_type == "temporal_conv"
+    assert cfg.autoencoder.latent_frames_per_epoch == {"high_frequency": 60, "low_frequency": 30}
+    assert cfg.autoencoder.channel_specific is True
     assert cfg.autoencoder.losses.waveform_l2_weight == 0.1
+    assert cfg.autoencoder.losses.derivative_l1_weight == 0.1
+    assert cfg.autoencoder.losses.mr_stft_weight == 0.1
     assert cfg.training.validation.interval_steps == 1000
     assert cfg.training.validation.max_batches_per_modality == 5
     assert cfg.training.validation.examples.num_examples == 5
@@ -93,7 +99,11 @@ def test_sleep2wave_generative_config_loads_diffusion_tiny():
     assert cfg.stage == "diffusion"
     assert cfg.diffusion is not None
     assert cfg.diffusion.latent_dim == 64
+    assert cfg.diffusion.latent_frames_per_epoch == {"high_frequency": 60, "low_frequency": 30}
+    assert cfg.diffusion.patches_per_epoch == 6
     assert cfg.diffusion.context_epochs == 15
+    assert cfg.diffusion.embeddings.channel_position is True
+    assert cfg.diffusion.embeddings.patch_position is True
     assert cfg.sampler is not None
     assert cfg.sampler.name == "ddim"
     assert cfg.sampler.steps == 20
@@ -375,6 +385,10 @@ def test_sleep2wave_generative_config_loads_tiny_bundle(path: Path):
         assert cfg.autoencoder.latent_dim == 64
     if cfg.diffusion is not None:
         assert cfg.diffusion.latent_dim == 64
+        assert cfg.diffusion.latent_frames_per_epoch == {"high_frequency": 60, "low_frequency": 30}
+        assert cfg.diffusion.patches_per_epoch == 6
+        assert cfg.diffusion.embeddings.channel_position is True
+        assert cfg.diffusion.embeddings.patch_position is True
         assert cfg.diffusion.transformer.hidden_size == 64
         assert cfg.diffusion.transformer.num_layers == 2
         assert cfg.diffusion.transformer.num_heads == 4
@@ -467,11 +481,11 @@ def test_sleep2wave_generative_config_rejects_cache_only_restoration_config(tmp_
     payload["diffusion"]["latent_cache_path"] = "latents"
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
-    with pytest.raises(ValueError, match="supports only translation/partial_full"):
+    with pytest.raises(ValueError, match="only supports translation, two_condition, and partial_full"):
         load_sleep2wave_config(path)
 
 
-def test_sleep2wave_generative_config_accepts_cache_only_translation_config(tmp_path: Path):
+def test_sleep2wave_generative_config_loads_cache_only_translation(tmp_path: Path):
     payload = _load_payload(DIFFUSION_TINY)
     del payload["diffusion"]["autoencoder_checkpoint"]
     payload["diffusion"]["latent_cache_path"] = "latents"
@@ -483,6 +497,16 @@ def test_sleep2wave_generative_config_accepts_cache_only_translation_config(tmp_
 
     assert cfg.diffusion.autoencoder_checkpoint is None
     assert cfg.diffusion.latent_cache_path == "latents"
+
+
+def test_sleep2wave_generative_config_rejects_cache_only_inference(tmp_path: Path):
+    payload = _load_payload(GENERATE_TINY)
+    del payload["diffusion"]["autoencoder_checkpoint"]
+    payload["diffusion"]["latent_cache_path"] = "latents"
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="stage=inference requires diffusion.autoencoder_checkpoint"):
+        load_sleep2wave_config(path)
 
 
 def test_sleep2wave_generative_config_loads_phase_checkpoint(tmp_path: Path):
@@ -628,10 +652,14 @@ def test_sleep2wave_generative_config_loads_medium_bundle(path: Path):
 
     assert cfg.recipe == "sleep2wave"
     if cfg.diffusion is not None:
-        assert cfg.diffusion.latent_dim == 768
-        assert cfg.diffusion.transformer.hidden_size == 768
-        assert cfg.diffusion.transformer.num_layers == 12
-        assert cfg.diffusion.transformer.num_heads == 16
+        assert cfg.diffusion.latent_dim == 64
+        assert cfg.diffusion.latent_frames_per_epoch == {"high_frequency": 60, "low_frequency": 30}
+        assert cfg.diffusion.patches_per_epoch == 6
+        assert cfg.diffusion.embeddings.channel_position is True
+        assert cfg.diffusion.embeddings.patch_position is True
+        assert cfg.diffusion.transformer.hidden_size == 256
+        assert cfg.diffusion.transformer.num_layers == 6
+        assert cfg.diffusion.transformer.num_heads == 8
 
 
 @pytest.mark.parametrize("path", MEDIUM_DIFFUSION_CONFIGS)
@@ -694,16 +722,72 @@ def test_sleep2wave_generative_config_rejects_unsupported_autoencoder_type(tmp_p
     payload["autoencoder"]["encoder_type"] = "other"
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
-    with pytest.raises(ValueError, match="autoencoder.encoder_type must be 'conv1d_epoch'"):
+    with pytest.raises(ValueError, match="autoencoder.encoder_type must be 'temporal_conv'"):
         load_sleep2wave_config(path)
 
 
-def test_sleep2wave_generative_config_rejects_false_autoencoder_flags(tmp_path: Path):
+def test_sleep2wave_generative_config_rejects_false_channel_specific(tmp_path: Path):
     payload = _load_payload(AUTOENCODER_TINY)
-    payload["autoencoder"]["modality_specific"] = False
+    payload["autoencoder"]["channel_specific"] = False
     path = _write_yaml(tmp_path / "bad.yaml", payload)
 
-    with pytest.raises(ValueError, match="autoencoder.modality_specific must be true"):
+    with pytest.raises(ValueError, match="autoencoder.channel_specific must be true"):
+        load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_rejects_old_autoencoder_fields(tmp_path: Path):
+    payload = _load_payload(AUTOENCODER_TINY)
+    payload["autoencoder"]["one_latent_per_epoch"] = True
+    payload["autoencoder"]["modality_specific"] = True
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="autoencoder has unsupported fields"):
+        load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_rejects_invalid_latent_frames(tmp_path: Path):
+    payload = _load_payload(AUTOENCODER_TINY)
+    payload["autoencoder"]["latent_frames_per_epoch"]["high_frequency"] = 0
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="autoencoder.latent_frames_per_epoch.high_frequency"):
+        load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_rejects_diffusion_latent_frames_not_divisible_by_patches(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    payload["diffusion"]["latent_frames_per_epoch"]["high_frequency"] = 61
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="must be divisible by diffusion.patches_per_epoch"):
+        load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_requires_patch_position_embedding_flag(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    del payload["diffusion"]["embeddings"]["patch_position"]
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="diffusion.embeddings.patch_position must be a boolean"):
+        load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_requires_channel_position_embedding_flag(tmp_path: Path):
+    payload = _load_payload(DIFFUSION_TINY)
+    del payload["diffusion"]["embeddings"]["channel_position"]
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="diffusion.embeddings.channel_position must be a boolean"):
+        load_sleep2wave_config(path)
+
+
+def test_sleep2wave_generative_config_rejects_all_zero_autoencoder_loss_weights(tmp_path: Path):
+    payload = _load_payload(AUTOENCODER_TINY)
+    for key in payload["autoencoder"]["losses"]:
+        payload["autoencoder"]["losses"][key] = 0.0
+    path = _write_yaml(tmp_path / "bad.yaml", payload)
+
+    with pytest.raises(ValueError, match="At least one sleep2wave autoencoder loss weight"):
         load_sleep2wave_config(path)
 
 

@@ -42,30 +42,60 @@ class BaseDiffusionSampler:
         self,
         model: Sleep2WaveDiffusionTransformer,
         condition_latents: dict[str, torch.Tensor],
-    ) -> tuple[int, int, int, torch.device]:
+    ) -> tuple[int, torch.device]:
         if not condition_latents:
             raise ValueError("condition_latents must be non-empty.")
+        batch_size: int | None = None
+        device: torch.device | None = None
         first = next(iter(condition_latents.values()))
-        if first.dim() != 3:
-            raise ValueError("Condition latents must have shape [B, E, D].")
-        batch_size, context_epochs, latent_dim = first.shape
-        if context_epochs != model.layout.context_epochs:
-            raise ValueError(f"Condition context has {context_epochs} epochs; expected {model.layout.context_epochs}.")
-        if latent_dim != model.latent_dim:
-            raise ValueError(f"Condition latent dim is {latent_dim}; expected {model.latent_dim}.")
-        return batch_size, context_epochs, latent_dim, first.device
+        device = first.device
+        for modality, latent in condition_latents.items():
+            current_batch_size, _context_epochs, _channels = model._validate_latent(latent, modality)
+            if batch_size is None:
+                batch_size = current_batch_size
+            elif current_batch_size != batch_size:
+                raise ValueError(f"Condition latent for '{modality}' has batch size {current_batch_size}.")
+        if batch_size is None:
+            raise ValueError("condition_latents must be non-empty.")
+        return batch_size, device
+
+    def _target_channel_count(
+        self,
+        model: Sleep2WaveDiffusionTransformer,
+        channel_mask: dict[str, torch.Tensor] | None,
+        modality: str,
+        *,
+        batch_size: int,
+        device: torch.device,
+    ) -> int:
+        if channel_mask is None or modality not in channel_mask:
+            return 1
+        mask = torch.as_tensor(channel_mask[modality], dtype=torch.bool, device=device)
+        expected_prefix = (batch_size, model.layout.context_epochs)
+        if mask.dim() != 3 or mask.shape[:2] != expected_prefix:
+            raise ValueError(f"channel_mask['{modality}'] must have shape {expected_prefix + ('C',)}.")
+        if mask.shape[2] <= 0:
+            raise ValueError(f"channel_mask['{modality}'] must include at least one channel.")
+        return int(mask.shape[2])
 
     def _initial_targets(
         self,
+        model: Sleep2WaveDiffusionTransformer,
         task: GenerationTask,
         *,
         batch_size: int,
-        context_epochs: int,
-        latent_dim: int,
         device: torch.device,
+        channel_mask: dict[str, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
         return {
-            modality: torch.randn(batch_size, context_epochs, latent_dim, device=device)
+            modality: torch.randn(
+                batch_size,
+                model.layout.context_epochs,
+                self._target_channel_count(model, channel_mask, modality, batch_size=batch_size, device=device),
+                model._latent_frames_for_modality(modality),
+                model.latent_dim,
+                device=device,
+            )
             for modality in task.target_modalities
         }
 
@@ -78,6 +108,8 @@ class BaseDiffusionSampler:
         availability_mask: dict[str, torch.Tensor],
         quality_mask: dict[str, torch.Tensor],
         night_position: torch.Tensor,
+        condition_availability_mask: dict[str, torch.Tensor] | None = None,
+        channel_mask: dict[str, torch.Tensor] | None = None,
     ) -> DiffusionSamplerOutput:
         raise NotImplementedError
 
@@ -100,19 +132,21 @@ class DDPMSampler(BaseDiffusionSampler):
         availability_mask: dict[str, torch.Tensor],
         quality_mask: dict[str, torch.Tensor],
         night_position: torch.Tensor,
+        condition_availability_mask: dict[str, torch.Tensor] | None = None,
+        channel_mask: dict[str, torch.Tensor] | None = None,
     ) -> DiffusionSamplerOutput:
         task = validate_generation_task(task)
-        batch_size, context_epochs, latent_dim, device = self._infer_shape(model, condition_latents)
+        batch_size, device = self._infer_shape(model, condition_latents)
         schedule = _schedule_to(self.schedule, device)
         collected = {modality: [] for modality in task.target_modalities}
         timesteps = self._timesteps(device)
         for _sample_idx in range(self.num_samples):
             current = self._initial_targets(
+                model,
                 task,
                 batch_size=batch_size,
-                context_epochs=context_epochs,
-                latent_dim=latent_dim,
                 device=device,
+                channel_mask=channel_mask,
             )
             for timestep in timesteps:
                 t_batch = torch.full((batch_size,), int(timestep.item()), dtype=torch.long, device=device)
@@ -122,6 +156,8 @@ class DDPMSampler(BaseDiffusionSampler):
                     task=task,
                     condition_latents=condition_latents,
                     availability_mask=availability_mask,
+                    condition_availability_mask=condition_availability_mask,
+                    channel_mask=channel_mask,
                     quality_mask=quality_mask,
                     night_position=night_position,
                 ).predicted_noise
@@ -155,20 +191,22 @@ class DDIMSampler(BaseDiffusionSampler):
         availability_mask: dict[str, torch.Tensor],
         quality_mask: dict[str, torch.Tensor],
         night_position: torch.Tensor,
+        condition_availability_mask: dict[str, torch.Tensor] | None = None,
+        channel_mask: dict[str, torch.Tensor] | None = None,
     ) -> DiffusionSamplerOutput:
         task = validate_generation_task(task)
-        batch_size, context_epochs, latent_dim, device = self._infer_shape(model, condition_latents)
+        batch_size, device = self._infer_shape(model, condition_latents)
         schedule = _schedule_to(self.schedule, device)
         collected = {modality: [] for modality in task.target_modalities}
         timesteps = self._timesteps(device)
         prev_timesteps = torch.cat([timesteps[1:], torch.tensor([-1], device=device, dtype=torch.long)])
         for _sample_idx in range(self.num_samples):
             current = self._initial_targets(
+                model,
                 task,
                 batch_size=batch_size,
-                context_epochs=context_epochs,
-                latent_dim=latent_dim,
                 device=device,
+                channel_mask=channel_mask,
             )
             for timestep, prev_timestep in zip(timesteps, prev_timesteps):
                 t_batch = torch.full((batch_size,), int(timestep.item()), dtype=torch.long, device=device)
@@ -178,6 +216,8 @@ class DDIMSampler(BaseDiffusionSampler):
                     task=task,
                     condition_latents=condition_latents,
                     availability_mask=availability_mask,
+                    condition_availability_mask=condition_availability_mask,
+                    channel_mask=channel_mask,
                     quality_mask=quality_mask,
                     night_position=night_position,
                 ).predicted_noise

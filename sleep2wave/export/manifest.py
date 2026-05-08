@@ -15,10 +15,15 @@ def build_generation_manifest(
     diffusion_ckpt: str | Path,
     autoencoder_ckpt: str | Path,
     sampler: dict[str, t.Any],
+    autoencoder_type: str,
+    latent_dim: int,
+    latent_frames_per_epoch: t.Mapping[str, int],
+    patches_per_epoch: int,
+    channel_specific: bool,
     output_files: t.Sequence[str],
 ) -> dict[str, t.Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_type": "sleep2wave_generation",
         "signal_provenance": GENERATED_SIGNAL_PROVENANCE,
         "clinical_use": "decision_support_only",
@@ -29,6 +34,11 @@ def build_generation_manifest(
         "diffusion_checkpoint": str(diffusion_ckpt),
         "autoencoder_checkpoint": str(autoencoder_ckpt),
         "sampler": dict(sampler),
+        "autoencoder_type": autoencoder_type,
+        "latent_dim": int(latent_dim),
+        "latent_frames_per_epoch": dict(latent_frames_per_epoch),
+        "patches_per_epoch": int(patches_per_epoch),
+        "channel_specific": bool(channel_specific),
         "output_files": list(output_files),
     }
 

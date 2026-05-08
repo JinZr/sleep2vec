@@ -104,13 +104,13 @@ def _decode_generated_latents(
 ) -> dict[str, torch.Tensor]:
     decoded: dict[str, torch.Tensor] = {}
     for modality, latents in generated_latents.items():
-        if latents.dim() != 4:
+        if latents.dim() != 6:
             raise ValueError(
-                f"Generated latents for '{modality}' must have shape [num_samples, B, E, D], "
+                f"Generated latents for '{modality}' must have shape [num_samples, B, E, C, L, D], "
                 f"got {tuple(latents.shape)}."
             )
-        num_samples, batch_size, context_epochs, latent_dim = latents.shape
-        flat = latents.reshape(num_samples * batch_size, context_epochs, latent_dim)
+        num_samples, batch_size, context_epochs, channels, latent_frames, latent_dim = latents.shape
+        flat = latents.reshape(num_samples * batch_size, context_epochs, channels, latent_frames, latent_dim)
         decoded_flat = autoencoder.decode_latents({modality: flat})[modality]
         decoded[modality] = decoded_flat.reshape(num_samples, batch_size, context_epochs, *decoded_flat.shape[2:])
     return decoded
@@ -221,6 +221,7 @@ def _collect_generation_windows(
     from sleep2wave.data.generative_dataset import Sleep2WaveGenerativeDataset
     from sleep2wave.data.modalities import CANONICAL_MODALITIES
     from sleep2wave.diffusion.samplers import build_sampler
+    from sleep2wave.diffusion.task_masks import build_patch_condition_availability
     from sleep2wave.inference.sliding_window import validate_single_night
 
     preset_path, index = _resolve_generation_data_source(args, config.data)
@@ -267,6 +268,14 @@ def _collect_generation_windows(
             availability_mask = _to_device(batch["availability_mask"], device)
             sampler_availability_mask = _activate_requested_generation_targets(availability_mask, task)
             quality_mask = _to_device(batch["quality_mask"], device)
+            channel_mask = _to_device(batch["channel_mask"], device)
+            corruption_mask = _to_device(batch["corruption_mask"], device)
+            condition_availability = build_patch_condition_availability(
+                sampler_availability_mask,
+                corruption_mask,
+                task,
+                patches_per_epoch=config.diffusion.patches_per_epoch,
+            )
             output = sampler.sample(
                 model,
                 condition_latents=condition_latents,
@@ -274,6 +283,8 @@ def _collect_generation_windows(
                 availability_mask=sampler_availability_mask,
                 quality_mask=quality_mask,
                 night_position=batch["night_position"].to(device),
+                condition_availability_mask=condition_availability,
+                channel_mask=channel_mask,
             )
             decoded = _decode_generated_latents(autoencoder, output.generated_latents)
             for modality, values in decoded.items():
@@ -400,6 +411,7 @@ def run_generation(args: argparse.Namespace) -> Path:
     autoencoder = load_sleep2wave_autoencoder_checkpoint(
         autoencoder_ckpt,
         latent_dim=config.diffusion.latent_dim,
+        latent_frames_per_epoch=config.diffusion.latent_frames_per_epoch,
         modalities=config.modalities.all,
         device=device,
     )
@@ -439,6 +451,11 @@ def run_generation(args: argparse.Namespace) -> Path:
             "num_samples": sampler_config.num_samples,
             "overlap_fusion": args.overlap_fusion,
         },
+        autoencoder_type="temporal_conv",
+        latent_dim=config.diffusion.latent_dim,
+        latent_frames_per_epoch=config.diffusion.latent_frames_per_epoch,
+        patches_per_epoch=config.diffusion.patches_per_epoch,
+        channel_specific=True,
         output_files=[
             "generated.npz",
             "uncertainty.npz",

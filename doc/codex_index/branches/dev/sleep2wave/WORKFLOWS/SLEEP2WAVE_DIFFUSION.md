@@ -8,11 +8,11 @@ Train a latent diffusion transformer that generates target modality latents from
 
 1. Train or provide a compatible sleep2wave autoencoder checkpoint.
 2. Load `stage: diffusion` config with `load_sleep2wave_config`.
-3. Build train and val split DataLoaders through `train_diffusion.build_dataloader`; cache-only validation can reuse train rows when the cache artifact has no val split.
-4. `Sleep2WaveDiffusionLightning` loads the autoencoder checkpoint, or uses an existing latent cache for translation/partial-full-only training.
+3. Build train and val split DataLoaders through `train_diffusion.build_dataloader`.
+4. `Sleep2WaveDiffusionLightning` loads the autoencoder checkpoint and encodes waveform batches into temporal latent maps.
 5. `Sleep2WaveTaskSampler` samples phase-appropriate tasks.
 6. Restoration/imputation tasks apply task-aware waveform corruptions from `training.corruptions` before autoencoder encoding.
-7. `Sleep2WaveDiffusionTransformer` predicts target noise.
+7. `Sleep2WaveDiffusionTransformer` patchifies `[B, E, C, L, D]` latents into `(modality, epoch, channel, patch)` tokens and predicts target noise.
 8. Validation logs epoch losses and task-family waveform examples when W&B is active.
 9. Save epoch checkpoints and `last.ckpt`.
 
@@ -31,8 +31,12 @@ Important constraints:
 
 - `training.phase` must be 1 through 5.
 - `data.context_epochs` must match `diffusion.context_epochs`.
-- `diffusion.autoencoder_checkpoint` is required for waveform-to-latent training.
-- `diffusion.latent_cache_path` can replace the autoencoder checkpoint only for translation/partial-full task mixes.
+- `diffusion.autoencoder_checkpoint` is required for Phase 2B temporal-patch diffusion.
+- `diffusion.latent_cache_path` without an autoencoder checkpoint is rejected until the Phase 3 cache schema update.
+- `diffusion.latent_frames_per_epoch` is required and currently uses 60 high-frequency frames and 30 low-frequency frames per 30-second epoch.
+- `diffusion.patches_per_epoch` is required and currently uses 6 patches per epoch.
+- `diffusion.embeddings.channel_position` and `diffusion.embeddings.patch_position` are required.
+- Restoration/imputation corruption masks are projected to channel-aware patch-level condition availability in training and validation-example sampling; target/loss availability remains separate and padded channels are controlled by `channel_mask`.
 - `training.phase_checkpoint` initializes the diffusion transformer from a previous Sleep2Wave phase while keeping the current config.
 - CLI `--resume-from-checkpoint` is reserved for Lightning crash recovery.
 - `diffusion.beta_schedule` is currently `cosine`.
@@ -58,20 +62,13 @@ python -m sleep2wave.train_diffusion \
   --seed 0
 ```
 
-Build a latent cache:
-
-```bash
-python -m sleep2wave.cache_latents \
-  --config configs/sleep2wave/sleep2wave_diffusion_medium_phase2.yaml \
-  --autoencoder-ckpt checkpoints/sleep2wave_autoencoder_medium.ckpt \
-  --output-dir outputs/sleep2wave_latent_cache
-```
+Latent-cache training is intentionally disabled for Phase 2B because the old cache schema stores `[N, E, D]` latents.
 
 ## Edit Hotspots
 
 - Task semantics: `sleep2wave/diffusion/tasks.py`
 - Attention mask semantics: `sleep2wave/diffusion/task_masks.py`
-- Model shape and embeddings: `sleep2wave/diffusion/model.py`
+- Model shape, patch projections, and embeddings: `sleep2wave/diffusion/model.py`
 - Schedule and samplers: `sleep2wave/diffusion/schedule.py`, `sleep2wave/diffusion/samplers.py`
 - Training step: `sleep2wave/diffusion/lightning.py`
 - Latent cache: `sleep2wave/diffusion/latent_cache.py`, `sleep2wave/cache_latents.py`

@@ -5,7 +5,6 @@ import typing as t
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS, validate_modality_sequence
 
@@ -16,60 +15,93 @@ class Sleep2WaveAutoencoderOutput:
     reconstructions: dict[str, torch.Tensor]
 
 
-class _EpochConvEncoder(nn.Module):
-    def __init__(self, *, frames_per_epoch: int, latent_dim: int) -> None:
+DEFAULT_LATENT_FRAMES_PER_EPOCH = {
+    "high_frequency": 60,
+    "low_frequency": 30,
+}
+
+
+def _require_power_of_two(value: int, *, name: str) -> int:
+    if value <= 0 or value & (value - 1):
+        raise ValueError(f"{name} must be a positive power of two.")
+    return value.bit_length() - 1
+
+
+class _TemporalConvEncoder(nn.Module):
+    def __init__(self, *, frames_per_epoch: int, latent_frames_per_epoch: int, latent_dim: int) -> None:
         super().__init__()
-        width = 32 if frames_per_epoch >= 1000 else 16
-        self.net = nn.Sequential(
-            nn.Conv1d(1, width, kernel_size=7, stride=2, padding=3),
-            nn.ReLU(),
-            nn.Conv1d(width, width, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1),
-            nn.Flatten(),
-            nn.Linear(width, latent_dim),
-        )
+        if frames_per_epoch % latent_frames_per_epoch != 0:
+            raise ValueError("frames_per_epoch must be divisible by latent_frames_per_epoch.")
+        downsample_factor = frames_per_epoch // latent_frames_per_epoch
+        steps = _require_power_of_two(downsample_factor, name="downsample_factor")
+
+        self.latent_frames_per_epoch = int(latent_frames_per_epoch)
+        width = 64 if frames_per_epoch >= 1000 else 32
+        layers: list[nn.Module] = []
+        in_channels = 1
+        for _ in range(steps):
+            layers.extend(
+                [
+                    nn.Conv1d(in_channels, width, kernel_size=4, stride=2, padding=1),
+                    nn.ReLU(),
+                ]
+            )
+            in_channels = width
+        layers.append(nn.Conv1d(in_channels, latent_dim, kernel_size=1))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        latent = self.net(x)
+        if latent.shape[-1] != self.latent_frames_per_epoch:
+            raise ValueError(f"Expected {self.latent_frames_per_epoch} latent frames, got {latent.shape[-1]}.")
+        return latent
 
 
-class _EpochDecoder(nn.Module):
-    def __init__(self, *, frames_per_epoch: int, latent_dim: int) -> None:
+class _TemporalConvDecoder(nn.Module):
+    def __init__(self, *, frames_per_epoch: int, latent_frames_per_epoch: int, latent_dim: int) -> None:
         super().__init__()
         self.frames_per_epoch = int(frames_per_epoch)
-        width = 32 if frames_per_epoch >= 1000 else 16
-        init_length = 16 if frames_per_epoch >= 1000 else 8
+        if frames_per_epoch % latent_frames_per_epoch != 0:
+            raise ValueError("frames_per_epoch must be divisible by latent_frames_per_epoch.")
+        downsample_factor = frames_per_epoch // latent_frames_per_epoch
+        steps = _require_power_of_two(downsample_factor, name="downsample_factor")
+
+        width = 64 if frames_per_epoch >= 1000 else 32
         layers: list[nn.Module] = []
-        length = init_length
-        while length < frames_per_epoch:
+        in_channels = latent_dim
+        layers.extend([nn.Conv1d(in_channels, width, kernel_size=1), nn.ReLU()])
+        for _ in range(steps):
             layers.extend(
                 [
                     nn.ConvTranspose1d(width, width, kernel_size=4, stride=2, padding=1),
                     nn.ReLU(),
                 ]
             )
-            length *= 2
-        self.proj = nn.Linear(latent_dim, width * init_length)
-        self.init_length = init_length
-        self.width = width
         self.net = nn.Sequential(*layers, nn.Conv1d(width, 1, kernel_size=3, padding=1))
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        x = self.proj(z).reshape(z.shape[0], self.width, self.init_length)
-        x = self.net(x)
+        x = self.net(z)
         if x.shape[-1] != self.frames_per_epoch:
-            x = F.interpolate(x, size=self.frames_per_epoch, mode="linear", align_corners=False)
+            raise ValueError(f"Expected {self.frames_per_epoch} decoded frames, got {x.shape[-1]}.")
         return x
 
 
 class _ModalityAutoencoder(nn.Module):
-    def __init__(self, *, frames_per_epoch: int, latent_dim: int) -> None:
+    def __init__(self, *, frames_per_epoch: int, latent_frames_per_epoch: int, latent_dim: int) -> None:
         super().__init__()
         self.frames_per_epoch = int(frames_per_epoch)
+        self.latent_frames_per_epoch = int(latent_frames_per_epoch)
         self.latent_dim = int(latent_dim)
-        self.encoder = _EpochConvEncoder(frames_per_epoch=frames_per_epoch, latent_dim=latent_dim)
-        self.decoder = _EpochDecoder(frames_per_epoch=frames_per_epoch, latent_dim=latent_dim)
+        self.encoder = _TemporalConvEncoder(
+            frames_per_epoch=frames_per_epoch,
+            latent_frames_per_epoch=latent_frames_per_epoch,
+            latent_dim=latent_dim,
+        )
+        self.decoder = _TemporalConvDecoder(
+            frames_per_epoch=frames_per_epoch,
+            latent_frames_per_epoch=latent_frames_per_epoch,
+            latent_dim=latent_dim,
+        )
 
     def _prepare_input(self, x: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int, int], bool]:
         if x.dim() == 3:
@@ -94,25 +126,24 @@ class _ModalityAutoencoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         prepared, (batch_size, epoch_count, channels), channel_first = self._prepare_input(x)
-        channel_latent = self.encoder(prepared).reshape(batch_size, epoch_count, channels, -1)
-        latent = channel_latent.mean(dim=2)
+        latent = self.encoder(prepared).transpose(1, 2)
+        latent = latent.reshape(batch_size, epoch_count, channels, self.latent_frames_per_epoch, self.latent_dim)
         reconstruction = self.decode(latent)
-        if channels > 1:
-            reconstruction = reconstruction.expand(
-                batch_size, epoch_count, channels, self.frames_per_epoch
-            ).contiguous()
         if not channel_first:
             reconstruction = reconstruction.squeeze(2)
         return latent, reconstruction
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        if latent.dim() != 3:
-            raise ValueError(f"Latent must have shape [B, E, D], got {tuple(latent.shape)}.")
-        batch_size, epoch_count, latent_dim = latent.shape
+        if latent.dim() != 5:
+            raise ValueError(f"Latent must have shape [B, E, C, L, D], got {tuple(latent.shape)}.")
+        batch_size, epoch_count, channels, latent_frames, latent_dim = latent.shape
+        if latent_frames != self.latent_frames_per_epoch:
+            raise ValueError(f"Expected {self.latent_frames_per_epoch} latent frames, got {latent_frames}.")
         if latent_dim != self.latent_dim:
             raise ValueError(f"Expected latent dim {self.latent_dim}, got {latent_dim}.")
-        reconstruction = self.decoder(latent.reshape(batch_size * epoch_count, latent_dim))
-        return reconstruction.reshape(batch_size, epoch_count, 1, self.frames_per_epoch)
+        prepared = latent.reshape(batch_size * epoch_count * channels, latent_frames, latent_dim).transpose(1, 2)
+        reconstruction = self.decoder(prepared)
+        return reconstruction.reshape(batch_size, epoch_count, channels, self.frames_per_epoch)
 
 
 class Sleep2WaveAutoencoder(nn.Module):
@@ -120,29 +151,44 @@ class Sleep2WaveAutoencoder(nn.Module):
         self,
         *,
         latent_dim: int,
-        encoder_type: str = "conv1d_epoch",
-        decoder_type: str = "convtranspose1d_epoch",
+        encoder_type: str = "temporal_conv",
+        decoder_type: str = "temporal_conv",
+        latent_frames_per_epoch: t.Mapping[str, int] | None = None,
+        channel_specific: bool = True,
         modalities: t.Sequence[str] = CANONICAL_MODALITIES,
     ) -> None:
         super().__init__()
-        if encoder_type != "conv1d_epoch":
-            raise ValueError("sleep2wave autoencoder currently supports encoder_type='conv1d_epoch'.")
-        if decoder_type != "convtranspose1d_epoch":
-            raise ValueError("sleep2wave autoencoder currently supports decoder_type='convtranspose1d_epoch'.")
+        if encoder_type != "temporal_conv":
+            raise ValueError("sleep2wave autoencoder currently supports encoder_type='temporal_conv'.")
+        if decoder_type != "temporal_conv":
+            raise ValueError("sleep2wave autoencoder currently supports decoder_type='temporal_conv'.")
+        if not channel_specific:
+            raise ValueError("sleep2wave autoencoder currently requires channel_specific=True.")
         if latent_dim <= 0:
             raise ValueError("latent_dim must be positive.")
 
         self.modalities = validate_modality_sequence(list(modalities), allow_aliases=False)
         self.latent_dim = int(latent_dim)
+        self.latent_frames_per_epoch = dict(latent_frames_per_epoch or DEFAULT_LATENT_FRAMES_PER_EPOCH)
         self.modality_autoencoders = nn.ModuleDict(
             {
                 modality: _ModalityAutoencoder(
                     frames_per_epoch=MODALITY_SPECS[modality].frames_per_epoch,
+                    latent_frames_per_epoch=self._latent_frames_for_modality(modality),
                     latent_dim=self.latent_dim,
                 )
                 for modality in self.modalities
             }
         )
+
+    def _latent_frames_for_modality(self, modality: str) -> int:
+        frequency_group = MODALITY_SPECS[modality].frequency_group
+        if frequency_group not in self.latent_frames_per_epoch:
+            raise ValueError(f"Missing latent frame count for frequency group '{frequency_group}'.")
+        value = self.latent_frames_per_epoch[frequency_group]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"latent_frames_per_epoch.{frequency_group} must be a positive integer.")
+        return value
 
     def forward(self, clean_signals: dict[str, torch.Tensor]) -> Sleep2WaveAutoencoderOutput:
         latents: dict[str, torch.Tensor] = {}

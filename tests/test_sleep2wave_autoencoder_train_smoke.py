@@ -61,14 +61,16 @@ def _write_config(
 ) -> Path:
     autoencoder = {
         "latent_dim": 8,
-        "encoder_type": "conv1d_epoch",
-        "decoder_type": "convtranspose1d_epoch",
-        "one_latent_per_epoch": True,
-        "modality_specific": True,
+        "encoder_type": "temporal_conv",
+        "decoder_type": "temporal_conv",
+        "latent_frames_per_epoch": {"high_frequency": 60, "low_frequency": 30},
+        "channel_specific": True,
         "losses": {
             "waveform_l1_weight": 1.0,
             "waveform_l2_weight": 0.0,
             "spectral_weight": 0.0,
+            "derivative_l1_weight": 0.0,
+            "mr_stft_weight": 0.0,
         },
     }
     training = {
@@ -154,8 +156,22 @@ def test_autoencoder_validation_step_logs_configured_examples(tmp_path: Path, mo
 
     losses = model.validation_step(batch, 0)
 
-    assert {"loss", "waveform_l1_loss", "waveform_l2_loss", "spectral_loss"} <= set(losses)
-    assert {"val_loss", "val_waveform_l1_loss", "val_waveform_l2_loss", "val_spectral_loss"} <= set(logged_scalars)
+    assert {
+        "loss",
+        "waveform_l1_loss",
+        "waveform_l2_loss",
+        "spectral_loss",
+        "derivative_l1_loss",
+        "mr_stft_loss",
+    } <= set(losses)
+    assert {
+        "val_loss",
+        "val_waveform_l1_loss",
+        "val_waveform_l2_loss",
+        "val_spectral_loss",
+        "val_derivative_l1_loss",
+        "val_mr_stft_loss",
+    } <= set(logged_scalars)
     assert len(logged_payloads) == 1
     payload, commit = logged_payloads[0]
     assert commit is False

@@ -14,14 +14,18 @@ modalities:
   frames_per_epoch: {eeg: 3840, eog: 3840, emg: 3840, ecg: 3840, airflow: 120, belt: 120, spo2: 120, ibi: 120, resp: 120}
 
 diffusion:
-  latent_dim: 768
+  latent_dim: 64
+  latent_frames_per_epoch:
+    high_frequency: 60
+    low_frequency: 30
+  patches_per_epoch: 6
   autoencoder_checkpoint: checkpoints/sleep2wave_autoencoder_medium.ckpt
-  transformer: {hidden_size: 768, num_layers: 12, num_heads: 16, mlp_ratio: 4}
+  transformer: {hidden_size: 256, num_layers: 6, num_heads: 8, mlp_ratio: 4}
   diffusion_steps: 1000
   beta_schedule: cosine
   prediction_type: epsilon
   context_epochs: 15
-  embeddings: {diffusion_step: true, modality: true, epoch_position: true, sleep_night_position: true, availability: true, quality: true}
+  embeddings: {diffusion_step: true, modality: true, epoch_position: true, channel_position: true, patch_position: true, sleep_night_position: true, availability: true, quality: true}
   task_attention_mask: directional
   auxiliary_restoration_token: true
   condition_dropout: 0.15
@@ -29,7 +33,7 @@ diffusion:
 training:
   phase: 3
   phase_checkpoint: outputs/sleep2wave_diffusion_medium_phase2/phase2/checkpoints/last.ckpt
-  batch_size: 256
+  batch_size: 16
   lr: 0.00002
   weight_decay: 0.01
   max_epochs: 160

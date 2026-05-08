@@ -26,6 +26,8 @@ class Sleep2WaveAutoencoderLightning(pl.LightningModule):
             latent_dim=config.autoencoder.latent_dim,
             encoder_type=config.autoencoder.encoder_type,
             decoder_type=config.autoencoder.decoder_type,
+            latent_frames_per_epoch=config.autoencoder.latent_frames_per_epoch,
+            channel_specific=config.autoencoder.channel_specific,
             modalities=config.modalities.all,
         )
         self.loss_fn = Sleep2WaveAutoencoderLoss(config.autoencoder.losses)

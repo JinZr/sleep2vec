@@ -43,10 +43,14 @@ def _group_for_key(key: str) -> str | None:
         return "autoencoder_encoders"
     if (
         key.startswith("input_projection.")
+        or key.startswith("input_projections.")
         or key.startswith("output_projection.")
+        or key.startswith("output_projections.")
         or key.startswith("diffusion_step_embedding.")
         or key.startswith("modality_embedding.")
         or key.startswith("epoch_position_embedding.")
+        or key.startswith("patch_position_embedding.")
+        or key.startswith("channel_position_projection.")
         or key.startswith("sleep_night_position_projection.")
         or key.startswith("availability_embedding.")
         or key.startswith("quality_projection.")

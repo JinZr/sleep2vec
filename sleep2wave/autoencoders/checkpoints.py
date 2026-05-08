@@ -13,6 +13,7 @@ def load_sleep2wave_autoencoder_checkpoint(
     checkpoint_path: str | Path,
     *,
     latent_dim: int,
+    latent_frames_per_epoch: t.Mapping[str, int],
     modalities: t.Sequence[str] = CANONICAL_MODALITIES,
     device: torch.device | str = "cpu",
 ) -> Sleep2WaveAutoencoder:
@@ -20,7 +21,11 @@ def load_sleep2wave_autoencoder_checkpoint(
     if not path.exists():
         raise FileNotFoundError(f"Autoencoder checkpoint not found: {path}")
 
-    model = Sleep2WaveAutoencoder(latent_dim=latent_dim, modalities=modalities)
+    model = Sleep2WaveAutoencoder(
+        latent_dim=latent_dim,
+        latent_frames_per_epoch=latent_frames_per_epoch,
+        modalities=modalities,
+    )
     checkpoint = torch.load(path, map_location=torch.device(device), weights_only=False)
     state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
     if not isinstance(state_dict, dict):

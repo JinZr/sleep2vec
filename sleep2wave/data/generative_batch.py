@@ -45,6 +45,12 @@ def _stack_channel_mask(samples: list[dict[str, t.Any]]) -> SignalDict:
     modalities = samples[0]["clean_signals"].keys()
     stacked: SignalDict = {}
     for modality in modalities:
+        if "channel_mask" in samples[0]:
+            values = [sample["channel_mask"][modality] for sample in samples]
+            max_channels = max(value.shape[1] for value in values)
+            masks = [_pad_channel_dim(value, max_channels, value=False) for value in values]
+            stacked[modality] = torch.stack(masks, dim=0)
+            continue
         max_channels = max(sample["clean_signals"][modality].shape[1] for sample in samples)
         masks = []
         for sample in samples:

@@ -64,6 +64,16 @@ def build_dataloader(config, *, num_workers: int, seed: int, split: str = "train
     if config.data.context_epochs != config.diffusion.context_epochs:
         raise ValueError("data.context_epochs must match diffusion.context_epochs for diffusion training.")
     is_train = split == "train"
+    schedule = build_phase_schedule(
+        config.training.phase,
+        config.training.task_mix,
+        replay_enabled=config.training.replay.enabled,
+    )
+    min_channels = 1
+    if schedule.task_mix.get("translation", 0.0) > 0 or schedule.task_mix.get("partial_full", 0.0) > 0:
+        min_channels = 2
+    if schedule.task_mix.get("two_condition", 0.0) > 0:
+        min_channels = 3
     if config.diffusion.autoencoder_checkpoint is None:
         try:
             dataset = Sleep2WaveLatentCacheDataset(config.diffusion.latent_cache_path, split=split)
@@ -71,9 +81,17 @@ def build_dataloader(config, *, num_workers: int, seed: int, split: str = "train
             if split == "train" or "No sleep2wave latent cache rows are available" not in str(exc):
                 raise
             dataset = Sleep2WaveLatentCacheDataset(config.diffusion.latent_cache_path, split="train")
-        return dataset.dataloader(
+        batch_sampler = AvailableChannelsBucketBatchSampler(
+            dataset.data,
             batch_size=config.training.batch_size,
+            min_channels=min_channels,
             shuffle=is_train,
+            drop_last=False,
+            shard_across_ranks=True,
+            seed=seed,
+        )
+        return dataset.dataloader(
+            batch_sampler=batch_sampler,
             num_workers=num_workers,
         )
     else:
@@ -85,16 +103,6 @@ def build_dataloader(config, *, num_workers: int, seed: int, split: str = "train
             task_type="translation",
             seed=seed,
         )
-    schedule = build_phase_schedule(
-        config.training.phase,
-        config.training.task_mix,
-        replay_enabled=config.training.replay.enabled,
-    )
-    min_channels = 1
-    if schedule.task_mix.get("translation", 0.0) > 0 or schedule.task_mix.get("partial_full", 0.0) > 0:
-        min_channels = 2
-    if schedule.task_mix.get("two_condition", 0.0) > 0:
-        min_channels = 3
     batch_sampler = AvailableChannelsBucketBatchSampler(
         dataset.data,
         batch_size=config.training.batch_size,

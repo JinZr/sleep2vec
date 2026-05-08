@@ -1,5 +1,13 @@
 # Branch Index Changelog
 
+## 2026-05-08
+
+- Updated after Phase 2B padded multi-channel diffusion:
+  - diffusion token layout now includes modality, epoch, channel, and patch
+  - `Sleep2WaveDiffusionTransformer` predicts `[B, E, C, L, D]` noise with `channel_mask`
+  - diffusion configs require `embeddings.channel_position`
+  - latent-cache migration remains deferred to Phase 3
+
 ## 2026-05-05
 
 - Initialized the `dev/sleep2wave` branch index at commit `55458eba899c81026710d31c31a3143501d911bd`.

@@ -26,6 +26,7 @@ class _TinyInitTarget(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.input_projection = nn.Linear(2, 2)
+        self.channel_position_projection = nn.Linear(1, 2)
         self.proj_head = nn.Linear(2, 2)
         self.tokenizer_mapping = nn.ModuleDict({"eeg": nn.Linear(2, 2)})
         self.modality_autoencoders = nn.ModuleDict({"eeg": _TinyAutoencoderBranch()})
@@ -69,6 +70,33 @@ def test_sleep2vec2_init_loads_exact_shape_keys(tmp_path: Path):
     assert report.loaded_groups == ["diffusion_transformer"]
     assert report.loaded_keys == ["input_projection.weight"]
     assert torch.equal(target.input_projection.weight, torch.full_like(target.input_projection.weight, 3.0))
+
+
+def test_sleep2vec2_init_loads_channel_position_projection(tmp_path: Path):
+    target = _TinyInitTarget()
+    ckpt_path = _save_checkpoint(
+        tmp_path / "init.ckpt",
+        {
+            "model.channel_position_projection.weight": torch.full_like(
+                target.channel_position_projection.weight,
+                5.0,
+            )
+        },
+    )
+
+    report = load_sleep2vec2_initialization(
+        target,
+        ckpt_path,
+        _config(ckpt_path, load_groups={"diffusion_transformer": True}),
+        target_groups={"diffusion_transformer"},
+    )
+
+    assert report.loaded_groups == ["diffusion_transformer"]
+    assert report.loaded_keys == ["channel_position_projection.weight"]
+    assert torch.equal(
+        target.channel_position_projection.weight,
+        torch.full_like(target.channel_position_projection.weight, 5.0),
+    )
 
 
 def test_sleep2vec2_init_prefers_ema_model_prefix(tmp_path: Path):
@@ -209,11 +237,17 @@ def _write_autoencoder_config(tmp_path: Path, init_ckpt: Path) -> Path:
         "modalities": _modalities_block(),
         "autoencoder": {
             "latent_dim": 8,
-            "encoder_type": "conv1d_epoch",
-            "decoder_type": "convtranspose1d_epoch",
-            "one_latent_per_epoch": True,
-            "modality_specific": True,
-            "losses": {"waveform_l1_weight": 1.0, "waveform_l2_weight": 0.0, "spectral_weight": 0.0},
+            "encoder_type": "temporal_conv",
+            "decoder_type": "temporal_conv",
+            "latent_frames_per_epoch": {"high_frequency": 60, "low_frequency": 30},
+            "channel_specific": True,
+            "losses": {
+                "waveform_l1_weight": 1.0,
+                "waveform_l2_weight": 0.0,
+                "spectral_weight": 0.0,
+                "derivative_l1_weight": 0.0,
+                "mr_stft_weight": 0.0,
+            },
         },
         "training": {
             "phase": 0,
@@ -244,6 +278,8 @@ def _write_diffusion_config(tmp_path: Path, init_ckpt: Path) -> Path:
         "modalities": _modalities_block(),
         "diffusion": {
             "latent_dim": 8,
+            "latent_frames_per_epoch": {"high_frequency": 60, "low_frequency": 30},
+            "patches_per_epoch": 6,
             "autoencoder_checkpoint": str(tmp_path / "autoencoder.ckpt"),
             "transformer": {"hidden_size": 8, "num_layers": 1, "num_heads": 2, "mlp_ratio": 2},
             "diffusion_steps": 8,
@@ -254,6 +290,8 @@ def _write_diffusion_config(tmp_path: Path, init_ckpt: Path) -> Path:
                 "diffusion_step": True,
                 "modality": True,
                 "epoch_position": True,
+                "channel_position": True,
+                "patch_position": True,
                 "sleep_night_position": True,
                 "availability": True,
                 "quality": True,

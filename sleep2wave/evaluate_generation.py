@@ -164,6 +164,71 @@ def _apply_metric_epoch_mask(
     return reference[mask], generated[mask], filtered_baseline
 
 
+def _load_masked_metric_arrays(
+    *,
+    reference_npz: np.lib.npyio.NpzFile,
+    generated_npz: np.lib.npyio.NpzFile,
+    uncertainty_npz: np.lib.npyio.NpzFile,
+    masks_npz: np.lib.npyio.NpzFile,
+    baseline_npz: np.lib.npyio.NpzFile | None,
+    modality: str,
+    corruption_mask_policy: str,
+    include_baseline: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None] | None:
+    reference = _load_reference(reference_npz, modality)
+    generated = _load_generated_mean(generated_npz, uncertainty_npz, modality)
+    if reference is None or generated is None:
+        return None
+    return _apply_metric_epoch_mask(
+        reference,
+        generated,
+        _load_baseline(baseline_npz, modality) if include_baseline else None,
+        _load_metric_epoch_mask(
+            masks_npz,
+            modality,
+            generated.shape[0],
+            corruption_mask_policy=corruption_mask_policy,
+        ),
+    )
+
+
+def _load_masked_metric_pair(
+    *,
+    reference_npz: np.lib.npyio.NpzFile,
+    generated_npz: np.lib.npyio.NpzFile,
+    uncertainty_npz: np.lib.npyio.NpzFile,
+    masks_npz: np.lib.npyio.NpzFile,
+    left_modality: str,
+    right_modality: str,
+    corruption_mask_policy: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    left_reference = _load_reference(reference_npz, left_modality)
+    left_generated = _load_generated_mean(generated_npz, uncertainty_npz, left_modality)
+    right_reference = _load_reference(reference_npz, right_modality)
+    right_generated = _load_generated_mean(generated_npz, uncertainty_npz, right_modality)
+    if left_reference is None or left_generated is None or right_reference is None or right_generated is None:
+        return None
+    if left_generated.shape[0] != right_generated.shape[0]:
+        raise ValueError("Paired metric modalities must share the same epoch dimension.")
+    mask = _load_metric_epoch_mask(
+        masks_npz,
+        left_modality,
+        left_generated.shape[0],
+        corruption_mask_policy=corruption_mask_policy,
+    )
+    mask &= _load_metric_epoch_mask(
+        masks_npz,
+        right_modality,
+        right_generated.shape[0],
+        corruption_mask_policy=corruption_mask_policy,
+    )
+    left_masked = _apply_metric_epoch_mask(left_reference, left_generated, None, mask)
+    right_masked = _apply_metric_epoch_mask(right_reference, right_generated, None, mask)
+    if left_masked is None or right_masked is None:
+        return None
+    return left_masked[0], left_masked[1], right_masked[0], right_masked[1]
+
+
 def _metric_rows(metrics: dict[str, t.Any]) -> list[dict[str, t.Any]]:
     rows: list[dict[str, t.Any]] = []
 
@@ -222,7 +287,7 @@ def run_evaluation(args: argparse.Namespace) -> Path:
     from sleep2wave.evaluation.downstream_hooks import load_downstream_metrics
     from sleep2wave.evaluation.efficiency import summarize_generation_efficiency
     from sleep2wave.evaluation.event_metrics import compute_event_metric_groups, compute_generated_signal_event_groups
-    from sleep2wave.evaluation.feature_metrics import compute_feature_metrics
+    from sleep2wave.evaluation.feature_metrics import airflow_belt_coherence_metrics, compute_feature_metrics
     from sleep2wave.evaluation.waveform_metrics import compute_waveform_metrics
     from sleep2wave.generative.config import load_sleep2wave_config
 
@@ -274,20 +339,15 @@ def run_evaluation(args: argparse.Namespace) -> Path:
             raise ValueError("evaluation.reference_npz is required for waveform metrics.")
         waveform_metrics: dict[str, dict[str, float]] = {}
         for modality in generated_modalities:
-            reference = _load_reference(reference_npz, modality)
-            generated = _load_generated_mean(generated_npz, uncertainty_npz, modality)
-            if reference is None or generated is None:
-                continue
-            masked = _apply_metric_epoch_mask(
-                reference,
-                generated,
-                _load_baseline(baseline_npz, modality),
-                _load_metric_epoch_mask(
-                    masks_npz,
-                    modality,
-                    generated.shape[0],
-                    corruption_mask_policy=evaluation.corruption_mask_policy,
-                ),
+            masked = _load_masked_metric_arrays(
+                reference_npz=reference_npz,
+                generated_npz=generated_npz,
+                uncertainty_npz=uncertainty_npz,
+                masks_npz=masks_npz,
+                baseline_npz=baseline_npz,
+                modality=modality,
+                corruption_mask_policy=evaluation.corruption_mask_policy,
+                include_baseline=True,
             )
             if masked is None:
                 continue
@@ -295,6 +355,8 @@ def run_evaluation(args: argparse.Namespace) -> Path:
             waveform_metrics[modality] = compute_waveform_metrics(
                 reference,
                 generated,
+                modality=modality,
+                sample_rate_hz=MODALITY_SPECS[modality].sample_rate_hz,
                 baseline=baseline,
                 max_shift_frames=evaluation.max_shift_frames,
             )
@@ -305,20 +367,14 @@ def run_evaluation(args: argparse.Namespace) -> Path:
             raise ValueError("evaluation.reference_npz is required for feature metrics.")
         feature_metrics: dict[str, dict[str, float]] = {}
         for modality in generated_modalities:
-            reference = _load_reference(reference_npz, modality)
-            generated = _load_generated_mean(generated_npz, uncertainty_npz, modality)
-            if reference is None or generated is None:
-                continue
-            masked = _apply_metric_epoch_mask(
-                reference,
-                generated,
-                None,
-                _load_metric_epoch_mask(
-                    masks_npz,
-                    modality,
-                    generated.shape[0],
-                    corruption_mask_policy=evaluation.corruption_mask_policy,
-                ),
+            masked = _load_masked_metric_arrays(
+                reference_npz=reference_npz,
+                generated_npz=generated_npz,
+                uncertainty_npz=uncertainty_npz,
+                masks_npz=masks_npz,
+                baseline_npz=None,
+                modality=modality,
+                corruption_mask_policy=evaluation.corruption_mask_policy,
             )
             if masked is None:
                 continue
@@ -331,6 +387,24 @@ def run_evaluation(args: argparse.Namespace) -> Path:
             )
             if modality_metrics:
                 feature_metrics[modality] = modality_metrics
+        if "airflow" in generated_modalities and "belt" in generated_modalities:
+            pair = _load_masked_metric_pair(
+                reference_npz=reference_npz,
+                generated_npz=generated_npz,
+                uncertainty_npz=uncertainty_npz,
+                masks_npz=masks_npz,
+                left_modality="airflow",
+                right_modality="belt",
+                corruption_mask_policy=evaluation.corruption_mask_policy,
+            )
+            if pair is not None:
+                reference_airflow, generated_airflow, reference_belt, generated_belt = pair
+                feature_metrics["airflow_belt"] = airflow_belt_coherence_metrics(
+                    reference_airflow,
+                    generated_airflow,
+                    reference_belt,
+                    generated_belt,
+                )
         metrics["feature"] = feature_metrics
 
     if "event" in metric_families:
@@ -344,9 +418,17 @@ def run_evaluation(args: argparse.Namespace) -> Path:
             reference_by_modality = {}
             generated_by_modality = {}
             for modality in generated_modalities:
-                reference = _load_reference(reference_npz, modality)
-                generated = _load_generated_mean(generated_npz, uncertainty_npz, modality)
-                if reference is not None and generated is not None:
+                masked = _load_masked_metric_arrays(
+                    reference_npz=reference_npz,
+                    generated_npz=generated_npz,
+                    uncertainty_npz=uncertainty_npz,
+                    masks_npz=masks_npz,
+                    baseline_npz=None,
+                    modality=modality,
+                    corruption_mask_policy=evaluation.corruption_mask_policy,
+                )
+                if masked is not None:
+                    reference, generated, _baseline = masked
                     reference_by_modality[modality] = reference
                     generated_by_modality[modality] = generated
             metrics["event"] = compute_generated_signal_event_groups(

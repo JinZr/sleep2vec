@@ -33,6 +33,10 @@ modalities:
 
 diffusion:
   latent_dim: 64
+  latent_frames_per_epoch:
+    high_frequency: 60
+    low_frequency: 30
+  patches_per_epoch: 6
   autoencoder_checkpoint: checkpoints/sleep2wave_autoencoder_tiny.ckpt
   transformer:
     hidden_size: 64
@@ -47,6 +51,8 @@ diffusion:
     diffusion_step: true
     modality: true
     epoch_position: true
+    channel_position: true
+    patch_position: true
     sleep_night_position: true
     availability: true
     quality: true
@@ -56,7 +62,7 @@ diffusion:
 
 training:
   phase: 1
-  batch_size: 256
+  batch_size: 16
   lr: 0.0001
   weight_decay: 0.01
   max_epochs: 160

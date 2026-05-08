@@ -15,7 +15,7 @@ from sleep2wave.autoencoders.model import Sleep2WaveAutoencoder
 from sleep2wave.data.default_dataset import SampleIndex
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, MODALITY_SPECS
 from sleep2wave.data.samplers import AvailableChannelsBucketBatchSampler
-from sleep2wave.diffusion.latent_cache import Sleep2WaveLatentCacheDataset, write_latent_cache
+from sleep2wave.diffusion.latent_cache import write_latent_cache
 import sleep2wave.diffusion.lightning as diffusion_lightning
 from sleep2wave.diffusion.lightning import Sleep2WaveDiffusionLightning
 from sleep2wave.diffusion.tasks import build_generation_task
@@ -24,12 +24,17 @@ from sleep2wave.train_diffusion import _limit_val_batches, _load_phase_checkpoin
 from sleep2wave.training.task_sampler import Sleep2WaveTaskSampler
 
 
-def _write_synthetic_preset(tmp_path: Path) -> Path:
+def _write_synthetic_preset(tmp_path: Path, *, channel_counts: dict[str, int] | None = None) -> Path:
     npz_path = tmp_path / "synthetic.npz"
     npz_payload = {}
     for index, modality in enumerate(CANONICAL_MODALITIES):
         frames = 2 * MODALITY_SPECS[modality].frames_per_epoch
-        npz_payload[modality] = np.linspace(0.0, 1.0 + index, frames, dtype=np.float32)
+        signal = np.linspace(0.0, 1.0 + index, frames, dtype=np.float32)
+        channels = (channel_counts or {}).get(modality, 1)
+        if channels == 1:
+            npz_payload[modality] = signal
+        else:
+            npz_payload[modality] = np.stack([signal + channel for channel in range(channels)], axis=0)
     np.savez(npz_path, **npz_payload)
 
     preset_path = tmp_path / "preset.pkl"
@@ -66,6 +71,36 @@ def _write_autoencoder_checkpoint(tmp_path: Path) -> Path:
     return checkpoint_path
 
 
+def _write_latent_cache(tmp_path: Path) -> Path:
+    latents = {}
+    availability = {}
+    quality = {}
+    channel_mask = {}
+    for modality in CANONICAL_MODALITIES:
+        group = MODALITY_SPECS[modality].frequency_group
+        latent_frames = 60 if group == "high_frequency" else 30
+        latents[modality] = torch.randn(2, 2, 1, latent_frames, 8)
+        availability[modality] = torch.ones(2, 2, dtype=torch.bool)
+        quality[modality] = torch.ones(2, 2)
+        channel_mask[modality] = torch.ones(2, 2, 1, dtype=torch.bool)
+    return write_latent_cache(
+        tmp_path / "cache",
+        clean_latents=latents,
+        availability_mask=availability,
+        quality_mask=quality,
+        channel_mask=channel_mask,
+        epoch_index=torch.tensor([[0, 1], [0, 1]]),
+        night_position=torch.tensor([[0.0, 1.0], [0.0, 1.0]]),
+        metadata_rows=[
+            {"id": "cache-train", "split": "train"},
+            {"id": "cache-val", "split": "val"},
+        ],
+        latent_frames_per_epoch={"high_frequency": 60, "low_frequency": 30},
+        patches_per_epoch=6,
+        modalities=CANONICAL_MODALITIES,
+    )
+
+
 def _write_config(
     tmp_path: Path,
     preset_path: Path,
@@ -75,6 +110,8 @@ def _write_config(
 ) -> Path:
     diffusion = {
         "latent_dim": 8,
+        "latent_frames_per_epoch": {"high_frequency": 60, "low_frequency": 30},
+        "patches_per_epoch": 6,
         "autoencoder_checkpoint": str(autoencoder_ckpt),
         "transformer": {"hidden_size": 8, "num_layers": 1, "num_heads": 2, "mlp_ratio": 2},
         "diffusion_steps": 8,
@@ -85,6 +122,8 @@ def _write_config(
             "diffusion_step": True,
             "modality": True,
             "epoch_position": True,
+            "channel_position": True,
+            "patch_position": True,
             "sleep_night_position": True,
             "availability": True,
             "quality": True,
@@ -207,22 +246,10 @@ def test_train_diffusion_dataloader_buckets_mixed_availability(tmp_path: Path):
         task_sampler.sample(batch["availability_mask"])
 
 
-def test_train_diffusion_accepts_cache_only_translation(tmp_path: Path):
+def test_train_diffusion_loads_cache_only_translation_with_bucket_sampler(tmp_path: Path):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
-    cache_path = tmp_path / "cache"
-    latents = {modality: torch.zeros(1, 2, 8) for modality in CANONICAL_MODALITIES}
-    masks = {modality: torch.ones(1, 2, dtype=torch.bool) for modality in CANONICAL_MODALITIES}
-    quality = {modality: torch.ones(1, 2) for modality in CANONICAL_MODALITIES}
-    write_latent_cache(
-        cache_path,
-        clean_latents=latents,
-        availability_mask=masks,
-        quality_mask=quality,
-        epoch_index=torch.tensor([[0, 1]]),
-        night_position=torch.tensor([[0.0, 1.0]]),
-        metadata_rows=[{"split": "train", "subject_id": "s1", "night_id": "n1"}],
-    )
+    cache_path = _write_latent_cache(tmp_path)
     config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
     payload = yaml.safe_load(config_path.read_text())
     del payload["diffusion"]["autoencoder_checkpoint"]
@@ -232,10 +259,11 @@ def test_train_diffusion_accepts_cache_only_translation(tmp_path: Path):
     config_path.write_text(yaml.safe_dump(payload))
 
     loader = build_dataloader(load_sleep2wave_config(config_path), num_workers=0, seed=123)
-
-    assert isinstance(loader.dataset, Sleep2WaveLatentCacheDataset)
     batch = next(iter(loader))
-    assert batch["clean_latents"]["eeg"].shape == (1, 2, 8)
+
+    assert isinstance(loader.batch_sampler, AvailableChannelsBucketBatchSampler)
+    assert batch["clean_latents"]["eeg"].shape == (1, 2, 1, 60, 8)
+    assert batch["channel_mask"]["eeg"].shape == (1, 2, 1)
 
 
 def test_train_diffusion_smoke_writes_artifacts(tmp_path: Path, monkeypatch):
@@ -374,6 +402,26 @@ def test_diffusion_validation_step_rotates_configured_modalities(tmp_path: Path,
     assert {name for name in logged_scalars if name.startswith("val_") and name.endswith("_mse")} == {"val_spo2_mse"}
 
 
+def test_diffusion_step_accepts_padded_two_channel_batch(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path, channel_counts={"eeg": 2})
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    config = load_sleep2wave_config(config_path)
+    loader = build_dataloader(config, num_workers=0, seed=123, split="train")
+    batch = next(iter(loader))
+    assert batch["channel_mask"]["eeg"].shape[-1] == 2
+    assert batch["channel_mask"]["belt"].shape[-1] == 1
+    batch["channel_mask"]["eeg"][:, :, 1] = False
+    for modality in CANONICAL_MODALITIES:
+        if modality != "eeg":
+            batch["availability_mask"][modality][:] = False
+    model = Sleep2WaveDiffusionLightning(config, seed=123)
+
+    losses, _task_family, _task = model._compute_step_losses(batch, apply_condition_dropout=True)
+
+    assert torch.isfinite(losses["loss"])
+
+
 def test_diffusion_validation_task_selection_rotates_families_and_falls_back(tmp_path: Path):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
@@ -468,22 +516,10 @@ def test_diffusion_validation_step_logs_task_examples(tmp_path: Path, monkeypatc
     }
 
 
-def test_diffusion_validation_step_skips_examples_for_latent_cache(tmp_path: Path, monkeypatch):
+def test_diffusion_validation_step_supports_cache_only_translation(tmp_path: Path, monkeypatch):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
-    cache_path = tmp_path / "cache"
-    latents = {modality: torch.zeros(1, 2, 8) for modality in CANONICAL_MODALITIES}
-    masks = {modality: torch.ones(1, 2, dtype=torch.bool) for modality in CANONICAL_MODALITIES}
-    quality = {modality: torch.ones(1, 2) for modality in CANONICAL_MODALITIES}
-    write_latent_cache(
-        cache_path,
-        clean_latents=latents,
-        availability_mask=masks,
-        quality_mask=quality,
-        epoch_index=torch.tensor([[0, 1]]),
-        night_position=torch.tensor([[0.0, 1.0]]),
-        metadata_rows=[{"split": "train", "subject_id": "s1", "night_id": "n1"}],
-    )
+    cache_path = _write_latent_cache(tmp_path)
     config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
     payload = yaml.safe_load(config_path.read_text())
     del payload["diffusion"]["autoencoder_checkpoint"]
@@ -491,21 +527,12 @@ def test_diffusion_validation_step_skips_examples_for_latent_cache(tmp_path: Pat
     payload["training"]["phase"] = 2
     payload["training"]["task_mix"] = {"translation": 1.0}
     config_path.write_text(yaml.safe_dump(payload))
-    config = load_sleep2wave_config(config_path)
-    loader = build_dataloader(config, num_workers=0, seed=123, split="val")
-    batch = next(iter(loader))
-    assert batch["metadata"]["split"] == ["train"]
-    model = Sleep2WaveDiffusionLightning(config, seed=123)
-    logged_payloads = []
-
-    monkeypatch.setattr(model, "log", lambda *args, **kwargs: None)
-    monkeypatch.setattr(wandb, "run", object())
-    monkeypatch.setattr(wandb, "log", lambda payload, commit=True: logged_payloads.append((payload, commit)))
+    model = Sleep2WaveDiffusionLightning(load_sleep2wave_config(config_path))
+    batch = next(iter(build_dataloader(load_sleep2wave_config(config_path), num_workers=0, seed=123, split="val")))
 
     losses = model.validation_step(batch, 0)
 
     assert "loss" in losses
-    assert logged_payloads == []
 
 
 def test_condition_dropout_keeps_nonempty_condition_set(tmp_path: Path):

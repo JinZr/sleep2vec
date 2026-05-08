@@ -16,6 +16,8 @@ from sleep2wave.diffusion.model import Sleep2WaveDiffusionTransformer
 from sleep2wave.diffusion.tasks import build_generation_task
 from sleep2wave.generate import (
     _activate_requested_generation_targets,
+    _collect_generation_windows,
+    _decode_generated_latents,
     _resolve_generation_data_source,
     _resolve_inference_corruption_specs,
     main,
@@ -24,12 +26,17 @@ from sleep2wave.generate_batch import run_batch_generation
 from sleep2wave.generative.config import load_sleep2wave_config
 
 
-def _write_synthetic_preset(tmp_path: Path) -> Path:
+def _write_synthetic_preset(tmp_path: Path, *, channel_counts: dict[str, int] | None = None) -> Path:
     npz_path = tmp_path / "synthetic.npz"
     payload = {}
     for index, modality in enumerate(CANONICAL_MODALITIES):
         frames = 2 * MODALITY_SPECS[modality].frames_per_epoch
-        payload[modality] = np.linspace(0.0, 1.0 + index, frames, dtype=np.float32)
+        signal = np.linspace(0.0, 1.0 + index, frames, dtype=np.float32)
+        channels = (channel_counts or {}).get(modality, 1)
+        if channels == 1:
+            payload[modality] = signal
+        else:
+            payload[modality] = np.stack([signal + channel for channel in range(channels)], axis=0)
     np.savez(npz_path, **payload)
 
     sample = SampleIndex(
@@ -81,6 +88,8 @@ def _write_checkpoints(tmp_path: Path) -> tuple[Path, Path]:
         mlp_ratio=2,
         diffusion_steps=8,
         context_epochs=2,
+        latent_frames_per_epoch={"high_frequency": 60, "low_frequency": 30},
+        patches_per_epoch=6,
     )
     diffusion_ckpt = tmp_path / "diffusion.ckpt"
     torch.save({"state_dict": {f"model.{key}": value for key, value in diffusion.state_dict().items()}}, diffusion_ckpt)
@@ -95,6 +104,8 @@ def _write_config(tmp_path: Path, preset_path: Path, autoencoder_ckpt: Path) -> 
         "modalities": _modalities_payload(),
         "diffusion": {
             "latent_dim": 8,
+            "latent_frames_per_epoch": {"high_frequency": 60, "low_frequency": 30},
+            "patches_per_epoch": 6,
             "autoencoder_checkpoint": str(autoencoder_ckpt),
             "transformer": {"hidden_size": 8, "num_layers": 1, "num_heads": 2, "mlp_ratio": 2},
             "diffusion_steps": 8,
@@ -105,6 +116,8 @@ def _write_config(tmp_path: Path, preset_path: Path, autoencoder_ckpt: Path) -> 
                 "diffusion_step": True,
                 "modality": True,
                 "epoch_position": True,
+                "channel_position": True,
+                "patch_position": True,
                 "sleep_night_position": True,
                 "availability": True,
                 "quality": True,
@@ -312,6 +325,107 @@ def test_generate_cli_corruption_overrides_config(tmp_path: Path):
     assert specs == {"eeg": ("gaussian_noise", {"std": 0.2})}
 
 
+def test_decode_generated_latents_accepts_temporal_channel_latents():
+    autoencoder = Sleep2WaveAutoencoder(latent_dim=8, modalities=["eeg"])
+    latents = {"eeg": torch.randn(2, 1, 2, 1, 60, 8)}
+
+    decoded = _decode_generated_latents(autoencoder, latents)
+
+    assert decoded["eeg"].shape == (2, 1, 2, 1, 3840)
+
+
+def test_generation_passes_patch_condition_availability(monkeypatch):
+    captured = {}
+    epoch_count = 2
+    eeg_frames = MODALITY_SPECS["eeg"].frames_per_epoch
+    batch = {
+        "observed_signals": {
+            modality: torch.zeros(1, epoch_count, 1, spec.frames_per_epoch) for modality, spec in MODALITY_SPECS.items()
+        },
+        "availability_mask": {
+            modality: torch.ones(1, epoch_count, dtype=torch.bool) for modality in CANONICAL_MODALITIES
+        },
+        "quality_mask": {modality: torch.ones(1, epoch_count) for modality in CANONICAL_MODALITIES},
+        "channel_mask": {
+            modality: torch.ones(1, epoch_count, 1, dtype=torch.bool) for modality in CANONICAL_MODALITIES
+        },
+        "corruption_mask": {
+            modality: torch.zeros(1, epoch_count, 1, spec.frames_per_epoch, dtype=torch.bool)
+            for modality, spec in MODALITY_SPECS.items()
+        },
+        "epoch_index": torch.tensor([[0, 1]]),
+        "night_position": torch.tensor([[0.0, 1.0]]),
+        "metadata": {
+            "id": ["row-0"],
+            "path": ["night.npz"],
+            "subject_id": ["subject"],
+            "night_id": ["night"],
+            "source": ["synthetic"],
+            "split": ["train"],
+        },
+    }
+    batch["corruption_mask"]["eeg"][:, 0, :, : eeg_frames // 6] = True
+
+    class FakeDataset:
+        def __init__(self, **_kwargs):
+            pass
+
+        def dataloader(self, **_kwargs):
+            return [batch]
+
+    class FakeAutoencoder:
+        def __call__(self, _signals):
+            return SimpleNamespace(latents={"eeg": torch.zeros(1, epoch_count, 1, 60, 8)})
+
+        def decode_latents(self, latents):
+            return {"eeg": torch.zeros(latents["eeg"].shape[0], epoch_count, 1, eeg_frames)}
+
+    class FakeSampler:
+        def sample(self, _model, **kwargs):
+            captured["condition_availability_mask"] = kwargs["condition_availability_mask"]
+            return SimpleNamespace(generated_latents={"eeg": torch.zeros(1, 1, epoch_count, 1, 60, 8)})
+
+    monkeypatch.setattr("sleep2wave.data.generative_dataset.Sleep2WaveGenerativeDataset", FakeDataset)
+    monkeypatch.setattr("sleep2wave.diffusion.samplers.build_sampler", lambda *_args, **_kwargs: FakeSampler())
+    task = build_generation_task(
+        "imputation",
+        condition_modalities=["eeg"],
+        target_modalities=["eeg"],
+        auxiliary_restoration_token=True,
+    )
+    config = SimpleNamespace(
+        data=SimpleNamespace(preset_path="preset.pkl", index=None, context_epochs=epoch_count),
+        diffusion=SimpleNamespace(diffusion_steps=8, beta_schedule="cosine", patches_per_epoch=6),
+        inference=None,
+        modalities=SimpleNamespace(all=list(CANONICAL_MODALITIES)),
+    )
+
+    _collect_generation_windows(
+        config=config,
+        args=SimpleNamespace(
+            preset_path=None,
+            index=None,
+            batch_size=1,
+            stride_epochs=1,
+            num_workers=0,
+            seed=0,
+            corruption_name=None,
+            corruption_kwargs=None,
+            condition_mask_npz=None,
+        ),
+        model=object(),
+        autoencoder=FakeAutoencoder(),
+        sampler_config=SimpleNamespace(),
+        task=task,
+        device=torch.device("cpu"),
+    )
+
+    condition_availability = captured["condition_availability_mask"]["eeg"]
+    assert condition_availability.shape == (1, epoch_count, 1, 6)
+    assert condition_availability[0, 0, 0].tolist() == [False, True, True, True, True, True]
+    assert condition_availability[0, 1, 0].tolist() == [True, True, True, True, True, True]
+
+
 def test_generate_smoke_writes_required_artifacts(tmp_path: Path):
     preset_path = _write_synthetic_preset(tmp_path)
     autoencoder_ckpt, diffusion_ckpt = _write_checkpoints(tmp_path)
@@ -353,6 +467,38 @@ def test_generate_smoke_writes_required_artifacts(tmp_path: Path):
     assert uncertainty["sample_count/eeg"].tolist() == [2]
     assert masks["condition/ecg"].tolist() == [True, True]
     assert masks["target/eeg"].tolist() == [True, True]
+
+
+def test_generate_smoke_preserves_two_target_channels(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path, channel_counts={"eeg": 2})
+    autoencoder_ckpt, diffusion_ckpt = _write_checkpoints(tmp_path)
+    config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    output_dir = tmp_path / "out"
+
+    main(
+        [
+            "--config",
+            str(config_path),
+            "--diffusion-ckpt",
+            str(diffusion_ckpt),
+            "--task",
+            "translation",
+            "--condition-modalities",
+            "ecg",
+            "--target-modalities",
+            "eeg",
+            "--output-dir",
+            str(output_dir),
+            "--batch-size",
+            "1",
+            "--device",
+            "cpu",
+        ]
+    )
+
+    generated = np.load(output_dir / "generated.npz")
+
+    assert generated["generated/eeg"].shape == (1, 2, 2, 3840)
 
 
 def test_generate_batch_groups_by_subject_night(tmp_path: Path, monkeypatch):

@@ -12,14 +12,14 @@
 | Generative batch collation | `collate_sleep2wave_generative` | Pads channel dimensions and stacks signal/mask dictionaries consistently | Ad hoc dict stacking |
 | Generative preset CLI | `sleep2wave.preprocess.build_sleep2wave_presets.build_sleep2wave_presets` | Canonical write path for sleep2wave generative preset pickles | External scripts that skip schema validation |
 | Index validation | `sleep2wave.preprocess.validate_sleep2wave_index.validate_sleep2wave_index` | Fast boundary check for required columns, masks, and zero-modality rows | Partial CSV checks |
-| Autoencoder model | `Sleep2WaveAutoencoder` | Encodes and decodes modality-specific one-latent-per-epoch waveform branches | Per-modality model copies |
-| Autoencoder loss | `compute_autoencoder_loss` / `Sleep2WaveAutoencoderLoss` | Applies availability and quality masks to waveform and spectral losses | Trainer-local loss math |
+| Autoencoder model | `Sleep2WaveAutoencoder` | Encodes and decodes modality-specific, channel-specific temporal latent maps | Per-modality model copies |
+| Autoencoder loss | `compute_autoencoder_loss` / `Sleep2WaveAutoencoderLoss` | Applies availability and quality masks to waveform, spectral, derivative, and MR-STFT losses | Trainer-local loss math |
 | Diffusion task semantics | `build_generation_task` and `validate_generation_task` | Centralizes restoration/imputation/translation/partial_full constraints | Branching on task strings in model or sampler code |
-| Directional attention masks | `build_directional_task_attention_mask` | Canonical condition/target token mask builder | Manual transformer masks |
-| Diffusion transformer | `Sleep2WaveDiffusionTransformer.from_config` | Constructs model from typed `DiffusionConfig` | Direct constructor calls from YAML dicts |
+| Directional attention masks | `build_directional_task_attention_mask` | Canonical condition/target patch-token mask builder | Manual transformer masks |
+| Diffusion transformer | `Sleep2WaveDiffusionTransformer.from_config` | Constructs temporal-patch model from typed `DiffusionConfig` | Direct constructor calls from YAML dicts |
 | Diffusion schedule | `build_diffusion_schedule` | Single cosine schedule implementation and validation | Recomputing beta/alpha arrays locally |
-| Diffusion samplers | `build_sampler`, `DDIMSampler`, `DDPMSampler` | Encodes DDIM/DDPM step constraints and generated-latent shape | Sampling loops inside generation CLI |
-| Latent cache training | `Sleep2WaveLatentCacheDataset` and `write_latent_cache` | Defines cache manifest, latent arrays, masks, and metadata records | Ad hoc latent NPZ readers |
+| Diffusion samplers | `build_sampler`, `DDIMSampler`, `DDPMSampler` | Encodes DDIM/DDPM step constraints, patch condition-availability forwarding, and generated-latent shape | Sampling loops inside generation CLI |
+| Latent cache training | Phase 3 only | The old cache schema stores `[N, E, D]` latents and is rejected by Phase 2B configs | Ad hoc latent NPZ readers |
 | Training task sampling | `Sleep2WaveTaskSampler` and `build_phase_schedule` | Central phase/task mix and availability-aware task selection | Random task code in Lightning modules |
 | Autoencoder checkpoint loading | `load_sleep2wave_autoencoder_checkpoint` | Loads only compatible sleep2wave autoencoder weights | Raw `torch.load` in diffusion/generation code |
 | Sleep2Vec2 initialization | `load_sleep2vec2_initialization` | Groups compatible checkpoint keys and reports loaded/missing/skipped state | Unstructured state-dict copying |
@@ -49,12 +49,13 @@
 ### Changing autoencoder behavior
 
 - Reuse `Sleep2WaveAutoencoder` and `Sleep2WaveAutoencoderLoss`.
-- Keep one latent per epoch unless the config contract is intentionally changed.
+- Keep the temporal latent-map contract `[B, E, C, L, D]` unless the config contract is intentionally changed.
 - Check `train_autoencoder.py`, `autoencoders/lightning.py`, autoencoder checkpoint loading, and autoencoder tests together.
 
 ### Changing diffusion behavior
 
 - Reuse `GenerationTask`, `TokenLayout`, `build_directional_task_attention_mask`, `Sleep2WaveDiffusionTransformer`, and `build_sampler`.
+- Keep the Phase 2B diffusion latent contract `[B, E, C, L, D]` and pass `channel_mask` for padded or multi-channel latents; latent-cache migration remains later-phase work.
 - Keep task-family validation outside the transformer forward path by using `validate_generation_task`.
 - Update task, mask, schedule, sampler, model-shape, and diffusion-smoke tests together.
 

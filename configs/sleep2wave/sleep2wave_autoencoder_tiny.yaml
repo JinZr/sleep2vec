@@ -33,14 +33,18 @@ modalities:
 
 autoencoder:
   latent_dim: 64
-  encoder_type: conv1d_epoch
-  decoder_type: convtranspose1d_epoch
-  one_latent_per_epoch: true
-  modality_specific: true
+  encoder_type: temporal_conv
+  decoder_type: temporal_conv
+  latent_frames_per_epoch:
+    high_frequency: 60
+    low_frequency: 30
+  channel_specific: true
   losses:
     waveform_l1_weight: 1.0
     waveform_l2_weight: 0.1
     spectral_weight: 0.1
+    derivative_l1_weight: 0.1
+    mr_stft_weight: 0.1
 
 training:
   phase: 0

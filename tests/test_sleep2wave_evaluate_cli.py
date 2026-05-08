@@ -104,6 +104,11 @@ def _write_generated_artifacts(tmp_path: Path) -> Path:
         diffusion_ckpt="diffusion.ckpt",
         autoencoder_ckpt="autoencoder.ckpt",
         sampler={"name": "ddim", "steps": 2, "eta": 0.0, "num_samples": 2},
+        autoencoder_type="temporal_conv",
+        latent_dim=64,
+        latent_frames_per_epoch={"high_frequency": 60, "low_frequency": 30},
+        patches_per_epoch=6,
+        channel_specific=True,
         output_files=["generated.npz", "uncertainty.npz", "masks.npz", "metadata.jsonl"],
     )
     (output_dir / "manifest.json").write_text(json.dumps(manifest))
@@ -171,6 +176,86 @@ def test_evaluate_cli_applies_exported_epoch_masks(tmp_path: Path):
 
     metrics = json.loads((output_dir / "metrics.json").read_text())
     assert metrics["metrics"]["waveform"]["eeg"]["rmse"] == pytest.approx(0.0)
+
+
+def test_evaluate_cli_writes_airflow_belt_coherence(tmp_path: Path):
+    generated_dir = _write_generated_artifacts(tmp_path)
+    t = np.arange(120) / 4.0
+    airflow = np.stack(
+        [
+            np.sin(2.0 * np.pi * 0.25 * t),
+            np.sin(2.0 * np.pi * 0.25 * t),
+        ],
+        axis=0,
+    )[
+        :, None, :
+    ].astype(np.float32)
+    reference_belt = airflow.copy()
+    generated_belt = -airflow
+    np.savez(
+        generated_dir / "generated.npz",
+        **{
+            "generated/airflow": airflow[None, ...],
+            "generated/belt": generated_belt[None, ...],
+        },
+    )
+    np.savez(
+        generated_dir / "uncertainty.npz",
+        **{
+            "mean/airflow": airflow,
+            "std/airflow": np.zeros_like(airflow),
+            "sample_count/airflow": np.array([1]),
+            "high_uncertainty_mask/airflow": np.array([False, False]),
+            "mean/belt": generated_belt,
+            "std/belt": np.zeros_like(generated_belt),
+            "sample_count/belt": np.array([1]),
+            "high_uncertainty_mask/belt": np.array([False, False]),
+        },
+    )
+    np.savez(
+        generated_dir / "masks.npz",
+        **{
+            "target/airflow": np.ones(2, dtype=bool),
+            "target/belt": np.ones(2, dtype=bool),
+        },
+    )
+    reference_npz = tmp_path / "reference.npz"
+    np.savez(reference_npz, airflow=airflow, belt=reference_belt)
+    config_path = _write_eval_config(tmp_path, generated_dir, reference_npz)
+    output_dir = tmp_path / "metrics_coherence"
+
+    main(["--config", str(config_path), "--output-dir", str(output_dir)])
+
+    metrics = json.loads((output_dir / "metrics.json").read_text())
+    assert metrics["metrics"]["feature"]["airflow_belt"]["coherence_error"] == pytest.approx(2.0)
+
+
+def test_evaluate_cli_applies_metric_masks_to_generated_signal_events(tmp_path: Path):
+    generated_dir = _write_generated_artifacts(tmp_path)
+    reference = np.full((2, 1, 40), 96.0, dtype=np.float32)
+    generated = reference.copy()
+    reference[1, :, 12:24] = 90.0
+    generated[1, :, 12:24] = 90.0
+    np.savez(generated_dir / "generated.npz", **{"generated/spo2": generated[None, ...]})
+    np.savez(
+        generated_dir / "uncertainty.npz",
+        **{
+            "mean/spo2": generated,
+            "std/spo2": np.zeros_like(generated),
+            "sample_count/spo2": np.array([1]),
+            "high_uncertainty_mask/spo2": np.array([False, False]),
+        },
+    )
+    np.savez(generated_dir / "masks.npz", **{"target/spo2": np.array([True, False])})
+    reference_npz = tmp_path / "reference.npz"
+    np.savez(reference_npz, spo2=reference)
+    config_path = _write_eval_config(tmp_path, generated_dir, reference_npz)
+    output_dir = tmp_path / "metrics_event_mask"
+
+    main(["--config", str(config_path), "--output-dir", str(output_dir)])
+
+    metrics = json.loads((output_dir / "metrics.json").read_text())
+    assert metrics["metrics"]["event"]["spo2_desaturation"]["tp"] == pytest.approx(0.0)
 
 
 def test_evaluate_metric_mask_combines_target_availability_quality_and_corruption(tmp_path: Path):

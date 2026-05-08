@@ -15,7 +15,7 @@ Evaluate generated sleep2wave artifact directories across waveform, feature, eve
    - `masks.npz`
    - `metadata.jsonl`
 4. Load optional reference, baseline, event, and downstream metrics files.
-5. Compute requested metric families, applying `evaluation.corruption_mask_policy` to waveform/feature epoch masks.
+5. Compute requested metric families, applying `evaluation.corruption_mask_policy` to waveform, feature, paired feature, and generated-signal event epoch masks.
 6. Write `metrics.json` and `metrics.csv`.
 
 ## Command
@@ -29,9 +29,9 @@ python -m sleep2wave.evaluate_generation \
 
 ## Metric Families
 
-- `waveform`: waveform RMSE, MAE, correlation, spectral distance, optional shifted metrics and SNR improvement
-- `feature`: modality-specific feature metrics
-- `event`: interval overlap/event metrics from events JSON
+- `waveform`: waveform RMSE, MAE, correlation, full-epoch spectral distance, multi-resolution STFT distance, modality-band spectral distances, optional shifted metrics, and SNR improvement
+- `feature`: modality-specific feature metrics plus airflow/belt coherence when both modalities are scored
+- `event`: interval overlap/event metrics from events JSON, or generated-signal SpO2 desaturation, respiratory low-amplitude, EEG sigma-burst, and EMG-burst metrics when reference waveforms are available
 - `efficiency`: artifact/sample-count summary
 - `downstream`: optional downstream metrics JSON passthrough
 

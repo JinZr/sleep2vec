@@ -32,6 +32,11 @@ def test_export_writes_generation_artifacts(tmp_path: Path):
         diffusion_ckpt="diffusion.ckpt",
         autoencoder_ckpt="autoencoder.ckpt",
         sampler={"name": "ddim", "steps": 2, "eta": 0.0, "num_samples": 3},
+        autoencoder_type="temporal_conv",
+        latent_dim=64,
+        latent_frames_per_epoch={"high_frequency": 60, "low_frequency": 30},
+        patches_per_epoch=6,
+        channel_specific=True,
         output_files=["generated.npz"],
     )
     args = argparse.Namespace(config=config_path, diffusion_ckpt="diffusion.ckpt")
@@ -62,4 +67,10 @@ def test_export_writes_generation_artifacts(tmp_path: Path):
     assert uncertainty_npz["std/eeg"].shape == (2, 1, 4)
     assert uncertainty_npz["sample_count/eeg"].tolist() == [3]
     assert masks_npz["target/eeg"].tolist() == [True, True]
+    assert manifest_payload["schema_version"] == 2
     assert manifest_payload["signal_provenance"] == GENERATED_SIGNAL_PROVENANCE
+    assert manifest_payload["autoencoder_type"] == "temporal_conv"
+    assert manifest_payload["latent_dim"] == 64
+    assert manifest_payload["latent_frames_per_epoch"] == {"high_frequency": 60, "low_frequency": 30}
+    assert manifest_payload["patches_per_epoch"] == 6
+    assert manifest_payload["channel_specific"] is True

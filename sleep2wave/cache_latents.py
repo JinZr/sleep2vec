@@ -49,6 +49,7 @@ def build_latent_cache(args: argparse.Namespace) -> Path:
     autoencoder = load_sleep2wave_autoencoder_checkpoint(
         checkpoint,
         latent_dim=config.diffusion.latent_dim,
+        latent_frames_per_epoch=config.diffusion.latent_frames_per_epoch,
         modalities=config.modalities.all,
         device=device,
     )
@@ -62,6 +63,7 @@ def build_latent_cache(args: argparse.Namespace) -> Path:
     latents = {modality: [] for modality in config.modalities.all}
     availability = {modality: [] for modality in config.modalities.all}
     quality = {modality: [] for modality in config.modalities.all}
+    channel_mask = {modality: [] for modality in config.modalities.all}
     epoch_index = []
     night_position = []
     metadata_rows = []
@@ -73,17 +75,45 @@ def build_latent_cache(args: argparse.Namespace) -> Path:
                 latents[modality].append(encoded[modality].cpu())
                 availability[modality].append(batch["availability_mask"][modality].cpu())
                 quality[modality].append(batch["quality_mask"][modality].cpu())
+                channel_mask[modality].append(batch["channel_mask"][modality].cpu())
             epoch_index.append(batch["epoch_index"].cpu())
             night_position.append(batch["night_position"].cpu())
             metadata_rows.extend(_metadata_rows(batch))
+
+    clean_latents = {}
+    cached_channel_mask = {}
+    for modality in config.modalities.all:
+        max_channels = max(value.shape[2] for value in latents[modality])
+        latent_chunks = []
+        mask_chunks = []
+        for latent_chunk, mask_chunk in zip(latents[modality], channel_mask[modality]):
+            pad_channels = max_channels - latent_chunk.shape[2]
+            if pad_channels > 0:
+                latent_pad_shape = list(latent_chunk.shape)
+                latent_pad_shape[2] = pad_channels
+                latent_pad = torch.zeros(latent_pad_shape, dtype=latent_chunk.dtype, device=latent_chunk.device)
+                latent_chunk = torch.cat([latent_chunk, latent_pad], dim=2)
+
+                mask_pad_shape = list(mask_chunk.shape)
+                mask_pad_shape[2] = pad_channels
+                mask_pad = torch.zeros(mask_pad_shape, dtype=mask_chunk.dtype, device=mask_chunk.device)
+                mask_chunk = torch.cat([mask_chunk, mask_pad], dim=2)
+            latent_chunks.append(latent_chunk)
+            mask_chunks.append(mask_chunk)
+        clean_latents[modality] = torch.cat(latent_chunks, dim=0)
+        cached_channel_mask[modality] = torch.cat(mask_chunks, dim=0)
+
     return write_latent_cache(
         args.output_dir,
-        clean_latents={modality: torch.cat(values, dim=0) for modality, values in latents.items()},
+        clean_latents=clean_latents,
         availability_mask={modality: torch.cat(values, dim=0) for modality, values in availability.items()},
         quality_mask={modality: torch.cat(values, dim=0) for modality, values in quality.items()},
+        channel_mask=cached_channel_mask,
         epoch_index=torch.cat(epoch_index, dim=0),
         night_position=torch.cat(night_position, dim=0),
         metadata_rows=metadata_rows,
+        latent_frames_per_epoch=config.diffusion.latent_frames_per_epoch,
+        patches_per_epoch=config.diffusion.patches_per_epoch,
         modalities=config.modalities.all,
     )
 

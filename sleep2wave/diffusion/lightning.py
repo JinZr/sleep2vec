@@ -14,6 +14,7 @@ from sleep2wave.diffusion.losses import compute_diffusion_loss
 from sleep2wave.diffusion.model import Sleep2WaveDiffusionTransformer
 from sleep2wave.diffusion.samplers import build_sampler
 from sleep2wave.diffusion.schedule import DiffusionSchedule, build_diffusion_schedule
+from sleep2wave.diffusion.task_masks import build_patch_condition_availability
 from sleep2wave.diffusion.tasks import GenerationTask, build_generation_task, is_restoration_task
 from sleep2wave.generative.config import Sleep2WaveConfig
 from sleep2wave.training.task_sampler import Sleep2WaveTaskSampler
@@ -87,8 +88,9 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
         for modality in task.target_modalities:
             clean = clean_latents[modality]
             noise = torch.randn_like(clean)
-            sqrt_alpha = schedule.sqrt_alpha_bars[timesteps].view(batch_size, 1, 1)
-            sqrt_one_minus = schedule.sqrt_one_minus_alpha_bars[timesteps].view(batch_size, 1, 1)
+            broadcast_shape = (batch_size,) + (1,) * (clean.dim() - 1)
+            sqrt_alpha = schedule.sqrt_alpha_bars[timesteps].view(broadcast_shape)
+            sqrt_one_minus = schedule.sqrt_one_minus_alpha_bars[timesteps].view(broadcast_shape)
             noisy[modality] = sqrt_alpha * clean + sqrt_one_minus * noise
             target_noise[modality] = noise
         return noisy, target_noise, timesteps
@@ -139,15 +141,18 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
         self,
         observed_signals: dict[str, torch.Tensor],
         task: GenerationTask,
-    ) -> dict[str, torch.Tensor]:
+        *,
+        return_masks: bool = False,
+    ):
         training_cfg = self.config_bundle.training
         if training_cfg is None:
-            return observed_signals
+            return (observed_signals, {}) if return_masks else observed_signals
         policy = training_cfg.corruptions.for_task(task.task_type)
         if policy is None:
-            return observed_signals
+            return (observed_signals, {}) if return_masks else observed_signals
 
         updated = dict(observed_signals)
+        masks: dict[str, torch.Tensor] = {}
         corruption_modalities = task.target_modalities if is_restoration_task(task) else task.condition_modalities
         for modality in corruption_modalities:
             spec = policy.for_modality(modality)
@@ -164,7 +169,24 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
                 **self._corruption_kwargs(choice.name, signal, choice.kwargs),
             )
             updated[modality] = corrupted
-        return updated
+            masks[modality] = _mask
+        return (updated, masks) if return_masks else updated
+
+    def _patch_condition_availability(
+        self,
+        availability_mask: dict[str, torch.Tensor],
+        corruption_mask: dict[str, torch.Tensor],
+        task: GenerationTask,
+    ) -> dict[str, torch.Tensor]:
+        diffusion_cfg = self.config_bundle.diffusion
+        if diffusion_cfg is None or not corruption_mask:
+            return availability_mask
+        return build_patch_condition_availability(
+            availability_mask,
+            corruption_mask,
+            task,
+            patches_per_epoch=diffusion_cfg.patches_per_epoch,
+        )
 
     def _validation_task_for_batch(self, batch, batch_idx: int):
         validation_cfg = self.config_bundle.training.validation
@@ -205,10 +227,20 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
         if self.autoencoder is None:
             clean_latents = batch["clean_latents"]
             observed_latents = batch.get("observed_latents", clean_latents)
+            condition_availability = None
         else:
             clean_latents = self._encode_signals(batch["clean_signals"])
-            observed_signals = self._apply_task_corruption(batch["observed_signals"], task)
+            observed_signals, corruption_mask = self._apply_task_corruption(
+                batch["observed_signals"],
+                task,
+                return_masks=True,
+            )
             observed_latents = self._encode_signals(observed_signals)
+            condition_availability = self._patch_condition_availability(
+                batch["availability_mask"],
+                corruption_mask,
+                task,
+            )
         condition_latents = {modality: observed_latents[modality] for modality in task.condition_modalities}
         noisy_targets, target_noise, timesteps = self._sample_noisy_targets(clean_latents, task)
         output = self.model(
@@ -217,6 +249,8 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             task=task,
             condition_latents=condition_latents,
             availability_mask=batch["availability_mask"],
+            condition_availability_mask=condition_availability if self.autoencoder is not None else None,
+            channel_mask=batch.get("channel_mask"),
             quality_mask=batch["quality_mask"],
             night_position=batch["night_position"],
         )
@@ -225,6 +259,7 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
             target_noise,
             task,
             target_mask=batch.get("availability_mask"),
+            channel_mask=batch.get("channel_mask"),
             quality_mask=batch.get("quality_mask"),
         )
         return losses, task_family, task
@@ -318,9 +353,18 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
                     )
                 except ValueError:
                     continue
-                observed_signals = self._apply_task_corruption(batch["observed_signals"], task)
+                observed_signals, corruption_mask = self._apply_task_corruption(
+                    batch["observed_signals"],
+                    task,
+                    return_masks=True,
+                )
                 observed_latents = self._encode_signals(observed_signals)
                 condition_latents = {modality: observed_latents[modality] for modality in task.condition_modalities}
+                condition_availability = self._patch_condition_availability(
+                    batch["availability_mask"],
+                    corruption_mask,
+                    task,
+                )
                 output = sampler.sample(
                     self.model,
                     condition_latents=condition_latents,
@@ -328,6 +372,8 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
                     availability_mask=batch["availability_mask"],
                     quality_mask=batch["quality_mask"],
                     night_position=batch["night_position"],
+                    condition_availability_mask=condition_availability,
+                    channel_mask=batch.get("channel_mask"),
                 )
                 decoded = self._decode_first_generated_sample(output.generated_latents)
                 target_modality = next(
@@ -342,7 +388,7 @@ class Sleep2WaveDiffusionLightning(pl.LightningModule):
                 sample_rate_hz = self.config_bundle.modalities.sample_rates[target_modality]
                 for sample_idx in range(example_count):
                     clean_example = self._select_example_channel(clean_signal, channel_mask, sample_idx)
-                    generated_example = self._select_example_channel(generated_signal, None, sample_idx)
+                    generated_example = self._select_example_channel(generated_signal, channel_mask, sample_idx)
                     if clean_example is None or generated_example is None:
                         continue
                     observed_example = None
@@ -398,6 +444,7 @@ def _load_autoencoder_for_diffusion(config: Sleep2WaveConfig):
     return load_sleep2wave_autoencoder_checkpoint(
         checkpoint_path,
         latent_dim=config.diffusion.latent_dim,
+        latent_frames_per_epoch=config.diffusion.latent_frames_per_epoch,
         modalities=config.modalities.all,
         device="cpu",
     )

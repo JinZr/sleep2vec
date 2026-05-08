@@ -43,6 +43,8 @@ class AutoencoderLossConfig:
     waveform_l1_weight: float = 1.0
     waveform_l2_weight: float = 0.0
     spectral_weight: float = 0.0
+    derivative_l1_weight: float = 0.0
+    mr_stft_weight: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -63,8 +65,8 @@ class AutoencoderConfig:
     latent_dim: int
     encoder_type: str
     decoder_type: str
-    one_latent_per_epoch: bool
-    modality_specific: bool
+    latent_frames_per_epoch: dict[str, int]
+    channel_specific: bool
     losses: AutoencoderLossConfig
 
 
@@ -81,6 +83,8 @@ class EmbeddingsConfig:
     diffusion_step: bool
     modality: bool
     epoch_position: bool
+    channel_position: bool
+    patch_position: bool
     sleep_night_position: bool
     availability: bool
     quality: bool
@@ -89,6 +93,8 @@ class EmbeddingsConfig:
 @dataclass(frozen=True)
 class DiffusionConfig:
     latent_dim: int
+    latent_frames_per_epoch: dict[str, int]
+    patches_per_epoch: int
     transformer: TransformerConfig
     diffusion_steps: int
     beta_schedule: str
@@ -377,13 +383,51 @@ def _load_modalities(raw: t.Any) -> ModalitiesConfig:
 
 def _load_autoencoder_losses(raw: t.Any) -> AutoencoderLossConfig:
     block = _require_mapping(raw, "autoencoder.losses")
-    allowed = {"waveform_l1_weight", "waveform_l2_weight", "spectral_weight"}
+    allowed = {
+        "waveform_l1_weight",
+        "waveform_l2_weight",
+        "spectral_weight",
+        "derivative_l1_weight",
+        "mr_stft_weight",
+    }
     _reject_extra(block, allowed, "autoencoder.losses")
-    return AutoencoderLossConfig(
+    config = AutoencoderLossConfig(
         waveform_l1_weight=_require_float(block, "waveform_l1_weight", "autoencoder.losses", minimum=0.0),
         waveform_l2_weight=_require_float(block, "waveform_l2_weight", "autoencoder.losses", minimum=0.0),
         spectral_weight=_require_float(block, "spectral_weight", "autoencoder.losses", minimum=0.0),
+        derivative_l1_weight=_require_float(block, "derivative_l1_weight", "autoencoder.losses", minimum=0.0),
+        mr_stft_weight=_require_float(block, "mr_stft_weight", "autoencoder.losses", minimum=0.0),
     )
+    total = (
+        config.waveform_l1_weight
+        + config.waveform_l2_weight
+        + config.spectral_weight
+        + config.derivative_l1_weight
+        + config.mr_stft_weight
+    )
+    if total <= 0:
+        raise ValueError("At least one sleep2wave autoencoder loss weight must be positive.")
+    return config
+
+
+def _load_latent_frames(raw: t.Any, path: str) -> dict[str, int]:
+    block = _require_mapping(raw, path)
+    allowed = {"high_frequency", "low_frequency"}
+    _reject_extra(block, allowed, path)
+    return {
+        "high_frequency": _require_int(
+            block,
+            "high_frequency",
+            path,
+            minimum=1,
+        ),
+        "low_frequency": _require_int(
+            block,
+            "low_frequency",
+            path,
+            minimum=1,
+        ),
+    }
 
 
 def _load_validation_examples(
@@ -441,29 +485,29 @@ def _load_autoencoder(raw: t.Any) -> AutoencoderConfig:
         "latent_dim",
         "encoder_type",
         "decoder_type",
-        "one_latent_per_epoch",
-        "modality_specific",
+        "latent_frames_per_epoch",
+        "channel_specific",
         "losses",
     }
     _reject_extra(block, allowed, "autoencoder")
     encoder_type = _require_string(block, "encoder_type", "autoencoder")
     decoder_type = _require_string(block, "decoder_type", "autoencoder")
-    one_latent_per_epoch = _require_bool(block, "one_latent_per_epoch", "autoencoder")
-    modality_specific = _require_bool(block, "modality_specific", "autoencoder")
-    if encoder_type != "conv1d_epoch":
-        raise ValueError("autoencoder.encoder_type must be 'conv1d_epoch'.")
-    if decoder_type != "convtranspose1d_epoch":
-        raise ValueError("autoencoder.decoder_type must be 'convtranspose1d_epoch'.")
-    if not one_latent_per_epoch:
-        raise ValueError("autoencoder.one_latent_per_epoch must be true.")
-    if not modality_specific:
-        raise ValueError("autoencoder.modality_specific must be true.")
+    channel_specific = _require_bool(block, "channel_specific", "autoencoder")
+    if encoder_type != "temporal_conv":
+        raise ValueError("autoencoder.encoder_type must be 'temporal_conv'.")
+    if decoder_type != "temporal_conv":
+        raise ValueError("autoencoder.decoder_type must be 'temporal_conv'.")
+    if not channel_specific:
+        raise ValueError("autoencoder.channel_specific must be true.")
     return AutoencoderConfig(
         latent_dim=_require_int(block, "latent_dim", "autoencoder", minimum=1),
         encoder_type=encoder_type,
         decoder_type=decoder_type,
-        one_latent_per_epoch=one_latent_per_epoch,
-        modality_specific=modality_specific,
+        latent_frames_per_epoch=_load_latent_frames(
+            block.get("latent_frames_per_epoch"),
+            "autoencoder.latent_frames_per_epoch",
+        ),
+        channel_specific=channel_specific,
         losses=_load_autoencoder_losses(block.get("losses")),
     )
 
@@ -486,12 +530,23 @@ def _load_transformer(raw: t.Any) -> TransformerConfig:
 
 def _load_embeddings(raw: t.Any) -> EmbeddingsConfig:
     block = _require_mapping(raw, "diffusion.embeddings")
-    allowed = {"diffusion_step", "modality", "epoch_position", "sleep_night_position", "availability", "quality"}
+    allowed = {
+        "diffusion_step",
+        "modality",
+        "epoch_position",
+        "channel_position",
+        "patch_position",
+        "sleep_night_position",
+        "availability",
+        "quality",
+    }
     _reject_extra(block, allowed, "diffusion.embeddings")
     return EmbeddingsConfig(
         diffusion_step=_require_bool(block, "diffusion_step", "diffusion.embeddings"),
         modality=_require_bool(block, "modality", "diffusion.embeddings"),
         epoch_position=_require_bool(block, "epoch_position", "diffusion.embeddings"),
+        channel_position=_require_bool(block, "channel_position", "diffusion.embeddings"),
+        patch_position=_require_bool(block, "patch_position", "diffusion.embeddings"),
         sleep_night_position=_require_bool(block, "sleep_night_position", "diffusion.embeddings"),
         availability=_require_bool(block, "availability", "diffusion.embeddings"),
         quality=_require_bool(block, "quality", "diffusion.embeddings"),
@@ -504,6 +559,8 @@ def _load_diffusion(
     block = _require_mapping(raw, "diffusion")
     allowed = {
         "latent_dim",
+        "latent_frames_per_epoch",
+        "patches_per_epoch",
         "autoencoder_checkpoint",
         "latent_cache_path",
         "transformer",
@@ -532,9 +589,18 @@ def _load_diffusion(
     task_attention_mask = _require_string(block, "task_attention_mask", "diffusion")
     if task_attention_mask != "directional":
         raise ValueError("diffusion.task_attention_mask must be 'directional'.")
+    latent_frames = _load_latent_frames(block.get("latent_frames_per_epoch"), "diffusion.latent_frames_per_epoch")
+    patches_per_epoch = _require_int(block, "patches_per_epoch", "diffusion", minimum=1)
+    for group, frames in latent_frames.items():
+        if frames % patches_per_epoch != 0:
+            raise ValueError(
+                f"diffusion.latent_frames_per_epoch.{group} must be divisible by diffusion.patches_per_epoch."
+            )
 
     return DiffusionConfig(
         latent_dim=_require_int(block, "latent_dim", "diffusion", minimum=1),
+        latent_frames_per_epoch=latent_frames,
+        patches_per_epoch=patches_per_epoch,
         autoencoder_checkpoint=autoencoder_checkpoint,
         latent_cache_path=latent_cache_path,
         transformer=_load_transformer(block.get("transformer")),
@@ -757,6 +823,32 @@ def _load_sampler(raw: t.Any, diffusion_cfg: DiffusionConfig) -> SamplerConfig:
     )
 
 
+def _validate_latent_cache_usage(
+    stage: str,
+    diffusion_cfg: DiffusionConfig,
+    training_cfg: TrainingConfig | None,
+) -> None:
+    if diffusion_cfg.autoencoder_checkpoint is not None:
+        return
+    if stage == "inference":
+        raise ValueError("stage=inference requires diffusion.autoencoder_checkpoint.")
+    if training_cfg is None:
+        return
+    from sleep2wave.training.phase_schedule import build_phase_schedule
+
+    schedule = build_phase_schedule(
+        training_cfg.phase,
+        training_cfg.task_mix,
+        replay_enabled=training_cfg.replay.enabled,
+    )
+    unsupported = sorted(set(schedule.task_mix) & {"restoration", "imputation"})
+    if unsupported:
+        raise ValueError(
+            "diffusion.latent_cache_path without autoencoder_checkpoint only supports "
+            f"translation, two_condition, and partial_full tasks. Got: {unsupported}"
+        )
+
+
 def _load_initialization(raw: t.Any) -> InitializationConfig | None:
     if raw is None:
         return None
@@ -946,22 +1038,9 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
         if "inference" in data:
             raise ValueError("stage=diffusion does not support an inference block.")
         diffusion_cfg = _load_diffusion(data["diffusion"])
+        _validate_latent_cache_usage(stage, diffusion_cfg, training_cfg)
         if data_cfg is None or data_cfg.context_epochs != diffusion_cfg.context_epochs:
             raise ValueError("data.context_epochs must match diffusion.context_epochs.")
-        if diffusion_cfg.autoencoder_checkpoint is None:
-            from sleep2wave.training.phase_schedule import build_phase_schedule
-
-            schedule = build_phase_schedule(
-                training_cfg.phase,
-                training_cfg.task_mix,
-                replay_enabled=training_cfg.replay.enabled,
-            )
-            unsupported = sorted(set(schedule.task_mix) & {"restoration", "imputation"})
-            if unsupported:
-                raise ValueError(
-                    "diffusion.latent_cache_path without autoencoder_checkpoint supports only "
-                    f"translation/partial_full task mixes, got {unsupported}."
-                )
         sampler_cfg = _load_sampler(data["sampler"], diffusion_cfg)
     elif stage == "inference":
         if "training" in data:
@@ -976,6 +1055,7 @@ def load_sleep2wave_config(path: str | Path) -> Sleep2WaveConfig:
         if "sampler" not in data:
             raise ValueError("sampler block is required for stage=inference.")
         diffusion_cfg = _load_diffusion(data["diffusion"])
+        _validate_latent_cache_usage(stage, diffusion_cfg, training_cfg)
         if data_cfg is None or data_cfg.context_epochs != diffusion_cfg.context_epochs:
             raise ValueError("data.context_epochs must match diffusion.context_epochs.")
         sampler_cfg = _load_sampler(data["sampler"], diffusion_cfg)

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Train modality-specific waveform autoencoders that produce one latent vector per 30-second epoch.
+Train modality-specific waveform autoencoders that produce channel-specific temporal latent maps per 30-second epoch.
 
 ## Canonical Path
 
@@ -23,10 +23,17 @@ Required blocks:
 
 Current autoencoder architecture constraints:
 
-- `encoder_type: conv1d_epoch`
-- `decoder_type: convtranspose1d_epoch`
-- `one_latent_per_epoch: true`
-- `modality_specific: true`
+- `encoder_type: temporal_conv`
+- `decoder_type: temporal_conv`
+- `latent_frames_per_epoch.high_frequency: 60`
+- `latent_frames_per_epoch.low_frequency: 30`
+- `channel_specific: true`
+
+Current latent contract:
+
+- High-frequency modalities: `[B, E, C, 60, D]`
+- Low-frequency modalities: `[B, E, C, 30, D]`
+- Reconstructions preserve the input signal shape, including channel dimension for `[B, E, C, S]` inputs.
 
 Optional logging config:
 

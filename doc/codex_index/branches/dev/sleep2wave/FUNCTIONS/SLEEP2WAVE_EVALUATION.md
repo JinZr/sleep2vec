@@ -29,12 +29,30 @@
 - Side effects: creates directory and writes files.
 - Reuse guidance: use for evaluation output schema changes.
 
+## `sleep2wave.evaluate_generation._load_masked_metric_arrays`
+
+- File: `sleep2wave/evaluate_generation.py`
+- Signature: `_load_masked_metric_arrays(...) -> tuple[np.ndarray, np.ndarray, np.ndarray | None] | None`
+- Purpose and contract: load reference/generated arrays for one modality and apply the canonical target, availability, quality, and corruption epoch mask before metric computation.
+- Important inputs/outputs: reference/generated/uncertainty/mask NPZ files and modality in; masked reference, generated, and optional baseline arrays out.
+- Side effects: none.
+- Reuse guidance: use when adding per-modality metrics that must respect the exported metric mask.
+
+## `sleep2wave.evaluate_generation._load_masked_metric_pair`
+
+- File: `sleep2wave/evaluate_generation.py`
+- Signature: `_load_masked_metric_pair(...) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None`
+- Purpose and contract: load two modalities with the intersection of their canonical metric masks for paired feature metrics such as airflow/belt coherence.
+- Important inputs/outputs: reference/generated/uncertainty/mask NPZ files and two modality names in; left/right masked reference/generated arrays out.
+- Side effects: none.
+- Reuse guidance: use for cross-modality metrics where both modalities must refer to the same scored epochs.
+
 ## `sleep2wave.evaluation.waveform_metrics.compute_waveform_metrics`
 
 - File: `sleep2wave/evaluation/waveform_metrics.py`
-- Signature: `compute_waveform_metrics(reference: Any, generated: Any, *, baseline: Any | None = None, max_shift_frames: int = 0) -> dict[str, float]`
-- Purpose and contract: compute waveform-level RMSE, MAE, correlation, spectral distance, optional shifted metrics, and optional SNR improvement.
-- Important inputs/outputs: reference/generated arrays and optional baseline in; metric dict out.
+- Signature: `compute_waveform_metrics(reference: Any, generated: Any, *, modality: str, sample_rate_hz: int, baseline: Any | None = None, max_shift_frames: int = 0) -> dict[str, float]`
+- Purpose and contract: compute waveform-level RMSE, MAE, correlation, full-epoch spectral distance, multi-resolution STFT distance, modality-band spectral distances, optional shifted metrics, and optional SNR improvement.
+- Important inputs/outputs: reference/generated arrays, modality, sample rate, and optional baseline in; metric dict out.
 - Side effects: none.
 - Key callers/callees: `evaluate_generation.run_evaluation`.
 - Reuse guidance: add waveform metrics here, not in the orchestration file.
@@ -43,11 +61,21 @@
 
 - File: `sleep2wave/evaluation/feature_metrics.py`
 - Signature: `compute_feature_metrics(modality: str, reference: Any, generated: Any, *, sample_rate_hz: int) -> dict[str, float]`
-- Purpose and contract: compute modality-specific feature metrics such as EEG bandpower error, EMG tone error, IBI MAE, SpO2 nadir metrics, respiratory amplitude error, and ECG peak metrics when applicable.
+- Purpose and contract: compute modality-specific feature metrics over `[epochs, channels, frames]` arrays without dropping channels, including EEG bandpower, EMG tone, IBI MAE, SpO2 nadir/desaturation morphology, respiratory cycle morphology, and ECG peak/RR/slope metrics.
 - Important inputs/outputs: modality and arrays in; metric dict out.
 - Side effects: none.
 - Key callers/callees: `evaluate_generation.run_evaluation`.
 - Reuse guidance: keep feature extraction here.
+
+## `sleep2wave.evaluation.feature_metrics.airflow_belt_coherence_metrics`
+
+- File: `sleep2wave/evaluation/feature_metrics.py`
+- Signature: `airflow_belt_coherence_metrics(reference_airflow, generated_airflow, reference_belt, generated_belt) -> dict[str, float]`
+- Purpose and contract: compare airflow/belt cross-modality waveform coherence between reference and generated signals.
+- Important inputs/outputs: masked airflow and belt arrays in; reference coherence, generated coherence, and coherence error out.
+- Side effects: none.
+- Key callers/callees: `evaluate_generation.run_evaluation`.
+- Reuse guidance: keep paired respiratory coherence metrics here rather than in the CLI orchestration.
 
 ## `sleep2wave.evaluation.event_metrics.compute_event_metric_groups`
 
@@ -63,8 +91,8 @@
 
 - File: `sleep2wave/evaluation/event_metrics.py`
 - Signature: `compute_generated_signal_event_groups(reference_by_modality, generated_by_modality, *, sample_rates, iou_threshold) -> dict[str, Any]`
-- Purpose and contract: derive simple event intervals from generated/reference SpO2 and respiratory waveforms when no external events JSON is provided.
-- Important inputs/outputs: modality arrays in; desaturation and low-amplitude respiratory event metrics out.
+- Purpose and contract: derive event intervals from masked generated/reference waveforms when no external events JSON is provided.
+- Important inputs/outputs: modality arrays in; SpO2 desaturation, respiratory low-amplitude, EEG sigma-burst, and EMG-burst event metrics out.
 - Side effects: none.
 - Reuse guidance: use as the generated-signal adapter before adding heavier clinical event detectors.
 

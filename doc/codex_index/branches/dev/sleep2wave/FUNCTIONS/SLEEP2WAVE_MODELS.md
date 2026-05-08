@@ -3,19 +3,19 @@
 ## `sleep2wave.autoencoders.model.Sleep2WaveAutoencoder`
 
 - File: `sleep2wave/autoencoders/model.py`
-- Signature: `Sleep2WaveAutoencoder(*, latent_dim: int, encoder_type: str = "conv1d_epoch", decoder_type: str = "convtranspose1d_epoch", modalities: Sequence[str] = CANONICAL_MODALITIES)`
-- Purpose and contract: build modality-specific waveform autoencoders and return one latent vector per epoch for each modality. Multi-channel inputs share the per-modality encoder and are averaged to the one-token diffusion contract.
+- Signature: `Sleep2WaveAutoencoder(*, latent_dim: int, encoder_type: str = "temporal_conv", decoder_type: str = "temporal_conv", latent_frames_per_epoch: Mapping[str, int] | None = None, channel_specific: bool = True, modalities: Sequence[str] = CANONICAL_MODALITIES)`
+- Purpose and contract: build modality-specific temporal waveform autoencoders and return channel-specific latent maps. High-frequency modalities default to 60 latent frames per 30-second epoch, low-frequency modalities default to 30 latent frames per epoch, and latents have shape `[B, E, C, L, D]`.
 - Important inputs/outputs: `clean_signals` dict in; `Sleep2WaveAutoencoderOutput(latents, reconstructions)` out.
 - Side effects: module construction and forward computation.
 - Key callers/callees: `Sleep2WaveAutoencoderLightning`, diffusion autoencoder loading, generation decoding.
 - Reuse guidance: use this for all sleep2wave waveform latent encoding and decoding; padded channels should be masked through the autoencoder loss `channel_mask`.
-- Duplication-risk notes: do not create separate per-modality autoencoder classes outside this module.
+- Duplication-risk notes: do not create separate per-modality temporal autoencoder classes outside this module.
 
 ## `sleep2wave.autoencoders.model.Sleep2WaveAutoencoder.decode_latents`
 
 - File: `sleep2wave/autoencoders/model.py`
 - Signature: `decode_latents(self, latents: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]`
-- Purpose and contract: decode `[B, E, D]` latent tensors into modality waveform reconstructions.
+- Purpose and contract: decode `[B, E, C, L, D]` latent maps into `[B, E, C, S]` modality waveform reconstructions.
 - Important inputs/outputs: modality latent dict in; modality waveform dict out.
 - Side effects: forward computation.
 - Key callers/callees: `generate._decode_generated_latents`.
@@ -25,7 +25,7 @@
 
 - File: `sleep2wave/autoencoders/losses.py`
 - Signature: `compute_autoencoder_loss(reconstructions, targets, *, availability_mask=None, quality_mask=None, config: AutoencoderLossConfig) -> dict[str, torch.Tensor]`
-- Purpose and contract: compute masked waveform L1, waveform L2, spectral, and total autoencoder losses.
+- Purpose and contract: compute masked waveform L1, waveform L2, full-epoch spectral, derivative L1, MR-STFT, and total autoencoder losses.
 - Important inputs/outputs: reconstruction/target dicts plus masks in; loss dict out.
 - Side effects: none.
 - Key callers/callees: `Sleep2WaveAutoencoderLoss.forward`, autoencoder Lightning training.
@@ -71,8 +71,8 @@
 ## `sleep2wave.diffusion.task_masks.TokenLayout`
 
 - File: `sleep2wave/diffusion/task_masks.py`
-- Signature: `TokenLayout(modalities: tuple[str, ...] = CANONICAL_MODALITIES, context_epochs: int = 15, include_aux: bool = True)`
-- Purpose and contract: map modality/epoch pairs to transformer token positions.
+- Signature: `TokenLayout(modalities: tuple[str, ...] = CANONICAL_MODALITIES, context_epochs: int = 15, channel_count: int = 1, patches_per_epoch: int = 6, include_aux: bool = True)`
+- Purpose and contract: map `(modality, epoch, channel, patch)` tuples to transformer token positions.
 - Important inputs/outputs: modality and context definitions in; token index helpers out.
 - Side effects: none.
 - Key callers/callees: `Sleep2WaveDiffusionTransformer`.
@@ -81,8 +81,8 @@
 ## `sleep2wave.diffusion.task_masks.build_directional_task_attention_mask`
 
 - File: `sleep2wave/diffusion/task_masks.py`
-- Signature: `build_directional_task_attention_mask(task: GenerationTask, layout: TokenLayout, *, availability_mask: dict[str, torch.Tensor] | None = None, batch_size: int = 1) -> TaskAttentionMask`
-- Purpose and contract: build condition/target/active token masks and blocked attention matrix for directional generation.
+- Signature: `build_directional_task_attention_mask(task: GenerationTask, layout: TokenLayout, *, availability_mask: dict[str, torch.Tensor] | None = None, condition_availability_mask: dict[str, torch.Tensor] | None = None, channel_mask: dict[str, torch.Tensor] | None = None, batch_size: int = 1) -> TaskAttentionMask`
+- Purpose and contract: build condition/target/active token masks and blocked attention matrix for directional generation; epoch masks `[B, E]` expand across channels and patches, patch masks `[B, E, P]` are accepted, channel-patch masks `[B, E, C, P]` are accepted for condition availability, and `channel_mask` suppresses padded channels.
 - Important inputs/outputs: task/layout/availability in; `TaskAttentionMask` out.
 - Side effects: none.
 - Key callers/callees: `Sleep2WaveDiffusionTransformer.forward`.
@@ -91,12 +91,12 @@
 ## `sleep2wave.diffusion.model.Sleep2WaveDiffusionTransformer`
 
 - File: `sleep2wave/diffusion/model.py`
-- Signature: `Sleep2WaveDiffusionTransformer(*, latent_dim, hidden_size, num_layers, num_heads, mlp_ratio, diffusion_steps, context_epochs, modalities=CANONICAL_MODALITIES, use_diffusion_step_embedding=True, use_modality_embedding=True, use_epoch_position_embedding=True, use_sleep_night_position_embedding=True, use_availability_embedding=True, use_quality_embedding=True, include_aux=True)`
-- Purpose and contract: denoise target modality latents conditioned on available modality latents and task masks.
-- Important inputs/outputs: noisy target latents, timesteps, task, condition latents, masks, night position in; `Sleep2WaveDiffusionOutput(predicted_noise, task_mask)` out.
+- Signature: `Sleep2WaveDiffusionTransformer(*, latent_dim, hidden_size, num_layers, num_heads, mlp_ratio, diffusion_steps, context_epochs, latent_frames_per_epoch=None, patches_per_epoch=6, modalities=CANONICAL_MODALITIES, use_diffusion_step_embedding=True, use_modality_embedding=True, use_epoch_position_embedding=True, use_channel_position_embedding=True, use_patch_position_embedding=True, use_sleep_night_position_embedding=True, use_availability_embedding=True, use_quality_embedding=True, include_aux=True)`
+- Purpose and contract: denoise padded multi-channel temporal latent maps using modality-specific 5-second patch projections.
+- Important inputs/outputs: noisy target latents `[B, E, C, L, D]`, timesteps, task, condition latents, availability/quality/channel masks, night position in; `Sleep2WaveDiffusionOutput(predicted_noise, task_mask)` out with predicted noise in `[B, E, C, L, D]`.
 - Side effects: forward computation.
 - Key callers/callees: diffusion Lightning and samplers; callees include `build_directional_task_attention_mask`.
-- Reuse guidance: construct from config through `from_config` when possible.
+- Reuse guidance: construct from config through `from_config` when possible; pass `channel_mask` for padded or multi-channel latents.
 - Duplication-risk notes: do not create task-specific forward paths outside the task/mask abstractions.
 
 ## `sleep2wave.diffusion.schedule.build_diffusion_schedule`
@@ -112,8 +112,8 @@
 
 - File: `sleep2wave/diffusion/samplers.py`
 - Signature: `build_sampler(config: SamplerConfig, *, diffusion_steps: int, beta_schedule: str) -> BaseDiffusionSampler`
-- Purpose and contract: construct a DDIM or DDPM sampler from typed config.
-- Important inputs/outputs: sampler config and diffusion schedule settings in; sampler out.
+- Purpose and contract: construct a DDIM or DDPM sampler from typed config; generated latent samples have shape `[num_samples, B, E, C, L, D]`.
+- Important inputs/outputs: sampler config and diffusion schedule settings in; optional patch-level condition availability masks and `channel_mask` are forwarded to the diffusion model; sampler out.
 - Side effects: none.
 - Key callers/callees: `generate._collect_generation_windows`.
 - Reuse guidance: use this instead of branching on sampler name in generation code.

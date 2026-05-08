@@ -71,8 +71,60 @@ def _spectral_epoch_error(reconstruction: torch.Tensor, target: torch.Tensor) ->
     return torch.abs(torch.log1p(recon_spec) - torch.log1p(target_spec)).mean(dim=-1)
 
 
+def _derivative_error(reconstruction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    reconstruction = _ensure_signal4d(reconstruction)
+    target = _ensure_signal4d(target)
+    return torch.abs(torch.diff(reconstruction, dim=-1) - torch.diff(target, dim=-1))
+
+
+def _mr_stft_window_lengths(frames: int) -> tuple[int, ...]:
+    candidates = (128, 256, 512) if frames >= 1000 else (16, 32, 64)
+    return tuple(window for window in candidates if window <= frames)
+
+
+def _mr_stft_epoch_error(reconstruction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    reconstruction = _ensure_signal4d(reconstruction)
+    target = _ensure_signal4d(target)
+    batch_size, epoch_count, channels, frames = target.shape
+    window_lengths = _mr_stft_window_lengths(frames)
+    if not window_lengths:
+        return torch.zeros((batch_size, epoch_count, channels), dtype=target.dtype, device=target.device)
+
+    flat_reconstruction = reconstruction.reshape(batch_size * epoch_count * channels, frames)
+    flat_target = target.reshape(batch_size * epoch_count * channels, frames)
+    errors = []
+    for window_length in window_lengths:
+        window = torch.hann_window(window_length, dtype=target.dtype, device=target.device)
+        hop_length = max(1, window_length // 4)
+        recon_spec = torch.stft(
+            flat_reconstruction,
+            n_fft=window_length,
+            hop_length=hop_length,
+            win_length=window_length,
+            window=window,
+            return_complex=True,
+        ).abs()
+        target_spec = torch.stft(
+            flat_target,
+            n_fft=window_length,
+            hop_length=hop_length,
+            win_length=window_length,
+            window=window,
+            return_complex=True,
+        ).abs()
+        errors.append(torch.abs(torch.log1p(recon_spec) - torch.log1p(target_spec)).mean(dim=(1, 2)))
+    stacked = torch.stack(errors, dim=0).mean(dim=0)
+    return stacked.reshape(batch_size, epoch_count, channels)
+
+
 def _validate_loss_weights(config: AutoencoderLossConfig) -> None:
-    total = config.waveform_l1_weight + config.waveform_l2_weight + config.spectral_weight
+    total = (
+        config.waveform_l1_weight
+        + config.waveform_l2_weight
+        + config.spectral_weight
+        + config.derivative_l1_weight
+        + config.mr_stft_weight
+    )
     if total <= 0:
         raise ValueError("At least one sleep2wave autoencoder loss weight must be positive.")
 
@@ -96,6 +148,10 @@ def compute_autoencoder_loss(
     l2_denominator = zero.clone()
     spectral_numerator = zero.clone()
     spectral_denominator = zero.clone()
+    derivative_numerator = zero.clone()
+    derivative_denominator = zero.clone()
+    mr_stft_numerator = zero.clone()
+    mr_stft_denominator = zero.clone()
 
     for modality, target in targets.items():
         if modality not in reconstructions:
@@ -122,19 +178,39 @@ def compute_autoencoder_loss(
         spectral_numerator = spectral_numerator + spectral_sum
         spectral_denominator = spectral_denominator + spectral_count
 
+        if config.derivative_l1_weight > 0:
+            derivative_sum, derivative_count = _masked_waveform_mean(
+                _derivative_error(reconstruction4d, target4d),
+                weights,
+            )
+            derivative_numerator = derivative_numerator + derivative_sum
+            derivative_denominator = derivative_denominator + derivative_count
+
+        if config.mr_stft_weight > 0:
+            mr_stft_error = _mr_stft_epoch_error(reconstruction4d, target4d)
+            mr_stft_sum, mr_stft_count = _masked_epoch_mean(mr_stft_error, weights)
+            mr_stft_numerator = mr_stft_numerator + mr_stft_sum
+            mr_stft_denominator = mr_stft_denominator + mr_stft_count
+
     waveform_l1 = _safe_divide(l1_numerator, l1_denominator)
     waveform_l2 = _safe_divide(l2_numerator, l2_denominator)
     spectral = _safe_divide(spectral_numerator, spectral_denominator)
+    derivative_l1 = _safe_divide(derivative_numerator, derivative_denominator)
+    mr_stft = _safe_divide(mr_stft_numerator, mr_stft_denominator)
     total = (
         config.waveform_l1_weight * waveform_l1
         + config.waveform_l2_weight * waveform_l2
         + config.spectral_weight * spectral
+        + config.derivative_l1_weight * derivative_l1
+        + config.mr_stft_weight * mr_stft
     )
     return {
         "loss": total,
         "waveform_l1_loss": waveform_l1,
         "waveform_l2_loss": waveform_l2,
         "spectral_loss": spectral,
+        "derivative_l1_loss": derivative_l1,
+        "mr_stft_loss": mr_stft,
     }
 
 

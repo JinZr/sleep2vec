@@ -118,39 +118,97 @@ def compute_event_metric_groups(
     return metrics
 
 
-def _contiguous_true_intervals(mask: np.ndarray, *, sample_rate_hz: int) -> list[list[float]]:
+def _contiguous_true_intervals(
+    mask: np.ndarray,
+    *,
+    sample_rate_hz: int,
+    min_duration_sec: float = 0.0,
+    max_duration_sec: float | None = None,
+) -> list[list[float]]:
     mask = np.asarray(mask, dtype=bool).reshape(-1)
     intervals: list[list[float]] = []
     start: int | None = None
+
+    def append_interval(left: int, right: int) -> None:
+        duration = (right - left) / sample_rate_hz
+        if duration < min_duration_sec:
+            return
+        if max_duration_sec is not None and duration > max_duration_sec:
+            return
+        intervals.append([left / sample_rate_hz, right / sample_rate_hz])
+
     for idx, value in enumerate(mask):
         if value and start is None:
             start = idx
         elif not value and start is not None:
-            intervals.append([start / sample_rate_hz, idx / sample_rate_hz])
+            append_interval(start, idx)
             start = None
     if start is not None:
-        intervals.append([start / sample_rate_hz, mask.size / sample_rate_hz])
+        append_interval(start, mask.size)
     return intervals
 
 
-def _flatten_signal(signal: t.Any) -> np.ndarray:
+def _as_epoch_channel_series(signal: t.Any) -> np.ndarray:
     array = np.asarray(signal, dtype=np.float64)
     if array.ndim == 1:
-        return array
+        return array.reshape(1, 1, -1)
     if array.ndim == 2:
-        return array.reshape(-1)
-    if array.ndim >= 3:
-        return array[:, 0, :].reshape(-1)
-    raise ValueError("Signal must be at least 1D.")
+        return array[:, None, :]
+    if array.ndim == 3:
+        return array
+    raise ValueError("Signal must have shape [frames], [epochs, frames], or [epochs, channels, frames].")
+
+
+def _intervals_from_epoch_channel_mask(
+    mask: np.ndarray,
+    *,
+    sample_rate_hz: int,
+    min_duration_sec: float = 0.0,
+    max_duration_sec: float | None = None,
+) -> list[list[float]]:
+    channel_aggregated = np.asarray(mask, dtype=bool).any(axis=1)
+    return _contiguous_true_intervals(
+        channel_aggregated.reshape(-1),
+        sample_rate_hz=sample_rate_hz,
+        min_duration_sec=min_duration_sec,
+        max_duration_sec=max_duration_sec,
+    )
+
+
+def _moving_average(values: np.ndarray, *, window: int) -> np.ndarray:
+    window = max(int(window), 1)
+    if window == 1:
+        return values
+    kernel = np.ones(window, dtype=np.float64) / window
+    flat = values.reshape(-1, values.shape[-1])
+    smoothed = np.stack([np.convolve(row, kernel, mode="same") for row in flat], axis=0)
+    return smoothed.reshape(values.shape)
+
+
+def _robust_threshold(envelope: np.ndarray, *, multiplier: float) -> np.ndarray:
+    median = np.nanmedian(envelope, axis=-1, keepdims=True)
+    mad = np.nanmedian(np.abs(envelope - median), axis=-1, keepdims=True)
+    return median + multiplier * np.maximum(mad, 1e-12)
+
+
+def _band_limited_signal(signal: np.ndarray, *, sample_rate_hz: int, low: float, high: float) -> np.ndarray:
+    freqs = np.fft.rfftfreq(signal.shape[-1], d=1.0 / sample_rate_hz)
+    spectrum = np.fft.rfft(signal, axis=-1)
+    spectrum[..., ~((freqs >= low) & (freqs < high))] = 0.0
+    return np.fft.irfft(spectrum, n=signal.shape[-1], axis=-1)
 
 
 def detect_spo2_desaturation_events(signal: t.Any, *, sample_rate_hz: int, drop: float = 3.0) -> list[list[float]]:
-    values = _flatten_signal(signal)
+    values = _as_epoch_channel_series(signal)
     finite = np.isfinite(values)
     if not finite.any():
         return []
-    baseline = float(np.nanmedian(values[finite]))
-    return _contiguous_true_intervals(values <= baseline - drop, sample_rate_hz=sample_rate_hz)
+    baseline = np.nanmedian(values, axis=-1, keepdims=True)
+    return _intervals_from_epoch_channel_mask(
+        values <= baseline - drop,
+        sample_rate_hz=sample_rate_hz,
+        min_duration_sec=2.0,
+    )
 
 
 def detect_low_amplitude_epoch_events(
@@ -163,19 +221,48 @@ def detect_low_amplitude_epoch_events(
     array = np.asarray(signal, dtype=np.float64)
     if array.ndim == 1:
         frames_per_epoch = int(epoch_sec * sample_rate_hz)
-        array = array[: array.size // frames_per_epoch * frames_per_epoch].reshape(-1, frames_per_epoch)
-    elif array.ndim >= 3:
-        array = array[:, 0, :]
-    elif array.ndim != 2:
-        return []
+        array = array[: array.size // frames_per_epoch * frames_per_epoch].reshape(-1, 1, frames_per_epoch)
+    else:
+        array = _as_epoch_channel_series(array)
     if array.size == 0:
         return []
-    amplitude = np.nanpercentile(array, 95, axis=-1) - np.nanpercentile(array, 5, axis=-1)
-    finite = np.isfinite(amplitude)
-    if not finite.any():
+    centered = array - np.nanmedian(array, axis=-1, keepdims=True)
+    envelope = _moving_average(np.abs(centered), window=max(int(round(5.0 * sample_rate_hz)), 1))
+    baseline = np.nanmedian(envelope, axis=-1, keepdims=True)
+    return _intervals_from_epoch_channel_mask(
+        envelope <= baseline * fraction,
+        sample_rate_hz=sample_rate_hz,
+        min_duration_sec=5.0,
+    )
+
+
+def detect_sigma_burst_events(signal: t.Any, *, sample_rate_hz: int) -> list[list[float]]:
+    values = _as_epoch_channel_series(signal)
+    if values.size == 0:
         return []
-    threshold = float(np.nanmedian(amplitude[finite]) * fraction)
-    return [[idx * epoch_sec, (idx + 1) * epoch_sec] for idx, value in enumerate(amplitude) if value <= threshold]
+    sigma = _band_limited_signal(values, sample_rate_hz=sample_rate_hz, low=12.0, high=16.0)
+    envelope = _moving_average(np.abs(sigma), window=max(int(round(0.25 * sample_rate_hz)), 1))
+    threshold = _robust_threshold(envelope, multiplier=3.0)
+    return _intervals_from_epoch_channel_mask(
+        envelope > threshold,
+        sample_rate_hz=sample_rate_hz,
+        min_duration_sec=0.5,
+        max_duration_sec=3.0,
+    )
+
+
+def detect_emg_burst_events(signal: t.Any, *, sample_rate_hz: int) -> list[list[float]]:
+    values = _as_epoch_channel_series(signal)
+    if values.size == 0:
+        return []
+    centered = values - np.nanmedian(values, axis=-1, keepdims=True)
+    envelope = _moving_average(np.abs(centered), window=max(int(round(0.1 * sample_rate_hz)), 1))
+    threshold = _robust_threshold(envelope, multiplier=3.0)
+    return _intervals_from_epoch_channel_mask(
+        envelope > threshold,
+        sample_rate_hz=sample_rate_hz,
+        min_duration_sec=0.25,
+    )
 
 
 def compute_generated_signal_event_groups(
@@ -209,6 +296,28 @@ def compute_generated_signal_event_groups(
                     sample_rate_hz=sample_rates[modality],
                 ),
             }
+    if "eeg" in reference_by_modality and "eeg" in generated_by_modality:
+        groups["eeg_sigma_burst"] = {
+            "reference": detect_sigma_burst_events(
+                reference_by_modality["eeg"],
+                sample_rate_hz=sample_rates["eeg"],
+            ),
+            "generated": detect_sigma_burst_events(
+                generated_by_modality["eeg"],
+                sample_rate_hz=sample_rates["eeg"],
+            ),
+        }
+    if "emg" in reference_by_modality and "emg" in generated_by_modality:
+        groups["emg_burst"] = {
+            "reference": detect_emg_burst_events(
+                reference_by_modality["emg"],
+                sample_rate_hz=sample_rates["emg"],
+            ),
+            "generated": detect_emg_burst_events(
+                generated_by_modality["emg"],
+                sample_rate_hz=sample_rates["emg"],
+            ),
+        }
     return compute_event_metric_groups(groups, iou_threshold=iou_threshold) if groups else {}
 
 
@@ -216,7 +325,9 @@ __all__ = [
     "compute_generated_signal_event_groups",
     "compute_event_metric_groups",
     "compute_event_metrics",
+    "detect_emg_burst_events",
     "detect_low_amplitude_epoch_events",
+    "detect_sigma_burst_events",
     "detect_spo2_desaturation_events",
     "interval_iou",
     "match_intervals",
