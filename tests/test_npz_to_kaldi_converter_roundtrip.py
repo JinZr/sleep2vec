@@ -349,6 +349,54 @@ def test_converter_trims_one_token_channel_length_difference(tmp_path: Path):
     assert _read_matrix(output_dir / "channels" / "train" / "ppg.scp", key).shape == (2, 4)
 
 
+def test_converter_skips_zero_length_trimmed_window(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4, "ppg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(
+        npz_path,
+        eeg=np.arange(8, dtype=np.float32),
+        ppg=np.arange(4, dtype=np.float32),
+    )
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "eeg_mask": 1,
+                "ppg_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "1",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    key = "mesa_s1_000000_000001"
+    assert manifest["sample_key"].tolist() == [key]
+    assert manifest["num_tokens"].tolist() == [1]
+    assert _scp_keys(output_dir / "channels" / "train" / "eeg.scp") == [key]
+    assert _scp_keys(output_dir / "channels" / "train" / "ppg.scp") == [key]
+
+
 def test_converter_rejects_channel_length_difference_greater_than_one(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4, "ppg": 4})
     npz_path = tmp_path / "sample.npz"

@@ -400,6 +400,8 @@ def convert(args: argparse.Namespace) -> Path:
                             f"Sample {sample_key!r} has channel token lengths differing by more than one: "
                             f"{dict((channel, matrix.shape[0]) for channel, matrix in matrices.items())}."
                         )
+                    if min_len < 1:
+                        continue
                     matrices = {channel: matrix[:min_len] for channel, matrix in matrices.items()}
                     actual_end = start + min_len
 
