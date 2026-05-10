@@ -165,7 +165,7 @@ def test_load_pretrain_config_parses_kaldi_data_fields(tmp_path: Path):
         {
             "backend": "kaldi",
             "kaldi_data_root": "/tmp/kaldi_root",
-            "kaldi_manifest": "/tmp/kaldi_root/manifest.csv",
+            "kaldi_manifest": "/tmp/kaldi_root/manifest.json",
         }
     )
     config_path = _write_yaml(tmp_path, payload)
@@ -174,7 +174,7 @@ def test_load_pretrain_config_parses_kaldi_data_fields(tmp_path: Path):
 
     assert bundle.data.backend == "kaldi"
     assert bundle.data.kaldi_data_root == "/tmp/kaldi_root"
-    assert bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.csv"
+    assert bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.json"
 
 
 def test_load_pretrain_config_parses_adapt_block(tmp_path: Path):
@@ -268,7 +268,7 @@ def test_load_finetune_config_parses_kaldi_data_fields(tmp_path: Path):
         {
             "backend": "kaldi",
             "kaldi_data_root": "/tmp/kaldi_root",
-            "kaldi_manifest": "/tmp/kaldi_root/manifest.csv",
+            "kaldi_manifest": "/tmp/kaldi_root/manifest.json",
         }
     )
     config_path = _write_yaml(tmp_path, payload)
@@ -277,7 +277,7 @@ def test_load_finetune_config_parses_kaldi_data_fields(tmp_path: Path):
 
     assert bundle.data.backend == "kaldi"
     assert bundle.data.kaldi_data_root == "/tmp/kaldi_root"
-    assert bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.csv"
+    assert bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.json"
 
 
 @pytest.mark.parametrize(

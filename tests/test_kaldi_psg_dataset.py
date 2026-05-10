@@ -20,8 +20,35 @@ def _write_kaldi_root(
     root: Path,
     channel_input_dims: dict[str, int],
     matrices: dict[str, dict[str, np.ndarray]],
+    *,
+    split: str = "train",
 ) -> None:
-    channels_dir = root / "channels"
+    manifest_channels = _write_kaldi_split(root, split, channel_input_dims, matrices)
+
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "backend": "kaldi_native_io",
+                "splits": {
+                    split: {
+                        "manifest": f"manifests/{split}.csv",
+                        "channels": manifest_channels,
+                    }
+                },
+            }
+        )
+        + "\n"
+    )
+
+
+def _write_kaldi_split(
+    root: Path,
+    split: str,
+    channel_input_dims: dict[str, int],
+    matrices: dict[str, dict[str, np.ndarray]],
+) -> dict[str, dict[str, int | str]]:
+    channels_dir = root / "channels" / split
     channels_dir.mkdir(parents=True, exist_ok=True)
     manifest_channels = {}
     for channel, input_dim in channel_input_dims.items():
@@ -30,24 +57,19 @@ def _write_kaldi_root(
         with kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}") as writer:
             for key, matrix in matrices.get(channel, {}).items():
                 writer.write(key, np.asarray(matrix, dtype=np.float32))
-        manifest_channels[channel] = {"input_dim": input_dim, "scp": f"channels/{channel}.scp"}
-
-    (root / "manifest.json").write_text(
-        json.dumps(
-            {
-                "format_version": 1,
-                "backend": "kaldi_native_io",
-                "channels": manifest_channels,
-            }
-        )
-        + "\n"
-    )
+        lines = scp_path.read_text().splitlines()
+        lines.sort(key=lambda line: line.split(maxsplit=1)[0])
+        scp_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+        manifest_channels[channel] = {"input_dim": input_dim, "scp": f"channels/{split}/{channel}.scp"}
+    return manifest_channels
 
 
-def _write_manifest(root: Path, rows: list[dict]) -> Path:
-    path = root / "manifest.csv"
+def _write_manifest(root: Path, rows: list[dict], *, split: str = "train") -> Path:
+    manifests_dir = root / "manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    path = manifests_dir / f"{split}.csv"
     pd.DataFrame(rows).to_csv(path, index=False)
-    return path
+    return root / "manifest.json"
 
 
 def _row(sample_key: str, channels: list[str], *, start: int = 0, end: int = 2, **metadata):
@@ -80,7 +102,7 @@ def _finetune_args(
     return argparse.Namespace(
         data_backend="kaldi",
         kaldi_data_root=root,
-        kaldi_manifest=root / "manifest.csv",
+        kaldi_manifest=root / "manifest.json",
         label_name=label_name,
         label_source_name=label_source_name,
         auxiliary_label_source_names=auxiliary_label_source_names or [],
@@ -163,6 +185,67 @@ def test_kaldi_dataset_batch_contract_without_npz_reads(tmp_path: Path, monkeypa
     assert batch["metadata"]["path"] == [f"/original/{key}.npz" for key in keys]
     assert batch["w"].shape == (2, 2)
     assert batch["h"].shape == (2, 2)
+
+
+def test_kaldi_dataset_uses_requested_split_manifest_and_scps(tmp_path: Path) -> None:
+    train_key = "mesa_train_000000_000002"
+    val_key = "mesa_val_000000_000002"
+    dims = {"eeg": 2, "ppg": 2}
+    train_channels = _write_kaldi_split(
+        tmp_path,
+        "train",
+        dims,
+        {
+            "eeg": {train_key: np.full((2, 2), 1.0, dtype=np.float32)},
+            "ppg": {train_key: np.full((2, 2), 2.0, dtype=np.float32)},
+        },
+    )
+    val_channels = _write_kaldi_split(
+        tmp_path,
+        "val",
+        dims,
+        {
+            "eeg": {val_key: np.full((2, 2), 7.0, dtype=np.float32)},
+            "ppg": {val_key: np.full((2, 2), 8.0, dtype=np.float32)},
+        },
+    )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "backend": "kaldi_native_io",
+                "splits": {
+                    "train": {"manifest": "manifests/train.csv", "channels": train_channels},
+                    "val": {"manifest": "manifests/val.csv", "channels": val_channels},
+                },
+            }
+        )
+        + "\n"
+    )
+    _write_manifest(tmp_path, [_row(train_key, ["eeg", "ppg"], split="train")], split="train")
+    manifest = _write_manifest(tmp_path, [_row(val_key, ["eeg", "ppg"], split="val")], split="val")
+
+    dataset = KaldiPSGDataset(
+        channel_names=["eeg", "ppg"],
+        channel_input_dims=dims,
+        kaldi_data_root=tmp_path,
+        manifest=manifest,
+        split=["val"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        allow_missing_channels=False,
+        is_train_set=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+
+    assert batch["id"] == [val_key]
+    assert batch["tokens"]["eeg"].eq(7.0).all()
+    assert batch["tokens"]["ppg"].eq(8.0).all()
 
 
 def test_kaldi_dataset_missing_channels_uses_pair_first_sampler(tmp_path: Path, monkeypatch) -> None:

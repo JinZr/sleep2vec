@@ -1900,7 +1900,7 @@ def test_run_inference_rejects_kaldi_inference_preset_override(monkeypatch: pyte
         args.data_backend = "kaldi"
         args.finetune_preset_path = None
         args.kaldi_data_root = tmp_path / "kaldi"
-        args.kaldi_manifest = tmp_path / "kaldi" / "manifest.csv"
+        args.kaldi_manifest = tmp_path / "kaldi" / "manifest.json"
         return _DummyBundle(), _DummyModelConfig()
 
     monkeypatch.setattr("sleep2vec.infer.apply_finetune_config", _apply_config)

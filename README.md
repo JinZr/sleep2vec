@@ -93,7 +93,7 @@
 ---
 
 ## Kaldi Backend Recipes
-Kaldi storage uses `manifest.csv` as the preset-equivalent artifact. Do not pass legacy NPZ preset pickles with `backend: kaldi`; pre-windowed per-sample/channel matrices are read by `sample_key`, and `token_start` is preserved in the manifest for downstream aggregation.
+Kaldi storage uses `manifest.json` as the preset-equivalent artifact. Do not pass legacy NPZ preset pickles with `backend: kaldi`; pre-windowed per-sample/channel matrices are read by `sample_key`, and `token_start` is preserved in the split manifests for downstream aggregation.
 
 Pretrain conversion should use model input channels only unless you intentionally want label-like channels in contrastive training:
 ```bash
@@ -112,7 +112,7 @@ python -m sleep2vec.pretrain \
   --version-name kaldi-pretrain-120 \
   --data-backend kaldi \
   --kaldi-data-root /data/sleep2vec_kaldi/pretrain_120 \
-  --kaldi-manifest /data/sleep2vec_kaldi/pretrain_120/manifest.csv \
+  --kaldi-manifest /data/sleep2vec_kaldi/pretrain_120/manifest.json \
   --pretrain-preset-path null \
   --allow-missing-channels --min-channels 2
 ```
@@ -122,7 +122,7 @@ Finetune and inference select Kaldi from the YAML `data` block:
 data:
   backend: kaldi
   kaldi_data_root: /data/sleep2vec_kaldi/ppg_stage5_1535
-  kaldi_manifest: /data/sleep2vec_kaldi/ppg_stage5_1535/manifest.csv
+  kaldi_manifest: /data/sleep2vec_kaldi/ppg_stage5_1535/manifest.json
   finetune_preset_path: null
 ```
 Convert finetune roots with model channels plus required label channels. For `stage3`, `stage4`, or `stage5`, include `stage5`; for `ahi`, include both `ahi` and `stage5`, and ensure manifest rows contain scalar `ahi` and `tst` metadata. Match the converter windowing to the finetune config; current whole-night PPG configs use `max_tokens: 1535`, so convert with `--max-tokens 1535 --stride-tokens 0`:
