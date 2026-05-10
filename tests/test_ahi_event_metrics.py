@@ -1888,6 +1888,44 @@ def test_run_inference_applies_inference_preset_override(monkeypatch: pytest.Mon
     assert captured["module_preset_path"] == override_preset
 
 
+def test_run_inference_rejects_kaldi_inference_preset_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    override_preset = tmp_path / "override.pkl"
+
+    @dataclass
+    class _DummyBundle:
+        finetune: object = None
+        averaging: object = None
+
+    def _apply_config(args):
+        args.data_backend = "kaldi"
+        args.finetune_preset_path = None
+        args.kaldi_data_root = tmp_path / "kaldi"
+        args.kaldi_manifest = tmp_path / "kaldi" / "manifest.csv"
+        return _DummyBundle(), _DummyModelConfig()
+
+    monkeypatch.setattr("sleep2vec.infer.apply_finetune_config", _apply_config)
+
+    args = argparse.Namespace(
+        label_name="stage5",
+        avg_ckpts=1,
+        ckpt_path="/tmp/model.ckpt",
+        avg_ckpt_dir=None,
+        config=Path("dummy.yaml"),
+        precision=32,
+        accelerator="cpu",
+        devices=[0],
+        batch_size=4,
+        eval_split="test",
+        seed=4523,
+        wandb=False,
+        results_csv_path=None,
+        inference_preset_path=override_preset,
+    )
+
+    with pytest.raises(ValueError, match="legacy NPZ preset pickles are unsupported"):
+        run_inference(args)
+
+
 def test_run_inference_preserves_primary_error_when_wandb_finish_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     warnings: list[str] = []
     created_run = object()
