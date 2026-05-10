@@ -18,6 +18,7 @@
   - [Overview](#overview)
   - [Setup](#setup)
   - [Data Format \& Caches](#data-format--caches)
+  - [Kaldi Backend Recipes](#kaldi-backend-recipes)
   - [Quick Start](#quick-start)
     - [Pretrain (contrastive)](#pretrain-contrastive)
     - [Adaptation — staged wearable expansion](#adaptation--staged-wearable-expansion)
@@ -87,6 +88,63 @@
     --skip-existing
   ```
   Batch mode shows a file-level `tqdm` progress bar. Optional flags: `--include-internal-1hz`, `--no-pulse-rate`, `--verbose`, `--json-summary /path/to/summary_dir`. `pyedflib` is used when available; otherwise the script falls back to its built-in manual EDF writer.
+
+---
+
+## Kaldi Backend Recipes
+Kaldi storage uses `manifest.csv` as the preset-equivalent artifact. Do not pass legacy NPZ preset pickles with `backend: kaldi`; pre-windowed per-sample/channel matrices are read by `sample_key`, and `token_start` is preserved in the manifest for downstream aggregation.
+
+Pretrain conversion should use model input channels only unless you intentionally want label-like channels in contrastive training:
+```bash
+python -m preprocess.convert_npz_to_kaldi \
+  --index /path/to/index.csv \
+  --config configs/sleep2vec_dense_pretrain.yaml \
+  --output-dir /data/sleep2vec_kaldi/pretrain_120 \
+  --max-tokens 120 \
+  --stride-tokens 120 \
+  --channels-from-config
+```
+For heterogeneous datasets, add `--allow-missing-channels --min-channels 2` during conversion and training so pair-first sampling uses `available_channels` from the manifest:
+```bash
+python -m sleep2vec.pretrain \
+  --config configs/sleep2vec_dense_pretrain.yaml \
+  --version-name kaldi-pretrain-120 \
+  --data-backend kaldi \
+  --kaldi-data-root /data/sleep2vec_kaldi/pretrain_120 \
+  --kaldi-manifest /data/sleep2vec_kaldi/pretrain_120/manifest.csv \
+  --pretrain-preset-path null \
+  --allow-missing-channels --min-channels 2
+```
+
+Finetune and inference select Kaldi from the YAML `data` block:
+```yaml
+data:
+  backend: kaldi
+  kaldi_data_root: /data/sleep2vec_kaldi/ppg_stage5_1535
+  kaldi_manifest: /data/sleep2vec_kaldi/ppg_stage5_1535/manifest.csv
+  finetune_preset_path: null
+```
+Convert finetune roots with model channels plus required label channels. For `stage3`, `stage4`, or `stage5`, include `stage5`; for `ahi`, include both `ahi` and `stage5`, and ensure manifest rows contain scalar `ahi` and `tst` metadata. Match the converter windowing to the finetune config; current whole-night PPG configs use `max_tokens: 1535`, so convert with `--max-tokens 1535 --stride-tokens 0`:
+```bash
+python -m preprocess.convert_npz_to_kaldi \
+  --index /path/to/index.csv \
+  --config configs/ppg_stage5_finetune.yaml \
+  --output-dir /data/sleep2vec_kaldi/ppg_stage5_1535 \
+  --max-tokens 1535 \
+  --stride-tokens 0 \
+  --channels-from-config \
+  --extra-channels stage5
+
+python -m preprocess.convert_npz_to_kaldi \
+  --index /path/to/index.csv \
+  --config configs/ppg_ahi_finetune.yaml \
+  --output-dir /data/sleep2vec_kaldi/ppg_ahi_1535 \
+  --max-tokens 1535 \
+  --stride-tokens 0 \
+  --channels-from-config \
+  --extra-channels ahi stage5
+```
+Inference reuses the same Kaldi root and manifest windowing as the checkpoint's finetune configuration. Keep `--avg-ckpts 1` for built-in `ahi`, because its evaluation threshold is checkpoint-specific.
 
 ---
 
@@ -425,4 +483,3 @@ Small, focused, and shipping.
 
 Hiring across ML research, signal processing, LLM agents, and clinical
 science. Reach real users, not just benchmarks — chenxuesong@wuji-inc.com
-
