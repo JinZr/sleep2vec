@@ -68,8 +68,8 @@ finetune:
     regression_scatter:
       enabled: true
 preset_build:
-  required_channels: [heartbeat, breath, ahi]
-  min_channels: 3
+  required_channels: [heartbeat, breath, ahi, stage5]
+  min_channels: 4
 model_averaging:
   name: ema
   params:

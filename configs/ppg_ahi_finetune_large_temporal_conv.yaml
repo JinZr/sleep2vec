@@ -63,8 +63,8 @@ finetune:
     regression_scatter:
       enabled: true
 preset_build:
-  required_channels: [ppg, ahi]
-  min_channels: 2
+  required_channels: [ppg, ahi, stage5]
+  min_channels: 3
 model_averaging:
   name: ema
   params:

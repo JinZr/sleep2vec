@@ -37,7 +37,7 @@ Primary code path:
    - Built-in `ahi` forces `min_channels == len(channel_names)` at validation time.
 6. Validate repo-specific policy for `ppg_*finetune*.yaml`.
    - Sequence staging configs must require `[ppg, stage5]` and `min_channels=2`.
-   - PPG AHI configs must require `[ppg, ahi]` and `min_channels=2`.
+   - PPG AHI configs must require `[ppg, ahi, stage5]` and `min_channels=3`.
    - Non-sequence single-channel PPG configs must require `[ppg]` and `min_channels=1`.
 
 ## Important Runtime Decisions
