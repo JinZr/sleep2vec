@@ -53,7 +53,7 @@ def _pretrain_args() -> argparse.Namespace:
         channel_names=["eeg", "ppg"],
         channel_input_dims={"eeg": 4, "ppg": 8},
         kaldi_data_root=Path("/kaldi/root"),
-        kaldi_manifest=Path("/kaldi/root/manifest.csv"),
+        kaldi_manifest=Path("/kaldi/root/manifest.json"),
         max_tokens=2,
         mask_rate=0.15,
         allow_missing_channels=True,
@@ -78,7 +78,7 @@ def _finetune_args(
     return argparse.Namespace(
         data_backend="kaldi",
         kaldi_data_root=Path("/kaldi/root"),
-        kaldi_manifest=Path("/kaldi/root/manifest.csv"),
+        kaldi_manifest=Path("/kaldi/root/manifest.json"),
         label_name=label_name,
         label_source_name=label_source_name,
         auxiliary_label_source_names=auxiliary_label_source_names or [],
@@ -108,7 +108,7 @@ def test_get_pretrain_dataloader_routes_kaldi_kwargs(monkeypatch):
     train_kwargs = _DummyDataset.instances[0].kwargs
     val_kwargs = _DummyDataset.instances[1].kwargs
     assert train_kwargs["kaldi_data_root"] == Path("/kaldi/root")
-    assert train_kwargs["manifest"] == Path("/kaldi/root/manifest.csv")
+    assert train_kwargs["manifest"] == Path("/kaldi/root/manifest.json")
     assert train_kwargs["channel_names"] == ["eeg", "ppg"]
     assert train_kwargs["channel_input_dims"] == {"eeg": 4, "ppg": 8}
     assert train_kwargs["split"] == ["train"]
@@ -140,7 +140,7 @@ def test_build_finetune_loader_routes_kaldi_stage_channels(monkeypatch):
     init_kwargs = loader["kwargs"]
     assert init_kwargs["channel_names"] == ["eeg", "stage5"]
     assert init_kwargs["kaldi_data_root"] == Path("/kaldi/root")
-    assert init_kwargs["manifest"] == Path("/kaldi/root/manifest.csv")
+    assert init_kwargs["manifest"] == Path("/kaldi/root/manifest.json")
     assert init_kwargs["randomly_select_channels"] is False
     assert init_kwargs["allow_missing_channels"] is False
     assert init_kwargs["min_channels"] == 2

@@ -74,7 +74,7 @@ class KaldiReaderPool:
         if channel not in self._readers:
             spec = self.channel_specs[channel]
             kaldi_native_io = self._import_kaldi_native_io()
-            self._readers[channel] = kaldi_native_io.RandomAccessFloatMatrixReader(f"scp:{spec.scp_path}")
+            self._readers[channel] = kaldi_native_io.RandomAccessFloatMatrixReader(f"s,scp:{spec.scp_path}")
         return self._readers[channel]
 
     def read_matrix(self, channel: str, key: str) -> np.ndarray:
