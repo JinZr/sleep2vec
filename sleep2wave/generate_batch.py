@@ -59,16 +59,35 @@ def _slug(value: object) -> str:
 
 def _group_samples(
     *,
+    backend: str,
     preset_path: Path | str | None,
     index: Path | str | None,
+    kaldi_data_root: Path | str | None,
+    kaldi_manifest: Path | str | None,
     context_epochs: int,
     stride_epochs: int,
 ):
-    from sleep2wave.data.generative_dataset import build_sample_indices_from_index, normalize_sample_index
+    from sleep2wave.data.generative_dataset import (
+        _load_kaldi_samples,
+        build_sample_indices_from_index,
+        normalize_sample_index,
+    )
 
-    if (preset_path is None) == (index is None):
+    if backend == "kaldi":
+        if index is not None:
+            raise ValueError("Batch generation with data.backend=kaldi does not support --index.")
+        if preset_path is not None:
+            with Path(preset_path).open("rb") as f:
+                samples = [normalize_sample_index(item) for item in pickle.load(f)]
+        else:
+            samples = _load_kaldi_samples(
+                kaldi_data_root,
+                kaldi_manifest,
+                split="test",
+            )
+    elif (preset_path is None) == (index is None):
         raise ValueError("Batch generation requires exactly one preset path or index path.")
-    if preset_path is not None:
+    elif preset_path is not None:
         with Path(preset_path).open("rb") as f:
             samples = [normalize_sample_index(item) for item in pickle.load(f)]
     else:
@@ -93,8 +112,11 @@ def run_batch_generation(args: argparse.Namespace) -> list[Path]:
     if config.stage != "inference" or config.data is None:
         raise ValueError("sleep2wave.generate_batch requires a stage=inference config.")
     grouped = _group_samples(
+        backend=config.data.backend,
         preset_path=args.preset_path or config.data.preset_path,
         index=args.index or config.data.index,
+        kaldi_data_root=config.data.kaldi_data_root,
+        kaldi_manifest=config.data.kaldi_manifest,
         context_epochs=config.data.context_epochs,
         stride_epochs=args.stride_epochs,
     )

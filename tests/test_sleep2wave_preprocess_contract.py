@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import pickle
 import subprocess
@@ -219,7 +220,7 @@ def test_convert_npz_to_kaldi_roundtrip_preserves_waveform_batch(tmp_path: Path)
     config_path = _write_sleep2wave_config(tmp_path / "sleep2wave.yaml")
     output_dir = tmp_path / "kaldi"
 
-    manifest_path, manifest_json_path = convert(
+    manifest_json_path = convert(
         parse_args(
             [
                 "--index",
@@ -236,16 +237,25 @@ def test_convert_npz_to_kaldi_roundtrip_preserves_waveform_batch(tmp_path: Path)
         )
     )
 
-    assert manifest_path.exists()
+    assert not (output_dir / "manifest.csv").exists()
+    assert (output_dir / "manifests" / "train.csv").exists()
+    assert (output_dir / "channels" / "train" / "eeg.scp").exists()
+    assert (output_dir / "channels" / "train" / "ecg.scp").exists()
     manifest_json = yaml.safe_load(manifest_json_path.read_text())
     assert manifest_json["backend"] == "kaldi_native_io"
+    assert manifest_json["format_version"] == 2
+    assert manifest_json["splits"]["train"]["manifest"] == "manifests/train.csv"
+    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
+        "frames_per_epoch": MODALITY_SPECS["eeg"].frames_per_epoch,
+        "scp": "channels/train/eeg.scp",
+    }
 
     from sleep2wave.data.generative_dataset import Sleep2WaveGenerativeDataset
 
     dataset = Sleep2WaveGenerativeDataset(
         backend="kaldi",
         kaldi_data_root=output_dir,
-        kaldi_manifest=manifest_path,
+        kaldi_manifest=manifest_json_path,
         split="train",
         context_epochs=2,
     )
@@ -261,6 +271,96 @@ def test_convert_npz_to_kaldi_roundtrip_preserves_waveform_batch(tmp_path: Path)
     assert batch["availability_mask"]["eog"].tolist() == [[False, False]]
     assert batch["metadata"]["subject_id"] == ["s1"]
     assert batch["metadata"]["night_id"] == ["n1"]
+
+
+def test_convert_npz_to_kaldi_writes_split_specific_manifests_and_sorted_scps(tmp_path: Path):
+    pytest.importorskip("kaldi_native_io")
+    sample_path = tmp_path / "sample.npz"
+    np.savez(sample_path, eeg=np.zeros(2 * MODALITY_SPECS["eeg"].frames_per_epoch, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    rows = []
+    for session_id, split in (("z", "train"), ("b", "test"), ("a", "train")):
+        row = _index_frame(sample_path).iloc[0].to_dict()
+        row["session_id"] = session_id
+        row["night_id"] = session_id
+        row["split"] = split
+        row.update({f"{modality}_mask": 1 if modality == "eeg" else 0 for modality in CANONICAL_MODALITIES})
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(index_path, index=False)
+    config_path = _write_sleep2wave_config(tmp_path / "sleep2wave.yaml")
+    output_dir = tmp_path / "kaldi"
+
+    manifest_json_path = convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--stride-epochs",
+                "2",
+            ]
+        )
+    )
+
+    assert (output_dir / "manifests" / "train.csv").exists()
+    assert (output_dir / "manifests" / "test.csv").exists()
+    train_scp = output_dir / "channels" / "train" / "eeg.scp"
+    test_scp = output_dir / "channels" / "test" / "eeg.scp"
+    assert train_scp.exists()
+    assert test_scp.exists()
+    assert not (output_dir / "manifest.csv").exists()
+
+    train_manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    test_manifest = pd.read_csv(output_dir / "manifests" / "test.csv", low_memory=False)
+    assert train_manifest["split"].tolist() == ["train", "train"]
+    assert test_manifest["split"].tolist() == ["test"]
+    train_keys = [line.split(maxsplit=1)[0] for line in train_scp.read_text().splitlines() if line.strip()]
+    test_keys = [line.split(maxsplit=1)[0] for line in test_scp.read_text().splitlines() if line.strip()]
+    assert train_keys == sorted(train_manifest["sample_key"].tolist())
+    assert test_keys == sorted(test_manifest["sample_key"].tolist())
+
+    manifest_json = json.loads(manifest_json_path.read_text())
+    assert manifest_json["splits"]["train"]["manifest"] == "manifests/train.csv"
+    assert manifest_json["splits"]["test"]["manifest"] == "manifests/test.csv"
+
+
+def test_convert_npz_to_kaldi_rewrites_npz_path_prefix_but_preserves_manifest_path(tmp_path: Path):
+    pytest.importorskip("kaldi_native_io")
+    actual_root = tmp_path / "actual"
+    original_root = tmp_path / "original"
+    actual_root.mkdir()
+    sample_path = actual_root / "sample.npz"
+    original_sample_path = original_root / "sample.npz"
+    np.savez(sample_path, eeg=np.zeros(2 * MODALITY_SPECS["eeg"].frames_per_epoch, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    row = _index_frame(original_sample_path).iloc[0].to_dict()
+    row.update({f"{modality}_mask": 1 if modality == "eeg" else 0 for modality in CANONICAL_MODALITIES})
+    pd.DataFrame([row]).to_csv(index_path, index=False)
+    config_path = _write_sleep2wave_config(tmp_path / "sleep2wave.yaml")
+    output_dir = tmp_path / "kaldi"
+
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--stride-epochs",
+                "2",
+                "--path-prefix-map",
+                f"{original_root}={actual_root}",
+            ]
+        )
+    )
+
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    assert manifest.loc[0, "path"] == str(original_sample_path)
 
 
 def test_convert_npz_to_kaldi_rejects_present_malformed_modality_without_mask(tmp_path: Path):

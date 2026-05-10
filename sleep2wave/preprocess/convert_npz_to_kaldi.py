@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -43,6 +44,13 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--subject-id-col", default="subject_id", help="Index column containing subject ids.")
     parser.add_argument("--night-id-col", default="night_id", help="Index column containing night ids.")
     parser.add_argument("--source-col", default="source", help="Index column containing source dataset names.")
+    parser.add_argument(
+        "--path-prefix-map",
+        action="append",
+        default=[],
+        metavar="OLD=NEW",
+        help="Rewrite NPZ paths by replacing OLD prefix with NEW. May be passed multiple times.",
+    )
     return parser.parse_args(argv)
 
 
@@ -61,6 +69,29 @@ def _sanitize_key_part(value: t.Any) -> str:
     text = str(value)
     text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_")
     return text or "unknown"
+
+
+def _parse_prefix_maps(raw_maps: t.Sequence[str]) -> list[tuple[str, str]]:
+    mappings: list[tuple[str, str]] = []
+    for item in raw_maps:
+        if "=" not in item:
+            raise ValueError(f"--path-prefix-map must use OLD=NEW format, got {item!r}.")
+        old, new = item.split("=", 1)
+        if not old:
+            raise ValueError("--path-prefix-map OLD prefix must not be empty.")
+        mappings.append((str(Path(old).expanduser()), str(Path(new).expanduser())))
+    return sorted(mappings, key=lambda pair: len(pair[0]), reverse=True)
+
+
+def _resolve_npz_path(path_value: t.Any, prefix_maps: t.Sequence[tuple[str, str]]) -> Path:
+    raw = str(path_value)
+    for old, new in prefix_maps:
+        old_prefix = old.rstrip(os.sep)
+        if raw == old_prefix:
+            return Path(new).expanduser()
+        if raw.startswith(old_prefix + os.sep):
+            return Path(new + raw[len(old_prefix) :]).expanduser()
+    return Path(raw).expanduser()
 
 
 def _load_index_df(index_paths: t.Sequence[Path], columns: IndexColumnConfig) -> pd.DataFrame:
@@ -141,7 +172,7 @@ def _matrix_from_npz_signal(
     return np.ascontiguousarray(matrix.astype(np.float32, copy=False))
 
 
-def convert(args: argparse.Namespace) -> tuple[Path, Path]:
+def convert(args: argparse.Namespace) -> Path:
     config = load_sleep2wave_config(args.config)
     if config.data is None:
         raise ValueError("Sleep2Wave conversion requires a config with a data block.")
@@ -171,22 +202,46 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
 
     mask_columns = resolve_modality_mask_columns(df, require_all=False)
     mask_frame = normalize_mask_frame(df, list(mask_columns.values()))
+    prefix_maps = _parse_prefix_maps(args.path_prefix_map)
 
     kaldi_native_io = _import_kaldi_native_io()
     output_dir = args.output_dir.expanduser()
-    channels_dir = output_dir / "channels"
-    channels_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = output_dir / "manifest.csv"
+    manifests_dir = output_dir / "manifests"
+    channels_root = output_dir / "channels"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    channels_root.mkdir(parents=True, exist_ok=True)
     manifest_json_path = output_dir / "manifest.json"
 
-    manifest_rows: list[dict[str, t.Any]] = []
     seen_sample_keys: set[str] = set()
+    writers: dict[tuple[str, str], t.Any] = {}
+    split_dirs: dict[str, str] = {}
+    split_keys_by_dir: dict[str, str] = {}
+    manifest_rows_by_split: dict[str, list[dict[str, t.Any]]] = {}
+
     with ExitStack() as stack:
-        writers = {}
-        for modality in CANONICAL_MODALITIES:
-            ark_path = channels_dir / f"{modality}.ark"
-            scp_path = channels_dir / f"{modality}.scp"
-            writers[modality] = stack.enter_context(kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}"))
+
+        def ensure_split_writers(split_value: t.Any) -> str:
+            split_key = str(split_value)
+            if split_key in split_dirs:
+                return split_key
+
+            split_dir = _sanitize_key_part(split_key)
+            existing_split_key = split_keys_by_dir.get(split_dir)
+            if existing_split_key is not None:
+                raise ValueError(
+                    f"Split labels {existing_split_key!r} and {split_key!r} both map to directory {split_dir!r}."
+                )
+            split_dirs[split_key] = split_dir
+            split_keys_by_dir[split_dir] = split_key
+            split_channel_dir = channels_root / split_dir
+            split_channel_dir.mkdir(parents=True, exist_ok=True)
+            for modality in CANONICAL_MODALITIES:
+                ark_path = split_channel_dir / f"{modality}.ark"
+                scp_path = split_channel_dir / f"{modality}.scp"
+                writers[(split_key, modality)] = stack.enter_context(
+                    kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
+                )
+            return split_key
 
         for row_number, row in df.iterrows():
             duration = float(row[columns.duration_col])
@@ -201,7 +256,8 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
             if pd.isna(source_value) or str(source_value) == "":
                 raise ValueError(f"CSV source field {columns.source_col!r} has an empty value.")
 
-            with load_npz(str(row[columns.path_col])) as npz:
+            npz_path = _resolve_npz_path(row[columns.path_col], prefix_maps)
+            with load_npz(str(npz_path)) as npz:
                 for start in range(0, night_epoch_count - context_epochs + 1, stride_epochs):
                     end = start + context_epochs
                     sample_key = _sample_key(
@@ -231,8 +287,9 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
                         continue
 
                     seen_sample_keys.add(sample_key)
+                    split_key = ensure_split_writers(row[columns.split_col])
                     for modality, matrix in matrices.items():
-                        writers[modality].write(sample_key, matrix)
+                        writers[(split_key, modality)].write(sample_key, matrix)
 
                     manifest_row = dict(row.to_dict())
                     manifest_row.update(
@@ -250,34 +307,48 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
                             "quality_masks": json.dumps(quality_masks),
                         }
                     )
-                    manifest_rows.append(manifest_row)
+                    manifest_rows_by_split.setdefault(split_key, []).append(manifest_row)
 
-    if not manifest_rows:
+    if not manifest_rows_by_split:
         raise ValueError("No Sleep2Wave Kaldi samples were produced.")
 
-    pd.DataFrame(manifest_rows).to_csv(manifest_path, index=False)
+    splits: dict[str, dict[str, t.Any]] = {}
+    for split_key, rows in manifest_rows_by_split.items():
+        split_dir = split_dirs[split_key]
+        manifest_rel = Path("manifests") / f"{split_dir}.csv"
+        pd.DataFrame(rows).to_csv(output_dir / manifest_rel, index=False)
+        split_channel_dir = channels_root / split_dir
+        for modality in CANONICAL_MODALITIES:
+            scp_path = split_channel_dir / f"{modality}.scp"
+            lines = scp_path.read_text().splitlines()
+            lines.sort(key=lambda line: line.split(maxsplit=1)[0])
+            scp_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+        splits[split_key] = {
+            "manifest": manifest_rel.as_posix(),
+            "channels": {
+                modality: {
+                    "frames_per_epoch": int(MODALITY_SPECS[modality].frames_per_epoch),
+                    "scp": (Path("channels") / split_dir / f"{modality}.scp").as_posix(),
+                }
+                for modality in CANONICAL_MODALITIES
+            },
+        }
+
     manifest_json = {
-        "format_version": 1,
+        "format_version": 2,
         "backend": "kaldi_native_io",
         "epoch_sec": EPOCH_SEC,
         "context_epochs": int(context_epochs),
         "stride_epochs": int(stride_epochs),
         "source_index": [str(path) for path in index_paths],
-        "channels": {
-            modality: {
-                "frames_per_epoch": int(MODALITY_SPECS[modality].frames_per_epoch),
-                "scp": str((Path("channels") / f"{modality}.scp").as_posix()),
-            }
-            for modality in CANONICAL_MODALITIES
-        },
+        "splits": splits,
     }
     manifest_json_path.write_text(json.dumps(manifest_json, indent=2) + "\n")
-    return manifest_path, manifest_json_path
+    return manifest_json_path
 
 
 def main(argv: t.Sequence[str] | None = None) -> None:
-    manifest_path, manifest_json_path = convert(parse_args(argv))
-    print(f"Wrote {manifest_path}")
+    manifest_json_path = convert(parse_args(argv))
     print(f"Wrote {manifest_json_path}")
 
 

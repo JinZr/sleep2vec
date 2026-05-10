@@ -32,7 +32,7 @@ Each generated `SampleIndex` payload records:
 - subject/night metadata
 - night epoch count
 
-Kaldi conversion writes one `channels/<modality>.ark/.scp` pair per canonical modality. Each stored matrix is `[context_epochs * channel_count, frames_per_epoch]`; the dataset decodes it back to `[context_epochs, channel_count, frames_per_epoch]`. `manifest.csv` is the Kaldi data source and records `sample_key`, `record_key`, `path`, `split`, epoch bounds, `available_channels`, and JSON quality masks when present. `manifest.json` records `backend: kaldi_native_io`, timing metadata, source indexes, and channel scp metadata.
+Kaldi conversion writes `manifest.json` with `format_version: 2`, one `manifests/<split>.csv` per split, and one sorted `channels/<split>/<modality>.ark/.scp` pair per canonical modality. Each stored matrix is `[context_epochs * channel_count, frames_per_epoch]`; the dataset decodes it back to `[context_epochs, channel_count, frames_per_epoch]`. Each split CSV records `sample_key`, `record_key`, `path`, `split`, epoch bounds, `available_channels`, and JSON quality masks when present. `manifest.json` records `backend: kaldi_native_io`, timing metadata, source indexes, and split-specific channel scp metadata.
 
 ## Commands
 
@@ -50,7 +50,8 @@ python -m sleep2wave.preprocess.convert_npz_to_kaldi \
   --config configs/sleep2wave/sleep2wave_autoencoder_medium.yaml \
   --output-dir data/sleep2wave_kaldi/medium_15e \
   --split train val test \
-  --stride-epochs 15
+  --stride-epochs 15 \
+  --path-prefix-map /old/data/root=/new/data/root
 ```
 
 ## Edit Hotspots

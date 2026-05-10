@@ -83,6 +83,7 @@ def test_latent_cache_exposes_available_channels_for_bucket_sampler(tmp_path: Pa
 def test_build_latent_cache_pads_channel_chunks_before_write(tmp_path: Path, monkeypatch):
     from sleep2wave.cache_latents import build_latent_cache
 
+    captured_dataset_kwargs = {}
     batches = [
         {
             "clean_signals": {"eeg": torch.zeros(1, 2, 1), "spo2": torch.zeros(1, 2, 1)},
@@ -117,8 +118,8 @@ def test_build_latent_cache_pads_channel_chunks_before_write(tmp_path: Path, mon
     ]
 
     class FakeDataset:
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            captured_dataset_kwargs.update(kwargs)
 
         def dataloader(self, **_kwargs):
             return batches
@@ -138,7 +139,14 @@ def test_build_latent_cache_pads_channel_chunks_before_write(tmp_path: Path, mon
             )
 
     config = SimpleNamespace(
-        data=SimpleNamespace(preset_path="preset.pkl", index=None, context_epochs=2),
+        data=SimpleNamespace(
+            backend="kaldi",
+            preset_path=None,
+            index=None,
+            kaldi_data_root="kaldi/root",
+            kaldi_manifest="kaldi/root/manifest.json",
+            context_epochs=2,
+        ),
         diffusion=SimpleNamespace(
             autoencoder_checkpoint="autoencoder.ckpt",
             latent_dim=4,
@@ -171,6 +179,9 @@ def test_build_latent_cache_pads_channel_chunks_before_write(tmp_path: Path, mon
     assert dataset.arrays["channel_mask/eeg"].shape == (2, 2, 2)
     assert not dataset.arrays["channel_mask/eeg"][0, :, 1].any()
     assert dataset.arrays["channel_mask/eeg"][1, :, 1].all()
+    assert captured_dataset_kwargs["backend"] == "kaldi"
+    assert captured_dataset_kwargs["kaldi_data_root"] == "kaldi/root"
+    assert captured_dataset_kwargs["kaldi_manifest"] == "kaldi/root/manifest.json"
 
 
 def test_latent_cache_rejects_schema_v1_cache(tmp_path: Path):

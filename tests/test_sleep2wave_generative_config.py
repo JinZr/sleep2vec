@@ -76,7 +76,7 @@ def test_sleep2wave_data_config_loads_kaldi_backend(tmp_path: Path):
     payload["data"] = {
         "backend": "kaldi",
         "kaldi_data_root": "/tmp/sleep2wave_kaldi",
-        "kaldi_manifest": "/tmp/sleep2wave_kaldi/manifest.csv",
+        "kaldi_manifest": "/tmp/sleep2wave_kaldi/manifest.json",
         "context_epochs": 15,
     }
     path = _write_yaml(tmp_path / "autoencoder_kaldi.yaml", payload)
@@ -85,7 +85,7 @@ def test_sleep2wave_data_config_loads_kaldi_backend(tmp_path: Path):
 
     assert cfg.data.backend == "kaldi"
     assert cfg.data.kaldi_data_root == "/tmp/sleep2wave_kaldi"
-    assert cfg.data.kaldi_manifest == "/tmp/sleep2wave_kaldi/manifest.csv"
+    assert cfg.data.kaldi_manifest == "/tmp/sleep2wave_kaldi/manifest.json"
     assert cfg.data.preset_path is None
     assert cfg.data.index is None
 
@@ -101,7 +101,7 @@ def test_sleep2wave_data_config_loads_kaldi_backend(tmp_path: Path):
             {
                 "backend": "kaldi",
                 "kaldi_data_root": "/tmp/root",
-                "kaldi_manifest": "/tmp/root/manifest.csv",
+                "kaldi_manifest": "/tmp/root/manifest.json",
                 "preset_path": "data/preset.pkl",
                 "context_epochs": 15,
             },

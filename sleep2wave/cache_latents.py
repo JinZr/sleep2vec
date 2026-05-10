@@ -54,8 +54,11 @@ def build_latent_cache(args: argparse.Namespace) -> Path:
         device=device,
     )
     dataset = Sleep2WaveGenerativeDataset(
+        backend=config.data.backend,
         preset_path=config.data.preset_path,
         index=config.data.index,
+        kaldi_data_root=config.data.kaldi_data_root,
+        kaldi_manifest=config.data.kaldi_manifest,
         split="train",
         context_epochs=config.data.context_epochs,
     )

@@ -203,11 +203,11 @@ def test_generate_cli_rejects_invalid_condition_target_overlap(tmp_path: Path):
 def test_generate_cli_data_source_override_replaces_config_source(tmp_path: Path):
     args = SimpleNamespace(preset_path=None, index=tmp_path / "override.csv")
     data_config = SimpleNamespace(
-        backend="kaldi",
+        backend="npz",
         preset_path=None,
         index=None,
-        kaldi_data_root=str(tmp_path / "kaldi"),
-        kaldi_manifest=str(tmp_path / "kaldi" / "manifest.csv"),
+        kaldi_data_root=None,
+        kaldi_manifest=None,
     )
 
     backend, preset_path, index, kaldi_data_root, kaldi_manifest = _resolve_generation_data_source(args, data_config)
@@ -226,7 +226,7 @@ def test_generate_cli_data_source_uses_configured_kaldi_backend(tmp_path: Path):
         preset_path=None,
         index=None,
         kaldi_data_root=str(tmp_path / "kaldi"),
-        kaldi_manifest=str(tmp_path / "kaldi" / "manifest.csv"),
+        kaldi_manifest=str(tmp_path / "kaldi" / "manifest.json"),
     )
 
     backend, preset_path, index, kaldi_data_root, kaldi_manifest = _resolve_generation_data_source(args, data_config)
@@ -235,7 +235,40 @@ def test_generate_cli_data_source_uses_configured_kaldi_backend(tmp_path: Path):
     assert preset_path is None
     assert index is None
     assert kaldi_data_root == str(tmp_path / "kaldi")
-    assert kaldi_manifest == str(tmp_path / "kaldi" / "manifest.csv")
+    assert kaldi_manifest == str(tmp_path / "kaldi" / "manifest.json")
+
+
+def test_generate_cli_keeps_kaldi_backend_with_preset_override(tmp_path: Path):
+    args = SimpleNamespace(preset_path=tmp_path / "group.pkl", index=None)
+    data_config = SimpleNamespace(
+        backend="kaldi",
+        preset_path=None,
+        index=None,
+        kaldi_data_root=str(tmp_path / "kaldi"),
+        kaldi_manifest=str(tmp_path / "kaldi" / "manifest.json"),
+    )
+
+    backend, preset_path, index, kaldi_data_root, kaldi_manifest = _resolve_generation_data_source(args, data_config)
+
+    assert backend == "kaldi"
+    assert preset_path == tmp_path / "group.pkl"
+    assert index is None
+    assert kaldi_data_root == str(tmp_path / "kaldi")
+    assert kaldi_manifest == str(tmp_path / "kaldi" / "manifest.json")
+
+
+def test_generate_cli_rejects_index_override_for_kaldi_backend(tmp_path: Path):
+    args = SimpleNamespace(preset_path=None, index=tmp_path / "override.csv")
+    data_config = SimpleNamespace(
+        backend="kaldi",
+        preset_path=None,
+        index=None,
+        kaldi_data_root=str(tmp_path / "kaldi"),
+        kaldi_manifest=str(tmp_path / "kaldi" / "manifest.json"),
+    )
+
+    with pytest.raises(ValueError, match="does not support --index"):
+        _resolve_generation_data_source(args, data_config)
 
 
 def test_generate_activates_unavailable_translation_targets_for_sampling():
@@ -403,7 +436,12 @@ def test_generation_passes_patch_condition_availability(monkeypatch):
 
     class FakeAutoencoder:
         def __call__(self, _signals):
-            return SimpleNamespace(latents={"eeg": torch.zeros(1, epoch_count, 1, 60, 8)})
+            return SimpleNamespace(
+                latents={
+                    "ecg": torch.zeros(1, epoch_count, 1, 60, 8),
+                    "eeg": torch.zeros(1, epoch_count, 1, 60, 8),
+                }
+            )
 
         def decode_latents(self, latents):
             return {"eeg": torch.zeros(latents["eeg"].shape[0], epoch_count, 1, eeg_frames)}
@@ -459,6 +497,101 @@ def test_generation_passes_patch_condition_availability(monkeypatch):
     assert condition_availability.shape == (1, epoch_count, 1, 6)
     assert condition_availability[0, 0, 0].tolist() == [False, True, True, True, True, True]
     assert condition_availability[0, 1, 0].tolist() == [True, True, True, True, True, True]
+
+
+def test_direct_kaldi_generation_uses_test_split(monkeypatch):
+    captured = {}
+    epoch_count = 2
+    eeg_frames = MODALITY_SPECS["eeg"].frames_per_epoch
+    batch = {
+        "observed_signals": {
+            modality: torch.zeros(1, epoch_count, 1, spec.frames_per_epoch) for modality, spec in MODALITY_SPECS.items()
+        },
+        "availability_mask": {
+            modality: torch.ones(1, epoch_count, dtype=torch.bool) for modality in CANONICAL_MODALITIES
+        },
+        "quality_mask": {modality: torch.ones(1, epoch_count) for modality in CANONICAL_MODALITIES},
+        "channel_mask": {
+            modality: torch.ones(1, epoch_count, 1, dtype=torch.bool) for modality in CANONICAL_MODALITIES
+        },
+        "corruption_mask": {
+            modality: torch.zeros(1, epoch_count, 1, spec.frames_per_epoch, dtype=torch.bool)
+            for modality, spec in MODALITY_SPECS.items()
+        },
+        "epoch_index": torch.tensor([[0, 1]]),
+        "night_position": torch.tensor([[0.0, 1.0]]),
+        "metadata": {
+            "id": ["row-0"],
+            "path": ["night.npz"],
+            "subject_id": ["subject"],
+            "night_id": ["night"],
+            "source": ["synthetic"],
+            "split": ["test"],
+        },
+    }
+
+    class FakeDataset:
+        def __init__(self, **kwargs):
+            captured["dataset_kwargs"] = kwargs
+
+        def dataloader(self, **_kwargs):
+            return [batch]
+
+    class FakeAutoencoder:
+        def __call__(self, _signals):
+            return SimpleNamespace(
+                latents={
+                    "ecg": torch.zeros(1, epoch_count, 1, 60, 8),
+                    "eeg": torch.zeros(1, epoch_count, 1, 60, 8),
+                }
+            )
+
+        def decode_latents(self, latents):
+            return {"eeg": torch.zeros(latents["eeg"].shape[0], epoch_count, 1, eeg_frames)}
+
+    class FakeSampler:
+        def sample(self, _model, **_kwargs):
+            return SimpleNamespace(generated_latents={"eeg": torch.zeros(1, 1, epoch_count, 1, 60, 8)})
+
+    monkeypatch.setattr("sleep2wave.data.generative_dataset.Sleep2WaveGenerativeDataset", FakeDataset)
+    monkeypatch.setattr("sleep2wave.diffusion.samplers.build_sampler", lambda *_args, **_kwargs: FakeSampler())
+    task = build_generation_task("translation", condition_modalities=["ecg"], target_modalities=["eeg"])
+    config = SimpleNamespace(
+        data=SimpleNamespace(
+            backend="kaldi",
+            preset_path=None,
+            index=None,
+            kaldi_data_root="/kaldi/root",
+            kaldi_manifest="/kaldi/root/manifest.json",
+            context_epochs=epoch_count,
+        ),
+        diffusion=SimpleNamespace(diffusion_steps=8, beta_schedule="cosine", patches_per_epoch=6),
+        inference=None,
+        modalities=SimpleNamespace(all=list(CANONICAL_MODALITIES)),
+    )
+
+    _collect_generation_windows(
+        config=config,
+        args=SimpleNamespace(
+            preset_path=None,
+            index=None,
+            batch_size=1,
+            stride_epochs=1,
+            num_workers=0,
+            seed=0,
+            corruption_name=None,
+            corruption_kwargs=None,
+            condition_mask_npz=None,
+        ),
+        model=object(),
+        autoencoder=FakeAutoencoder(),
+        sampler_config=SimpleNamespace(),
+        task=task,
+        device=torch.device("cpu"),
+    )
+
+    assert captured["dataset_kwargs"]["backend"] == "kaldi"
+    assert captured["dataset_kwargs"]["split"] == "test"
 
 
 def test_generate_smoke_writes_required_artifacts(tmp_path: Path):
@@ -588,3 +721,200 @@ def test_generate_batch_groups_by_subject_night(tmp_path: Path, monkeypatch):
     assert len(calls) == 2
     assert len(outputs) == 2
     assert all(call.preset_path.exists() for call in calls)
+
+
+def test_generate_batch_groups_kaldi_test_samples(tmp_path: Path, monkeypatch):
+    samples = [
+        SampleIndex(
+            id="a",
+            path="a.npz",
+            start=0,
+            end=2,
+            payload={"subject_id": "s1", "night_id": "n1", "available_channels": ["eeg", "ecg"]},
+            metadata={"subject_id": "s1", "night_id": "n1", "split": "test"},
+        ),
+        SampleIndex(
+            id="b",
+            path="b.npz",
+            start=0,
+            end=2,
+            payload={"subject_id": "s2", "night_id": "n2", "available_channels": ["eeg", "ecg"]},
+            metadata={"subject_id": "s2", "night_id": "n2", "split": "test"},
+        ),
+    ]
+    load_calls = []
+    generation_calls = []
+
+    def fake_load_kaldi_samples(kaldi_data_root, kaldi_manifest, *, split):
+        load_calls.append((kaldi_data_root, kaldi_manifest, split))
+        return samples
+
+    def fake_run_generation(args):
+        generation_calls.append(args)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        return args.output_dir
+
+    monkeypatch.setattr("sleep2wave.data.generative_dataset._load_kaldi_samples", fake_load_kaldi_samples)
+    monkeypatch.setattr("sleep2wave.generate.run_generation", fake_run_generation)
+    monkeypatch.setattr(
+        "sleep2wave.generative.config.load_sleep2wave_config",
+        lambda _path: SimpleNamespace(
+            stage="inference",
+            data=SimpleNamespace(
+                backend="kaldi",
+                preset_path=None,
+                index=None,
+                kaldi_data_root="/kaldi/root",
+                kaldi_manifest="/kaldi/root/manifest.json",
+                context_epochs=2,
+            ),
+        ),
+    )
+
+    outputs = run_batch_generation(
+        SimpleNamespace(
+            config=tmp_path / "config.yaml",
+            diffusion_ckpt=tmp_path / "diffusion.ckpt",
+            autoencoder_ckpt=tmp_path / "autoencoder.ckpt",
+            preset_path=None,
+            index=None,
+            task="translation",
+            condition_modalities=["ecg"],
+            target_modalities=["eeg"],
+            corruption_name=None,
+            corruption_kwargs=None,
+            condition_mask_npz=None,
+            num_samples=None,
+            output_dir=tmp_path / "batch_out",
+            stride_epochs=1,
+            overlap_fusion="mean",
+            batch_size=1,
+            num_workers=0,
+            device="cpu",
+            seed=0,
+        )
+    )
+
+    assert load_calls == [("/kaldi/root", "/kaldi/root/manifest.json", "test")]
+    assert len(outputs) == 2
+    assert len(generation_calls) == 2
+    assert all(call.preset_path.exists() for call in generation_calls)
+    assert all(call.index is None for call in generation_calls)
+    with generation_calls[0].preset_path.open("rb") as f:
+        grouped_samples = pickle.load(f)
+    assert grouped_samples[0].metadata["split"] == "test"
+
+
+def test_generate_batch_kaldi_respects_preset_override(tmp_path: Path, monkeypatch):
+    sample = SampleIndex(
+        id="subset",
+        path="subset.npz",
+        start=0,
+        end=2,
+        payload={"subject_id": "subset-subject", "night_id": "subset-night", "available_channels": ["eeg", "ecg"]},
+        metadata={"subject_id": "subset-subject", "night_id": "subset-night", "split": "test"},
+    )
+    subset_preset = tmp_path / "subset.pkl"
+    with subset_preset.open("wb") as f:
+        pickle.dump([sample], f)
+    load_calls = []
+    generation_calls = []
+
+    def fake_load_kaldi_samples(kaldi_data_root, kaldi_manifest, *, split):
+        load_calls.append((kaldi_data_root, kaldi_manifest, split))
+        return []
+
+    def fake_run_generation(args):
+        generation_calls.append(args)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        return args.output_dir
+
+    monkeypatch.setattr("sleep2wave.data.generative_dataset._load_kaldi_samples", fake_load_kaldi_samples)
+    monkeypatch.setattr("sleep2wave.generate.run_generation", fake_run_generation)
+    monkeypatch.setattr(
+        "sleep2wave.generative.config.load_sleep2wave_config",
+        lambda _path: SimpleNamespace(
+            stage="inference",
+            data=SimpleNamespace(
+                backend="kaldi",
+                preset_path=None,
+                index=None,
+                kaldi_data_root="/kaldi/root",
+                kaldi_manifest="/kaldi/root/manifest.json",
+                context_epochs=2,
+            ),
+        ),
+    )
+
+    outputs = run_batch_generation(
+        SimpleNamespace(
+            config=tmp_path / "config.yaml",
+            diffusion_ckpt=tmp_path / "diffusion.ckpt",
+            autoencoder_ckpt=tmp_path / "autoencoder.ckpt",
+            preset_path=subset_preset,
+            index=None,
+            task="translation",
+            condition_modalities=["ecg"],
+            target_modalities=["eeg"],
+            corruption_name=None,
+            corruption_kwargs=None,
+            condition_mask_npz=None,
+            num_samples=None,
+            output_dir=tmp_path / "batch_out",
+            stride_epochs=1,
+            overlap_fusion="mean",
+            batch_size=1,
+            num_workers=0,
+            device="cpu",
+            seed=0,
+        )
+    )
+
+    assert load_calls == []
+    assert len(outputs) == 1
+    assert len(generation_calls) == 1
+    with generation_calls[0].preset_path.open("rb") as f:
+        grouped_samples = pickle.load(f)
+    assert [item.id for item in grouped_samples] == ["subset"]
+
+
+def test_generate_batch_kaldi_rejects_index_override(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "sleep2wave.generative.config.load_sleep2wave_config",
+        lambda _path: SimpleNamespace(
+            stage="inference",
+            data=SimpleNamespace(
+                backend="kaldi",
+                preset_path=None,
+                index=None,
+                kaldi_data_root="/kaldi/root",
+                kaldi_manifest="/kaldi/root/manifest.json",
+                context_epochs=2,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not support --index"):
+        run_batch_generation(
+            SimpleNamespace(
+                config=tmp_path / "config.yaml",
+                diffusion_ckpt=tmp_path / "diffusion.ckpt",
+                autoencoder_ckpt=tmp_path / "autoencoder.ckpt",
+                preset_path=None,
+                index=tmp_path / "subset.csv",
+                task="translation",
+                condition_modalities=["ecg"],
+                target_modalities=["eeg"],
+                corruption_name=None,
+                corruption_kwargs=None,
+                condition_mask_npz=None,
+                num_samples=None,
+                output_dir=tmp_path / "batch_out",
+                stride_epochs=1,
+                overlap_fusion="mean",
+                batch_size=1,
+                num_workers=0,
+                device="cpu",
+                seed=0,
+            )
+        )

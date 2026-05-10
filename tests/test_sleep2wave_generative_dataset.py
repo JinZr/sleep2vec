@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import pickle
 
@@ -239,3 +240,148 @@ def test_generative_dataset_rejects_index_rows_with_no_available_modalities(tmp_
 
     with pytest.raises(ValueError, match="no available sleep2wave modalities"):
         Sleep2WaveGenerativeDataset(index=index_path, split="train", context_epochs=2)
+
+
+def _write_kaldi_manifest(root: Path) -> Path:
+    (root / "manifests").mkdir(parents=True)
+    (root / "channels" / "train").mkdir(parents=True)
+    (root / "channels" / "val").mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "sample_key": "train-a",
+                "path": "train.npz",
+                "split": "train",
+                "epoch_start": 0,
+                "epoch_end": 2,
+                "num_epochs": 2,
+                "available_channels": json.dumps(["eeg"]),
+                "subject_id": "s-train",
+                "night_id": "n-train",
+                "night_epoch_count": 2,
+            }
+        ]
+    ).to_csv(root / "manifests" / "train.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "sample_key": "val-a",
+                "path": "val.npz",
+                "split": "val",
+                "epoch_start": 0,
+                "epoch_end": 2,
+                "num_epochs": 2,
+                "available_channels": json.dumps(["eeg"]),
+                "subject_id": "s-val",
+                "night_id": "n-val",
+                "night_epoch_count": 2,
+            }
+        ]
+    ).to_csv(root / "manifests" / "val.csv", index=False)
+    manifest_path = root / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "backend": "kaldi_native_io",
+                "epoch_sec": 30,
+                "context_epochs": 2,
+                "stride_epochs": 2,
+                "splits": {
+                    "train": {
+                        "manifest": "manifests/train.csv",
+                        "channels": {
+                            "eeg": {
+                                "frames_per_epoch": MODALITY_SPECS["eeg"].frames_per_epoch,
+                                "scp": "channels/train/eeg.scp",
+                            }
+                        },
+                    },
+                    "val": {
+                        "manifest": "manifests/val.csv",
+                        "channels": {
+                            "eeg": {
+                                "frames_per_epoch": MODALITY_SPECS["eeg"].frames_per_epoch,
+                                "scp": "channels/val/eeg.scp",
+                            }
+                        },
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+    return manifest_path
+
+
+def test_generative_dataset_kaldi_direct_uses_requested_split_manifest_and_scp(tmp_path: Path, monkeypatch):
+    root = tmp_path / "kaldi"
+    manifest_path = _write_kaldi_manifest(root)
+    captured = {}
+
+    class FakeReaderPool:
+        def __init__(self, _root, channel_specs):
+            captured["specs"] = channel_specs
+
+        def read_matrix(self, _modality, key):
+            assert key == "train-a"
+            return np.zeros((2, MODALITY_SPECS["eeg"].frames_per_epoch), dtype=np.float32)
+
+    monkeypatch.setattr("sleep2wave.data.generative_dataset.KaldiWaveReaderPool", FakeReaderPool)
+
+    dataset = Sleep2WaveGenerativeDataset(
+        backend="kaldi",
+        kaldi_data_root=root,
+        kaldi_manifest=manifest_path,
+        split="train",
+        context_epochs=2,
+    )
+    item = dataset[0]
+
+    assert [sample.metadata["split"] for sample in dataset.data] == ["train"]
+    assert captured["specs"]["eeg"].scp_path == Path("channels/train/eeg.scp")
+    assert item["clean_signals"]["eeg"].shape == (2, 1, MODALITY_SPECS["eeg"].frames_per_epoch)
+    assert item["metadata"]["subject_id"] == "s-train"
+
+
+def test_generative_dataset_kaldi_preset_infers_split_for_channel_specs(tmp_path: Path, monkeypatch):
+    root = tmp_path / "kaldi"
+    manifest_path = _write_kaldi_manifest(root)
+    preset_path = tmp_path / "val_preset.pkl"
+    with preset_path.open("wb") as f:
+        pickle.dump(
+            [
+                SampleIndex(
+                    id="val-a",
+                    path="val.npz",
+                    start=0,
+                    end=2,
+                    payload={"backend": "kaldi", "available_channels": ["eeg"], "night_epoch_count": 2},
+                    metadata={"split": "val", "subject_id": "s-val", "night_id": "n-val"},
+                )
+            ],
+            f,
+        )
+    captured = {}
+
+    class FakeReaderPool:
+        def __init__(self, _root, channel_specs):
+            captured["specs"] = channel_specs
+
+        def read_matrix(self, _modality, key):
+            assert key == "val-a"
+            return np.zeros((2, MODALITY_SPECS["eeg"].frames_per_epoch), dtype=np.float32)
+
+    monkeypatch.setattr("sleep2wave.data.generative_dataset.KaldiWaveReaderPool", FakeReaderPool)
+
+    dataset = Sleep2WaveGenerativeDataset(
+        backend="kaldi",
+        preset_path=preset_path,
+        kaldi_data_root=root,
+        kaldi_manifest=manifest_path,
+        context_epochs=2,
+    )
+    item = dataset[0]
+
+    assert captured["specs"]["eeg"].scp_path == Path("channels/val/eeg.scp")
+    assert item["clean_signals"]["eeg"].shape == (2, 1, MODALITY_SPECS["eeg"].frames_per_epoch)

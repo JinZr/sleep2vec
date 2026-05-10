@@ -28,7 +28,7 @@
 - `generate.py` -> `load_sleep2wave_config` -> autoencoder checkpoint + diffusion checkpoint -> `build_sampler` -> sliding-window fusion -> artifact export
 - `evaluate_generation.py` -> generated artifact files -> metric family modules -> `metrics.json` and `metrics.csv`
 - `build_sleep2wave_presets.py` -> `build_sample_indices_from_frame` -> schema-versioned `SampleIndex` list
-- `convert_npz_to_kaldi.py` -> `load_sleep2wave_config` + modality schema -> `manifest.csv` + per-modality waveform ark/scp files
+- `convert_npz_to_kaldi.py` -> `load_sleep2wave_config` + modality schema -> split-aware `manifest.json`, `manifests/<split>.csv`, and `channels/<split>/<modality>.ark/.scp`
 
 ## Ownership Notes
 

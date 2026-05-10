@@ -200,7 +200,7 @@ def _write_synthetic_kaldi_root(tmp_path: Path, config_path: Path) -> tuple[Path
 
     output_dir = tmp_path / "kaldi"
     index_path = _write_synthetic_index(tmp_path)
-    manifest_path, _ = convert(
+    manifest_path = convert(
         parse_args(
             [
                 "--index",

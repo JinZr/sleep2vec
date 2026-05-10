@@ -324,17 +324,39 @@ def _parse_json_field(raw: t.Any, *, field_name: str, sample_key: str) -> t.Any:
     return raw
 
 
-def _load_kaldi_channel_specs(kaldi_data_root: str | Path) -> dict[str, KaldiWaveChannelSpec]:
-    root = Path(kaldi_data_root).expanduser()
-    manifest_json_path = root / "manifest.json"
+def _load_kaldi_manifest_json(kaldi_manifest: str | Path) -> dict[str, t.Any]:
+    manifest_json_path = Path(kaldi_manifest).expanduser()
     if not manifest_json_path.exists():
         raise FileNotFoundError(f"Sleep2Wave Kaldi manifest.json not found: {manifest_json_path}")
     manifest_json = json.loads(manifest_json_path.read_text())
     if manifest_json.get("backend") != "kaldi_native_io":
         raise ValueError("Sleep2Wave Kaldi manifest.json must set backend='kaldi_native_io'.")
-    raw_channels = manifest_json.get("channels")
+    if manifest_json.get("format_version") != 2:
+        raise ValueError("Sleep2Wave Kaldi manifest.json must use format_version 2.")
+    raw_splits = manifest_json.get("splits")
+    if not isinstance(raw_splits, dict):
+        raise ValueError("Sleep2Wave Kaldi manifest.json must contain a 'splits' mapping.")
+    return manifest_json
+
+
+def _select_kaldi_split(manifest_json: dict[str, t.Any], split: str) -> dict[str, t.Any]:
+    raw_splits = manifest_json["splits"]
+    split_spec = raw_splits.get(str(split))
+    if not isinstance(split_spec, dict):
+        raise ValueError(f"Sleep2Wave Kaldi manifest.json is missing requested split {str(split)!r}.")
+    return split_spec
+
+
+def _load_kaldi_channel_specs(
+    kaldi_data_root: str | Path,
+    kaldi_manifest: str | Path,
+    split: str,
+) -> dict[str, KaldiWaveChannelSpec]:
+    manifest_json = _load_kaldi_manifest_json(kaldi_manifest)
+    split_spec = _select_kaldi_split(manifest_json, str(split))
+    raw_channels = split_spec.get("channels")
     if not isinstance(raw_channels, dict):
-        raise ValueError("Sleep2Wave Kaldi manifest.json must contain a 'channels' mapping.")
+        raise ValueError("Sleep2Wave Kaldi manifest split spec must contain a 'channels' mapping.")
 
     specs: dict[str, KaldiWaveChannelSpec] = {}
     for modality in CANONICAL_MODALITIES:
@@ -359,21 +381,22 @@ def _load_kaldi_channel_specs(kaldi_data_root: str | Path) -> dict[str, KaldiWav
 
 
 def _load_kaldi_samples(
-    manifest: str | Path,
+    kaldi_data_root: str | Path,
+    kaldi_manifest: str | Path,
     *,
-    split: str | t.Sequence[str] | None,
+    split: str,
 ) -> list[SampleIndex]:
-    manifest_path = Path(manifest).expanduser()
+    manifest_json = _load_kaldi_manifest_json(kaldi_manifest)
+    split_spec = _select_kaldi_split(manifest_json, str(split))
+    manifest_path = Path(kaldi_data_root).expanduser() / split_spec["manifest"]
     if not manifest_path.exists():
-        raise FileNotFoundError(f"Sleep2Wave Kaldi manifest.csv not found: {manifest_path}")
+        raise FileNotFoundError(f"Sleep2Wave Kaldi split manifest CSV not found: {manifest_path}")
     df = pd.read_csv(manifest_path, low_memory=False)
     required = {"sample_key", "path", "split", "epoch_start", "epoch_end", "num_epochs", "available_channels"}
     missing = sorted(required - set(df.columns))
     if missing:
-        raise ValueError(f"Sleep2Wave Kaldi manifest.csv is missing required column(s): {missing}.")
-    if split is not None:
-        split_values = {split} if isinstance(split, str) else set(split)
-        df = df[df["split"].astype("string").isin(split_values)].reset_index(drop=True)
+        raise ValueError(f"Sleep2Wave Kaldi split manifest CSV is missing required column(s): {missing}.")
+    df = df[df["split"].astype("string") == str(split)].reset_index(drop=True)
 
     samples: list[SampleIndex] = []
     for _, row in df.iterrows():
@@ -475,8 +498,8 @@ class Sleep2WaveGenerativeDataset(Dataset):
             if kaldi_data_root is not None or kaldi_manifest is not None:
                 raise ValueError("backend='npz' does not support kaldi_data_root or kaldi_manifest.")
         else:
-            if preset_path is not None or index is not None:
-                raise ValueError("backend='kaldi' uses kaldi_manifest; preset_path and index are unsupported.")
+            if index is not None:
+                raise ValueError("backend='kaldi' uses kaldi_manifest; index is unsupported.")
             if kaldi_data_root is None or kaldi_manifest is None:
                 raise ValueError("backend='kaldi' requires kaldi_data_root and kaldi_manifest.")
 
@@ -507,9 +530,18 @@ class Sleep2WaveGenerativeDataset(Dataset):
         self.seed = int(seed)
 
         if backend == "kaldi":
-            channel_specs = _load_kaldi_channel_specs(kaldi_data_root)
+            if preset_path is not None:
+                data = _load_preset(preset_path)
+                if not data:
+                    raise ValueError("No sleep2wave generative samples are available.")
+                split_for_specs = str(data[0].metadata["split"])
+            else:
+                if split is None or not isinstance(split, str):
+                    raise ValueError("backend='kaldi' requires one split when preset_path is not provided.")
+                split_for_specs = str(split)
+                data = _load_kaldi_samples(kaldi_data_root, kaldi_manifest, split=split_for_specs)
+            channel_specs = _load_kaldi_channel_specs(kaldi_data_root, kaldi_manifest, split_for_specs)
             self.kaldi_reader_pool = KaldiWaveReaderPool(kaldi_data_root, channel_specs)
-            data = _load_kaldi_samples(kaldi_manifest, split=split)
         elif preset_path is not None:
             data = _load_preset(preset_path)
             if split is not None:

@@ -119,7 +119,15 @@ def _decode_generated_latents(
 def _resolve_generation_data_source(
     args: argparse.Namespace, data_config
 ) -> tuple[str, Path | str | None, Path | str | None, Path | str | None, Path | str | None]:
-    if args.preset_path is not None or args.index is not None:
+    if data_config.backend == "kaldi":
+        if args.index is not None:
+            raise ValueError("Generation with data.backend=kaldi does not support --index.")
+        backend = "kaldi"
+        preset_path = args.preset_path
+        index = None
+        kaldi_data_root = data_config.kaldi_data_root
+        kaldi_manifest = data_config.kaldi_manifest
+    elif args.preset_path is not None or args.index is not None:
         backend = "npz"
         preset_path = args.preset_path
         index = args.index
@@ -238,6 +246,9 @@ def _collect_generation_windows(
     if args.stride_epochs <= 0:
         raise ValueError("--stride-epochs must be positive.")
     corruption_specs = _resolve_inference_corruption_specs(config=config, args=args, task=task)
+    dataset_split = None
+    if backend == "kaldi" and preset_path is None:
+        dataset_split = "test"
 
     dataset = Sleep2WaveGenerativeDataset(
         backend=backend,
@@ -245,6 +256,7 @@ def _collect_generation_windows(
         index=index,
         kaldi_data_root=kaldi_data_root,
         kaldi_manifest=kaldi_manifest,
+        split=dataset_split,
         context_epochs=config.data.context_epochs,
         stride_epochs=args.stride_epochs,
         condition_modalities=task.condition_modalities,
