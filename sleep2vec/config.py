@@ -6,7 +6,6 @@ import typing as t
 
 import yaml
 
-
 DATA_BACKEND_CHOICES = ("npz", "kaldi")
 
 

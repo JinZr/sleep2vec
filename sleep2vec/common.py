@@ -366,8 +366,7 @@ def apply_data_backend_args(args, data_cfg, *, preset_attr: str | None = None) -
         missing.append("kaldi_manifest")
     if missing:
         raise ValueError(
-            "Kaldi backend requires explicit kaldi_data_root and kaldi_manifest; "
-            f"missing {', '.join(missing)}."
+            "Kaldi backend requires explicit kaldi_data_root and kaldi_manifest; " f"missing {', '.join(missing)}."
         )
 
     if preset_attr and getattr(args, preset_attr, None):

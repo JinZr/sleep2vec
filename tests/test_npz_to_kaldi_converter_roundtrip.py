@@ -21,10 +21,7 @@ def _write_config(tmp_path: Path, channel_dims: dict[str, int]) -> Path:
         yaml.safe_dump(
             {
                 "model": {
-                    "channels": [
-                        {"name": name, "input_dim": input_dim}
-                        for name, input_dim in channel_dims.items()
-                    ]
+                    "channels": [{"name": name, "input_dim": input_dim} for name, input_dim in channel_dims.items()]
                 }
             }
         )

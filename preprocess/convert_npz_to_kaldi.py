@@ -333,9 +333,7 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
         for channel in channel_names:
             ark_path = channels_dir / f"{channel}.ark"
             scp_path = channels_dir / f"{channel}.scp"
-            writers[channel] = stack.enter_context(
-                kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
-            )
+            writers[channel] = stack.enter_context(kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}"))
 
         for _, row in df.iterrows():
             source_value = row[args.source_field]
