@@ -225,6 +225,67 @@ def test_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Pat
     }
 
 
+def test_converter_writes_ark_shards_with_aggregate_scp(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(16, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 120,
+                "session_id": "night",
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--ark-shards",
+                "2",
+                "--max-tokens",
+                "2",
+                "--stride-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    channel_dir = output_dir / "channels" / "train"
+    assert (channel_dir / "eeg.1.ark").exists()
+    assert (channel_dir / "eeg.1.scp").exists()
+    assert (channel_dir / "eeg.2.ark").exists()
+    assert (channel_dir / "eeg.2.scp").exists()
+    aggregate_scp = channel_dir / "eeg.scp"
+    assert aggregate_scp.exists()
+
+    keys = ["mesa_night_000000_000002", "mesa_night_000002_000004"]
+    assert _scp_keys(channel_dir / "eeg.1.scp") == [keys[0]]
+    assert _scp_keys(channel_dir / "eeg.2.scp") == [keys[1]]
+    assert _scp_keys(aggregate_scp) == keys
+    for key in keys:
+        assert _read_matrix(aggregate_scp, key).shape == (2, 4)
+
+    manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
+        "input_dim": 4,
+        "scp": "channels/train/eeg.scp",
+    }
+
+
 def test_converter_rejects_sanitized_split_directory_collisions(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4})
     npz_path = tmp_path / "sample.npz"

@@ -12,6 +12,7 @@ import typing as t
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -42,6 +43,12 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         help="YAML config whose model.channels define channel names and input_dim values.",
     )
     parser.add_argument("--output-dir", type=Path, required=True, help="Output Kaldi data root.")
+    parser.add_argument(
+        "--ark-shards",
+        type=int,
+        default=1,
+        help="Number of ark shards to write per split/channel. Default preserves one ark per split/channel.",
+    )
     parser.add_argument("--max-tokens", type=int, required=True, help="Maximum tokens per output sample.")
     parser.add_argument(
         "--stride-tokens",
@@ -283,6 +290,8 @@ def convert(args: argparse.Namespace) -> Path:
         raise ValueError("--stride-tokens must be >= 0.")
     if args.min_channels < 1:
         raise ValueError("--min-channels must be >= 1.")
+    if args.ark_shards < 1:
+        raise ValueError("--ark-shards must be >= 1.")
 
     args.config = args.config.expanduser()
     if not args.config.exists():
@@ -315,9 +324,10 @@ def convert(args: argparse.Namespace) -> Path:
 
     seen_sample_keys: set[str] = set()
     manifest_json_path = output_dir / "manifest.json"
-    writers: dict[tuple[str, str], t.Any] = {}
+    writers: dict[tuple[str, str, int], t.Any] = {}
     split_dirs: dict[str, str] = {}
     split_keys_by_dir: dict[str, str] = {}
+    split_sample_counts: dict[str, int] = {}
     manifest_rows_by_split: dict[str, list[dict[str, t.Any]]] = {}
 
     with ExitStack() as stack:
@@ -338,14 +348,23 @@ def convert(args: argparse.Namespace) -> Path:
             split_channel_dir = channels_root / split_dir
             split_channel_dir.mkdir(parents=True, exist_ok=True)
             for channel in channel_names:
-                ark_path = split_channel_dir / f"{channel}.ark"
-                scp_path = split_channel_dir / f"{channel}.scp"
-                writers[(split_key, channel)] = stack.enter_context(
-                    kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
-                )
+                if args.ark_shards == 1:
+                    ark_path = split_channel_dir / f"{channel}.ark"
+                    scp_path = split_channel_dir / f"{channel}.scp"
+                    writers[(split_key, channel, 0)] = stack.enter_context(
+                        kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
+                    )
+                else:
+                    for shard_index in range(args.ark_shards):
+                        shard_no = shard_index + 1
+                        ark_path = split_channel_dir / f"{channel}.{shard_no}.ark"
+                        scp_path = split_channel_dir / f"{channel}.{shard_no}.scp"
+                        writers[(split_key, channel, shard_index)] = stack.enter_context(
+                            kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
+                        )
             return split_key
 
-        for _, row in df.iterrows():
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Converting records", unit="record"):
             source_value = row[args.source_field]
             if pd.isna(source_value) or str(source_value) == "":
                 raise ValueError(f"CSV source field {args.source_field!r} has an empty value.")
@@ -415,8 +434,11 @@ def convert(args: argparse.Namespace) -> Path:
 
                     seen_sample_keys.add(sample_key)
                     split_key = ensure_split_writers(row["split"])
+                    split_sample_count = split_sample_counts.get(split_key, 0)
+                    shard_index = split_sample_count % args.ark_shards
+                    split_sample_counts[split_key] = split_sample_count + 1
                     for channel, matrix in matrices.items():
-                        writers[(split_key, channel)].write(sample_key, matrix)
+                        writers[(split_key, channel, shard_index)].write(sample_key, matrix)
 
                     manifest_row = dict(row.to_dict())
                     source = manifest_row.get("source")
@@ -448,7 +470,16 @@ def convert(args: argparse.Namespace) -> Path:
         split_channel_dir = channels_root / split_dir
         for channel in channel_names:
             scp_path = split_channel_dir / f"{channel}.scp"
-            lines = scp_path.read_text().splitlines()
+            if args.ark_shards == 1:
+                lines = scp_path.read_text().splitlines()
+            else:
+                lines = []
+                for shard_index in range(args.ark_shards):
+                    shard_scp_path = split_channel_dir / f"{channel}.{shard_index + 1}.scp"
+                    shard_lines = shard_scp_path.read_text().splitlines() if shard_scp_path.exists() else []
+                    shard_lines.sort(key=lambda line: line.split(maxsplit=1)[0])
+                    shard_scp_path.write_text("\n".join(shard_lines) + ("\n" if shard_lines else ""))
+                    lines.extend(shard_lines)
             lines.sort(key=lambda line: line.split(maxsplit=1)[0])
             scp_path.write_text("\n".join(lines) + ("\n" if lines else ""))
         splits[split_key] = {

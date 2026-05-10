@@ -94,9 +94,9 @@
 
 - File: `preprocess/convert_npz_to_kaldi.py`; package-local mirrors: `sleep2vec2/preprocess/convert_npz_to_kaldi.py`, `sleep2expert/preprocess/convert_npz_to_kaldi.py`
 - Signature: `convert(args: argparse.Namespace) -> Path`
-- Purpose and contract: convert CSV-indexed NPZ token windows into split-specific Kaldi ark/scp files plus `manifest.json` format v2 and `manifests/{split}.csv`, preserving sample metadata, cropped `token_start`/`token_end`, available-channel lists, and built-in `ahi`/`tst` metadata when requested.
-- Important inputs/outputs: index CSV(s), config YAML, output directory, selected channels, windowing settings, missing-channel policy, and optional path-prefix maps in; Kaldi manifest paths out.
-- Side effects: reads NPZ files, writes sorted split-specific Kaldi ark/scp files and manifests, and imports optional `kaldi_native_io` only when conversion runs.
+- Purpose and contract: convert CSV-indexed NPZ token windows into split-specific Kaldi ark/scp files plus `manifest.json` format v2 and `manifests/{split}.csv`, preserving sample metadata, cropped `token_start`/`token_end`, available-channel lists, and built-in `ahi`/`tst` metadata when requested. Optional `--ark-shards` writes numbered shard ark/scp files while preserving one aggregate `{channel}.scp` for runtime readers.
+- Important inputs/outputs: index CSV(s), config YAML, output directory, selected channels, windowing settings, missing-channel policy, optional ark shard count, and optional path-prefix maps in; Kaldi manifest paths out.
+- Side effects: reads NPZ files, writes sorted split-specific Kaldi ark/scp files or shard files plus aggregate scps and manifests, and imports optional `kaldi_native_io` only when conversion runs.
 - Key callers/callees: called by `main`; callees include `_build_channel_registry`, `load_npz`, `load_builtin_ahi_metadata`, `window`, and `normalize_mask_frame`.
 - Reuse guidance: use this CLI to build Kaldi roots for pretrain, finetune, and inference instead of creating ad hoc ark/scp writers. Standalone variants should use their package-local converter.
 - Duplication risk notes: standalone variants must use their package-local converter so tokenizer/extractor semantics come from the same recipe namespace.
