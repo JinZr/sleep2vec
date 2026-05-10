@@ -108,28 +108,28 @@ def test_sleep2expert_config_parses_kaldi_backend_fields(tmp_path: Path):
         {
             "backend": "kaldi",
             "kaldi_data_root": "/tmp/kaldi_root",
-            "kaldi_manifest": "/tmp/kaldi_root/manifest.csv",
+            "kaldi_manifest": "/tmp/kaldi_root/manifest.json",
         }
     )
     pretrain_bundle = load_pretrain_config(_write_yaml(tmp_path, pretrain_payload, "pretrain.yaml"))
 
     assert pretrain_bundle.data.backend == "kaldi"
     assert pretrain_bundle.data.kaldi_data_root == "/tmp/kaldi_root"
-    assert pretrain_bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.csv"
+    assert pretrain_bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.json"
 
     finetune_payload = _finetune_payload()
     finetune_payload["data"].update(
         {
             "backend": "kaldi",
             "kaldi_data_root": "/tmp/kaldi_root",
-            "kaldi_manifest": "/tmp/kaldi_root/manifest.csv",
+            "kaldi_manifest": "/tmp/kaldi_root/manifest.json",
         }
     )
     finetune_bundle = load_finetune_config(_write_yaml(tmp_path, finetune_payload, "finetune.yaml"))
 
     assert finetune_bundle.data.backend == "kaldi"
     assert finetune_bundle.data.kaldi_data_root == "/tmp/kaldi_root"
-    assert finetune_bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.csv"
+    assert finetune_bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.json"
 
 
 @pytest.mark.parametrize(
@@ -154,7 +154,7 @@ def test_sleep2expert_apply_finetune_config_populates_kaldi_backend(tmp_path: Pa
         {
             "backend": "kaldi",
             "kaldi_data_root": "kaldi/root",
-            "kaldi_manifest": "kaldi/root/manifest.csv",
+            "kaldi_manifest": "kaldi/root/manifest.json",
         }
     )
     config_path = _write_yaml(tmp_path, payload)
@@ -164,7 +164,7 @@ def test_sleep2expert_apply_finetune_config_populates_kaldi_backend(tmp_path: Pa
 
     assert args.data_backend == "kaldi"
     assert args.kaldi_data_root == Path("kaldi/root")
-    assert args.kaldi_manifest == Path("kaldi/root/manifest.csv")
+    assert args.kaldi_manifest == Path("kaldi/root/manifest.json")
     assert args.finetune_preset_path is None
 
 
@@ -184,7 +184,7 @@ def test_sleep2expert_apply_finetune_config_rejects_kaldi_preset_path(tmp_path: 
         {
             "backend": "kaldi",
             "kaldi_data_root": "kaldi/root",
-            "kaldi_manifest": "kaldi/root/manifest.csv",
+            "kaldi_manifest": "kaldi/root/manifest.json",
             "finetune_preset_path": "preset.pkl",
         }
     )
@@ -239,7 +239,7 @@ def _pretrain_args() -> argparse.Namespace:
         channel_names=["eeg", "ppg"],
         channel_input_dims={"eeg": 4, "ppg": 8},
         kaldi_data_root=Path("/kaldi/root"),
-        kaldi_manifest=Path("/kaldi/root/manifest.csv"),
+        kaldi_manifest=Path("/kaldi/root/manifest.json"),
         max_tokens=2,
         mask_rate=0.15,
         allow_missing_channels=True,
@@ -264,7 +264,7 @@ def _finetune_args(
     return argparse.Namespace(
         data_backend="kaldi",
         kaldi_data_root=Path("/kaldi/root"),
-        kaldi_manifest=Path("/kaldi/root/manifest.csv"),
+        kaldi_manifest=Path("/kaldi/root/manifest.json"),
         label_name=label_name,
         label_source_name=label_source_name,
         auxiliary_label_source_names=auxiliary_label_source_names or [],
@@ -295,7 +295,7 @@ def test_sleep2expert_get_pretrain_dataloader_routes_kaldi_kwargs(monkeypatch):
     train_kwargs = _DummyDataset.instances[0].kwargs
     val_kwargs = _DummyDataset.instances[1].kwargs
     assert train_kwargs["kaldi_data_root"] == Path("/kaldi/root")
-    assert train_kwargs["manifest"] == Path("/kaldi/root/manifest.csv")
+    assert train_kwargs["manifest"] == Path("/kaldi/root/manifest.json")
     assert train_kwargs["channel_names"] == ["eeg", "ppg"]
     assert train_kwargs["channel_input_dims"] == {"eeg": 4, "ppg": 8}
     assert train_kwargs["split"] == ["train"]
@@ -328,7 +328,7 @@ def test_sleep2expert_build_finetune_loader_routes_kaldi_stage_channels(monkeypa
     init_kwargs = loader["kwargs"]
     assert init_kwargs["channel_names"] == ["eeg", "stage5"]
     assert init_kwargs["kaldi_data_root"] == Path("/kaldi/root")
-    assert init_kwargs["manifest"] == Path("/kaldi/root/manifest.csv")
+    assert init_kwargs["manifest"] == Path("/kaldi/root/manifest.json")
     assert init_kwargs["randomly_select_channels"] is False
     assert init_kwargs["allow_missing_channels"] is False
     assert init_kwargs["min_channels"] == 2
@@ -398,9 +398,36 @@ def _write_kaldi_root(
     root: Path,
     channel_input_dims: dict[str, int],
     matrices: dict[str, dict[str, np.ndarray]],
+    *,
+    split: str = "train",
 ) -> None:
+    manifest_channels = _write_kaldi_split(root, split, channel_input_dims, matrices)
+
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "backend": "kaldi_native_io",
+                "splits": {
+                    split: {
+                        "manifest": f"manifests/{split}.csv",
+                        "channels": manifest_channels,
+                    }
+                },
+            }
+        )
+        + "\n"
+    )
+
+
+def _write_kaldi_split(
+    root: Path,
+    split: str,
+    channel_input_dims: dict[str, int],
+    matrices: dict[str, dict[str, np.ndarray]],
+) -> dict[str, dict[str, int | str]]:
     kaldi_native_io = _require_kaldi_native_io()
-    channels_dir = root / "channels"
+    channels_dir = root / "channels" / split
     channels_dir.mkdir(parents=True, exist_ok=True)
     manifest_channels = {}
     for channel, input_dim in channel_input_dims.items():
@@ -409,24 +436,19 @@ def _write_kaldi_root(
         with kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}") as writer:
             for key, matrix in matrices.get(channel, {}).items():
                 writer.write(key, np.asarray(matrix, dtype=np.float32))
-        manifest_channels[channel] = {"input_dim": input_dim, "scp": f"channels/{channel}.scp"}
-
-    (root / "manifest.json").write_text(
-        json.dumps(
-            {
-                "format_version": 1,
-                "backend": "kaldi_native_io",
-                "channels": manifest_channels,
-            }
-        )
-        + "\n"
-    )
+        lines = scp_path.read_text().splitlines()
+        lines.sort(key=lambda line: line.split(maxsplit=1)[0])
+        scp_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+        manifest_channels[channel] = {"input_dim": input_dim, "scp": f"channels/{split}/{channel}.scp"}
+    return manifest_channels
 
 
-def _write_manifest(root: Path, rows: list[dict]) -> Path:
-    path = root / "manifest.csv"
+def _write_manifest(root: Path, rows: list[dict], *, split: str = "train") -> Path:
+    manifests_dir = root / "manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    path = manifests_dir / f"{split}.csv"
     pd.DataFrame(rows).to_csv(path, index=False)
-    return path
+    return root / "manifest.json"
 
 
 def _row(sample_key: str, channels: list[str], *, start: int = 0, end: int = 2, **metadata):
@@ -509,6 +531,69 @@ def test_sleep2expert_kaldi_dataset_batch_contract_without_npz_reads(tmp_path: P
     assert batch["metadata"]["sex"].tolist() == [1, 0]
     assert batch["metadata"]["source"] == ["center-a", "center-a"]
     assert batch["metadata"]["path"] == [f"/original/{key}.npz" for key in keys]
+
+
+def test_sleep2expert_kaldi_dataset_uses_requested_split_manifest_and_scps(tmp_path: Path) -> None:
+    from sleep2expert.data.kaldi_psg_dataset import KaldiPSGDataset
+
+    train_key = "mesa_train_000000_000002"
+    val_key = "mesa_val_000000_000002"
+    dims = {"eeg": 2, "ppg": 2}
+    train_channels = _write_kaldi_split(
+        tmp_path,
+        "train",
+        dims,
+        {
+            "eeg": {train_key: np.full((2, 2), 1.0, dtype=np.float32)},
+            "ppg": {train_key: np.full((2, 2), 2.0, dtype=np.float32)},
+        },
+    )
+    val_channels = _write_kaldi_split(
+        tmp_path,
+        "val",
+        dims,
+        {
+            "eeg": {val_key: np.full((2, 2), 7.0, dtype=np.float32)},
+            "ppg": {val_key: np.full((2, 2), 8.0, dtype=np.float32)},
+        },
+    )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "backend": "kaldi_native_io",
+                "splits": {
+                    "train": {"manifest": "manifests/train.csv", "channels": train_channels},
+                    "val": {"manifest": "manifests/val.csv", "channels": val_channels},
+                },
+            }
+        )
+        + "\n"
+    )
+    _write_manifest(tmp_path, [_row(train_key, ["eeg", "ppg"], split="train")], split="train")
+    manifest = _write_manifest(tmp_path, [_row(val_key, ["eeg", "ppg"], split="val")], split="val")
+
+    dataset = KaldiPSGDataset(
+        channel_names=["eeg", "ppg"],
+        channel_input_dims=dims,
+        kaldi_data_root=tmp_path,
+        manifest=manifest,
+        split=["val"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        allow_missing_channels=False,
+        is_train_set=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+
+    assert batch["id"] == [val_key]
+    assert batch["tokens"]["eeg"].eq(7.0).all()
+    assert batch["tokens"]["ppg"].eq(8.0).all()
 
 
 def test_sleep2expert_kaldi_dataset_missing_channels_uses_pair_first_sampler(tmp_path: Path) -> None:
@@ -669,17 +754,16 @@ def test_sleep2expert_kaldi_dataset_reader_pool_works_with_multiple_workers(tmp_
     assert [batch["id"][0] for batch in batches] == keys
 
 
-def _converter_config(tmp_path: Path, channel_dims: dict[str, int]) -> Path:
+def _converter_config(tmp_path: Path, channel_dims: dict[str, int], preset_build: dict | None = None) -> Path:
     path = tmp_path / "converter.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "model": {
-                    "channels": [{"name": name, "input_dim": input_dim} for name, input_dim in channel_dims.items()]
-                }
-            }
-        )
-    )
+    payload = {
+        "model": {
+            "channels": [{"name": name, "input_dim": input_dim} for name, input_dim in channel_dims.items()],
+        }
+    }
+    if preset_build is not None:
+        payload["preset_build"] = preset_build
+    path.write_text(yaml.safe_dump(payload))
     return path
 
 
@@ -762,7 +846,7 @@ def test_sleep2expert_converter_roundtrip_writes_manifest_and_matching_scp(tmp_p
         )
     )
 
-    manifest = pd.read_csv(output_dir / "manifest.csv", low_memory=False)
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
     assert manifest["sample_key"].tolist() == [
         "mesa_night_1_000000_000002",
         "mesa_night_1_000002_000004",
@@ -775,7 +859,7 @@ def test_sleep2expert_converter_roundtrip_writes_manifest_and_matching_scp(tmp_p
     assert json.loads(manifest.loc[0, "available_channels"]) == ["eeg", "ppg", "stage5", "ahi"]
 
     for channel in ["eeg", "ppg", "stage5", "ahi"]:
-        assert _scp_keys(output_dir / "channels" / f"{channel}.scp") == manifest["sample_key"].tolist()
+        assert _scp_keys(output_dir / "channels" / "train" / f"{channel}.scp") == manifest["sample_key"].tolist()
 
     registry = _build_channel_registry(
         channel_names=["eeg", "ppg", "stage5", "ahi"],
@@ -789,11 +873,325 @@ def test_sleep2expert_converter_roundtrip_writes_manifest_and_matching_scp(tmp_p
         expected_ahi = registry["ahi"][1](registry["ahi"][0](npz, 0, 2)).numpy()
 
     key = "mesa_night_1_000000_000002"
-    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "eeg.scp", key), expected_eeg)
-    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "ppg.scp", key), expected_ppg)
-    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "stage5.scp", key), expected_stage5)
-    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "ahi.scp", key), expected_ahi)
+    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "eeg.scp", key), expected_eeg)
+    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "ppg.scp", key), expected_ppg)
+    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "stage5.scp", key), expected_stage5)
+    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "ahi.scp", key), expected_ahi)
 
     manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert manifest_json["format_version"] == 2
     assert manifest_json["backend"] == "kaldi_native_io"
-    assert manifest_json["channels"]["eeg"] == {"input_dim": 4, "scp": "channels/eeg.scp"}
+    assert manifest_json["splits"]["train"]["manifest"] == "manifests/train.csv"
+    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {"input_dim": 4, "scp": "channels/train/eeg.scp"}
+
+
+def test_sleep2expert_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Path):
+    _require_kaldi_native_io()
+    from sleep2expert.preprocess.convert_npz_to_kaldi import convert, parse_args
+
+    config_path = _converter_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "z",
+                "eeg_mask": 1,
+            },
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "val",
+                "duration": 60,
+                "session_id": "b",
+                "eeg_mask": 1,
+            },
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "a",
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    train_manifest_path = output_dir / "manifests" / "train.csv"
+    val_manifest_path = output_dir / "manifests" / "val.csv"
+    train_scp_path = output_dir / "channels" / "train" / "eeg.scp"
+    val_scp_path = output_dir / "channels" / "val" / "eeg.scp"
+    assert train_manifest_path.exists()
+    assert val_manifest_path.exists()
+    assert train_scp_path.exists()
+    assert val_scp_path.exists()
+    assert (output_dir / "manifest.json").exists()
+    assert not (output_dir / "manifest.csv").exists()
+
+    train_manifest = pd.read_csv(train_manifest_path, low_memory=False)
+    val_manifest = pd.read_csv(val_manifest_path, low_memory=False)
+    assert train_manifest["split"].tolist() == ["train", "train"]
+    assert val_manifest["split"].tolist() == ["val"]
+    assert _scp_keys(train_scp_path) == sorted(train_manifest["sample_key"].tolist())
+    assert _scp_keys(val_scp_path) == sorted(val_manifest["sample_key"].tolist())
+
+    manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert manifest_json["format_version"] == 2
+    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
+        "input_dim": 4,
+        "scp": "channels/train/eeg.scp",
+    }
+    assert manifest_json["splits"]["val"]["channels"]["eeg"] == {
+        "input_dim": 4,
+        "scp": "channels/val/eeg.scp",
+    }
+
+
+def test_sleep2expert_converter_honors_preset_build_required_channels(tmp_path: Path):
+    _require_kaldi_native_io()
+    from sleep2expert.preprocess.convert_npz_to_kaldi import convert, parse_args
+
+    config_path = _converter_config(
+        tmp_path,
+        {"ppg": 8},
+        preset_build={"required_channels": ["ppg", "stage5"], "min_channels": 2},
+    )
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, ppg=np.arange(16, dtype=np.float32), stage5=np.arange(2, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "ppg_mask": 1,
+                "stage_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+            ]
+        )
+    )
+
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    assert json.loads(manifest.loc[0, "available_channels"]) == ["ppg", "stage5"]
+    manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert manifest_json["splits"]["train"]["channels"]["stage5"] == {
+        "input_dim": 1,
+        "scp": "channels/train/stage5.scp",
+    }
+    assert _scp_keys(output_dir / "channels" / "train" / "stage5.scp") == ["mesa_s1_000000_000002"]
+
+
+def test_sleep2expert_converter_auto_adds_stage5_when_preset_build_requires_ahi(tmp_path: Path):
+    _require_kaldi_native_io()
+    from sleep2expert.preprocess.convert_npz_to_kaldi import convert, parse_args
+
+    config_path = _converter_config(
+        tmp_path,
+        {"ppg": 8},
+        preset_build={"required_channels": ["ppg", "ahi"], "min_channels": 2},
+    )
+    npz_path = tmp_path / "sample.npz"
+    np.savez(
+        npz_path,
+        ppg=np.arange(16, dtype=np.float32),
+        stage5=np.arange(2, dtype=np.float32),
+        ah_event=np.arange(60, dtype=np.float32),
+        ahi=np.asarray(7.0, dtype=np.float32),
+        tst=np.asarray(33.0, dtype=np.float32),
+    )
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "ppg_mask": 1,
+                "stage_mask": 1,
+                "ah_event_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+            ]
+        )
+    )
+
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    assert json.loads(manifest.loc[0, "available_channels"]) == ["ppg", "ahi", "stage5"]
+    manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert manifest_json["splits"]["train"]["channels"]["stage5"] == {
+        "input_dim": 1,
+        "scp": "channels/train/stage5.scp",
+    }
+
+
+def test_sleep2expert_converter_trims_one_token_channel_length_difference(tmp_path: Path):
+    _require_kaldi_native_io()
+    from sleep2expert.preprocess.convert_npz_to_kaldi import convert, parse_args
+
+    config_path = _converter_config(tmp_path, {"eeg": 4, "ppg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(12, dtype=np.float32), ppg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 90,
+                "session_id": "s1",
+                "eeg_mask": 1,
+                "ppg_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "3",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    key = "mesa_s1_000000_000003"
+    assert manifest.loc[0, "sample_key"] == key
+    assert manifest.loc[0, "token_end"] == 2
+    assert manifest.loc[0, "num_tokens"] == 2
+    assert _read_matrix(output_dir / "channels" / "train" / "eeg.scp", key).shape == (2, 4)
+    assert _read_matrix(output_dir / "channels" / "train" / "ppg.scp", key).shape == (2, 4)
+
+
+def test_sleep2expert_converter_rejects_channel_length_difference_greater_than_one(tmp_path: Path):
+    _require_kaldi_native_io()
+    from sleep2expert.preprocess.convert_npz_to_kaldi import convert, parse_args
+
+    config_path = _converter_config(tmp_path, {"eeg": 4, "ppg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(16, dtype=np.float32), ppg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 120,
+                "session_id": "s1",
+                "eeg_mask": 1,
+                "ppg_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    with pytest.raises(ValueError, match="differing by more than one"):
+        convert(
+            parse_args(
+                [
+                    "--index",
+                    str(index_path),
+                    "--config",
+                    str(config_path),
+                    "--output-dir",
+                    str(tmp_path / "kaldi"),
+                    "--max-tokens",
+                    "4",
+                    "--channels-from-config",
+                ]
+            )
+        )
+
+
+def test_sleep2expert_reader_pool_opens_sorted_scp_reader(tmp_path: Path, monkeypatch) -> None:
+    from sleep2expert.data.kaldi_io import KaldiChannelSpec, KaldiReaderPool
+
+    opened_specs = []
+
+    class FakeReader:
+        def __contains__(self, key: str) -> bool:
+            return key == "sample-a"
+
+        def __getitem__(self, key: str) -> np.ndarray:
+            return np.ones((2, 3), dtype=np.float32)
+
+    class FakeKaldiNativeIO:
+        def RandomAccessFloatMatrixReader(self, spec: str) -> FakeReader:
+            opened_specs.append(spec)
+            return FakeReader()
+
+    monkeypatch.setattr(KaldiReaderPool, "_import_kaldi_native_io", lambda self: FakeKaldiNativeIO())
+
+    pool = KaldiReaderPool(
+        tmp_path,
+        {"eeg": KaldiChannelSpec(name="eeg", input_dim=3, scp_path=Path("channels/train/eeg.scp"))},
+    )
+
+    pool.read_matrix("eeg", "sample-a")
+
+    assert opened_specs == [f"s,scp:{tmp_path / 'channels' / 'train' / 'eeg.scp'}"]

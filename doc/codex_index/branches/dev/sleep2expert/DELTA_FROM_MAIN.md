@@ -30,7 +30,7 @@
 - `backbone.name: roformer` inside `sleep2vec2` resolves to the package-local standalone `RoFormerEncoderModel`.
 - `backbone.name: roformer` inside `sleep2expert` resolves to the package-local standalone `RoFormerEncoderModel`.
 - LoRA is disabled for standalone variant finetune configs and rejected by variant-local config loaders until standalone RoFormer PEFT compatibility is explicitly added.
-- `sleep2vec2` and `sleep2expert` support `data.backend: kaldi` through package-local config binding, dataset routing, reader pooling, and NPZ-to-Kaldi conversion; Kaldi flows use `manifest.csv`/`manifest.json` instead of legacy NPZ preset pickles.
+- `sleep2vec2` and `sleep2expert` support `data.backend: kaldi` through package-local config binding, dataset routing, reader pooling, and NPZ-to-Kaldi conversion; Kaldi flows use `manifest.json` format v2 plus split-specific CSV/scp files instead of legacy NPZ preset pickles.
 - Existing Hugging Face checkpoint key translation is not added for standalone variants; parity scope is forward/API/numeric parity when weights are copied in tests.
 
 ## Validation Notes

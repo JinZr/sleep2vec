@@ -103,7 +103,7 @@
 
 - File: `data/kaldi_psg_dataset.py`; package-local mirrors: `sleep2vec2/data/kaldi_psg_dataset.py`, `sleep2expert/data/kaldi_psg_dataset.py`
 - Signature: `KaldiPSGDataset(channel_names, channel_input_dims, kaldi_data_root, manifest, split, max_tokens, mask_rate, ...)`
-- Purpose and contract: read pre-windowed Kaldi matrices using `manifest.csv`/`manifest.json` while preserving the `DefaultDataset` batch contract, missing-channel sampler behavior, built-in `stage5`/`ahi` label channels, and metadata filtering.
+- Purpose and contract: read pre-windowed Kaldi matrices using `manifest.json` format v2 plus the requested split's CSV manifest and scp specs while preserving the `DefaultDataset` batch contract, missing-channel sampler behavior, built-in `stage5`/`ahi` label channels, and metadata filtering.
 - Important inputs/outputs: channel list, YAML channel dims, Kaldi root, manifest path, split and loader flags in; dataset instance out.
 - Side effects: reads manifest files, opens Kaldi readers lazily, and filters rows by split/channel/metadata.
 - Key callers/callees: callers are `sleep2vec.utils._dataset_class_for_args`, `get_pretrain_dataloader`, and `_build_finetune_loader`; callees include `KaldiReaderPool`, `_build_channel_registry`, and `DefaultDataset` hook methods.

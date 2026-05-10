@@ -20,11 +20,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from sleep2expert.data.psg_pretrain_dataset import _build_channel_registry
 from sleep2expert.data.utils import load_builtin_ahi_metadata, load_npz, window
 from sleep2expert.preprocess.save_dataset_presets import (
-    BUILTIN_CHANNEL_SPECS,
-    _dedupe_keep_order,
     _load_config_mapping,
     _load_model_channels,
+    _load_preset_build_block,
     _mask_column_for_channel,
+    _resolve_effective_min_channels,
+    _resolve_validation_channels,
 )
 from sleep2expert.preprocess.split_index_by_dataset import normalize_mask_frame
 
@@ -127,37 +128,32 @@ def _sanitize_key_part(value: t.Any) -> str:
     return text or "unknown"
 
 
-def _read_config_channels(config_path: Path) -> tuple[list[str], dict[str, int]]:
-    config_data = _load_config_mapping(config_path)
-    return _load_model_channels(config_data)
+def _resolve_channels(args: argparse.Namespace) -> tuple[list[str], dict[str, int], int]:
+    config_data = _load_config_mapping(args.config)
+    model_channels, model_channel_input_dims = _load_model_channels(config_data)
+    preset_required_channels, preset_min_channels = _load_preset_build_block(config_data)
 
-
-def _resolve_channels(args: argparse.Namespace) -> tuple[list[str], dict[str, int]]:
-    model_channels, model_channel_input_dims = _read_config_channels(args.config)
-    channels: list[str] = []
-    if args.channels_from_config:
-        channels.extend(model_channels)
-    channels.extend(args.extra_channels or [])
-    channels = _dedupe_keep_order(channels)
-    if "ahi" in channels and "stage5" not in channels:
-        channels.append("stage5")
-    if not channels:
+    selected_channels: list[str] = []
+    if preset_required_channels is not None:
+        selected_channels.extend(preset_required_channels)
+    elif args.channels_from_config:
+        selected_channels.extend(model_channels)
+    selected_channels.extend(args.extra_channels or [])
+    if not selected_channels:
         raise ValueError("No channels selected. Use --channels-from-config and/or --extra-channels.")
 
-    unknown = [name for name in channels if name not in model_channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
-    if unknown:
-        raise ValueError(
-            "Requested channels must be declared in YAML model.channels or be built-in channels. "
-            f"Unknown: {unknown}; model channels: {model_channels}"
-        )
-
-    channel_input_dims: dict[str, int] = {}
-    for name in channels:
-        if name in model_channel_input_dims:
-            channel_input_dims[name] = int(model_channel_input_dims[name])
-        else:
-            channel_input_dims[name] = int(BUILTIN_CHANNEL_SPECS[name]["input_dim"])
-    return channels, channel_input_dims
+    channel_names, channel_input_dims = _resolve_validation_channels(
+        model_channels=model_channels,
+        channel_input_dims=model_channel_input_dims,
+        preset_required_channels=None,
+        selected_channels=selected_channels,
+    )
+    effective_min_channels = _resolve_effective_min_channels(
+        channel_names=channel_names,
+        cli_min_channels=args.min_channels,
+        preset_min_channels=preset_min_channels,
+    )
+    return channel_names, channel_input_dims, effective_min_channels
 
 
 def _load_index_df(index_paths: t.Sequence[Path]) -> pd.DataFrame:
@@ -188,17 +184,12 @@ def _row_mask_status(row: pd.Series, channel_names: t.Sequence[str]) -> dict[str
     }
 
 
-def _tokens_to_matrix(tokens, *, channel: str, sample_key: str, expected_tokens: int) -> np.ndarray:
+def _tokens_to_matrix(tokens, *, channel: str, sample_key: str) -> np.ndarray:
     if tokens.dim() != 2:
         raise ValueError(
             f"Channel {channel!r} for sample {sample_key!r} tokenized to rank {tokens.dim()} "
             f"with shape {tuple(tokens.shape)}; expected rank 2. "
             "Multichannel raw arrays are not supported by the Kaldi converter yet."
-        )
-    if tokens.shape[0] != expected_tokens:
-        raise ValueError(
-            f"Channel {channel!r} for sample {sample_key!r} produced {tokens.shape[0]} tokens, "
-            f"expected {expected_tokens} from the CSV duration/window."
         )
     arr = tokens.detach().cpu().numpy().astype(np.float32, copy=False)
     return np.ascontiguousarray(arr)
@@ -216,7 +207,7 @@ def _extract_channel_matrix(
 ) -> np.ndarray:
     payload = extractor(npz, start, end)
     tokens = tokenizer(payload)
-    return _tokens_to_matrix(tokens, channel=channel, sample_key=sample_key, expected_tokens=end - start)
+    return _tokens_to_matrix(tokens, channel=channel, sample_key=sample_key)
 
 
 def _try_extract_channel(
@@ -281,7 +272,7 @@ def _should_keep_sample(
     return len(available_channels) == len(requested_channels)
 
 
-def convert(args: argparse.Namespace) -> tuple[Path, Path]:
+def convert(args: argparse.Namespace) -> Path:
     if args.max_tokens < 1:
         raise ValueError("--max-tokens must be >= 1.")
     if args.token_sec < 1:
@@ -301,11 +292,7 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
     if missing_indexes:
         raise FileNotFoundError(f"Index CSV not found: {missing_indexes}")
 
-    channel_names, channel_input_dims = _resolve_channels(args)
-    if args.min_channels > len(channel_names):
-        raise ValueError(
-            f"--min-channels={args.min_channels} exceeds selected channel count {len(channel_names)}: {channel_names}"
-        )
+    channel_names, channel_input_dims, effective_min_channels = _resolve_channels(args)
     registry = _build_channel_registry(
         channel_names=channel_names,
         channel_input_dims=channel_input_dims,
@@ -320,20 +307,42 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
 
     kaldi_native_io = _import_kaldi_native_io()
     output_dir = args.output_dir.expanduser()
-    channels_dir = output_dir / "channels"
-    channels_dir.mkdir(parents=True, exist_ok=True)
+    manifests_dir = output_dir / "manifests"
+    channels_root = output_dir / "channels"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    channels_root.mkdir(parents=True, exist_ok=True)
 
-    manifest_rows: list[dict[str, t.Any]] = []
     seen_sample_keys: set[str] = set()
-    manifest_path = output_dir / "manifest.csv"
     manifest_json_path = output_dir / "manifest.json"
+    writers: dict[tuple[str, str], t.Any] = {}
+    split_dirs: dict[str, str] = {}
+    split_keys_by_dir: dict[str, str] = {}
+    manifest_rows_by_split: dict[str, list[dict[str, t.Any]]] = {}
 
     with ExitStack() as stack:
-        writers = {}
-        for channel in channel_names:
-            ark_path = channels_dir / f"{channel}.ark"
-            scp_path = channels_dir / f"{channel}.scp"
-            writers[channel] = stack.enter_context(kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}"))
+
+        def ensure_split_writers(split_value: t.Any) -> str:
+            split_key = str(split_value)
+            if split_key in split_dirs:
+                return split_key
+
+            split_dir = _sanitize_key_part(split_key)
+            existing_split_key = split_keys_by_dir.get(split_dir)
+            if existing_split_key is not None:
+                raise ValueError(
+                    f"Split labels {existing_split_key!r} and {split_key!r} both map to directory {split_dir!r}."
+                )
+            split_dirs[split_key] = split_dir
+            split_keys_by_dir[split_dir] = split_key
+            split_channel_dir = channels_root / split_dir
+            split_channel_dir.mkdir(parents=True, exist_ok=True)
+            for channel in channel_names:
+                ark_path = split_channel_dir / f"{channel}.ark"
+                scp_path = split_channel_dir / f"{channel}.scp"
+                writers[(split_key, channel)] = stack.enter_context(
+                    kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
+                )
+            return split_key
 
         for _, row in df.iterrows():
             source_value = row[args.source_field]
@@ -386,13 +395,27 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
                         available_channels,
                         channel_names,
                         allow_missing_channels=args.allow_missing_channels,
-                        min_channels=args.min_channels,
+                        min_channels=effective_min_channels,
                     ):
                         continue
 
+                    lengths = [matrix.shape[0] for matrix in matrices.values()]
+                    min_len = min(lengths)
+                    max_len = max(lengths)
+                    if max_len - min_len > 1:
+                        raise ValueError(
+                            f"Sample {sample_key!r} has channel token lengths differing by more than one: "
+                            f"{dict((channel, matrix.shape[0]) for channel, matrix in matrices.items())}."
+                        )
+                    if min_len < 1:
+                        continue
+                    matrices = {channel: matrix[:min_len] for channel, matrix in matrices.items()}
+                    actual_end = start + min_len
+
                     seen_sample_keys.add(sample_key)
+                    split_key = ensure_split_writers(row["split"])
                     for channel, matrix in matrices.items():
-                        writers[channel].write(sample_key, matrix)
+                        writers[(split_key, channel)].write(sample_key, matrix)
 
                     manifest_row = dict(row.to_dict())
                     source = manifest_row.get("source")
@@ -405,40 +428,54 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
                             "sample_source": source_value,
                             "path": original_path,
                             "token_start": start,
-                            "token_end": end,
-                            "num_tokens": end - start,
+                            "token_end": actual_end,
+                            "num_tokens": min_len,
                             "available_channels": json.dumps(available_channels),
                         }
                     )
                     manifest_row.update(scalar_metadata)
-                    manifest_rows.append(manifest_row)
+                    manifest_rows_by_split.setdefault(split_key, []).append(manifest_row)
 
-    if not manifest_rows:
+    if not manifest_rows_by_split:
         raise ValueError("No samples satisfied the requested channel availability rules.")
 
-    pd.DataFrame(manifest_rows).to_csv(manifest_path, index=False)
+    splits: dict[str, dict[str, t.Any]] = {}
+    for split_key, rows in manifest_rows_by_split.items():
+        split_dir = split_dirs[split_key]
+        manifest_rel = Path("manifests") / f"{split_dir}.csv"
+        pd.DataFrame(rows).to_csv(output_dir / manifest_rel, index=False)
+        split_channel_dir = channels_root / split_dir
+        for channel in channel_names:
+            scp_path = split_channel_dir / f"{channel}.scp"
+            lines = scp_path.read_text().splitlines()
+            lines.sort(key=lambda line: line.split(maxsplit=1)[0])
+            scp_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+        splits[split_key] = {
+            "manifest": manifest_rel.as_posix(),
+            "channels": {
+                channel: {
+                    "input_dim": int(channel_input_dims[channel]),
+                    "scp": (Path("channels") / split_dir / f"{channel}.scp").as_posix(),
+                }
+                for channel in channel_names
+            },
+        }
+
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "backend": "kaldi_native_io",
         "token_sec": int(args.token_sec),
         "max_tokens": int(args.max_tokens),
         "stride_tokens": int(stride_tokens),
-        "channels": {
-            channel: {
-                "input_dim": int(channel_input_dims[channel]),
-                "scp": str((Path("channels") / f"{channel}.scp").as_posix()),
-            }
-            for channel in channel_names
-        },
         "source_index": [str(path) for path in index_paths],
+        "splits": splits,
     }
     manifest_json_path.write_text(json.dumps(manifest, indent=2) + "\n")
-    return manifest_path, manifest_json_path
+    return manifest_json_path
 
 
 def main(argv: t.Sequence[str] | None = None) -> None:
-    manifest_path, manifest_json_path = convert(parse_args(argv))
-    print(f"Wrote {manifest_path}")
+    manifest_json_path = convert(parse_args(argv))
     print(f"Wrote {manifest_json_path}")
 
 

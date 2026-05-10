@@ -66,7 +66,7 @@ Primary code path:
 ## Important Runtime Decisions
 
 - Pair-first missing-channel training is selected inside `DefaultDataset.dataloader`, not in the entrypoint.
-- Kaldi pretraining uses `manifest.csv`/`manifest.json`; legacy NPZ preset pickles are rejected for `data_backend="kaldi"`.
+- Kaldi pretraining uses `manifest.json` format v2; legacy NPZ preset pickles are rejected for `data_backend="kaldi"`.
 - Lightning distributed sampler injection is disabled when the batch sampler already shards by rank.
 - Validation pair metrics are aggregated inside one callback-aware loader, not by spawning one loader object per pair.
 - `sleep2expert` MoE regularization logs `*_moe_*` diagnostics but keeps `val_contrastive_acc` as the checkpoint monitor.

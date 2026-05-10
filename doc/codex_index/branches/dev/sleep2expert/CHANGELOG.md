@@ -2,6 +2,7 @@
 
 ## 2026-05-10
 
+- Updated Kaldi backend guidance for `manifest.json` format v2, split-specific CSV manifests, sorted split-specific scp files, and package-local `sleep2vec2` / `sleep2expert` mirrors.
 - Refreshed `sleep2vec2` index coverage for the package-local Kaldi backend port:
   - `sleep2vec2.data.kaldi_io`
   - `sleep2vec2.data.kaldi_psg_dataset`

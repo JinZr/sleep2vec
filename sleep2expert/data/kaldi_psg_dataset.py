@@ -66,8 +66,20 @@ class KaldiPSGDataset(DefaultDataset):
         split_list = [split] if isinstance(split, str) else list(split or [])
         meta_data_names = meta_data_names or []
         sources = sources or []
+        if len(split_list) != 1:
+            raise ValueError(f"KaldiPSGDataset expects exactly one split, got {split_list}.")
 
-        channel_specs = self._load_channel_specs(channel_input_dims)
+        manifest_data = self._load_manifest_json()
+        split_name = str(split_list[0])
+        raw_splits = manifest_data.get("splits")
+        if not isinstance(raw_splits, dict) or split_name not in raw_splits:
+            raise ValueError(f"Kaldi manifest.json is missing requested split {split_name!r}.")
+        split_spec = raw_splits[split_name]
+        if not isinstance(split_spec, dict):
+            raise ValueError(f"Kaldi manifest split spec for {split_name!r} must be a mapping.")
+        self.manifest = self.kaldi_data_root / split_spec["manifest"]
+
+        channel_specs = self._load_channel_specs(channel_input_dims, split_spec)
         self.reader_pool = KaldiReaderPool(self.kaldi_data_root, channel_specs)
 
         data = self._load_manifest_samples(split_list, max_tokens)
@@ -97,18 +109,22 @@ class KaldiPSGDataset(DefaultDataset):
             dataloader_config=dataloader_kwargs,
         )
 
+    def _load_manifest_json(self) -> dict[str, t.Any]:
+        if not self.manifest.exists():
+            raise FileNotFoundError(f"Kaldi manifest.json not found: {self.manifest}")
+        manifest_data = json.loads(self.manifest.read_text())
+        if manifest_data.get("format_version") != 2:
+            raise ValueError("Kaldi manifest.json must use format_version 2.")
+        return manifest_data
+
     def _load_channel_specs(
         self,
         channel_input_dims: t.Mapping[str, int],
+        split_spec: t.Mapping[str, t.Any],
     ) -> dict[str, KaldiChannelSpec]:
-        manifest_json_path = self.kaldi_data_root / "manifest.json"
-        if not manifest_json_path.exists():
-            raise FileNotFoundError(f"Kaldi manifest.json not found: {manifest_json_path}")
-
-        manifest_data = json.loads(manifest_json_path.read_text())
-        raw_channels = manifest_data.get("channels")
+        raw_channels = split_spec.get("channels")
         if not isinstance(raw_channels, dict):
-            raise ValueError("Kaldi manifest.json must contain a 'channels' mapping.")
+            raise ValueError("Kaldi manifest split spec must contain a 'channels' mapping.")
 
         provided_dims = _normalize_channel_input_dims(channel_input_dims)
         specs: dict[str, KaldiChannelSpec] = {}
@@ -139,13 +155,13 @@ class KaldiPSGDataset(DefaultDataset):
 
     def _load_manifest_samples(self, split: list[str], max_tokens: int) -> list[SampleIndex]:
         if not self.manifest.exists():
-            raise FileNotFoundError(f"Kaldi manifest.csv not found: {self.manifest}")
+            raise FileNotFoundError(f"Kaldi split manifest CSV not found: {self.manifest}")
 
         df = pd.read_csv(self.manifest, low_memory=False)
         required = {"sample_key", "path", "split", "token_start", "token_end", "available_channels"}
         missing = sorted(required - set(df.columns))
         if missing:
-            raise ValueError(f"Kaldi manifest.csv is missing required column(s): {missing}.")
+            raise ValueError(f"Kaldi split manifest CSV is missing required column(s): {missing}.")
         if split:
             df = df[df["split"].isin(split)].reset_index(drop=True)
 

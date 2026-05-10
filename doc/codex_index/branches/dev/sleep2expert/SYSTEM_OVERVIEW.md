@@ -118,7 +118,7 @@ The runtime assumes a batch dictionary with these keys:
 - Built-in sequence tasks are `stage3`, `stage4`, `stage5`, and `ahi` only.
 - `stage3` and `stage4` are runtime remaps over raw `stage5` tokens; their source labels still come from `stage5`.
 - Built-in `ahi` requires NPZ key `ah_event` plus scalar NPZ keys `ahi` and `tst`; evaluation also expects `stage5` tokens as an auxiliary label source.
-- Kaldi-backed data uses pre-windowed matrices from `manifest.csv`/`manifest.json`; legacy NPZ preset pickles are not accepted for `data.backend: kaldi`.
+- Kaldi-backed data uses pre-windowed matrices from `manifest.json` format v2 and split-specific CSV/scp files; legacy NPZ preset pickles are not accepted for `data.backend: kaldi`.
 - Built-in `age` and `sex` runs reject presets/indexes without valid labels after split/source filtering; stage/AHI-only presets may omit those metadata columns.
 - Non-sequence metadata classification remains binary-only.
 - Pair-first missing-channel pretraining requires `payload["available_channels"]` on every retained sample.

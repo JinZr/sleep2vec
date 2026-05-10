@@ -16,7 +16,7 @@ Prepare CSV splits, inspect channel-mask coverage, generate preset pickles or Ka
 ### CSV/NPZ To Kaldi Path
 
 1. `preprocess/convert_npz_to_kaldi.py`
-2. `manifest.csv` and `manifest.json` consumed by `KaldiPSGDataset`
+2. `manifest.json` consumed by `KaldiPSGDataset`, which selects `manifests/{split}.csv`
 
 ### WatchPAT Conversion Path
 
@@ -77,9 +77,9 @@ The preset schema is still implicitly a pickled `list[SampleIndex]`, but the bra
 
 - loads selected channels from YAML `model.channels` and optional built-in channels such as `stage5` and `ahi`
 - windows CSV-indexed NPZ recordings into per-sample matrices
-- writes one ark/scp pair per channel under `channels/`
-- writes `manifest.csv` with `sample_key`, token span, metadata, and `available_channels`
-- writes `manifest.json` with channel input dimensions and scp paths
+- writes one ark/scp pair per channel under `channels/{split}/`
+- writes `manifests/{split}.csv` with `sample_key`, token span, metadata, and `available_channels`
+- writes `manifest.json` format v2 with split-specific channel input dimensions and sorted scp paths
 
 Standalone recipes must use their package-local converter, such as `sleep2vec2.preprocess.convert_npz_to_kaldi` or `sleep2expert.preprocess.convert_npz_to_kaldi`, so extractor/tokenizer semantics match the runtime namespace.
 
