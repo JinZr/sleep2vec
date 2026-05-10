@@ -262,7 +262,7 @@ if __name__ == "__main__":
         "--kaldi-manifest",
         type=Path,
         default=None,
-        help="Kaldi manifest.csv path when --data-backend kaldi is used.",
+        help="Kaldi manifest.json path when --data-backend kaldi is used.",
     )
     parser.add_argument(
         "--allow-missing-channels",

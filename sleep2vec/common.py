@@ -370,7 +370,7 @@ def apply_data_backend_args(args, data_cfg, *, preset_attr: str | None = None) -
         )
 
     if preset_attr and getattr(args, preset_attr, None):
-        raise ValueError("Kaldi backend uses manifest.csv; legacy NPZ preset pickles are unsupported.")
+        raise ValueError("Kaldi backend uses manifest.json; legacy NPZ preset pickles are unsupported.")
 
 
 def _to_yamlable(obj: t.Any) -> t.Any:
