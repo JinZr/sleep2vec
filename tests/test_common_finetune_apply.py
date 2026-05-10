@@ -297,6 +297,9 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert args.max_tokens == 4
     assert args.finetune_data_index == Path("index/custom.csv")
     assert args.finetune_preset_path == Path("preset/custom.pkl")
+    assert args.data_backend == "npz"
+    assert args.kaldi_data_root is None
+    assert args.kaldi_manifest is None
     assert args.train_dataset_names == ["train_a"]
     assert args.test_dataset_names == ["test_a"]
     assert args.n_few_shot == 32
@@ -309,6 +312,54 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert args.is_classification is True
     assert args.is_seq is False
     assert config_bundle.finetune.task is not None
+
+
+def test_apply_finetune_config_populates_kaldi_backend(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["data"]["finetune_preset_path"] = None
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "kaldi_data_root": "kaldi/root",
+            "kaldi_manifest": "kaldi/root/manifest.csv",
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    apply_finetune_config(args)
+
+    assert args.data_backend == "kaldi"
+    assert args.kaldi_data_root == Path("kaldi/root")
+    assert args.kaldi_manifest == Path("kaldi/root/manifest.csv")
+    assert args.finetune_preset_path is None
+
+
+def test_apply_finetune_config_rejects_kaldi_missing_manifest(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["data"]["finetune_preset_path"] = None
+    payload["data"].update({"backend": "kaldi", "kaldi_data_root": "kaldi/root"})
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    with pytest.raises(ValueError, match="Kaldi backend requires explicit kaldi_data_root and kaldi_manifest"):
+        apply_finetune_config(args)
+
+
+def test_apply_finetune_config_rejects_kaldi_preset_path(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "kaldi_data_root": "kaldi/root",
+            "kaldi_manifest": "kaldi/root/manifest.csv",
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    with pytest.raises(ValueError, match="legacy NPZ preset pickles are unsupported"):
+        apply_finetune_config(args)
 
 
 def test_apply_finetune_config_populates_eval_visualizations(tmp_path: Path):

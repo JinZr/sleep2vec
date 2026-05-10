@@ -39,6 +39,7 @@ def _load_adapt_module() -> ModuleType:
     stubbed_modules["pytorch_lightning.strategies"].DeepSpeedStrategy = object
     stubbed_modules["data.samplers"].handles_distributed_sharding = lambda _sampler: False
     stubbed_modules["sleep2vec.callbacks.pair_acc_logger"].PairAccLoggerCallback = object
+    stubbed_modules["sleep2vec.common"].apply_data_backend_args = lambda *args, **kwargs: None
     stubbed_modules["sleep2vec.common"].apply_model_config_args = lambda *args, **kwargs: None
     stubbed_modules["sleep2vec.common"].persist_run_config_and_args = lambda *args, **kwargs: None
     stubbed_modules["sleep2vec.config"].load_pretrain_config = lambda *_args, **_kwargs: None
@@ -76,6 +77,54 @@ def _load_adapt_module() -> ModuleType:
 @pytest.fixture(scope="module")
 def adapt_module() -> ModuleType:
     return _load_adapt_module()
+
+
+def test_optional_path_accepts_null_for_kaldi_backend(adapt_module: ModuleType):
+    assert adapt_module._optional_path("null") is None
+    assert adapt_module._optional_path("none") is None
+    assert adapt_module._optional_path("preset.pkl") == Path("preset.pkl")
+
+
+def test_sleep2vec_adapt_applies_data_backend_args_before_loader(adapt_module: ModuleType, monkeypatch):
+    sentinel = RuntimeError("backend helper called")
+    data_cfg = types.SimpleNamespace(
+        backend="kaldi",
+        kaldi_data_root="kaldi/root",
+        kaldi_manifest="kaldi/root/manifest.csv",
+        mask_rate=0.15,
+        max_tokens=120,
+    )
+    config_bundle = types.SimpleNamespace(
+        data=data_cfg,
+        model=object(),
+        loss=object(),
+        averaging=None,
+        adapt=types.SimpleNamespace(new_channels=["ppg"]),
+    )
+
+    def _apply_data_backend_args(args, received_data_cfg, *, preset_attr=None):
+        assert received_data_cfg is data_cfg
+        assert preset_attr == "pretrain_preset_path"
+        raise sentinel
+
+    monkeypatch.setattr(adapt_module, "load_pretrain_config", lambda _path: config_bundle)
+    monkeypatch.setattr(adapt_module, "apply_data_backend_args", _apply_data_backend_args)
+    monkeypatch.setattr(
+        adapt_module,
+        "get_pretrain_dataloader",
+        lambda _args: (_ for _ in ()).throw(AssertionError("loader should not be reached")),
+    )
+
+    args = argparse.Namespace(
+        config=Path("adapt.yaml"),
+        phase="stage1",
+        channel_names=["ppg"],
+        pretrain_preset_path=Path("preset.pkl"),
+    )
+
+    with pytest.raises(RuntimeError, match="backend helper called") as exc_info:
+        adapt_module.sleep2vec_adapt(args)
+    assert exc_info.value is sentinel
 
 
 def _write_cli_args(path: Path, *, phase: str) -> None:
