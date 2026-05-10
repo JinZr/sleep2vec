@@ -253,7 +253,8 @@ def _record_key_from_row(row: pd.Series, original_path: str) -> str:
     session_id = row.get("session_id", None)
     if session_id is not None and not pd.isna(session_id) and str(session_id):
         return _sanitize_key_part(session_id)
-    return _sanitize_key_part(Path(original_path).stem)
+    path = Path(original_path)
+    return _sanitize_key_part(f"{path.parent.name}_{path.stem}")
 
 
 def _sample_key(*, source_value: t.Any, record_key: str, start: int, end: int) -> str:

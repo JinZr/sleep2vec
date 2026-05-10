@@ -718,6 +718,60 @@ def test_converter_rejects_duplicate_sample_keys(tmp_path: Path):
         )
 
 
+def test_converter_uses_parent_directory_when_path_stems_repeat(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    sub_a = tmp_path / "sub-a"
+    sub_b = tmp_path / "sub-b"
+    sub_a.mkdir()
+    sub_b.mkdir()
+    npz_a = sub_a / "ses-1.npz"
+    npz_b = sub_b / "ses-1.npz"
+    np.savez(npz_a, eeg=np.arange(8, dtype=np.float32))
+    np.savez(npz_b, eeg=np.arange(8, 16, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_a),
+                "dataset": "hsp",
+                "split": "train",
+                "duration": 60,
+                "eeg_mask": 1,
+            },
+            {
+                "path": str(npz_b),
+                "dataset": "hsp",
+                "split": "train",
+                "duration": 60,
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    assert manifest["sample_key"].tolist() == [
+        "hsp_sub-a_ses-1_000000_000002",
+        "hsp_sub-b_ses-1_000000_000002",
+    ]
+
+
 def test_converter_rejects_rank3_tokenized_channel(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4})
     npz_path = tmp_path / "sample.npz"
