@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import json
 import os
@@ -48,6 +49,12 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         default=1,
         help="Number of ark shards to write per split/channel. Default preserves one ark per split/channel.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=4,
+        help="Number of record conversion worker threads.",
     )
     parser.add_argument("--max-tokens", type=int, required=True, help="Maximum tokens per output sample.")
     parser.add_argument(
@@ -280,6 +287,112 @@ def _should_keep_sample(
     return len(available_channels) == len(requested_channels)
 
 
+def _convert_record(
+    row: pd.Series,
+    *,
+    args: argparse.Namespace,
+    channel_names: t.Sequence[str],
+    extractors: t.Mapping[str, t.Callable],
+    tokenizers: t.Mapping[str, t.Callable],
+    prefix_maps: t.Sequence[tuple[str, str]],
+    stride_tokens: int,
+    effective_min_channels: int,
+) -> list[dict[str, t.Any]]:
+    source_value = row[args.source_field]
+    if pd.isna(source_value) or str(source_value) == "":
+        raise ValueError(f"CSV source field {args.source_field!r} has an empty value.")
+
+    original_path = str(row["path"])
+    npz_path = _resolve_npz_path(original_path, prefix_maps)
+    duration = int(row["duration"])
+    num_record_tokens = duration // int(args.token_sec)
+    if num_record_tokens <= 0:
+        return []
+
+    record_key = _record_key_from_row(row, original_path)
+    mask_status = _row_mask_status(row, channel_names)
+    samples: list[dict[str, t.Any]] = []
+
+    with load_npz(str(npz_path)) as npz:
+        for left, right in window(num_record_tokens, args.max_tokens, stride_tokens):
+            start = int(left)
+            end = int(right)
+            sample_key = _sample_key(
+                source_value=source_value,
+                record_key=record_key,
+                start=start,
+                end=end,
+            )
+
+            matrices: dict[str, np.ndarray] = {}
+            scalar_metadata: dict[str, float] = {}
+            for channel in channel_names:
+                matrix, channel_metadata = _try_extract_channel(
+                    npz=npz,
+                    channel=channel,
+                    extractor=extractors[channel],
+                    tokenizer=tokenizers[channel],
+                    mask_present=mask_status[channel],
+                    start=start,
+                    end=end,
+                    sample_key=sample_key,
+                )
+                if matrix is None:
+                    continue
+                matrices[channel] = matrix
+                scalar_metadata.update(channel_metadata)
+
+            available_channels = [channel for channel in channel_names if channel in matrices]
+            if not _should_keep_sample(
+                available_channels,
+                channel_names,
+                allow_missing_channels=args.allow_missing_channels,
+                min_channels=effective_min_channels,
+            ):
+                continue
+
+            lengths = [matrix.shape[0] for matrix in matrices.values()]
+            min_len = min(lengths)
+            max_len = max(lengths)
+            if max_len - min_len > 1:
+                raise ValueError(
+                    f"Sample {sample_key!r} has channel token lengths differing by more than one: "
+                    f"{dict((channel, matrix.shape[0]) for channel, matrix in matrices.items())}."
+                )
+            if min_len < 1:
+                continue
+            matrices = {channel: matrix[:min_len] for channel, matrix in matrices.items()}
+            actual_end = start + min_len
+
+            manifest_row = dict(row.to_dict())
+            source = manifest_row.get("source")
+            if source is None or pd.isna(source) or str(source).strip() == "":
+                manifest_row["source"] = source_value
+            manifest_row.update(
+                {
+                    "sample_key": sample_key,
+                    "record_key": record_key,
+                    "sample_source": source_value,
+                    "path": original_path,
+                    "token_start": start,
+                    "token_end": actual_end,
+                    "num_tokens": min_len,
+                    "available_channels": json.dumps(available_channels),
+                }
+            )
+            manifest_row.update(scalar_metadata)
+            samples.append(
+                {
+                    "sample_key": sample_key,
+                    "split": row["split"],
+                    "matrices": matrices,
+                    "manifest_row": manifest_row,
+                }
+            )
+
+    return samples
+
+
 def convert(args: argparse.Namespace) -> Path:
     if args.max_tokens < 1:
         raise ValueError("--max-tokens must be >= 1.")
@@ -292,6 +405,8 @@ def convert(args: argparse.Namespace) -> Path:
         raise ValueError("--min-channels must be >= 1.")
     if args.ark_shards < 1:
         raise ValueError("--ark-shards must be >= 1.")
+    if args.num_workers < 1:
+        raise ValueError("--num-workers must be >= 1.")
 
     args.config = args.config.expanduser()
     if not args.config.exists():
@@ -364,100 +479,39 @@ def convert(args: argparse.Namespace) -> Path:
                         )
             return split_key
 
-        for _, row in tqdm(df.iterrows(), total=len(df), desc="Converting records", unit="record"):
-            source_value = row[args.source_field]
-            if pd.isna(source_value) or str(source_value) == "":
-                raise ValueError(f"CSV source field {args.source_field!r} has an empty value.")
+        def convert_row(row: pd.Series) -> list[dict[str, t.Any]]:
+            return _convert_record(
+                row,
+                args=args,
+                channel_names=channel_names,
+                extractors=extractors,
+                tokenizers=tokenizers,
+                prefix_maps=prefix_maps,
+                stride_tokens=stride_tokens,
+                effective_min_channels=effective_min_channels,
+            )
 
-            original_path = str(row["path"])
-            npz_path = _resolve_npz_path(original_path, prefix_maps)
-            duration = int(row["duration"])
-            num_record_tokens = duration // int(args.token_sec)
-            if num_record_tokens <= 0:
-                continue
+        rows = (row for _, row in df.iterrows())
+        if args.num_workers == 1:
+            converted_records = map(convert_row, rows)
+        else:
+            executor = stack.enter_context(ThreadPoolExecutor(max_workers=args.num_workers))
+            converted_records = executor.map(convert_row, rows)
 
-            record_key = _record_key_from_row(row, original_path)
-            mask_status = _row_mask_status(row, channel_names)
+        for samples in tqdm(converted_records, total=len(df), desc="Converting records", unit="record"):
+            for sample in samples:
+                sample_key = sample["sample_key"]
+                if sample_key in seen_sample_keys:
+                    raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
 
-            with load_npz(str(npz_path)) as npz:
-                for left, right in window(num_record_tokens, args.max_tokens, stride_tokens):
-                    start = int(left)
-                    end = int(right)
-                    sample_key = _sample_key(
-                        source_value=source_value,
-                        record_key=record_key,
-                        start=start,
-                        end=end,
-                    )
-                    if sample_key in seen_sample_keys:
-                        raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
-
-                    matrices: dict[str, np.ndarray] = {}
-                    scalar_metadata: dict[str, float] = {}
-                    for channel in channel_names:
-                        matrix, channel_metadata = _try_extract_channel(
-                            npz=npz,
-                            channel=channel,
-                            extractor=extractors[channel],
-                            tokenizer=tokenizers[channel],
-                            mask_present=mask_status[channel],
-                            start=start,
-                            end=end,
-                            sample_key=sample_key,
-                        )
-                        if matrix is None:
-                            continue
-                        matrices[channel] = matrix
-                        scalar_metadata.update(channel_metadata)
-
-                    available_channels = [channel for channel in channel_names if channel in matrices]
-                    if not _should_keep_sample(
-                        available_channels,
-                        channel_names,
-                        allow_missing_channels=args.allow_missing_channels,
-                        min_channels=effective_min_channels,
-                    ):
-                        continue
-
-                    lengths = [matrix.shape[0] for matrix in matrices.values()]
-                    min_len = min(lengths)
-                    max_len = max(lengths)
-                    if max_len - min_len > 1:
-                        raise ValueError(
-                            f"Sample {sample_key!r} has channel token lengths differing by more than one: "
-                            f"{dict((channel, matrix.shape[0]) for channel, matrix in matrices.items())}."
-                        )
-                    if min_len < 1:
-                        continue
-                    matrices = {channel: matrix[:min_len] for channel, matrix in matrices.items()}
-                    actual_end = start + min_len
-
-                    seen_sample_keys.add(sample_key)
-                    split_key = ensure_split_writers(row["split"])
-                    split_sample_count = split_sample_counts.get(split_key, 0)
-                    shard_index = split_sample_count % args.ark_shards
-                    split_sample_counts[split_key] = split_sample_count + 1
-                    for channel, matrix in matrices.items():
-                        writers[(split_key, channel, shard_index)].write(sample_key, matrix)
-
-                    manifest_row = dict(row.to_dict())
-                    source = manifest_row.get("source")
-                    if source is None or pd.isna(source) or str(source).strip() == "":
-                        manifest_row["source"] = source_value
-                    manifest_row.update(
-                        {
-                            "sample_key": sample_key,
-                            "record_key": record_key,
-                            "sample_source": source_value,
-                            "path": original_path,
-                            "token_start": start,
-                            "token_end": actual_end,
-                            "num_tokens": min_len,
-                            "available_channels": json.dumps(available_channels),
-                        }
-                    )
-                    manifest_row.update(scalar_metadata)
-                    manifest_rows_by_split.setdefault(split_key, []).append(manifest_row)
+                seen_sample_keys.add(sample_key)
+                split_key = ensure_split_writers(sample["split"])
+                split_sample_count = split_sample_counts.get(split_key, 0)
+                shard_index = split_sample_count % args.ark_shards
+                split_sample_counts[split_key] = split_sample_count + 1
+                for channel, matrix in sample["matrices"].items():
+                    writers[(split_key, channel, shard_index)].write(sample_key, matrix)
+                manifest_rows_by_split.setdefault(split_key, []).append(sample["manifest_row"])
 
     if not manifest_rows_by_split:
         raise ValueError("No samples satisfied the requested channel availability rules.")

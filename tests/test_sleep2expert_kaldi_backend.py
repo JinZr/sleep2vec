@@ -934,6 +934,8 @@ def test_sleep2expert_converter_writes_split_specific_manifests_and_sorted_scps(
                 str(output_dir),
                 "--max-tokens",
                 "2",
+                "--num-workers",
+                "2",
                 "--channels-from-config",
             ]
         )

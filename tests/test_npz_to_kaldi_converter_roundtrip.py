@@ -35,6 +35,45 @@ def _read_matrix(scp_path: Path, key: str) -> np.ndarray:
         return np.asarray(reader[key], dtype=np.float32)
 
 
+def test_parse_args_defaults_num_workers_to_four(tmp_path: Path):
+    args = parse_args(
+        [
+            "--index",
+            str(tmp_path / "index.csv"),
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--output-dir",
+            str(tmp_path / "kaldi"),
+            "--max-tokens",
+            "2",
+            "--channels-from-config",
+        ]
+    )
+
+    assert args.num_workers == 4
+
+
+def test_converter_rejects_num_workers_less_than_one(tmp_path: Path):
+    args = parse_args(
+        [
+            "--index",
+            str(tmp_path / "index.csv"),
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--output-dir",
+            str(tmp_path / "kaldi"),
+            "--max-tokens",
+            "2",
+            "--channels-from-config",
+            "--num-workers",
+            "0",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="--num-workers must be >= 1"):
+        convert(args)
+
+
 def test_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4, "ppg": 8})
     actual_root = tmp_path / "actual"
@@ -187,6 +226,8 @@ def test_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Pat
                 "--output-dir",
                 str(output_dir),
                 "--max-tokens",
+                "2",
+                "--num-workers",
                 "2",
                 "--channels-from-config",
             ]

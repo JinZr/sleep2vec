@@ -79,6 +79,7 @@ The preset schema is still implicitly a pickled `list[SampleIndex]`, but the bra
 - windows CSV-indexed NPZ recordings into per-sample matrices
 - writes one ark/scp pair per channel under `channels/{split}/`
 - optionally writes multiple ark shards per split/channel with `--ark-shards`, while keeping one aggregate `{channel}.scp` in `manifest.json`
+- can parallelize record conversion with `--num-workers`, while writing Kaldi ark/scp files on the main thread in CSV order
 - writes `manifests/{split}.csv` with `sample_key`, token span, metadata, and `available_channels`
 - writes `manifest.json` format v2 with split-specific channel input dimensions and sorted scp paths
 
