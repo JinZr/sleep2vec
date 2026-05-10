@@ -33,6 +33,7 @@ Primary code path:
    - Aliases `best` and `last` are allowed.
 2. Bind finetune YAML into `args`.
    - Optional `--inference-preset-path` overrides YAML `data.finetune_preset_path` for this evaluation run.
+   - For Kaldi backends, `--inference-preset-path` is rejected because the manifest replaces legacy NPZ presets.
 3. Build a single evaluation loader.
    - `eval_split` selects `train`, `val`, or `test`.
    - `override_dataset_names` can replace configured dataset lists.
@@ -65,7 +66,7 @@ Primary code path:
 - Inference can initialize W&B separately from training and only on rank zero.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
 - AHI inference requires `ahi_eval_threshold` to be present in the checkpoint state.
-- Base and standalone variant inference CLIs share the same `--inference-preset-path` behavior.
+- Base and standalone variant inference CLIs share the same `--inference-preset-path` behavior for NPZ, and reject it for Kaldi.
 - `sleep2expert.routing_analysis` is evaluation-adjacent but intentionally bypasses Lightning metric reduction; it reuses the package-local inference loader and downstream eval model only to collect `backbone.last_moe_aux` into a fixed CSV schema.
 - Routing export accepts both `--split` and `--eval-split` for the same `eval_split` runtime field.
 
@@ -73,5 +74,6 @@ Primary code path:
 
 - Change checkpoint averaging semantics: `sleep2vec/checkpoints.py`
 - Change eval loader or dataset override behavior: `sleep2vec/infer.py`, `sleep2vec/utils.py`
+- Change Kaldi inference behavior: `sleep2vec/common.py`, `sleep2vec/infer.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`
 - Change inference-only logging/W&B behavior: `sleep2vec/infer.py`
 - Change `sleep2expert` MoE route CSV fields or aggregation: `sleep2expert/routing_analysis.py`

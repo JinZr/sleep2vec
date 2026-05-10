@@ -11,6 +11,7 @@ This page answers the practical question: when you need to add or change behavio
 | Config-only model loading | `sleep2vec.config.load_model_config` | Smallest schema-only loader when callers need channel/backbone structure without a full runtime bundle | Ad hoc YAML slicing |
 | Task semantics | `sleep2vec.common.apply_task_flags` plus `get_task_label_source_name`, `get_task_auxiliary_label_source_names`, and `remap_stage_labels` | Single source for built-in `stage3`/`stage4`/`stage5`/`ahi`/`sex`/`age` semantics | Duplicated task/type/monitor/remap logic |
 | Finetune CLI normalization | `sleep2vec.common.apply_finetune_config` | Binds YAML into `args`, enforces channel parity, and derives task flags | Re-copying YAML fields in `finetune.py` or `infer.py` |
+| Data backend normalization | `sleep2vec.common.apply_data_backend_args` and package-local variant mirrors | Resolves `npz` vs `kaldi`, normalizes Kaldi paths, and rejects NPZ presets for Kaldi flows | Backend checks scattered across datasets or trainers |
 | Run artifact persistence | `sleep2vec.common.persist_run_config_and_args` | Single helper for root-level and phase-scoped config / CLI snapshots | Entry-point-local file copying |
 | Registry-backed construction | `sleep2vec.builders.*`, `sleep2vec.registry.*` | All config-backed model assembly flows through here | Direct instantiation scattered across callers |
 | Tokenizer instantiation | `sleep2vec.modules.tokenizers.build_tokenizer_from_channel` and `build_tokenizer_mapping` | Guarantees channel config is respected | Manual tokenizer maps |
@@ -26,6 +27,7 @@ This page answers the practical question: when you need to add or change behavio
 | Sample validation | `data.utils.filter_valid_sample_indices` | Produces `payload["available_channels"]`, validates built-in AHI samples, and drops broken samples early | Custom preset-building loops |
 | Built-in AHI metadata loading | `data.utils.load_builtin_ahi_metadata` | Single contract for `ah_event`, scalar `ahi`, and scalar `tst` | Custom scalar parsing in dataset or metrics code |
 | Runtime batch assembly | `DefaultDataset.dataloader` | Single source for collate-time NPZ reads, tokenization, metadata packing, `token_start`, `w/h`, and sampler choice | New collate functions outside `data/default_dataset.py` |
+| Kaldi data loading | `data.kaldi_psg_dataset.KaldiPSGDataset` and package-local variant mirrors | Reuses `DefaultDataset` batch semantics while sourcing tokens from `manifest.csv`/`manifest.json` and `kaldi_native_io` readers | Opening ark/scp readers in trainers or using top-level `data` from standalone variants |
 | Missing-channel training batches | `PairFirstBatchSampler` | Canonical train-time sampler for pair-first missing-channel pretraining/adaptation | Ad hoc pair scheduling loops |
 | Missing-channel homogeneous eval/train fallback | `AvailableChannelsBucketBatchSampler` | Canonical bucketed sampler when pair-first is not active | New bucket logic in entrypoints |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
@@ -40,6 +42,7 @@ This page answers the practical question: when you need to add or change behavio
 | Split generation | `preprocess/split_index_by_dataset.py` | Canonical dataset-group split policy, mask normalization, and optional global pair-coverage checks | Manual split assignment notebooks |
 | Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness; selects package-local loaders for `configs/sleep2expert/**` and `configs/sleep2vec2/**` | One-off shell loops or YAML linters without repo semantics |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
+| NPZ-to-Kaldi conversion | `preprocess.convert_npz_to_kaldi.convert` and package-local variant mirrors | Converts CSV-indexed NPZ windows into channel-separated ark/scp plus manifests with matching extractor/tokenizer semantics | One-off Kaldi writers or cross-namespace converter imports |
 | standalone recipe variants | `sleep2vec2/` plus `configs/sleep2vec2/`; `sleep2expert/` plus `configs/sleep2expert/` | Mirror the base recipe while keeping config/data/preprocess imports package-local and replacing RoFormer with the copied standalone implementation | Falling back to top-level `data`, top-level `preprocess`, another variant namespace, or base `sleep2vec.backbones.encoder_factory` |
 
 ## Reuse Rules By Change Type
@@ -62,6 +65,7 @@ This page answers the practical question: when you need to add or change behavio
 - Reuse `filter_valid_sample_indices` for preset validation and `DefaultDataset.dataloader` for collate-time semantics.
 - Reuse `PairFirstBatchSampler` or `AvailableChannelsBucketBatchSampler` instead of adding new sampler logic in `sleep2vec/utils.py`.
 - Preserve `payload["available_channels"]` if missing-channel support is involved.
+- For Kaldi storage, reuse `KaldiPSGDataset` and the `DefaultDataset` hook methods instead of adding a second collate implementation.
 
 ### If you are changing AHI behavior
 
@@ -86,6 +90,7 @@ This page answers the practical question: when you need to add or change behavio
   - `utils/check_configs.py`
 - For `configs/sleep2expert/**` and `configs/sleep2vec2/**`, keep config validation package-local through `utils/check_configs.py` instead of importing the base `sleep2vec` loader directly.
 - Only touch `watchpat_zzp_to_edf.py` for WatchPAT-specific conversion work.
+- For Kaldi roots, use the package-local `convert_npz_to_kaldi.py` matching the recipe namespace.
 
 ### If you are changing sleep2vec2 or sleep2expert
 
@@ -93,6 +98,7 @@ This page answers the practical question: when you need to add or change behavio
 - Keep copied recipes under `configs/<variant>/`.
 - Keep the `roformer` backbone registration in `<variant>.backbones.encoder_factory` pointed at `<variant>.backbones.roformer.RoFormerEncoderModel`.
 - Keep LoRA disabled for standalone variants until RoFormer PEFT compatibility is explicitly implemented and tested.
+- Keep Kaldi backend imports package-local in standalone variants; for `sleep2expert`, use `sleep2expert.data.kaldi_*` and `sleep2expert.preprocess.convert_npz_to_kaldi`.
 - Do not add HF checkpoint key translation unless checkpoint compatibility becomes an explicit requirement.
 
 ## Major Duplication Risks

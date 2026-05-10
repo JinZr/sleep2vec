@@ -4,10 +4,10 @@
 
 - File: `sleep2vec/pretrain.py`
 - Signature: `sleep2vec_pretrain(args) -> None`
-- Purpose and contract: canonical pretrain entrypoint after argument parsing; binds YAML into runtime args, builds loaders, configures callbacks, persists run artifacts, and launches `trainer.fit`.
+- Purpose and contract: canonical pretrain entrypoint after argument parsing; binds YAML into runtime args, resolves NPZ/Kaldi backend settings, builds loaders, configures callbacks, persists run artifacts, and launches `trainer.fit`.
 - Important inputs/outputs: CLI namespace in; no direct return value.
 - Side effects: creates experiment directories, copies config, writes `cli_args.yaml`, initializes W&B, runs training.
-- Key callers/callees: called from `__main__`; calls `load_pretrain_config`, `apply_model_config_args`, `get_pretrain_dataloader`, `Sleep2vecPretraining`, and `persist_run_config_and_args`-adjacent helpers.
+- Key callers/callees: called from `__main__`; calls `load_pretrain_config`, `apply_model_config_args`, `apply_data_backend_args`, `get_pretrain_dataloader`, `Sleep2vecPretraining`, and `persist_run_config_and_args`-adjacent helpers.
 - Reuse guidance: reuse this flow for any new pretrain CLI behavior rather than adding separate orchestration scripts.
 - Duplication risk notes: pretrain remains the canonical non-adaptation contrastive runtime path.
 
@@ -26,10 +26,10 @@
 
 - File: `sleep2vec/adapt.py`
 - Signature: `sleep2vec_adapt(args) -> None`
-- Purpose and contract: canonical staged adaptation entrypoint; loads config, derives initial pair probabilities, builds loaders, resolves run artifacts, persists snapshots, configures callbacks, and launches training.
+- Purpose and contract: canonical staged adaptation entrypoint; loads config, resolves NPZ/Kaldi backend settings, derives initial pair probabilities, builds loaders, resolves run artifacts, persists snapshots, configures callbacks, and launches training.
 - Important inputs/outputs: CLI namespace in; no direct return value.
 - Side effects: creates or reuses run directories, writes root and phase-scoped snapshots, initializes W&B, runs training.
-- Key callers/callees: called from `__main__`; calls `load_pretrain_config`, `apply_model_config_args`, `initial_pair_probs_for_phase`, `get_pretrain_dataloader`, `_resolve_adapt_run_artifacts`, and `Sleep2vecAdaptation`.
+- Key callers/callees: called from `__main__`; calls `load_pretrain_config`, `apply_model_config_args`, `apply_data_backend_args`, `initial_pair_probs_for_phase`, `get_pretrain_dataloader`, `_resolve_adapt_run_artifacts`, and `Sleep2vecAdaptation`.
 - Reuse guidance: extend this routine instead of creating separate adaptation orchestration scripts.
 - Duplication risk notes: stage1 vs stage2 semantics, callback selection, and artifact layout are centralized here.
 
@@ -92,7 +92,7 @@
 
 - File: `sleep2vec/infer.py`
 - Signature: `run_inference(args) -> None`
-- Purpose and contract: canonical inference driver; normalizes config, builds trainer and loader, optionally averages checkpoints, runs evaluation, and writes metrics.
+- Purpose and contract: canonical inference driver; normalizes config, rejects legacy `--inference-preset-path` overrides for Kaldi backends, builds trainer and loader, optionally averages checkpoints, runs evaluation, and writes metrics.
 - Important inputs/outputs: namespace in; no direct return value.
 - Side effects: optional W&B run, trainer evaluation, optional results CSV output.
 - Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, `_init_wandb`, and `save_result_csv`.

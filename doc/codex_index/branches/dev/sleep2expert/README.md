@@ -5,9 +5,9 @@ This directory is the branch-scoped engineering manual for `dev/sleep2expert`. U
 ## Branch Scope
 
 - Branch: `dev/sleep2expert`
-- Last full refresh commit: `21bbd67bc7b69dce4b119141cd201779688f016c`
-- Last full refresh at: `2026-05-01T05:06:42Z`
-- Mode: `initialize-branch`
+- Last full refresh commit: `336dcec83e8ddac4774f798ff9196d56b995e496`
+- Last full refresh at: `2026-05-10T07:17:09Z`
+- Mode: `refresh`
 
 ## Purpose
 
@@ -34,14 +34,14 @@ For small, localized fixes or routine updates, it is enough to read this page pl
 
 Tracked files indexed from this branch:
 
-- `sleep2vec/`: 78 tracked files
-- `data/`: 6 tracked files
-- `preprocess/`: 6 tracked files
-- `configs/`: 96 indexed files, including `configs/sleep2vec2/` and `configs/sleep2expert/`
-- `tests/`: 28 indexed files
+- `sleep2vec/`: 80 tracked files
+- `data/`: 8 tracked files
+- `preprocess/`: 7 tracked files
+- `configs/`: 100 indexed files, including `configs/sleep2vec2/` and `configs/sleep2expert/`
+- `tests/`: 44 indexed files
 - `utils/`: 2 tracked files
-- `sleep2vec2/`: 97 indexed files, including 87 Python source files and 9 visualization font assets
-- `sleep2expert/`: 97 indexed files, including 87 Python source files and 9 visualization font assets
+- `sleep2vec2/`: 99 indexed files, including package-local Kaldi backend files where present
+- `sleep2expert/`: 106 indexed files, including package-local Kaldi backend files
 
 Branch-state coverage only:
 
@@ -51,7 +51,7 @@ Branch-state coverage only:
 ## Coverage Boundaries
 
 - Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result writing, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, preprocessing CLIs, downstream evaluation visualizations, and the tests that pin those contracts.
-- `sleep2vec2/` and `sleep2expert/` are active standalone mirrors of the base recipe, summarized in the variant-surface catalog. Their key branch deltas are package-local `data/`, `preprocess/`, copied YAMLs under `configs/<variant>/`, copied visualization font assets, and standalone RoFormer backbones under `<variant>/backbones/roformer/`.
+- `sleep2vec2/` and `sleep2expert/` are active standalone mirrors of the base recipe, summarized in the variant-surface catalog. Their key branch deltas are package-local `data/`, `preprocess/`, copied YAMLs under `configs/<variant>/`, copied visualization font assets, standalone RoFormer backbones under `<variant>/backbones/roformer/`, and package-local Kaldi backend surfaces where present.
 - Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb` and tracked visualization font binaries under `sleep2vec/visualization/assets/fonts/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
 - `AGENTS.md` is referenced for ownership context but is not reproduced here as an editable source of truth.

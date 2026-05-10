@@ -1,19 +1,19 @@
 {
   "branch": "dev/sleep2expert",
-  "commit": "0a4e80ab23c81544e90c3ddb9ea734a66c67cc42",
-  "generated_at": "2026-05-06T02:21:44Z",
-  "mode": "initialize-branch",
+  "commit": "336dcec83e8ddac4774f798ff9196d56b995e496",
+  "generated_at": "2026-05-10T07:17:09Z",
+  "mode": "refresh",
   "coverage": {
     "tracked_file_counts": {
-      "sleep2vec": 78,
-      "data": 6,
-      "preprocess": 6,
-      "sleep2vec2": 97,
-      "sleep2expert": 97,
+      "sleep2vec": 80,
+      "data": 8,
+      "preprocess": 7,
+      "sleep2vec2": 99,
+      "sleep2expert": 106,
       "sleep2vec_moe": 0,
       "sleep2vec_hires": 0,
-      "configs": 96,
-      "tests": 28,
+      "configs": 100,
+      "tests": 44,
       "utils": 2
     },
     "function_catalog_scope": [
@@ -26,7 +26,7 @@
       "preset generation, split assignment, mask normalization, and WatchPAT conversion CLIs",
       "downstream evaluation plots, pair-accuracy heatmaps, and diagnostics hooks",
       "sleep2vec2 standalone mirror with package-local data, preprocessing, visualization assets, configs, and RoFormer backbone",
-      "sleep2expert standalone mirror of sleep2vec2 with package-local data, preprocessing, visualization assets, configs, and RoFormer backbone"
+      "sleep2expert standalone mirror of sleep2vec2 with package-local data, preprocessing, visualization assets, configs, RoFormer backbone, and Kaldi backend mirrors"
     ],
     "workflow_scope": [
       "pretrain",

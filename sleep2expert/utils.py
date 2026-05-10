@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from sleep2expert.common import is_builtin_seq_task
+from sleep2expert.data.kaldi_psg_dataset import KaldiPSGDataset
 from sleep2expert.data.metadata import _encode_binary_label, safe_cast
 from sleep2expert.data.psg_pretrain_dataset import PSGPretrainDataset
 from sleep2expert.data.samplers import SequentialPairEvalBatchSampler
@@ -23,7 +24,18 @@ def move_to_device(data, device="cuda"):
     return data
 
 
+def _dataset_class_for_args(args):
+    data_backend = getattr(args, "data_backend", "npz")
+    if data_backend == "npz":
+        return PSGPretrainDataset
+    if data_backend == "kaldi":
+        return KaldiPSGDataset
+    raise ValueError(f"Unknown data backend: {data_backend!r}.")
+
+
 def get_pretrain_dataloader(args):
+    dataset_cls = _dataset_class_for_args(args)
+    data_backend = getattr(args, "data_backend", "npz")
     # set random seed
     seed = 12345
     random.seed(seed)
@@ -77,20 +89,34 @@ def get_pretrain_dataloader(args):
         "worker_init_fn": _seed_worker,
     }
     channel_input_dims = dict(getattr(args, "channel_input_dims", {}) or {})
-    base_dataset_kwargs = dict(
-        channel_names=args.channel_names,
-        channel_input_dims=channel_input_dims,
-        save_preset_path=None,
-        load_preset_path=args.pretrain_preset_path,
-        index=args.pretrain_data_index,
-        max_tokens=args.max_tokens,
-        stride_tokens=args.max_tokens,  # 0 for truncation
-        mask_rate=args.mask_rate,
-        generative=False,
-        allow_missing_channels=allow_missing_channels,
-        min_channels=min_channels,
-        bucket_by_available_channels=bucket_by_available_channels,
-    )
+    if data_backend == "npz":
+        base_dataset_kwargs = dict(
+            channel_names=args.channel_names,
+            channel_input_dims=channel_input_dims,
+            save_preset_path=None,
+            load_preset_path=args.pretrain_preset_path,
+            index=args.pretrain_data_index,
+            max_tokens=args.max_tokens,
+            stride_tokens=args.max_tokens,  # 0 for truncation
+            mask_rate=args.mask_rate,
+            generative=False,
+            allow_missing_channels=allow_missing_channels,
+            min_channels=min_channels,
+            bucket_by_available_channels=bucket_by_available_channels,
+        )
+    else:
+        base_dataset_kwargs = dict(
+            channel_names=args.channel_names,
+            channel_input_dims=channel_input_dims,
+            kaldi_data_root=args.kaldi_data_root,
+            manifest=args.kaldi_manifest,
+            max_tokens=args.max_tokens,
+            mask_rate=args.mask_rate,
+            generative=False,
+            allow_missing_channels=allow_missing_channels,
+            min_channels=min_channels,
+            bucket_by_available_channels=bucket_by_available_channels,
+        )
 
     def build_pretrain_dataset(
         *,
@@ -101,7 +127,7 @@ def get_pretrain_dataloader(args):
         train_pair_track_unique_samples_override=False,
         is_train_set,
     ):
-        return PSGPretrainDataset(
+        return dataset_cls(
             **base_dataset_kwargs,
             split=split,
             pair_selector=pair_selector,
@@ -157,6 +183,9 @@ def _build_finetune_loader(
     is_train_set,
     few_shot=None,
 ):
+    dataset_cls = _dataset_class_for_args(args)
+    data_backend = getattr(args, "data_backend", "npz")
+
     is_seq_task = is_builtin_seq_task(args.label_name)
     if args.label_name == "ahi":
         meta_data_names = ["ahi", "tst"]
@@ -183,12 +212,8 @@ def _build_finetune_loader(
     dataset_kwargs = dict(
         channel_names=dataset_channel_names,
         channel_input_dims=dataset_channel_input_dims,
-        save_preset_path=None,
-        load_preset_path=args.finetune_preset_path,
-        index=args.finetune_data_index,
         split=split,
         max_tokens=args.max_tokens,
-        stride_tokens=args.max_tokens,
         mask_rate=0.0,
         meta_data_names=meta_data_names,
         meta_data_regression_names=meta_data_regression_names,
@@ -201,11 +226,23 @@ def _build_finetune_loader(
         shuffle=shuffle,
         num_workers=args.num_workers,
     )
+    if data_backend == "npz":
+        dataset_kwargs.update(
+            save_preset_path=None,
+            load_preset_path=args.finetune_preset_path,
+            index=args.finetune_data_index,
+            stride_tokens=args.max_tokens,
+        )
+    else:
+        dataset_kwargs.update(
+            kaldi_data_root=args.kaldi_data_root,
+            manifest=args.kaldi_manifest,
+        )
 
     if few_shot is not None:
         dataset_kwargs["few_shot"] = few_shot
 
-    dataset = PSGPretrainDataset(**dataset_kwargs)
+    dataset = dataset_cls(**dataset_kwargs)
     if args.label_name in {"age", "sex"}:
         invalid = 0
         for sample in getattr(dataset, "data", []):

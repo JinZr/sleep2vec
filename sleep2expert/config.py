@@ -6,6 +6,14 @@ import typing as t
 
 import yaml
 
+DATA_BACKEND_CHOICES = ("npz", "kaldi")
+
+
+def _validate_data_backend(backend: str) -> str:
+    if backend not in DATA_BACKEND_CHOICES:
+        raise ValueError(f"data.backend must be one of {DATA_BACKEND_CHOICES}, got {backend!r}.")
+    return backend
+
 
 @dataclass
 class TokenizerConfig:
@@ -336,6 +344,9 @@ class FinetuneConfigBundle:
 
 @dataclass
 class FinetuneDataConfig:
+    backend: str = "npz"
+    kaldi_data_root: str | None = None
+    kaldi_manifest: str | None = None
     max_tokens: int = 120
     data_channel_names: t.List[str] | None = None
     finetune_data_index: str | None = None
@@ -343,6 +354,9 @@ class FinetuneDataConfig:
     train_dataset_names: t.List[str] | None = None
     test_dataset_names: t.List[str] | None = None
     n_few_shot: int = 1280
+
+    def __post_init__(self) -> None:
+        self.backend = _validate_data_backend(self.backend)
 
 
 @dataclass
@@ -404,8 +418,14 @@ class FinetuneConfig:
 
 @dataclass
 class PretrainDataConfig:
+    backend: str = "npz"
+    kaldi_data_root: str | None = None
+    kaldi_manifest: str | None = None
     mask_rate: float = 0.15
     max_tokens: int = 120
+
+    def __post_init__(self) -> None:
+        self.backend = _validate_data_backend(self.backend)
 
 
 def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
@@ -1119,6 +1139,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
 
 
 __all__ = [
+    "DATA_BACKEND_CHOICES",
     "FinetuneConfigBundle",
     "FinetuneConfig",
     "FinetuneLrScalesConfig",

@@ -13,11 +13,12 @@ Primary code path:
 1. `sleep2vec.pretrain.sleep2vec_pretrain`
 2. `sleep2vec.config.load_pretrain_config`
 3. `sleep2vec.common.apply_model_config_args`
-4. `sleep2vec.utils.get_pretrain_dataloader`
-5. `sleep2vec.sleep2vec_modelling.Sleep2vecPretraining`
-6. `sleep2vec.pretrain_model.Sleep2vecPretrainModel`
-7. `sleep2vec.losses.create_loss`
-8. Lightning `trainer.fit(...)`
+4. `sleep2vec.common.apply_data_backend_args`
+5. `sleep2vec.utils.get_pretrain_dataloader`
+6. `sleep2vec.sleep2vec_modelling.Sleep2vecPretraining`
+7. `sleep2vec.pretrain_model.Sleep2vecPretrainModel`
+8. `sleep2vec.losses.create_loss`
+9. Lightning `trainer.fit(...)`
 
 ## Detailed Flow
 
@@ -30,8 +31,9 @@ Primary code path:
    - `channel_names`
    - `channel_input_dims`
    - optionally `backbone_arch`
+   - `data_backend`, `kaldi_data_root`, and `kaldi_manifest` when Kaldi is selected
 3. Build train and validation loaders.
-   - Train loader is a single `PSGPretrainDataset`.
+   - Train loader is a single `PSGPretrainDataset` for NPZ or `KaldiPSGDataset` for Kaldi.
    - Validation is a single loader whose `SequentialPairEvalBatchSampler` iterates supported modality pairs.
    - Missing-channel mode changes worker counts, sampler choice, and batch sharding.
 4. Resolve experiment directory.
@@ -64,6 +66,7 @@ Primary code path:
 ## Important Runtime Decisions
 
 - Pair-first missing-channel training is selected inside `DefaultDataset.dataloader`, not in the entrypoint.
+- Kaldi pretraining uses `manifest.csv`/`manifest.json`; legacy NPZ preset pickles are rejected for `data_backend="kaldi"`.
 - Lightning distributed sampler injection is disabled when the batch sampler already shards by rank.
 - Validation pair metrics are aggregated inside one callback-aware loader, not by spawning one loader object per pair.
 - `sleep2expert` MoE regularization logs `*_moe_*` diagnostics but keeps `val_contrastive_acc` as the checkpoint monitor.
@@ -79,6 +82,7 @@ Primary code path:
 
 - Change YAML schema: `sleep2vec/config.py`
 - Change dataloader construction or missing-channel policy: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/samplers.py`
+- Change Kaldi backend selection or loading: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_io.py`, `data/kaldi_psg_dataset.py`
 - Change backbone forward contract: `sleep2vec/pretrain_model.py`
 - Change loss semantics: `sleep2vec/losses/`
 - Change `sleep2expert` MoE auxiliary loss semantics: `sleep2expert/losses/moe_regularization.py`

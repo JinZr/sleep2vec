@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-10
+
+- Refreshed `sleep2expert` index coverage for the package-local Kaldi backend port:
+  - `sleep2expert.data.kaldi_io`
+  - `sleep2expert.data.kaldi_psg_dataset`
+  - `sleep2expert.preprocess.convert_npz_to_kaldi`
+- Documented that `sleep2expert` resolves `data.backend: kaldi` through local config/runtime binding and local dataset/converter modules, not top-level `data/` or `preprocess/`.
+- Updated reuse guidance to keep Kaldi reader, dataset, and converter work inside the standalone recipe namespace.
+
 ## 2026-05-06
 
 - Tightened `sleep2expert` dense-to-MoE checkpoint initialization so missing or shape-incompatible expert/layer-norm tensors fail fast instead of entering fine-tune randomly initialized.

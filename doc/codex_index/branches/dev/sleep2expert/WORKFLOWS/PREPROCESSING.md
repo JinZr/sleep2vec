@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Prepare CSV splits, inspect channel-mask coverage, generate preset pickles, optionally merge presets, and convert WatchPAT `.zzp` archives when needed.
+Prepare CSV splits, inspect channel-mask coverage, generate preset pickles or Kaldi manifests, optionally merge presets, and convert WatchPAT `.zzp` archives when needed.
 
 ## Canonical Paths
 
@@ -12,6 +12,11 @@ Prepare CSV splits, inspect channel-mask coverage, generate preset pickles, opti
 2. optional `preprocess/mask_missing_stats.py`
 3. `preprocess/save_dataset_presets.py`
 4. optional `preprocess/merge_dataset_presets.py`
+
+### CSV/NPZ To Kaldi Path
+
+1. `preprocess/convert_npz_to_kaldi.py`
+2. `manifest.csv` and `manifest.json` consumed by `KaldiPSGDataset`
 
 ### WatchPAT Conversion Path
 
@@ -66,6 +71,18 @@ Stage/AHI-only test indexes need `path`, `split`, `duration`, task channels/mask
 
 The preset schema is still implicitly a pickled `list[SampleIndex]`, but the branch now treats `preset_build` as part of the contract for reproducible preset generation.
 
+## Kaldi Conversion
+
+`convert_npz_to_kaldi.py`:
+
+- loads selected channels from YAML `model.channels` and optional built-in channels such as `stage5` and `ahi`
+- windows CSV-indexed NPZ recordings into per-sample matrices
+- writes one ark/scp pair per channel under `channels/`
+- writes `manifest.csv` with `sample_key`, token span, metadata, and `available_channels`
+- writes `manifest.json` with channel input dimensions and scp paths
+
+Standalone recipes must use their package-local converter, such as `sleep2expert.preprocess.convert_npz_to_kaldi`, so extractor/tokenizer semantics match the runtime namespace.
+
 ## Preset Merge
 
 `merge_dataset_presets.py`:
@@ -109,6 +126,7 @@ Use this tool when config changes alter loader behavior, built-in task semantics
 
 - Change split policy: `preprocess/split_index_by_dataset.py`
 - Change preset schema or generation behavior: `preprocess/save_dataset_presets.py` plus `data/psg_pretrain_dataset.py`
+- Change Kaldi conversion behavior: `preprocess/convert_npz_to_kaldi.py` plus `data/kaldi_psg_dataset.py`
 - Change mask semantics: keep `split_index_by_dataset.py` and `mask_missing_stats.py` aligned
 - Change config-policy checks: `utils/check_configs.py`
 - Change WatchPAT conversion: `preprocess/watchpat_zzp_to_edf.py`

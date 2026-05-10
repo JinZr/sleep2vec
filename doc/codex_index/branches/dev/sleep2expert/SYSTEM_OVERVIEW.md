@@ -33,7 +33,7 @@ Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task,
 1. Parse CLI.
 2. Load YAML with `load_pretrain_config`.
 3. Copy model-derived channel metadata into `args`.
-4. Build one training loader plus one validation loader whose batch sampler iterates channel pairs through `get_pretrain_dataloader`.
+4. Resolve the data backend and build one training loader plus one validation loader whose batch sampler iterates channel pairs through `get_pretrain_dataloader`.
 5. Instantiate `Sleep2vecPretraining`, which owns a `Sleep2vecPretrainModel`, contrastive loss, diagnostics hooks, and optional model averager.
 6. Configure Lightning callbacks:
    - `ModelCheckpoint`
@@ -52,7 +52,7 @@ The monitored validation metric is `val_contrastive_acc`.
 1. Parse CLI, including `--phase stage1|stage2`.
 2. Load pretrain-style YAML and require a top-level `adapt` block.
 3. Derive initial pair probabilities from `adapt.new_channels` and `adapt.stage2.pair_schedule`.
-4. Build missing-channel-aware train/validation loaders with `get_pretrain_dataloader`.
+4. Resolve the data backend and build missing-channel-aware train/validation loaders with `get_pretrain_dataloader`.
 5. Resolve or validate the experiment directory and phase-specific checkpoint layout via `_resolve_adapt_run_artifacts`.
 6. Persist root-level and phase-specific `config*.yaml` / `cli_args*.yaml`.
 7. Instantiate `Sleep2vecAdaptation`, which wraps `Sleep2vecPretraining` but applies adaptation freeze policy and stage-specific optimizer grouping.
@@ -66,7 +66,7 @@ Stage transitions are strict: `--ckpt-path` resumes within the same phase only, 
 
 1. Parse CLI.
 2. Call `apply_finetune_config(args)`.
-3. That call loads YAML via `load_finetune_config`, validates task semantics, converts configured data paths to `Path`, and enforces `data.data_channel_names == model.channels`.
+3. That call loads YAML via `load_finetune_config`, validates task semantics, resolves NPZ/Kaldi data paths, and enforces `data.data_channel_names == model.channels`.
 4. Build train/val/test loaders via `get_finetune_dataloaders`.
 5. Instantiate `Sleep2vecFinetuning`, which owns:
    - a `Sleep2vecPretrainModel` backbone
@@ -87,7 +87,7 @@ Built-in task semantics now include `stage3`, `stage4`, `stage5`, `ahi`, `sex`, 
 
 1. Parse CLI and validate explicit checkpoint path unless the alias is `best` or `last`.
 2. Call `apply_finetune_config(args)`.
-3. Build a single evaluation loader with `_build_inference_loader`.
+3. Reject `--inference-preset-path` for Kaldi backends and build a single evaluation loader with `_build_inference_loader`.
 4. Instantiate `Sleep2vecFinetuning`.
 5. Optionally select and average checkpoints with `select_checkpoints` and `average_checkpoints`.
 6. Run `trainer.test(...)`.
@@ -118,6 +118,7 @@ The runtime assumes a batch dictionary with these keys:
 - Built-in sequence tasks are `stage3`, `stage4`, `stage5`, and `ahi` only.
 - `stage3` and `stage4` are runtime remaps over raw `stage5` tokens; their source labels still come from `stage5`.
 - Built-in `ahi` requires NPZ key `ah_event` plus scalar NPZ keys `ahi` and `tst`; evaluation also expects `stage5` tokens as an auxiliary label source.
+- Kaldi-backed data uses pre-windowed matrices from `manifest.csv`/`manifest.json`; legacy NPZ preset pickles are not accepted for `data.backend: kaldi`.
 - Built-in `age` and `sex` runs reject presets/indexes without valid labels after split/source filtering; stage/AHI-only presets may omit those metadata columns.
 - Non-sequence metadata classification remains binary-only.
 - Pair-first missing-channel pretraining requires `payload["available_channels"]` on every retained sample.
@@ -146,12 +147,17 @@ The preprocessing surface is split between reusable CLIs and one notebook:
 - `mask_missing_stats.py`: summarize `_mask` coverage
 - `save_dataset_presets.py`: build preset pickles through `PSGPretrainDataset`, including YAML-driven `preset_build` validation
 - `merge_dataset_presets.py`: concatenate multiple preset pickles
+- `convert_npz_to_kaldi.py`: convert CSV-indexed NPZ windows into channel-separated ark/scp files plus manifests
 - `watchpat_zzp_to_edf.py`: convert WatchPAT `.zzp` archives to EDF and optional JSON summary
 - `preprocess_pipeline.ipynb`: manual, dataset-specific workflow history
 
 The canonical preset path is:
 
 `CSV split prep -> optional mask analysis -> preset generation -> optional preset merge`
+
+The canonical Kaldi path is:
+
+`CSV split prep -> NPZ-to-Kaldi conversion -> manifest-backed runtime loading`
 
 `utils/check_configs.py` is the branch-local tooling path for validating:
 
@@ -176,12 +182,13 @@ The canonical preset path is:
   - confusion matrices, ROC curves, and regression scatter plots
 - Preprocessing outputs:
   - preset pickles
+  - Kaldi ark/scp files and manifests
   - split CSVs
   - mask statistics CSVs
   - EDF files and optional JSON summaries
 
 ## Variant State On This Branch
 
-`sleep2vec2/` and `sleep2expert/` are active on this branch as standalone mirrors of the base recipe. They carry package-local copies of the runtime, `data/`, and `preprocess/`, duplicated YAMLs under `configs/<variant>/`, and copied standalone RoFormer implementations under `<variant>/backbones/roformer/`. Data-contract changes such as optional `age`/`sex` metadata must be synchronized into those package-local copies rather than falling back to the root implementation.
+`sleep2vec2/` and `sleep2expert/` are active on this branch as standalone mirrors of the base recipe. They carry package-local copies of the runtime, `data/`, and `preprocess/`, duplicated YAMLs under `configs/<variant>/`, copied standalone RoFormer implementations under `<variant>/backbones/roformer/`, and package-local Kaldi backend surfaces where present. Data-contract changes such as optional `age`/`sex` metadata or Kaldi manifest semantics must be synchronized into those package-local copies rather than falling back to the root implementation.
 
 `sleep2vec_moe/` and `sleep2vec_hires/` remain branch-state placeholders with no tracked source files here.

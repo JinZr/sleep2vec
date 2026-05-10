@@ -32,7 +32,10 @@ def test_sleep2expert_data_and_preprocess_modules_import_independently():
 
     modules = [
         "sleep2expert.data.default_dataset",
+        "sleep2expert.data.kaldi_io",
+        "sleep2expert.data.kaldi_psg_dataset",
         "sleep2expert.data.psg_pretrain_dataset",
+        "sleep2expert.preprocess.convert_npz_to_kaldi",
         "sleep2expert.preprocess.save_dataset_presets",
         "sleep2expert.preprocess.split_index_by_dataset",
     ]

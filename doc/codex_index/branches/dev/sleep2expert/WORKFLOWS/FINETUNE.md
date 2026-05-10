@@ -22,8 +22,9 @@ Primary code path:
 
 1. Load and bind finetune YAML.
    - Parse typed config bundle with `load_finetune_config`.
-   - Copy channels, data paths, task semantics, LoRA flags, and eval-visualization config into `args`.
+   - Copy channels, data paths, backend settings, task semantics, LoRA flags, and eval-visualization config into `args`.
    - Reject mismatched `data.data_channel_names`.
+   - Reject Kaldi configs that still point at legacy NPZ preset pickles.
 2. Resolve version name.
    - Prefer `--version-name`.
    - Otherwise derive from label, channel selection, few-shot mode, pretrained-vs-scratch, and optional tag.
@@ -33,6 +34,7 @@ Primary code path:
    - `log-finetune/<version>/moe_finetune_status.json` for `sleep2expert` MoE fine-tune status.
 4. Build train/val/test loaders.
    - Always uses `allow_missing_channels=False`.
+   - Selects `PSGPretrainDataset` for NPZ or `KaldiPSGDataset` for Kaldi.
    - Built-in sequence tasks append runtime label channels to `dataset_channel_names`.
    - `stage3` and `stage4` still pull raw labels from `stage5`.
    - `ahi` adds `ahi` as the primary token label source and `stage5` as an auxiliary label source.
@@ -70,6 +72,7 @@ Custom labels require `finetune.task` in YAML.
 ## Important Runtime Decisions
 
 - Task semantics are enforced before loaders are built.
+- Kaldi finetune uses `data.kaldi_data_root` and `data.kaldi_manifest` from YAML; `data.finetune_preset_path` must be null.
 - CLS vs token downstream behavior is defined by `model.cls`, not by folder naming in `configs/`.
 - Layer mix is applied inside `Sleep2vecDownstreamModel`, not in the trainer.
 - `sleep2expert` downstream MoE tuning is opt-in through `finetune.moe_tuning`; absent configs retain the legacy finetune trainability and two-group optimizer behavior.
@@ -95,3 +98,4 @@ Custom labels require `finetune.task` in YAML.
 - Change head/layer-mix/LoRA behavior: `sleep2vec/downstream_model.py`, `sleep2vec/downstreams/`
 - Change per-stage loss/metrics aggregation or AHI threshold behavior: `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`
 - Change finetune data loader or built-in label-channel wiring: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`
+- Change Kaldi finetune loading: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`

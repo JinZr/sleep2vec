@@ -9,7 +9,7 @@ import typing as t
 
 import yaml
 
-from sleep2expert.config import ModelConfig, TaskConfig, load_finetune_config
+from sleep2expert.config import DATA_BACKEND_CHOICES, ModelConfig, TaskConfig, load_finetune_config
 
 _BUILTIN_TASK_SPECS = {
     "stage3": {
@@ -312,6 +312,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.train_dataset_names = data_cfg.train_dataset_names or []
     args.test_dataset_names = data_cfg.test_dataset_names or []
     args.n_few_shot = data_cfg.n_few_shot
+    apply_data_backend_args(args, data_cfg, preset_attr="finetune_preset_path")
 
     args.freeze_backbone_and_insert_lora = lora_cfg.freeze_backbone_and_insert_lora
     args.insert_lora = lora_cfg.insert_lora
@@ -329,6 +330,47 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
 
     apply_task_flags(args, config_bundle.finetune.task)
     return config_bundle, model_cfg
+
+
+def _optional_path(value: t.Any) -> Path | None:
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return value
+    return Path(value)
+
+
+def apply_data_backend_args(args, data_cfg, *, preset_attr: str | None = None) -> None:
+    backend = getattr(args, "data_backend", None) or getattr(data_cfg, "backend", "npz") or "npz"
+    if backend not in DATA_BACKEND_CHOICES:
+        raise ValueError(f"Unknown data backend: {backend!r}. Expected one of {DATA_BACKEND_CHOICES}.")
+
+    kaldi_data_root = getattr(args, "kaldi_data_root", None)
+    if kaldi_data_root is None:
+        kaldi_data_root = getattr(data_cfg, "kaldi_data_root", None)
+    kaldi_manifest = getattr(args, "kaldi_manifest", None)
+    if kaldi_manifest is None:
+        kaldi_manifest = getattr(data_cfg, "kaldi_manifest", None)
+
+    args.data_backend = backend
+    args.kaldi_data_root = _optional_path(kaldi_data_root)
+    args.kaldi_manifest = _optional_path(kaldi_manifest)
+
+    if backend != "kaldi":
+        return
+
+    missing = []
+    if args.kaldi_data_root is None:
+        missing.append("kaldi_data_root")
+    if args.kaldi_manifest is None:
+        missing.append("kaldi_manifest")
+    if missing:
+        raise ValueError(
+            "Kaldi backend requires explicit kaldi_data_root and kaldi_manifest; " f"missing {', '.join(missing)}."
+        )
+
+    if preset_attr and getattr(args, preset_attr, None):
+        raise ValueError("Kaldi backend uses manifest.csv; legacy NPZ preset pickles are unsupported.")
 
 
 def _to_yamlable(obj: t.Any) -> t.Any:

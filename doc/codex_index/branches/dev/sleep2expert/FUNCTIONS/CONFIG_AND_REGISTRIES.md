@@ -11,6 +11,7 @@
   - `AdaptConfig`, `AdaptStage1Config`, `AdaptStage2Config`, `AdaptLrScalesConfig`, `AdaptPairSchedulePoint`
   - `PretrainConfigBundle`, `FinetuneConfigBundle`
 - Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing.
+- Data backend note: `PretrainDataConfig` and `FinetuneDataConfig` accept `backend` (`npz` or `kaldi`) plus optional `kaldi_data_root` and `kaldi_manifest`; Kaldi path presence is enforced at CLI-binding time.
 - Reuse guidance: extend these dataclasses before adding new ad hoc dict plumbing in entrypoints or Lightning modules.
 
 ## `sleep2vec.config.load_model_config`
@@ -89,6 +90,17 @@
 - Key callers/callees: callers are `sleep2vec.finetune` and `sleep2vec.infer`; callee is `load_finetune_config`.
 - Reuse guidance: this is the canonical CLI binding layer for finetune/inference.
 - Duplication risk notes: do not partially mirror its behavior in entrypoints.
+
+## `sleep2vec.common.apply_data_backend_args`
+
+- File: `sleep2vec/common.py`; package-local mirror: `sleep2expert/common.py`
+- Signature: `apply_data_backend_args(args, data_cfg, *, preset_attr: str | None = None) -> None`
+- Purpose and contract: resolve the effective data backend from CLI or YAML, convert Kaldi paths to `Path`, require `kaldi_data_root` and `kaldi_manifest` for Kaldi, and reject legacy NPZ preset pickles for Kaldi flows.
+- Important inputs/outputs: argparse namespace plus typed data config in; mutates `args.data_backend`, `args.kaldi_data_root`, and `args.kaldi_manifest`.
+- Side effects: namespace mutation only.
+- Key callers/callees: callers are `pretrain.sleep2vec_pretrain`, `adapt.sleep2vec_adapt`, and `apply_finetune_config`.
+- Reuse guidance: use this for every pretrain/adapt/finetune/inference binding path that may select NPZ vs Kaldi.
+- Duplication risk notes: do not re-check Kaldi path/preset compatibility in dataset constructors or trainers.
 
 ## `sleep2vec.common.persist_run_config_and_args`
 
