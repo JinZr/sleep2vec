@@ -49,9 +49,7 @@ def _write_sleep2wave_config(path: Path, *, context_epochs: int = 2) -> Path:
             "all": list(CANONICAL_MODALITIES),
             "high_frequency": ["eeg", "eog", "emg", "ecg"],
             "low_frequency": ["airflow", "belt", "spo2", "ibi", "resp"],
-            "sample_rates": {
-                modality: MODALITY_SPECS[modality].sample_rate_hz for modality in CANONICAL_MODALITIES
-            },
+            "sample_rates": {modality: MODALITY_SPECS[modality].sample_rate_hz for modality in CANONICAL_MODALITIES},
             "frames_per_epoch": {
                 modality: MODALITY_SPECS[modality].frames_per_epoch for modality in CANONICAL_MODALITIES
             },

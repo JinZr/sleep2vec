@@ -133,9 +133,7 @@ def _matrix_from_npz_signal(
     elif raw.ndim == 3 and raw.shape[0] >= end and raw.shape[2] == spec.frames_per_epoch:
         segment = raw[start:end]
     else:
-        raise ValueError(
-            f"Channel {key!r} must be 1D, [T, 1], channel-first [C, T], or [E, C, F], got {raw.shape}."
-        )
+        raise ValueError(f"Channel {key!r} must be 1D, [T, 1], channel-first [C, T], or [E, C, F], got {raw.shape}.")
 
     if segment.shape[0] != end - start or segment.shape[2] != spec.frames_per_epoch:
         raise ValueError(f"Channel {key!r} yielded invalid window shape {segment.shape}.")
@@ -188,9 +186,7 @@ def convert(args: argparse.Namespace) -> tuple[Path, Path]:
         for modality in CANONICAL_MODALITIES:
             ark_path = channels_dir / f"{modality}.ark"
             scp_path = channels_dir / f"{modality}.scp"
-            writers[modality] = stack.enter_context(
-                kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
-            )
+            writers[modality] = stack.enter_context(kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}"))
 
         for row_number, row in df.iterrows():
             duration = float(row[columns.duration_col])
