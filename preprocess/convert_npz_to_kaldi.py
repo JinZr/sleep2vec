@@ -319,6 +319,7 @@ def convert(args: argparse.Namespace) -> Path:
     manifest_rows_by_split: dict[str, list[dict[str, t.Any]]] = {}
 
     with ExitStack() as stack:
+
         def ensure_split_writers(split_value: t.Any) -> str:
             split_key = str(split_value)
             if split_key in split_dirs:
