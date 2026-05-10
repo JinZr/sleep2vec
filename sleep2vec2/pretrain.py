@@ -18,11 +18,17 @@ if str(REPO_ROOT) not in sys.path:
 
 from sleep2vec2.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2vec2.checkpoints import load_pretrain_init_weights
-from sleep2vec2.common import apply_model_config_args, persist_run_config_and_args
+from sleep2vec2.common import apply_data_backend_args, apply_model_config_args, persist_run_config_and_args
 from sleep2vec2.config import load_pretrain_config
 from sleep2vec2.data.samplers import handles_distributed_sharding
 from sleep2vec2.sleep2vec_modelling import Sleep2vecPretraining
 from sleep2vec2.utils import get_pretrain_dataloader
+
+
+def _optional_path(value):
+    if value.lower() in {"null", "none"}:
+        return None
+    return Path(value)
 
 
 def sleep2vec_pretrain(args):
@@ -34,6 +40,7 @@ def sleep2vec_pretrain(args):
     args.mask_rate = config_bundle.data.mask_rate
     args.max_tokens = config_bundle.data.max_tokens
     apply_model_config_args(args, model_config, set_backbone_arch=True)
+    apply_data_backend_args(args, config_bundle.data, preset_attr="pretrain_preset_path")
 
     # get data loaders
     train_loader, val_loader = get_pretrain_dataloader(args)
@@ -235,9 +242,27 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pretrain-preset-path",
+        type=_optional_path,
+        default=None,
+        help="path to precomputed preset pickle for PSG dataset; use null/none to disable",
+    )
+    parser.add_argument(
+        "--data-backend",
+        choices=["npz", "kaldi"],
+        default=None,
+        help="Data backend for pretraining (default: npz unless YAML data.backend overrides it).",
+    )
+    parser.add_argument(
+        "--kaldi-data-root",
         type=Path,
-        default="/data/ywx/BIOT/data/5dataset_preset_120.pickle",
-        help="path to precomputed preset pickle for PSG dataset",
+        default=None,
+        help="Kaldi data root when --data-backend kaldi is used.",
+    )
+    parser.add_argument(
+        "--kaldi-manifest",
+        type=Path,
+        default=None,
+        help="Kaldi manifest.csv path when --data-backend kaldi is used.",
     )
     parser.add_argument(
         "--allow-missing-channels",

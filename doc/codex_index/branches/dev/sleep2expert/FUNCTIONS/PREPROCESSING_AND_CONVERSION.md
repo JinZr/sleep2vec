@@ -92,13 +92,13 @@
 
 ## `preprocess.convert_npz_to_kaldi.convert`
 
-- File: `preprocess/convert_npz_to_kaldi.py`; package-local mirror: `sleep2expert/preprocess/convert_npz_to_kaldi.py`
+- File: `preprocess/convert_npz_to_kaldi.py`; package-local mirrors: `sleep2vec2/preprocess/convert_npz_to_kaldi.py`, `sleep2expert/preprocess/convert_npz_to_kaldi.py`
 - Signature: `convert(args: argparse.Namespace) -> tuple[Path, Path]`
 - Purpose and contract: convert CSV-indexed NPZ token windows into channel-separated Kaldi ark/scp files plus `manifest.csv` and `manifest.json`, preserving sample metadata, `token_start`/`token_end`, available-channel lists, and built-in `ahi`/`tst` metadata when requested.
 - Important inputs/outputs: index CSV(s), config YAML, output directory, selected channels, windowing settings, missing-channel policy, and optional path-prefix maps in; Kaldi manifest paths out.
 - Side effects: reads NPZ files, writes Kaldi ark/scp files and manifests, and imports optional `kaldi_native_io` only when conversion runs.
 - Key callers/callees: called by `main`; callees include `_build_channel_registry`, `load_npz`, `load_builtin_ahi_metadata`, `window`, and `normalize_mask_frame`.
-- Reuse guidance: use this CLI to build Kaldi roots for pretrain, finetune, and inference instead of creating ad hoc ark/scp writers.
+- Reuse guidance: use this CLI to build Kaldi roots for pretrain, finetune, and inference instead of creating ad hoc ark/scp writers. Standalone variants should use their package-local converter.
 - Duplication risk notes: standalone variants must use their package-local converter so tokenizer/extractor semantics come from the same recipe namespace.
 
 ## `preprocess.split_index_by_dataset.normalize_mask_frame`

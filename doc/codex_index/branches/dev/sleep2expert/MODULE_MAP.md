@@ -20,7 +20,7 @@ These are the stable cross-file boundaries that matter before editing:
 | Config recipes | `configs/` | Encode model/head/task variants, preset-build policy, adapt recipes | Config parser + entrypoints | New recipe variants | Folder names are not always semantically authoritative |
 | Tests | `tests/` | Pin config, registry, AHI metric, checkpoint, result CSV, preset-build, pair-sampler, and visualization contracts | pytest | New contract coverage | Many important contracts live here now |
 | Formatting wrapper | `utils/style_check.sh` | Run `isort`, `black`, `flake8` over repo | Python env toolchain | None | Lint wrapper only |
-| Variant namespaces | `sleep2vec2/`, `sleep2expert/`, `sleep2vec_moe/`, `sleep2vec_hires/` | `sleep2vec2` and `sleep2expert` are standalone mirror recipes with local data/preprocess/configs and standalone RoFormer; the other roots remain placeholders | variant-local copies, Torch, optional Transformers for parity tests | Variant-specific backbones and recipe-local data/preprocess flows | Keep variant imports package-local; do not route RoFormer through base `sleep2vec` or another variant |
+| Variant namespaces | `sleep2vec2/`, `sleep2expert/`, `sleep2vec_moe/`, `sleep2vec_hires/` | `sleep2vec2` and `sleep2expert` are standalone mirror recipes with local data/preprocess/configs, standalone RoFormer, and package-local Kaldi backends; the other roots remain placeholders | variant-local copies, Torch, optional Transformers for parity tests, optional `kaldi_native_io` | Variant-specific backbones and recipe-local data/preprocess flows | Keep variant imports package-local; do not route RoFormer or Kaldi data through base `sleep2vec` or another variant |
 
 ## Key Dependencies
 

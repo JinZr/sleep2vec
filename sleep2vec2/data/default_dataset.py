@@ -112,19 +112,8 @@ class DefaultDataset(BaseDataset):
             ]
         elif data is not None:
             # ✅ 初始化时检查并过滤掉 token 长度不一致的样本
-            allow_missing_channels = bool(self.allow_missing_channels)
             channel_names = self.channel_names
-            min_channels = self.min_channels
-            self.data = filter_valid_sample_indices(
-                data,
-                extractors,
-                tokenizers,
-                allow_missing_channels=allow_missing_channels,
-                channel_names=channel_names,
-                min_channels=min_channels,
-                tolerance=1,
-                max_workers=filter_max_workers,
-            )
+            self.data = self._filter_valid_sample_indices(data, filter_max_workers=filter_max_workers)
             if "ahi" in channel_names and not self.data:
                 raise ValueError(
                     "No valid samples remain for the built-in AHI contract. "
@@ -147,6 +136,60 @@ class DefaultDataset(BaseDataset):
         # few-shot 筛选
         if few_shot is not None:
             self.select_few_shot()
+
+    def _filter_valid_sample_indices(
+        self,
+        data: t.Sequence[SampleIndex],
+        *,
+        filter_max_workers: int | None,
+    ) -> list[SampleIndex]:
+        return filter_valid_sample_indices(
+            data,
+            self.extractors,
+            self.tokenizers,
+            allow_missing_channels=bool(self.allow_missing_channels),
+            channel_names=self.channel_names,
+            min_channels=self.min_channels,
+            tolerance=1,
+            max_workers=filter_max_workers,
+        )
+
+    def _get_available_channels_for_src(self, src: SampleIndex) -> set[str]:
+        channel_names = self.channel_names
+        channel_name_set = set(channel_names)
+        payload = getattr(src, "payload", None)
+        if isinstance(payload, dict) and payload.get("available_channels"):
+            avail = payload["available_channels"]
+        else:
+            with load_npz(src.path) as npz:
+                avail = []
+                for channel_name in channel_names:
+                    if channel_name == "ahi":
+                        try:
+                            load_builtin_ahi_metadata(npz)
+                        except Exception:
+                            continue
+                        avail.append(channel_name)
+                        continue
+                    if channel_name in npz:
+                        avail.append(channel_name)
+        return {str(k) for k in avail if str(k) in channel_name_set}
+
+    def _load_tokens_for_src(
+        self,
+        src: SampleIndex,
+        chosen_channels: list[str],
+    ) -> tuple[dict, dict, dict, dict]:
+        with load_npz(src.path) as npz:
+            payload = {k: self.extractors[k](npz, src.start, src.end) for k in chosen_channels}
+            tokens = {k: self.tokenizers[k](payload[k]) for k in chosen_channels}
+            masks = {k: self.mask_generators[k](tokens[k]) for k in chosen_channels}
+            metadata = dict(src.metadata)
+            if "ahi" in chosen_channels:
+                ahi_value, tst_value = load_builtin_ahi_metadata(npz)
+                metadata["ahi"] = ahi_value
+                metadata["tst"] = tst_value
+        return payload, tokens, masks, metadata
 
     def filter_with_metadata(
         self,
@@ -271,7 +314,6 @@ class DefaultDataset(BaseDataset):
         disease_names = self.meta_data_names
         allow_missing_channels = bool(self.allow_missing_channels)
         min_channels = self.min_channels
-        channel_name_set = set(channel_names)
         bucket_by_available_channels = bool(self.bucket_by_available_channels)
         train_pair_probs = self.train_pair_probs
         train_pair_track_unique_samples = bool(self.train_pair_track_unique_samples)
@@ -296,29 +338,9 @@ class DefaultDataset(BaseDataset):
                 resolved_indices.append(src)
 
             if allow_missing_channels:
-
-                def _available_for_src(src):
-                    payload = getattr(src, "payload", None)
-                    if isinstance(payload, dict) and payload.get("available_channels"):
-                        avail = payload["available_channels"]
-                    else:
-                        with load_npz(src.path) as npz:
-                            avail = []
-                            for channel_name in channel_names:
-                                if channel_name == "ahi":
-                                    try:
-                                        load_builtin_ahi_metadata(npz)
-                                    except Exception:
-                                        continue
-                                    avail.append(channel_name)
-                                    continue
-                                if channel_name in npz:
-                                    avail.append(channel_name)
-                    return set([k for k in avail if k in channel_name_set])
-
                 avail_map = []
                 for src in resolved_indices:
-                    avail = _available_for_src(src)
+                    avail = self._get_available_channels_for_src(src)
                     if len(avail) >= min_channels:
                         avail_map.append((src, avail))
                     elif selected_pair is not None:
@@ -390,16 +412,7 @@ class DefaultDataset(BaseDataset):
             samples = []
             token_starts: list[int] = []
             for src in selected_sources:
-
-                with load_npz(src.path) as npz:
-                    payload = {k: self.extractors[k](npz, src.start, src.end) for k in chosen}
-                    tokens = {k: self.tokenizers[k](payload[k]) for k in chosen}
-                    masks = {k: self.mask_generators[k](tokens[k]) for k in chosen}
-                    metadata = dict(src.metadata)
-                    if "ahi" in chosen:
-                        ahi_value, tst_value = load_builtin_ahi_metadata(npz)
-                        metadata["ahi"] = ahi_value
-                        metadata["tst"] = tst_value
+                payload, tokens, masks, metadata = self._load_tokens_for_src(src, chosen)
                 payload.update(src.payload)
                 sample = Sample(
                     id=src.id,

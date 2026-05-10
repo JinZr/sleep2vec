@@ -2,6 +2,12 @@
 
 ## 2026-05-10
 
+- Refreshed `sleep2vec2` index coverage for the package-local Kaldi backend port:
+  - `sleep2vec2.data.kaldi_io`
+  - `sleep2vec2.data.kaldi_psg_dataset`
+  - `sleep2vec2.preprocess.convert_npz_to_kaldi`
+- Documented that `sleep2vec2` resolves `data.backend: kaldi` through local config/runtime binding and local dataset/converter modules, not top-level `data/`, top-level `preprocess/`, `sleep2vec`, or `sleep2expert`.
+- Updated variant reuse guidance so both standalone recipes keep Kaldi reader, dataset, and converter work inside their own namespace.
 - Refreshed `sleep2expert` index coverage for the package-local Kaldi backend port:
   - `sleep2expert.data.kaldi_io`
   - `sleep2expert.data.kaldi_psg_dataset`

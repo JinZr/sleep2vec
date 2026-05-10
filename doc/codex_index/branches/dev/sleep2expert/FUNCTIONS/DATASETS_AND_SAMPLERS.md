@@ -90,7 +90,7 @@
 
 ## `data.kaldi_io.KaldiReaderPool`
 
-- File: `data/kaldi_io.py`; package-local mirror: `sleep2expert/data/kaldi_io.py`
+- File: `data/kaldi_io.py`; package-local mirrors: `sleep2vec2/data/kaldi_io.py`, `sleep2expert/data/kaldi_io.py`
 - Signature: `KaldiReaderPool(root, channel_specs).read_matrix(channel: str, key: str) -> np.ndarray`
 - Purpose and contract: lazily open one `kaldi_native_io.RandomAccessFloatMatrixReader` per channel/scp file, reopen handles after dataloader worker fork, validate rank/input width, and return a float32 matrix copy.
 - Important inputs/outputs: Kaldi data root plus `KaldiChannelSpec` mapping in; per-sample token matrix out.
@@ -101,14 +101,14 @@
 
 ## `data.kaldi_psg_dataset.KaldiPSGDataset`
 
-- File: `data/kaldi_psg_dataset.py`; package-local mirror: `sleep2expert/data/kaldi_psg_dataset.py`
+- File: `data/kaldi_psg_dataset.py`; package-local mirrors: `sleep2vec2/data/kaldi_psg_dataset.py`, `sleep2expert/data/kaldi_psg_dataset.py`
 - Signature: `KaldiPSGDataset(channel_names, channel_input_dims, kaldi_data_root, manifest, split, max_tokens, mask_rate, ...)`
 - Purpose and contract: read pre-windowed Kaldi matrices using `manifest.csv`/`manifest.json` while preserving the `DefaultDataset` batch contract, missing-channel sampler behavior, built-in `stage5`/`ahi` label channels, and metadata filtering.
 - Important inputs/outputs: channel list, YAML channel dims, Kaldi root, manifest path, split and loader flags in; dataset instance out.
 - Side effects: reads manifest files, opens Kaldi readers lazily, and filters rows by split/channel/metadata.
 - Key callers/callees: callers are `sleep2vec.utils._dataset_class_for_args`, `get_pretrain_dataloader`, and `_build_finetune_loader`; callees include `KaldiReaderPool`, `_build_channel_registry`, and `DefaultDataset` hook methods.
 - Reuse guidance: use this class whenever `data.backend` or CLI backend is `kaldi`; do not route standalone variants through top-level `data.kaldi_psg_dataset`.
-- Duplication risk notes: package-local mirrors must keep imports within their own namespace (`sleep2expert.data.*` for `sleep2expert`).
+- Duplication risk notes: package-local mirrors must keep imports within their own namespace (`sleep2vec2.data.*` for `sleep2vec2`, `sleep2expert.data.*` for `sleep2expert`).
 
 ## `data.metadata.build_w_h_age_sex_center`
 

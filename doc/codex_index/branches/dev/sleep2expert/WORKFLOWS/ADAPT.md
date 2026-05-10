@@ -80,4 +80,4 @@ Primary code path:
 - Change freeze policy or optimizer groups: `sleep2vec/sleep2vec_adaptation.py`, `sleep2vec/pretrain_model.py`
 - Change pair-schedule behavior: `sleep2vec/sleep2vec_adaptation.py`, `data/samplers.py`, `sleep2vec/callbacks/pair_acc_logger.py`
 - Change missing-channel loader policy: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`
-- Change Kaldi adapt loading: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`
+- Change Kaldi adapt loading: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`, plus package-local variant mirrors when the recipe is standalone.

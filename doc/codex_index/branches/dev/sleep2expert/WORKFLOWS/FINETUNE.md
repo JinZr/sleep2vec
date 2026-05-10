@@ -98,4 +98,4 @@ Custom labels require `finetune.task` in YAML.
 - Change head/layer-mix/LoRA behavior: `sleep2vec/downstream_model.py`, `sleep2vec/downstreams/`
 - Change per-stage loss/metrics aggregation or AHI threshold behavior: `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`
 - Change finetune data loader or built-in label-channel wiring: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`
-- Change Kaldi finetune loading: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`
+- Change Kaldi finetune loading: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`, plus package-local variant mirrors when the recipe is standalone.

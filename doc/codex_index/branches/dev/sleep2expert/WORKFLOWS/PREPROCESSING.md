@@ -81,7 +81,7 @@ The preset schema is still implicitly a pickled `list[SampleIndex]`, but the bra
 - writes `manifest.csv` with `sample_key`, token span, metadata, and `available_channels`
 - writes `manifest.json` with channel input dimensions and scp paths
 
-Standalone recipes must use their package-local converter, such as `sleep2expert.preprocess.convert_npz_to_kaldi`, so extractor/tokenizer semantics match the runtime namespace.
+Standalone recipes must use their package-local converter, such as `sleep2vec2.preprocess.convert_npz_to_kaldi` or `sleep2expert.preprocess.convert_npz_to_kaldi`, so extractor/tokenizer semantics match the runtime namespace.
 
 ## Preset Merge
 

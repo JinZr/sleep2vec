@@ -93,7 +93,7 @@
 
 ## `sleep2vec.common.apply_data_backend_args`
 
-- File: `sleep2vec/common.py`; package-local mirror: `sleep2expert/common.py`
+- File: `sleep2vec/common.py`; package-local mirrors: `sleep2vec2/common.py`, `sleep2expert/common.py`
 - Signature: `apply_data_backend_args(args, data_cfg, *, preset_attr: str | None = None) -> None`
 - Purpose and contract: resolve the effective data backend from CLI or YAML, convert Kaldi paths to `Path`, require `kaldi_data_root` and `kaldi_manifest` for Kaldi, and reject legacy NPZ preset pickles for Kaldi flows.
 - Important inputs/outputs: argparse namespace plus typed data config in; mutates `args.data_backend`, `args.kaldi_data_root`, and `args.kaldi_manifest`.

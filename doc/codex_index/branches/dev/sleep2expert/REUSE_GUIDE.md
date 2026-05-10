@@ -98,7 +98,7 @@ This page answers the practical question: when you need to add or change behavio
 - Keep copied recipes under `configs/<variant>/`.
 - Keep the `roformer` backbone registration in `<variant>.backbones.encoder_factory` pointed at `<variant>.backbones.roformer.RoFormerEncoderModel`.
 - Keep LoRA disabled for standalone variants until RoFormer PEFT compatibility is explicitly implemented and tested.
-- Keep Kaldi backend imports package-local in standalone variants; for `sleep2expert`, use `sleep2expert.data.kaldi_*` and `sleep2expert.preprocess.convert_npz_to_kaldi`.
+- Keep Kaldi backend imports package-local in standalone variants; for `sleep2vec2`, use `sleep2vec2.data.kaldi_*` and `sleep2vec2.preprocess.convert_npz_to_kaldi`; for `sleep2expert`, use `sleep2expert.data.kaldi_*` and `sleep2expert.preprocess.convert_npz_to_kaldi`.
 - Do not add HF checkpoint key translation unless checkpoint compatibility becomes an explicit requirement.
 
 ## Major Duplication Risks

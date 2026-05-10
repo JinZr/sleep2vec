@@ -74,6 +74,6 @@ Primary code path:
 
 - Change checkpoint averaging semantics: `sleep2vec/checkpoints.py`
 - Change eval loader or dataset override behavior: `sleep2vec/infer.py`, `sleep2vec/utils.py`
-- Change Kaldi inference behavior: `sleep2vec/common.py`, `sleep2vec/infer.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`
+- Change Kaldi inference behavior: `sleep2vec/common.py`, `sleep2vec/infer.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`, plus package-local variant mirrors when the recipe is standalone.
 - Change inference-only logging/W&B behavior: `sleep2vec/infer.py`
 - Change `sleep2expert` MoE route CSV fields or aggregation: `sleep2expert/routing_analysis.py`

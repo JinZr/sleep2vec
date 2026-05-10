@@ -32,7 +32,10 @@ def test_sleep2vec2_data_and_preprocess_modules_import_independently():
 
     modules = [
         "sleep2vec2.data.default_dataset",
+        "sleep2vec2.data.kaldi_io",
+        "sleep2vec2.data.kaldi_psg_dataset",
         "sleep2vec2.data.psg_pretrain_dataset",
+        "sleep2vec2.preprocess.convert_npz_to_kaldi",
         "sleep2vec2.preprocess.save_dataset_presets",
         "sleep2vec2.preprocess.split_index_by_dataset",
     ]

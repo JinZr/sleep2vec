@@ -189,6 +189,6 @@ The canonical Kaldi path is:
 
 ## Variant State On This Branch
 
-`sleep2vec2/` and `sleep2expert/` are active on this branch as standalone mirrors of the base recipe. They carry package-local copies of the runtime, `data/`, and `preprocess/`, duplicated YAMLs under `configs/<variant>/`, copied standalone RoFormer implementations under `<variant>/backbones/roformer/`, and package-local Kaldi backend surfaces where present. Data-contract changes such as optional `age`/`sex` metadata or Kaldi manifest semantics must be synchronized into those package-local copies rather than falling back to the root implementation.
+`sleep2vec2/` and `sleep2expert/` are active on this branch as standalone mirrors of the base recipe. They carry package-local copies of the runtime, `data/`, and `preprocess/`, duplicated YAMLs under `configs/<variant>/`, copied standalone RoFormer implementations under `<variant>/backbones/roformer/`, and package-local Kaldi backend surfaces. Data-contract changes such as optional `age`/`sex` metadata or Kaldi manifest semantics must be synchronized into those package-local copies rather than falling back to the root implementation.
 
 `sleep2vec_moe/` and `sleep2vec_hires/` remain branch-state placeholders with no tracked source files here.

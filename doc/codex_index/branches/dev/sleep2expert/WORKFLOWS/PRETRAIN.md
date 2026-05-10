@@ -82,7 +82,7 @@ Primary code path:
 
 - Change YAML schema: `sleep2vec/config.py`
 - Change dataloader construction or missing-channel policy: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/samplers.py`
-- Change Kaldi backend selection or loading: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_io.py`, `data/kaldi_psg_dataset.py`
+- Change Kaldi backend selection or loading: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_io.py`, `data/kaldi_psg_dataset.py`, plus package-local variant mirrors when the recipe is standalone.
 - Change backbone forward contract: `sleep2vec/pretrain_model.py`
 - Change loss semantics: `sleep2vec/losses/`
 - Change `sleep2expert` MoE auxiliary loss semantics: `sleep2expert/losses/moe_regularization.py`
