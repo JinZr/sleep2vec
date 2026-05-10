@@ -389,7 +389,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrain-preset-path",
         type=_optional_path,
-        default="/data/ywx/BIOT/data/5dataset_preset_120.pickle",
+        default=None,
         help="Path to precomputed preset pickle for adaptation data; use null/none to disable.",
     )
     parser.add_argument(
