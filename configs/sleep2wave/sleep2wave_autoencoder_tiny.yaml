@@ -1,0 +1,64 @@
+recipe: sleep2wave
+stage: autoencoder
+
+data:
+  preset_path: data/sleep2wave_tiny_preset.pkl
+  context_epochs: 15
+
+modalities:
+  epoch_sec: 30
+  all: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
+  high_frequency: [eeg, eog, emg, ecg]
+  low_frequency: [airflow, belt, spo2, ibi, resp]
+  sample_rates:
+    eeg: 128
+    eog: 128
+    emg: 128
+    ecg: 128
+    airflow: 4
+    belt: 4
+    spo2: 4
+    ibi: 4
+    resp: 4
+  frames_per_epoch:
+    eeg: 3840
+    eog: 3840
+    emg: 3840
+    ecg: 3840
+    airflow: 120
+    belt: 120
+    spo2: 120
+    ibi: 120
+    resp: 120
+
+autoencoder:
+  latent_dim: 64
+  encoder_type: temporal_conv
+  decoder_type: temporal_conv
+  latent_frames_per_epoch:
+    high_frequency: 60
+    low_frequency: 30
+  channel_specific: true
+  losses:
+    waveform_l1_weight: 1.0
+    waveform_l2_weight: 0.1
+    spectral_weight: 0.1
+    derivative_l1_weight: 0.1
+    mr_stft_weight: 0.1
+
+training:
+  phase: 0
+  batch_size: 256
+  lr: 0.0001
+  weight_decay: 0.01
+  max_epochs: 50
+  gradient_clip_val: 1.0
+  validation:
+    interval_steps: 1000
+    max_batches_per_modality: 5
+    examples:
+      num_examples: 5
+      modalities: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
+
+export:
+  output_dir: outputs/sleep2wave_autoencoder_tiny

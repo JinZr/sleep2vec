@@ -1,0 +1,92 @@
+# sleep2wave Diffusion Workflow
+
+## Purpose
+
+Train a latent diffusion transformer that generates target modality latents from available condition modality latents.
+
+## Canonical Path
+
+1. Train or provide a compatible sleep2wave autoencoder checkpoint.
+2. Load `stage: diffusion` config with `load_sleep2wave_config`.
+3. Build train and val split DataLoaders through `train_diffusion.build_dataloader`.
+4. `Sleep2WaveDiffusionLightning` loads the autoencoder checkpoint and encodes waveform batches into temporal latent maps.
+5. `Sleep2WaveTaskSampler` samples phase-appropriate tasks.
+6. Restoration/imputation tasks apply task-aware waveform corruptions from `training.corruptions` before autoencoder encoding.
+7. `Sleep2WaveDiffusionTransformer` patchifies `[B, E, C, L, D]` latents into `(modality, epoch, channel, patch)` tokens and predicts target noise.
+8. Validation logs epoch losses and task-family waveform examples when W&B is active.
+9. Save epoch checkpoints and `last.ckpt`.
+
+## Config Contract
+
+Required blocks:
+
+- `data`
+- `modalities`
+- `diffusion`
+- `training`
+- `sampler`
+- `export`
+
+Important constraints:
+
+- `data.backend` defaults to `npz`; opt-in Kaldi runs use `data.backend: kaldi` with `kaldi_data_root`, `kaldi_manifest`, and no `preset_path` or `index`.
+- `training.phase` must be 1 through 5.
+- `data.context_epochs` must match `diffusion.context_epochs`.
+- `diffusion.autoencoder_checkpoint` is required for Phase 2B temporal-patch diffusion.
+- `diffusion.latent_cache_path` without an autoencoder checkpoint is rejected until the Phase 3 cache schema update.
+- `diffusion.latent_frames_per_epoch` is required and currently uses 60 high-frequency frames and 30 low-frequency frames per 30-second epoch.
+- `diffusion.patches_per_epoch` is required and currently uses 6 patches per epoch.
+- `diffusion.embeddings.channel_position` and `diffusion.embeddings.patch_position` are required.
+- Restoration/imputation corruption masks are projected to channel-aware patch-level condition availability in training and validation-example sampling; target/loss availability remains separate and padded channels are controlled by `channel_mask`.
+- `training.phase_checkpoint` initializes the diffusion transformer from a previous Sleep2Wave phase while keeping the current config.
+- CLI `--resume-from-checkpoint` is reserved for Lightning crash recovery.
+- `diffusion.beta_schedule` is currently `cosine`.
+- `diffusion.prediction_type` is currently `epsilon`.
+- `diffusion.task_attention_mask` is currently `directional`.
+- `training.replay.enabled` selects replay-style default task mixtures when no explicit `task_mix` is provided; replay defaults train restoration and imputation before adding translation, two-condition, and partial-full tasks.
+- `training.condition_counts` controls translation and partial-full condition-set sizes; partial-full samples among configured counts that fit the available modalities.
+- `training.restoration_condition_counts` controls restoration/imputation condition-set sizes; the target modality is always included and extra modalities act as clean auxiliary context.
+- `training.validation.interval_steps` controls step-based validation cadence; `training.validation.max_batches_per_modality` is expanded across configured example modalities and active task families before being passed to Lightning as the validation batch cap.
+- `training.validation.examples` controls W&B validation example count and target-modality candidates for diffusion phases; examples use the configured sampler and are logged per active task family.
+- Tiny and medium diffusion phase recipes use `training.corruptions.*.by_modality` for physiologic restoration/imputation corruptions, and selected entries can define weighted `choices`.
+- `diffusion.condition_dropout` preserves partial-full coverage by moving dropped condition modalities into the target set.
+
+## Command
+
+```bash
+python -m sleep2wave.train_diffusion \
+  --config configs/sleep2wave/sleep2wave_diffusion_tiny_phase1.yaml \
+  --version-name diffusion-smoke \
+  --accelerator cpu \
+  --devices 1 \
+  --num-workers 0 \
+  --seed 0
+```
+
+Latent-cache training is intentionally disabled for Phase 2B because the old cache schema stores `[N, E, D]` latents.
+
+## Edit Hotspots
+
+- Task semantics: `sleep2wave/diffusion/tasks.py`
+- Attention mask semantics: `sleep2wave/diffusion/task_masks.py`
+- Model shape, patch projections, and embeddings: `sleep2wave/diffusion/model.py`
+- Schedule and samplers: `sleep2wave/diffusion/schedule.py`, `sleep2wave/diffusion/samplers.py`
+- Training step: `sleep2wave/diffusion/lightning.py`
+- Latent cache: `sleep2wave/diffusion/latent_cache.py`, `sleep2wave/cache_latents.py`
+- Curriculum: `sleep2wave/training/phase_schedule.py`, `sleep2wave/training/task_sampler.py`
+- Data backend loading: `sleep2wave/data/generative_dataset.py`
+
+## Tests
+
+```bash
+python3.10 -m pytest -q \
+  tests/test_sleep2wave_diffusion_model_shapes.py \
+  tests/test_sleep2wave_diffusion_losses.py \
+  tests/test_sleep2wave_diffusion_task_masks.py \
+  tests/test_sleep2wave_diffusion_tasks.py \
+  tests/test_sleep2wave_diffusion_schedule.py \
+  tests/test_sleep2wave_diffusion_sampler.py \
+  tests/test_sleep2wave_diffusion_train_smoke.py \
+  tests/test_sleep2wave_phase_schedule.py \
+  tests/test_sleep2wave_task_sampler.py
+```

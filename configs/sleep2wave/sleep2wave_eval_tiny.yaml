@@ -1,0 +1,41 @@
+recipe: sleep2wave
+stage: evaluation
+
+modalities:
+  epoch_sec: 30
+  all: [eeg, eog, emg, ecg, airflow, belt, spo2, ibi, resp]
+  high_frequency: [eeg, eog, emg, ecg]
+  low_frequency: [airflow, belt, spo2, ibi, resp]
+  sample_rates:
+    eeg: 128
+    eog: 128
+    emg: 128
+    ecg: 128
+    airflow: 4
+    belt: 4
+    spo2: 4
+    ibi: 4
+    resp: 4
+  frames_per_epoch:
+    eeg: 3840
+    eog: 3840
+    emg: 3840
+    ecg: 3840
+    airflow: 120
+    belt: 120
+    spo2: 120
+    ibi: 120
+    resp: 120
+
+evaluation:
+  generated_dir: outputs/sleep2wave_generate_tiny
+  reference_npz: tests/fixtures/sleep2wave_reference.npz
+  baseline_npz: null
+  events_json: null
+  downstream_metrics_json: null
+  metric_families: [waveform, feature, event, efficiency, downstream]
+  max_shift_frames: 3
+  event_iou_threshold: 0.5
+
+export:
+  output_dir: outputs/sleep2wave_eval_tiny
