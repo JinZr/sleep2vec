@@ -138,8 +138,10 @@ def test_sleep2expert_moe_config_rejects_non_roformer_backbone(tmp_path: Path):
         ({"top_k": 5}, "top_k must be <= backbone.moe.num_experts"),
         ({"expert_hidden_size": True}, "expert_hidden_size must be an integer"),
         ({"router_noise": "bad"}, "router_noise must be a number"),
+        ({"router_noise": float("nan")}, "router_noise must be finite"),
         ({"router_noise": -0.1}, "router_noise must be >= 0"),
         ({"load_balance_coef": "bad"}, "load_balance_coef must be a number"),
+        ({"load_balance_coef": float("inf")}, "load_balance_coef must be finite"),
         ({"load_balance_coef": -1.0}, "load_balance_coef must be >= 0"),
         ({"expert_dropout_prob": "bad"}, "expert_dropout_prob must be a number"),
         ({"expert_dropout_prob": -0.1}, "expert_dropout_prob must be >= 0"),
@@ -288,7 +290,12 @@ def test_sleep2expert_finetune_moe_tuning_rejects_dense_moe_regularization(tmp_p
     [
         ({"mode": "bad"}, "mode must be one of"),
         ({"mode": "head_only", "lr_scales": {"backbone": -0.1}}, "lr_scales.backbone must be >= 0"),
+        ({"mode": "head_only", "lr_scales": {"backbone": float("nan")}}, "lr_scales.backbone must be finite"),
         ({"mode": "head_only", "lr_scales": {"head": True}}, "lr_scales.head must be a number"),
+        (
+            {"mode": "head_only", "moe_regularization": {"router_z_loss_coef": float("inf")}},
+            "moe_regularization.router_z_loss_coef must be finite",
+        ),
         ({"mode": "custom", "freeze_router": True}, "custom requires explicit"),
         ({"mode": "head_only", "freeze_router": True}, "only supported in custom mode"),
         (

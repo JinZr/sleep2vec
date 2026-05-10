@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 import typing as t
 
@@ -79,6 +80,8 @@ def _validate_moe_int_list(value: t.Any, field_name: str, *, required: bool = Fa
 def _validate_moe_nonnegative_number(value: t.Any, field_name: str) -> None:
     if type(value) not in {int, float}:
         raise ValueError(f"backbone.moe.{field_name} must be a number.")
+    if not math.isfinite(float(value)):
+        raise ValueError(f"backbone.moe.{field_name} must be finite.")
     if value < 0:
         raise ValueError(f"backbone.moe.{field_name} must be >= 0.")
 
@@ -723,6 +726,8 @@ def _validate_finetune_moe_bool(value: t.Any, field_name: str) -> None:
 def _validate_finetune_moe_nonnegative_number(value: t.Any, field_name: str) -> None:
     if type(value) not in {int, float}:
         raise ValueError(f"{field_name} must be a number.")
+    if not math.isfinite(float(value)):
+        raise ValueError(f"{field_name} must be finite.")
     if value < 0:
         raise ValueError(f"{field_name} must be >= 0.")
 
