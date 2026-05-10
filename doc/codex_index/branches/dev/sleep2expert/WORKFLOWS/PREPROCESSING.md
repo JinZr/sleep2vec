@@ -63,9 +63,10 @@ This is the canonical split policy before preset generation.
 2. loads channels and input dimensions from YAML `model.channels`
 3. optionally reads YAML `preset_build.required_channels` and `preset_build.min_channels`
 4. auto-injects `stage5` when built-in `ahi` is part of the validation-channel set
-5. optionally prefilters the CSV by required mask columns when `allow_missing_channels=False`
-6. instantiates `PSGPretrainDataset` for each `(metadata, split)` pair
-7. relies on `DefaultDataset` side effects to validate samples and write the preset pickle
+5. excludes `val`/`test` by default when `0 < stride_tokens < n_tokens`, unless `--include-overlap-eval-splits` is passed
+6. optionally prefilters the CSV by required mask columns when `allow_missing_channels=False`
+7. instantiates `PSGPretrainDataset` for each `(metadata, split)` pair
+8. relies on `DefaultDataset` side effects to validate samples and write the preset pickle
 
 Stage/AHI-only test indexes need `path`, `split`, `duration`, task channels/masks, and corresponding NPZ contents, but they do not need `age` or `sex`. Explicit metadata variants requested through `--meta-data-names` still require the matching CSV columns, except built-in AHI `ahi`/`tst` summaries loaded from NPZ.
 
@@ -76,7 +77,9 @@ The preset schema is still implicitly a pickled `list[SampleIndex]`, but the bra
 `convert_npz_to_kaldi.py`:
 
 - loads selected channels from YAML `model.channels` and optional built-in channels such as `stage5` and `ahi`
+- optionally filters input rows by `--split` before conversion
 - windows CSV-indexed NPZ recordings into per-sample matrices
+- excludes `val`/`test` rows by default when `0 < --stride-tokens < --max-tokens`, unless `--include-overlap-eval-splits` is passed
 - writes one ark/scp pair per channel under `channels/{split}/`
 - optionally writes multiple ark shards per split/channel with `--ark-shards`, while keeping one aggregate `{channel}.scp` in `manifest.json`
 - can parallelize record conversion with `--num-workers`, while writing Kaldi ark/scp files on the main thread in CSV order

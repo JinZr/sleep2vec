@@ -4,7 +4,7 @@
 
 - File: `preprocess/save_dataset_presets.py`
 - Signature: `main() -> None`
-- Purpose and contract: canonical preset-generation CLI. It resolves channels from YAML, applies optional `preset_build` policy, plans output paths, optionally prefilters the source CSV by required masks, then instantiates `PSGPretrainDataset` so validation and writing happen through the dataset layer.
+- Purpose and contract: canonical preset-generation CLI. It resolves channels from YAML, applies optional `preset_build` policy, excludes `val`/`test` splits by default when overlapping windows are requested, plans output paths, optionally prefilters the source CSV by required masks, then instantiates `PSGPretrainDataset` so validation and writing happen through the dataset layer.
 - Important inputs/outputs: CLI args in; preset pickle files out.
 - Side effects: creates parent directories, may write temporary filtered CSVs, and writes preset files unless `--dry-run` is set.
 - Key callers/callees: called from `__main__`; callees include `_load_model_channels`, `_load_preset_build_block`, `_resolve_validation_channels`, `_resolve_effective_min_channels`, `_build_preset_job`, and `PSGPretrainDataset`.
@@ -94,8 +94,8 @@
 
 - File: `preprocess/convert_npz_to_kaldi.py`; package-local mirrors: `sleep2vec2/preprocess/convert_npz_to_kaldi.py`, `sleep2expert/preprocess/convert_npz_to_kaldi.py`
 - Signature: `convert(args: argparse.Namespace) -> Path`
-- Purpose and contract: convert CSV-indexed NPZ token windows into split-specific Kaldi ark/scp files plus `manifest.json` format v2 and `manifests/{split}.csv`, preserving sample metadata, cropped `token_start`/`token_end`, available-channel lists, and built-in `ahi`/`tst` metadata when requested. Optional `--ark-shards` writes numbered shard ark/scp files while preserving one aggregate `{channel}.scp` for runtime readers; `--num-workers` parallelizes record conversion while keeping Kaldi writes deterministic on the main thread.
-- Important inputs/outputs: index CSV(s), config YAML, output directory, selected channels, windowing settings, missing-channel policy, optional ark shard count, worker count, and optional path-prefix maps in; Kaldi manifest paths out.
+- Purpose and contract: convert CSV-indexed NPZ token windows into split-specific Kaldi ark/scp files plus `manifest.json` format v2 and `manifests/{split}.csv`, preserving sample metadata, cropped `token_start`/`token_end`, available-channel lists, and built-in `ahi`/`tst` metadata when requested. Optional `--split` filters CSV rows by split label before conversion. When `0 < --stride-tokens < --max-tokens`, `val`/`test` rows are excluded unless `--include-overlap-eval-splits` is passed. Optional `--ark-shards` writes numbered shard ark/scp files while preserving one aggregate `{channel}.scp` for runtime readers; `--num-workers` parallelizes record conversion while keeping Kaldi writes deterministic on the main thread.
+- Important inputs/outputs: index CSV(s), config YAML, output directory, optional split filter, selected channels, windowing settings, missing-channel policy, optional ark shard count, worker count, and optional path-prefix maps in; Kaldi manifest paths out.
 - Side effects: reads NPZ files, writes sorted split-specific Kaldi ark/scp files or shard files plus aggregate scps and manifests, and imports optional `kaldi_native_io` only when conversion runs.
 - Key callers/callees: called by `main`; callees include `_build_channel_registry`, `load_npz`, `load_builtin_ahi_metadata`, `window`, and `normalize_mask_frame`.
 - Reuse guidance: use this CLI to build Kaldi roots for pretrain, finetune, and inference instead of creating ad hoc ark/scp writers. Standalone variants should use their package-local converter.

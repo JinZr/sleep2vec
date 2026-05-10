@@ -38,6 +38,12 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--index", nargs="+", required=True, help="Input index CSV file(s).")
     parser.add_argument(
+        "--split",
+        nargs="+",
+        default=None,
+        help="Optional CSV split label(s) to convert. Defaults to every split present in the index.",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         required=True,
@@ -62,6 +68,11 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Window stride in tokens. Defaults to --max-tokens.",
+    )
+    parser.add_argument(
+        "--include-overlap-eval-splits",
+        action="store_true",
+        help="Keep val/test rows when overlapping windows are enabled.",
     )
     parser.add_argument("--token-sec", type=int, default=30, help="Seconds represented by one token.")
     parser.add_argument(
@@ -428,6 +439,18 @@ def convert(args: argparse.Namespace) -> Path:
 
     df = _load_index_df(index_paths)
     _validate_required_columns(df, args.source_field)
+    if args.split is not None:
+        requested_splits = {str(split) for split in args.split}
+        df = df[df["split"].astype(str).isin(requested_splits)].copy()
+        if df.empty:
+            raise ValueError(f"No rows matched requested --split values: {sorted(requested_splits)}.")
+    if 0 < stride_tokens < args.max_tokens and not args.include_overlap_eval_splits:
+        original_count = len(df)
+        df = df[~df["split"].astype(str).isin({"val", "test"})].copy()
+        if len(df) != original_count:
+            print("Overlap windows enabled; excluding val/test splits unless --include-overlap-eval-splits is set.")
+        if df.empty:
+            raise ValueError("Overlap windows excluded val/test splits and no rows remain.")
     prefix_maps = _parse_prefix_maps(args.path_prefix_map)
 
     kaldi_native_io = _import_kaldi_native_io()
