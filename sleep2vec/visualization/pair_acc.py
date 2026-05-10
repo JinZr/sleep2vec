@@ -35,9 +35,11 @@ def render_pair_acc_heatmap(
         figsize=(12.0, 9.0),
         annotation_formatter=lambda value: f"{value:.3f}",
         colorbar_title="Accuracy",
-        subplots_adjust={"left": 0.16, "right": 0.91, "bottom": 0.27, "top": 0.90},
+        subplots_adjust={"left": 0.16, "right": 0.91, "bottom": 0.34, "top": 0.90},
     )
     ax = fig.axes[0]
+    ax.tick_params(axis="x", pad=10)
+    ax.xaxis.labelpad = 45
     for label in ax.get_xticklabels():
         label.set_rotation(45)
         label.set_ha("right")

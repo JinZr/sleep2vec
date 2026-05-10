@@ -35,6 +35,45 @@ def _read_matrix(scp_path: Path, key: str) -> np.ndarray:
         return np.asarray(reader[key], dtype=np.float32)
 
 
+def test_parse_args_defaults_num_workers_to_four(tmp_path: Path):
+    args = parse_args(
+        [
+            "--index",
+            str(tmp_path / "index.csv"),
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--output-dir",
+            str(tmp_path / "kaldi"),
+            "--max-tokens",
+            "2",
+            "--channels-from-config",
+        ]
+    )
+
+    assert args.num_workers == 4
+
+
+def test_converter_rejects_num_workers_less_than_one(tmp_path: Path):
+    args = parse_args(
+        [
+            "--index",
+            str(tmp_path / "index.csv"),
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--output-dir",
+            str(tmp_path / "kaldi"),
+            "--max-tokens",
+            "2",
+            "--channels-from-config",
+            "--num-workers",
+            "0",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="--num-workers must be >= 1"):
+        convert(args)
+
+
 def test_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4, "ppg": 8})
     actual_root = tmp_path / "actual"
@@ -188,6 +227,8 @@ def test_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Pat
                 str(output_dir),
                 "--max-tokens",
                 "2",
+                "--num-workers",
+                "2",
                 "--channels-from-config",
             ]
         )
@@ -222,6 +263,313 @@ def test_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Pat
     assert manifest_json["splits"]["val"]["channels"]["eeg"] == {
         "input_dim": 4,
         "scp": "channels/val/eeg.scp",
+    }
+
+
+def test_converter_split_filter_selects_requested_split(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "train",
+                "eeg_mask": 1,
+            },
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "val",
+                "duration": 60,
+                "session_id": "val",
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--split",
+                "train",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert set(manifest_json["splits"]) == {"train"}
+    assert (output_dir / "manifests" / "train.csv").exists()
+    assert not (output_dir / "manifests" / "val.csv").exists()
+
+
+def test_converter_split_filter_accepts_custom_split_labels(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "fold/1",
+                "duration": 60,
+                "session_id": "fold",
+                "eeg_mask": 1,
+            },
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "fold/2",
+                "duration": 60,
+                "session_id": "other",
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--split",
+                "fold/1",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert set(manifest_json["splits"]) == {"fold/1"}
+    assert manifest_json["splits"]["fold/1"]["manifest"] == "manifests/fold_1.csv"
+    assert (output_dir / "manifests" / "fold_1.csv").exists()
+    assert not (output_dir / "manifests" / "fold_2.csv").exists()
+
+
+def test_converter_rejects_split_filter_with_no_matching_rows(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "train",
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    with pytest.raises(ValueError, match="No rows matched requested --split values"):
+        convert(
+            parse_args(
+                [
+                    "--index",
+                    str(index_path),
+                    "--split",
+                    "val",
+                    "--config",
+                    str(config_path),
+                    "--output-dir",
+                    str(tmp_path / "kaldi"),
+                    "--max-tokens",
+                    "2",
+                    "--channels-from-config",
+                ]
+            )
+        )
+
+
+def test_converter_prunes_overlap_eval_splits_unless_opted_in(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(12, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": split,
+                "duration": 90,
+                "session_id": split,
+                "eeg_mask": 1,
+            }
+            for split in ("train", "val", "test")
+        ]
+    ).to_csv(index_path, index=False)
+
+    def run_convert(output_dir: Path, include_eval_splits: bool) -> None:
+        argv = [
+            "--index",
+            str(index_path),
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(output_dir),
+            "--max-tokens",
+            "2",
+            "--stride-tokens",
+            "1",
+            "--channels-from-config",
+        ]
+        if include_eval_splits:
+            argv.append("--include-overlap-eval-splits")
+        convert(parse_args(argv))
+
+    default_output_dir = tmp_path / "kaldi-default"
+    run_convert(default_output_dir, include_eval_splits=False)
+    default_manifest = json.loads((default_output_dir / "manifest.json").read_text())
+    assert set(default_manifest["splits"]) == {"train"}
+    assert (default_output_dir / "manifests" / "train.csv").exists()
+    assert not (default_output_dir / "manifests" / "val.csv").exists()
+    assert not (default_output_dir / "manifests" / "test.csv").exists()
+
+    opt_in_output_dir = tmp_path / "kaldi-opt-in"
+    run_convert(opt_in_output_dir, include_eval_splits=True)
+    opt_in_manifest = json.loads((opt_in_output_dir / "manifest.json").read_text())
+    assert set(opt_in_manifest["splits"]) == {"train", "val", "test"}
+    assert (opt_in_output_dir / "manifests" / "train.csv").exists()
+    assert (opt_in_output_dir / "manifests" / "val.csv").exists()
+    assert (opt_in_output_dir / "manifests" / "test.csv").exists()
+
+
+def test_converter_split_filter_requires_overlap_eval_opt_in_for_eval_splits(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(12, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "val",
+                "duration": 90,
+                "session_id": "val",
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    base_args = [
+        "--index",
+        str(index_path),
+        "--split",
+        "val",
+        "--config",
+        str(config_path),
+        "--max-tokens",
+        "2",
+        "--stride-tokens",
+        "1",
+        "--channels-from-config",
+    ]
+    with pytest.raises(ValueError, match="Overlap windows excluded val/test splits and no rows remain"):
+        convert(parse_args(base_args + ["--output-dir", str(tmp_path / "blocked")]))
+
+    output_dir = tmp_path / "kept"
+    convert(
+        parse_args(
+            base_args
+            + [
+                "--output-dir",
+                str(output_dir),
+                "--include-overlap-eval-splits",
+            ]
+        )
+    )
+
+    manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert set(manifest_json["splits"]) == {"val"}
+    assert (output_dir / "manifests" / "val.csv").exists()
+
+
+def test_converter_writes_ark_shards_with_aggregate_scp(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(16, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 120,
+                "session_id": "night",
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--ark-shards",
+                "2",
+                "--max-tokens",
+                "2",
+                "--stride-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    channel_dir = output_dir / "channels" / "train"
+    assert (channel_dir / "eeg.1.ark").exists()
+    assert (channel_dir / "eeg.1.scp").exists()
+    assert (channel_dir / "eeg.2.ark").exists()
+    assert (channel_dir / "eeg.2.scp").exists()
+    aggregate_scp = channel_dir / "eeg.scp"
+    assert aggregate_scp.exists()
+
+    keys = ["mesa_night_000000_000002", "mesa_night_000002_000004"]
+    assert _scp_keys(channel_dir / "eeg.1.scp") == [keys[0]]
+    assert _scp_keys(channel_dir / "eeg.2.scp") == [keys[1]]
+    assert _scp_keys(aggregate_scp) == keys
+    for key in keys:
+        assert _read_matrix(aggregate_scp, key).shape == (2, 4)
+
+    manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
+        "input_dim": 4,
+        "scp": "channels/train/eeg.scp",
     }
 
 
@@ -716,6 +1064,60 @@ def test_converter_rejects_duplicate_sample_keys(tmp_path: Path):
                 ]
             )
         )
+
+
+def test_converter_uses_parent_directory_when_path_stems_repeat(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    sub_a = tmp_path / "sub-a"
+    sub_b = tmp_path / "sub-b"
+    sub_a.mkdir()
+    sub_b.mkdir()
+    npz_a = sub_a / "ses-1.npz"
+    npz_b = sub_b / "ses-1.npz"
+    np.savez(npz_a, eeg=np.arange(8, dtype=np.float32))
+    np.savez(npz_b, eeg=np.arange(8, 16, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_a),
+                "dataset": "hsp",
+                "split": "train",
+                "duration": 60,
+                "eeg_mask": 1,
+            },
+            {
+                "path": str(npz_b),
+                "dataset": "hsp",
+                "split": "train",
+                "duration": 60,
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    assert manifest["sample_key"].tolist() == [
+        "hsp_sub-a_ses-1_000000_000002",
+        "hsp_sub-b_ses-1_000000_000002",
+    ]
 
 
 def test_converter_rejects_rank3_tokenized_channel(tmp_path: Path):

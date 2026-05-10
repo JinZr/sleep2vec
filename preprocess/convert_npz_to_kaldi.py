@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import json
 import os
@@ -12,6 +13,7 @@ import typing as t
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -36,18 +38,41 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--index", nargs="+", required=True, help="Input index CSV file(s).")
     parser.add_argument(
+        "--split",
+        nargs="+",
+        default=None,
+        help="Optional CSV split label(s) to convert. Defaults to every split present in the index.",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="YAML config whose model.channels define channel names and input_dim values.",
     )
     parser.add_argument("--output-dir", type=Path, required=True, help="Output Kaldi data root.")
+    parser.add_argument(
+        "--ark-shards",
+        type=int,
+        default=1,
+        help="Number of ark shards to write per split/channel. Default preserves one ark per split/channel.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=4,
+        help="Number of record conversion worker threads.",
+    )
     parser.add_argument("--max-tokens", type=int, required=True, help="Maximum tokens per output sample.")
     parser.add_argument(
         "--stride-tokens",
         type=int,
         default=None,
         help="Window stride in tokens. Defaults to --max-tokens.",
+    )
+    parser.add_argument(
+        "--include-overlap-eval-splits",
+        action="store_true",
+        help="Keep val/test rows when overlapping windows are enabled.",
     )
     parser.add_argument("--token-sec", type=int, default=30, help="Seconds represented by one token.")
     parser.add_argument(
@@ -253,7 +278,8 @@ def _record_key_from_row(row: pd.Series, original_path: str) -> str:
     session_id = row.get("session_id", None)
     if session_id is not None and not pd.isna(session_id) and str(session_id):
         return _sanitize_key_part(session_id)
-    return _sanitize_key_part(Path(original_path).stem)
+    path = Path(original_path)
+    return _sanitize_key_part(f"{path.parent.name}_{path.stem}")
 
 
 def _sample_key(*, source_value: t.Any, record_key: str, start: int, end: int) -> str:
@@ -272,6 +298,112 @@ def _should_keep_sample(
     return len(available_channels) == len(requested_channels)
 
 
+def _convert_record(
+    row: pd.Series,
+    *,
+    args: argparse.Namespace,
+    channel_names: t.Sequence[str],
+    extractors: t.Mapping[str, t.Callable],
+    tokenizers: t.Mapping[str, t.Callable],
+    prefix_maps: t.Sequence[tuple[str, str]],
+    stride_tokens: int,
+    effective_min_channels: int,
+) -> list[dict[str, t.Any]]:
+    source_value = row[args.source_field]
+    if pd.isna(source_value) or str(source_value) == "":
+        raise ValueError(f"CSV source field {args.source_field!r} has an empty value.")
+
+    original_path = str(row["path"])
+    npz_path = _resolve_npz_path(original_path, prefix_maps)
+    duration = int(row["duration"])
+    num_record_tokens = duration // int(args.token_sec)
+    if num_record_tokens <= 0:
+        return []
+
+    record_key = _record_key_from_row(row, original_path)
+    mask_status = _row_mask_status(row, channel_names)
+    samples: list[dict[str, t.Any]] = []
+
+    with load_npz(str(npz_path)) as npz:
+        for left, right in window(num_record_tokens, args.max_tokens, stride_tokens):
+            start = int(left)
+            end = int(right)
+            sample_key = _sample_key(
+                source_value=source_value,
+                record_key=record_key,
+                start=start,
+                end=end,
+            )
+
+            matrices: dict[str, np.ndarray] = {}
+            scalar_metadata: dict[str, float] = {}
+            for channel in channel_names:
+                matrix, channel_metadata = _try_extract_channel(
+                    npz=npz,
+                    channel=channel,
+                    extractor=extractors[channel],
+                    tokenizer=tokenizers[channel],
+                    mask_present=mask_status[channel],
+                    start=start,
+                    end=end,
+                    sample_key=sample_key,
+                )
+                if matrix is None:
+                    continue
+                matrices[channel] = matrix
+                scalar_metadata.update(channel_metadata)
+
+            available_channels = [channel for channel in channel_names if channel in matrices]
+            if not _should_keep_sample(
+                available_channels,
+                channel_names,
+                allow_missing_channels=args.allow_missing_channels,
+                min_channels=effective_min_channels,
+            ):
+                continue
+
+            lengths = [matrix.shape[0] for matrix in matrices.values()]
+            min_len = min(lengths)
+            max_len = max(lengths)
+            if max_len - min_len > 1:
+                raise ValueError(
+                    f"Sample {sample_key!r} has channel token lengths differing by more than one: "
+                    f"{dict((channel, matrix.shape[0]) for channel, matrix in matrices.items())}."
+                )
+            if min_len < 1:
+                continue
+            matrices = {channel: matrix[:min_len] for channel, matrix in matrices.items()}
+            actual_end = start + min_len
+
+            manifest_row = dict(row.to_dict())
+            source = manifest_row.get("source")
+            if source is None or pd.isna(source) or str(source).strip() == "":
+                manifest_row["source"] = source_value
+            manifest_row.update(
+                {
+                    "sample_key": sample_key,
+                    "record_key": record_key,
+                    "sample_source": source_value,
+                    "path": original_path,
+                    "token_start": start,
+                    "token_end": actual_end,
+                    "num_tokens": min_len,
+                    "available_channels": json.dumps(available_channels),
+                }
+            )
+            manifest_row.update(scalar_metadata)
+            samples.append(
+                {
+                    "sample_key": sample_key,
+                    "split": row["split"],
+                    "matrices": matrices,
+                    "manifest_row": manifest_row,
+                }
+            )
+
+    return samples
+
+
 def convert(args: argparse.Namespace) -> Path:
     if args.max_tokens < 1:
         raise ValueError("--max-tokens must be >= 1.")
@@ -282,6 +414,10 @@ def convert(args: argparse.Namespace) -> Path:
         raise ValueError("--stride-tokens must be >= 0.")
     if args.min_channels < 1:
         raise ValueError("--min-channels must be >= 1.")
+    if args.ark_shards < 1:
+        raise ValueError("--ark-shards must be >= 1.")
+    if args.num_workers < 1:
+        raise ValueError("--num-workers must be >= 1.")
 
     args.config = args.config.expanduser()
     if not args.config.exists():
@@ -303,6 +439,18 @@ def convert(args: argparse.Namespace) -> Path:
 
     df = _load_index_df(index_paths)
     _validate_required_columns(df, args.source_field)
+    if args.split is not None:
+        requested_splits = {str(split) for split in args.split}
+        df = df[df["split"].astype(str).isin(requested_splits)].copy()
+        if df.empty:
+            raise ValueError(f"No rows matched requested --split values: {sorted(requested_splits)}.")
+    if 0 < stride_tokens < args.max_tokens and not args.include_overlap_eval_splits:
+        original_count = len(df)
+        df = df[~df["split"].astype(str).isin({"val", "test"})].copy()
+        if len(df) != original_count:
+            print("Overlap windows enabled; excluding val/test splits unless --include-overlap-eval-splits is set.")
+        if df.empty:
+            raise ValueError("Overlap windows excluded val/test splits and no rows remain.")
     prefix_maps = _parse_prefix_maps(args.path_prefix_map)
 
     kaldi_native_io = _import_kaldi_native_io()
@@ -314,9 +462,10 @@ def convert(args: argparse.Namespace) -> Path:
 
     seen_sample_keys: set[str] = set()
     manifest_json_path = output_dir / "manifest.json"
-    writers: dict[tuple[str, str], t.Any] = {}
+    writers: dict[tuple[str, str, int], t.Any] = {}
     split_dirs: dict[str, str] = {}
     split_keys_by_dir: dict[str, str] = {}
+    split_sample_counts: dict[str, int] = {}
     manifest_rows_by_split: dict[str, list[dict[str, t.Any]]] = {}
 
     with ExitStack() as stack:
@@ -337,104 +486,55 @@ def convert(args: argparse.Namespace) -> Path:
             split_channel_dir = channels_root / split_dir
             split_channel_dir.mkdir(parents=True, exist_ok=True)
             for channel in channel_names:
-                ark_path = split_channel_dir / f"{channel}.ark"
-                scp_path = split_channel_dir / f"{channel}.scp"
-                writers[(split_key, channel)] = stack.enter_context(
-                    kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
-                )
+                if args.ark_shards == 1:
+                    ark_path = split_channel_dir / f"{channel}.ark"
+                    scp_path = split_channel_dir / f"{channel}.scp"
+                    writers[(split_key, channel, 0)] = stack.enter_context(
+                        kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
+                    )
+                else:
+                    for shard_index in range(args.ark_shards):
+                        shard_no = shard_index + 1
+                        ark_path = split_channel_dir / f"{channel}.{shard_no}.ark"
+                        scp_path = split_channel_dir / f"{channel}.{shard_no}.scp"
+                        writers[(split_key, channel, shard_index)] = stack.enter_context(
+                            kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
+                        )
             return split_key
 
-        for _, row in df.iterrows():
-            source_value = row[args.source_field]
-            if pd.isna(source_value) or str(source_value) == "":
-                raise ValueError(f"CSV source field {args.source_field!r} has an empty value.")
+        def convert_row(row: pd.Series) -> list[dict[str, t.Any]]:
+            return _convert_record(
+                row,
+                args=args,
+                channel_names=channel_names,
+                extractors=extractors,
+                tokenizers=tokenizers,
+                prefix_maps=prefix_maps,
+                stride_tokens=stride_tokens,
+                effective_min_channels=effective_min_channels,
+            )
 
-            original_path = str(row["path"])
-            npz_path = _resolve_npz_path(original_path, prefix_maps)
-            duration = int(row["duration"])
-            num_record_tokens = duration // int(args.token_sec)
-            if num_record_tokens <= 0:
-                continue
+        rows = (row for _, row in df.iterrows())
+        if args.num_workers == 1:
+            converted_records = map(convert_row, rows)
+        else:
+            executor = stack.enter_context(ThreadPoolExecutor(max_workers=args.num_workers))
+            converted_records = executor.map(convert_row, rows)
 
-            record_key = _record_key_from_row(row, original_path)
-            mask_status = _row_mask_status(row, channel_names)
+        for samples in tqdm(converted_records, total=len(df), desc="Converting records", unit="record"):
+            for sample in samples:
+                sample_key = sample["sample_key"]
+                if sample_key in seen_sample_keys:
+                    raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
 
-            with load_npz(str(npz_path)) as npz:
-                for left, right in window(num_record_tokens, args.max_tokens, stride_tokens):
-                    start = int(left)
-                    end = int(right)
-                    sample_key = _sample_key(
-                        source_value=source_value,
-                        record_key=record_key,
-                        start=start,
-                        end=end,
-                    )
-                    if sample_key in seen_sample_keys:
-                        raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
-
-                    matrices: dict[str, np.ndarray] = {}
-                    scalar_metadata: dict[str, float] = {}
-                    for channel in channel_names:
-                        matrix, channel_metadata = _try_extract_channel(
-                            npz=npz,
-                            channel=channel,
-                            extractor=extractors[channel],
-                            tokenizer=tokenizers[channel],
-                            mask_present=mask_status[channel],
-                            start=start,
-                            end=end,
-                            sample_key=sample_key,
-                        )
-                        if matrix is None:
-                            continue
-                        matrices[channel] = matrix
-                        scalar_metadata.update(channel_metadata)
-
-                    available_channels = [channel for channel in channel_names if channel in matrices]
-                    if not _should_keep_sample(
-                        available_channels,
-                        channel_names,
-                        allow_missing_channels=args.allow_missing_channels,
-                        min_channels=effective_min_channels,
-                    ):
-                        continue
-
-                    lengths = [matrix.shape[0] for matrix in matrices.values()]
-                    min_len = min(lengths)
-                    max_len = max(lengths)
-                    if max_len - min_len > 1:
-                        raise ValueError(
-                            f"Sample {sample_key!r} has channel token lengths differing by more than one: "
-                            f"{dict((channel, matrix.shape[0]) for channel, matrix in matrices.items())}."
-                        )
-                    if min_len < 1:
-                        continue
-                    matrices = {channel: matrix[:min_len] for channel, matrix in matrices.items()}
-                    actual_end = start + min_len
-
-                    seen_sample_keys.add(sample_key)
-                    split_key = ensure_split_writers(row["split"])
-                    for channel, matrix in matrices.items():
-                        writers[(split_key, channel)].write(sample_key, matrix)
-
-                    manifest_row = dict(row.to_dict())
-                    source = manifest_row.get("source")
-                    if source is None or pd.isna(source) or str(source).strip() == "":
-                        manifest_row["source"] = source_value
-                    manifest_row.update(
-                        {
-                            "sample_key": sample_key,
-                            "record_key": record_key,
-                            "sample_source": source_value,
-                            "path": original_path,
-                            "token_start": start,
-                            "token_end": actual_end,
-                            "num_tokens": min_len,
-                            "available_channels": json.dumps(available_channels),
-                        }
-                    )
-                    manifest_row.update(scalar_metadata)
-                    manifest_rows_by_split.setdefault(split_key, []).append(manifest_row)
+                seen_sample_keys.add(sample_key)
+                split_key = ensure_split_writers(sample["split"])
+                split_sample_count = split_sample_counts.get(split_key, 0)
+                shard_index = split_sample_count % args.ark_shards
+                split_sample_counts[split_key] = split_sample_count + 1
+                for channel, matrix in sample["matrices"].items():
+                    writers[(split_key, channel, shard_index)].write(sample_key, matrix)
+                manifest_rows_by_split.setdefault(split_key, []).append(sample["manifest_row"])
 
     if not manifest_rows_by_split:
         raise ValueError("No samples satisfied the requested channel availability rules.")
@@ -447,7 +547,16 @@ def convert(args: argparse.Namespace) -> Path:
         split_channel_dir = channels_root / split_dir
         for channel in channel_names:
             scp_path = split_channel_dir / f"{channel}.scp"
-            lines = scp_path.read_text().splitlines()
+            if args.ark_shards == 1:
+                lines = scp_path.read_text().splitlines()
+            else:
+                lines = []
+                for shard_index in range(args.ark_shards):
+                    shard_scp_path = split_channel_dir / f"{channel}.{shard_index + 1}.scp"
+                    shard_lines = shard_scp_path.read_text().splitlines() if shard_scp_path.exists() else []
+                    shard_lines.sort(key=lambda line: line.split(maxsplit=1)[0])
+                    shard_scp_path.write_text("\n".join(shard_lines) + ("\n" if shard_lines else ""))
+                    lines.extend(shard_lines)
             lines.sort(key=lambda line: line.split(maxsplit=1)[0])
             scp_path.write_text("\n".join(lines) + ("\n" if lines else ""))
         splits[split_key] = {
