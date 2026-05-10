@@ -316,6 +316,7 @@ def convert(args: argparse.Namespace) -> Path:
     manifest_json_path = output_dir / "manifest.json"
     writers: dict[tuple[str, str], t.Any] = {}
     split_dirs: dict[str, str] = {}
+    split_keys_by_dir: dict[str, str] = {}
     manifest_rows_by_split: dict[str, list[dict[str, t.Any]]] = {}
 
     with ExitStack() as stack:
@@ -326,7 +327,13 @@ def convert(args: argparse.Namespace) -> Path:
                 return split_key
 
             split_dir = _sanitize_key_part(split_key)
+            existing_split_key = split_keys_by_dir.get(split_dir)
+            if existing_split_key is not None:
+                raise ValueError(
+                    f"Split labels {existing_split_key!r} and {split_key!r} both map to directory {split_dir!r}."
+                )
             split_dirs[split_key] = split_dir
+            split_keys_by_dir[split_dir] = split_key
             split_channel_dir = channels_root / split_dir
             split_channel_dir.mkdir(parents=True, exist_ok=True)
             for channel in channel_names:

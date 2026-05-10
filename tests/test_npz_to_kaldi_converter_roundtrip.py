@@ -225,6 +225,50 @@ def test_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Pat
     }
 
 
+def test_converter_rejects_sanitized_split_directory_collisions(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "fold/1",
+                "duration": 60,
+                "session_id": "s1",
+                "eeg_mask": 1,
+            },
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "fold_1",
+                "duration": 60,
+                "session_id": "s2",
+                "eeg_mask": 1,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    with pytest.raises(ValueError, match="both map to directory 'fold_1'"):
+        convert(
+            parse_args(
+                [
+                    "--index",
+                    str(index_path),
+                    "--config",
+                    str(config_path),
+                    "--output-dir",
+                    str(tmp_path / "kaldi"),
+                    "--max-tokens",
+                    "2",
+                    "--channels-from-config",
+                ]
+            )
+        )
+
+
 def test_converter_allow_missing_channels_keeps_partial_samples(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4, "ppg": 4})
     npz_path = tmp_path / "sample.npz"
