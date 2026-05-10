@@ -51,6 +51,7 @@ Tracked files indexed from this branch:
 - a standalone RoFormer backbone implementation used instead of legacy HF RoFormer checkpoint keys
 - a new sleep2wave generative stack for waveform autoencoding, latent diffusion, generation artifacts, and evaluation
 - sleep2wave-specific preprocessing and schema-versioned generative presets
+- opt-in sleep2wave Kaldi waveform storage for the generative autoencoder/diffusion/generation stack
 
 ## Deliverable Layout
 

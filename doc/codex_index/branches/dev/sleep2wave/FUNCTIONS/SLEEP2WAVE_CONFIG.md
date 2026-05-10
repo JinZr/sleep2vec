@@ -12,7 +12,7 @@
 - Important inputs/outputs: YAML mappings in; frozen dataclass tree out.
 - Side effects: none beyond reading YAML through `load_sleep2wave_config`.
 - Reuse guidance: extend these dataclasses before adding ad hoc entrypoint fields.
-- Duplication-risk notes: stage semantics and modality validation must stay centralized here.
+- Duplication-risk notes: stage semantics, modality validation, and data-backend source rules must stay centralized here.
 
 ## `sleep2wave.generative.config.load_sleep2wave_config`
 
@@ -38,12 +38,12 @@
   - `_load_sampler(raw, diffusion_cfg) -> SamplerConfig`
   - `_load_initialization(raw) -> InitializationConfig | None`
   - `_load_evaluation(raw) -> EvaluationConfig`
-- Purpose and contract: parse individual schema blocks and reject unsupported fields, including temporal-patch diffusion fields, training validation cadence, batch caps, example logging config, task-aware training/inference corruption specs with optional weighted choices, restoration condition-count sampling, evaluation corruption mask policy, and phase checkpoint paths.
+- Purpose and contract: parse individual schema blocks and reject unsupported fields, including `data.backend` source rules, temporal-patch diffusion fields, training validation cadence, batch caps, example logging config, task-aware training/inference corruption specs with optional weighted choices, restoration condition-count sampling, evaluation corruption mask policy, and phase checkpoint paths.
 - Important inputs/outputs: raw mapping in; typed config out.
 - Side effects: none.
 - Key callers/callees: called by `load_sleep2wave_config`.
 - Reuse guidance: keep validation close to each block when adding fields.
-- Duplication-risk notes: `sampler.steps` and DDPM constraints are validated here and in sampler constructors; keep them aligned. `diffusion.latent_frames_per_epoch`, `patches_per_epoch`, `embeddings.channel_position`, and `embeddings.patch_position` belong here rather than in entrypoints.
+- Duplication-risk notes: `DataConfig.backend` defaults to `npz`. For `npz`, exactly one of `preset_path` or `index` is required and Kaldi fields are rejected. For `kaldi`, `kaldi_data_root` and `kaldi_manifest` are required and `preset_path`/`index` are rejected. `sampler.steps` and DDPM constraints are validated here and in sampler constructors; keep them aligned. `diffusion.latent_frames_per_epoch`, `patches_per_epoch`, `embeddings.channel_position`, and `embeddings.patch_position` belong here rather than in entrypoints.
 
 ## `sleep2wave.config.load_pretrain_config`
 

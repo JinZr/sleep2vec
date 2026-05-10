@@ -32,6 +32,8 @@ python -m sleep2wave.generate \
 
 For restoration/imputation, use `--corruption-name` with JSON `--corruption-kwargs` to override YAML defaults for a run, or pass `--condition-mask-npz` with per-modality mask arrays such as `eeg_mask`.
 
+Generation follows the YAML `data.backend` by default. `data.backend: kaldi` reads `kaldi_data_root` and `kaldi_manifest`; passing `--preset-path` or `--index` remains an explicit NPZ override.
+
 ## Artifact Contract
 
 `write_generation_artifacts` writes:
@@ -49,7 +51,7 @@ For restoration/imputation, use `--corruption-name` with JSON `--corruption-kwar
 ## Current Limitations
 
 - `validate_single_night` requires all generation windows to belong to one subject/night/path.
-- `--preset-path` and `--index` are mutually exclusive, and exactly one source must be available through CLI or config.
+- `--preset-path` and `--index` are mutually exclusive NPZ overrides. Without them, the YAML data backend decides whether generation reads NPZ preset/index data or a Kaldi manifest.
 - DDPM sampling requires sampler steps equal to diffusion steps.
 
 ## Edit Hotspots

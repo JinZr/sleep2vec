@@ -202,12 +202,40 @@ def test_generate_cli_rejects_invalid_condition_target_overlap(tmp_path: Path):
 
 def test_generate_cli_data_source_override_replaces_config_source(tmp_path: Path):
     args = SimpleNamespace(preset_path=None, index=tmp_path / "override.csv")
-    data_config = SimpleNamespace(preset_path=str(tmp_path / "config.pkl"), index=None)
+    data_config = SimpleNamespace(
+        backend="kaldi",
+        preset_path=None,
+        index=None,
+        kaldi_data_root=str(tmp_path / "kaldi"),
+        kaldi_manifest=str(tmp_path / "kaldi" / "manifest.csv"),
+    )
 
-    preset_path, index = _resolve_generation_data_source(args, data_config)
+    backend, preset_path, index, kaldi_data_root, kaldi_manifest = _resolve_generation_data_source(args, data_config)
 
+    assert backend == "npz"
     assert preset_path is None
     assert index == tmp_path / "override.csv"
+    assert kaldi_data_root is None
+    assert kaldi_manifest is None
+
+
+def test_generate_cli_data_source_uses_configured_kaldi_backend(tmp_path: Path):
+    args = SimpleNamespace(preset_path=None, index=None)
+    data_config = SimpleNamespace(
+        backend="kaldi",
+        preset_path=None,
+        index=None,
+        kaldi_data_root=str(tmp_path / "kaldi"),
+        kaldi_manifest=str(tmp_path / "kaldi" / "manifest.csv"),
+    )
+
+    backend, preset_path, index, kaldi_data_root, kaldi_manifest = _resolve_generation_data_source(args, data_config)
+
+    assert backend == "kaldi"
+    assert preset_path is None
+    assert index is None
+    assert kaldi_data_root == str(tmp_path / "kaldi")
+    assert kaldi_manifest == str(tmp_path / "kaldi" / "manifest.csv")
 
 
 def test_generate_activates_unavailable_translation_targets_for_sampling():
@@ -394,7 +422,14 @@ def test_generation_passes_patch_condition_availability(monkeypatch):
         auxiliary_restoration_token=True,
     )
     config = SimpleNamespace(
-        data=SimpleNamespace(preset_path="preset.pkl", index=None, context_epochs=epoch_count),
+        data=SimpleNamespace(
+            backend="npz",
+            preset_path="preset.pkl",
+            index=None,
+            kaldi_data_root=None,
+            kaldi_manifest=None,
+            context_epochs=epoch_count,
+        ),
         diffusion=SimpleNamespace(diffusion_steps=8, beta_schedule="cosine", patches_per_epoch=6),
         inference=None,
         modalities=SimpleNamespace(all=list(CANONICAL_MODALITIES)),

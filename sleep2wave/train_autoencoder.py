@@ -49,8 +49,11 @@ def build_dataloader(config, *, num_workers: int, split: str = "train"):
     if config.training is None:
         raise ValueError("training block is required for autoencoder training.")
     dataset = Sleep2WaveGenerativeDataset(
+        backend=config.data.backend,
         preset_path=config.data.preset_path,
         index=config.data.index,
+        kaldi_data_root=config.data.kaldi_data_root,
+        kaldi_manifest=config.data.kaldi_manifest,
         split=split,
         context_epochs=config.data.context_epochs,
         task_type="restoration",

@@ -96,8 +96,11 @@ def build_dataloader(config, *, num_workers: int, seed: int, split: str = "train
         )
     else:
         dataset = Sleep2WaveGenerativeDataset(
+            backend=config.data.backend,
             preset_path=config.data.preset_path,
             index=config.data.index,
+            kaldi_data_root=config.data.kaldi_data_root,
+            kaldi_manifest=config.data.kaldi_manifest,
             split=split,
             context_epochs=config.data.context_epochs,
             task_type="translation",

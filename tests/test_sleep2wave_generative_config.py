@@ -41,6 +41,7 @@ def test_sleep2wave_generative_config_loads_autoencoder_tiny():
     assert cfg.recipe == "sleep2wave"
     assert cfg.stage == "autoencoder"
     assert cfg.modalities.all == list(CANONICAL_MODALITIES)
+    assert cfg.data.backend == "npz"
     assert cfg.data.context_epochs == 15
     assert cfg.autoencoder is not None
     assert cfg.autoencoder.latent_dim == 64
@@ -68,6 +69,70 @@ def test_sleep2wave_autoencoder_validation_examples_default_to_all_modalities(tm
 
     assert cfg.training.validation.examples.num_examples == 1
     assert cfg.training.validation.examples.modalities == list(CANONICAL_MODALITIES)
+
+
+def test_sleep2wave_data_config_loads_kaldi_backend(tmp_path: Path):
+    payload = _load_payload(AUTOENCODER_TINY)
+    payload["data"] = {
+        "backend": "kaldi",
+        "kaldi_data_root": "/tmp/sleep2wave_kaldi",
+        "kaldi_manifest": "/tmp/sleep2wave_kaldi/manifest.csv",
+        "context_epochs": 15,
+    }
+    path = _write_yaml(tmp_path / "autoencoder_kaldi.yaml", payload)
+
+    cfg = load_sleep2wave_config(path)
+
+    assert cfg.data.backend == "kaldi"
+    assert cfg.data.kaldi_data_root == "/tmp/sleep2wave_kaldi"
+    assert cfg.data.kaldi_manifest == "/tmp/sleep2wave_kaldi/manifest.csv"
+    assert cfg.data.preset_path is None
+    assert cfg.data.index is None
+
+
+@pytest.mark.parametrize(
+    ("data_block", "match"),
+    [
+        (
+            {"backend": "kaldi", "kaldi_data_root": "/tmp/root", "context_epochs": 15},
+            "requires kaldi_manifest",
+        ),
+        (
+            {
+                "backend": "kaldi",
+                "kaldi_data_root": "/tmp/root",
+                "kaldi_manifest": "/tmp/root/manifest.csv",
+                "preset_path": "data/preset.pkl",
+                "context_epochs": 15,
+            },
+            "preset_path and index are unsupported",
+        ),
+        (
+            {
+                "backend": "npz",
+                "preset_path": "data/preset.pkl",
+                "kaldi_data_root": "/tmp/root",
+                "context_epochs": 15,
+            },
+            "backend=npz does not support",
+        ),
+        (
+            {"backend": ["kaldi"], "preset_path": "data/preset.pkl", "context_epochs": 15},
+            "data.backend must be one of",
+        ),
+    ],
+)
+def test_sleep2wave_data_config_rejects_invalid_backend_fields(
+    tmp_path: Path,
+    data_block: dict,
+    match: str,
+):
+    payload = _load_payload(AUTOENCODER_TINY)
+    payload["data"] = data_block
+    path = _write_yaml(tmp_path / "bad_data.yaml", payload)
+
+    with pytest.raises(ValueError, match=match):
+        load_sleep2wave_config(path)
 
 
 @pytest.mark.parametrize(

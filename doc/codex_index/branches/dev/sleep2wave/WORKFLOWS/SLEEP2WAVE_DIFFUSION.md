@@ -29,6 +29,7 @@ Required blocks:
 
 Important constraints:
 
+- `data.backend` defaults to `npz`; opt-in Kaldi runs use `data.backend: kaldi` with `kaldi_data_root`, `kaldi_manifest`, and no `preset_path` or `index`.
 - `training.phase` must be 1 through 5.
 - `data.context_epochs` must match `diffusion.context_epochs`.
 - `diffusion.autoencoder_checkpoint` is required for Phase 2B temporal-patch diffusion.
@@ -73,6 +74,7 @@ Latent-cache training is intentionally disabled for Phase 2B because the old cac
 - Training step: `sleep2wave/diffusion/lightning.py`
 - Latent cache: `sleep2wave/diffusion/latent_cache.py`, `sleep2wave/cache_latents.py`
 - Curriculum: `sleep2wave/training/phase_schedule.py`, `sleep2wave/training/task_sampler.py`
+- Data backend loading: `sleep2wave/data/generative_dataset.py`
 
 ## Tests
 

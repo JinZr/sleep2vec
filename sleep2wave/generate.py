@@ -118,16 +118,24 @@ def _decode_generated_latents(
 
 def _resolve_generation_data_source(
     args: argparse.Namespace, data_config
-) -> tuple[Path | str | None, Path | str | None]:
+) -> tuple[str, Path | str | None, Path | str | None, Path | str | None, Path | str | None]:
     if args.preset_path is not None or args.index is not None:
+        backend = "npz"
         preset_path = args.preset_path
         index = args.index
+        kaldi_data_root = None
+        kaldi_manifest = None
     else:
+        backend = data_config.backend
         preset_path = data_config.preset_path
         index = data_config.index
-    if (preset_path is None) == (index is None):
+        kaldi_data_root = data_config.kaldi_data_root
+        kaldi_manifest = data_config.kaldi_manifest
+    if backend == "npz" and (preset_path is None) == (index is None):
         raise ValueError("Generation requires exactly one preset path or index path.")
-    return preset_path, index
+    if backend == "kaldi" and (kaldi_data_root is None or kaldi_manifest is None):
+        raise ValueError("Generation with data.backend=kaldi requires kaldi_data_root and kaldi_manifest.")
+    return backend, preset_path, index, kaldi_data_root, kaldi_manifest
 
 
 def _parse_corruption_kwargs(raw: str | None) -> dict[str, t.Any]:
@@ -224,7 +232,7 @@ def _collect_generation_windows(
     from sleep2wave.diffusion.task_masks import build_patch_condition_availability
     from sleep2wave.inference.sliding_window import validate_single_night
 
-    preset_path, index = _resolve_generation_data_source(args, config.data)
+    backend, preset_path, index, kaldi_data_root, kaldi_manifest = _resolve_generation_data_source(args, config.data)
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive.")
     if args.stride_epochs <= 0:
@@ -232,8 +240,11 @@ def _collect_generation_windows(
     corruption_specs = _resolve_inference_corruption_specs(config=config, args=args, task=task)
 
     dataset = Sleep2WaveGenerativeDataset(
+        backend=backend,
         preset_path=preset_path,
         index=index,
+        kaldi_data_root=kaldi_data_root,
+        kaldi_manifest=kaldi_manifest,
         context_epochs=config.data.context_epochs,
         stride_epochs=args.stride_epochs,
         condition_modalities=task.condition_modalities,

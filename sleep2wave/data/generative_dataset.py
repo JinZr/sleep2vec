@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import pickle
 import typing as t
@@ -16,6 +17,7 @@ from tqdm import tqdm
 from sleep2wave.data.corruptions import apply_corruption
 from sleep2wave.data.default_dataset import SampleIndex
 from sleep2wave.data.generative_batch import collate_sleep2wave_generative
+from sleep2wave.data.kaldi_io import KaldiWaveChannelSpec, KaldiWaveReaderPool
 from sleep2wave.data.modalities import (
     CANONICAL_MODALITIES,
     EPOCH_SEC,
@@ -30,6 +32,7 @@ from sleep2wave.preprocess.split_index_by_dataset import normalize_mask_frame
 
 SLEEP2WAVE_SCHEMA_VERSION = 1
 TASK_TYPES = {"restoration", "imputation", "translation", "partial_full"}
+DATA_BACKENDS = {"npz", "kaldi"}
 
 
 @dataclass(frozen=True)
@@ -303,12 +306,151 @@ def _load_preset(path: str | Path) -> list[SampleIndex]:
     return [normalize_sample_index(item) for item in loaded]
 
 
+def _is_missing(value: t.Any) -> bool:
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _parse_json_field(raw: t.Any, *, field_name: str, sample_key: str) -> t.Any:
+    if _is_missing(raw):
+        return None
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Kaldi sample {sample_key!r} has invalid {field_name}: {raw!r}.") from exc
+    return raw
+
+
+def _load_kaldi_channel_specs(kaldi_data_root: str | Path) -> dict[str, KaldiWaveChannelSpec]:
+    root = Path(kaldi_data_root).expanduser()
+    manifest_json_path = root / "manifest.json"
+    if not manifest_json_path.exists():
+        raise FileNotFoundError(f"Sleep2Wave Kaldi manifest.json not found: {manifest_json_path}")
+    manifest_json = json.loads(manifest_json_path.read_text())
+    if manifest_json.get("backend") != "kaldi_native_io":
+        raise ValueError("Sleep2Wave Kaldi manifest.json must set backend='kaldi_native_io'.")
+    raw_channels = manifest_json.get("channels")
+    if not isinstance(raw_channels, dict):
+        raise ValueError("Sleep2Wave Kaldi manifest.json must contain a 'channels' mapping.")
+
+    specs: dict[str, KaldiWaveChannelSpec] = {}
+    for modality in CANONICAL_MODALITIES:
+        raw_spec = raw_channels.get(modality)
+        if raw_spec is None:
+            continue
+        if not isinstance(raw_spec, dict):
+            raise ValueError(f"Sleep2Wave Kaldi channel spec for {modality!r} must be a mapping.")
+        frames_per_epoch = int(raw_spec["frames_per_epoch"])
+        expected = MODALITY_SPECS[modality].frames_per_epoch
+        if frames_per_epoch != expected:
+            raise ValueError(
+                f"Sleep2Wave Kaldi channel {modality!r} has frames_per_epoch={frames_per_epoch}, "
+                f"expected {expected}."
+            )
+        specs[modality] = KaldiWaveChannelSpec(
+            name=modality,
+            frames_per_epoch=frames_per_epoch,
+            scp_path=Path(raw_spec["scp"]),
+        )
+    return specs
+
+
+def _load_kaldi_samples(
+    manifest: str | Path,
+    *,
+    split: str | t.Sequence[str] | None,
+) -> list[SampleIndex]:
+    manifest_path = Path(manifest).expanduser()
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Sleep2Wave Kaldi manifest.csv not found: {manifest_path}")
+    df = pd.read_csv(manifest_path, low_memory=False)
+    required = {"sample_key", "path", "split", "epoch_start", "epoch_end", "num_epochs", "available_channels"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(f"Sleep2Wave Kaldi manifest.csv is missing required column(s): {missing}.")
+    if split is not None:
+        split_values = {split} if isinstance(split, str) else set(split)
+        df = df[df["split"].astype("string").isin(split_values)].reset_index(drop=True)
+
+    samples: list[SampleIndex] = []
+    for _, row in df.iterrows():
+        sample_key = str(row["sample_key"])
+        raw_available = _parse_json_field(
+            row["available_channels"],
+            field_name="available_channels",
+            sample_key=sample_key,
+        )
+        if not isinstance(raw_available, list):
+            raise ValueError(f"Kaldi sample {sample_key!r} has invalid available_channels.")
+        available_channels = validate_modality_sequence(raw_available, allow_aliases=True)
+        raw_quality = _parse_json_field(row.get("quality_masks"), field_name="quality_masks", sample_key=sample_key)
+        if raw_quality is None:
+            quality_masks = {}
+        elif isinstance(raw_quality, dict):
+            quality_masks = raw_quality
+        else:
+            raise ValueError(f"Kaldi sample {sample_key!r} has invalid quality_masks.")
+        start = int(row["epoch_start"])
+        end = int(row["epoch_end"])
+        num_epochs = int(row["num_epochs"])
+        if end - start != num_epochs:
+            raise ValueError(f"Kaldi sample {sample_key!r} has inconsistent epoch span and num_epochs.")
+
+        metadata = row.to_dict()
+        source = metadata.get("source")
+        if _is_missing(source):
+            source = metadata.get("sample_source", str(manifest_path))
+        subject_id = metadata.get("subject_id")
+        if _is_missing(subject_id):
+            subject_id = metadata.get("record_key", row["path"])
+        night_id = metadata.get("night_id")
+        if _is_missing(night_id):
+            night_id = metadata.get("record_key", row["path"])
+        metadata.update(
+            {
+                "source": source,
+                "path": row["path"],
+                "split": row["split"],
+                "subject_id": subject_id,
+                "night_id": night_id,
+            }
+        )
+        night_epoch_count = metadata.get("night_epoch_count")
+        if _is_missing(night_epoch_count):
+            night_epoch_count = end
+        samples.append(
+            SampleIndex(
+                id=sample_key,
+                path=str(row["path"]),
+                start=start,
+                end=end,
+                payload={
+                    "sleep2wave_schema_version": SLEEP2WAVE_SCHEMA_VERSION,
+                    "backend": "kaldi",
+                    "available_channels": available_channels,
+                    "quality_masks": quality_masks,
+                    "subject_id": subject_id,
+                    "night_id": night_id,
+                    "night_epoch_count": int(night_epoch_count),
+                },
+                metadata=metadata,
+            )
+        )
+    return samples
+
+
 class Sleep2WaveGenerativeDataset(Dataset):
     def __init__(
         self,
         *,
+        backend: str = "npz",
         preset_path: str | Path | None = None,
         index: str | Path | None = None,
+        kaldi_data_root: str | Path | None = None,
+        kaldi_manifest: str | Path | None = None,
         split: str | t.Sequence[str] | None = None,
         context_epochs: int = 15,
         stride_epochs: int | None = None,
@@ -325,10 +467,22 @@ class Sleep2WaveGenerativeDataset(Dataset):
             raise ValueError("context_epochs must be positive.")
         if task_type not in TASK_TYPES:
             raise ValueError(f"task_type must be one of {sorted(TASK_TYPES)}.")
-        if (preset_path is None) == (index is None):
-            raise ValueError("Exactly one of preset_path or index must be provided.")
+        if backend not in DATA_BACKENDS:
+            raise ValueError(f"backend must be one of {sorted(DATA_BACKENDS)}.")
+        if backend == "npz":
+            if (preset_path is None) == (index is None):
+                raise ValueError("Exactly one of preset_path or index must be provided.")
+            if kaldi_data_root is not None or kaldi_manifest is not None:
+                raise ValueError("backend='npz' does not support kaldi_data_root or kaldi_manifest.")
+        else:
+            if preset_path is not None or index is not None:
+                raise ValueError("backend='kaldi' uses kaldi_manifest; preset_path and index are unsupported.")
+            if kaldi_data_root is None or kaldi_manifest is None:
+                raise ValueError("backend='kaldi' requires kaldi_data_root and kaldi_manifest.")
 
+        self.backend = backend
         self.context_epochs = int(context_epochs)
+        self.kaldi_reader_pool = None
         self.condition_modalities = (
             validate_modality_sequence(list(condition_modalities or []), allow_aliases=True)
             if condition_modalities
@@ -352,7 +506,11 @@ class Sleep2WaveGenerativeDataset(Dataset):
             raise FileNotFoundError(f"Condition mask NPZ not found: {self.condition_mask_npz}")
         self.seed = int(seed)
 
-        if preset_path is not None:
+        if backend == "kaldi":
+            channel_specs = _load_kaldi_channel_specs(kaldi_data_root)
+            self.kaldi_reader_pool = KaldiWaveReaderPool(kaldi_data_root, channel_specs)
+            data = _load_kaldi_samples(kaldi_manifest, split=split)
+        elif preset_path is not None:
             data = _load_preset(preset_path)
             if split is not None:
                 split_values = {split} if isinstance(split, str) else set(split)
@@ -394,6 +552,39 @@ class Sleep2WaveGenerativeDataset(Dataset):
         if key is not None:
             return self._slice_signal(primary_npz, key, modality, sample.start, sample.end), True
         return self._zero_signal(modality), False
+
+    def _load_kaldi_modality_signal(self, sample: SampleIndex, modality: str) -> torch.Tensor:
+        if self.kaldi_reader_pool is None:
+            raise ValueError("Kaldi reader pool is not initialized.")
+        matrix = self.kaldi_reader_pool.read_matrix(modality, str(sample.id))
+        if matrix.shape[0] % self.context_epochs != 0:
+            raise ValueError(
+                f"Kaldi matrix for modality {modality!r}, key {sample.id!r} has {matrix.shape[0]} rows, "
+                f"which is not divisible by context_epochs={self.context_epochs}."
+            )
+        channel_count = matrix.shape[0] // self.context_epochs
+        if channel_count < 1:
+            raise ValueError(f"Kaldi matrix for modality {modality!r}, key {sample.id!r} has no channels.")
+        spec = MODALITY_SPECS[modality]
+        return torch.as_tensor(matrix, dtype=torch.float32).reshape(
+            self.context_epochs,
+            channel_count,
+            spec.frames_per_epoch,
+        )
+
+    def _kaldi_quality_mask(self, sample: SampleIndex, modality: str, *, available: bool) -> torch.Tensor:
+        if not available:
+            return torch.zeros((self.context_epochs,), dtype=torch.float32)
+        raw = sample.payload.get("quality_masks", {}).get(modality)
+        if raw is None:
+            return torch.ones((self.context_epochs,), dtype=torch.float32)
+        tensor = torch.as_tensor(raw, dtype=torch.float32)
+        if tensor.dim() != 1 or tensor.shape[0] != self.context_epochs:
+            raise ValueError(
+                f"Kaldi quality mask for modality {modality!r}, key {sample.id!r} must have "
+                f"{self.context_epochs} values."
+            )
+        return tensor
 
     def _zero_signal(self, modality: str) -> torch.Tensor:
         spec = MODALITY_SPECS[modality]
@@ -529,6 +720,47 @@ class Sleep2WaveGenerativeDataset(Dataset):
         quality_mask: dict[str, torch.Tensor] = {}
         corruption_mask: dict[str, torch.Tensor] = {}
 
+        if self.backend == "kaldi":
+            condition_mask_npz = None
+            with ExitStack() as stack:
+                if self.condition_mask_npz is not None:
+                    condition_mask_npz = stack.enter_context(load_npz(str(self.condition_mask_npz)))
+                for modality_index, modality in enumerate(CANONICAL_MODALITIES):
+                    available = declared_available is None or modality in declared_available
+                    if available:
+                        clean = self._load_kaldi_modality_signal(sample, modality)
+                    else:
+                        clean = self._zero_signal(modality)
+                    clean_signals[modality] = clean
+                    availability_mask[modality] = torch.full(
+                        (self.context_epochs,),
+                        available,
+                        dtype=torch.bool,
+                    )
+                    quality_mask[modality] = self._kaldi_quality_mask(sample, modality, available=available)
+                    if available:
+                        corrupt_seed = idx * len(CANONICAL_MODALITIES) + modality_index
+                        observed, corrupt_mask = self._maybe_corrupt(clean, modality, corrupt_seed)
+                        if condition_mask_npz is not None and modality in self.condition_modalities:
+                            external_mask = self._load_condition_mask(condition_mask_npz, sample, modality, clean)
+                            if external_mask is not None:
+                                observed = observed.clone()
+                                observed[external_mask] = 0.0
+                                corrupt_mask = corrupt_mask | external_mask
+                    else:
+                        observed = clean.clone()
+                        corrupt_mask = torch.zeros_like(clean, dtype=torch.bool)
+                    observed_signals[modality] = observed
+                    corruption_mask[modality] = corrupt_mask
+            return self._format_item(
+                sample,
+                clean_signals,
+                observed_signals,
+                availability_mask,
+                quality_mask,
+                corruption_mask,
+            )
+
         with ExitStack() as stack:
             npz = stack.enter_context(load_npz(sample.path))
             condition_mask_npz = (
@@ -575,6 +807,24 @@ class Sleep2WaveGenerativeDataset(Dataset):
                 observed_signals[modality] = observed
                 corruption_mask[modality] = corrupt_mask
 
+        return self._format_item(
+            sample,
+            clean_signals,
+            observed_signals,
+            availability_mask,
+            quality_mask,
+            corruption_mask,
+        )
+
+    def _format_item(
+        self,
+        sample: SampleIndex,
+        clean_signals: dict[str, torch.Tensor],
+        observed_signals: dict[str, torch.Tensor],
+        availability_mask: dict[str, torch.Tensor],
+        quality_mask: dict[str, torch.Tensor],
+        corruption_mask: dict[str, torch.Tensor],
+    ) -> dict[str, t.Any]:
         night_epoch_count = int(sample.payload.get("night_epoch_count") or sample.end)
         denom = max(night_epoch_count - 1, 1)
         epoch_index = torch.arange(sample.start, sample.end, dtype=torch.long)

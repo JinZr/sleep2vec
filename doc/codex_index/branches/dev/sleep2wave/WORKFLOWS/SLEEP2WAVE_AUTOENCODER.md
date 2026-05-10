@@ -21,6 +21,8 @@ Required blocks:
 - `training`
 - `export`
 
+`data.backend` defaults to `npz`, so existing tiny/medium configs and `sleep2wave_train.sh` continue to use `preset_path` or `index`. For opt-in Kaldi runs, set `data.backend: kaldi` with `kaldi_data_root`, `kaldi_manifest`, and matching `context_epochs`; the CLI command is unchanged.
+
 Current autoencoder architecture constraints:
 
 - `encoder_type: temporal_conv`
@@ -70,6 +72,7 @@ python -m sleep2wave.train_autoencoder \
 - Loss behavior: `sleep2wave/autoencoders/losses.py`
 - Lightning training: `sleep2wave/autoencoders/lightning.py`
 - CLI/trainer wiring: `sleep2wave/train_autoencoder.py`
+- Data backend loading: `sleep2wave/data/generative_dataset.py`
 
 ## Tests
 

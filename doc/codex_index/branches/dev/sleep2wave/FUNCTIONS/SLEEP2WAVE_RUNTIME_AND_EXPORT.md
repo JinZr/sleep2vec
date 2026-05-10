@@ -6,7 +6,7 @@
 - Signature: `build_dataloader(config, *, num_workers: int, split: str = "train")`
 - Purpose and contract: build a split-specific DataLoader for autoencoder-stage configs.
 - Important inputs/outputs: typed config in; DataLoader out.
-- Side effects: dataset reads preset/index and NPZ files during iteration.
+- Side effects: dataset reads NPZ preset/index sources or Kaldi manifest/scp sources during iteration.
 - Key callers/callees: `train_autoencoder`.
 - Reuse guidance: keep autoencoder data-loader setup here.
 
@@ -24,7 +24,7 @@
 
 - File: `sleep2wave/train_diffusion.py`
 - Signature: `build_dataloader(config, *, num_workers: int, seed: int, split: str = "train")`
-- Purpose and contract: build a split-specific DataLoader for diffusion-stage configs with available-modality bucketed waveform batches, or a latent-cache DataLoader when `diffusion.autoencoder_checkpoint` is omitted; cache-only validation falls back to train rows for train-only cache artifacts.
+- Purpose and contract: build a split-specific DataLoader for diffusion-stage configs with available-modality bucketed waveform batches from NPZ or Kaldi sources, or a latent-cache DataLoader when `diffusion.autoencoder_checkpoint` is omitted; cache-only validation falls back to train rows for train-only cache artifacts.
 - Important inputs/outputs: typed config and seed in; DataLoader out.
 - Side effects: dataset reads files during iteration.
 - Key callers/callees: `train_diffusion`; callee `AvailableChannelsBucketBatchSampler`.
@@ -76,7 +76,7 @@
 - Signature: `_collect_generation_windows(*, config, args, model, autoencoder, sampler_config, task, device) -> tuple[dict[str, torch.Tensor], dict[str, dict[str, torch.Tensor]], list[int], list[dict[str, Any]]]`
 - Purpose and contract: iterate dataset windows, apply inference condition corruptions or externally supplied condition masks, sample target latents, decode them, collect masks, and record metadata.
 - Important inputs/outputs: model/data/task context in; generated windows, mask windows, start epochs, metadata rows out.
-- Side effects: reads data and runs model inference.
+- Side effects: reads NPZ or Kaldi data and runs model inference.
 - Key callers/callees: `run_generation`; callee `validate_single_night` currently limits generation to one subject/night.
 - Reuse guidance: change collection semantics here rather than in artifact writing.
 

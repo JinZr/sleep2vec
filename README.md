@@ -19,6 +19,7 @@
   - [Setup](#setup)
   - [Data Format \& Caches](#data-format--caches)
   - [Kaldi Backend Recipes](#kaldi-backend-recipes)
+  - [Sleep2Wave Kaldi Backend Recipes](#sleep2wave-kaldi-backend-recipes)
   - [Quick Start](#quick-start)
     - [Pretrain (contrastive)](#pretrain-contrastive)
     - [Adaptation — staged wearable expansion](#adaptation--staged-wearable-expansion)
@@ -145,6 +146,31 @@ python -m preprocess.convert_npz_to_kaldi \
   --extra-channels ahi stage5
 ```
 Inference reuses the same Kaldi root and manifest windowing as the checkpoint's finetune configuration. Keep `--avg-ckpts 1` for built-in `ahi`, because its evaluation threshold is checkpoint-specific.
+
+---
+
+## Sleep2Wave Kaldi Backend Recipes
+The active `recipe: sleep2wave` autoencoder, diffusion, and generation stack defaults to NPZ presets. Existing tiny/medium YAMLs and `sleep2wave_train.sh` stay on that path unless you explicitly set `data.backend: kaldi`.
+
+Convert NPZ waveform indexes with the package-local converter:
+```bash
+python -m sleep2wave.preprocess.convert_npz_to_kaldi \
+  --index /path/to/sleep2wave_index.csv \
+  --config configs/sleep2wave/sleep2wave_autoencoder_medium.yaml \
+  --output-dir /data/sleep2wave_kaldi/medium_15e \
+  --stride-epochs 15
+```
+
+Then opt a sleep2wave YAML into Kaldi:
+```yaml
+data:
+  backend: kaldi
+  kaldi_data_root: /data/sleep2wave_kaldi/medium_15e
+  kaldi_manifest: /data/sleep2wave_kaldi/medium_15e/manifest.csv
+  context_epochs: 15
+```
+
+For `backend: kaldi`, do not set `preset_path` or `index`. Generation also uses the YAML data backend unless `--preset-path` or `--index` is passed, which remains an NPZ override.
 
 ---
 

@@ -9,8 +9,10 @@
 | sleep2wave modality schema | `sleep2wave.data.modalities` | Single source for modality order, sample rates, aliases, and frames per epoch | New local modality lists |
 | Index to generative windows | `build_sample_indices_from_frame` and `build_sample_indices_from_index` | Builds schema-versioned `SampleIndex` payloads from split-filtered rows | Manual `SampleIndex` pickling |
 | Generative dataset loading | `Sleep2WaveGenerativeDataset` | Handles preset/index source choice, signal slicing, availability/quality masks, condition corruptions, external condition masks, and metadata | Entry-point-local NPZ readers |
+| Sleep2Wave Kaldi waveform loading | `sleep2wave.data.kaldi_io.KaldiWaveReaderPool` | Package-local reader for raw sleep2wave waveform matrices stored by modality | Base `data.kaldi_io`, which serves tokenized sleep2vec matrices |
 | Generative batch collation | `collate_sleep2wave_generative` | Pads channel dimensions and stacks signal/mask dictionaries consistently | Ad hoc dict stacking |
 | Generative preset CLI | `sleep2wave.preprocess.build_sleep2wave_presets.build_sleep2wave_presets` | Canonical write path for sleep2wave generative preset pickles | External scripts that skip schema validation |
+| Generative Kaldi converter | `sleep2wave.preprocess.convert_npz_to_kaldi.convert` | Canonical write path for sleep2wave waveform Kaldi roots and manifests | Reusing base sleep2vec Kaldi conversion |
 | Index validation | `sleep2wave.preprocess.validate_sleep2wave_index.validate_sleep2wave_index` | Fast boundary check for required columns, masks, and zero-modality rows | Partial CSV checks |
 | Autoencoder model | `Sleep2WaveAutoencoder` | Encodes and decodes modality-specific, channel-specific temporal latent maps | Per-modality model copies |
 | Autoencoder loss | `compute_autoencoder_loss` / `Sleep2WaveAutoencoderLoss` | Applies availability and quality masks to waveform, spectral, derivative, and MR-STFT losses | Trainer-local loss math |
@@ -44,6 +46,7 @@
 - Start with `sleep2wave.data.modalities`.
 - Reuse `build_sample_indices_from_frame` for schema-versioned `SampleIndex` creation.
 - Reuse `Sleep2WaveGenerativeDataset` for waveform loading and masks.
+- For Kaldi-backed sleep2wave runs, reuse `convert_npz_to_kaldi.convert` and `KaldiWaveReaderPool`; keep the batch contract identical to NPZ loading.
 - Keep `tests/test_sleep2wave_modalities.py`, `tests/test_sleep2wave_generative_dataset.py`, and `tests/test_sleep2wave_preprocess_contract.py` aligned.
 
 ### Changing autoencoder behavior
@@ -75,7 +78,7 @@
 
 1. `sleep2wave` intentionally mirrors much of `sleep2vec`; keep branch-specific changes package-local and avoid reintroducing base imports.
 2. The sleep2wave modality list appears in configs, tests, model construction, and metrics. Treat `sleep2wave.data.modalities` as canonical.
-3. `build_sample_indices_from_frame` and `Sleep2WaveGenerativeDataset` both understand preset payloads. Do not create a third schema interpretation.
+3. `build_sample_indices_from_frame`, `convert_npz_to_kaldi`, and `Sleep2WaveGenerativeDataset` must agree on window metadata and modality availability. Do not create another schema interpretation.
 4. Diffusion tasks, task masks, task sampler, and generation CLI must agree on restoration/imputation auxiliary-token behavior.
 5. Artifact schema is shared by generation, export, evaluation, and tests. Do not change one without the others.
 6. DDIM/DDPM sampler constraints are enforced in both config parsing and sampler constructors. Keep error behavior aligned.

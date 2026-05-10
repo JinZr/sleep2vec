@@ -11,6 +11,7 @@ import yaml
 from sleep2wave.data.modalities import CANONICAL_MODALITIES, EPOCH_SEC, MODALITY_SPECS, validate_modality_sequence
 
 SUPPORTED_STAGES = {"autoencoder", "diffusion", "evaluation", "inference"}
+SUPPORTED_DATA_BACKENDS = {"npz", "kaldi"}
 SUPPORTED_EVALUATION_METRIC_FAMILIES = {"waveform", "feature", "event", "efficiency", "downstream"}
 SUPPORTED_INITIALIZATION_GROUPS = {
     "tokenizers",
@@ -23,8 +24,11 @@ SUPPORTED_INITIALIZATION_GROUPS = {
 
 @dataclass(frozen=True)
 class DataConfig:
+    backend: str = "npz"
     preset_path: str | None = None
     index: str | None = None
+    kaldi_data_root: str | None = None
+    kaldi_manifest: str | None = None
     context_epochs: int = 15
 
 
@@ -312,15 +316,44 @@ def _require_float(
 
 def _load_data(raw: t.Any) -> DataConfig:
     block = _require_mapping(raw, "data")
-    _reject_extra(block, {"preset_path", "index", "context_epochs"}, "data")
+    _reject_extra(
+        block,
+        {"backend", "preset_path", "index", "kaldi_data_root", "kaldi_manifest", "context_epochs"},
+        "data",
+    )
+    backend = block.get("backend", "npz")
+    if not isinstance(backend, str) or backend not in SUPPORTED_DATA_BACKENDS:
+        raise ValueError(f"data.backend must be one of {sorted(SUPPORTED_DATA_BACKENDS)}.")
     preset_path = _optional_string(block, "preset_path", "data")
     index = _optional_string(block, "index", "data")
-    if (preset_path is None) == (index is None):
-        raise ValueError("data must define exactly one of preset_path or index.")
+    kaldi_data_root = _optional_string(block, "kaldi_data_root", "data")
+    kaldi_manifest = _optional_string(block, "kaldi_manifest", "data")
+    if backend == "npz":
+        if (preset_path is None) == (index is None):
+            raise ValueError("data must define exactly one of preset_path or index.")
+        if kaldi_data_root is not None or kaldi_manifest is not None:
+            raise ValueError("data.backend=npz does not support kaldi_data_root or kaldi_manifest.")
+    else:
+        if preset_path is not None or index is not None:
+            raise ValueError("data.backend=kaldi uses kaldi_manifest; preset_path and index are unsupported.")
+        missing = [
+            name
+            for name, value in (("kaldi_data_root", kaldi_data_root), ("kaldi_manifest", kaldi_manifest))
+            if value is None
+        ]
+        if missing:
+            raise ValueError(f"data.backend=kaldi requires {', '.join(missing)}.")
     context_epochs = block.get("context_epochs", 15)
     if not isinstance(context_epochs, int) or isinstance(context_epochs, bool) or context_epochs < 1:
         raise ValueError("data.context_epochs must be an integer >= 1.")
-    return DataConfig(preset_path=preset_path, index=index, context_epochs=context_epochs)
+    return DataConfig(
+        backend=backend,
+        preset_path=preset_path,
+        index=index,
+        kaldi_data_root=kaldi_data_root,
+        kaldi_manifest=kaldi_manifest,
+        context_epochs=context_epochs,
+    )
 
 
 def _load_modalities(raw: t.Any) -> ModalitiesConfig:

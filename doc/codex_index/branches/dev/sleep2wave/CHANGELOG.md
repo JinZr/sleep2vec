@@ -1,5 +1,13 @@
 # Branch Index Changelog
 
+## 2026-05-10
+
+- Updated after the Sleep2Wave Kaldi backend port:
+  - `DataConfig` now documents `backend: npz|kaldi` source rules
+  - `Sleep2WaveGenerativeDataset` now documents the Kaldi manifest/scp path while keeping the batch contract unchanged
+  - package-local raw waveform Kaldi conversion and reader ownership are indexed
+  - autoencoder, diffusion, and generation workflows now describe Kaldi as an explicit opt-in data backend
+
 ## 2026-05-08
 
 - Updated after Phase 2B padded multi-channel diffusion:

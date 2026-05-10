@@ -64,7 +64,7 @@
     "function_catalog_scope": [
       "base sleep2vec runtime inherited from the main branch index",
       "sleep2wave config parsing for legacy runtime recipes and generative stage recipes",
-      "sleep2wave modality schema, index-to-window conversion, dataset materialization, corruption, masks, and collation",
+      "sleep2wave modality schema, index-to-window conversion, Kaldi waveform conversion/loading, dataset materialization, corruption, masks, and collation",
       "sleep2wave autoencoder, diffusion transformer, generation task masks, diffusion schedules, samplers, and task sampler",
       "sleep2wave runtime entrypoints for autoencoder training, diffusion training, generation, generation evaluation, and package-local copied sleep2vec runtime",
       "sleep2wave artifact export, sliding-window fusion, uncertainty summaries, and metric families",
@@ -73,7 +73,7 @@
     "workflow_scope": [
       "base pretrain/adapt/finetune/infer runtime",
       "sleep2wave config validation",
-      "sleep2wave preprocessing and preset generation",
+      "sleep2wave preprocessing, preset generation, and Kaldi conversion",
       "sleep2wave autoencoder training",
       "sleep2wave diffusion training",
       "sleep2wave generation",

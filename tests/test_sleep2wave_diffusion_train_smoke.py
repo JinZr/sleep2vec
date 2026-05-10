@@ -107,6 +107,7 @@ def _write_config(
     autoencoder_ckpt: Path,
     *,
     validation_examples: dict | None = None,
+    data_block: dict | None = None,
 ) -> Path:
     diffusion = {
         "latent_dim": 8,
@@ -148,7 +149,7 @@ def _write_config(
     payload = {
         "recipe": "sleep2wave",
         "stage": "diffusion",
-        "data": {"preset_path": str(preset_path), "context_epochs": 2},
+        "data": data_block or {"preset_path": str(preset_path), "context_epochs": 2},
         "modalities": {
             "epoch_sec": 30,
             "all": list(CANONICAL_MODALITIES),
@@ -167,6 +168,55 @@ def _write_config(
     config_path = tmp_path / "diffusion.yaml"
     config_path.write_text(yaml.safe_dump(payload))
     return config_path
+
+
+def _write_synthetic_index(tmp_path: Path) -> Path:
+    npz_path = tmp_path / "synthetic_kaldi.npz"
+    npz_payload = {}
+    for index, modality in enumerate(CANONICAL_MODALITIES):
+        frames = 2 * MODALITY_SPECS[modality].frames_per_epoch
+        npz_payload[modality] = np.linspace(0.0, 1.0 + index, frames, dtype=np.float32)
+    np.savez(npz_path, **npz_payload)
+
+    import pandas as pd
+
+    index_path = tmp_path / "index.csv"
+    row = {
+        "path": str(npz_path),
+        "duration": 60,
+        "split": "train",
+        "subject_id": "subject",
+        "night_id": "night",
+        "source": "synthetic",
+    }
+    row.update({f"{modality}_mask": 1 for modality in CANONICAL_MODALITIES})
+    pd.DataFrame([row]).to_csv(index_path, index=False)
+    return index_path
+
+
+def _write_synthetic_kaldi_root(tmp_path: Path, config_path: Path) -> tuple[Path, Path]:
+    pytest.importorskip("kaldi_native_io")
+    from sleep2wave.preprocess.convert_npz_to_kaldi import convert, parse_args
+
+    output_dir = tmp_path / "kaldi"
+    index_path = _write_synthetic_index(tmp_path)
+    manifest_path, _ = convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--split",
+                "train",
+                "--stride-epochs",
+                "2",
+            ]
+        )
+    )
+    return output_dir, manifest_path
 
 
 def test_train_diffusion_dataloader_uses_train_split(tmp_path: Path):
@@ -191,6 +241,30 @@ def test_train_diffusion_dataloader_uses_train_split(tmp_path: Path):
     assert [sample.metadata["split"] for sample in loader.dataset.data] == ["train"]
     assert loader.dataset.seed == 123
     assert loader.dataset.corruption_name is None
+
+
+def test_train_diffusion_dataloader_uses_kaldi_backend(tmp_path: Path):
+    preset_path = _write_synthetic_preset(tmp_path)
+    autoencoder_ckpt = _write_autoencoder_checkpoint(tmp_path)
+    npz_config_path = _write_config(tmp_path, preset_path, autoencoder_ckpt)
+    kaldi_root, kaldi_manifest = _write_synthetic_kaldi_root(tmp_path, npz_config_path)
+    config_path = _write_config(
+        tmp_path,
+        preset_path,
+        autoencoder_ckpt,
+        data_block={
+            "backend": "kaldi",
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(kaldi_manifest),
+            "context_epochs": 2,
+        },
+    )
+
+    loader = build_dataloader(load_sleep2wave_config(config_path), num_workers=0, seed=123)
+
+    assert loader.dataset.backend == "kaldi"
+    batch = next(iter(loader))
+    assert batch["clean_signals"]["eeg"].shape == (1, 2, 1, MODALITY_SPECS["eeg"].frames_per_epoch)
 
 
 def test_train_diffusion_dataloader_uses_val_split(tmp_path: Path):
