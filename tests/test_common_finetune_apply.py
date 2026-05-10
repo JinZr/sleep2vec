@@ -321,7 +321,7 @@ def test_apply_finetune_config_populates_kaldi_backend(tmp_path: Path):
         {
             "backend": "kaldi",
             "kaldi_data_root": "kaldi/root",
-            "kaldi_manifest": "kaldi/root/manifest.csv",
+            "kaldi_manifest": "kaldi/root/manifest.json",
         }
     )
     config_path = _write_yaml(tmp_path, payload)
@@ -331,7 +331,7 @@ def test_apply_finetune_config_populates_kaldi_backend(tmp_path: Path):
 
     assert args.data_backend == "kaldi"
     assert args.kaldi_data_root == Path("kaldi/root")
-    assert args.kaldi_manifest == Path("kaldi/root/manifest.csv")
+    assert args.kaldi_manifest == Path("kaldi/root/manifest.json")
     assert args.finetune_preset_path is None
 
 
@@ -352,7 +352,7 @@ def test_apply_finetune_config_rejects_kaldi_preset_path(tmp_path: Path):
         {
             "backend": "kaldi",
             "kaldi_data_root": "kaldi/root",
-            "kaldi_manifest": "kaldi/root/manifest.csv",
+            "kaldi_manifest": "kaldi/root/manifest.json",
         }
     )
     config_path = _write_yaml(tmp_path, payload)

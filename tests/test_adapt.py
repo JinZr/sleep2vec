@@ -90,7 +90,7 @@ def test_sleep2vec_adapt_applies_data_backend_args_before_loader(adapt_module: M
     data_cfg = types.SimpleNamespace(
         backend="kaldi",
         kaldi_data_root="kaldi/root",
-        kaldi_manifest="kaldi/root/manifest.csv",
+        kaldi_manifest="kaldi/root/manifest.json",
         mask_rate=0.15,
         max_tokens=120,
     )
