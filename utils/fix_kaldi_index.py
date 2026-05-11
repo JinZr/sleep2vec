@@ -22,7 +22,6 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         help="Output fixed index CSV. Defaults to overwriting --index after creating --index.backup.",
     )
     parser.add_argument("--source-field", default="dataset", help="CSV column used as the sample-key source prefix.")
-    parser.add_argument("--session-id-column", default="session_id", help="Column used by the converter as record key.")
     return parser.parse_args(argv)
 
 
@@ -39,8 +38,8 @@ def _sanitize_key_part(value: t.Any) -> str:
     return text or "unknown"
 
 
-def _record_key_from_row(row: pd.Series, session_id_column: str) -> str:
-    session_id = row.get(session_id_column, None)
+def _record_key_from_row(row: pd.Series) -> str:
+    session_id = row.get("session_id", None)
     if session_id is not None and not _is_missing(session_id) and str(session_id):
         return _sanitize_key_part(session_id)
     path = Path(str(row["path"]))
@@ -54,8 +53,8 @@ def _source_prefix(row: pd.Series, source_field: str) -> str:
     return _sanitize_key_part(source_value)
 
 
-def _key_prefix(row: pd.Series, *, source_field: str, session_id_column: str) -> str:
-    return f"{_source_prefix(row, source_field)}_{_record_key_from_row(row, session_id_column)}"
+def _key_prefix(row: pd.Series, *, source_field: str) -> str:
+    return f"{_source_prefix(row, source_field)}_{_record_key_from_row(row)}"
 
 
 def _unique_session_id(
@@ -75,20 +74,20 @@ def _unique_session_id(
         suffix += 1
 
 
-def fix_index(df: pd.DataFrame, *, source_field: str, session_id_column: str) -> tuple[pd.DataFrame, int]:
+def fix_index(df: pd.DataFrame, *, source_field: str) -> tuple[pd.DataFrame, int]:
     required = {"path", source_field}
     missing = sorted(required - set(df.columns))
     if missing:
         raise ValueError(f"Input index CSV is missing required column(s): {missing}.")
 
     fixed = df.copy()
-    if session_id_column not in fixed.columns:
-        fixed[session_id_column] = ""
+    if "session_id" not in fixed.columns:
+        fixed["session_id"] = ""
 
     used_prefixes: set[str] = set()
     changed = 0
     for row_number, (row_index, row) in enumerate(fixed.iterrows(), start=1):
-        prefix = _key_prefix(row, source_field=source_field, session_id_column=session_id_column)
+        prefix = _key_prefix(row, source_field=source_field)
         if prefix not in used_prefixes:
             used_prefixes.add(prefix)
             continue
@@ -99,7 +98,7 @@ def fix_index(df: pd.DataFrame, *, source_field: str, session_id_column: str) ->
             source_field=source_field,
             used_prefixes=used_prefixes,
         )
-        fixed.at[row_index, session_id_column] = session_id
+        fixed.at[row_index, "session_id"] = session_id
         used_prefixes.add(f"{_source_prefix(row, source_field)}_{session_id}")
         changed += 1
 
@@ -113,7 +112,7 @@ def main(argv: t.Sequence[str] | None = None) -> int:
     write_back = index_path.resolve() == output_path.resolve()
 
     df = pd.read_csv(index_path, low_memory=False)
-    fixed, changed = fix_index(df, source_field=args.source_field, session_id_column=args.session_id_column)
+    fixed, changed = fix_index(df, source_field=args.source_field)
 
     if write_back:
         backup_path = Path(str(index_path) + ".backup")
@@ -122,7 +121,7 @@ def main(argv: t.Sequence[str] | None = None) -> int:
     else:
         output_path.parent.mkdir(parents=True, exist_ok=True)
     fixed.to_csv(output_path, index=False)
-    print(f"Wrote {output_path} with {len(fixed)} rows; updated {changed} {args.session_id_column!r} value(s).")
+    print(f"Wrote {output_path} with {len(fixed)} rows; updated {changed} 'session_id' value(s).")
     return 0
 
 
