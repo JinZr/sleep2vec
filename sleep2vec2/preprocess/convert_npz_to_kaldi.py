@@ -465,7 +465,7 @@ def convert(args: argparse.Namespace) -> Path:
     compressed_channels = {
         channel for channel in channel_names if args.compress_ark and channel not in UNCOMPRESSED_BUILTIN_CHANNELS
     }
-    compression_method = kaldi_native_io.CompressionMethod.kAutomaticMethod if compressed_channels else None
+    compression_method = kaldi_native_io.CompressionMethod.kTwoByteAuto if compressed_channels else None
     channel_storage = {
         channel: "compressed_matrix" if channel in compressed_channels else "float_matrix" for channel in channel_names
     }
