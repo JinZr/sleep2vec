@@ -12,9 +12,10 @@ Primary code path:
 
 1. `utils.check_configs.collect_config_paths`
 2. `utils.check_configs.check_config_file`
-3. `sleep2vec.config.load_pretrain_config` or `sleep2vec.config.load_finetune_config`
-4. `sleep2vec.config.validate_model_config`
-5. preset-build helpers reused from `preprocess/save_dataset_presets.py`
+3. `_resolve_config_variant`
+4. package-local `load_pretrain_config` or `load_finetune_config`
+5. package-local `validate_model_config`
+6. package-local preset-build helpers reused from `preprocess/save_dataset_presets.py`, `sleep2vec2.preprocess.save_dataset_presets`, or `sleep2expert.preprocess.save_dataset_presets`
 
 ## Detailed Flow
 
@@ -23,8 +24,12 @@ Primary code path:
    - Paths may be files or directories.
 2. Load the raw YAML mapping.
 3. Validate runtime loader compatibility.
-   - Finetune configs must load via `load_finetune_config`.
-   - Pretrain configs must load via `load_pretrain_config`.
+   - Root configs load through `sleep2vec.config`.
+   - `configs/sleep2vec2/**` loads through `sleep2vec2.config`.
+   - `configs/sleep2expert/**` loads through `sleep2expert.config`.
+   - Configs outside variant directories that contain `model.backbone.moe` or `finetune.moe_tuning` are routed to `sleep2expert`.
+   - Finetune configs must load via the selected package's `load_finetune_config`.
+   - Pretrain configs must load via the selected package's `load_pretrain_config`.
    - Both paths also pass through `validate_model_config`.
 4. Validate `preset_build` when present.
    - Both `required_channels` and `min_channels` must be present together.
@@ -38,6 +43,7 @@ Primary code path:
 ## Important Runtime Decisions
 
 - This workflow intentionally reuses runtime config loaders rather than linting YAML shape independently.
+- Variant directories are validated with package-local loaders and package-local preset helpers.
 - Repo policy enforcement lives here, not inside `sleep2vec/config.py`.
 - Failures are reported per file so the command can validate the entire tree in one pass.
 
@@ -49,5 +55,6 @@ Primary code path:
 ## Edit Hotspots
 
 - Change schema validation: `sleep2vec/config.py`
+- Change standalone variant schema validation: `sleep2vec2/config.py` or `sleep2expert/config.py`
 - Change built-in task semantics or finetune normalization: `sleep2vec/common.py`
 - Change preset-build policy: `preprocess/save_dataset_presets.py`, `utils/check_configs.py`

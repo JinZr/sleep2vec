@@ -13,11 +13,12 @@ Primary code path:
 1. `sleep2vec.adapt.sleep2vec_adapt`
 2. `sleep2vec.config.load_pretrain_config`
 3. `sleep2vec.common.apply_model_config_args`
-4. `sleep2vec.sleep2vec_adaptation.initial_pair_probs_for_phase`
-5. `sleep2vec.utils.get_pretrain_dataloader`
-6. `sleep2vec.adapt._resolve_adapt_run_artifacts`
-7. `sleep2vec.sleep2vec_adaptation.Sleep2vecAdaptation`
-8. Lightning `trainer.fit(...)`
+4. `sleep2vec.common.apply_data_backend_args`
+5. `sleep2vec.sleep2vec_adaptation.initial_pair_probs_for_phase`
+6. `sleep2vec.utils.get_pretrain_dataloader`
+7. `sleep2vec.adapt._resolve_adapt_run_artifacts`
+8. `sleep2vec.sleep2vec_adaptation.Sleep2vecAdaptation`
+9. Lightning `trainer.fit(...)`
 
 ## Detailed Flow
 
@@ -32,9 +33,11 @@ Primary code path:
    - `channel_names`
    - `channel_input_dims`
    - `backbone_arch`
+   - data-backend fields from YAML
    - initial `train_pair_probs`
 4. Build loaders.
    - Reuses the missing-channel pretrain dataloader path.
+   - Uses `PSGPretrainDataset` for `npz` or `KaldiPSGDataset` for `kaldi`.
    - Usually depends on `PairFirstBatchSampler` for training.
    - Validation uses sequential pair evaluation.
 5. Resolve run artifacts and checkpoint policy.
@@ -57,6 +60,7 @@ Primary code path:
 ## Important Runtime Decisions
 
 - Adaptation uses pretrain-style contrastive loss and logging, not downstream finetune loss code.
+- Kaldi-backed adaptation is controlled by YAML data backend fields; legacy preset pickle paths are not valid with Kaldi.
 - Pair scheduling is part of the runtime contract; do not move it into ad hoc sampler wrappers.
 - The checkpoint directory name is phase-specific:
   - stage1: `checkpoints/`
@@ -75,4 +79,4 @@ Primary code path:
 - Change phase-transition or resume semantics: `sleep2vec/adapt.py`
 - Change freeze policy or optimizer groups: `sleep2vec/sleep2vec_adaptation.py`, `sleep2vec/pretrain_model.py`
 - Change pair-schedule behavior: `sleep2vec/sleep2vec_adaptation.py`, `data/samplers.py`, `sleep2vec/callbacks/pair_acc_logger.py`
-- Change missing-channel loader policy: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`
+- Change missing-channel or data-backend loader policy: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`, `data/kaldi_psg_dataset.py`

@@ -1,26 +1,28 @@
 {
   "branch": "main",
-  "commit": "99d22deee69cc3cb9eae9229a8faaa4c33974824",
-  "generated_at": "2026-04-20T11:49:16Z",
-  "mode": "refresh",
+  "commit": "4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd",
+  "generated_at": "2026-05-11T06:28:06Z",
+  "mode": "repair",
   "coverage": {
     "tracked_file_counts": {
-      "sleep2vec": 78,
-      "data": 6,
-      "preprocess": 6,
-      "sleep2vec2": 0,
-      "sleep2vec_moe": 0,
-      "sleep2vec_hires": 0,
-      "configs": 32,
-      "tests": 24,
+      "sleep2vec": 80,
+      "data": 8,
+      "preprocess": 7,
+      "sleep2vec2": 102,
+      "sleep2expert": 106,
+      "configs": 100,
+      "tests": 47,
       "utils": 2
     },
     "function_catalog_scope": [
       "config parsing, built-in task semantics, and run-artifact persistence",
+      "NPZ and Kaldi data-backend selection, manifest routing, and storage-hook batch loading",
       "registry and builder entrypoints for backbones, tokenizers, projections, and CLS handling",
       "runtime entrypoints for pretrain, adapt, finetune, and inference",
       "checkpoint initialization, averaging, distributed helpers, and result CSV writes",
       "core backbone, downstream, AHI-eval, layer-mix, and adaptation-freeze contracts",
+      "standalone sleep2vec2 and sleep2expert variant surfaces, including RoFormer parity and package-local data/preprocess mirrors",
+      "sleep2expert MoE config, routing, finetune tuning, checkpoint initialization, regularization, and routing export",
       "dataset, metadata, sampler, and missing-channel batching contracts",
       "preset generation, split assignment, mask normalization, and WatchPAT conversion CLIs",
       "downstream evaluation plots, pair-accuracy heatmaps, and diagnostics hooks"
@@ -31,13 +33,15 @@
       "finetune",
       "infer and checkpoint averaging",
       "preprocessing and preset generation",
-      "config validation"
+      "config validation",
+      "variant namespaces and sleep2expert routing analysis"
     ]
   },
   "exclusions": [
     "AGENTS.md is referenced for ownership context but not duplicated here",
     "preprocess/preprocess_pipeline.ipynb is summarized only at workflow level",
-    "sleep2vec2, sleep2vec_moe, and sleep2vec_hires have no tracked source files on this branch",
+    "sleep2vec2/preprocess/preprocess_pipeline.ipynb and sleep2expert/preprocess/preprocess_pipeline.ipynb are summarized only at workflow level",
+    "egs/ contains tracked example data scaffolding but is outside this branch-index coverage scope",
     "tracked visualization font binaries are noted at directory level, not indexed function-by-function",
     "__pycache__, .DS_Store, and ignored local artifacts are excluded",
     "untracked workspaces such as index/ and new_index/ are excluded",

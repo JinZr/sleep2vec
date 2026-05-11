@@ -2,38 +2,60 @@
 
 ## Branch State
 
-On commit `825a30433e1f3d4cfcf6e4338cde5c29426411f3`, the following directories exist but contain no tracked source files:
+On commit `4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd`, tracked variant coverage is:
 
-- `sleep2vec2/`
-- `sleep2vec_moe/`
-- `sleep2vec_hires/`
+- `sleep2vec2/`: active standalone dense mirror with 102 tracked files
+- `sleep2expert/`: active standalone MoE-capable mirror with 106 tracked files
 
-No file or directory symlinks were found under these roots during index generation.
+## `sleep2vec2` Standalone Mirror
+
+- Files: `sleep2vec2/`, `configs/sleep2vec2/`, `tests/test_sleep2vec2_namespace.py`, `tests/test_sleep2vec2_roformer_parity.py`, `tests/test_sleep2vec2_kaldi_backend.py`
+- Purpose and contract: keep a package-local dense recipe mirror whose runtime, data, preprocessing, visualization, and config imports stay under `sleep2vec2`.
+- Important inputs/outputs: same pretrain/adapt/finetune/infer contracts as root `sleep2vec`, plus package-local Kaldi conversion and dataset routing.
+- Side effects: runtime side effects mirror root entrypoints, but W&B projects use `sleep2vec2-*` names.
+- Reuse guidance: edit the package-local implementation directly when working in `sleep2vec2`; do not shortcut through root `sleep2vec`, `data`, or `preprocess`.
+- Duplication-risk notes: behavior parity is intentional duplication. Namespace-crossing imports and silent legacy RoFormer checkpoint compatibility are regressions.
+
+## `sleep2expert` Standalone MoE Mirror
+
+- Files: `sleep2expert/`, `configs/sleep2expert/`, `tests/test_sleep2expert_namespace.py`, `tests/test_sleep2expert_roformer_parity.py`, `tests/test_sleep2expert_moe_*.py`, `tests/test_sleep2expert_routing_analysis.py`
+- Purpose and contract: keep a package-local mirror that adds MoE RoFormer layers, routing aux capture, pretrain MoE regularization, finetune MoE tuning, dense-to-MoE checkpoint expansion, and routing export.
+- Important inputs/outputs: same dense runtime inputs as root for non-MoE recipes; MoE recipes add `model.backbone.moe` and optional `finetune.moe_tuning` blocks.
+- Side effects: runtime side effects mirror root entrypoints, W&B projects use `sleep2expert-*` names, and routing analysis writes CSV/PNG artifacts.
+- Reuse guidance: route schema changes through `sleep2expert.config`, sparse routing through `sleep2expert.backbones.roformer.moe`, MoE loss through `sleep2expert.losses.moe_regularization`, and persistent routing inspection through `sleep2expert.routing_analysis`.
+- Duplication-risk notes: `last_moe_aux` is in-memory state only; use routing export for persistent analysis. Do not implement parallel router metrics inside trainers or ad hoc scripts.
+
+## Package-Local Data And Preprocess Mirrors
+
+- Files: `sleep2vec2/data/`, `sleep2vec2/preprocess/`, `sleep2expert/data/`, `sleep2expert/preprocess/`
+- Purpose and contract: preserve standalone recipe operation for data loading, Kaldi backends, preset generation, split assignment, and WatchPAT conversion.
+- Important inputs/outputs: same `SampleIndex`, NPZ preset, Kaldi manifest, and batch contracts as root unless a package-local test says otherwise.
+- Side effects: mirror root data/preprocessing file writes and optional `kaldi_native_io` usage.
+- Reuse guidance: when changing root data/preprocess contracts that variants must share, update package-local mirrors and the variant parity tests in the same pass.
+- Duplication-risk notes: root/variant converter and dataset behavior can drift silently if only one namespace is patched.
 
 ## Indexed Function Status
 
-- Indexed functions: none
-- Reason: there are no tracked Python source files to catalog on this branch
+This file indexes variant-specific deltas, not every mirrored function. For common dense runtime behavior, use the root function catalogs first, then apply the package-local namespace rule.
 
-## Reuse Guidance
+Important variant-specific functions and classes:
 
-- If future work revives these variant packages, reuse the base package extension surface first:
-  - `sleep2vec.registry`
-  - `sleep2vec.builders`
-  - `sleep2vec.backbones.encoder_factory`
-  - `sleep2vec.config`
-  - `sleep2vec.common`
-  - `sleep2vec.checkpoints`
-  - `sleep2vec.modules.tokenizers`
-  - `sleep2vec.modules.projection`
-- Do not treat `__pycache__` contents as authoritative code.
+- `sleep2vec2.backbones.roformer.RoFormerEncoderModel`: standalone dense RoFormer parity surface.
+- `sleep2expert.config.MoeConfig` and `_validate_moe_config`: MoE backbone schema and strict validation.
+- `sleep2expert.config._build_finetune_moe_tuning_config`: MoE finetune mode, LR-scale, and regularization parser.
+- `sleep2expert.backbones.roformer.moe.TopKRouter`: learned/random/hard router implementation.
+- `sleep2expert.backbones.roformer.moe.SparseMoEFFN`: sparse expert FFN execution.
+- `sleep2expert.losses.moe_regularization.compute_moe_regularization`: pretrain MoE auxiliary loss.
+- `sleep2expert.losses.moe_regularization.compute_downstream_moe_regularization`: supported downstream MoE auxiliary loss subset.
+- `sleep2expert.checkpoints.initialize_moe_from_dense_if_possible`: dense FFN to MoE expert checkpoint expansion.
+- `sleep2expert.routing_analysis.run_routing_analysis`: persistent routing CSV and heatmap export.
+- `sleep2expert.model_stats.*`: parameter, active-parameter, FFN FLOP, and expert-usage summaries.
 
 ## Ownership Notes
 
-- `sleep2vec_moe/` and variant-specific `sleep2vec2/` files are conceptually assigned to the variant-maintainer ownership boundary in repository policy.
-- `sleep2vec_hires/` has no explicit tracked-source owner on this branch because it has no tracked source files here.
+- `sleep2vec2/` is a dense standalone variant boundary. Keep it package-local and parity-tested.
+- `sleep2expert/` is the active MoE standalone variant boundary. Keep MoE schema, routing, regularization, tuning, and export changes inside this namespace unless deliberately changing root contracts.
 
 ## Unknowns
 
-- Whether real variant implementations exist on another branch is unknown.
-- Whether the local bytecode artifacts reflect out-of-branch source is unknown.
+- Package-local notebooks are not indexed as reusable source beyond workflow-level notes.

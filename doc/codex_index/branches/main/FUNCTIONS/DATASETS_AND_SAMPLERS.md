@@ -22,6 +22,28 @@
 - Reuse guidance: use this class for PSG-style NPZ/preset loading instead of building `SampleIndex` lists manually.
 - Duplication risk notes: the built-in label-channel registry lives here and should not be replicated in caller code.
 
+## `data.kaldi_io.KaldiReaderPool`
+
+- File: `data/kaldi_io.py`
+- Signature: `KaldiReaderPool(root: str | Path, channel_specs: Mapping[str, KaldiChannelSpec])`
+- Purpose and contract: lazily open process-local sorted `scp:` readers for Kaldi matrix channels and return NumPy matrices by `(channel, sample_key)`.
+- Important inputs/outputs: Kaldi root and per-channel `KaldiChannelSpec` mappings in; channel matrices out.
+- Side effects: imports optional `kaldi_native_io`, opens readers, closes reader handles, and reopens handles after DataLoader worker process changes.
+- Key callers/callees: caller is `KaldiPSGDataset._load_tokens_for_src`; callee is `kaldi_native_io.RandomAccessFloatMatrixReader`.
+- Reuse guidance: use this pool for runtime Kaldi reads instead of opening raw readers in datasets or collate functions.
+- Duplication risk notes: sorted `s,scp:` reader URI construction and missing-key errors belong here.
+
+## `KaldiPSGDataset.__init__`
+
+- File: `data/kaldi_psg_dataset.py`
+- Signature: `KaldiPSGDataset(channel_names, kaldi_data_root, manifest, split, max_tokens, *, channel_input_dims, mask_rate=0.15, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, randomly_select_channels=True, min_channels=2, allow_missing_channels=False, bucket_by_available_channels=False, train_pair_probs=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, **kwargs)`
+- Purpose and contract: build the same runtime batch contract as `PSGPretrainDataset` from a Kaldi `manifest.json` format v2 root rather than NPZ/preset inputs.
+- Important inputs/outputs: configured channels, Kaldi root, split manifest, and split name in; dataset instance out.
+- Side effects: reads `manifest.json`, selects the requested split, builds channel specs, reads the split CSV, creates `SampleIndex` records with `payload["available_channels"]`, and opens Kaldi readers lazily.
+- Key callers/callees: callers are `sleep2vec.utils.get_pretrain_dataloader` and `_build_finetune_loader` when `data_backend="kaldi"`; callees include `_load_manifest_json`, `_load_channel_specs`, `_load_manifest_samples`, `DefaultDataset.__init__`, and `KaldiReaderPool`.
+- Reuse guidance: use this class for Kaldi-backed pretrain, finetune, and inference. It intentionally reuses `DefaultDataset.dataloader` instead of introducing a separate collate path.
+- Duplication risk notes: split CSV column requirements, `available_channels` parsing, manifest input-dim checks, and token-length validation should stay here.
+
 ## `data.utils.load_builtin_ahi_metadata`
 
 - File: `data/utils.py`
@@ -54,6 +76,19 @@
 - Key callers/callees: caller is `PSGPretrainDataset.__init__`; callees are `filter_valid_sample_indices`, `filter_with_metadata`, and `select_few_shot`.
 - Reuse guidance: use this base class when new datasets share the same collate semantics.
 - Duplication risk notes: preset loading and sample validation should stay centralized here.
+
+## `DefaultDataset._get_available_channels_for_src` and `_load_tokens_for_src`
+
+- File: `data/default_dataset.py`
+- Signatures:
+  - `_get_available_channels_for_src(self, src: SampleIndex) -> set[str]`
+  - `_load_tokens_for_src(self, src: SampleIndex, chosen_channels: list[str]) -> tuple[dict, dict, dict, dict]`
+- Purpose and contract: storage hooks used by `DefaultDataset.dataloader` to discover available channels and materialize payload/tokens/masks/metadata for one sample.
+- Important inputs/outputs: `SampleIndex` and selected channels in; available channel set or collate-ready payload maps out.
+- Side effects: default implementation reads NPZ files and may backfill `ahi`/`tst` metadata.
+- Key callers/callees: caller is the nested collate function inside `DefaultDataset.dataloader`; override implementer is `KaldiPSGDataset`.
+- Reuse guidance: override these hooks when adding a storage backend while preserving the canonical batch contract.
+- Duplication risk notes: do not fork `DefaultDataset.dataloader` just to change where tokens are read from.
 
 ## `DefaultDataset.filter_with_metadata`
 
@@ -173,10 +208,10 @@
 
 - File: `sleep2vec/utils.py`
 - Signature: `get_pretrain_dataloader(args)`
-- Purpose and contract: build the standard pretrain/adapt train loader plus one sequential pair-eval validation loader from the current CLI namespace.
+- Purpose and contract: build the standard pretrain/adapt train loader plus one sequential pair-eval validation loader from the current CLI namespace, dispatching to `PSGPretrainDataset` or `KaldiPSGDataset` according to `args.data_backend`.
 - Important inputs/outputs: pretrain-style `args` in; `(train_loader, val_loader)` out.
 - Side effects: seeds RNGs and configures sampler behavior based on missing-channel flags.
-- Key callers/callees: callers are `pretrain.sleep2vec_pretrain` and `adapt.sleep2vec_adapt`; callees include `PSGPretrainDataset`, `build_all_pairs`, `RoundRobinPairSelector`, `PairFirstBatchSampler`, `AvailableChannelsBucketBatchSampler`, and `SequentialPairEvalBatchSampler`.
+- Key callers/callees: callers are `pretrain.sleep2vec_pretrain` and `adapt.sleep2vec_adapt`; callees include `_dataset_class_for_args`, `PSGPretrainDataset`, `KaldiPSGDataset`, `build_all_pairs`, `RoundRobinPairSelector`, `PairFirstBatchSampler`, `AvailableChannelsBucketBatchSampler`, and `SequentialPairEvalBatchSampler`.
 - Reuse guidance: use for any standard pretrain or adaptation runtime path.
 - Duplication risk notes: keep missing-channel argument normalization here rather than in the entrypoint.
 
@@ -186,9 +221,9 @@
 - Signatures:
   - `_build_finetune_loader(args, *, split, sources, shuffle, is_train_set, few_shot=None)`
   - `get_finetune_dataloaders(args)`
-- Purpose and contract: build finetune train/val/test loaders with correct metadata label wiring, built-in sequence label-channel insertion, AHI auxiliary `stage5` injection, and fail-fast validation that built-in `age`/`sex` runs have valid labels after split/source filtering.
+- Purpose and contract: build finetune train/val/test loaders with correct metadata label wiring, built-in sequence label-channel insertion, AHI auxiliary `stage5` injection, backend-specific dataset kwargs, and fail-fast validation that built-in `age`/`sex` runs have valid labels after split/source filtering.
 - Important inputs/outputs: normalized finetune `args` in; one loader or three loaders out.
 - Side effects: seed initialization in `get_finetune_dataloaders`.
-- Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callee is `PSGPretrainDataset.dataloader`.
+- Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callees are `_dataset_class_for_args`, `PSGPretrainDataset.dataloader`, and `KaldiPSGDataset.dataloader`.
 - Reuse guidance: use these helpers for any finetune or inference data-loading path.
 - Duplication risk notes: built-in label-channel insertion and metadata-label selection should not be duplicated in trainer code.
