@@ -132,6 +132,28 @@
 - Reuse guidance: use for pair-alignment visualization.
 - Duplication risk notes: matrix-shape validation belongs here, not in callers.
 
+## `sleep2vec.visualization.routing_heatmap.render_routing_usage_heatmap`
+
+- File: `sleep2vec/visualization/routing_heatmap.py`; package-local mirrors: `sleep2vec2/visualization/routing_heatmap.py`, `sleep2expert/visualization/routing_heatmap.py`
+- Signature: `render_routing_usage_heatmap(matrix, layer_labels, expert_labels, *, title="MoE Routing Usage") -> plt.Figure`
+- Purpose and contract: render a MoE layer-by-expert usage heatmap and validate the matrix shape against provided labels.
+- Important inputs/outputs: usage matrix plus layer/expert labels in; matplotlib figure out.
+- Side effects: none beyond figure creation.
+- Key callers/callees: caller is `sleep2expert.routing_analysis.write_routing_heatmaps`; callee is shared heatmap/theme code.
+- Reuse guidance: use for routing usage plots instead of open-coding matrix figures.
+- Duplication risk notes: label-shape validation and routing colormap semantics should stay in this helper.
+
+## `sleep2vec.visualization.boxplot.render_routing_entropy_boxplot`
+
+- File: `sleep2vec/visualization/boxplot.py`; package-local mirrors: `sleep2vec2/visualization/boxplot.py`, `sleep2expert/visualization/boxplot.py`
+- Signature: `render_routing_entropy_boxplot(rows, *, title="MoE Routing Entropy") -> plt.Figure`
+- Purpose and contract: render normalized router entropy distributions by MoE layer from routing-analysis rows.
+- Important inputs/outputs: routing row dictionaries in; matplotlib figure out.
+- Side effects: none beyond figure creation.
+- Key callers/callees: currently exercised by visualization tests and available for routing-analysis reporting.
+- Reuse guidance: use when summarizing router entropy from exported rows.
+- Duplication risk notes: entropy normalization and row-field expectations should stay aligned with `sleep2expert.routing_analysis`.
+
 ## `sleep2vec.visualization.theme.use_openai_like_theme`
 
 - File: `sleep2vec/visualization/theme.py`

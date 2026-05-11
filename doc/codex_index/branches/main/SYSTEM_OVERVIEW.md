@@ -7,8 +7,10 @@ The repository is a config-driven multimodal sleep modeling system with five ope
 1. Schema and task semantics: `sleep2vec/config.py`, `sleep2vec/common.py`
 2. Construction and extension: `sleep2vec/registry.py`, `sleep2vec/builders.py`, `sleep2vec/backbones/`, `sleep2vec/modules/`, `sleep2vec/cls/`, `sleep2vec/downstreams/`
 3. Model and trainer runtime: `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/sleep2vec_adaptation.py`
-4. Data and preprocessing: `data/`, `preprocess/`, `sleep2vec/utils.py`
+4. Data and preprocessing: `data/`, `preprocess/`, `sleep2vec/utils.py`, including both NPZ and Kaldi manifest backends
 5. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`
+
+`sleep2vec2/` and `sleep2expert/` are tracked standalone namespaces on this branch. They mirror the root runtime surface with package-local `data/` and `preprocess/` modules instead of importing root `data` or `preprocess`. `sleep2expert/` also owns the MoE RoFormer, MoE regularization, finetune tuning policy, and routing-analysis export path.
 
 Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task, head, evaluation-visualization, and adapt references; entrypoints still inject runtime-only values such as learning rate, devices, checkpoint paths, diagnostics mode, and experiment naming.
 
@@ -18,8 +20,11 @@ Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task,
 - `python -m sleep2vec.adapt`
 - `python -m sleep2vec.finetune`
 - `python -m sleep2vec.infer`
+- `python -m sleep2expert.routing_analysis`
 - `python utils/check_configs.py`
 - Preprocessing CLIs under `preprocess/`
+
+The package-local variant mirrors expose equivalent pretrain/adapt/finetune/infer and preprocessing module entrypoints under `sleep2vec2.*` and `sleep2expert.*`.
 
 ## Runtime Stack
 
@@ -29,8 +34,8 @@ Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task,
 
 1. Parse CLI.
 2. Load YAML with `load_pretrain_config`.
-3. Copy model-derived channel metadata into `args`.
-4. Build one training loader plus one validation loader whose batch sampler iterates channel pairs through `get_pretrain_dataloader`.
+3. Copy model-derived channel metadata and data-backend settings into `args`.
+4. Build one training loader plus one validation loader whose batch sampler iterates channel pairs through `get_pretrain_dataloader`. The loader chooses `PSGPretrainDataset` for `npz` and `KaldiPSGDataset` for `kaldi`.
 5. Instantiate `Sleep2vecPretraining`, which owns a `Sleep2vecPretrainModel`, contrastive loss, diagnostics hooks, and optional model averager.
 6. Configure Lightning callbacks:
    - `ModelCheckpoint`
@@ -63,8 +68,8 @@ Stage transitions are strict: `--ckpt-path` resumes within the same phase only, 
 
 1. Parse CLI.
 2. Call `apply_finetune_config(args)`.
-3. That call loads YAML via `load_finetune_config`, validates task semantics, converts configured data paths to `Path`, and enforces `data.data_channel_names == model.channels`.
-4. Build train/val/test loaders via `get_finetune_dataloaders`.
+3. That call loads YAML via `load_finetune_config`, validates task semantics, converts configured data paths to `Path`, applies `data.backend`, and enforces `data.data_channel_names == model.channels`.
+4. Build train/val/test loaders via `get_finetune_dataloaders`; NPZ runs use preset/index inputs, and Kaldi runs use `kaldi_data_root` plus `manifest.json`.
 5. Instantiate `Sleep2vecFinetuning`, which owns:
    - a `Sleep2vecPretrainModel` backbone
    - a `Sleep2vecDownstreamModel` head stack
@@ -93,6 +98,11 @@ Built-in task semantics now include `stage3`, `stage4`, `stage5`, `ahi`, `sex`, 
 AHI inference deliberately rejects checkpoint averaging because the fitted `ahi_eval_threshold` is checkpoint-specific.
 
 ## Core Data Contract
+
+The root runtime supports two data backends:
+
+- `npz`: `PSGPretrainDataset` reads index CSVs or preset pickles and loads NPZ arrays at collate time.
+- `kaldi`: `KaldiPSGDataset` reads `manifest.json` format v2, split CSVs, and sorted `.scp` channel files through `KaldiReaderPool`; legacy NPZ preset pickles are rejected for this backend.
 
 The runtime assumes a batch dictionary with these keys:
 
@@ -143,12 +153,17 @@ The preprocessing surface is split between reusable CLIs and one notebook:
 - `mask_missing_stats.py`: summarize `_mask` coverage
 - `save_dataset_presets.py`: build preset pickles through `PSGPretrainDataset`, including YAML-driven `preset_build` validation
 - `merge_dataset_presets.py`: concatenate multiple preset pickles
+- `convert_npz_to_kaldi.py`: convert CSV-indexed NPZ windows into split-specific Kaldi ark/scp roots plus `manifest.json` format v2
 - `watchpat_zzp_to_edf.py`: convert WatchPAT `.zzp` archives to EDF and optional JSON summary
 - `preprocess_pipeline.ipynb`: manual, dataset-specific workflow history
 
-The canonical preset path is:
+The canonical NPZ preset path is:
 
 `CSV split prep -> optional mask analysis -> preset generation -> optional preset merge`
+
+The canonical Kaldi path is:
+
+`CSV split prep -> optional mask analysis -> convert_npz_to_kaldi -> runtime data.backend=kaldi`
 
 `utils/check_configs.py` is the branch-local tooling path for validating:
 
@@ -173,10 +188,11 @@ The canonical preset path is:
   - confusion matrices, ROC curves, and regression scatter plots
 - Preprocessing outputs:
   - preset pickles
+  - Kaldi `manifest.json`, split CSV manifests, sorted `.scp` files, and ark shards
   - split CSVs
   - mask statistics CSVs
   - EDF files and optional JSON summaries
 
 ## Variant State On This Branch
 
-`sleep2vec2/`, `sleep2vec_moe/`, and `sleep2vec_hires/` exist as directories but contain no tracked source files on `main`. Treat them as branch-state notes, not active extension targets, unless tracked code appears in a later commit.
+`sleep2vec2/` is an active tracked standalone mirror of the root recipe with a package-local RoFormer implementation and no LoRA support for its standalone backbone. `sleep2expert/` is an active tracked standalone variant that adds MoE configuration, sparse RoFormer FFN routing, MoE pretrain/finetune regularization, MoE checkpoint initialization, and routing export/visualization.
