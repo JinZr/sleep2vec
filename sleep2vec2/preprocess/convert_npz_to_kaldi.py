@@ -510,9 +510,7 @@ def convert(args: argparse.Namespace) -> Path:
                 if args.ark_shards == 1:
                     ark_path = split_channel_dir / f"{channel}.ark"
                     scp_path = split_channel_dir / f"{channel}.scp"
-                    writers[(split_key, channel, 0)] = stack.enter_context(
-                        writer_cls(f"ark,scp:{ark_path},{scp_path}")
-                    )
+                    writers[(split_key, channel, 0)] = stack.enter_context(writer_cls(f"ark,scp:{ark_path},{scp_path}"))
                 else:
                     for shard_index in range(args.ark_shards):
                         shard_no = shard_index + 1
