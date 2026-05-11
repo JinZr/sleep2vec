@@ -134,6 +134,17 @@
 - Reuse guidance: use as the standard split-preparation CLI.
 - Duplication risk notes: this is the source of truth for split assignment before preset creation.
 
+## `preprocess.convert_npz_to_kaldi.convert`
+
+- File: `preprocess/convert_npz_to_kaldi.py`; package-local mirrors: `sleep2vec2/preprocess/convert_npz_to_kaldi.py`, `sleep2expert/preprocess/convert_npz_to_kaldi.py`
+- Signature: `convert(args: argparse.Namespace) -> Path`
+- Purpose and contract: convert CSV-indexed NPZ token windows into split-specific Kaldi ark/scp files plus `manifest.json` format v2. The converter defaults to `--compress-ark`, compressing non-built-in signal channels with Kaldi `CompressedMatrixWriter`, while built-in `stage5` and `ahi` stay uncompressed `FloatMatrix` entries. `--no-compress-ark` forces all channel ark files to `FloatMatrix`.
+- Important inputs/outputs: index CSV(s), config YAML, output directory, optional split filter, selected channels, windowing settings, missing-channel policy, shard count, worker count, path-prefix maps, and compression switch in; Kaldi data root with split manifests, channel scps, ark files, and manifest channel `ark_storage` metadata out.
+- Side effects: reads NPZ files and writes sorted split-specific Kaldi ark/scp files or shard files plus aggregate scps and manifests; imports optional `kaldi_native_io` only when conversion runs.
+- Key callers/callees: called from `__main__`; callees include `_resolve_channels`, `_convert_record`, `kaldi_native_io.FloatMatrixWriter`, and `kaldi_native_io.CompressedMatrixWriter`.
+- Reuse guidance: use this CLI to build Kaldi roots for pretrain, finetune, and inference instead of creating ad hoc ark/scp writers. Standalone variants should keep their package-local mirrors behaviorally aligned.
+- Duplication risk notes: keep root, `sleep2vec2`, and `sleep2expert` converter storage semantics in sync when changing writer behavior.
+
 ## `preprocess.mask_missing_stats.main`
 
 - File: `preprocess/mask_missing_stats.py`

@@ -24,6 +24,18 @@ def _write_channel(root: Path, channel: str, matrices: dict[str, np.ndarray]) ->
     return scp_path
 
 
+def _write_compressed_channel(root: Path, channel: str, matrices: dict[str, np.ndarray]) -> Path:
+    channels_dir = root / "channels"
+    channels_dir.mkdir(parents=True, exist_ok=True)
+    ark_path = channels_dir / f"{channel}.ark"
+    scp_path = channels_dir / f"{channel}.scp"
+    method = kaldi_native_io.CompressionMethod.kAutomaticMethod
+    with kaldi_native_io.CompressedMatrixWriter(f"ark,scp:{ark_path},{scp_path}") as writer:
+        for key, matrix in matrices.items():
+            writer.write(key, np.asarray(matrix, dtype=np.float32), method=method)
+    return scp_path
+
+
 def _pool(root: Path, channel: str, input_dim: int, scp_path: Path) -> KaldiReaderPool:
     return KaldiReaderPool(
         root,
@@ -54,6 +66,16 @@ def test_reader_pool_reads_matrix_copy(tmp_path: Path) -> None:
     assert actual.dtype == np.float32
     actual[0, 0] = -999.0
     np.testing.assert_array_equal(pool.read_matrix("eeg", "sample-a"), matrix)
+
+
+def test_reader_pool_reads_compressed_matrix(tmp_path: Path) -> None:
+    matrix = np.linspace(-1.0, 1.0, num=12, dtype=np.float32).reshape(4, 3)
+    scp_path = _write_compressed_channel(tmp_path, "eeg", {"sample-a": matrix})
+    pool = _pool(tmp_path, "eeg", 3, scp_path)
+
+    actual = pool.read_matrix("eeg", "sample-a")
+
+    np.testing.assert_allclose(actual, matrix, rtol=1e-3, atol=1e-3)
 
 
 def test_reader_pool_rejects_unknown_channel(tmp_path: Path) -> None:
