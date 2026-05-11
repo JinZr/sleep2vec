@@ -35,7 +35,7 @@ def _read_matrix(scp_path: Path, key: str) -> np.ndarray:
         return np.asarray(reader[key], dtype=np.float32)
 
 
-def test_parse_args_defaults_num_workers_to_four(tmp_path: Path):
+def test_parse_args_defaults_num_workers_to_four_and_compresses_ark(tmp_path: Path):
     args = parse_args(
         [
             "--index",
@@ -51,6 +51,24 @@ def test_parse_args_defaults_num_workers_to_four(tmp_path: Path):
     )
 
     assert args.num_workers == 4
+    assert args.compress_ark is True
+
+
+def test_parse_args_accepts_compress_ark_switches(tmp_path: Path):
+    base_args = [
+        "--index",
+        str(tmp_path / "index.csv"),
+        "--config",
+        str(tmp_path / "config.yaml"),
+        "--output-dir",
+        str(tmp_path / "kaldi"),
+        "--max-tokens",
+        "2",
+        "--channels-from-config",
+    ]
+
+    assert parse_args(base_args + ["--compress-ark"]).compress_ark is True
+    assert parse_args(base_args + ["--no-compress-ark"]).compress_ark is False
 
 
 def test_converter_rejects_num_workers_less_than_one(tmp_path: Path):
@@ -165,8 +183,18 @@ def test_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):
         expected_ahi = registry["ahi"][1](registry["ahi"][0](npz, 0, 2)).numpy()
 
     key = "mesa_night_1_000000_000002"
-    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "eeg.scp", key), expected_eeg)
-    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "ppg.scp", key), expected_ppg)
+    np.testing.assert_allclose(
+        _read_matrix(output_dir / "channels" / "train" / "eeg.scp", key),
+        expected_eeg,
+        rtol=1e-3,
+        atol=1e-3,
+    )
+    np.testing.assert_allclose(
+        _read_matrix(output_dir / "channels" / "train" / "ppg.scp", key),
+        expected_ppg,
+        rtol=1e-3,
+        atol=1e-3,
+    )
     np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "stage5.scp", key), expected_stage5)
     np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "ahi.scp", key), expected_ahi)
 
@@ -177,8 +205,72 @@ def test_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):
     assert manifest_json["max_tokens"] == 2
     assert manifest_json["stride_tokens"] == 2
     assert manifest_json["splits"]["train"]["manifest"] == "manifests/train.csv"
-    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {"input_dim": 4, "scp": "channels/train/eeg.scp"}
+    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
+        "input_dim": 4,
+        "scp": "channels/train/eeg.scp",
+        "ark_storage": "compressed_matrix",
+    }
+    assert manifest_json["splits"]["train"]["channels"]["ppg"]["ark_storage"] == "compressed_matrix"
+    assert manifest_json["splits"]["train"]["channels"]["stage5"]["ark_storage"] == "float_matrix"
+    assert manifest_json["splits"]["train"]["channels"]["ahi"]["ark_storage"] == "float_matrix"
     assert manifest_json["source_index"] == [str(index_path)]
+
+
+def test_converter_no_compress_ark_keeps_float_storage_and_exact_roundtrip(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32), stage5=np.arange(2, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "eeg_mask": 1,
+                "stage_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+                "--extra-channels",
+                "stage5",
+                "--no-compress-ark",
+            ]
+        )
+    )
+
+    registry = _build_channel_registry(
+        channel_names=["eeg", "stage5"],
+        channel_input_dims={"eeg": 4, "stage5": 1},
+        mask_rate=0.0,
+    )
+    with load_npz(str(npz_path)) as npz:
+        expected_eeg = registry["eeg"][1](registry["eeg"][0](npz, 0, 2)).numpy()
+        expected_stage5 = registry["stage5"][1](registry["stage5"][0](npz, 0, 2)).numpy()
+
+    key = "mesa_s1_000000_000002"
+    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "eeg.scp", key), expected_eeg)
+    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "stage5.scp", key), expected_stage5)
+
+    channels = json.loads((output_dir / "manifest.json").read_text())["splits"]["train"]["channels"]
+    assert channels["eeg"]["ark_storage"] == "float_matrix"
+    assert channels["stage5"]["ark_storage"] == "float_matrix"
 
 
 def test_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Path):
@@ -258,11 +350,13 @@ def test_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Pat
     assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
         "input_dim": 4,
         "scp": "channels/train/eeg.scp",
+        "ark_storage": "compressed_matrix",
     }
     assert manifest_json["splits"]["val"]["manifest"] == "manifests/val.csv"
     assert manifest_json["splits"]["val"]["channels"]["eeg"] == {
         "input_dim": 4,
         "scp": "channels/val/eeg.scp",
+        "ark_storage": "compressed_matrix",
     }
 
 
@@ -570,6 +664,7 @@ def test_converter_writes_ark_shards_with_aggregate_scp(tmp_path: Path):
     assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
         "input_dim": 4,
         "scp": "channels/train/eeg.scp",
+        "ark_storage": "compressed_matrix",
     }
 
 
@@ -879,6 +974,7 @@ def test_converter_honors_preset_build_required_channels(tmp_path: Path):
     assert manifest_json["splits"]["train"]["channels"]["stage5"] == {
         "input_dim": 1,
         "scp": "channels/train/stage5.scp",
+        "ark_storage": "float_matrix",
     }
     assert _scp_keys(output_dir / "channels" / "train" / "stage5.scp") == ["mesa_s1_000000_000002"]
 
@@ -936,10 +1032,12 @@ def test_converter_auto_adds_stage5_when_preset_build_requires_ahi(tmp_path: Pat
     assert manifest_json["splits"]["train"]["channels"]["ahi"] == {
         "input_dim": 30,
         "scp": "channels/train/ahi.scp",
+        "ark_storage": "float_matrix",
     }
     assert manifest_json["splits"]["train"]["channels"]["stage5"] == {
         "input_dim": 1,
         "scp": "channels/train/stage5.scp",
+        "ark_storage": "float_matrix",
     }
     assert _scp_keys(output_dir / "channels" / "train" / "stage5.scp") == ["mesa_s1_000000_000002"]
 

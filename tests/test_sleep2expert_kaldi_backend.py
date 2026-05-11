@@ -873,8 +873,18 @@ def test_sleep2expert_converter_roundtrip_writes_manifest_and_matching_scp(tmp_p
         expected_ahi = registry["ahi"][1](registry["ahi"][0](npz, 0, 2)).numpy()
 
     key = "mesa_night_1_000000_000002"
-    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "eeg.scp", key), expected_eeg)
-    np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "ppg.scp", key), expected_ppg)
+    np.testing.assert_allclose(
+        _read_matrix(output_dir / "channels" / "train" / "eeg.scp", key),
+        expected_eeg,
+        rtol=1e-3,
+        atol=1e-3,
+    )
+    np.testing.assert_allclose(
+        _read_matrix(output_dir / "channels" / "train" / "ppg.scp", key),
+        expected_ppg,
+        rtol=1e-3,
+        atol=1e-3,
+    )
     np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "stage5.scp", key), expected_stage5)
     np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "ahi.scp", key), expected_ahi)
 
@@ -882,7 +892,14 @@ def test_sleep2expert_converter_roundtrip_writes_manifest_and_matching_scp(tmp_p
     assert manifest_json["format_version"] == 2
     assert manifest_json["backend"] == "kaldi_native_io"
     assert manifest_json["splits"]["train"]["manifest"] == "manifests/train.csv"
-    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {"input_dim": 4, "scp": "channels/train/eeg.scp"}
+    assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
+        "input_dim": 4,
+        "scp": "channels/train/eeg.scp",
+        "ark_storage": "compressed_matrix",
+    }
+    assert manifest_json["splits"]["train"]["channels"]["ppg"]["ark_storage"] == "compressed_matrix"
+    assert manifest_json["splits"]["train"]["channels"]["stage5"]["ark_storage"] == "float_matrix"
+    assert manifest_json["splits"]["train"]["channels"]["ahi"]["ark_storage"] == "float_matrix"
 
 
 def test_sleep2expert_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Path):
@@ -964,10 +981,12 @@ def test_sleep2expert_converter_writes_split_specific_manifests_and_sorted_scps(
     assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
         "input_dim": 4,
         "scp": "channels/train/eeg.scp",
+        "ark_storage": "compressed_matrix",
     }
     assert manifest_json["splits"]["val"]["channels"]["eeg"] == {
         "input_dim": 4,
         "scp": "channels/val/eeg.scp",
+        "ark_storage": "compressed_matrix",
     }
 
 
@@ -1123,6 +1142,7 @@ def test_sleep2expert_converter_honors_preset_build_required_channels(tmp_path: 
     assert manifest_json["splits"]["train"]["channels"]["stage5"] == {
         "input_dim": 1,
         "scp": "channels/train/stage5.scp",
+        "ark_storage": "float_matrix",
     }
     assert _scp_keys(output_dir / "channels" / "train" / "stage5.scp") == ["mesa_s1_000000_000002"]
 
@@ -1183,6 +1203,7 @@ def test_sleep2expert_converter_auto_adds_stage5_when_preset_build_requires_ahi(
     assert manifest_json["splits"]["train"]["channels"]["stage5"] == {
         "input_dim": 1,
         "scp": "channels/train/stage5.scp",
+        "ark_storage": "float_matrix",
     }
 
 
