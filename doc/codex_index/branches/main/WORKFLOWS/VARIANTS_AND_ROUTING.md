@@ -37,7 +37,7 @@ Primary namespace guards:
 
 Canonical entrypoint:
 
-`python -m sleep2expert.routing_analysis --config <yaml> --ckpt-path <ckpt> --output <csv>`
+`python -m sleep2expert.routing_analysis --config <yaml> --ckpt-path <ckpt> --label-name <label> --output <csv>`
 
 Primary code path:
 
@@ -53,6 +53,7 @@ Primary code path:
 
 Important options:
 
+- `--label-name`: required downstream label name used by the finetune config.
 - `--pretrained-only`: export routing from a pretrained backbone without loading a downstream checkpoint.
 - `--eval-split`: choose `train`, `val`, or `test`.
 - `--override-dataset-names`: replace configured dataset names for the export.
