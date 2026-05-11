@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-11
+
+- Added the Kaldi NPZ-to-ark converter contract to the preprocessing function catalog, including default two-byte semantic ark compression and package-local mirror parity notes.
+
 ## 2026-05-06
 
 - Updated dataset and preprocessing docs for stage/AHI-only preset generation without mandatory `age`/`sex` CSV columns.

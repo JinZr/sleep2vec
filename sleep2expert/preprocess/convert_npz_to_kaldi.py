@@ -31,6 +31,8 @@ from sleep2expert.preprocess.save_dataset_presets import (
 )
 from sleep2expert.preprocess.split_index_by_dataset import normalize_mask_frame
 
+UNCOMPRESSED_BUILTIN_CHANNELS = {"stage5", "ahi"}
+
 
 def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -61,6 +63,12 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         default=4,
         help="Number of record conversion worker threads.",
+    )
+    parser.add_argument(
+        "--compress-ark",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compress non-label ark matrices with two-byte Kaldi compression.",
     )
     parser.add_argument("--max-tokens", type=int, required=True, help="Maximum tokens per output sample.")
     parser.add_argument(
@@ -454,6 +462,13 @@ def convert(args: argparse.Namespace) -> Path:
     prefix_maps = _parse_prefix_maps(args.path_prefix_map)
 
     kaldi_native_io = _import_kaldi_native_io()
+    compressed_channels = {
+        channel for channel in channel_names if args.compress_ark and channel not in UNCOMPRESSED_BUILTIN_CHANNELS
+    }
+    compression_method = kaldi_native_io.CompressionMethod.kTwoByteAuto if compressed_channels else None
+    channel_storage = {
+        channel: "compressed_matrix" if channel in compressed_channels else "float_matrix" for channel in channel_names
+    }
     output_dir = args.output_dir.expanduser()
     manifests_dir = output_dir / "manifests"
     channels_root = output_dir / "channels"
@@ -486,19 +501,22 @@ def convert(args: argparse.Namespace) -> Path:
             split_channel_dir = channels_root / split_dir
             split_channel_dir.mkdir(parents=True, exist_ok=True)
             for channel in channel_names:
+                writer_cls = (
+                    kaldi_native_io.CompressedMatrixWriter
+                    if channel_storage[channel] == "compressed_matrix"
+                    else kaldi_native_io.FloatMatrixWriter
+                )
                 if args.ark_shards == 1:
                     ark_path = split_channel_dir / f"{channel}.ark"
                     scp_path = split_channel_dir / f"{channel}.scp"
-                    writers[(split_key, channel, 0)] = stack.enter_context(
-                        kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
-                    )
+                    writers[(split_key, channel, 0)] = stack.enter_context(writer_cls(f"ark,scp:{ark_path},{scp_path}"))
                 else:
                     for shard_index in range(args.ark_shards):
                         shard_no = shard_index + 1
                         ark_path = split_channel_dir / f"{channel}.{shard_no}.ark"
                         scp_path = split_channel_dir / f"{channel}.{shard_no}.scp"
                         writers[(split_key, channel, shard_index)] = stack.enter_context(
-                            kaldi_native_io.FloatMatrixWriter(f"ark,scp:{ark_path},{scp_path}")
+                            writer_cls(f"ark,scp:{ark_path},{scp_path}")
                         )
             return split_key
 
@@ -533,7 +551,11 @@ def convert(args: argparse.Namespace) -> Path:
                 shard_index = split_sample_count % args.ark_shards
                 split_sample_counts[split_key] = split_sample_count + 1
                 for channel, matrix in sample["matrices"].items():
-                    writers[(split_key, channel, shard_index)].write(sample_key, matrix)
+                    writer = writers[(split_key, channel, shard_index)]
+                    if channel_storage[channel] == "compressed_matrix":
+                        writer.write(sample_key, matrix, method=compression_method)
+                    else:
+                        writer.write(sample_key, matrix)
                 manifest_rows_by_split.setdefault(split_key, []).append(sample["manifest_row"])
 
     if not manifest_rows_by_split:
@@ -565,6 +587,7 @@ def convert(args: argparse.Namespace) -> Path:
                 channel: {
                     "input_dim": int(channel_input_dims[channel]),
                     "scp": (Path("channels") / split_dir / f"{channel}.scp").as_posix(),
+                    "ark_storage": channel_storage[channel],
                 }
                 for channel in channel_names
             },
