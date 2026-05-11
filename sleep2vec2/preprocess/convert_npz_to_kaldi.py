@@ -466,9 +466,6 @@ def convert(args: argparse.Namespace) -> Path:
         channel for channel in channel_names if args.compress_ark and channel not in UNCOMPRESSED_BUILTIN_CHANNELS
     }
     compression_method = kaldi_native_io.CompressionMethod.kTwoByteAuto if compressed_channels else None
-    channel_storage = {
-        channel: "compressed_matrix" if channel in compressed_channels else "float_matrix" for channel in channel_names
-    }
     output_dir = args.output_dir.expanduser()
     manifests_dir = output_dir / "manifests"
     channels_root = output_dir / "channels"
@@ -478,6 +475,7 @@ def convert(args: argparse.Namespace) -> Path:
     seen_sample_keys: set[str] = set()
     manifest_json_path = output_dir / "manifest.json"
     writers: dict[tuple[str, str, int], t.Any] = {}
+    split_channel_storage: dict[tuple[str, str], str] = {}
     split_dirs: dict[str, str] = {}
     split_keys_by_dir: dict[str, str] = {}
     split_sample_counts: dict[str, int] = {}
@@ -500,10 +498,13 @@ def convert(args: argparse.Namespace) -> Path:
             split_keys_by_dir[split_dir] = split_key
             split_channel_dir = channels_root / split_dir
             split_channel_dir.mkdir(parents=True, exist_ok=True)
+            compress_split = split_key == "train"
             for channel in channel_names:
+                storage = "compressed_matrix" if compress_split and channel in compressed_channels else "float_matrix"
+                split_channel_storage[(split_key, channel)] = storage
                 writer_cls = (
                     kaldi_native_io.CompressedMatrixWriter
-                    if channel_storage[channel] == "compressed_matrix"
+                    if storage == "compressed_matrix"
                     else kaldi_native_io.FloatMatrixWriter
                 )
                 if args.ark_shards == 1:
@@ -552,7 +553,8 @@ def convert(args: argparse.Namespace) -> Path:
                 split_sample_counts[split_key] = split_sample_count + 1
                 for channel, matrix in sample["matrices"].items():
                     writer = writers[(split_key, channel, shard_index)]
-                    if channel_storage[channel] == "compressed_matrix":
+                    storage = split_channel_storage[(split_key, channel)]
+                    if storage == "compressed_matrix":
                         writer.write(sample_key, matrix, method=compression_method)
                     else:
                         writer.write(sample_key, matrix)
@@ -587,7 +589,7 @@ def convert(args: argparse.Namespace) -> Path:
                 channel: {
                     "input_dim": int(channel_input_dims[channel]),
                     "scp": (Path("channels") / split_dir / f"{channel}.scp").as_posix(),
-                    "ark_storage": channel_storage[channel],
+                    "ark_storage": split_channel_storage[(split_key, channel)],
                 }
                 for channel in channel_names
             },
