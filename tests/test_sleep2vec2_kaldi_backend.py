@@ -986,7 +986,7 @@ def test_sleep2vec2_converter_writes_split_specific_manifests_and_sorted_scps(tm
     assert manifest_json["splits"]["val"]["channels"]["eeg"] == {
         "input_dim": 4,
         "scp": "channels/val/eeg.scp",
-        "ark_storage": "compressed_matrix",
+        "ark_storage": "float_matrix",
     }
 
 
