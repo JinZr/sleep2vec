@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-import csv
 import json
 import os
 from pathlib import Path
@@ -300,80 +298,6 @@ def _should_keep_sample(
     return len(available_channels) == len(requested_channels)
 
 
-def _build_manifest_columns(df: pd.DataFrame, channel_names: t.Sequence[str]) -> list[str]:
-    columns = list(df.columns)
-    for column in [
-        "source",
-        "sample_key",
-        "record_key",
-        "sample_source",
-        "token_start",
-        "token_end",
-        "num_tokens",
-        "available_channels",
-    ]:
-        if column not in columns:
-            columns.append(column)
-    if "ahi" in channel_names:
-        for column in ["ahi", "tst"]:
-            if column not in columns:
-                columns.append(column)
-    return columns
-
-
-def _manifest_csv_row(manifest_row: dict[str, t.Any], columns: t.Sequence[str]) -> dict[str, t.Any]:
-    row = {}
-    for column in columns:
-        value = manifest_row.get(column, "")
-        if value is None or pd.isna(value):
-            value = ""
-        row[column] = value
-    return row
-
-
-def _validate_unique_records(df: pd.DataFrame, source_field: str) -> None:
-    seen_records: set[tuple[str, str]] = set()
-    for _, row in df.iterrows():
-        source_value = row[source_field]
-        if pd.isna(source_value) or str(source_value) == "":
-            raise ValueError(f"CSV source field {source_field!r} has an empty value.")
-        record_id = (_sanitize_key_part(source_value), _record_key_from_row(row, str(row["path"])))
-        if record_id in seen_records:
-            raise ValueError(f"Duplicate Kaldi sample_key generated for record {record_id[1]!r}.")
-        seen_records.add(record_id)
-
-
-def _map_records_in_order(
-    rows: t.Iterator[pd.Series],
-    convert_row: t.Callable[[pd.Series], list[dict[str, t.Any]]],
-    num_workers: int,
-) -> t.Iterator[list[dict[str, t.Any]]]:
-    if num_workers == 1:
-        yield from map(convert_row, rows)
-        return
-
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        # ThreadPoolExecutor.map submits every row eagerly on Python 3.10/3.11.
-        pending = deque()
-        max_pending = num_workers * 2
-        for _ in range(max_pending):
-            try:
-                row = next(rows)
-            except StopIteration:
-                break
-            pending.append(executor.submit(convert_row, row))
-
-        while pending:
-            future = pending.popleft()
-            try:
-                row = next(rows)
-            except StopIteration:
-                pass
-            else:
-                pending.append(executor.submit(convert_row, row))
-            yield future.result()
-
-
 def _convert_record(
     row: pd.Series,
     *,
@@ -528,8 +452,6 @@ def convert(args: argparse.Namespace) -> Path:
         if df.empty:
             raise ValueError("Overlap windows excluded val/test splits and no rows remain.")
     prefix_maps = _parse_prefix_maps(args.path_prefix_map)
-    manifest_columns = _build_manifest_columns(df, channel_names)
-    _validate_unique_records(df, args.source_field)
 
     kaldi_native_io = _import_kaldi_native_io()
     output_dir = args.output_dir.expanduser()
@@ -538,12 +460,13 @@ def convert(args: argparse.Namespace) -> Path:
     manifests_dir.mkdir(parents=True, exist_ok=True)
     channels_root.mkdir(parents=True, exist_ok=True)
 
+    seen_sample_keys: set[str] = set()
     manifest_json_path = output_dir / "manifest.json"
     writers: dict[tuple[str, str, int], t.Any] = {}
-    manifest_writers: dict[str, csv.DictWriter] = {}
     split_dirs: dict[str, str] = {}
     split_keys_by_dir: dict[str, str] = {}
     split_sample_counts: dict[str, int] = {}
+    manifest_rows_by_split: dict[str, list[dict[str, t.Any]]] = {}
 
     with ExitStack() as stack:
 
@@ -562,11 +485,6 @@ def convert(args: argparse.Namespace) -> Path:
             split_keys_by_dir[split_dir] = split_key
             split_channel_dir = channels_root / split_dir
             split_channel_dir.mkdir(parents=True, exist_ok=True)
-            manifest_path = manifests_dir / f"{split_dir}.csv"
-            manifest_file = stack.enter_context(manifest_path.open("w", newline=""))
-            manifest_writer = csv.DictWriter(manifest_file, fieldnames=manifest_columns)
-            manifest_writer.writeheader()
-            manifest_writers[split_key] = manifest_writer
             for channel in channel_names:
                 if args.ark_shards == 1:
                     ark_path = split_channel_dir / f"{channel}.ark"
@@ -596,25 +514,36 @@ def convert(args: argparse.Namespace) -> Path:
                 effective_min_channels=effective_min_channels,
             )
 
-        converted_records = _map_records_in_order((row for _, row in df.iterrows()), convert_row, args.num_workers)
+        rows = (row for _, row in df.iterrows())
+        if args.num_workers == 1:
+            converted_records = map(convert_row, rows)
+        else:
+            executor = stack.enter_context(ThreadPoolExecutor(max_workers=args.num_workers))
+            converted_records = executor.map(convert_row, rows)
+
         for samples in tqdm(converted_records, total=len(df), desc="Converting records", unit="record"):
             for sample in samples:
                 sample_key = sample["sample_key"]
+                if sample_key in seen_sample_keys:
+                    raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
+
+                seen_sample_keys.add(sample_key)
                 split_key = ensure_split_writers(sample["split"])
                 split_sample_count = split_sample_counts.get(split_key, 0)
                 shard_index = split_sample_count % args.ark_shards
                 split_sample_counts[split_key] = split_sample_count + 1
                 for channel, matrix in sample["matrices"].items():
                     writers[(split_key, channel, shard_index)].write(sample_key, matrix)
-                manifest_writers[split_key].writerow(_manifest_csv_row(sample["manifest_row"], manifest_columns))
+                manifest_rows_by_split.setdefault(split_key, []).append(sample["manifest_row"])
 
-    if not split_sample_counts:
+    if not manifest_rows_by_split:
         raise ValueError("No samples satisfied the requested channel availability rules.")
 
     splits: dict[str, dict[str, t.Any]] = {}
-    for split_key in split_sample_counts:
+    for split_key, rows in manifest_rows_by_split.items():
         split_dir = split_dirs[split_key]
         manifest_rel = Path("manifests") / f"{split_dir}.csv"
+        pd.DataFrame(rows).to_csv(output_dir / manifest_rel, index=False)
         split_channel_dir = channels_root / split_dir
         for channel in channel_names:
             scp_path = split_channel_dir / f"{channel}.scp"
