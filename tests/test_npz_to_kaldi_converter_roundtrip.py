@@ -1146,7 +1146,55 @@ def test_converter_rejects_duplicate_sample_keys(tmp_path: Path):
         ]
     ).to_csv(index_path, index=False)
 
-    with pytest.raises(ValueError, match="Duplicate Kaldi sample_key"):
+    output_dir = tmp_path / "kaldi"
+    with pytest.raises(ValueError, match="Duplicate Kaldi sample_key generated before writing"):
+        convert(
+            parse_args(
+                [
+                    "--index",
+                    str(index_path),
+                    "--config",
+                    str(config_path),
+                    "--output-dir",
+                    str(output_dir),
+                    "--max-tokens",
+                    "2",
+                    "--channels-from-config",
+                ]
+            )
+        )
+    assert not output_dir.exists()
+
+
+def test_converter_duplicate_preflight_ignores_mask_filtered_rows(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4, "ppg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "eeg_mask": 1,
+                "ppg_mask": 0,
+            },
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "eeg_mask": 1,
+                "ppg_mask": 0,
+            },
+        ]
+    ).to_csv(index_path, index=False)
+
+    with pytest.raises(ValueError, match="No samples satisfied"):
         convert(
             parse_args(
                 [
