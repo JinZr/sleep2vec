@@ -29,7 +29,7 @@ def _write_compressed_channel(root: Path, channel: str, matrices: dict[str, np.n
     channels_dir.mkdir(parents=True, exist_ok=True)
     ark_path = channels_dir / f"{channel}.ark"
     scp_path = channels_dir / f"{channel}.scp"
-    method = kaldi_native_io.CompressionMethod.kAutomaticMethod
+    method = kaldi_native_io.CompressionMethod.kTwoByteAuto
     with kaldi_native_io.CompressedMatrixWriter(f"ark,scp:{ark_path},{scp_path}") as writer:
         for key, matrix in matrices.items():
             writer.write(key, np.asarray(matrix, dtype=np.float32), method=method)
