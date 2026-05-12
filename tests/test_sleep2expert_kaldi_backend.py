@@ -1037,7 +1037,7 @@ def test_sleep2expert_converter_split_filter_selects_requested_split(tmp_path: P
     assert not (output_dir / "manifests" / "val.csv").exists()
 
 
-def test_sleep2expert_converter_prunes_overlap_eval_splits_unless_opted_in(tmp_path: Path):
+def test_sleep2expert_converter_keeps_eval_splits_without_overlap_by_default(tmp_path: Path, capsys):
     _require_kaldi_native_io()
     from sleep2expert.preprocess.convert_npz_to_kaldi import convert, parse_args
 
@@ -1079,11 +1079,28 @@ def test_sleep2expert_converter_prunes_overlap_eval_splits_unless_opted_in(tmp_p
 
     default_output_dir = tmp_path / "kaldi-default"
     run_convert(default_output_dir, include_eval_splits=False)
+    assert "keeping val/test rows with non-overlapping stride" in capsys.readouterr().out
     default_manifest = json.loads((default_output_dir / "manifest.json").read_text())
-    assert set(default_manifest["splits"]) == {"train"}
+    assert set(default_manifest["splits"]) == {"train", "val", "test"}
     assert (default_output_dir / "manifests" / "train.csv").exists()
-    assert not (default_output_dir / "manifests" / "val.csv").exists()
-    assert not (default_output_dir / "manifests" / "test.csv").exists()
+    assert (default_output_dir / "manifests" / "val.csv").exists()
+    assert (default_output_dir / "manifests" / "test.csv").exists()
+    default_train = pd.read_csv(default_output_dir / "manifests" / "train.csv", low_memory=False)
+    default_val = pd.read_csv(default_output_dir / "manifests" / "val.csv", low_memory=False)
+    default_test = pd.read_csv(default_output_dir / "manifests" / "test.csv", low_memory=False)
+    assert default_train["sample_key"].tolist() == [
+        "mesa_train_000000_000002",
+        "mesa_train_000001_000003",
+        "mesa_train_000002_000003",
+    ]
+    assert default_val["sample_key"].tolist() == [
+        "mesa_val_000000_000002",
+        "mesa_val_000002_000003",
+    ]
+    assert default_test["sample_key"].tolist() == [
+        "mesa_test_000000_000002",
+        "mesa_test_000002_000003",
+    ]
 
     opt_in_output_dir = tmp_path / "kaldi-opt-in"
     run_convert(opt_in_output_dir, include_eval_splits=True)
@@ -1092,6 +1109,12 @@ def test_sleep2expert_converter_prunes_overlap_eval_splits_unless_opted_in(tmp_p
     assert (opt_in_output_dir / "manifests" / "train.csv").exists()
     assert (opt_in_output_dir / "manifests" / "val.csv").exists()
     assert (opt_in_output_dir / "manifests" / "test.csv").exists()
+    opt_in_val = pd.read_csv(opt_in_output_dir / "manifests" / "val.csv", low_memory=False)
+    assert opt_in_val["sample_key"].tolist() == [
+        "mesa_val_000000_000002",
+        "mesa_val_000001_000003",
+        "mesa_val_000002_000003",
+    ]
 
 
 def test_sleep2expert_converter_honors_preset_build_required_channels(tmp_path: Path):

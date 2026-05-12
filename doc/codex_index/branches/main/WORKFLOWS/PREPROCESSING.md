@@ -82,6 +82,7 @@ The preset schema is still implicitly a pickled `list[SampleIndex]`, but the bra
 - honors `preset_build.required_channels` and `preset_build.min_channels`
 - expands each source row into fixed token windows
 - writes `manifest.json` format v2, split CSV manifests, per-channel `.scp` files, and ark files
+- keeps `val`/`test` rows when overlapping windows are requested but converts them with non-overlapping stride unless `--include-overlap-eval-splits` is passed
 - defaults to compressed matrix ark storage for non-built-in signal channels in the `train` split
 - keeps built-in `stage5`/`ahi` channels and non-train splits as float matrices
 - supports shard count, worker count, split filtering, and path-prefix mapping

@@ -82,7 +82,7 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--include-overlap-eval-splits",
         action="store_true",
-        help="Keep val/test rows when overlapping windows are enabled.",
+        help="Apply overlapping windows to val/test rows. By default, val/test rows use non-overlapping stride.",
     )
     parser.add_argument("--token-sec", type=int, default=30, help="Seconds represented by one token.")
     parser.add_argument(
@@ -338,7 +338,14 @@ def _validate_unique_sample_keys(
             continue
 
         record_key = _record_key_from_row(row, str(row["path"]))
-        for left, right in window(num_record_tokens, args.max_tokens, stride_tokens):
+        sample_stride_tokens = stride_tokens
+        if (
+            0 < stride_tokens < args.max_tokens
+            and not args.include_overlap_eval_splits
+            and str(row["split"]) in {"val", "test"}
+        ):
+            sample_stride_tokens = args.max_tokens
+        for left, right in window(num_record_tokens, args.max_tokens, sample_stride_tokens):
             sample_key = _sample_key(
                 source_value=source_value,
                 record_key=record_key,
@@ -377,10 +384,17 @@ def _convert_record(
 
     record_key = _record_key_from_row(row, original_path)
     mask_status = _row_mask_status(row, channel_names)
+    sample_stride_tokens = stride_tokens
+    if (
+        0 < stride_tokens < args.max_tokens
+        and not args.include_overlap_eval_splits
+        and str(row["split"]) in {"val", "test"}
+    ):
+        sample_stride_tokens = args.max_tokens
     samples: list[dict[str, t.Any]] = []
 
     with load_npz(str(npz_path)) as npz:
-        for left, right in window(num_record_tokens, args.max_tokens, stride_tokens):
+        for left, right in window(num_record_tokens, args.max_tokens, sample_stride_tokens):
             start = int(left)
             end = int(right)
             sample_key = _sample_key(
@@ -500,12 +514,11 @@ def convert(args: argparse.Namespace) -> Path:
         if df.empty:
             raise ValueError(f"No rows matched requested --split values: {sorted(requested_splits)}.")
     if 0 < stride_tokens < args.max_tokens and not args.include_overlap_eval_splits:
-        original_count = len(df)
-        df = df[~df["split"].astype(str).isin({"val", "test"})].copy()
-        if len(df) != original_count:
-            print("Overlap windows enabled; excluding val/test splits unless --include-overlap-eval-splits is set.")
-        if df.empty:
-            raise ValueError("Overlap windows excluded val/test splits and no rows remain.")
+        if df["split"].astype(str).isin({"val", "test"}).any():
+            print(
+                "Overlap windows enabled; keeping val/test rows with non-overlapping stride "
+                "(stride_tokens=max_tokens). Pass --include-overlap-eval-splits to overlap them."
+            )
     prefix_maps = _parse_prefix_maps(args.path_prefix_map)
     _validate_unique_sample_keys(
         df,
