@@ -125,8 +125,8 @@ This path is operationally separate from preset generation and is not used by `P
 - walks a flat or bucketed UKB `.cwa` tree
 - imports the standalone pip-installed `asleep` package, not sleep2vec
 - reuses asleep parsing, 30 Hz epoching, non-wear handling, and sleep-window detection
-- selects only the longest sleep block in each asleep noon-to-noon interval as the nightly segment
-- writes per-night compressed NPZ files plus `night_sleep_blocks.csv` per source file and a root `manifest.csv`
+- selects only the longest sleep block in each UK local noon-to-noon interval as the nightly segment
+- writes per-night compressed NPZ files plus `night_sleep_blocks.csv` per source file and a root `manifest.csv`; dynamic `--time-shift auto` writes local offset-aware `time` and raw `device_time`
 
 This output is an external data-cutting artifact. It does not create `SampleIndex` presets and does not exercise `PSGPretrainDataset`.
 

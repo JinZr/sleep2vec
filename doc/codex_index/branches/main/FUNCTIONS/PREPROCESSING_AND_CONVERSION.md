@@ -196,8 +196,8 @@
 
 - File: `utils/cut_ukb_sleep_with_asleep.py`
 - Signature: `main()`
-- Purpose and contract: standalone CLI for cutting nightly UKB `.cwa` accelerometer segments with the external pip-installed `asleep` package. It recursively finds `.cwa` files, mirrors the input tree under the output directory, runs asleep parsing and sleep-window detection, keeps only the longest sleep block per asleep noon-to-noon interval, and writes per-night compressed NPZ files plus CSV manifests.
-- Important inputs/outputs: input `.cwa` file or directory and output directory in; per-night `.npz`, per-file `night_sleep_blocks.csv`, asleep cache files, and root `manifest.csv` out.
+- Purpose and contract: standalone CLI for cutting nightly UKB `.cwa` accelerometer segments with the external pip-installed `asleep` package. It recursively finds `.cwa` files, mirrors the input tree under the output directory, runs asleep parsing and sleep-window detection, keeps only the longest sleep block per UK local noon-to-noon interval, and writes per-night compressed NPZ files plus CSV manifests.
+- Important inputs/outputs: input `.cwa` file or directory and output directory in; per-night `.npz` files with local `time` and raw `device_time`, per-file `night_sleep_blocks.csv`, asleep cache files, and root `manifest.csv` out. `--time-shift auto` keeps asleep on device time and applies dynamic `Europe/London` offsets per timestamp; explicit numeric shifts keep the fixed-shift legacy path.
 - Side effects: creates output directories, may download asleep model weights through asleep when requested, and may remove per-file asleep caches when `--remove-cache` is passed.
 - Key callers/callees: called from `__main__`; callees include `asleep.get_sleep.get_parsed_data`, `asleep.get_sleep.transform_data2model_input`, and `asleep.get_sleep.get_sleep_windows`.
 - Reuse guidance: use this utility for UKB CWA night extraction instead of adding sleep2vec-dependent cutting scripts.
