@@ -501,7 +501,7 @@ def test_converter_rejects_split_filter_with_no_matching_rows(tmp_path: Path):
         )
 
 
-def test_converter_prunes_overlap_eval_splits_unless_opted_in(tmp_path: Path):
+def test_converter_keeps_eval_splits_without_overlap_by_default(tmp_path: Path, capsys):
     config_path = _write_config(tmp_path, {"eeg": 4})
     npz_path = tmp_path / "sample.npz"
     np.savez(npz_path, eeg=np.arange(12, dtype=np.float32))
@@ -540,11 +540,28 @@ def test_converter_prunes_overlap_eval_splits_unless_opted_in(tmp_path: Path):
 
     default_output_dir = tmp_path / "kaldi-default"
     run_convert(default_output_dir, include_eval_splits=False)
+    assert "keeping val/test rows with non-overlapping stride" in capsys.readouterr().out
     default_manifest = json.loads((default_output_dir / "manifest.json").read_text())
-    assert set(default_manifest["splits"]) == {"train"}
+    assert set(default_manifest["splits"]) == {"train", "val", "test"}
     assert (default_output_dir / "manifests" / "train.csv").exists()
-    assert not (default_output_dir / "manifests" / "val.csv").exists()
-    assert not (default_output_dir / "manifests" / "test.csv").exists()
+    assert (default_output_dir / "manifests" / "val.csv").exists()
+    assert (default_output_dir / "manifests" / "test.csv").exists()
+    default_train = pd.read_csv(default_output_dir / "manifests" / "train.csv", low_memory=False)
+    default_val = pd.read_csv(default_output_dir / "manifests" / "val.csv", low_memory=False)
+    default_test = pd.read_csv(default_output_dir / "manifests" / "test.csv", low_memory=False)
+    assert default_train["sample_key"].tolist() == [
+        "mesa_train_000000_000002",
+        "mesa_train_000001_000003",
+        "mesa_train_000002_000003",
+    ]
+    assert default_val["sample_key"].tolist() == [
+        "mesa_val_000000_000002",
+        "mesa_val_000002_000003",
+    ]
+    assert default_test["sample_key"].tolist() == [
+        "mesa_test_000000_000002",
+        "mesa_test_000002_000003",
+    ]
 
     opt_in_output_dir = tmp_path / "kaldi-opt-in"
     run_convert(opt_in_output_dir, include_eval_splits=True)
@@ -553,9 +570,15 @@ def test_converter_prunes_overlap_eval_splits_unless_opted_in(tmp_path: Path):
     assert (opt_in_output_dir / "manifests" / "train.csv").exists()
     assert (opt_in_output_dir / "manifests" / "val.csv").exists()
     assert (opt_in_output_dir / "manifests" / "test.csv").exists()
+    opt_in_val = pd.read_csv(opt_in_output_dir / "manifests" / "val.csv", low_memory=False)
+    assert opt_in_val["sample_key"].tolist() == [
+        "mesa_val_000000_000002",
+        "mesa_val_000001_000003",
+        "mesa_val_000002_000003",
+    ]
 
 
-def test_converter_split_filter_requires_overlap_eval_opt_in_for_eval_splits(tmp_path: Path):
+def test_converter_split_filter_keeps_eval_split_without_overlap_by_default(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4})
     npz_path = tmp_path / "sample.npz"
     np.savez(npz_path, eeg=np.arange(12, dtype=np.float32))
@@ -586,8 +609,16 @@ def test_converter_split_filter_requires_overlap_eval_opt_in_for_eval_splits(tmp
         "1",
         "--channels-from-config",
     ]
-    with pytest.raises(ValueError, match="Overlap windows excluded val/test splits and no rows remain"):
-        convert(parse_args(base_args + ["--output-dir", str(tmp_path / "blocked")]))
+    default_output_dir = tmp_path / "default"
+    convert(parse_args(base_args + ["--output-dir", str(default_output_dir)]))
+
+    default_manifest_json = json.loads((default_output_dir / "manifest.json").read_text())
+    default_manifest = pd.read_csv(default_output_dir / "manifests" / "val.csv", low_memory=False)
+    assert set(default_manifest_json["splits"]) == {"val"}
+    assert default_manifest["sample_key"].tolist() == [
+        "mesa_val_000000_000002",
+        "mesa_val_000002_000003",
+    ]
 
     output_dir = tmp_path / "kept"
     convert(
@@ -602,8 +633,14 @@ def test_converter_split_filter_requires_overlap_eval_opt_in_for_eval_splits(tmp
     )
 
     manifest_json = json.loads((output_dir / "manifest.json").read_text())
+    manifest = pd.read_csv(output_dir / "manifests" / "val.csv", low_memory=False)
     assert set(manifest_json["splits"]) == {"val"}
     assert (output_dir / "manifests" / "val.csv").exists()
+    assert manifest["sample_key"].tolist() == [
+        "mesa_val_000000_000002",
+        "mesa_val_000001_000003",
+        "mesa_val_000002_000003",
+    ]
 
 
 def test_converter_writes_ark_shards_with_aggregate_scp(tmp_path: Path):
