@@ -1,0 +1,96 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+import unittest
+
+import numpy as np
+import pandas as pd
+
+from utils import cut_ukb_sleep_with_asleep as cutter
+
+
+class CutUkbSleepWithAsleepTest(unittest.TestCase):
+    def test_process_file_reads_raw_cwa_in_device_time_when_asleep_times_are_shifted(self):
+        with TemporaryDirectory() as tmp:
+            source_dir = Path(tmp) / "source"
+            source_dir.mkdir()
+            cwa_path = source_dir / "sample.cwa"
+            cwa_path.touch()
+            output_dir = Path(tmp) / "out"
+
+            read_calls = []
+            write_calls = []
+
+            def fake_get_parsed_data(raw_data_path, info_data_path, resample_hz, args):
+                return pd.DataFrame(), None
+
+            def fake_transform_data2model_input(data2model_path, times_path, non_wear_path, data, args):
+                times = np.array(
+                    [
+                        np.datetime64("2024-01-02T00:00:00"),
+                        np.datetime64("2024-01-02T00:00:30"),
+                    ]
+                )
+                return np.zeros((2, 3, 900), dtype=np.float32), times, np.zeros(2, dtype=bool)
+
+            def fake_get_sleep_windows(data2model, times, non_wear, args):
+                blocks = pd.DataFrame(
+                    {
+                        "start": [pd.Timestamp("2024-01-02 00:00:00")],
+                        "end": [pd.Timestamp("2024-01-02 00:00:30")],
+                    }
+                )
+                return None, blocks, blocks.copy(), None, None
+
+            def fake_read_cwa_signal_segment(path, start, end_exclusive):
+                read_calls.append((path, start, end_exclusive))
+                return (
+                    np.ones((2, 3), dtype=np.float32),
+                    pd.DatetimeIndex(["2024-01-01 23:00:00", "2024-01-01 23:00:30"]),
+                )
+
+            def fake_write_night_npz(output_path, segment, times):
+                write_calls.append((output_path, segment, times))
+
+            original_read = cutter.read_cwa_signal_segment
+            original_write = cutter.write_night_npz
+            cutter.read_cwa_signal_segment = fake_read_cwa_signal_segment
+            cutter.write_night_npz = fake_write_night_npz
+            try:
+                rows = cutter.process_file(
+                    cwa_path,
+                    source_dir,
+                    output_dir,
+                    SimpleNamespace(
+                        force_run=False,
+                        force_download=False,
+                        pytorch_device="cpu",
+                        time_shift="+1",
+                        overwrite=True,
+                        remove_cache=False,
+                    ),
+                    (fake_get_parsed_data, fake_transform_data2model_input, fake_get_sleep_windows),
+                )
+            finally:
+                cutter.read_cwa_signal_segment = original_read
+                cutter.write_night_npz = original_write
+
+            self.assertEqual(
+                read_calls,
+                [
+                    (
+                        cwa_path,
+                        pd.Timestamp("2024-01-01 23:00:00"),
+                        pd.Timestamp("2024-01-01 23:01:00"),
+                    )
+                ],
+            )
+            self.assertEqual(
+                list(write_calls[0][2]),
+                [
+                    pd.Timestamp("2024-01-02 00:00:00"),
+                    pd.Timestamp("2024-01-02 00:00:30"),
+                ],
+            )
+            self.assertEqual(rows[0]["start_time"], "2024-01-02 00:00:00")
+            self.assertEqual(rows[0]["end_time_exclusive"], "2024-01-02 00:01:00")

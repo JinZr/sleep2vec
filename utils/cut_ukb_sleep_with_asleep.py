@@ -174,6 +174,7 @@ def process_file(path, input_root, output_dir, args, asleep_pipeline):
 
     rows = []
     times_index = pd.to_datetime(times)
+    time_shift = pd.Timedelta(hours=int(args.time_shift))
     for _, night_row in nightly_blocks.iterrows():
         start = pd.Timestamp(night_row["start"])
         last_epoch = pd.Timestamp(night_row["end"])
@@ -186,8 +187,8 @@ def process_file(path, input_root, output_dir, args, asleep_pipeline):
         out_name = f"night_{night_id:03d}_{timestamp_for_filename(start)}.npz"
         out_path = file_output_dir / out_name
         if args.overwrite or not out_path.exists():
-            raw_segment, raw_times = read_cwa_signal_segment(path, start, end_exclusive)
-            write_night_npz(out_path, raw_segment, raw_times)
+            raw_segment, raw_times = read_cwa_signal_segment(path, start - time_shift, end_exclusive - time_shift)
+            write_night_npz(out_path, raw_segment, raw_times + time_shift)
         else:
             with np.load(out_path) as existing:
                 raw_segment = existing["actigraphy"]
