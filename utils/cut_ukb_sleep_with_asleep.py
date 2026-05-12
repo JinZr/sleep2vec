@@ -4,15 +4,20 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
+import struct
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
+CWA_BLOCK_BYTES = 512
 EPOCH_SECONDS = 30
 RESAMPLE_HZ = 30
+UK_TIMEZONE = ZoneInfo("Europe/London")
 
 
 def load_asleep_pipeline():
@@ -46,7 +51,11 @@ def parse_args():
     parser.add_argument("--pattern", default="*.cwa", help="Recursive filename pattern under input_root")
     parser.add_argument("--limit", type=int, default=None, help="Process at most this many input files")
     parser.add_argument("--pytorch-device", default=None, help="Device passed to asleep, e.g. cpu or cuda:0")
-    parser.add_argument("--time-shift", default="0", help="Hour shift passed to asleep, e.g. +1 or -1")
+    parser.add_argument(
+        "--time-shift",
+        default="auto",
+        help="Hour shift passed to asleep, e.g. auto, 0, +1, or -1. auto uses the UK timezone offset.",
+    )
     parser.add_argument("--force-run", action="store_true", help="Regenerate asleep intermediate files")
     parser.add_argument("--force-download", action="store_true", help="Force asleep model download")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing nightly .npz files")
@@ -103,6 +112,32 @@ def timestamp_for_filename(value):
     return pd.Timestamp(value).strftime("%Y%m%dT%H%M%S")
 
 
+def read_cwa_first_timestamp(path):
+    with path.open("rb") as file:
+        while True:
+            block = file.read(CWA_BLOCK_BYTES)
+            if not block:
+                raise ValueError(f"No AX data block found in {path}")
+            if block[:2] == b"AX":
+                timestamp = struct.unpack_from("<I", block, 14)[0]
+                return datetime(
+                    2000 + ((timestamp >> 26) & 0x3F),
+                    (timestamp >> 22) & 0x0F,
+                    (timestamp >> 17) & 0x1F,
+                    (timestamp >> 12) & 0x1F,
+                    (timestamp >> 6) & 0x3F,
+                    timestamp & 0x3F,
+                )
+
+
+def resolve_time_shift_hours(path, requested_shift):
+    if requested_shift != "auto":
+        return int(requested_shift)
+    start_time = read_cwa_first_timestamp(path)
+    offset = start_time.replace(tzinfo=timezone.utc).astimezone(UK_TIMEZONE).utcoffset()
+    return int(offset.total_seconds() // 3600)
+
+
 def read_cwa_signal_segment(path, start, end_exclusive):
     try:
         import actipy
@@ -140,8 +175,10 @@ def process_file(path, input_root, output_dir, args, asleep_pipeline):
     get_parsed_data, transform_data2model_input, get_sleep_windows = asleep_pipeline
 
     rel_stem = relative_output_stem(path, input_root)
+    time_shift_hours = resolve_time_shift_hours(path, args.time_shift)
+    time_shift_arg = f"+{time_shift_hours}" if time_shift_hours > 0 else str(time_shift_hours)
     file_output_dir = output_dir / rel_stem
-    file_cache_dir = output_dir / "_asleep_cache" / rel_stem
+    file_cache_dir = output_dir / "_asleep_cache" / rel_stem / f"time_shift_{time_shift_hours:+d}"
     file_output_dir.mkdir(parents=True, exist_ok=True)
     file_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -151,7 +188,7 @@ def process_file(path, input_root, output_dir, args, asleep_pipeline):
         force_run=args.force_run,
         force_download=args.force_download,
         pytorch_device=args.pytorch_device or default_device(),
-        time_shift=args.time_shift,
+        time_shift=time_shift_arg,
     )
 
     raw_data_path = file_cache_dir / "raw.csv"
@@ -174,7 +211,7 @@ def process_file(path, input_root, output_dir, args, asleep_pipeline):
 
     rows = []
     times_index = pd.to_datetime(times)
-    time_shift = pd.Timedelta(hours=int(args.time_shift))
+    time_shift = pd.Timedelta(hours=time_shift_hours)
     for _, night_row in nightly_blocks.iterrows():
         start = pd.Timestamp(night_row["start"])
         last_epoch = pd.Timestamp(night_row["end"])
@@ -203,6 +240,7 @@ def process_file(path, input_root, output_dir, args, asleep_pipeline):
                 "duration_seconds": float((end_exclusive - start).total_seconds()),
                 "epochs": int(mask.sum()),
                 "raw_samples": int(raw_segment.shape[0]),
+                "time_shift_hours": time_shift_hours,
                 "output_path": str(out_path),
                 "asleep_cache_dir": str(file_cache_dir),
             }
