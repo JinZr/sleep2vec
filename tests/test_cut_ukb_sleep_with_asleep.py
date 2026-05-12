@@ -237,10 +237,13 @@ class CutUkbSleepWithAsleepTest(unittest.TestCase):
                     )
                 ],
             )
-            self.assertEqual([t.isoformat() for t in write_calls[0][2]], [
-                "2015-10-25T01:59:30+01:00",
-                "2015-10-25T01:00:00+00:00",
-            ])
+            self.assertEqual(
+                [t.isoformat() for t in write_calls[0][2]],
+                [
+                    "2015-10-25T01:59:30+01:00",
+                    "2015-10-25T01:00:00+00:00",
+                ],
+            )
             self.assertEqual(rows[0]["start_time"], "2015-10-25T01:59:30+01:00")
             self.assertEqual(rows[0]["end_time_exclusive"], "2015-10-25T01:00:30+00:00")
             self.assertEqual(rows[0]["device_start_time"], "2015-10-25T00:59:30")
