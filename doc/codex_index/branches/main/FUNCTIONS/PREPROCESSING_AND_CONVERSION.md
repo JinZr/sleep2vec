@@ -191,3 +191,14 @@
 - Key callers/callees: caller chain is `convert_zzp_to_edf` -> `decode_sleep_dat` / `infer_channel_mapping` / `build_signals`.
 - Reuse guidance: keep these heuristics inside the WatchPAT conversion pipeline.
 - Duplication risk notes: signal layout and physiological channel mapping are specialized and partially heuristic; avoid cloning them outside this module.
+
+## `utils.cut_ukb_sleep_with_asleep.main`
+
+- File: `utils/cut_ukb_sleep_with_asleep.py`
+- Signature: `main()`
+- Purpose and contract: standalone CLI for cutting nightly UKB `.cwa` accelerometer segments with the external pip-installed `asleep` package. It recursively finds `.cwa` files, mirrors the input tree under the output directory, runs asleep parsing and sleep-window detection, keeps only the longest sleep block per asleep noon-to-noon interval, and writes per-night compressed NPZ files plus CSV manifests.
+- Important inputs/outputs: input `.cwa` file or directory and output directory in; per-night `.npz`, per-file `night_sleep_blocks.csv`, asleep cache files, and root `manifest.csv` out.
+- Side effects: creates output directories, may download asleep model weights through asleep when requested, and may remove per-file asleep caches when `--remove-cache` is passed.
+- Key callers/callees: called from `__main__`; callees include `asleep.get_sleep.get_parsed_data`, `asleep.get_sleep.transform_data2model_input`, and `asleep.get_sleep.get_sleep_windows`.
+- Reuse guidance: use this utility for UKB CWA night extraction instead of adding sleep2vec-dependent cutting scripts.
+- Duplication risk notes: this is intentionally outside the sleep2vec preset and Kaldi conversion contracts; downstream conversion should consume its NPZ manifest rather than mixing asleep logic into `preprocess/save_dataset_presets.py`.

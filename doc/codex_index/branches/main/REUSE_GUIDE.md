@@ -43,6 +43,7 @@ This page answers the practical question: when you need to add or change behavio
 | Split generation | `preprocess/split_index_by_dataset.py` | Canonical dataset-group split policy, mask normalization, and optional global pair-coverage checks | Manual split assignment notebooks |
 | Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness | One-off shell loops or YAML linters without repo semantics |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
+| UKB asleep night cutting | `utils/cut_ukb_sleep_with_asleep.py` | Standalone utility that mirrors UKB `.cwa` input trees and saves longest sleep block per asleep noon-to-noon interval | New sleep2vec-dependent cutting scripts |
 | Standalone dense variant | `sleep2vec2/*` package-local implementations | Maintains behavior parity while keeping imports under `sleep2vec2`, including data/preprocess mirrors | Cross-namespace shortcuts through root `sleep2vec`, `data`, or `preprocess` |
 | Standalone MoE config | `sleep2expert.config.MoeConfig`, `_validate_moe_config`, and `_build_finetune_moe_tuning_config` | Single source for MoE schema, router groups, finetune modes, LR scales, and unsupported regularization checks | Reading `model.backbone.moe` as loose dicts |
 | Sparse MoE routing | `sleep2expert.backbones.roformer.moe.TopKRouter` and `SparseMoEFFN` | Canonical router/expert implementation for learned, random, hard-modality, and hard-group modes | Router branches outside the standalone RoFormer layers |
@@ -93,6 +94,7 @@ This page answers the practical question: when you need to add or change behavio
   - `merge_dataset_presets.py`
   - `utils/check_configs.py`
 - Only touch `watchpat_zzp_to_edf.py` for WatchPAT-specific conversion work.
+- Use `utils/cut_ukb_sleep_with_asleep.py` for UKB `.cwa` night extraction with the external `asleep` package; keep it independent of sleep2vec runtime/data imports.
 
 ### If you are changing standalone variants
 
