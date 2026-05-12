@@ -17,6 +17,7 @@ These are the stable cross-file boundaries that matter before editing:
 | Data helpers and samplers | `data/utils.py`, `data/metadata.py`, `data/channel_selection.py`, `data/samplers.py`, `data/kaldi_io.py`, `data/kaldi_psg_dataset.py`, `sleep2vec/utils.py` | NPZ I/O, Kaldi `.scp` readers, token windowing, preset/manifest filtering, metadata tensorization, pair scheduling, bucketed batching, finetune/pretrain loader assembly | NumPy, Torch, optional `kaldi_native_io` | New samplers, metadata encodings, loader policies, storage backends | Missing-channel pretrain and Kaldi routing rely on these |
 | Preprocessing CLIs | `preprocess/*.py` | CSV splitting, preset generation/merge, NPZ-to-Kaldi conversion, required-channel prefiltering, missing-mask stats, WatchPAT conversion | pandas, pickle, NumPy, optional `kaldi_native_io`, optional EDF deps | New data-prep utilities | CLI tools are the canonical prep surface |
 | Config-policy tooling | `utils/check_configs.py` | Validate repo YAMLs against loader contracts, tokenizer parity, preset-build strictness, and repo-specific ppg policy | config loaders, preset-build helpers | New static checks | Tooling boundary, not runtime |
+| External data-cutting utilities | `utils/cut_ukb_sleep_with_asleep.py` | Use the standalone `asleep` package to cut nightly UKB `.cwa` accelerometer segments into per-night NPZ files | `asleep`, pandas, NumPy | UKB CWA night extraction | Does not import sleep2vec or write sleep2vec presets |
 | Config recipes | `configs/` | Encode model/head/task variants, preset-build policy, adapt recipes, standalone `sleep2vec2` recipes, and `sleep2expert` dense/MoE recipes | Config parser + entrypoints | New recipe variants | Folder names are not always semantically authoritative |
 | Tests | `tests/` | Pin config, registry, AHI metric, checkpoint, result CSV, preset-build, pair-sampler, and visualization contracts | pytest | New contract coverage | Many important contracts live here now |
 | Formatting wrapper | `utils/style_check.sh` | Run `isort`, `black`, `flake8` over repo | Python env toolchain | None | Lint wrapper only |
@@ -49,6 +50,7 @@ These are the stable cross-file boundaries that matter before editing:
 - `save_dataset_presets.py` -> `split_index_by_dataset.normalize_mask_frame` + `PSGPretrainDataset` -> `DefaultDataset`
 - `convert_npz_to_kaldi.py` -> `PSGPretrainDataset` channel registry + `data.utils.window` + Kaldi ark/scp writers
 - `utils/check_configs.py` -> config loaders + preset-build helpers from `save_dataset_presets.py`
+- `utils/cut_ukb_sleep_with_asleep.py` -> standalone `asleep.get_sleep` helpers; no sleep2vec imports
 - `sleep2expert.routing_analysis` -> `sleep2expert.infer._build_inference_loader` + `Sleep2vecFinetuning` + `backbone.last_moe_aux`
 
 ## Important Ownership Notes

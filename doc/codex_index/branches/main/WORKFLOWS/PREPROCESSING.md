@@ -25,6 +25,11 @@ Prepare CSV splits, inspect channel-mask coverage, generate preset pickles, opti
 1. `preprocess/watchpat_zzp_to_edf.py`
 2. optional JSON summary output
 
+### UKB Asleep Night-Cutting Path
+
+1. `utils/cut_ukb_sleep_with_asleep.py`
+2. optional sleep2vec preset or Kaldi conversion later, from the generated NPZ manifest
+
 ### Config Validation Path
 
 1. `utils/check_configs.py`
@@ -113,6 +118,18 @@ This utility does not normalize schema versions; it trusts all input preset list
 
 This path is operationally separate from preset generation and is not used by `PSGPretrainDataset`.
 
+## UKB Asleep Night Cutting
+
+`cut_ukb_sleep_with_asleep.py`:
+
+- walks a flat or bucketed UKB `.cwa` tree
+- imports the standalone pip-installed `asleep` package, not sleep2vec
+- reuses asleep parsing, 30 Hz epoching, non-wear handling, and sleep-window detection
+- selects only the longest sleep block in each asleep noon-to-noon interval as the nightly segment
+- writes per-night compressed NPZ files plus `night_sleep_blocks.csv` per source file and a root `manifest.csv`
+
+This output is an external data-cutting artifact. It does not create `SampleIndex` presets and does not exercise `PSGPretrainDataset`.
+
 ## Config Validation
 
 `utils/check_configs.py`:
@@ -137,3 +154,4 @@ Use this tool when config changes alter loader behavior, built-in task semantics
 - Change mask semantics: keep `split_index_by_dataset.py` and `mask_missing_stats.py` aligned
 - Change config-policy checks: `utils/check_configs.py`
 - Change WatchPAT conversion: `preprocess/watchpat_zzp_to_edf.py`
+- Change standalone UKB/asleep night extraction: `utils/cut_ukb_sleep_with_asleep.py`
