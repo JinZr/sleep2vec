@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import csv
+from datetime import datetime, timezone
 import html
 import json
-import re
-from collections import defaultdict
-from datetime import datetime, timezone
 from pathlib import Path
+import re
 
 from tqdm import tqdm
 
