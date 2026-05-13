@@ -30,6 +30,7 @@ def clean_html_fragment(fragment: str) -> str:
 
 
 def parse_vector_items(inner: str) -> list[str]:
+    inner = re.sub(r"\s*\n\s*", " ", inner.strip())
     reader = csv.reader([inner], skipinitialspace=True)
     items = next(reader, [])
     return [item.strip() for item in items]
@@ -84,16 +85,24 @@ def parse_html_dictionary(path: Path) -> tuple[dict, list[dict]]:
     basket_match = re.search(r"<!-- Basket ID: (\d+) -->", text)
     run_match = re.search(r"<!-- Run ID: (\d+) -->", text)
 
-    table_match = re.search(r"<table border cellspacing=\"0\">(.*?)</table>", text, flags=re.DOTALL)
-    if not table_match:
+    dictionary_rows = None
+    for table_html in re.findall(r"<table\b[^>]*>(.*?)</table>", text, flags=re.DOTALL | re.IGNORECASE):
+        rows = re.findall(r"<tr>(.*?)</tr>", table_html, flags=re.DOTALL | re.IGNORECASE)
+        if not rows:
+            continue
+        header_cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", rows[0], flags=re.DOTALL | re.IGNORECASE)
+        header_text = {clean_html_fragment(cell) for cell in header_cells}
+        if {"Column", "UDI", "Count"}.issubset(header_text):
+            dictionary_rows = rows
+            break
+    if dictionary_rows is None:
         raise ValueError(f"Could not locate dictionary table in {path.name}")
 
-    rows = re.findall(r"<tr>(.*?)</tr>", table_match.group(1), flags=re.DOTALL)
     columns = []
     current_type = ""
     current_description = ""
 
-    for row_html in rows[1:]:
+    for row_html in dictionary_rows[1:]:
         cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.DOTALL)
         cell_text = [clean_html_fragment(cell) for cell in cells]
         if len(cell_text) == 5:
@@ -149,22 +158,15 @@ def parse_r_codings(path: Path) -> dict[int, list[dict]]:
     coding_levels = {}
     coding_labels = {}
 
-    level_pattern = re.compile(r"^lvl\.(\d+) <- c\((.*)\)$")
-    label_pattern = re.compile(r"^lbl\.(\d+) <- c\((.*)\)$")
-
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        level_match = level_pattern.match(line)
-        if level_match:
-            coding_id = int(level_match.group(1))
-            coding_levels[coding_id] = parse_vector_items(level_match.group(2))
-            continue
-        label_match = label_pattern.match(line)
-        if label_match:
-            coding_id = int(label_match.group(1))
-            coding_labels[coding_id] = parse_vector_items(label_match.group(2))
+    assignment_pattern = re.compile(r"(?ms)^\s*(lvl|lbl)\.(\d+)\s*<-\s*c\((.*?)\)\s*$")
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for match in assignment_pattern.finditer(text):
+        kind, coding_id_text, items_text = match.groups()
+        coding_id = int(coding_id_text)
+        if kind == "lvl":
+            coding_levels[coding_id] = parse_vector_items(items_text)
+        else:
+            coding_labels[coding_id] = parse_vector_items(items_text)
 
     codings = {}
     for coding_id in sorted(set(coding_levels) | set(coding_labels)):
