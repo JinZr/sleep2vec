@@ -1,7 +1,10 @@
+import io
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -37,6 +40,15 @@ class FakeSleepWindows:
 
 
 class CutUkbSleepWithAsleepTest(unittest.TestCase):
+    def test_parse_args_defaults_num_workers_to_one(self):
+        args = cutter.parse_args(["input.cwa", "out"])
+
+        self.assertEqual(args.num_workers, 1)
+
+    def test_parse_args_rejects_non_positive_num_workers(self):
+        with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            cutter.parse_args(["input.cwa", "out", "--num-workers", "0"])
+
     def test_device_to_local_times_uses_uk_summer_and_winter_offsets(self):
         local_times = cutter.device_to_local_times(
             [
@@ -253,3 +265,150 @@ class CutUkbSleepWithAsleepTest(unittest.TestCase):
             self.assertEqual(rows[0]["timezone_mode"], "auto")
             self.assertTrue(rows[0]["asleep_cache_dir"].endswith("timezone_auto_device"))
             self.assertIn("+0100", Path(rows[0]["output_path"]).name)
+
+    def test_configure_asleep_runtime_uses_output_cache_and_single_loader_worker(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_model = tmp_path / "source" / "ssl.joblib.lzma"
+            source_model.parent.mkdir()
+            source_model.write_bytes(b"model")
+            model_cache_dir = tmp_path / "_asleep_models"
+
+            asleep_package = ModuleType("asleep")
+            asleep_package.__path__ = []
+            get_sleep_module = ModuleType("asleep.get_sleep")
+            models_module = ModuleType("asleep.models")
+            sslmodel_module = ModuleType("asleep.sslmodel")
+            load_calls = []
+
+            def load_model(model_path, force_download=False):
+                load_calls.append((Path(model_path), force_download))
+                return "loaded"
+
+            class FakeDataLoader:
+                def __init__(self, *args, **kwargs):
+                    self.args = args
+                    self.kwargs = kwargs
+
+            get_sleep_module.load_model = load_model
+            models_module.DataLoader = FakeDataLoader
+
+            with patch.dict(
+                sys.modules,
+                {
+                    "asleep": asleep_package,
+                    "asleep.get_sleep": get_sleep_module,
+                    "asleep.models": models_module,
+                    "asleep.sslmodel": sslmodel_module,
+                },
+            ):
+                cutter.configure_asleep_runtime(model_cache_dir)
+                loaded = get_sleep_module.load_model(str(source_model))
+                loader = models_module.DataLoader("dataset", num_workers=8)
+
+            self.assertEqual(loaded, "loaded")
+            self.assertEqual(load_calls, [(model_cache_dir / "ssl.joblib.lzma", False)])
+            self.assertEqual((model_cache_dir / "ssl.joblib.lzma").read_bytes(), b"model")
+            self.assertEqual(sslmodel_module.torch_cache_path, model_cache_dir / "torch_hub_cache")
+            self.assertEqual(loader.args, ("dataset",))
+            self.assertEqual(loader.kwargs["num_workers"], 0)
+
+    def test_warm_asleep_model_cache_loads_ssl_model_and_torch_hub_repo(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            package_dir = tmp_path / "package"
+            package_dir.mkdir()
+            (package_dir / "ssl.joblib.lzma").write_bytes(b"model")
+            model_cache_dir = tmp_path / "_asleep_models"
+
+            asleep_package = ModuleType("asleep")
+            asleep_package.__path__ = []
+            get_sleep_module = ModuleType("asleep.get_sleep")
+            models_module = ModuleType("asleep.models")
+            sslmodel_module = ModuleType("asleep.sslmodel")
+            load_calls = []
+            sslnet_calls = []
+
+            def load_model(model_path, force_download=False):
+                load_calls.append((Path(model_path), force_download))
+                return SimpleNamespace(repo_tag="v1.2.3")
+
+            class FakeDataLoader:
+                pass
+
+            get_sleep_module.__file__ = str(package_dir / "get_sleep.py")
+            get_sleep_module.load_model = load_model
+            models_module.DataLoader = FakeDataLoader
+            sslmodel_module.get_sslnet = lambda **kwargs: sslnet_calls.append(kwargs)
+
+            with patch.dict(
+                sys.modules,
+                {
+                    "asleep": asleep_package,
+                    "asleep.get_sleep": get_sleep_module,
+                    "asleep.models": models_module,
+                    "asleep.sslmodel": sslmodel_module,
+                },
+            ):
+                cutter.warm_asleep_model_cache(model_cache_dir, force_download=False)
+
+            self.assertEqual(load_calls, [(model_cache_dir / "ssl.joblib.lzma", False)])
+            self.assertEqual(sslnet_calls, [{"tag": "v1.2.3", "pretrained": False}])
+
+    def test_process_files_parallel_preserves_manifest_order(self):
+        with TemporaryDirectory() as tmp:
+            source_dir = Path(tmp) / "source"
+            source_dir.mkdir()
+            first = source_dir / "first.cwa"
+            second = source_dir / "second.cwa"
+            first.touch()
+            second.touch()
+            args = SimpleNamespace(
+                num_workers=2,
+                input_root=source_dir,
+                output_dir=Path(tmp) / "out",
+                pytorch_device=None,
+                force_download=True,
+            )
+            warm_calls = []
+
+            class FakeFuture:
+                def __init__(self, result):
+                    self._result = result
+
+                def result(self):
+                    return self._result
+
+            class FakeExecutor:
+                def __init__(self, max_workers):
+                    self.max_workers = max_workers
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, traceback):
+                    return False
+
+                def submit(self, fn, *args):
+                    index = args[0]
+                    path = args[2]
+                    return FakeFuture((index, [{"relative_source": path.name}]))
+
+            original_executor = cutter.ProcessPoolExecutor
+            original_as_completed = cutter.as_completed
+            original_warm = cutter.warm_asleep_model_cache
+            try:
+                cutter.ProcessPoolExecutor = FakeExecutor
+                cutter.as_completed = lambda futures: list(reversed(futures))
+                cutter.warm_asleep_model_cache = lambda *args: warm_calls.append(args)
+                with patch("sys.stdout", io.StringIO()):
+                    rows = cutter.process_files([first, second], args)
+            finally:
+                cutter.ProcessPoolExecutor = original_executor
+                cutter.as_completed = original_as_completed
+                cutter.warm_asleep_model_cache = original_warm
+
+            self.assertEqual([row["relative_source"] for row in rows], ["first.cwa", "second.cwa"])
+            self.assertEqual(args.pytorch_device, "cpu")
+            self.assertFalse(args.force_download)
+            self.assertEqual(warm_calls, [(Path(tmp) / "out" / "_asleep_models", True)])
