@@ -1,0 +1,17 @@
+# Runtime requirements for utils/cut_ukb_sleep_with_asleep.py.
+
+asleep==0.4.18
+actipy
+hydra-core
+joblib
+matplotlib==3.10.9
+numpy==1.26.4
+omegaconf
+pandas==1.5.3
+scikit-learn==1.7.2
+scipy==1.15.3
+stepcount
+torch==2.7.0
+torchvision==0.22.0
+tqdm==4.67.3
+transforms3d
