@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
+import os
 from pathlib import Path
 import shutil
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -19,7 +22,45 @@ RESAMPLE_HZ = 30
 UK_TIMEZONE = "Europe/London"
 
 
-def load_asleep_pipeline():
+def configure_asleep_runtime(model_cache_dir):
+    model_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import asleep.get_sleep as get_sleep_module
+        import asleep.models as asleep_models
+        import asleep.sslmodel as sslmodel
+    except ImportError as exc:
+        raise SystemExit(
+            "Could not import asleep. Install it in this environment first, for example: " "pip install asleep"
+        ) from exc
+
+    original_load_model = getattr(get_sleep_module, "_sleep2vec_original_load_model", get_sleep_module.load_model)
+    get_sleep_module._sleep2vec_original_load_model = original_load_model
+
+    def load_model_from_cache(model_path, force_download=False):
+        source_path = Path(model_path)
+        cached_model_path = model_cache_dir / source_path.name
+        if not force_download and not cached_model_path.exists() and source_path.exists():
+            tmp_model_path = cached_model_path.with_name(f".{cached_model_path.name}.{os.getpid()}.tmp")
+            shutil.copyfile(source_path, tmp_model_path)
+            tmp_model_path.replace(cached_model_path)
+        return original_load_model(str(cached_model_path), force_download=force_download)
+
+    get_sleep_module.load_model = load_model_from_cache
+    sslmodel.torch_cache_path = model_cache_dir / "torch_hub_cache"
+
+    original_dataloader = getattr(asleep_models, "_sleep2vec_original_dataloader", asleep_models.DataLoader)
+    asleep_models._sleep2vec_original_dataloader = original_dataloader
+
+    def single_worker_dataloader(*args, **kwargs):
+        kwargs["num_workers"] = 0
+        return original_dataloader(*args, **kwargs)
+
+    asleep_models.DataLoader = single_worker_dataloader
+
+
+def load_asleep_pipeline(model_cache_dir):
+    configure_asleep_runtime(model_cache_dir)
     try:
         from asleep.get_sleep import get_parsed_data, get_sleep_windows, transform_data2model_input
         import asleep.sleep_windows as sleep_windows
@@ -30,6 +71,16 @@ def load_asleep_pipeline():
     return get_parsed_data, transform_data2model_input, get_sleep_windows, sleep_windows
 
 
+def warm_asleep_model_cache(model_cache_dir, force_download):
+    configure_asleep_runtime(model_cache_dir)
+    import asleep.get_sleep as get_sleep_module
+    import asleep.sslmodel as sslmodel
+
+    model_path = Path(get_sleep_module.__file__).parent / "ssl.joblib.lzma"
+    sleep_window_detector = get_sleep_module.load_model(str(model_path), force_download=force_download)
+    sslmodel.get_sslnet(tag=sleep_window_detector.repo_tag, pretrained=False)
+
+
 def default_device():
     import torch
 
@@ -38,7 +89,7 @@ def default_device():
     return "cpu"
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=(
             "Use asleep's sleep-window detector to cut nightly sleep accelerometer "
@@ -59,13 +110,17 @@ def parse_args():
     parser.add_argument("--force-run", action="store_true", help="Regenerate asleep intermediate files")
     parser.add_argument("--force-download", action="store_true", help="Force asleep model download")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing nightly .npz files")
+    parser.add_argument("--num-workers", type=int, default=1, help="Number of input files to process in parallel")
     parser.add_argument(
         "--remove-cache",
         action="store_true",
         help="Remove per-file asleep cache after writing outputs",
     )
     parser.add_argument("--manifest-name", default="manifest.csv", help="Manifest filename under output_dir")
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.num_workers < 1:
+        parser.error("--num-workers must be >= 1")
+    return args
 
 
 def find_inputs(input_root, pattern, limit):
@@ -391,19 +446,68 @@ def process_file(path, input_root, output_dir, args, asleep_pipeline):
     return rows
 
 
+def process_indexed_file(index, total, path, input_root, output_dir, args):
+    started_at = time.perf_counter()
+    print(f"[{index}/{total}] {path}", flush=True)
+    asleep_pipeline = load_asleep_pipeline(output_dir / "_asleep_models")
+    rows = process_file(path, input_root, output_dir, args, asleep_pipeline)
+    elapsed = time.perf_counter() - started_at
+    print(f"[{index}/{total}] completed {path} in {elapsed:.1f}s", flush=True)
+    return index, rows
+
+
+def process_files(input_files, args):
+    if args.num_workers == 1:
+        asleep_pipeline = load_asleep_pipeline(args.output_dir / "_asleep_models")
+        manifest_rows = []
+        total = len(input_files)
+        for index, path in enumerate(input_files, start=1):
+            path = path.resolve()
+            started_at = time.perf_counter()
+            print(f"[{index}/{total}] {path}")
+            manifest_rows.extend(process_file(path, args.input_root, args.output_dir, args, asleep_pipeline))
+            elapsed = time.perf_counter() - started_at
+            print(f"[{index}/{total}] completed {path} in {elapsed:.1f}s")
+        return manifest_rows
+
+    indexed_rows = []
+    total = len(input_files)
+    max_workers = min(args.num_workers, total)
+    if args.pytorch_device is None:
+        args.pytorch_device = "cpu"
+        print("Using pytorch device: cpu (default for parallel processing)")
+    warm_asleep_model_cache(args.output_dir / "_asleep_models", args.force_download)
+    args.force_download = False
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                process_indexed_file,
+                index,
+                total,
+                path.resolve(),
+                args.input_root,
+                args.output_dir,
+                args,
+            )
+            for index, path in enumerate(input_files, start=1)
+        ]
+        for future in as_completed(futures):
+            indexed_rows.append(future.result())
+
+    manifest_rows = []
+    for _, rows in sorted(indexed_rows, key=lambda item: item[0]):
+        manifest_rows.extend(rows)
+    return manifest_rows
+
+
 def main():
     args = parse_args()
     args.input_root = args.input_root.expanduser().resolve()
     args.output_dir = args.output_dir.expanduser().resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    asleep_pipeline = load_asleep_pipeline()
     input_files = find_inputs(args.input_root, args.pattern, args.limit)
-
-    manifest_rows = []
-    for idx, path in enumerate(input_files, start=1):
-        print(f"[{idx}/{len(input_files)}] {path}")
-        manifest_rows.extend(process_file(path.resolve(), args.input_root, args.output_dir, args, asleep_pipeline))
+    manifest_rows = process_files(input_files, args)
 
     manifest_path = args.output_dir / args.manifest_name
     pd.DataFrame(manifest_rows).to_csv(manifest_path, index=False)
