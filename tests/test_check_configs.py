@@ -8,6 +8,8 @@ import yaml
 
 from utils.check_configs import check_config_file
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _write_yaml(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,27 +81,103 @@ def _ppg_finetune_payload(*, is_seq: bool, preset_build: dict | None, task_overr
 
 
 def test_check_config_file_accepts_repo_ppg_stage3_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_stage3_finetune.yaml"
+    path = REPO_ROOT / "configs" / "ppg_stage3_finetune.yaml"
     check_config_file(path)
 
 
 def test_check_config_file_accepts_repo_ppg_age_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_age_finetune_large.yaml"
+    path = REPO_ROOT / "configs" / "ppg_age_finetune_large.yaml"
     check_config_file(path)
 
 
 def test_check_config_file_accepts_repo_ppg_ahi_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune.yaml"
+    path = REPO_ROOT / "configs" / "ppg_ahi_finetune.yaml"
     check_config_file(path)
 
 
 def test_check_config_file_accepts_repo_ppg_ahi_large_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune_large.yaml"
+    path = REPO_ROOT / "configs" / "ppg_ahi_finetune_large.yaml"
     check_config_file(path)
 
 
 def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_conv_config():
-    path = Path(__file__).resolve().parents[1] / "configs" / "ppg_ahi_finetune_large_temporal_conv.yaml"
+    path = REPO_ROOT / "configs" / "ppg_ahi_finetune_large_temporal_conv.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_pretrain_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_pretrain.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_finetune_cls_conservative_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_finetune_cls_conservative.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_finetune_reg_conservative_tokens_config():
+    path = (
+        REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_finetune_reg_conservative_tokens.yaml"
+    )
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_finetune_cls_head_only_fewshot_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_finetune_cls_head_only_fewshot.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_router_trainable_ablation_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "finetune_ablations" / "router_trainable.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_sleep2expert_moe_top_layer_expert_only_ablation_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "finetune_ablations" / "top_moe_layer_expert_only.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_does_not_use_base_loader_for_sleep2expert_moe(monkeypatch):
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate sleep2expert configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_base_loader)
+
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_pretrain.yaml"
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_out_of_tree_sleep2expert_moe_config(monkeypatch, tmp_path: Path):
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate copied sleep2expert configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_base_loader)
+    source = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_pretrain.yaml"
+    path = tmp_path / "copied.yaml"
+    path.write_text(source.read_text())
+
+    check_config_file(path)
+
+
+def test_check_config_file_accepts_out_of_tree_sleep2vec2_config_with_path_hint(
+    monkeypatch,
+    tmp_path: Path,
+):
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate copied sleep2vec2 configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_base_loader)
+    source = REPO_ROOT / "configs" / "sleep2vec2" / "sleep2vec_dense_pretrain.yaml"
+    path = tmp_path / "sleep2vec2" / "sleep2vec_dense_pretrain.yaml"
+    path.parent.mkdir()
+    path.write_text(source.read_text())
+
     check_config_file(path)
 
 
@@ -155,7 +233,7 @@ def test_check_config_file_rejects_wrong_required_channels_for_ppg_ahi_config(tm
     )
     _write_yaml(path, payload)
 
-    with pytest.raises(ValueError, match="must set preset_build.required_channels to \\[ppg, ahi\\]"):
+    with pytest.raises(ValueError, match="must set preset_build.required_channels to \\[ppg, ahi, stage5\\]"):
         check_config_file(path)
 
 
@@ -163,12 +241,12 @@ def test_check_config_file_rejects_wrong_min_channels_for_ppg_ahi_config(tmp_pat
     path = tmp_path / "configs" / "ppg_ahi_finetune.yaml"
     payload = _ppg_finetune_payload(
         is_seq=True,
-        preset_build={"required_channels": ["ppg", "ahi"], "min_channels": 1},
+        preset_build={"required_channels": ["ppg", "ahi", "stage5"], "min_channels": 2},
         task_overrides={"output_dim": 30, "monitor": "val_ahi_pearson"},
     )
     _write_yaml(path, payload)
 
-    with pytest.raises(ValueError, match="must set preset_build.min_channels to 2"):
+    with pytest.raises(ValueError, match="must set preset_build.min_channels to 3"):
         check_config_file(path)
 
 

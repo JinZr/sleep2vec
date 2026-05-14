@@ -157,6 +157,9 @@ def test_load_pretrain_config_parses_valid_yaml(tmp_path: Path):
     assert [c.name for c in bundle.model.channels] == ["eeg", "ecg"]
     assert bundle.model.backbone.hidden_size == 8
     assert bundle.loss.name == "info_nce"
+    assert bundle.data.backend == "npz"
+    assert bundle.data.kaldi_data_root is None
+    assert bundle.data.kaldi_manifest is None
     assert bundle.data.max_tokens == 4
 
 
@@ -177,6 +180,24 @@ def test_load_wrist2vec_pretrain_config_rejects_non_positive_token_sec(tmp_path:
 
     with pytest.raises(ValueError, match="data.token_sec must be a positive integer"):
         load_wrist2vec_pretrain_config(config_path)
+
+
+def test_load_pretrain_config_parses_kaldi_data_fields(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "kaldi_data_root": "/tmp/kaldi_root",
+            "kaldi_manifest": "/tmp/kaldi_root/manifest.json",
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_pretrain_config(config_path)
+
+    assert bundle.data.backend == "kaldi"
+    assert bundle.data.kaldi_data_root == "/tmp/kaldi_root"
+    assert bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.json"
 
 
 def test_load_pretrain_config_parses_adapt_block(tmp_path: Path):
@@ -306,8 +327,45 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
 
     assert bundle.model.head is not None
     assert bundle.model.head.temporal_agg.name == "mean"
+    assert bundle.data.backend == "npz"
+    assert bundle.data.kaldi_data_root is None
+    assert bundle.data.kaldi_manifest is None
     assert bundle.finetune.task is not None
     assert bundle.finetune.task.output_dim == 2
+
+
+def test_load_finetune_config_parses_kaldi_data_fields(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "kaldi_data_root": "/tmp/kaldi_root",
+            "kaldi_manifest": "/tmp/kaldi_root/manifest.json",
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.data.backend == "kaldi"
+    assert bundle.data.kaldi_data_root == "/tmp/kaldi_root"
+    assert bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.json"
+
+
+@pytest.mark.parametrize(
+    ("loader", "payload_factory"),
+    [
+        (load_pretrain_config, _pretrain_payload),
+        (load_finetune_config, _finetune_payload),
+    ],
+)
+def test_load_config_rejects_invalid_data_backend(tmp_path: Path, loader, payload_factory):
+    payload = payload_factory()
+    payload["data"]["backend"] = "hdf5"
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="data.backend must be one of"):
+        loader(config_path)
 
 
 def test_load_finetune_config_parses_eval_visualizations(tmp_path: Path):

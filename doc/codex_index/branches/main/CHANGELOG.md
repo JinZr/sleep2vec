@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-05-11
+
+- Repaired the `main` branch index for commit `4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd`.
+- Updated tracked-file coverage counts to reflect the current branch:
+  - `sleep2vec/`: 80
+  - `data/`: 8
+  - `preprocess/`: 7
+  - `sleep2vec2/`: 102
+  - `sleep2expert/`: 106
+  - `configs/`: 100
+  - `tests/`: 47
+  - `utils/`: 2
+- Repaired stale branch-state claims that said `sleep2vec2/` had no tracked source files.
+- Added active standalone variant coverage for `sleep2vec2/` and `sleep2expert/`, including package-local data/preprocess mirrors and namespace-parity guidance.
+- Added sleep2expert MoE routing, finetune tuning, checkpoint expansion, model-stats, and routing-analysis export guidance.
+- Added `WORKFLOWS/VARIANTS_AND_ROUTING.md`.
+- Updated config-validation workflow guidance for package-local config and preset helpers.
+- Stale entries removed or corrected:
+  - old manifest commit/counts from `99d22deee69cc3cb9eae9229a8faaa4c33974824`
+  - old claim that active variant directories were placeholders
+  - old reuse guidance that treated variant directories as non-active reuse targets
+- Added the Kaldi NPZ-to-ark converter contract to the preprocessing function catalog, including default semantic ark compression and package-local mirror parity notes.
+
 ## 2026-05-06
 
 - Updated dataset and preprocessing docs for stage/AHI-only preset generation without mandatory `age`/`sex` CSV columns.
@@ -57,6 +80,5 @@
   - `FUNCTIONS/`
   - `WORKFLOWS/`
 - Indexed tracked code under `sleep2vec/`, `data/`, `preprocess/`, `configs/`, `tests/`, and `utils/`.
-- Recorded branch-state notes for `sleep2vec2/`, `sleep2vec_moe/`, and `sleep2vec_hires/` because they contain no tracked source files on `main`.
 - Marked notebook coverage as summary-only for `preprocess/preprocess_pipeline.ipynb`.
 - Stale entries removed: none, because this was an initialize-main build rather than a refresh.

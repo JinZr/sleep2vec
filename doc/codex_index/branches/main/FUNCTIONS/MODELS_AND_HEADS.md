@@ -57,6 +57,39 @@
 - Reuse guidance: this is the canonical contrastive pretrain forward path.
 - Duplication risk notes: do not recreate channel-selection and masking flow in the Lightning module.
 
+## `sleep2vec2.backbones.roformer.RoFormerEncoderModel`
+
+- File: `sleep2vec2/backbones/roformer/model.py` and `sleep2vec2/backbones/roformer/modeling_roformer.py`
+- Signature: `RoFormerEncoderModel.forward(input_ids=None, attention_mask=None, token_type_ids=None, inputs_embeds=None, output_attentions=None, output_hidden_states=None, return_dict=None, **kwargs)`
+- Purpose and contract: package-local standalone RoFormer encoder used by `sleep2vec2` instead of the root/Hugging Face RoFormer module.
+- Important inputs/outputs: token ids or embeddings plus attention controls in; RoFormer-style output with last hidden state, optional hidden states, and optional attentions out.
+- Side effects: none beyond compute.
+- Key callers/callees: built by `sleep2vec2.backbones.encoder_factory.build_roformer`; exercised by `sleep2vec2.pretrain_model.Sleep2vecPretrainModel`.
+- Reuse guidance: keep `sleep2vec2` backbone changes inside this standalone implementation and preserve parity tests against root behavior.
+- Duplication risk notes: `sleep2vec2` rejects legacy sleep2vec/HF RoFormer checkpoint key layouts; do not add silent compatibility shims.
+
+## `sleep2expert.backbones.roformer.moe.TopKRouter.forward`
+
+- File: `sleep2expert/backbones/roformer/moe.py`
+- Signature: `TopKRouter.forward(hidden_states, modality_name=None, token_mask=None) -> MoERoutingOutput`
+- Purpose and contract: compute per-token top-k expert choices for learned, random, hard-modality, or hard-group routing, applying modality group masks when enabled.
+- Important inputs/outputs: hidden states, modality name, and optional token mask in; `MoERoutingOutput` with logits, probabilities, top-k indices/probabilities, load, importance, z-loss, entropy, modality name, and layer index out.
+- Side effects: uses random logits for `router_type="random"` and training-time router noise when configured.
+- Key callers/callees: caller is `SparseMoEFFN.forward`; callees include `_allowed_experts`, `_hard_route`, `_mask_logits`, and `_build_output`.
+- Reuse guidance: add router behavior here, not in trainer or loss code.
+- Duplication risk notes: modality-to-expert group validation is paired with `sleep2expert.config._validate_moe_config`.
+
+## `sleep2expert.backbones.roformer.moe.SparseMoEFFN.forward`
+
+- File: `sleep2expert/backbones/roformer/moe.py`
+- Signature: `SparseMoEFFN.forward(hidden_states, input_tensor, *, modality_name=None, attention_mask=None, collect_aux=False) -> tuple[torch.Tensor, MoERoutingOutput | None]`
+- Purpose and contract: replace a dense RoFormer FFN with sparse expert execution, weighted top-k expert aggregation, residual dropout, layer norm, and optional routing aux return.
+- Important inputs/outputs: hidden states, residual tensor, modality name, attention mask, and aux flag in; transformed hidden states and optional routing aux out.
+- Side effects: none beyond compute.
+- Key callers/callees: caller is the standalone sleep2expert RoFormer layer; callee is `TopKRouter.forward`.
+- Reuse guidance: keep sparse FFN execution here; losses and export should consume aux records rather than recomputing routes.
+- Duplication risk notes: hard-routing and group-mask semantics must not be duplicated in downstream heads.
+
 ## `Sleep2vecDownstreamModel.__init__`
 
 - File: `sleep2vec/downstream_model.py`
@@ -127,7 +160,7 @@
 
 - File: `sleep2vec/sleep2vec_modelling.py`
 - Signature: `Sleep2vecPretraining._contrastive_step(batch, log_prefix=None, model=None)`
-- Purpose and contract: run the contrastive forward pass, apply the configured loss, log step/epoch metrics, and cache validation metrics for epoch-end aggregation.
+- Purpose and contract: run the contrastive forward pass, apply the configured loss, add sleep2expert MoE pretrain regularization when enabled in that namespace, log step/epoch metrics, and cache validation metrics for epoch-end aggregation.
 - Important inputs/outputs: batch in; returns `(total_loss, contrastive_acc)`.
 - Side effects: logs Lightning metrics and mutates validation caches.
 - Key callers/callees: callers are `training_step` and `validation_step`; callees are `self.model(...)` and `self.loss_fn(...)`.
@@ -160,7 +193,7 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `Sleep2vecFinetuning._shared_step(batch, stage: str, model=None)`
-- Purpose and contract: run forward, compute loss if valid labels exist, log stage loss or accumulate eval loss, and cache either generic predictions or AHI event records for epoch-end metrics.
+- Purpose and contract: run forward, compute loss if valid labels exist, add sleep2expert downstream MoE regularization/metrics when configured in that namespace, log stage loss or accumulate eval loss, and cache either generic predictions or AHI event records for epoch-end metrics.
 - Important inputs/outputs: batch and stage name in; returns training loss for `train`, otherwise `None`.
 - Side effects: logs Lightning metrics and mutates `_stage_outputs`.
 - Key callers/callees: callers are `training_step`, `validation_step`, and `test_step`; callees are `self.model(...)`, `_compute_loss`, `_extract_valid_predictions`, and `_extract_ahi_event_records`.
@@ -237,6 +270,28 @@
 - Key callers/callees: caller is `Sleep2vecPretraining._build_loss` and then `_contrastive_step`.
 - Reuse guidance: new contrastive objectives should register here.
 - Duplication risk notes: `_contrastive_accuracy` is duplicated between the two shipped loss modules.
+
+## `sleep2expert.losses.moe_regularization.compute_moe_regularization`
+
+- File: `sleep2expert/losses/moe_regularization.py`
+- Signature: `compute_moe_regularization(moe_aux, moe_cfg, batch, *, prefix: str | None = None) -> LossOutput`
+- Purpose and contract: compute pretrain-time MoE auxiliary loss and metrics from `model.last_moe_aux`.
+- Important inputs/outputs: routing aux records, `MoeConfig`, and batch in; `LossOutput` with total auxiliary loss and metrics out.
+- Side effects: none.
+- Key callers/callees: caller is `sleep2expert.sleep2vec_modelling.Sleep2vecPretraining._contrastive_step`; callees include `_load_balance_loss`, `_modality_balance_loss`, `_route_consistency_loss`, `_routing_stats`, and `_expert_usage_entropy`.
+- Reuse guidance: route all pretrain MoE regularization through this function.
+- Duplication risk notes: route consistency strips CLS tokens and compares only common expert support; keep that logic centralized.
+
+## `sleep2expert.losses.moe_regularization.compute_downstream_moe_regularization`
+
+- File: `sleep2expert/losses/moe_regularization.py`
+- Signature: `compute_downstream_moe_regularization(moe_aux, reg_cfg, batch, *, prefix: str | None = None) -> LossOutput`
+- Purpose and contract: compute the supported downstream MoE auxiliary loss subset from `model.backbone.last_moe_aux`.
+- Important inputs/outputs: routing aux records, finetune MoE regularization config, and batch in; `LossOutput` with router z-loss contribution and metrics out.
+- Side effects: none.
+- Key callers/callees: caller is `sleep2expert.sleep2vec_finetuning.Sleep2vecFinetuning._compute_loss`; callee is `_downstream_moe_metric_values`.
+- Reuse guidance: use this for sleep2expert downstream MoE finetuning regularization.
+- Duplication risk notes: downstream route consistency, load balance, modality balance, and entropy regularization are intentionally unsupported and should not be implemented piecemeal elsewhere.
 
 ## Model-averaging family
 

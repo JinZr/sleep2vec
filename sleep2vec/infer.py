@@ -81,6 +81,8 @@ def run_inference(args):
     config_bundle, model_cfg = apply_finetune_config(args)
     inference_preset_path = getattr(args, "inference_preset_path", None)
     if inference_preset_path is not None:
+        if getattr(args, "data_backend", "npz") == "kaldi":
+            raise ValueError("Kaldi backend uses manifest.json; legacy NPZ preset pickles are unsupported.")
         args.finetune_preset_path = Path(inference_preset_path)
     if args.label_name == "ahi" and args.avg_ckpts > 1:
         raise ValueError(
