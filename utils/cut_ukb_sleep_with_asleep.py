@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 EPOCH_SECONDS = 30
 IS_SLEEP_LABEL = 1
@@ -448,11 +449,11 @@ def process_file(path, input_root, output_dir, args, asleep_pipeline):
 
 def process_indexed_file(index, total, path, input_root, output_dir, args):
     started_at = time.perf_counter()
-    print(f"[{index}/{total}] {path}", flush=True)
+    tqdm.write(f"[{index}/{total}] {path}")
     asleep_pipeline = load_asleep_pipeline(output_dir / "_asleep_models")
     rows = process_file(path, input_root, output_dir, args, asleep_pipeline)
     elapsed = time.perf_counter() - started_at
-    print(f"[{index}/{total}] completed {path} in {elapsed:.1f}s", flush=True)
+    tqdm.write(f"[{index}/{total}] completed {path} in {elapsed:.1f}s")
     return index, rows
 
 
@@ -461,13 +462,13 @@ def process_files(input_files, args):
         asleep_pipeline = load_asleep_pipeline(args.output_dir / "_asleep_models")
         manifest_rows = []
         total = len(input_files)
-        for index, path in enumerate(input_files, start=1):
+        for index, path in enumerate(tqdm(input_files, total=total, desc="Processing CWA files", unit="file"), start=1):
             path = path.resolve()
             started_at = time.perf_counter()
-            print(f"[{index}/{total}] {path}")
+            tqdm.write(f"[{index}/{total}] {path}")
             manifest_rows.extend(process_file(path, args.input_root, args.output_dir, args, asleep_pipeline))
             elapsed = time.perf_counter() - started_at
-            print(f"[{index}/{total}] completed {path} in {elapsed:.1f}s")
+            tqdm.write(f"[{index}/{total}] completed {path} in {elapsed:.1f}s")
         return manifest_rows
 
     indexed_rows = []
@@ -491,7 +492,12 @@ def process_files(input_files, args):
             )
             for index, path in enumerate(input_files, start=1)
         ]
-        for future in as_completed(futures):
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Processing CWA files",
+            unit="file",
+        ):
             indexed_rows.append(future.result())
 
     manifest_rows = []
