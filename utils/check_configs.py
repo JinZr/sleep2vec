@@ -15,6 +15,7 @@ CONFIG_ROOT = REPO_ROOT / "configs"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+
 @dataclass(frozen=True)
 class ConfigVariant:
     config_module: str

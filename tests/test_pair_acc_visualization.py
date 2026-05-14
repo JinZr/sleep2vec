@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from sleep2expert.visualization.pair_acc import render_pair_acc_heatmap as render_sleep2expert_pair_acc_heatmap
-from sleep2vec.visualization.pair_acc import render_pair_acc_heatmap as render_sleep_pair_acc_heatmap
 from sleep2vec2.visualization.pair_acc import render_pair_acc_heatmap as render_sleep2vec2_pair_acc_heatmap
+from sleep2vec.visualization.pair_acc import render_pair_acc_heatmap as render_sleep_pair_acc_heatmap
 from wrist2vec.visualization.pair_acc import render_pair_acc_heatmap as render_wrist_pair_acc_heatmap
 
 
