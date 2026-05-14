@@ -7,14 +7,18 @@ import argparse
 from collections import defaultdict
 import csv
 from datetime import datetime, timezone
+import errno
 import html
 import json
 from pathlib import Path
 import re
+import time
 
 from tqdm import tqdm
 
 MISSING_VALUES = {"", "NA"}
+PARTICIPANT_WRITE_RETRIES = 5
+PARTICIPANT_WRITE_RETRY_DELAY_SECONDS = 10
 
 
 def clean_html_fragment(fragment: str) -> str:
@@ -484,8 +488,19 @@ def write_participant_json(path: Path, eid: str, dataset_id: str, source_file: s
         "source_file": source_file,
         "values": values,
     }
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    for attempt in range(PARTICIPANT_WRITE_RETRIES + 1):
+        try:
+            path.write_text(text, encoding="utf-8")
+            return
+        except OSError as exc:
+            if exc.errno != errno.EIO:
+                raise
+            if attempt == PARTICIPANT_WRITE_RETRIES:
+                raise RuntimeError(f"Failed to write participant JSON after repeated I/O errors: {path}") from exc
+            tqdm.write(f"I/O error while writing {path}; retrying in {PARTICIPANT_WRITE_RETRY_DELAY_SECONDS}s")
+            time.sleep(PARTICIPANT_WRITE_RETRY_DELAY_SECONDS)
 
 
 def parse_participants(
