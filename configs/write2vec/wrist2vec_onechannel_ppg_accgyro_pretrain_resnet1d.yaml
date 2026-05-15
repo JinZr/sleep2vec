@@ -54,7 +54,8 @@ model:
     #       clamp_value: null
     #       modality_scale: 1.0
     - name: ppg_green
-      input_dim: 512  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
+      source_names: ["GR"]
+      input_dim: 200  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
       tokenizer:
         name: resnet1d
         out_dim: 384
@@ -70,25 +71,27 @@ model:
           norm_groups: 8
           act: relu
           dropout: 0.1
-    - name: ppg_red
-      input_dim: 512  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
-      tokenizer:
-        name: resnet1d
-        out_dim: 384
-        kwargs:
-          block_counts: [2, 2, 2]
-          channel_schedule: [64, 128, 256]
-          stride_schedule: [2, 2, 2]
-          front_kernel_size: 7
-          front_stride: 2
-          front_pool: max
-          front_pool_stride: 2
-          norm: group
-          norm_groups: 8
-          act: relu
-          dropout: 0.1
+    # - name: ppg_red
+    #   source_names: ["RE"]
+    #   input_dim: 200  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
+    #   tokenizer:
+    #     name: resnet1d
+    #     out_dim: 384
+    #     kwargs:
+    #       block_counts: [2, 2, 2]
+    #       channel_schedule: [64, 128, 256]
+    #       stride_schedule: [2, 2, 2]
+    #       front_kernel_size: 7
+    #       front_stride: 2
+    #       front_pool: max
+    #       front_pool_stride: 2
+    #       norm: group
+    #       norm_groups: 8
+    #       act: relu
+    #       dropout: 0.1
     - name: ppg_infrared
-      input_dim: 512  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
+      source_names: ["IR"]
+      input_dim: 200  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
       tokenizer:
         name: resnet1d
         out_dim: 384
@@ -105,6 +108,7 @@ model:
           act: relu
           dropout: 0.1
     - name: gyro_vm
+      source_names: ["gyro"]
       input_dim: 200  # 2 s * 100 Hz per token; adjust if your gyroscope VM sampling rate differs
       tokenizer:
         name: sundial2
@@ -116,6 +120,7 @@ model:
           clamp_value: null
           modality_scale: 1.0
     - name: acc_vm
+      source_names: ["acc"]
       input_dim: 200  # 2 s * 100 Hz per token; adjust if your accelerometer VM sampling rate differs
       tokenizer:
         name: sundial2
