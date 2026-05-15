@@ -9,7 +9,6 @@ import pytest
 import torch
 import torch.nn as nn
 
-import wrist2vec_flex.downstreams.heads  # noqa: F401
 from wrist2vec_flex.config import (
     BackboneConfig,
     ChannelAggConfig,
@@ -25,10 +24,10 @@ from wrist2vec_flex.config import (
     TokenizerConfig,
 )
 from wrist2vec_flex.downstream_model import Wrist2vecDownstreamModel
+import wrist2vec_flex.downstreams.heads  # noqa: F401
 from wrist2vec_flex.modules.channel_source_encoder import ChannelSourceEncoder
 from wrist2vec_flex.utils import _build_finetune_loader
 from wrist2vec_flex.wrist2vec_finetuning import Wrist2vecFinetuning
-
 
 FEATURE_DIM = 4
 

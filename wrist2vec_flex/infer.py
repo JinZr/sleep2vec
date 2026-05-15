@@ -154,7 +154,9 @@ def run_inference(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run downstream wrist2vec_flex inference from a fine-tuned checkpoint.")
+    parser = argparse.ArgumentParser(
+        description="Run downstream wrist2vec_flex inference from a fine-tuned checkpoint."
+    )
     parser.add_argument(
         "--config",
         type=Path,

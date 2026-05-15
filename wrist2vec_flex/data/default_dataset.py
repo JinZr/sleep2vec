@@ -741,7 +741,12 @@ class DefaultDataset(BaseDataset):
         # If enabled, bucket batches by available-channel signature to keep each
         # batch homogeneous.
 
-        if allow_missing_channels and bucket_by_available_channels and sampler is None and not collate_all_feature_channels:
+        if (
+            allow_missing_channels
+            and bucket_by_available_channels
+            and sampler is None
+            and not collate_all_feature_channels
+        ):
             from wrist2vec_flex.data.samplers import AvailableChannelsBucketBatchSampler
 
             batch_size = int(dl_kwargs.pop("batch_size"))

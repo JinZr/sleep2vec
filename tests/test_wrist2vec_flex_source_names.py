@@ -1084,9 +1084,7 @@ def test_wrist2vec_finetuning_rejects_frozen_missing_source_modules(monkeypatch)
             self.tokenizers_trainable = trainable
 
     def _load_missing_source_modules(self, _path):
-        return argparse.Namespace(
-            missing_keys=["channel_source_encoder_mapping.ppg_green.source_fusion.query.weight"]
-        )
+        return argparse.Namespace(missing_keys=["channel_source_encoder_mapping.ppg_green.source_fusion.query.weight"])
 
     monkeypatch.setattr(finetuning_module, "Wrist2vecPretrainModel", _FakePretrainModel)
     monkeypatch.setattr(

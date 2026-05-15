@@ -450,8 +450,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     if model_cfg.head.channel_agg.name == "concat":
         if args.allow_missing_feature_channels:
             raise ValueError(
-                "model.head.channel_agg.name='concat' is incompatible with "
-                "data.allow_missing_feature_channels=True."
+                "model.head.channel_agg.name='concat' is incompatible with " "data.allow_missing_feature_channels=True."
             )
         if args.channel_dropout_rate > 0.0 and args.min_channels_after_dropout < len(args.data_channel_names):
             raise ValueError(

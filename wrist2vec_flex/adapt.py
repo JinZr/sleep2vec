@@ -22,7 +22,11 @@ from wrist2vec_flex.common import apply_data_backend_args, apply_model_config_ar
 from wrist2vec_flex.config import load_pretrain_config
 from wrist2vec_flex.data.samplers import handles_distributed_sharding
 from wrist2vec_flex.utils import get_pretrain_dataloader
-from wrist2vec_flex.wrist2vec_adaptation import AdaptPairScheduleCallback, Wrist2vecAdaptation, initial_pair_probs_for_phase
+from wrist2vec_flex.wrist2vec_adaptation import (
+    AdaptPairScheduleCallback,
+    Wrist2vecAdaptation,
+    initial_pair_probs_for_phase,
+)
 
 
 def _optional_path(value):
