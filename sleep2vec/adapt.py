@@ -19,10 +19,16 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.samplers import handles_distributed_sharding
 from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
-from sleep2vec.common import apply_model_config_args, persist_run_config_and_args
+from sleep2vec.common import apply_data_backend_args, apply_model_config_args, persist_run_config_and_args
 from sleep2vec.config import load_pretrain_config
 from sleep2vec.sleep2vec_adaptation import AdaptPairScheduleCallback, Sleep2vecAdaptation, initial_pair_probs_for_phase
 from sleep2vec.utils import get_pretrain_dataloader
+
+
+def _optional_path(value):
+    if value.lower() in {"null", "none"}:
+        return None
+    return Path(value)
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,7 @@ def sleep2vec_adapt(args):
     args.mask_rate = config_bundle.data.mask_rate
     args.max_tokens = config_bundle.data.max_tokens
     apply_model_config_args(args, model_config, set_backbone_arch=True)
+    apply_data_backend_args(args, config_bundle.data, preset_attr="pretrain_preset_path")
     args.train_pair_probs = initial_pair_probs_for_phase(
         args.phase,
         channel_names=args.channel_names,
@@ -334,7 +341,7 @@ if __name__ == "__main__":
         "--warmup-steps",
         type=int,
         default=None,
-        help="Override warmup steps for LR schedule (default: 3% of total steps).",
+        help="Override warmup steps for LR schedule (default: 3%% of total steps).",
     )
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="Weight decay for AdamW.")
     parser.add_argument("--batch-size", type=int, default=320, help="Batch size.")
@@ -381,9 +388,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pretrain-preset-path",
-        type=Path,
-        default="/data/ywx/BIOT/data/5dataset_preset_120.pickle",
-        help="Path to precomputed preset pickle for adaptation data.",
+        type=_optional_path,
+        default=None,
+        help="Path to precomputed preset pickle for adaptation data; use null/none to disable.",
     )
     parser.add_argument(
         "--allow-missing-channels",

@@ -156,17 +156,20 @@ class PSGPretrainDataset(DefaultDataset):
             for i, (_, row) in enumerate(csv.iterrows()):
                 # ✅ 从指定列中提取 metadata
                 metadata = {
-                    "age": row["age"],
-                    "sex": row["sex"],
                     "source": row["source"],
                     "path": row["path"],
                     "split": row["split"],
                 }
+                for optional_meta_name in ("age", "sex"):
+                    if optional_meta_name in row.index:
+                        metadata[optional_meta_name] = row[optional_meta_name]
 
                 for meta_data_name in meta_data_names:
                     # Built-in AHI summary scalars come from NPZ backfill, not CSV columns.
                     if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
                         continue
+                    if meta_data_name not in row.index:
+                        raise ValueError(f"Required metadata column '{meta_data_name}' is missing from index CSV.")
                     metadata[meta_data_name] = row[meta_data_name]
 
                 # 需要划分为 n 个 token

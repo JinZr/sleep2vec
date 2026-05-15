@@ -27,6 +27,8 @@ Primary code path:
 3. Build a single evaluation loader.
    - `eval_split` selects `train`, `val`, or `test`.
    - `override_dataset_names` can replace configured dataset lists.
+   - `data_backend=npz` can use `--inference-preset-path` to override YAML `data.finetune_preset_path`.
+   - `data_backend=kaldi` uses `kaldi_data_root` and `kaldi_manifest`; `--inference-preset-path` is rejected.
 4. Instantiate `Sleep2vecFinetuning`.
 5. Optionally average checkpoints.
    - `avg_ckpts == 1`: use `ckpt_path` directly.
@@ -52,6 +54,7 @@ Primary code path:
 ## Important Runtime Decisions
 
 - `infer.py` is the reviewed place that handles CPU precision fallback for `bf16`.
+- Backend-specific loader construction is still delegated through `_build_finetune_loader`.
 - Inference can initialize W&B separately from training and only on rank zero.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
 - AHI inference requires `ahi_eval_threshold` to be present in the checkpoint state.
@@ -59,5 +62,5 @@ Primary code path:
 ## Edit Hotspots
 
 - Change checkpoint averaging semantics: `sleep2vec/checkpoints.py`
-- Change eval loader or dataset override behavior: `sleep2vec/infer.py`, `sleep2vec/utils.py`
+- Change eval loader, data-backend, or dataset override behavior: `sleep2vec/infer.py`, `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`
 - Change inference-only logging/W&B behavior: `sleep2vec/infer.py`

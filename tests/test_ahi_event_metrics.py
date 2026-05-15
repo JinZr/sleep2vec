@@ -11,7 +11,7 @@ import torch
 
 import sleep2vec.finetune as finetune
 from sleep2vec.finetune import supervised
-from sleep2vec.infer import run_inference
+from sleep2vec.infer import parse_args, run_inference
 import sleep2vec.metrics as metrics_mod
 from sleep2vec.metrics import (
     AHI_COARSE_THRESHOLD_GRID,
@@ -1807,6 +1807,123 @@ def test_run_inference_uses_single_ahi_checkpoint_without_search_injection(monke
     assert not hasattr(captured["args"], "ahi_test_search_thresholds")
     assert captured["ckpt_path"] == "/tmp/model.ckpt"
     assert captured["dataloaders"] == "loader"
+
+
+def test_infer_parse_args_accepts_inference_preset_path(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "sleep2vec.infer",
+            "--config",
+            "config.yaml",
+            "--ckpt-path",
+            "best.ckpt",
+            "--label-name",
+            "ahi",
+            "--inference-preset-path",
+            "preset.pkl",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.inference_preset_path == Path("preset.pkl")
+
+
+def test_run_inference_applies_inference_preset_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: dict[str, object] = {}
+    config_preset = tmp_path / "config.pkl"
+    override_preset = tmp_path / "override.pkl"
+
+    @dataclass
+    class _DummyBundle:
+        finetune: object = None
+        averaging: object = None
+
+    class _DummyModule:
+        def __init__(self, args, model_cfg, finetune_config=None, averaging_config=None):
+            captured["module_preset_path"] = args.finetune_preset_path
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def test(self, model=None, ckpt_path=None, dataloaders=None):
+            return [{"ahi_pearson": 0.5}]
+
+    def _apply_config(args):
+        args.finetune_preset_path = config_preset
+        return _DummyBundle(), _DummyModelConfig()
+
+    def _build_loader(args):
+        captured["loader_preset_path"] = args.finetune_preset_path
+        return "loader"
+
+    monkeypatch.setattr("sleep2vec.infer.apply_finetune_config", _apply_config)
+    monkeypatch.setattr("sleep2vec.infer._build_inference_loader", _build_loader)
+    monkeypatch.setattr("sleep2vec.infer.Sleep2vecFinetuning", _DummyModule)
+    monkeypatch.setattr("sleep2vec.infer.pl.Trainer", _DummyTrainer)
+    monkeypatch.setattr("sleep2vec.infer._init_wandb", lambda args: None)
+
+    args = argparse.Namespace(
+        label_name="ahi",
+        avg_ckpts=1,
+        ckpt_path="/tmp/model.ckpt",
+        avg_ckpt_dir=None,
+        config=Path("dummy.yaml"),
+        precision=32,
+        accelerator="cpu",
+        devices=[0],
+        batch_size=4,
+        eval_split="test",
+        seed=4523,
+        wandb=False,
+        results_csv_path=None,
+        inference_preset_path=override_preset,
+    )
+
+    run_inference(args)
+
+    assert captured["loader_preset_path"] == override_preset
+    assert captured["module_preset_path"] == override_preset
+
+
+def test_run_inference_rejects_kaldi_inference_preset_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    override_preset = tmp_path / "override.pkl"
+
+    @dataclass
+    class _DummyBundle:
+        finetune: object = None
+        averaging: object = None
+
+    def _apply_config(args):
+        args.data_backend = "kaldi"
+        args.finetune_preset_path = None
+        args.kaldi_data_root = tmp_path / "kaldi"
+        args.kaldi_manifest = tmp_path / "kaldi" / "manifest.json"
+        return _DummyBundle(), _DummyModelConfig()
+
+    monkeypatch.setattr("sleep2vec.infer.apply_finetune_config", _apply_config)
+
+    args = argparse.Namespace(
+        label_name="stage5",
+        avg_ckpts=1,
+        ckpt_path="/tmp/model.ckpt",
+        avg_ckpt_dir=None,
+        config=Path("dummy.yaml"),
+        precision=32,
+        accelerator="cpu",
+        devices=[0],
+        batch_size=4,
+        eval_split="test",
+        seed=4523,
+        wandb=False,
+        results_csv_path=None,
+        inference_preset_path=override_preset,
+    )
+
+    with pytest.raises(ValueError, match="legacy NPZ preset pickles are unsupported"):
+        run_inference(args)
 
 
 def test_run_inference_preserves_primary_error_when_wandb_finish_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

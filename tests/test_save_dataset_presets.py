@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 import pickle
 import sys
@@ -262,6 +263,208 @@ def test_strict_mode_single_channel_subset_does_not_need_min_channel_validation(
     )
 
     save_dataset_presets_main()
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "preprocess.save_dataset_presets",
+        "sleep2expert.preprocess.save_dataset_presets",
+        "sleep2vec2.preprocess.save_dataset_presets",
+    ],
+)
+def test_main_prunes_overlap_eval_splits_in_preset_planning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str
+):
+    module = importlib.import_module(module_name)
+    submitted_jobs: list[dict[str, object]] = []
+
+    def fake_build_preset_job(**kwargs):
+        submitted_jobs.append(kwargs)
+        return kwargs["output_path"], 1
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60},
+            {"path": "b.npz", "split": "val", "duration": 60},
+            {"path": "c.npz", "split": "test", "duration": 60},
+        ]
+    ).to_csv(index_path, index=False)
+
+    monkeypatch.setattr(module, "_build_preset_job", fake_build_preset_job)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--n-tokens",
+            "4",
+            "--stride-tokens",
+            "2",
+            "--min-channels",
+            "1",
+        ],
+    )
+
+    module.main()
+
+    assert [job["split"] for job in submitted_jobs] == ["train"]
+
+
+@pytest.mark.parametrize(
+    "module_name,split",
+    [
+        ("preprocess.save_dataset_presets", "val"),
+        ("preprocess.save_dataset_presets", "test"),
+        ("sleep2expert.preprocess.save_dataset_presets", "val"),
+        ("sleep2expert.preprocess.save_dataset_presets", "test"),
+        ("sleep2vec2.preprocess.save_dataset_presets", "val"),
+        ("sleep2vec2.preprocess.save_dataset_presets", "test"),
+    ],
+)
+def test_main_include_overlap_eval_splits_keeps_requested_eval_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str, split: str
+):
+    module = importlib.import_module(module_name)
+    submitted_jobs: list[dict[str, object]] = []
+
+    def fake_build_preset_job(**kwargs):
+        submitted_jobs.append(kwargs)
+        return kwargs["output_path"], 1
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": f"{split}.npz", "split": split, "duration": 60}]).to_csv(index_path, index=False)
+
+    monkeypatch.setattr(module, "_build_preset_job", fake_build_preset_job)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            split,
+            "--n-tokens",
+            "4",
+            "--stride-tokens",
+            "2",
+            "--include-overlap-eval-splits",
+            "--min-channels",
+            "1",
+        ],
+    )
+
+    module.main()
+
+    assert [job["split"] for job in submitted_jobs] == [split]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "preprocess.save_dataset_presets",
+        "sleep2expert.preprocess.save_dataset_presets",
+        "sleep2vec2.preprocess.save_dataset_presets",
+    ],
+)
+def test_main_keeps_eval_split_when_stride_is_not_overlapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str
+):
+    module = importlib.import_module(module_name)
+    submitted_jobs: list[dict[str, object]] = []
+
+    def fake_build_preset_job(**kwargs):
+        submitted_jobs.append(kwargs)
+        return kwargs["output_path"], 1
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": "val.npz", "split": "val", "duration": 60}]).to_csv(index_path, index=False)
+
+    monkeypatch.setattr(module, "_build_preset_job", fake_build_preset_job)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            "val",
+            "--n-tokens",
+            "4",
+            "--stride-tokens",
+            "4",
+            "--min-channels",
+            "1",
+        ],
+    )
+
+    module.main()
+
+    assert [job["split"] for job in submitted_jobs] == ["val"]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "preprocess.save_dataset_presets",
+        "sleep2expert.preprocess.save_dataset_presets",
+        "sleep2vec2.preprocess.save_dataset_presets",
+    ],
+)
+def test_main_rejects_overlap_eval_only_preset_splits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str
+):
+    module = importlib.import_module(module_name)
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "val.npz", "split": "val", "duration": 60},
+            {"path": "test.npz", "split": "test", "duration": 60},
+        ]
+    ).to_csv(index_path, index=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--split",
+            "val",
+            "test",
+            "--n-tokens",
+            "4",
+            "--stride-tokens",
+            "2",
+            "--dry-run",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Overlap windows excluded val/test splits and no splits remain"):
+        module.main()
 
 
 def test_filter_index_df_for_required_channels_uses_generic_and_builtin_masks():

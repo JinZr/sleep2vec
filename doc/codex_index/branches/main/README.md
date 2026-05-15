@@ -5,9 +5,9 @@ This directory is the branch-scoped engineering manual for `main`. Use it before
 ## Branch Scope
 
 - Branch: `main`
-- Last full refresh commit: `99d22deee69cc3cb9eae9229a8faaa4c33974824`
-- Last full refresh at: `2026-04-20T11:49:16Z`
-- Mode: `refresh`
+- Last repair commit: `4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd`
+- Last repair at: `2026-05-11T06:28:06Z`
+- Mode: `repair`
 
 ## Purpose
 
@@ -34,23 +34,20 @@ For small, localized fixes or routine updates, it is enough to read this page pl
 
 Tracked files indexed from this branch:
 
-- `sleep2vec/`: 78 tracked files
-- `data/`: 6 tracked files
-- `preprocess/`: 6 tracked files
-- `configs/`: 32 tracked files
-- `tests/`: 24 tracked files
+- `sleep2vec/`: 80 tracked files
+- `data/`: 8 tracked files
+- `preprocess/`: 7 tracked files
+- `sleep2vec2/`: 102 tracked files
+- `sleep2expert/`: 106 tracked files
+- `configs/`: 100 tracked files
+- `tests/`: 47 tracked files
 - `utils/`: 2 tracked files
-
-Branch-state coverage only:
-
-- `sleep2vec2/`: no tracked source files on `main`
-- `sleep2vec_moe/`: no tracked source files on `main`
-- `sleep2vec_hires/`: no tracked source files on `main`
 
 ## Coverage Boundaries
 
-- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result writing, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, preprocessing CLIs, downstream evaluation visualizations, and the tests that pin those contracts.
-- Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb` and tracked visualization font binaries under `sleep2vec/visualization/assets/fonts/`.
+- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result writing, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation visualizations, and the tests that pin those contracts.
+- Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb`, package-local variant preprocessing notebooks, and tracked visualization font binaries under `*/visualization/assets/fonts/`.
+- Outside this index scope: tracked example data scaffolding under `egs/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
 - `AGENTS.md` is referenced for ownership context but is not reproduced here as an editable source of truth.
 
@@ -65,7 +62,7 @@ Branch-state coverage only:
 - If you are changing dataset loading, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
 - If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, or WatchPAT conversion, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
 - If you are changing evaluation plots, pair-accuracy logging, or diagnostics, start with [FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md](./FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md).
-- If you think you need `sleep2vec2/`, `sleep2vec_moe/`, or `sleep2vec_hires/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first; on this branch they are placeholders, not active tracked implementations.
+- If you think you need `sleep2vec2/` or `sleep2expert/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first. Both are active tracked standalone namespaces on this branch.
 
 ## Deliverable Layout
 
@@ -85,6 +82,7 @@ Current workflow coverage:
 - [WORKFLOWS/INFER_AND_CHECKPOINTS.md](./WORKFLOWS/INFER_AND_CHECKPOINTS.md)
 - [WORKFLOWS/PREPROCESSING.md](./WORKFLOWS/PREPROCESSING.md)
 - [WORKFLOWS/CONFIG_VALIDATION.md](./WORKFLOWS/CONFIG_VALIDATION.md)
+- [WORKFLOWS/VARIANTS_AND_ROUTING.md](./WORKFLOWS/VARIANTS_AND_ROUTING.md)
 
 ## Reliability Notes
 

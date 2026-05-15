@@ -18,6 +18,7 @@
   - [Overview](#overview)
   - [Setup](#setup)
   - [Data Format \& Caches](#data-format--caches)
+  - [Kaldi Backend Recipes](#kaldi-backend-recipes)
   - [Quick Start](#quick-start)
     - [Pretrain (contrastive)](#pretrain-contrastive)
     - [Adaptation — staged wearable expansion](#adaptation--staged-wearable-expansion)
@@ -53,7 +54,7 @@
 ---
 
 ## Data Format & Caches
-- **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), `duration` (seconds), `age`, `sex`; optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set. For the built-in `sex` task, the normalized contract is `sex=female|male`, encoded as `0=female`, `1=male`. If your source metadata uses `sexM`, convert it to `sex` with `1 -> male`, `0 -> female` during preprocessing.
+- **Index CSV** (used by pretrain/finetune): required columns `path`, `split` (`train|val|test`), and `duration` (seconds). `age` and `sex` are optional for stage/AHI-only workflows, but built-in `age`/`sex` tasks require valid labels after split/source filtering; generate those presets from indexes carrying the corresponding real column. Optional extra label columns (e.g., disease flags) are consumed when `meta_data_names` is set. For the built-in `sex` task, the normalized contract is `sex=female|male`, encoded as `0=female`, `1=male`. If your source metadata uses `sexM`, convert it to `sex` with `1 -> male`, `0 -> female` during preprocessing.
 - **NPZ contents per row**: every non-label key used at runtime must be declared in YAML `model.channels` with a matching `name` and `input_dim` (frames per token). Built-in examples include `heartbeat`, `breath`, `eeg_original`, `ecg_original`, `eog_original`, `emg_original`, `spo2`, `resp_original`, and `resp_nasal_original`; this branch also ships wearable examples for `ppg` and `actigraphy`. In this repo, `actigraphy` stores vector magnitude (VM). `stage5` remains a special per-token label channel and always uses width `1`. Built-in `ahi` additionally requires a flat 1 Hz `ah_event` array plus scalar NPZ keys `ahi` and `tst`.
 - **Preset pickles**: both CLIs expect a precomputed pickle of `SampleIndex` objects (see `preprocess/save_dataset_presets.py`). Point `--pretrain-preset-path` / YAML `data.finetune_preset_path` to an existing pickle; these scripts do **not** fall back to CSV when a path is provided. Preset generation now requires a YAML config so the script can resolve channel names and `input_dim` values from `model.channels`.
 - `preprocess/save_dataset_presets.py` also honors an optional top-level `preset_build` block. Use it when preset validation must differ from runtime input modalities, for example token-level PPG staging should validate both `ppg` and `stage5`.
@@ -69,6 +70,7 @@
     --split train val test
   ```
   Optional flags: `--channels eeg_original ecg_original`, `--meta-data-names hypertension diabetes`, `--include-no-metadata`, `--output-template 'data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle'`, `--dry-run`, `--overwrite`.
+  Explicit `--meta-data-names` values remain strict: the CSV must contain each requested metadata column except built-in AHI summaries, which come from NPZ.
 - `--channels` is now an optional ordered subset of YAML `model.channels`; any requested channel that is missing from the YAML or lacks `input_dim` fails fast.
 - **Missing-channel pretrain**: if you enable `--allow-missing-channels`, presets must carry `payload["available_channels"]` (auto-populated during preset creation) so the bucketed sampler can group by montage.
 - **WatchPAT `.zzp` conversion**: `preprocess/watchpat_zzp_to_edf.py` converts a WatchPAT archive (`Sleep.dat`, `Patient.dat`, `log.dat`) into EDF for downstream inspection or external preprocessing. Example:
@@ -88,6 +90,63 @@
     --skip-existing
   ```
   Batch mode shows a file-level `tqdm` progress bar. Optional flags: `--include-internal-1hz`, `--no-pulse-rate`, `--verbose`, `--json-summary /path/to/summary_dir`. `pyedflib` is used when available; otherwise the script falls back to its built-in manual EDF writer.
+
+---
+
+## Kaldi Backend Recipes
+Kaldi storage uses `manifest.json` as the preset-equivalent artifact. Do not pass legacy NPZ preset pickles with `backend: kaldi`; pre-windowed per-sample/channel matrices are read by `sample_key`, and `token_start` is preserved in the split manifests for downstream aggregation.
+
+Pretrain conversion should use model input channels only unless you intentionally want label-like channels in contrastive training:
+```bash
+python -m preprocess.convert_npz_to_kaldi \
+  --index /path/to/index.csv \
+  --config configs/sleep2vec_dense_pretrain.yaml \
+  --output-dir /data/sleep2vec_kaldi/pretrain_120 \
+  --max-tokens 120 \
+  --stride-tokens 120 \
+  --channels-from-config
+```
+For heterogeneous datasets, add `--allow-missing-channels --min-channels 2` during conversion and training so pair-first sampling uses `available_channels` from the manifest:
+```bash
+python -m sleep2vec.pretrain \
+  --config configs/sleep2vec_dense_pretrain.yaml \
+  --version-name kaldi-pretrain-120 \
+  --data-backend kaldi \
+  --kaldi-data-root /data/sleep2vec_kaldi/pretrain_120 \
+  --kaldi-manifest /data/sleep2vec_kaldi/pretrain_120/manifest.json \
+  --pretrain-preset-path null \
+  --allow-missing-channels --min-channels 2
+```
+
+Finetune and inference select Kaldi from the YAML `data` block:
+```yaml
+data:
+  backend: kaldi
+  kaldi_data_root: /data/sleep2vec_kaldi/ppg_stage5_1535
+  kaldi_manifest: /data/sleep2vec_kaldi/ppg_stage5_1535/manifest.json
+  finetune_preset_path: null
+```
+Convert finetune roots with model channels plus required label channels. For `stage3`, `stage4`, or `stage5`, include `stage5`; for `ahi`, include both `ahi` and `stage5`, and ensure manifest rows contain scalar `ahi` and `tst` metadata. Match the converter windowing to the finetune config; current whole-night PPG configs use `max_tokens: 1535`, so convert with `--max-tokens 1535 --stride-tokens 0`:
+```bash
+python -m preprocess.convert_npz_to_kaldi \
+  --index /path/to/index.csv \
+  --config configs/ppg_stage5_finetune.yaml \
+  --output-dir /data/sleep2vec_kaldi/ppg_stage5_1535 \
+  --max-tokens 1535 \
+  --stride-tokens 0 \
+  --channels-from-config \
+  --extra-channels stage5
+
+python -m preprocess.convert_npz_to_kaldi \
+  --index /path/to/index.csv \
+  --config configs/ppg_ahi_finetune.yaml \
+  --output-dir /data/sleep2vec_kaldi/ppg_ahi_1535 \
+  --max-tokens 1535 \
+  --stride-tokens 0 \
+  --channels-from-config \
+  --extra-channels ahi stage5
+```
+Inference reuses the same Kaldi root and manifest windowing as the checkpoint's finetune configuration. Keep `--avg-ckpts 1` for built-in `ahi`, because its evaluation threshold is checkpoint-specific.
 
 ---
 
@@ -170,7 +229,7 @@ Notes:
 - Built-in sleep-staging labels are `stage3`, `stage4`, and `stage5`. They are all **per-token sequence labeling** tasks (`is_seq=True`) and use token-level downstream (`model.cls.downstream: tokens`).
 - `stage3` merges raw `stage5` labels into `W / NREM / REM`; `stage4` merges raw `stage5` labels into `W / N1N2 / N3 / REM`.
 - Do **not** add `stage5` or `ahi` to `data.data_channel_names`; built-in sequence labels are loaded automatically into `batch["tokens"][...]` whenever `--label-name` is `stage3`, `stage4`, `stage5`, or `ahi`.
-- Built-in `sex` classification is a metadata task with class order `["female", "male"]`, so targets are encoded as `0=female`, `1=male`.
+- Built-in `sex` classification is a metadata task with class order `["female", "male"]`, so targets are encoded as `0=female`, `1=male`; presets missing valid `sex` labels are rejected.
 - `--pretrained-backbone-path /path/to/pretrain_or_adapt.ckpt` can be used to bootstrap downstream training from a pretrain/adaptation checkpoint; loader prefers `ema_model.` and falls back to `model.`.
 
 ### Finetune — regression
@@ -183,6 +242,7 @@ python -m sleep2vec.finetune \
 ```
 
 Custom metadata labels:
+- Built-in `age` regression requires valid `age` metadata; stage/AHI-only presets that omit or carry dummy `age`/`sex` labels are not valid for `--label-name age|sex`.
 - Set `--label-name` to the CSV column name (e.g., `bmi`) and add a `finetune.task` block in the YAML to define task semantics (type/output_dim/is_seq/monitor/monitor_mod).
 - Use the same `--label-name` for `sleep2vec.infer` (required) when evaluating custom tasks.
 - Token-level labels (`is_seq: true`) are only supported for built-in sequence labels (`stage3`, `stage4`, `stage5`, `ahi`) unless you extend the dataloader.
@@ -231,12 +291,14 @@ python -m wrist2vec.infer \
   --config configs/write2vec/wrist2vec_dense_finetune_cls.yaml \
   --ckpt-path log-wrist2vec-finetune/wrist-stage5/checkpoints/best.ckpt \
   --label-name stage5 --batch-size 12 --devices 0 \
+  --inference-preset-path /path/to/test_preset_1535.pickle \
   --eval-split test --results-csv-path outputs.csv
 ```
 
 Notes:
 - Every top-level example config under `configs/` now has a `configs/write2vec/wrist2vec_*.yaml` companion.
 - For generic wearable/downstream recipes, use files such as `configs/write2vec/wrist2vec_ppg_ahi_finetune.yaml` and `configs/write2vec/wrist2vec_heartbeat_breath_age_finetune_large.yaml`.
+- `wrist2vec.infer` supports `--inference-preset-path`; result CSV rows record the effective preset in `preset_path`.
 - Wrist runs write to `log-wrist2vec-pretrain/`, `log-wrist2vec-adapt/`, and `log-wrist2vec-finetune/`.
 
 ---
@@ -249,9 +311,11 @@ python -m sleep2vec.infer \
   --config configs/sleep2vec_dense_finetune_cls.yaml \
   --ckpt-path log-finetune/exp001-stage5/checkpoints/epoch=49.ckpt \
   --label-name stage5 --batch-size 12 --devices 0 \
+  --inference-preset-path /path/to/test_preset_1535.pickle \
   --eval-split test --results-csv-path outputs.csv
 ```
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
+Use `--inference-preset-path` to evaluate the same config/checkpoint against a different preset pickle without editing YAML; result CSV rows record the effective preset in `preset_path`.
 Use the same `--label-name` that was used for fine-tuning; it is required.
 To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
 Use `--pretrained-backbone-path` if you want to preload a pretrain/adaptation initialization checkpoint before applying downstream weights.
@@ -454,3 +518,17 @@ finetune:
 - `data/` — dataset/index definitions, metadata helpers, NPZ loaders, channel-selection & samplers.
 - `preprocess/` — scripts to build index CSVs/presets, split/merge dataset indices, inspect missing-channel stats, and run raw format converters such as WatchPAT `.zzp` to EDF.
 - `utils/` — misc helpers.
+
+---
+
+## Join us
+
+We're Five Seasons Medical, building the full stack of AI for human health —
+contactless sensors, foundation models for physiology, and LLM agents
+that ship to real users every day. Sleep2vec is one piece of it.
+
+The team comes from Tsinghua, Peking University, and top industry labs.
+Small, focused, and shipping.
+
+Hiring across ML research, signal processing, LLM agents, and clinical
+science. Reach real users, not just benchmarks — chenxuesong@wuji-inc.com

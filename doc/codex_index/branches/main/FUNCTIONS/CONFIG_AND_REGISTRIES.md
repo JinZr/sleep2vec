@@ -8,6 +8,7 @@
   - `HeadConfig`, `TemporalAggConfig`, `ChannelAggConfig`, `LayerMixConfig`
   - `TaskConfig`, `FinetuneConfig`, `FinetuneDataConfig`, `EvalVisualizationsConfig`
   - `AdaptConfig`, `AdaptStage1Config`, `AdaptStage2Config`, `AdaptLrScalesConfig`, `AdaptPairSchedulePoint`
+  - `PretrainDataConfig` with `backend`, `kaldi_data_root`, and `kaldi_manifest`
   - `PretrainConfigBundle`, `FinetuneConfigBundle`
 - Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing.
 - Reuse guidance: extend these dataclasses before adding new ad hoc dict plumbing in entrypoints or Lightning modules.
@@ -27,7 +28,7 @@
 
 - File: `sleep2vec/config.py`
 - Signature: `load_pretrain_config(path: str | Path) -> PretrainConfigBundle`
-- Purpose and contract: parse pretrain YAML into typed dataclasses; require `model.backbone`, `model.projection`, and `model.cls`; build channels, loss config, data config, optional model-averaging config, and optional `adapt` config.
+- Purpose and contract: parse pretrain YAML into typed dataclasses; require `model.backbone`, `model.projection`, and `model.cls`; build channels, loss config, data config including `npz`/`kaldi` backend fields, optional model-averaging config, and optional `adapt` config.
 - Important inputs/outputs: filesystem path in, `PretrainConfigBundle` out.
 - Side effects: reads YAML from disk only.
 - Key callers/callees: callers are `sleep2vec.pretrain.sleep2vec_pretrain`, `sleep2vec.adapt.sleep2vec_adapt`, and `utils/check_configs.py`; callees include `_require_channels`, `_build_model_config`, `_build_loss`, `_build_model_averaging_config`, `_build_adapt_config`, and `_validate_adapt_config`.
@@ -38,7 +39,7 @@
 
 - File: `sleep2vec/config.py`
 - Signature: `load_finetune_config(path: str | Path) -> FinetuneConfigBundle`
-- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, layer-mix, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
+- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, layer-mix, data backend, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
 - Important inputs/outputs: YAML path in, `FinetuneConfigBundle` out.
 - Side effects: reads YAML from disk only.
 - Key callers/callees: caller is `sleep2vec.common.apply_finetune_config`; callees include `_build_layer_mix_config`, `_build_task_config`, `_build_eval_visualizations_config`, `_validate_layer_mix_config`, and `_build_model_averaging_config`.
@@ -82,12 +83,23 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_finetune_config(args) -> tuple[Any, Any]`
-- Purpose and contract: load finetune YAML, copy data/model/task/LoRA/eval-visualization settings into the CLI namespace, and enforce dataloader/model channel parity.
+- Purpose and contract: load finetune YAML, copy data/model/task/LoRA/eval-visualization settings into the CLI namespace, apply data-backend settings, and enforce dataloader/model channel parity.
 - Important inputs/outputs: mutates `args`; returns `(config_bundle, model_cfg)` for convenience.
 - Side effects: converts configured data paths into `Path` objects and mutates many runtime flags.
 - Key callers/callees: callers are `sleep2vec.finetune` and `sleep2vec.infer`; callee is `load_finetune_config`.
 - Reuse guidance: this is the canonical CLI binding layer for finetune/inference.
 - Duplication risk notes: do not partially mirror its behavior in entrypoints.
+
+## `sleep2vec.common.apply_data_backend_args`
+
+- File: `sleep2vec/common.py`
+- Signature: `apply_data_backend_args(args, data_cfg, *, preset_attr: str | None = None) -> None`
+- Purpose and contract: normalize `args.data_backend` from CLI or YAML, convert Kaldi paths to `Path`, require `kaldi_data_root` and `kaldi_manifest` for Kaldi runs, and reject legacy preset pickle paths when the backend is Kaldi.
+- Important inputs/outputs: CLI namespace, typed data config, and optional preset attribute name in; mutates `args`.
+- Side effects: namespace mutation only.
+- Key callers/callees: callers are `sleep2vec.pretrain`, `sleep2vec.adapt`, and `apply_finetune_config`; callee is `_optional_path`.
+- Reuse guidance: use this helper before constructing loaders for any runtime path that supports `data.backend`.
+- Duplication risk notes: do not repeat Kaldi path and preset incompatibility checks in entrypoints.
 
 ## `sleep2vec.common.persist_run_config_and_args`
 
@@ -178,6 +190,28 @@
 - Key callers/callees: resolved through `build_encoder_factory`.
 - Reuse guidance: add new backbones here through registry decoration.
 - Duplication risk notes: this is the canonical place to map YAML names to concrete encoder families.
+
+## `sleep2expert.config.MoeConfig` and `_validate_moe_config`
+
+- File: `sleep2expert/config.py`
+- Signature: `_validate_moe_config(moe_cfg: MoeConfig, backbone_cfg: BackboneConfig, channel_names: Sequence[str] | None = None) -> None`
+- Purpose and contract: define and validate the sleep2expert MoE backbone schema, including enabled layers, expert count, `top_k`, router type, regularization coefficients, modality group masks, expert groups, modality-to-group mapping, and route-consistency layers.
+- Important inputs/outputs: typed MoE/backbone configs and optional channel names in; raises on invalid schema, otherwise returns `None`.
+- Side effects: none.
+- Key callers/callees: caller is `_build_backbone_config`; callees include `_validate_moe_int_list` and `_validate_moe_nonnegative_number`.
+- Reuse guidance: add MoE backbone config semantics here before touching routers or trainers.
+- Duplication risk notes: `model.backbone.config_overrides.moe` is intentionally rejected; MoE belongs under `model.backbone.moe`.
+
+## `sleep2expert.config._build_finetune_moe_tuning_config`
+
+- File: `sleep2expert/config.py`
+- Signature: `_build_finetune_moe_tuning_config(raw: Any) -> FinetuneMoeTuningConfig | None`
+- Purpose and contract: parse finetune-time MoE tuning policy, including `head_only`, conservative full-router modes, `top_moe_layer_expert_only`, custom freeze flags, LR scales, and downstream MoE regularization.
+- Important inputs/outputs: raw YAML block in; typed `FinetuneMoeTuningConfig` or `None` out.
+- Side effects: none, except `_validate_finetune_moe_tuning_config` may fill a default top MoE layer when `top_moe_layer_expert_only` omits `train_moe_layer_indices`.
+- Key callers/callees: caller is `load_finetune_config`; callees include `_build_finetune_lr_scales_config`, `_build_finetune_moe_regularization_config`, and `_validate_finetune_moe_tuning_config`.
+- Reuse guidance: use this path for sleep2expert MoE finetune recipes instead of adding CLI-only tuning switches.
+- Duplication risk notes: downstream load-balance, modality-balance, route-consistency, and entropy regularization are currently rejected for finetune; keep that unsupported subset centralized here.
 
 ## `sleep2vec.modules.tokenizers.build_tokenizer_from_channel` and `build_tokenizer_mapping`
 

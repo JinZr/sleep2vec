@@ -134,6 +134,17 @@
 - Reuse guidance: use as the standard split-preparation CLI.
 - Duplication risk notes: this is the source of truth for split assignment before preset creation.
 
+## `preprocess.convert_npz_to_kaldi.convert`
+
+- File: `preprocess/convert_npz_to_kaldi.py`; package-local mirrors: `sleep2vec2/preprocess/convert_npz_to_kaldi.py`, `sleep2expert/preprocess/convert_npz_to_kaldi.py`
+- Signature: `convert(args: argparse.Namespace) -> Path`
+- Purpose and contract: convert CSV-indexed NPZ token windows into split-specific Kaldi ark/scp files plus `manifest.json` format v2. Before opening writers, it preflights index-derived sample keys after split filtering, per-split overlap stride selection, and mask-based availability filtering, rejecting duplicate keys before partial ark/scp output is created. When overlapping windows are requested, `val`/`test` rows are retained but use non-overlapping stride unless `--include-overlap-eval-splits` is passed. The converter defaults to `--compress-ark`, compressing non-built-in signal channels in the `train` split with Kaldi `CompressedMatrixWriter` and `CompressionMethod.kTwoByteAuto`, while built-in `stage5` and `ahi` plus non-train splits stay uncompressed `FloatMatrix` entries. `--no-compress-ark` forces all channel ark files to `FloatMatrix`.
+- Important inputs/outputs: index CSV(s), config YAML, output directory, optional split filter, selected channels, windowing settings, missing-channel policy, shard count, worker count, path-prefix maps, and compression switch in; Kaldi data root with split manifests, channel scps, ark files, and manifest channel `ark_storage` metadata out.
+- Side effects: reads NPZ files and writes sorted split-specific Kaldi ark/scp files or shard files plus aggregate scps and streamed split manifests; imports optional `kaldi_native_io` only after index preflight passes.
+- Key callers/callees: called from `__main__`; callees include `_resolve_channels`, `_validate_unique_sample_keys`, `_convert_record`, `kaldi_native_io.FloatMatrixWriter`, and `kaldi_native_io.CompressedMatrixWriter`.
+- Reuse guidance: use this CLI to build Kaldi roots for pretrain, finetune, and inference instead of creating ad hoc ark/scp writers. Standalone variants should keep their package-local mirrors behaviorally aligned.
+- Duplication risk notes: keep root, `sleep2vec2`, and `sleep2expert` converter storage semantics in sync when changing writer behavior.
+
 ## `preprocess.mask_missing_stats.main`
 
 - File: `preprocess/mask_missing_stats.py`
@@ -180,3 +191,14 @@
 - Key callers/callees: caller chain is `convert_zzp_to_edf` -> `decode_sleep_dat` / `infer_channel_mapping` / `build_signals`.
 - Reuse guidance: keep these heuristics inside the WatchPAT conversion pipeline.
 - Duplication risk notes: signal layout and physiological channel mapping are specialized and partially heuristic; avoid cloning them outside this module.
+
+## `utils.cut_ukb_sleep_with_asleep.main`
+
+- File: `utils/cut_ukb_sleep_with_asleep.py`
+- Signature: `main()`
+- Purpose and contract: standalone CLI for cutting nightly UKB `.cwa` accelerometer segments with the external pip-installed `asleep` package. It recursively finds `.cwa` files, mirrors the input tree under the output directory, runs asleep parsing and sleep-window detection, keeps only the longest sleep block per UK local noon-to-noon interval, and writes per-night compressed NPZ files plus CSV manifests.
+- Important inputs/outputs: input `.cwa` file or directory and output directory in; per-night `.npz` files with local `time` and raw `device_time`, per-file `night_sleep_blocks.csv`, asleep cache files, and root `manifest.csv` out. `--time-shift auto` keeps asleep on device time and applies dynamic `Europe/London` offsets per timestamp; explicit numeric shifts keep the fixed-shift legacy path.
+- Side effects: creates output directories, may download asleep model weights through asleep when requested, and may remove per-file asleep caches when `--remove-cache` is passed.
+- Key callers/callees: called from `__main__`; callees include `asleep.get_sleep.get_parsed_data`, `asleep.get_sleep.transform_data2model_input`, and `asleep.get_sleep.get_sleep_windows`.
+- Reuse guidance: use this utility for UKB CWA night extraction instead of adding sleep2vec-dependent cutting scripts.
+- Duplication risk notes: this is intentionally outside the sleep2vec preset and Kaldi conversion contracts; downstream conversion should consume its NPZ manifest rather than mixing asleep logic into `preprocess/save_dataset_presets.py`.

@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import pickle
 
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -32,6 +33,7 @@ from wrist2vec.preprocess.save_dataset_presets import (
     _filter_index_df_for_required_channels,
     _load_model_channel_source_names,
 )
+from wrist2vec.utils import _build_finetune_loader
 
 
 class _FakeNpz(dict):
@@ -42,10 +44,56 @@ class _FakeNpz(dict):
         return False
 
 
+class _DummyDatasetWithSamples:
+    samples = []
+
+    def __init__(self, **kwargs):
+        self.data = type(self).samples
+
+    def dataloader(self, device="cpu"):
+        return {"device": device}
+
+
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "config.yaml") -> Path:
     path = tmp_path / name
     path.write_text(yaml.safe_dump(payload))
     return path
+
+
+def _wrist_metadata_args(label_name: str, *, is_classification: bool) -> argparse.Namespace:
+    return argparse.Namespace(
+        label_name=label_name,
+        data_channel_names=["ppg_green"],
+        channel_input_dims={"ppg_green": 4},
+        channel_source_names={},
+        finetune_preset_path=Path("preset.pkl"),
+        finetune_data_index=None,
+        max_tokens=2,
+        batch_size=1,
+        num_workers=0,
+        device="cpu",
+        is_classification=is_classification,
+        output_dim=2 if is_classification else 1,
+    )
+
+
+def _wrist_seq_args(label_name: str, *, label_source_name: str, output_dim: int) -> argparse.Namespace:
+    return argparse.Namespace(
+        label_name=label_name,
+        label_source_name=label_source_name,
+        auxiliary_label_source_names=["stage5"] if label_name == "ahi" else [],
+        data_channel_names=["ppg_green"],
+        channel_input_dims={"ppg_green": 4},
+        channel_source_names={},
+        finetune_preset_path=Path("preset.pkl"),
+        finetune_data_index=None,
+        max_tokens=2,
+        batch_size=1,
+        num_workers=0,
+        device="cpu",
+        is_classification=True,
+        output_dim=output_dim,
+    )
 
 
 def _pretrain_payload_with_source_names() -> dict:
@@ -123,6 +171,175 @@ def test_wrist2vec_preset_source_names_reject_non_list_values():
 
     with pytest.raises(ValueError, match="source_names must be a list of non-empty strings"):
         _load_model_channel_source_names(payload, ["ppg_green", "acc_vm"])
+
+
+def test_wrist2vec_psg_dataset_allows_stage5_index_without_age_or_sex(tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, stage5=np.array([0.0, 1.0], dtype=np.float32))
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "test",
+                "duration": 60,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    dataset = PSGPretrainDataset(
+        channel_names=["stage5"],
+        channel_input_dims={},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["test"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+    assert "age" not in dataset.data[0].metadata
+    assert "sex" not in dataset.data[0].metadata
+    assert torch.equal(batch["tokens"]["stage5"], torch.tensor([[[0.0], [1.0]]]))
+
+
+def test_wrist2vec_psg_dataset_allows_ahi_index_without_age_or_sex(tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(
+        npz_path,
+        ah_event=np.arange(60, dtype=np.float32),
+        ahi=np.asarray(9.5, dtype=np.float32),
+        tst=np.asarray(3.5, dtype=np.float32),
+        stage5=np.array([1.0, 2.0], dtype=np.float32),
+    )
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "test",
+                "duration": 60,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    dataset = PSGPretrainDataset(
+        channel_names=["ahi", "stage5"],
+        channel_input_dims={},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["test"],
+        max_tokens=2,
+        mask_rate=0.0,
+        meta_data_names=["ahi", "tst"],
+        meta_data_regression_names=["ahi", "tst"],
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader(device="cpu")))
+    assert "age" not in dataset.data[0].metadata
+    assert "sex" not in dataset.data[0].metadata
+    assert batch["metadata"]["ahi"].tolist() == [9.5]
+    assert batch["metadata"]["tst"].tolist() == [3.5]
+
+
+@pytest.mark.parametrize("metadata_name", ["age", "sex"])
+def test_wrist2vec_psg_dataset_requires_explicit_requested_metadata_columns(
+    tmp_path: Path,
+    metadata_name: str,
+):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, stage5=np.array([0.0, 1.0], dtype=np.float32))
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "test",
+                "duration": 60,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    with pytest.raises(ValueError, match=f"Required metadata column '{metadata_name}' is missing"):
+        PSGPretrainDataset(
+            channel_names=["stage5"],
+            channel_input_dims={},
+            save_preset_path=None,
+            load_preset_path=None,
+            index=str(index_path),
+            split=["test"],
+            max_tokens=2,
+            mask_rate=0.0,
+            meta_data_names=[metadata_name],
+            randomly_select_channels=False,
+            batch_size=1,
+            shuffle=False,
+            num_workers=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("label_name", "is_classification", "metadata"),
+    [
+        ("age", False, {}),
+        ("age", False, {"age": float("nan")}),
+        ("sex", True, {}),
+        ("sex", True, {"sex": float("nan")}),
+    ],
+)
+def test_wrist2vec_build_finetune_loader_rejects_missing_builtin_metadata_labels(
+    monkeypatch,
+    label_name: str,
+    is_classification: bool,
+    metadata: dict,
+):
+    _DummyDatasetWithSamples.samples = [argparse.Namespace(metadata=metadata)]
+    monkeypatch.setattr("wrist2vec.utils.PSGPretrainDataset", _DummyDatasetWithSamples)
+    args = _wrist_metadata_args(label_name, is_classification=is_classification)
+
+    with pytest.raises(ValueError, match=f"invalid or missing '{label_name}' labels"):
+        _build_finetune_loader(
+            args,
+            split=["test"],
+            sources=[],
+            shuffle=False,
+            is_train_set=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        _wrist_seq_args("stage5", label_source_name="stage5", output_dim=5),
+        _wrist_seq_args("ahi", label_source_name="ahi", output_dim=30),
+    ],
+)
+def test_wrist2vec_build_finetune_loader_allows_sequence_tasks_without_age_or_sex(monkeypatch, args):
+    _DummyDatasetWithSamples.samples = [argparse.Namespace(metadata={})]
+    monkeypatch.setattr("wrist2vec.utils.PSGPretrainDataset", _DummyDatasetWithSamples)
+
+    loader = _build_finetune_loader(
+        args,
+        split=["test"],
+        sources=[],
+        shuffle=False,
+        is_train_set=False,
+    )
+
+    assert loader == {"device": "cpu"}
 
 
 def test_wrist2vec_preset_defaults_to_strict_mask_prefilter_for_finetune(tmp_path: Path, monkeypatch, capsys):

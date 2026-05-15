@@ -5,6 +5,7 @@ import pandas as pd
 
 from sleep2vec.distributed import get_rank_world_size, is_rank_zero_process, is_torch_distributed_ready
 from sleep2vec.results import save_result_csv
+from wrist2vec.results import save_result_csv as save_wrist_result_csv
 
 
 def _finetune_args(*, version: str) -> argparse.Namespace:
@@ -103,6 +104,37 @@ def test_save_result_csv_builds_infer_experiment_version_when_version_is_missing
 
     assert df.loc[0, "result_source"] == "infer"
     assert df.loc[0, "experiment_version"] == "ppg_ahi_finetune_large-ahi-test-best"
+
+
+def test_save_result_csv_records_effective_preset_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "results.csv"
+    args = _infer_args()
+    args.finetune_preset_path = Path("config/preset.pkl")
+    args.inference_preset_path = Path("index_parallel/presets/ahi/cuhk_test_preset_1535.pickle")
+
+    save_result_csv({"test_loss": 0.1}, str(csv_path), args)
+
+    df = pd.read_csv(csv_path)
+
+    assert df.loc[0, "preset_path"] == "index_parallel/presets/ahi/cuhk_test_preset_1535.pickle"
+
+
+def test_wrist2vec_save_result_csv_records_effective_preset_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "wrist_results.csv"
+    args = _infer_args()
+    args.config = Path("configs/write2vec/wrist2vec_ppg_ahi_finetune.yaml")
+    args.finetune_preset_path = Path("config/wrist_preset.pkl")
+    args.inference_preset_path = Path("index_parallel/presets/ahi/wrist_test_preset_1535.pickle")
+
+    save_wrist_result_csv({"test_loss": 0.1}, str(csv_path), args)
+
+    df = pd.read_csv(csv_path)
+
+    assert df.loc[0, "preset_path"] == "index_parallel/presets/ahi/wrist_test_preset_1535.pickle"
 
 
 def test_is_rank_zero_process_defaults_true_without_rank_env(monkeypatch):

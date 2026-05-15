@@ -22,7 +22,7 @@ Primary code path:
 
 1. Load and bind finetune YAML.
    - Parse typed config bundle with `load_finetune_config`.
-   - Copy channels, data paths, task semantics, LoRA flags, and eval-visualization config into `args`.
+   - Copy channels, data paths, data-backend settings, task semantics, LoRA flags, and eval-visualization config into `args`.
    - Reject mismatched `data.data_channel_names`.
 2. Resolve version name.
    - Prefer `--version-name`.
@@ -31,6 +31,8 @@ Primary code path:
    - `log-finetune/<version>/config.yaml`
    - `log-finetune/<version>/cli_args.yaml`
 4. Build train/val/test loaders.
+   - `data_backend=npz`: use `finetune_data_index` or `finetune_preset_path`.
+   - `data_backend=kaldi`: use `kaldi_data_root` and `kaldi_manifest`; legacy preset pickle paths are rejected.
    - Always uses `allow_missing_channels=False`.
    - Built-in sequence tasks append runtime label channels to `dataset_channel_names`.
    - `stage3` and `stage4` still pull raw labels from `stage5`.
@@ -61,11 +63,14 @@ Built-in labels:
 - `sex`: classification, `output_dim=2`, non-sequence
 - `age`: regression, `output_dim=1`, non-sequence
 
+Stage/AHI-only presets may omit `age` and `sex`, but built-in `age` and `sex` runs reject loaded presets/indexes that lack valid labels after split/source filtering.
+
 Custom labels require `finetune.task` in YAML.
 
 ## Important Runtime Decisions
 
 - Task semantics are enforced before loaders are built.
+- Dataset backend semantics are enforced before loaders are built.
 - CLS vs token downstream behavior is defined by `model.cls`, not by folder naming in `configs/`.
 - Layer mix is applied inside `Sleep2vecDownstreamModel`, not in the trainer.
 - AHI validation fits and stores an `ahi_eval_threshold` inside the checkpoint; test and inference require that threshold.
@@ -83,4 +88,4 @@ Custom labels require `finetune.task` in YAML.
 - Change task semantics: `sleep2vec/common.py`, `sleep2vec/config.py`
 - Change head/layer-mix/LoRA behavior: `sleep2vec/downstream_model.py`, `sleep2vec/downstreams/`
 - Change per-stage loss/metrics aggregation or AHI threshold behavior: `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`
-- Change finetune data loader or built-in label-channel wiring: `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`
+- Change finetune data loader, data-backend routing, or built-in label-channel wiring: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`, `data/kaldi_psg_dataset.py`
