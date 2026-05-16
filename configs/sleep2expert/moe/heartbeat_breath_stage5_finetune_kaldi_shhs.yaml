@@ -81,15 +81,15 @@ data:
   test_dataset_names: []
   n_few_shot: 0
 finetune:
-  freeze_tokenizer: true
+  freeze_tokenizer: false
   moe_tuning:
-    mode: conservative_full_router_frozen
+    mode: conservative_full_router_trainable
     lr_scales:
       head: 1.0
-      backbone: 0.1
-      experts: 0.1
-      routers: 0.0
-      tokenizers: 0.0
+      backbone: 1.0
+      experts: 1.0
+      routers: 0.1
+      tokenizers: 1.0
       projection: 0.0
     moe_regularization:
       enabled: false
