@@ -204,7 +204,7 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `Sleep2vecFinetuning._compute_loss(logits, batch)`
-- Purpose and contract: compute classification, regression, or multilabel loss, ignoring invalid labels and returning `None` when the batch contains no valid targets.
+- Purpose and contract: compute classification, regression, or multilabel loss, ignoring invalid labels and returning `None` when the batch contains no valid targets; configured `class_weights` affect CrossEntropyLoss and configured `pos_weight` affects BCEWithLogitsLoss for multilabel/AHI.
 - Important inputs/outputs: logits and batch in; returns `(loss, valid_count)` or `None`.
 - Side effects: none.
 - Key callers/callees: caller is `_shared_step`.

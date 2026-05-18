@@ -221,6 +221,10 @@ def _build_finetune_loader(
         randomly_select_channels=False,
         allow_missing_channels=False,
         min_channels=len(dataset_channel_names),
+        weighted_random_sampler=getattr(args, "weighted_random_sampler", False) and is_train_set,
+        weighted_random_sampler_target=(
+            args.label_name if getattr(args, "weighted_random_sampler", False) and is_train_set else None
+        ),
         is_train_set=is_train_set,
         batch_size=args.batch_size,
         shuffle=shuffle,

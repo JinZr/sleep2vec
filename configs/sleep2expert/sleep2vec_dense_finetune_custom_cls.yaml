@@ -79,6 +79,11 @@ data:
   n_few_shot: 1280
 finetune:
   freeze_tokenizer: true
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
   task:
     type: classification
     output_dim: 2

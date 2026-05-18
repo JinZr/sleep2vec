@@ -114,6 +114,11 @@ data:
   n_few_shot: 1280
 finetune:
   freeze_tokenizer: true
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
   moe_tuning:
     mode: conservative_full_router_frozen
     lr_scales:

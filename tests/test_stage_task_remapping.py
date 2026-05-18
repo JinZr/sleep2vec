@@ -127,6 +127,42 @@ def test_build_finetune_loader_rejects_missing_builtin_metadata_labels(
         )
 
 
+def test_build_finetune_loader_passes_weighted_random_sampler_for_train_metadata(monkeypatch):
+    monkeypatch.setattr("sleep2vec.utils.PSGPretrainDataset", _DummyDataset)
+    args = _metadata_args("src_isDep", is_classification=True)
+    args.weighted_random_sampler = True
+
+    loader = _build_finetune_loader(
+        args,
+        split=["train"],
+        sources=["demo"],
+        shuffle=True,
+        is_train_set=True,
+    )
+
+    assert loader == {"device": "cpu"}
+    assert _DummyDataset.last_init_kwargs["meta_data_names"] == ["src_isDep"]
+    assert _DummyDataset.last_init_kwargs["weighted_random_sampler"] is True
+    assert _DummyDataset.last_init_kwargs["weighted_random_sampler_target"] == "src_isDep"
+
+
+def test_build_finetune_loader_keeps_weighted_random_sampler_train_only(monkeypatch):
+    monkeypatch.setattr("sleep2vec.utils.PSGPretrainDataset", _DummyDataset)
+    args = _metadata_args("src_isDep", is_classification=True)
+    args.weighted_random_sampler = True
+
+    _build_finetune_loader(
+        args,
+        split=["val"],
+        sources=["demo"],
+        shuffle=False,
+        is_train_set=False,
+    )
+
+    assert _DummyDataset.last_init_kwargs["weighted_random_sampler"] is False
+    assert _DummyDataset.last_init_kwargs["weighted_random_sampler_target"] is None
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -296,6 +332,7 @@ def test_extract_ahi_event_records_keeps_stage5_aligned_for_partially_masked_tok
 
 def test_compute_loss_ignores_ahi_padding():
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    torch.nn.Module.__init__(module)
     module.args = argparse.Namespace(
         is_seq=True,
         is_classification=True,
@@ -316,6 +353,65 @@ def test_compute_loss_ignores_ahi_padding():
 
     assert valid_count == 5
     assert torch.isclose(loss, torch.tensor(math.log(2.0), dtype=torch.float32))
+
+
+def test_compute_loss_applies_class_weights_for_binary_classification():
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    torch.nn.Module.__init__(module)
+    module.args = argparse.Namespace(
+        is_seq=False,
+        is_classification=True,
+        is_multilabel=False,
+        label_name="src_isDep",
+        device="cpu",
+    )
+    class_weights = torch.tensor([1.0, 3.0], dtype=torch.float32)
+    module._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1, weight=class_weights)
+    logits = torch.tensor([[3.0, 0.0], [3.0, 0.0], [0.0, 0.0]], dtype=torch.float32)
+    targets = torch.tensor([0, 1, -1], dtype=torch.long)
+    batch = {"metadata": {"src_isDep": targets}}
+
+    loss, valid_count = module._compute_loss(logits, batch)
+    expected = torch.nn.functional.cross_entropy(logits[:2], targets[:2], weight=class_weights)
+    unweighted = torch.nn.functional.cross_entropy(logits[:2], targets[:2])
+
+    assert valid_count == 2
+    assert torch.isclose(loss, expected)
+    assert not torch.isclose(loss, unweighted)
+
+
+def test_compute_loss_applies_ahi_pos_weight_and_ignores_padding():
+    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    torch.nn.Module.__init__(module)
+    module.args = argparse.Namespace(
+        is_seq=True,
+        is_classification=True,
+        label_name="ahi",
+        label_source_name="ahi",
+        is_multilabel=True,
+        device="cpu",
+    )
+    pos_weight = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    module._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight)
+    logits = torch.zeros((1, 2, 3), dtype=torch.float32)
+    targets = torch.tensor([[[0.0, 1.0, 0.0], [1.0, 0.0, -1.0]]], dtype=torch.float32)
+    batch = {"tokens": {"ahi": targets}}
+
+    loss, valid_count = module._compute_loss(logits, batch)
+    valid_mask = targets != -1.0
+    expected = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits,
+        targets,
+        reduction="none",
+        pos_weight=pos_weight,
+    )[valid_mask].mean()
+    unweighted = torch.nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")[
+        valid_mask
+    ].mean()
+
+    assert valid_count == 5
+    assert torch.isclose(loss, expected)
+    assert not torch.isclose(loss, unweighted)
 
 
 def test_compute_downstream_metrics_reports_stage_specific_scores_for_stage3_and_stage4():

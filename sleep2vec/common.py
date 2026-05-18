@@ -9,7 +9,7 @@ import typing as t
 
 import yaml
 
-from sleep2vec.config import DATA_BACKEND_CHOICES, ModelConfig, TaskConfig, load_finetune_config
+from sleep2vec.config import DATA_BACKEND_CHOICES, FinetuneConfig, ModelConfig, TaskConfig, load_finetune_config
 
 _BUILTIN_TASK_SPECS = {
     "stage3": {
@@ -222,6 +222,27 @@ def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict
                 f"finetune.task.monitor is '{task_cfg.monitor}' and --label-name is '{label_name}'."
             )
         return
+    if task_cfg.type == "classification":
+        allowed_classification_monitors = {
+            "val_accuracy": "max",
+            "val_f1_macro": "max",
+            "val_f1_weighted": "max",
+            "val_cohen_kappa": "max",
+        }
+        if task_cfg.output_dim == 2:
+            allowed_classification_monitors["val_roc_auc"] = "max"
+        expected_monitor_mod = allowed_classification_monitors.get(task_cfg.monitor)
+        if expected_monitor_mod is None:
+            raise ValueError(
+                "finetune.task.monitor must be one of "
+                f"{sorted(allowed_classification_monitors)} when --label-name is '{label_name}'."
+            )
+        if task_cfg.monitor_mod != expected_monitor_mod:
+            raise ValueError(
+                f"finetune.task.monitor_mod must be '{expected_monitor_mod}' when "
+                f"finetune.task.monitor is '{task_cfg.monitor}' and --label-name is '{label_name}'."
+            )
+        return
     if task_cfg.monitor != spec["monitor"]:
         raise ValueError(f"finetune.task.monitor must be '{spec['monitor']}' when --label-name is '{label_name}'.")
     if task_cfg.monitor_mod != spec["monitor_mod"]:
@@ -291,6 +312,45 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
     )
 
 
+def _validate_and_apply_imbalance_config(args: argparse.Namespace, finetune_cfg: FinetuneConfig) -> None:
+    loss_cfg = finetune_cfg.loss
+    sampler_cfg = finetune_cfg.sampler
+
+    class_weights = loss_cfg.class_weights
+    if class_weights is not None:
+        if not getattr(args, "is_classification", False) or getattr(args, "is_multilabel", False):
+            raise ValueError("finetune.loss.class_weights is only supported for single-label classification tasks.")
+        if len(class_weights) != int(args.output_dim):
+            raise ValueError(
+                "finetune.loss.class_weights length must match finetune.task.output_dim "
+                f"({args.output_dim}); got {len(class_weights)}."
+            )
+
+    pos_weight = loss_cfg.pos_weight
+    if pos_weight is not None:
+        if not getattr(args, "is_classification", False) or not getattr(args, "is_multilabel", False):
+            raise ValueError("finetune.loss.pos_weight is only supported for multilabel classification tasks.")
+        if isinstance(pos_weight, list):
+            if len(pos_weight) != int(args.output_dim):
+                raise ValueError(
+                    "finetune.loss.pos_weight length must match finetune.task.output_dim "
+                    f"({args.output_dim}); got {len(pos_weight)}."
+                )
+        else:
+            pos_weight = [float(pos_weight)] * int(args.output_dim)
+
+    if sampler_cfg.weighted_random and (
+        not getattr(args, "is_classification", False) or getattr(args, "is_seq", False) or int(args.output_dim) != 2
+    ):
+        raise ValueError(
+            "finetune.sampler.weighted_random is only supported for binary non-sequence classification tasks."
+        )
+
+    args.class_weights = class_weights
+    args.pos_weight = pos_weight
+    args.weighted_random_sampler = bool(sampler_cfg.weighted_random)
+
+
 def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     """
     Load finetune YAML and populate argparse Namespace in-place.
@@ -329,6 +389,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
         )
 
     apply_task_flags(args, config_bundle.finetune.task)
+    _validate_and_apply_imbalance_config(args, finetune_cfg)
     return config_bundle, model_cfg
 
 
