@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import importlib
 from itertools import combinations
 from pathlib import Path
 
@@ -85,6 +86,13 @@ def _finetune_payload() -> dict:
         },
         "finetune": {
             "freeze_tokenizer": True,
+            "loss": {
+                "class_weights": None,
+                "pos_weight": None,
+            },
+            "sampler": {
+                "weighted_random": False,
+            },
             "lora": {
                 "freeze_backbone_and_insert_lora": False,
                 "insert_lora": True,
@@ -260,6 +268,62 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.data.kaldi_manifest is None
     assert bundle.finetune.task is not None
     assert bundle.finetune.task.output_dim == 2
+    assert bundle.finetune.loss.class_weights is None
+    assert bundle.finetune.loss.pos_weight is None
+    assert bundle.finetune.sampler.weighted_random is False
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_finetune_config_parses_imbalance_blocks_across_namespaces(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
+    payload = _finetune_payload()
+    if module_name != "sleep2vec.config":
+        payload["finetune"]["lora"] = {
+            "freeze_backbone_and_insert_lora": False,
+            "insert_lora": False,
+            "separate_adapters": False,
+        }
+    payload["finetune"]["loss"] = {"class_weights": [1, 2.5], "pos_weight": 3}
+    payload["finetune"]["sampler"] = {"weighted_random": True}
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.loss.class_weights == [1.0, 2.5]
+    assert bundle.finetune.loss.pos_weight == 3.0
+    assert bundle.finetune.sampler.weighted_random is True
+
+
+@pytest.mark.parametrize(
+    ("loss_block", "match"),
+    [
+        ({"class_weights": [1.0, 0.0], "pos_weight": None}, "class_weights must contain only positive numbers"),
+        ({"class_weights": None, "pos_weight": [1.0, -1.0]}, "pos_weight must contain only positive numbers"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_imbalance_loss_values(tmp_path: Path, loss_block: dict, match: str):
+    payload = _finetune_payload()
+    payload["finetune"]["loss"] = loss_block
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=match):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_non_boolean_weighted_random(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["sampler"] = {"weighted_random": "true"}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="weighted_random must be a boolean"):
+        load_finetune_config(config_path)
 
 
 def test_load_finetune_config_parses_kaldi_data_fields(tmp_path: Path):

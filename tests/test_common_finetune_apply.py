@@ -64,6 +64,13 @@ def _finetune_payload() -> dict:
         },
         "finetune": {
             "freeze_tokenizer": False,
+            "loss": {
+                "class_weights": None,
+                "pos_weight": None,
+            },
+            "sampler": {
+                "weighted_random": False,
+            },
             "lora": {
                 "freeze_backbone_and_insert_lora": True,
                 "insert_lora": True,
@@ -284,6 +291,34 @@ def test_apply_task_flags_rejects_ahi_pointwise_roc_auc_monitor():
         apply_task_flags(args, task_cfg)
 
 
+@pytest.mark.parametrize(
+    ("label_name", "output_dim", "is_seq", "monitor"),
+    [
+        ("sex", 2, False, "val_roc_auc"),
+        ("stage5", 5, True, "val_f1_macro"),
+        ("stage4", 4, True, "val_cohen_kappa"),
+    ],
+)
+def test_apply_task_flags_allows_builtin_classification_imbalance_monitors(
+    label_name: str,
+    output_dim: int,
+    is_seq: bool,
+    monitor: str,
+):
+    args = argparse.Namespace(label_name=label_name)
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=output_dim,
+        is_seq=is_seq,
+        monitor=monitor,
+        monitor_mod="max",
+    )
+
+    apply_task_flags(args, task_cfg)
+
+    assert args.monitor == monitor
+
+
 def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     config_path = _write_yaml(tmp_path, _finetune_payload())
     args = argparse.Namespace(config=config_path, label_name="custom_target")
@@ -311,7 +346,132 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert args.output_dim == 2
     assert args.is_classification is True
     assert args.is_seq is False
+    assert args.class_weights is None
+    assert args.pos_weight is None
+    assert args.weighted_random_sampler is False
     assert config_bundle.finetune.task is not None
+
+
+def test_apply_finetune_config_applies_binary_imbalance_knobs(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["loss"] = {"class_weights": [1.0, 2.436], "pos_weight": None}
+    payload["finetune"]["sampler"] = {"weighted_random": True}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="src_isDep")
+
+    apply_finetune_config(args)
+
+    assert args.class_weights == [1.0, 2.436]
+    assert args.pos_weight is None
+    assert args.weighted_random_sampler is True
+
+
+def test_apply_finetune_config_expands_scalar_ahi_pos_weight(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "classification",
+        "output_dim": 30,
+        "is_seq": True,
+        "monitor": "val_ahi_pearson",
+        "monitor_mod": "max",
+    }
+    payload["finetune"]["loss"] = {"class_weights": None, "pos_weight": 2.5}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="ahi")
+
+    apply_finetune_config(args)
+
+    assert args.class_weights is None
+    assert args.pos_weight == [2.5] * 30
+    assert args.weighted_random_sampler is False
+
+
+def test_apply_finetune_config_rejects_class_weights_for_regression(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "regression",
+        "output_dim": 1,
+        "is_seq": False,
+        "monitor": "val_mae",
+        "monitor_mod": "min",
+    }
+    payload["finetune"]["loss"] = {"class_weights": [1.0], "pos_weight": None}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    with pytest.raises(ValueError, match="class_weights is only supported"):
+        apply_finetune_config(args)
+
+
+def test_apply_finetune_config_rejects_class_weights_length_mismatch(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["loss"] = {"class_weights": [1.0], "pos_weight": None}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    with pytest.raises(ValueError, match="class_weights length must match"):
+        apply_finetune_config(args)
+
+
+def test_apply_finetune_config_rejects_pos_weight_for_single_label_classification(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["loss"] = {"class_weights": None, "pos_weight": 2.0}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    with pytest.raises(ValueError, match="pos_weight is only supported"):
+        apply_finetune_config(args)
+
+
+def test_apply_finetune_config_rejects_pos_weight_length_mismatch(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "classification",
+        "output_dim": 30,
+        "is_seq": True,
+        "monitor": "val_ahi_pearson",
+        "monitor_mod": "max",
+    }
+    payload["finetune"]["loss"] = {"class_weights": None, "pos_weight": [1.0, 2.0]}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="ahi")
+
+    with pytest.raises(ValueError, match="pos_weight length must match"):
+        apply_finetune_config(args)
+
+
+def test_apply_finetune_config_rejects_weighted_random_for_sequence_task(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "classification",
+        "output_dim": 5,
+        "is_seq": True,
+        "monitor": "val_accuracy",
+        "monitor_mod": "max",
+    }
+    payload["finetune"]["sampler"] = {"weighted_random": True}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="stage5")
+
+    with pytest.raises(ValueError, match="weighted_random is only supported"):
+        apply_finetune_config(args)
+
+
+def test_apply_finetune_config_rejects_weighted_random_for_regression(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "regression",
+        "output_dim": 1,
+        "is_seq": False,
+        "monitor": "val_mae",
+        "monitor_mod": "min",
+    }
+    payload["finetune"]["sampler"] = {"weighted_random": True}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    with pytest.raises(ValueError, match="weighted_random is only supported"):
+        apply_finetune_config(args)
 
 
 def test_apply_finetune_config_populates_kaldi_backend(tmp_path: Path):

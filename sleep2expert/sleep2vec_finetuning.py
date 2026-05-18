@@ -95,8 +95,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self.moe_finetune_status = self._build_moe_finetune_status()
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
-        self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
-        self._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
+        class_weights = getattr(args, "class_weights", None)
+        class_weight_tensor = None
+        if class_weights is not None:
+            class_weight_tensor = torch.tensor(class_weights, dtype=torch.float32, device=args.device)
+        pos_weight = getattr(args, "pos_weight", None)
+        pos_weight_tensor = None
+        if pos_weight is not None:
+            pos_weight_tensor = torch.tensor(pos_weight, dtype=torch.float32, device=args.device)
+        self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1, weight=class_weight_tensor)
+        self._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight_tensor)
         self._regression_loss = torch.nn.MSELoss()
         self._ahi_eval_threshold: float | None = None
         self._ahi_train_pointwise_counts = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}

@@ -69,7 +69,7 @@
 ## `DefaultDataset.__init__`
 
 - File: `data/default_dataset.py`
-- Signature: `DefaultDataset.__init__(save_preset_path, load_preset_path, data, split, extractors, tokenizers, mask_generators, dataloader_config, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, seed=42, filter_max_workers=None) -> None`
+- Signature: `DefaultDataset.__init__(save_preset_path, load_preset_path, data, split, extractors, tokenizers, mask_generators, dataloader_config, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, weighted_random_sampler=False, weighted_random_sampler_target=None, seed=42, filter_max_workers=None) -> None`
 - Purpose and contract: own the lifecycle for either loading a preset or validating raw `SampleIndex` entries, then applying metadata/split/source filtering and optional few-shot selection.
 - Important inputs/outputs: preset paths or raw `SampleIndex` records in; dataset state on `self`.
 - Side effects: loads or writes pickle presets, mutates `self.data`.
@@ -116,10 +116,10 @@
 
 - File: `data/default_dataset.py`
 - Signature: `DefaultDataset.dataloader(self, device: str = "cpu") -> DataLoader`
-- Purpose and contract: canonical runtime collate path. It decides channel choice, reads NPZ slices, tokenizes, builds masks, pads sequences, constructs `token_start`, metadata tensors, `w/h`, and selects the correct sampler.
+- Purpose and contract: canonical runtime collate path. It decides channel choice, reads NPZ slices, tokenizes, builds masks, pads sequences, constructs `token_start`, metadata tensors, `w/h`, and selects the correct sampler, including optional binary-label weighted random sampling for train-only downstream imbalance runs.
 - Important inputs/outputs: dataset state in; fully configured `DataLoader` out.
 - Side effects: nested `collate_fn` performs NPZ I/O on every batch, may select channels dynamically, and backfills built-in AHI metadata into sample-level metadata.
-- Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `load_npz`, `load_builtin_ahi_metadata`, `process_metadata`, `build_w_h_age_sex_center`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
+- Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `load_npz`, `load_builtin_ahi_metadata`, `process_metadata`, `build_w_h_age_sex_center`, `extract_binary_labels`, `make_weighted_sampler_from_labels`, `WeightedRandomDistributedSampler`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
 - Reuse guidance: this is the canonical place to change batch structure.
 - Duplication risk notes: avoid adding parallel collate implementations elsewhere in the repo.
 
@@ -161,13 +161,24 @@
 ## `data.samplers.handles_distributed_sharding`
 
 - File: `data/samplers.py`
-- Signature: `handles_distributed_sharding(batch_sampler: Any) -> bool`
-- Purpose and contract: report whether a batch sampler already shards batches across distributed ranks.
-- Important inputs/outputs: batch sampler in, boolean out.
+- Signature: `handles_distributed_sharding(sampler: Any) -> bool`
+- Purpose and contract: report whether a sampler or batch sampler already shards work across distributed ranks.
+- Important inputs/outputs: sampler or batch sampler in, boolean out.
 - Side effects: none.
 - Key callers/callees: callers are `sleep2vec.utils.get_pretrain_dataloader` and `sleep2vec.adapt.sleep2vec_adapt`.
 - Reuse guidance: use this helper when configuring Lightning `use_distributed_sampler`.
 - Duplication risk notes: sampler sharding detection should not be reimplemented in entrypoints.
+
+## `WeightedRandomDistributedSampler.__iter__`
+
+- File: `data/samplers.py`
+- Signature: `WeightedRandomDistributedSampler(weights: torch.Tensor, num_samples: int, *, seed: int = 0)`
+- Purpose and contract: draw weighted replacement samples for train-only imbalance handling while sharding the global draw stream by distributed rank.
+- Important inputs/outputs: per-index weights and global epoch sample count in; local rank indices out.
+- Side effects: advances its epoch counter unless `set_epoch` is driving it manually.
+- Key callers/callees: caller is `data.metadata.make_weighted_sampler_from_labels`, which is reached from `DefaultDataset.dataloader` when `finetune.sampler.weighted_random` is enabled.
+- Reuse guidance: use this sampler for metadata-label weighted finetune loaders instead of raw PyTorch `WeightedRandomSampler`, so Lightning keeps the train sampler under DDP.
+- Duplication risk notes: it intentionally subclasses `DistributedSampler` to avoid Lightning sampler replacement while still preserving val/test distributed sampler injection.
 
 ## `AvailableChannelsBucketBatchSampler.__iter__`
 
@@ -221,7 +232,7 @@
 - Signatures:
   - `_build_finetune_loader(args, *, split, sources, shuffle, is_train_set, few_shot=None)`
   - `get_finetune_dataloaders(args)`
-- Purpose and contract: build finetune train/val/test loaders with correct metadata label wiring, built-in sequence label-channel insertion, AHI auxiliary `stage5` injection, backend-specific dataset kwargs, and fail-fast validation that built-in `age`/`sex` runs have valid labels after split/source filtering.
+- Purpose and contract: build finetune train/val/test loaders with correct metadata label wiring, built-in sequence label-channel insertion, AHI auxiliary `stage5` injection, backend-specific dataset kwargs, train-only weighted random sampler kwargs, and fail-fast validation that built-in `age`/`sex` runs have valid labels after split/source filtering.
 - Important inputs/outputs: normalized finetune `args` in; one loader or three loaders out.
 - Side effects: seed initialization in `get_finetune_dataloaders`.
 - Key callers/callees: callers are `prepare_dataloader` and `_build_inference_loader`; callees are `_dataset_class_for_args`, `PSGPretrainDataset.dataloader`, and `KaldiPSGDataset.dataloader`.

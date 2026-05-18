@@ -4,6 +4,8 @@ import typing as t
 import numpy as np
 import torch
 
+from data.samplers import WeightedRandomDistributedSampler
+
 
 def _equal_matrix_from_ids(vals: t.Sequence[str]) -> torch.Tensor:
     """
@@ -182,7 +184,11 @@ def process_metadata(samples, disease_names, regression_names: t.Sequence[str] |
 def extract_binary_labels(dataset, target_name: str):
     labels = np.fromiter(
         (
-            (int(float(s.metadata[target_name])) if (hasattr(s, "metadata") and (target_name in s.metadata)) else -1)
+            (
+                _encode_binary_label(s.metadata[target_name])
+                if (hasattr(s, "metadata") and (target_name in s.metadata))
+                else -1
+            )
             for s in dataset.data
         ),
         dtype=np.int64,
@@ -190,7 +196,7 @@ def extract_binary_labels(dataset, target_name: str):
     return labels
 
 
-def make_weighted_sampler_from_labels(labels: np.ndarray, epoch_size: int | None = None):
+def make_weighted_sampler_from_labels(labels: np.ndarray, epoch_size: int | None = None, *, seed: int = 0):
     valid = labels != -1
     if not valid.any():
         return None
@@ -204,9 +210,9 @@ def make_weighted_sampler_from_labels(labels: np.ndarray, epoch_size: int | None
             w[labels == y] = class_weight[y]
 
     num_samples = int(valid.sum()) if epoch_size is None else int(epoch_size)
-    sampler = torch.utils.data.WeightedRandomSampler(
+    sampler = WeightedRandomDistributedSampler(
         weights=torch.as_tensor(w, dtype=torch.float32),
         num_samples=num_samples,
-        replacement=True,
+        seed=seed,
     )
     return sampler
