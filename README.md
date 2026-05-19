@@ -230,6 +230,19 @@ Notes:
 - Built-in `sex` classification is a metadata task with class order `["female", "male"]`, so targets are encoded as `0=female`, `1=male`; presets missing valid `sex` labels are rejected.
 - `--pretrained-backbone-path /path/to/pretrain_or_adapt.ckpt` can be used to bootstrap downstream training from a pretrain/adaptation checkpoint; loader prefers `ema_model.` and falls back to `model.`.
 
+Imbalance controls in finetune YAML default to `null` / `false` in the provided recipes:
+```yaml
+finetune:
+  loss:
+    class_weights: [1.0, 2.4]
+    pos_weight: null
+  sampler:
+    weighted_random: true
+```
+- `finetune.loss.class_weights` is for single-label classification only; the list length must match `finetune.task.output_dim`.
+- `finetune.loss.pos_weight` is for multilabel classification only; for built-in `ahi`, a scalar expands across the 30 BCE outputs.
+- `finetune.sampler.weighted_random` affects only the train loader for binary non-sequence classification labels, such as `sex` or a custom binary metadata target.
+
 ### Finetune — regression
 ```bash
 python -m sleep2vec.finetune \
