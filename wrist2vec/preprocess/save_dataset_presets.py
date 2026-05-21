@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# import debugpy
+
+# # 5679是debugpy服务器监听的端口号，确保这个端口在你的系统上是空闲的
+# debugpy.listen(('0.0.0.0', 5679))
+# print("⏳ Waiting for debugger to attach...")
+
+# # 让debugpy等待VSCode的调试器连接
+# debugpy.wait_for_client()
+# print("🚀 Debugger attached!")
+
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path

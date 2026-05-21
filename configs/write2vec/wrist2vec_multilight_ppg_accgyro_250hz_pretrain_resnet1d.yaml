@@ -16,7 +16,7 @@ model:
   channels:
     - name: ppg_green
       source_names: ['G0-PD0', 'G0-PD1', 'G1-PD0', 'G1-PD1']
-      input_dim: 200
+      input_dim: 500  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
       tokenizer:
         name: resnet1d
         out_dim: 384
@@ -34,7 +34,7 @@ model:
           dropout: 0.1
     - name: ppg_infrared
       source_names: ['IR0-PD0', 'IR0-PD1']
-      input_dim: 200
+      input_dim: 500  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
       tokenizer:
         name: resnet1d
         out_dim: 384
@@ -52,7 +52,7 @@ model:
           dropout: 0.1
     - name: gyro_vm
       source_names: ["gyro_x", "gyro_y", "gyro_z"]
-      input_dim: 200
+      input_dim: 500  # 2 s * 100 Hz per token; adjust if your gyroscope VM sampling rate differs
       tokenizer:
         name: sundial2
         out_dim: 384
@@ -62,49 +62,25 @@ model:
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
-  head:
-    name: regression
-    dropout: 0.1
-    hidden_dim: null
-    channel_agg:
-      name: mean
-      kwargs: {}
-    temporal_agg:
-      name: mean
-      kwargs: {}
+    - name: acc_vm
+      source_names: ["acc_x", "acc_y", "acc_z"]
+      input_dim: 500  # 2 s * 100 Hz per token; adjust if your accelerometer VM sampling rate differs
+      tokenizer:
+        name: sundial2
+        out_dim: 384
+        kwargs:
+          pre_norm: true
+          residual_scale: 0.5
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+loss:
+  name: info_nce
+  temperature: 0.2
 data:
-  max_tokens: 30
-  data_channel_names: [ppg_green, ppg_infrared, gyro_vm]
-  finetune_data_index: null
-  finetune_preset_path: null
-  train_dataset_names: []
-  test_dataset_names: []
-  n_few_shot: 0
-finetune:
-  freeze_tokenizer: true
-  layer_mix:
-    enabled: false
-    shared_across_modalities: false
-    layer_indices: null
-  lora:
-    freeze_backbone_and_insert_lora: false
-    insert_lora: true
-    separate_adapters: false
-  task:
-    type: regression
-    output_dim: 1
-    is_seq: false
-    monitor: val_mae
-    monitor_mod: min
-  eval_visualizations:
-    enabled: true
-    stages: [val, test]
-    confusion_matrix:
-      enabled: false
-    roc_curve:
-      enabled: false
-    regression_scatter:
-      enabled: true
+  mask_rate: 0.15
+  token_sec: 2
+  max_tokens: 30  # 60 s clip with 2 s non-overlapping tokens
 model_averaging:
   name: ema
   params:

@@ -249,3 +249,6 @@ wandb_logs/
 
 # VSCode settings folder
 .vscode/
+
+*.tar.gz
+results

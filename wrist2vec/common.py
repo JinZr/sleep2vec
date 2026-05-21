@@ -323,8 +323,13 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     apply_model_config_args(args, model_cfg)
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
     args.max_tokens = data_cfg.max_tokens
-    args.finetune_data_index = Path(data_cfg.finetune_data_index) if data_cfg.finetune_data_index else None
-    args.finetune_preset_path = Path(data_cfg.finetune_preset_path) if data_cfg.finetune_preset_path else None
+    _index_override = getattr(args, "finetune_data_index_override", None)
+    _index = _index_override or data_cfg.finetune_data_index
+    args.finetune_data_index = Path(_index) if _index else None
+
+    _preset_override = getattr(args, "finetune_preset_path_override", None)
+    _preset = _preset_override or data_cfg.finetune_preset_path
+    args.finetune_preset_path = Path(_preset) if _preset else None
     args.train_dataset_names = data_cfg.train_dataset_names or []
     args.test_dataset_names = data_cfg.test_dataset_names or []
     args.n_few_shot = data_cfg.n_few_shot

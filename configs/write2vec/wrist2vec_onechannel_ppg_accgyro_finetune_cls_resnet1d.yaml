@@ -15,7 +15,7 @@ model:
     downstream: tokens
   channels:
     - name: ppg_green
-      source_names: ['G0-PD0', 'G0-PD1', 'G1-PD0', 'G1-PD1']
+      source_names: ["GR"]
       input_dim: 200
       tokenizer:
         name: resnet1d
@@ -33,7 +33,7 @@ model:
           act: relu
           dropout: 0.1
     - name: ppg_infrared
-      source_names: ['IR0-PD0', 'IR0-PD1']
+      source_names: ["IR"]
       input_dim: 200
       tokenizer:
         name: resnet1d
@@ -51,7 +51,7 @@ model:
           act: relu
           dropout: 0.1
     - name: gyro_vm
-      source_names: ["gyro_x", "gyro_y", "gyro_z"]
+      source_names: ["gyro"]
       input_dim: 200
       tokenizer:
         name: sundial2
@@ -63,11 +63,11 @@ model:
           clamp_value: null
           modality_scale: 1.0
   head:
-    name: regression
+    name: classification
     dropout: 0.1
     hidden_dim: null
     channel_agg:
-      name: mean
+      name: gated_scalar
       kwargs: {}
     temporal_agg:
       name: mean
@@ -91,20 +91,21 @@ finetune:
     insert_lora: true
     separate_adapters: false
   task:
-    type: regression
-    output_dim: 1
+    type: classification
+    output_dim: 2
     is_seq: false
-    monitor: val_mae
-    monitor_mod: min
+    monitor: val_accuracy
+    monitor_mod: max
   eval_visualizations:
     enabled: true
     stages: [val, test]
     confusion_matrix:
-      enabled: false
-    roc_curve:
-      enabled: false
-    regression_scatter:
       enabled: true
+      show_raw_counts: false
+    roc_curve:
+      enabled: true
+    regression_scatter:
+      enabled: false
 model_averaging:
   name: ema
   params:

@@ -15,7 +15,8 @@ model:
     downstream: tokens
   channels:
     - name: ppg_green
-      input_dim: 512
+      source_names: ['G0-PD0', 'G0-PD1', 'G1-PD0', 'G1-PD1']
+      input_dim: 200
       tokenizer:
         name: resnet1d
         out_dim: 384
@@ -31,25 +32,26 @@ model:
           norm_groups: 8
           act: relu
           dropout: 0.1
-    - name: ppg_red
-      input_dim: 512
-      tokenizer:
-        name: resnet1d
-        out_dim: 384
-        kwargs:
-          block_counts: [2, 2, 2]
-          channel_schedule: [64, 128, 256]
-          stride_schedule: [2, 2, 2]
-          front_kernel_size: 7
-          front_stride: 2
-          front_pool: max
-          front_pool_stride: 2
-          norm: group
-          norm_groups: 8
-          act: relu
-          dropout: 0.1
+    # - name: ppg_red
+    #   input_dim: 200
+    #   tokenizer:
+    #     name: resnet1d
+    #     out_dim: 384
+    #     kwargs:
+    #       block_counts: [2, 2, 2]
+    #       channel_schedule: [64, 128, 256]
+    #       stride_schedule: [2, 2, 2]
+    #       front_kernel_size: 7
+    #       front_stride: 2
+    #       front_pool: max
+    #       front_pool_stride: 2
+    #       norm: group
+    #       norm_groups: 8
+    #       act: relu
+    #       dropout: 0.1
     - name: ppg_infrared
-      input_dim: 512
+      source_names: ['IR0-PD0', 'IR0-PD1']
+      input_dim: 200
       tokenizer:
         name: resnet1d
         out_dim: 384
@@ -66,6 +68,7 @@ model:
           act: relu
           dropout: 0.1
     - name: gyro_vm
+      source_names: ["gyro_x", "gyro_y", "gyro_z"]
       input_dim: 200
       tokenizer:
         name: sundial2
@@ -76,17 +79,18 @@ model:
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
-    - name: acc_vm
-      input_dim: 200
-      tokenizer:
-        name: sundial2
-        out_dim: 384
-        kwargs:
-          pre_norm: true
-          residual_scale: 0.5
-          ff_scale: 1.0
-          clamp_value: null
-          modality_scale: 1.0
+    # - name: acc_vm
+    #   source_names: ["acc_x", "acc_y", "acc_z"]
+    #   input_dim: 200
+    #   tokenizer:
+    #     name: sundial2
+    #     out_dim: 384
+    #     kwargs:
+    #       pre_norm: true
+    #       residual_scale: 0.5
+    #       ff_scale: 1.0
+    #       clamp_value: null
+    #       modality_scale: 1.0
   head:
     name: classification
     dropout: 0.1
@@ -99,7 +103,7 @@ model:
       kwargs: {}
 data:
   max_tokens: 30
-  data_channel_names: [ppg_green, ppg_red, ppg_infrared, gyro_vm, acc_vm]
+  data_channel_names: [ppg_green, ppg_infrared, gyro_vm]
   finetune_data_index: null
   finetune_preset_path: null
   train_dataset_names: []

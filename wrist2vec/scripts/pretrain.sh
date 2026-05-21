@@ -7,16 +7,16 @@ DEVICES=$(seq 0 $((GPUS_PER_NODE-1)) | tr '\n' ' ')
 echo "Devices: $DEVICES"
 
 WANDB_MODE=offline python -m wrist2vec.pretrain \
-    --config configs/write2vec/wrist2vec_multilight_ppg_accgyro_pretrain_resnet1d.yaml \
-    --pretrain-data-index /home/notebook/data/personal/S9063410/bp_data_one_channel/index_one_channel.csv \
-    --pretrain-preset-path /home/notebook/data/personal/S9063410/bp_data_one_channel/pretrain_data/index_one_channel_merge_preset_60.pickle \
-    --version-name onechannel-v1 \
-    --epochs 10 \
+    --config configs/write2vec/wrist2vec_onechannel_ppg_accgyro_pretrain_resnet1d.yaml \
+    --pretrain-data-index /home/notebook/data/personal/S9063410/bp_data_one_channel/index_mask_split.csv \
+    --pretrain-preset-path /home/notebook/data/personal/S9063410/bp_data_one_channel/pretrain_data/index_mask_split_merge_preset_30.pickle \
+    --version-name onechannel-cs \
+    --epochs 20 \
     --lr 5e-5 \
-    --batch-size 320 \
+    --batch-size 640 \
     --devices $DEVICES \
     --num-workers 32 \
-    --val-num-workers 4 \
+    --val-num-workers 8 \
     --allow-missing-channels \
     --min-channels 2 \
     2>&1 | tee -a "training_terminal_out.txt"

@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
-"""Augment a multilight index CSV with participant metadata and per-channel mask columns.
+"""Augment a multilight PWV index CSV with participant metadata and per-channel mask columns.
 
 Reads:
-  --index-csv   Base index CSV produced by ppg_formant_multilight.py
-                (columns: path, dataset, session_id, patient_id, duration)
-  --roster-csv  加入研究信息整合名单260422.csv
-                (columns include: ssoid, sex, weight, height, birthday_value)
+  --index-csv          Base index CSV produced by pwv_formant_multilight.py
+                       (columns: path, dataset, session_id, patient_id, duration)
+  --demographics-csv   pwv_label/demographics.csv
+                       (columns: ssoid, weight, height, sex, birthday_value, age)
 
 Writes:
-  --out-csv     Augmented CSV with age, sex, weight, height, bmi,
-                plus one {channel}_mask column per NPZ key (1=present, 0=absent).
+  --out-csv            Augmented CSV with age, sex, weight, height, bmi,
+                       plus one {channel}_mask column per NPZ key (1=present, 0=absent).
 
-Rows whose patient_id (ssoid) is absent from the roster are silently dropped.
+Age is derived from collection time minus birthday_value, not the roster age column.
+Collection time is parsed from session_id.split("-")[1] as YYYYMMDDhhmmss.
+
+Rows whose patient_id (ssoid) is absent from demographics are silently dropped.
 Rows already present in --out-csv (by path) are skipped on re-runs.
 
 Processing is parallelised with ProcessPoolExecutor; results are flushed to disk
 every --batch-size rows.
 
 NPZ channel keys recognised (and their mask columns):
-  G0-PD0, G0-PD1, G1-PD0, G1-PD1     -> G0-PD0_mask …
-  IR0-PD0, IR0-PD1                     -> IR0-PD0_mask …
-  gyro_x, gyro_y, gyro_z              -> gyro_x_mask …
-  acc_x,  acc_y,  acc_z               -> acc_x_mask …
+  ECG                                  -> ECG_mask
+  G0-PD0 … G0-PD3, IR0-PD0 … IR0-PD3  -> G0-PD0_mask …
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
-import math
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
@@ -37,14 +37,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-LOG = logging.getLogger("ppg_metadata")
+LOG = logging.getLogger("pwv_metadata")
 
-# All physical channel keys that may appear in a multilight NPZ (excluding "duration").
 _NPZ_CHANNEL_KEYS: tuple[str, ...] = (
-    "G0-PD0", "G0-PD1", "G1-PD0", "G1-PD1",
-    "IR0-PD0", "IR0-PD1",
-    "gyro_x", "gyro_y", "gyro_z",
-    "acc_x", "acc_y", "acc_z",
+    "ECG",
+    "G0-PD0",
+    "G0-PD1",
+    "G0-PD2",
+    "G0-PD3",
+    "IR0-PD0",
+    "IR0-PD1",
+    "IR0-PD2",
+    "IR0-PD3",
 )
 _MASK_COLUMNS: tuple[str, ...] = tuple(f"{k}_mask" for k in _NPZ_CHANNEL_KEYS)
 
@@ -52,10 +56,7 @@ _BASE_COLUMNS: tuple[str, ...] = ("path", "dataset", "session_id", "patient_id",
 _META_COLUMNS: tuple[str, ...] = ("age", "sex", "weight", "height", "bmi")
 _OUTPUT_COLUMNS: tuple[str, ...] = _BASE_COLUMNS + _META_COLUMNS + _MASK_COLUMNS
 
-
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
+_SECONDS_PER_YEAR: float = 365.2425 * 24 * 3600
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,19 +64,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--index-csv",
         type=Path,
-        default=Path("/home/notebook/data/personal/S9063410/pwv+bp_data_multilight/bp_index.csv"),
-        help="Base index CSV from ppg_formant_multilight.py",
+        default=Path("/home/notebook/data/personal/S9063410/pwv+bp_data_multilight/pwv_index.csv"),
+        help="Base index CSV from pwv_formant_multilight.py",
     )
     p.add_argument(
-        "--roster-csv",
+        "--demographics-csv",
         type=Path,
-        default=Path("/home/notebook/data/personal/S9063410/bp_data_one_channel/加入研究信息整合名单260422.csv"),
-        help="Participant roster with ssoid/sex/weight/height/birthday_value columns",
+        default=Path(
+            "/home/notebook/data/personal/S9063410/pwv+bp_data_multilight/pwv_label/demographics.csv"
+        ),
+        help="Participant demographics with ssoid/sex/weight/height/birthday_value columns",
     )
     p.add_argument(
         "--out-csv",
         type=Path,
-        default=Path("/home/notebook/data/personal/S9063410/pwv+bp_data_multilight/index_mask.csv"),
+        default=Path("/home/notebook/data/personal/S9063410/pwv+bp_data_multilight/pwv_index_mask.csv"),
         help="Output path for augmented index CSV",
     )
     p.add_argument(
@@ -99,57 +102,63 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# ---------------------------------------------------------------------------
-# Roster / metadata helpers
-# ---------------------------------------------------------------------------
+def _is_null(value: object) -> bool:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return True
+    if isinstance(value, str) and value.strip().upper() in {"", "NULL", "NAN", "NONE"}:
+        return True
+    return False
 
 
-def _load_roster(roster_csv: Path) -> dict[str, dict]:
+def _load_demographics(demographics_csv: Path) -> dict[str, dict]:
     """Return {ssoid_str -> {weight, height, bmi, sex, birthday}} with cleaned units."""
-    df = pd.read_csv(roster_csv, dtype={"ssoid": str})
+    df = pd.read_csv(demographics_csv, dtype={"ssoid": str})
     out: dict[str, dict] = {}
     for _, row in df.iterrows():
         ssoid = str(row["ssoid"]).strip()
 
-        # Weight: raw unit is mg; valid range 40 000–200 000 mg → 40–200 kg
         weight_raw = row.get("weight")
-        if pd.isna(weight_raw) or not isinstance(weight_raw, float):
-            weight = None
-        elif weight_raw < 40_000 or weight_raw > 200_000:
+        if _is_null(weight_raw):
             weight = None
         else:
-            weight = weight_raw / 1000.0
+            weight_raw = float(weight_raw)
+            if weight_raw < 40_000 or weight_raw > 200_000:
+                weight = None
+            else:
+                weight = weight_raw / 1000.0
 
-        # Height: raw unit is 0.1 mm (tenths of mm); valid range 1400–2100 → 140–210 cm
         height_raw = row.get("height")
-        if pd.isna(height_raw) or not isinstance(height_raw, float):
-            height = None
-        elif height_raw < 1400 or height_raw > 2100:
+        if _is_null(height_raw):
             height = None
         else:
-            height = height_raw / 10.0
+            height_raw = float(height_raw)
+            if height_raw < 1400 or height_raw > 2100:
+                height = None
+            else:
+                height = height_raw / 10.0
 
         bmi = (weight / (height / 100.0) ** 2) if (weight is not None and height is not None) else None
 
         sex_raw = row.get("sex")
-        if sex_raw == "M":
+        if _is_null(sex_raw):
+            sex = None
+        elif str(sex_raw).strip().upper() == "M":
             sex = "male"
-        elif sex_raw == "F":
+        elif str(sex_raw).strip().upper() == "F":
             sex = "female"
         else:
             sex = None
 
         bday_raw = row.get("birthday_value")
-        if pd.isna(bday_raw):
+        if _is_null(bday_raw):
             birthday = None
         else:
             try:
-                dt = datetime.strptime(str(bday_raw), "%Y-%m-%d")
+                dt = datetime.strptime(str(bday_raw).strip(), "%Y-%m-%d")
                 birthday = dt if 1940 <= dt.year <= 2010 else None
             except ValueError:
                 birthday = None
 
-        # Discard placeholder entries (weight==60 kg, height==170 cm, no birthday)
         if weight == 60.0 and height == 170.0 and birthday is None:
             weight = height = bmi = sex = None
 
@@ -164,28 +173,22 @@ def _load_roster(roster_csv: Path) -> dict[str, dict]:
 
 
 def _compute_age(session_id: str, birthday: datetime | None) -> float | None:
-    """Derive collection date from session_id stem and return age in years."""
+    """Derive collection datetime from session_id and return age in years."""
     if birthday is None:
         return None
     try:
-        # Session IDs carry the date as the 8-digit substring after the first "-".
-        date_str = session_id.split("-")[1][:8]
-        collect_date = datetime.strptime(date_str, "%Y%m%d")
-        return round((collect_date - birthday).days / 365.2425, 1)
+        collect_str = session_id.split("-")[1]
+        collect_dt = datetime.strptime(collect_str, "%Y%m%d%H%M%S")
+        bday_dt = birthday.replace(hour=0, minute=0, second=0, microsecond=0)
+        return round((collect_dt - bday_dt).total_seconds() / _SECONDS_PER_YEAR, 1)
     except (IndexError, ValueError):
         return None
 
 
-# ---------------------------------------------------------------------------
-# Per-row worker task
-# ---------------------------------------------------------------------------
-
-# Picklable task: (row_dict, roster_entry)
 _RowTask = tuple[dict, dict]
 
 
 def _process_row_task(task: _RowTask) -> dict | None:
-    """Open the NPZ, compute mask columns, and return the augmented output row."""
     row, meta = task
     npz_path = Path(row["path"])
 
@@ -225,11 +228,6 @@ def _configure_worker_logging(log_level: str) -> None:
         logging.basicConfig(level=level, format=fmt)
 
 
-# ---------------------------------------------------------------------------
-# CSV helpers
-# ---------------------------------------------------------------------------
-
-
 def _load_indexed_paths(out_csv: Path) -> frozenset[str]:
     if not out_csv.exists() or out_csv.stat().st_size == 0:
         return frozenset()
@@ -248,11 +246,6 @@ def _flush_batch(rows: list[dict], writer: csv.DictWriter, batch_idx: int) -> No
         clean = {k: ("" if row.get(k) is None else row[k]) for k in _OUTPUT_COLUMNS}
         writer.writerow(clean)
     LOG.info("Flushed batch %d: %d rows.", batch_idx, len(rows))
-
-
-# ---------------------------------------------------------------------------
-# Pool driver
-# ---------------------------------------------------------------------------
 
 
 def _run_pool_batched(
@@ -307,18 +300,13 @@ def _run_pool_batched(
     return total_written
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s %(message)s")
 
-    LOG.info("Loading roster from %s", args.roster_csv)
-    roster = _load_roster(args.roster_csv)
-    LOG.info("Roster loaded: %d entries.", len(roster))
+    LOG.info("Loading demographics from %s", args.demographics_csv)
+    roster = _load_demographics(args.demographics_csv)
+    LOG.info("Demographics loaded: %d entries.", len(roster))
 
     LOG.info("Loading base index from %s", args.index_csv)
     index_df = pd.read_csv(args.index_csv, dtype=str)
@@ -326,14 +314,13 @@ def main() -> None:
 
     indexed_paths = frozenset() if args.overwrite else _load_indexed_paths(args.out_csv)
 
-    # Build task list: filter out missing-roster and already-indexed rows.
     tasks: list[_RowTask] = []
     n_no_roster = 0
     n_already_indexed = 0
     for _, row in index_df.iterrows():
         ssoid = str(row["patient_id"]).strip()
         if ssoid not in roster:
-            LOG.debug("Skipping %s: ssoid %s not in roster.", row["path"], ssoid)
+            LOG.debug("Skipping %s: ssoid %s not in demographics.", row["path"], ssoid)
             n_no_roster += 1
             continue
         if row["path"] in indexed_paths:
@@ -342,7 +329,7 @@ def main() -> None:
         tasks.append((row.to_dict(), roster[ssoid]))
 
     LOG.info(
-        "Tasks to process: %d  |  skipped (no roster): %d  |  skipped (already indexed): %d",
+        "Tasks to process: %d  |  skipped (no demographics): %d  |  skipped (already indexed): %d",
         len(tasks),
         n_no_roster,
         n_already_indexed,

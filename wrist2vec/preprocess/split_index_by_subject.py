@@ -4,14 +4,15 @@
 The split unit is ``patient_id``: every row from the same subject receives the same split.
 
 Default policy:
-  1. Find subjects with non-empty age, sex, and bmi values.
-  2. Draw 20,000 of those complete-metadata subjects as test subjects.
-  3. Draw 1% of the remaining subjects as validation subjects.
+  1. Partition subjects into complete-metadata and incomplete-metadata pools.
+  2. Draw test subjects proportionally from both pools so that the
+     complete/incomplete ratio is the same in test as in the overall population.
+  3. Draw val subjects from the remaining subjects with the same proportional strategy.
   4. Assign all other subjects to train.
 
-Both test and validation draws are stratified by each subject's primary device
-(``dataset`` with the most rows for that subject), so row-level device ratios
-stay roughly aligned across train/val/test.
+Both test and validation draws within each metadata pool are stratified by each
+subject's primary device (``dataset`` with the most rows for that subject), so
+row-level device ratios stay roughly aligned across train/val/test.
 """
 
 from __future__ import annotations
@@ -144,6 +145,31 @@ def draw_subjects_by_primary_dataset(
     return selected
 
 
+def _draw_proportional(
+    complete: set[str],
+    incomplete: set[str],
+    primary_dataset: pd.Series,
+    *,
+    target_total: int,
+    rng: np.random.Generator,
+    shuffle: bool,
+) -> set[str]:
+    """Draw *target_total* subjects from complete+incomplete, keeping their ratio intact."""
+    n_total = len(complete) + len(incomplete)
+    if n_total == 0 or target_total <= 0:
+        return set()
+    # Allocate proportionally, then clamp to available pool sizes.
+    n_complete = min(round(len(complete) / n_total * target_total), len(complete))
+    n_incomplete = min(target_total - n_complete, len(incomplete))
+    # If one pool is too small, redirect the surplus to the other pool.
+    n_complete = min(n_complete + max(0, target_total - n_complete - n_incomplete), len(complete))
+    n_incomplete = min(target_total - n_complete, len(incomplete))
+
+    drawn = draw_subjects_by_primary_dataset(complete, primary_dataset, target_total=n_complete, rng=rng, shuffle=shuffle)
+    drawn |= draw_subjects_by_primary_dataset(incomplete, primary_dataset, target_total=n_incomplete, rng=rng, shuffle=shuffle)
+    return drawn
+
+
 def assign_splits_by_subject(
     df: pd.DataFrame,
     *,
@@ -164,19 +190,26 @@ def assign_splits_by_subject(
     primary_dataset = primary_dataset_by_subject(df, subject_col=subject_col, dataset_col=dataset_col)
 
     complete_subjects = complete_metadata_subjects(df, subject_col=subject_col, metadata_cols=metadata_cols)
-    test_pool = all_subjects & complete_subjects
-    test_subjects = draw_subjects_by_primary_dataset(
-        test_pool,
+    incomplete_subjects = all_subjects - complete_subjects
+
+    # Test: draw proportionally from complete and incomplete pools.
+    test_subjects = _draw_proportional(
+        complete_subjects,
+        incomplete_subjects,
         primary_dataset,
         target_total=n_test_subjects,
         rng=rng,
         shuffle=shuffle,
     )
 
-    remaining_subjects = all_subjects - test_subjects
+    # Val: same proportional strategy applied to the remaining subjects.
+    remaining_complete = complete_subjects - test_subjects
+    remaining_incomplete = incomplete_subjects - test_subjects
+    remaining_subjects = remaining_complete | remaining_incomplete
     n_val_subjects = int(round(len(remaining_subjects) * val_fraction))
-    val_subjects = draw_subjects_by_primary_dataset(
-        remaining_subjects,
+    val_subjects = _draw_proportional(
+        remaining_complete,
+        remaining_incomplete,
         primary_dataset,
         target_total=n_val_subjects,
         rng=rng,
@@ -189,7 +222,7 @@ def assign_splits_by_subject(
 
     stats = {
         "all_subjects": len(all_subjects),
-        "complete_metadata_subjects": len(test_pool),
+        "complete_metadata_subjects": len(complete_subjects),
         "train_subjects": len(remaining_subjects - val_subjects),
         "val_subjects": len(val_subjects),
         "test_subjects": len(test_subjects),
@@ -206,7 +239,7 @@ def parse_args() -> argparse.Namespace:
         "--n-test-subjects",
         type=int,
         default=20_000,
-        help="Number of complete-metadata subjects assigned to test (default: 20000).",
+        help="Total number of subjects assigned to test (drawn proportionally from complete/incomplete metadata pools; default: 20000).",
     )
     parser.add_argument(
         "--val-fraction",

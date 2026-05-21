@@ -1,11 +1,11 @@
 from dataclasses import dataclass, field
 import itertools
 import logging
-import math
 import pickle
 import random
 import typing as t
 
+import pandas as pd
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
@@ -138,6 +138,8 @@ class DefaultDataset(BaseDataset):
                     "No valid samples remain for the built-in AHI contract. "
                     "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
                 )
+            if self.meta_data_names is not None:
+                self.filter_with_metadata()
             if save_preset_path:
                 with open(save_preset_path, "wb") as f:
                     pickle.dump(self.data, f)
@@ -173,8 +175,14 @@ class DefaultDataset(BaseDataset):
                     continue
                 value = d.metadata.get(meta_data_name, None)
 
-                # 如果字段缺失 或 值为 NaN，则丢弃
-                if value is None or (isinstance(value, float) and math.isnan(value)):
+                # 如果字段缺失或为任意形式的缺失值则丢弃：
+                # pd.isna() 统一覆盖 float NaN / numpy.nan / pd.NA / pd.NaT / None；
+                # 额外处理空字符串和字符串形式的 "nan"/"none"/"null"。
+                try:
+                    _missing = pd.isna(value)
+                except (TypeError, ValueError):
+                    _missing = False
+                if _missing or (isinstance(value, str) and value.strip().lower() in {"", "nan", "none", "null", "na", "n/a", "<na>"}):
                     keep = False
                     break
 

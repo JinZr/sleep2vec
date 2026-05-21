@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import logging
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Dict, Optional, List
 
 import numpy as np
 from scipy.stats import pearsonr
@@ -14,6 +14,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+import sklearn.metrics as sklearn_metrics
 
 AHI_COARSE_THRESHOLD_GRID = tuple(round(float(x), 2) for x in np.arange(0.1, 1.0, 0.1))
 AHI_FINE_THRESHOLD_GRID = tuple(round(float(x), 2) for x in np.arange(0.01, 1.0, 0.01))
@@ -699,6 +700,93 @@ def compute_ahi_event_metrics(
     )
 
 
+def multiclass_metrics_fn(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    metrics: Optional[List[str]] = None,
+    y_predset: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+
+    if metrics is None:
+        metrics = ["accuracy", "f1_macro", "f1_micro"]
+    y_pred = np.argmax(y_prob, axis=-1)
+
+    output = {}
+    for metric in metrics:
+        if metric == "roc_auc_macro_ovo":
+            roc_auc_macro_ovo = sklearn_metrics.roc_auc_score(
+                y_true, y_prob, average="macro", multi_class="ovo"
+            )
+            output["roc_auc_macro_ovo"] = roc_auc_macro_ovo
+        elif metric == "roc_auc_macro_ovr":
+            roc_auc_macro_ovr = sklearn_metrics.roc_auc_score(
+                y_true, y_prob, average="macro", multi_class="ovr"
+            )
+            output["roc_auc_macro_ovr"] = roc_auc_macro_ovr
+        elif metric == "roc_auc_weighted_ovo":
+            roc_auc_weighted_ovo = sklearn_metrics.roc_auc_score(
+                y_true, y_prob, average="weighted", multi_class="ovo"
+            )
+            output["roc_auc_weighted_ovo"] = roc_auc_weighted_ovo
+        elif metric == "roc_auc_weighted_ovr":
+            roc_auc_weighted_ovr = sklearn_metrics.roc_auc_score(
+                y_true, y_prob, average="weighted", multi_class="ovr"
+            )
+            output["roc_auc_weighted_ovr"] = roc_auc_weighted_ovr
+        elif metric == "accuracy":
+            accuracy = sklearn_metrics.accuracy_score(y_true, y_pred)
+            output["accuracy"] = accuracy
+        elif metric == "balanced_accuracy":
+            balanced_accuracy = sklearn_metrics.balanced_accuracy_score(y_true, y_pred)
+            output["balanced_accuracy"] = balanced_accuracy
+        elif metric == "f1_micro":
+            f1_micro = sklearn_metrics.f1_score(y_true, y_pred, average="micro")
+            output["f1_micro"] = f1_micro
+        elif metric == "f1_macro":
+            f1_macro = sklearn_metrics.f1_score(y_true, y_pred, average="macro")
+            output["f1_macro"] = f1_macro
+        elif metric == "f1_weighted":
+            f1_weighted = sklearn_metrics.f1_score(y_true, y_pred, average="weighted")
+            output["f1_weighted"] = f1_weighted
+        elif metric == "jaccard_micro":
+            jacard_micro = sklearn_metrics.jaccard_score(
+                y_true, y_pred, average="micro"
+            )
+            output["jaccard_micro"] = jacard_micro
+        elif metric == "jaccard_macro":
+            jacard_macro = sklearn_metrics.jaccard_score(
+                y_true, y_pred, average="macro"
+            )
+            output["jaccard_macro"] = jacard_macro
+        elif metric == "jaccard_weighted":
+            jacard_weighted = sklearn_metrics.jaccard_score(
+                y_true, y_pred, average="weighted"
+            )
+            output["jaccard_weighted"] = jacard_weighted
+        elif metric == "cohen_kappa":
+            cohen_kappa = sklearn_metrics.cohen_kappa_score(y_true, y_pred)
+            output["cohen_kappa"] = cohen_kappa
+        
+        elif metric == "hits@n":
+            argsort = np.argsort(-y_prob, axis=1)
+            ranking = np.array([np.where(argsort[i] == y_true[i])[0][0] for i in range(len(y_true))]) + 1
+            output["HITS@1"] = np.count_nonzero(ranking <= 1) / len(ranking)
+            output["HITS@5"] = np.count_nonzero(ranking <= 5) / len(ranking)
+            output["HITS@10"] = np.count_nonzero(ranking <= 10) / len(ranking)
+        elif metric == "mean_rank":
+            argsort = np.argsort(-y_prob, axis=1)
+            ranking = np.array([np.where(argsort[i] == y_true[i])[0][0] for i in range(len(y_true))]) + 1
+            mean_rank = np.mean(ranking)
+            mean_reciprocal_rank = np.mean(1/ranking)
+            output["mean_rank"] = mean_rank
+            output["mean_reciprocal_rank"] = mean_reciprocal_rank
+            
+        else:
+            raise ValueError(f"Unknown metric for multiclass classification: {metric}")
+
+    return output
+
+
 def compute_downstream_metrics(
     gts,
     preds,
@@ -713,7 +801,6 @@ def compute_downstream_metrics(
         return compute_binary_label_metrics(gts, preds)
 
     if is_classification:
-        from pyhealth.metrics import multiclass_metrics_fn
 
         result = multiclass_metrics_fn(
             gts,

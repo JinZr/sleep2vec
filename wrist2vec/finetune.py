@@ -304,6 +304,20 @@ if __name__ == "__main__":
     )
     # ---------------- Data/configuration now YAML-driven; keep CLI for ckpt paths only ----------------
     parser.add_argument(
+        "--finetune-preset-path",
+        type=str,
+        default=None,
+        dest="finetune_preset_path_override",
+        help="Override data.finetune_preset_path from YAML. Useful when the same YAML is shared across tasks.",
+    )
+    parser.add_argument(
+        "--finetune-data-index",
+        type=str,
+        default=None,
+        dest="finetune_data_index_override",
+        help="Override data.finetune_data_index from YAML.",
+    )
+    parser.add_argument(
         "--pretrained-backbone-path",
         type=str,
         default=None,
