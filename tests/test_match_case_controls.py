@@ -112,6 +112,28 @@ def test_missing_rows_are_filtered_before_duplicate_suppression(tmp_path):
     assert counts.loc["C1", "status"] == "full"
 
 
+def test_identifier_columns_are_read_as_strings(tmp_path):
+    rows = [
+        {"Cohort": "RJ-MSA", "ID": "010", "MSA": "1", "Age": 60, "Sex": "F"},
+        {"Cohort": "Control", "ID": "001", "MSA": "0", "Age": 59, "Sex": "F"},
+        {"Cohort": "Control", "ID": "002", "MSA": "0", "Age": 62, "Sex": "F"},
+    ]
+
+    output_path, _, _, counts_path, _ = run_match(tmp_path, rows, ["--ratio", "1"])
+
+    matched = pd.read_csv(output_path, dtype={"ID": "string", "case_id": "string"})
+    counts = pd.read_csv(counts_path, dtype={"case_id": "string"})
+    assert matched["ID"].tolist() == ["010", "001"]
+    assert matched["case_id"].tolist() == ["010", "010"]
+    assert counts["case_id"].tolist() == ["010"]
+
+
+def test_case_mask_uses_exact_string_codes():
+    mask = matcher.case_mask(pd.Series(["01", "1", "001", "0"]), "01")
+
+    assert mask.tolist() == [True, False, False, False]
+
+
 def test_exact_matching_prevents_cross_sex_controls(tmp_path):
     rows = [
         {"Cohort": "RJ-MSA", "ID": "C1", "MSA": 1, "Age": 60, "Sex": "F"},

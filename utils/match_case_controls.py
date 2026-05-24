@@ -148,11 +148,7 @@ def is_missing_value(series: pd.Series) -> pd.Series:
 
 
 def case_mask(series: pd.Series, case_value: str) -> pd.Series:
-    mask = series.astype("string").str.strip().eq(str(case_value).strip()).fillna(False)
-    numeric_value = pd.to_numeric(pd.Series([case_value]), errors="coerce").iloc[0]
-    if pd.notna(numeric_value):
-        mask = mask | pd.to_numeric(series, errors="coerce").eq(float(numeric_value)).fillna(False)
-    return mask
+    return series.astype("string").str.strip().eq(str(case_value).strip()).fillna(False)
 
 
 def prepare_rows(
@@ -689,7 +685,9 @@ def main(argv=None) -> None:
     resolve_output_paths(args)
     calipers = parse_calipers(args.caliper, args.caliper_cols)
 
-    df = pd.read_csv(args.input)
+    string_cols = list(dict.fromkeys([args.case_col, args.id_col] + args.exact_cols + args.dedupe_cols))
+    header = pd.read_csv(args.input, nrows=0)
+    df = pd.read_csv(args.input, dtype={col: "string" for col in string_cols if col in header.columns})
     required_cols = list(
         dict.fromkeys([args.case_col, args.id_col] + args.covariates + args.exact_cols + list(calipers))
     )
