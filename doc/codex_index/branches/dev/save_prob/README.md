@@ -1,0 +1,92 @@
+# Dev Save Prob Branch Codex Engineering Index
+
+This directory is the branch-scoped engineering manual for `dev/save_prob`. Use it before broader code changes, and use a quick consult for small localized fixes.
+
+## Branch Scope
+
+- Branch: `dev/save_prob`
+- Last initialize commit: `d68f7a3ac6bea8f932bed2d3e04705b466c36d8d`
+- Last initialize at: `2026-05-24T03:47:31Z`
+- Mode: `initialize-branch`
+
+## Purpose
+
+Use this index to answer four questions before making changes:
+
+1. Which module owns the behavior I need to change?
+2. Which existing function or class should I reuse instead of reimplementing?
+3. Which runtime path will exercise the change?
+4. Which test or contract file already defines the expected behavior?
+
+The manual is intentionally biased toward contract-bearing, reuse-relevant APIs rather than exhaustively listing trivial helpers.
+
+## Recommended Reading Order
+
+1. [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md) for the current runtime architecture, task semantics, and batch contract.
+2. [MODULE_MAP.md](./MODULE_MAP.md) for edit boundaries, ownership seams, and dependency flow.
+3. [REUSE_GUIDE.md](./REUSE_GUIDE.md) for canonical implementations and duplication traps.
+4. Relevant workflow file under [WORKFLOWS/](./WORKFLOWS/).
+5. Relevant family catalog under [FUNCTIONS/](./FUNCTIONS/).
+
+For small, localized fixes or routine updates, it is enough to read this page plus the single most relevant page from `REUSE_GUIDE.md`, `MODULE_MAP.md`, `WORKFLOWS/`, or `FUNCTIONS/`.
+
+## Coverage
+
+Tracked files indexed from this branch:
+
+- `sleep2vec/`: 81 tracked files
+- `data/`: 8 tracked files
+- `preprocess/`: 7 tracked files
+- `sleep2vec2/`: 103 tracked files
+- `sleep2expert/`: 107 tracked files
+- `configs/`: 100 tracked files
+- `tests/`: 47 tracked files
+- `utils/`: 2 tracked files
+
+## Coverage Boundaries
+
+- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, aggregate result writing, automatic inference result organization, inference prediction CSV export, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation visualizations, and the tests that pin those contracts.
+- Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb`, package-local variant preprocessing notebooks, and tracked visualization font binaries under `*/visualization/assets/fonts/`.
+- Outside this index scope: tracked example data scaffolding under `egs/`.
+- Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
+- `AGENTS.md` is referenced for ownership context but is not reproduced here as an editable source of truth.
+
+## How To Use This Index
+
+- For a small local fix, start here, then jump to one relevant section instead of doing the full handbook pass.
+- For a broader behavior or contract change, follow the full reading order above.
+
+- If you are changing YAML semantics, built-in task behavior, or config validation, start with [FUNCTIONS/CONFIG_AND_REGISTRIES.md](./FUNCTIONS/CONFIG_AND_REGISTRIES.md).
+- If you are changing pretrain, adapt, finetune, inference, checkpoint, or result-export orchestration, start with [FUNCTIONS/RUNTIME_ORCHESTRATION.md](./FUNCTIONS/RUNTIME_ORCHESTRATION.md) and the relevant workflow.
+- If you are changing backbone forward behavior, adaptation freeze policy, downstream heads, AHI epoch reduction, or layer mix, start with [FUNCTIONS/MODELS_AND_HEADS.md](./FUNCTIONS/MODELS_AND_HEADS.md).
+- If you are changing dataset loading, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
+- If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, or WatchPAT conversion, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
+- If you are changing evaluation plots, pair-accuracy logging, or diagnostics, start with [FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md](./FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md).
+- If you think you need `sleep2vec2/` or `sleep2expert/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first. Both are active tracked standalone namespaces on this branch.
+
+## Deliverable Layout
+
+- [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md)
+- [MODULE_MAP.md](./MODULE_MAP.md)
+- [REUSE_GUIDE.md](./REUSE_GUIDE.md)
+- [CHANGELOG.md](./CHANGELOG.md)
+- [DELTA_FROM_MAIN.md](./DELTA_FROM_MAIN.md)
+- [FUNCTIONS/](./FUNCTIONS/)
+- [WORKFLOWS/](./WORKFLOWS/)
+- [MANIFEST.json](./MANIFEST.json)
+
+Current workflow coverage:
+
+- [WORKFLOWS/PRETRAIN.md](./WORKFLOWS/PRETRAIN.md)
+- [WORKFLOWS/ADAPT.md](./WORKFLOWS/ADAPT.md)
+- [WORKFLOWS/FINETUNE.md](./WORKFLOWS/FINETUNE.md)
+- [WORKFLOWS/INFER_AND_CHECKPOINTS.md](./WORKFLOWS/INFER_AND_CHECKPOINTS.md)
+- [WORKFLOWS/PREPROCESSING.md](./WORKFLOWS/PREPROCESSING.md)
+- [WORKFLOWS/CONFIG_VALIDATION.md](./WORKFLOWS/CONFIG_VALIDATION.md)
+- [WORKFLOWS/VARIANTS_AND_ROUTING.md](./WORKFLOWS/VARIANTS_AND_ROUTING.md)
+
+## Reliability Notes
+
+- Every claim in this index is grounded in the current tracked code on `dev/save_prob`, with `main` used only as the initialization baseline.
+- If behavior is unclear from source, the index says `unknown` rather than inferring.
+- Some runtime paths were only statically inspected due environment limits; those areas are explicitly marked in the relevant pages.

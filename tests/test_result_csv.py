@@ -1,10 +1,21 @@
 import argparse
+import importlib
+import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
+import torch
 
 from sleep2vec.distributed import get_rank_world_size, is_rank_zero_process, is_torch_distributed_ready
-from sleep2vec.results import save_result_csv
+from sleep2vec.results import (
+    make_prediction_run_id,
+    prepare_inference_result_paths,
+    save_prediction_csv,
+    save_result_csv,
+)
+
+RESULT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
 
 
 def _finetune_args(*, version: str) -> argparse.Namespace:
@@ -33,6 +44,10 @@ def _infer_args() -> argparse.Namespace:
         wandb_name=None,
         wandb_id=None,
     )
+
+
+def _write_lightning_ckpt(path: Path, *, epoch: int, step: int) -> None:
+    torch.save({"state_dict": {}, "epoch": epoch, "global_step": step}, path)
 
 
 def test_save_result_csv_appends_rows_with_experiment_version(tmp_path, monkeypatch):
@@ -118,6 +133,331 @@ def test_save_result_csv_records_effective_preset_path(tmp_path, monkeypatch):
     df = pd.read_csv(csv_path)
 
     assert df.loc[0, "preset_path"] == "index_parallel/presets/ahi/cuhk_test_preset_1535.pickle"
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_finetune_result_csv_omits_inference_metadata(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "results.csv"
+
+    results_mod.save_result_csv({"test_loss": 1.0}, str(csv_path), _finetune_args(version="exp-a"))
+
+    df = pd.read_csv(csv_path)
+    assert "prediction_run_id" not in df.columns
+    assert "run_dir" not in df.columns
+    assert "prediction_csv_path" not in df.columns
+
+
+def test_prepare_inference_result_paths_builds_run_directory(tmp_path):
+    ckpt_path = tmp_path / "model.ckpt"
+    _write_lightning_ckpt(ckpt_path, epoch=7, step=1234)
+    args = _infer_args()
+    args.ckpt_path = str(ckpt_path)
+
+    prepare_inference_result_paths(args, root=tmp_path / "results" / "inference", timestamp="20260524T000000Z")
+
+    assert args.prediction_run_id.startswith("20260524T000000Z__sleep2vec__")
+    assert args.prediction_run_id in str(args.run_dir)
+    assert args.run_dir == tmp_path / "results" / "inference" / "sleep2vec" / "ahi" / args.prediction_run_id
+    assert args.inference_metrics_csv_path.name == "metrics__ahi__test__epoch07_step1234.csv"
+    assert args.inference_prediction_csv_path.name == "predictions__ahi__test__epoch07_step1234.csv"
+    assert args.inference_overview_csv_path == tmp_path / "results" / "inference" / "overview.csv"
+    assert args.ckpt_epoch == 7
+    assert args.ckpt_step == 1234
+    assert args.ckpt_tag == "epoch07_step1234"
+
+
+def test_prepare_inference_result_paths_falls_back_to_checkpoint_filename(tmp_path):
+    ckpt_path = tmp_path / "epoch=12.ckpt"
+    args = _infer_args()
+    args.ckpt_path = str(ckpt_path)
+
+    prepare_inference_result_paths(args, root=tmp_path / "results" / "inference", timestamp="20260524T000000Z")
+
+    assert args.ckpt_epoch == 12
+    assert args.ckpt_step is None
+    assert args.ckpt_tag == "epoch12"
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_prepare_inference_result_paths_describes_averaged_checkpoints_without_loading_payload(
+    tmp_path, monkeypatch, package_name: str
+):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    paths = []
+    for epoch in (3, 4, 5):
+        path = tmp_path / f"epoch={epoch}-step={epoch * 100}.ckpt"
+        path.touch()
+        paths.append(path)
+    monkeypatch.setattr(
+        results_mod.torch, "load", lambda *args, **kwargs: pytest.fail("metadata path loaded checkpoint")
+    )
+    args = _infer_args()
+    args.avg_ckpts = 3
+    args.ckpt_path = str(paths[-1])
+
+    results_mod.prepare_inference_result_paths(
+        args,
+        namespace=package_name,
+        root=tmp_path / "results" / "inference",
+        checkpoint_paths=paths,
+        timestamp="20260524T000000Z",
+    )
+
+    assert args.ckpt_tag == "avg3_epoch03-05"
+    assert args.ckpt_epoch == 5
+    assert args.ckpt_step == 500
+    assert args.inference_checkpoint_paths == [str(path) for path in paths]
+
+
+def test_save_prediction_csv_appends_rows_and_serializes_lists(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "predictions.csv"
+    args = _infer_args()
+    args.prediction_run_id = make_prediction_run_id(args, timestamp="20260524T000000Z")
+
+    save_prediction_csv(
+        [
+            {
+                "path": "a.npz",
+                "groundtruth": [1, 2],
+                "prediction": [1, 1],
+                "n_predictions": 2,
+                "n_windows": 1,
+                "token_starts": [0],
+                "prob_0": [0.1, 0.2],
+                "prob_1": [0.9, 0.8],
+            }
+        ],
+        str(csv_path),
+        args,
+    )
+    save_prediction_csv(
+        [
+            {
+                "path": "b.npz",
+                "groundtruth": 0,
+                "prediction": 1,
+                "n_predictions": 1,
+                "n_windows": 1,
+                "token_starts": [0],
+                "prob_0": 0.4,
+                "prob_1": 0.6,
+            }
+        ],
+        str(csv_path),
+        args,
+    )
+
+    df = pd.read_csv(csv_path)
+
+    assert len(df) == 2
+    assert df["prediction_run_id"].tolist() == [args.prediction_run_id, args.prediction_run_id]
+    assert json.loads(df.loc[0, "groundtruth"]) == [1, 2]
+    assert json.loads(df.loc[0, "token_starts"]) == [0]
+    assert df.loc[1, "path"] == "b.npz"
+
+
+def test_prediction_run_id_matches_results_and_predictions(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    args = _infer_args()
+    prepare_inference_result_paths(args, root=tmp_path / "results" / "inference", timestamp="20260524T000000Z")
+
+    save_result_csv({"test_loss": 0.1}, str(args.inference_metrics_csv_path), args)
+    save_result_csv({"test_loss": 0.1}, str(args.inference_overview_csv_path), args)
+    save_prediction_csv(
+        [
+            {
+                "path": "a.npz",
+                "groundtruth": 1,
+                "prediction": 1,
+                "n_predictions": 1,
+                "n_windows": 1,
+                "token_starts": [0],
+            }
+        ],
+        str(args.inference_prediction_csv_path),
+        args,
+    )
+
+    result_df = pd.read_csv(args.inference_metrics_csv_path)
+    overview_df = pd.read_csv(args.inference_overview_csv_path)
+    prediction_df = pd.read_csv(args.inference_prediction_csv_path)
+
+    assert result_df.loc[0, "prediction_run_id"] == args.prediction_run_id
+    assert overview_df.loc[0, "prediction_run_id"] == args.prediction_run_id
+    assert prediction_df.loc[0, "prediction_run_id"] == args.prediction_run_id
+    assert result_df.loc[0, "run_dir"] == str(args.run_dir)
+
+
+def test_save_prediction_csv_skips_nonzero_rank(tmp_path, monkeypatch):
+    monkeypatch.setenv("RANK", "2")
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "predictions.csv"
+
+    save_prediction_csv(
+        [
+            {
+                "path": "a.npz",
+                "groundtruth": 1,
+                "prediction": 1,
+                "n_predictions": 1,
+                "n_windows": 1,
+                "token_starts": [0],
+            }
+        ],
+        str(csv_path),
+        _infer_args(),
+    )
+
+    assert not csv_path.exists()
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_automatic_inference_paths_across_namespaces(tmp_path, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    args = _infer_args()
+    args.label_name = "stage5"
+    args.eval_split = "val"
+    args.ckpt_path = str(tmp_path / "epoch=9-step=42.ckpt")
+
+    results_mod.prepare_inference_result_paths(
+        args,
+        namespace=package_name,
+        root=tmp_path / "results" / "inference",
+        timestamp="20260524T000000Z",
+    )
+
+    assert args.run_dir == (tmp_path / "results" / "inference" / package_name / "stage5" / args.prediction_run_id)
+    assert args.inference_metrics_csv_path.name == "metrics__stage5__val__epoch09_step42.csv"
+    assert args.inference_prediction_csv_path.name == "predictions__stage5__val__epoch09_step42.csv"
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_prediction_csv_append_overview_and_manifest_across_namespaces(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    args = _infer_args()
+    results_mod.prepare_inference_result_paths(
+        args,
+        namespace=package_name,
+        root=tmp_path / "results" / "inference",
+        timestamp="20260524T000000Z",
+    )
+
+    results_mod.save_result_csv({"test_loss": 0.1}, str(args.inference_metrics_csv_path), args)
+    results_mod.save_result_csv({"test_loss": 0.1}, str(args.inference_overview_csv_path), args)
+    results_mod.save_prediction_csv(
+        [
+            {
+                "path": "a.npz",
+                "groundtruth": [1, 2],
+                "prediction": [1, 1],
+                "n_predictions": 2,
+                "n_windows": 1,
+                "token_starts": [0],
+            }
+        ],
+        str(args.inference_prediction_csv_path),
+        args,
+    )
+    results_mod.save_prediction_csv(
+        [
+            {
+                "path": "b.npz",
+                "groundtruth": 0,
+                "prediction": 1,
+                "n_predictions": 1,
+                "n_windows": 1,
+                "token_starts": [5],
+            }
+        ],
+        str(args.inference_prediction_csv_path),
+        args,
+    )
+    results_mod.save_inference_manifest(args, {"test_loss": 0.1}, prediction_row_count=2)
+
+    result_df = pd.read_csv(args.inference_metrics_csv_path)
+    overview_df = pd.read_csv(args.inference_overview_csv_path)
+    prediction_df = pd.read_csv(args.inference_prediction_csv_path)
+    manifest = json.loads(Path(args.manifest_path).read_text())
+
+    assert len(prediction_df) == 2
+    assert result_df.loc[0, "prediction_run_id"] == args.prediction_run_id
+    assert overview_df.loc[0, "prediction_run_id"] == args.prediction_run_id
+    assert prediction_df["prediction_run_id"].tolist() == [args.prediction_run_id, args.prediction_run_id]
+    assert json.loads(prediction_df.loc[0, "groundtruth"]) == [1, 2]
+    assert manifest["prediction_run_id"] == args.prediction_run_id
+    assert manifest["prediction_row_count"] == 2
+    assert manifest["paths"]["prediction_csv_path"] == str(args.inference_prediction_csv_path)
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_overview_csv_appends_runs_across_namespaces(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    overview_path = tmp_path / "results" / "inference" / "overview.csv"
+
+    for timestamp in ("20260524T000000Z", "20260524T000001Z"):
+        args = _infer_args()
+        results_mod.prepare_inference_result_paths(
+            args,
+            namespace=package_name,
+            root=tmp_path / "results" / "inference",
+            timestamp=timestamp,
+        )
+        results_mod.save_result_csv({"test_loss": 0.1}, str(args.inference_overview_csv_path), args)
+
+    df = pd.read_csv(overview_path)
+
+    assert len(df) == 2
+    assert df["prediction_run_id"].is_unique
+    assert df["namespace"].tolist() == [package_name, package_name]
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_empty_prediction_csv_is_created_across_namespaces(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "predictions.csv"
+
+    results_mod.save_prediction_csv([], str(csv_path), _infer_args())
+
+    df = pd.read_csv(csv_path)
+    assert len(df) == 0
+    assert {"prediction_run_id", "path", "groundtruth", "prediction"}.issubset(df.columns)
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_prediction_csv_rank_zero_only_across_namespaces(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.setenv("RANK", "2")
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "predictions.csv"
+
+    results_mod.save_prediction_csv(
+        [
+            {
+                "path": "a.npz",
+                "groundtruth": 1,
+                "prediction": 1,
+                "n_predictions": 1,
+                "n_windows": 1,
+                "token_starts": [0],
+            }
+        ],
+        str(csv_path),
+        _infer_args(),
+    )
+
+    assert not csv_path.exists()
 
 
 def test_is_rank_zero_process_defaults_true_without_rank_env(monkeypatch):

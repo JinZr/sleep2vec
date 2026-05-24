@@ -18,7 +18,12 @@ if str(REPO_ROOT) not in sys.path:
 from sleep2expert.checkpoints import average_checkpoints, select_checkpoints
 from sleep2expert.common import apply_finetune_config
 from sleep2expert.distributed import is_rank_zero_process
-from sleep2expert.results import save_result_csv
+from sleep2expert.results import (
+    prepare_inference_result_paths,
+    save_inference_manifest,
+    save_prediction_csv,
+    save_result_csv,
+)
 from sleep2expert.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2expert.utils import _build_finetune_loader
 
@@ -115,6 +120,7 @@ def run_inference(args):
     )
 
     ckpt_path = args.ckpt_path
+    selected_ckpt_paths = None
     if args.avg_ckpts > 1:
         ckpt_dir = args.avg_ckpt_dir
         end_ckpt = None if args.ckpt_path in {"best", "last"} else Path(args.ckpt_path)
@@ -123,6 +129,7 @@ def run_inference(args):
                 raise ValueError("Use --avg-ckpt-dir when averaging with ckpt-path=best/last.")
             ckpt_dir = end_ckpt.parent
         ckpt_paths = select_checkpoints(Path(ckpt_dir), end_ckpt=end_ckpt, num_ckpts=args.avg_ckpts)
+        selected_ckpt_paths = ckpt_paths
         logging.info("Averaging checkpoints: %s", ", ".join(str(p) for p in ckpt_paths))
         avg_state = average_checkpoints(ckpt_paths, device=torch.device("cpu"))
         missing_keys, unexpected_keys = model.load_state_dict(avg_state, strict=False)
@@ -132,11 +139,21 @@ def run_inference(args):
             logging.warning("Unexpected keys when loading averaged checkpoint: %s", unexpected_keys)
         ckpt_path = None
 
+    prepare_inference_result_paths(args, namespace="sleep2expert", checkpoint_paths=selected_ckpt_paths)
     logging.info("Running inference on split=%s with %s samples/batch", args.eval_split, args.batch_size)
     wandb_run = _init_wandb(args)
     try:
         test_results = trainer.test(model=model, ckpt_path=ckpt_path, dataloaders=dataloader)
         metrics = test_results[0] if test_results else {}
+        resolved_ckpt_path = getattr(trainer, "ckpt_path", None)
+        if args.ckpt_path in {"best", "last"} and resolved_ckpt_path not in (None, "", args.ckpt_path):
+            args.ckpt_resolved_path = str(resolved_ckpt_path)
+            prepare_inference_result_paths(
+                args,
+                namespace="sleep2expert",
+                checkpoint_paths=selected_ckpt_paths,
+                timestamp=args.timestamp_utc,
+            )
         logging.info("Inference metrics: %s", metrics)
     finally:
         if wandb_run is not None:
@@ -149,8 +166,11 @@ def run_inference(args):
                 else:
                     raise
 
-    if args.results_csv_path and metrics:
-        save_result_csv(metrics, str(args.results_csv_path), args)
+    prediction_rows = getattr(model, "prediction_rows", [])
+    save_result_csv(metrics, str(args.inference_metrics_csv_path), args)
+    save_result_csv(metrics, str(args.inference_overview_csv_path), args)
+    save_prediction_csv(prediction_rows, str(args.inference_prediction_csv_path), args)
+    save_inference_manifest(args, metrics, prediction_row_count=len(prediction_rows))
 
 
 def parse_args():
@@ -220,12 +240,6 @@ def parse_args():
         type=Path,
         default=None,
         help="Optional preset pickle path for this inference run; overrides data.finetune_preset_path from YAML.",
-    )
-    parser.add_argument(
-        "--results-csv-path",
-        type=Path,
-        default=None,
-        help="Optional CSV path to append aggregated inference metrics.",
     )
     parser.add_argument(
         "--precision",
