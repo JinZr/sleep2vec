@@ -385,7 +385,7 @@ def _resolve_checkpoint_info(
 
     if checkpoint_paths:
         paths = [Path(path) for path in checkpoint_paths]
-        infos = [_read_single_checkpoint_info(path) for path in paths]
+        infos = [{"epoch": epoch, "step": step} for epoch, step in (_parse_checkpoint_name(path) for path in paths)]
         epochs = [info["epoch"] for info in infos if info["epoch"] is not None]
         steps = [info["step"] for info in infos if info["step"] is not None]
         if epochs:

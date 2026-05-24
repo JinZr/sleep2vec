@@ -181,18 +181,26 @@ def test_prepare_inference_result_paths_falls_back_to_checkpoint_filename(tmp_pa
     assert args.ckpt_tag == "epoch12"
 
 
-def test_prepare_inference_result_paths_describes_averaged_checkpoints(tmp_path):
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_prepare_inference_result_paths_describes_averaged_checkpoints_without_loading_payload(
+    tmp_path, monkeypatch, package_name: str
+):
+    results_mod = importlib.import_module(f"{package_name}.results")
     paths = []
     for epoch in (3, 4, 5):
-        path = tmp_path / f"epoch={epoch}.ckpt"
-        _write_lightning_ckpt(path, epoch=epoch, step=epoch * 100)
+        path = tmp_path / f"epoch={epoch}-step={epoch * 100}.ckpt"
+        path.touch()
         paths.append(path)
+    monkeypatch.setattr(
+        results_mod.torch, "load", lambda *args, **kwargs: pytest.fail("metadata path loaded checkpoint")
+    )
     args = _infer_args()
     args.avg_ckpts = 3
     args.ckpt_path = str(paths[-1])
 
-    prepare_inference_result_paths(
+    results_mod.prepare_inference_result_paths(
         args,
+        namespace=package_name,
         root=tmp_path / "results" / "inference",
         checkpoint_paths=paths,
         timestamp="20260524T000000Z",
