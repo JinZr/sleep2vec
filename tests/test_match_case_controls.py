@@ -128,6 +128,22 @@ def test_identifier_columns_are_read_as_strings(tmp_path):
     assert counts["case_id"].tolist() == ["010"]
 
 
+def test_identifier_and_category_na_tokens_are_preserved(tmp_path):
+    rows = [
+        {"Cohort": "RJ-MSA", "ID": "010", "MSA": "CASE", "Age": 60, "Sex": "NA"},
+        {"Cohort": "Control", "ID": "NA", "MSA": "CTRL", "Age": 59, "Sex": "NA"},
+        {"Cohort": "Control", "ID": "002", "MSA": "CTRL", "Age": 62, "Sex": "NA"},
+    ]
+
+    output_path, _, excluded_path, _, _ = run_match(tmp_path, rows, ["--case-value", "CASE", "--ratio", "1"])
+
+    matched = pd.read_csv(output_path, keep_default_na=False)
+    excluded = pd.read_csv(excluded_path, keep_default_na=False)
+    assert matched["ID"].tolist() == ["010", "NA"]
+    assert matched["Sex"].tolist() == ["NA", "NA"]
+    assert excluded.empty
+
+
 def test_case_mask_uses_exact_string_codes():
     mask = matcher.case_mask(pd.Series(["01", "1", "001", "0"]), "01")
 

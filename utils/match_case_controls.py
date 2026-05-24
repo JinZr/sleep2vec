@@ -687,7 +687,7 @@ def main(argv=None) -> None:
 
     string_cols = list(dict.fromkeys([args.case_col, args.id_col] + args.exact_cols + args.dedupe_cols))
     header = pd.read_csv(args.input, nrows=0)
-    df = pd.read_csv(args.input, dtype={col: "string" for col in string_cols if col in header.columns})
+    df = pd.read_csv(args.input, converters={col: str for col in string_cols if col in header.columns})
     required_cols = list(
         dict.fromkeys([args.case_col, args.id_col] + args.covariates + args.exact_cols + list(calipers))
     )
