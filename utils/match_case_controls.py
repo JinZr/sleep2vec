@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import warnings
 from pathlib import Path
+import warnings
 
 import numpy as np
 import pandas as pd
