@@ -336,16 +336,6 @@ def order_cases_like_matchit(case_indices: list[int], propensity: pd.Series) -> 
     )
 
 
-def validate_matchit_ratio(is_case: pd.Series, ratio: int) -> None:
-    n_cases = int(is_case.sum())
-    n_controls = int((~is_case).sum())
-    if n_controls >= n_cases and n_controls < n_cases * ratio:
-        raise SystemExit(
-            "Not enough control rows for MatchIt-style fixed-ratio matching without replacement: "
-            f"{n_cases} cases * ratio {ratio} requires {n_cases * ratio} controls, found {n_controls}."
-        )
-
-
 def passes_calipers(case_row: pd.Series, control_row: pd.Series, calipers: dict[str, float]) -> bool:
     for col, limit in calipers.items():
         case_value = pd.to_numeric(pd.Series([case_row[col]]), errors="coerce").iloc[0]
@@ -720,8 +710,6 @@ def main(argv=None) -> None:
     if is_case.all():
         write_csv(excluded, args.excluded_output)
         raise SystemExit("No control rows found after filtering.")
-    validate_matchit_ratio(is_case, args.ratio)
-
     y, glm_features, encoded_features, metadata = build_design_matrices(clean_df, is_case, args.covariates)
     propensity = estimate_propensity_scores(y, glm_features)
     caliper_features = build_caliper_distance_features(clean_df, calipers, args.covariates)

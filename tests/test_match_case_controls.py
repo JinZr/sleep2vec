@@ -144,15 +144,20 @@ def test_controls_are_not_reused_across_cases(tmp_path):
     assert counts.loc["C2", "status"] == "unmatched"
 
 
-def test_matchit_style_ratio_fails_when_controls_cannot_satisfy_fixed_ratio(tmp_path):
+def test_ratio_is_maximum_and_allows_partial_matches(tmp_path):
     rows = [
         {"Cohort": "RJ-MSA", "ID": "C1", "MSA": 1, "Age": 60, "Sex": "F"},
         {"Cohort": "Control", "ID": "T1", "MSA": 0, "Age": 59, "Sex": "F"},
         {"Cohort": "Control", "ID": "T2", "MSA": 0, "Age": 61, "Sex": "F"},
     ]
 
-    with pytest.raises(SystemExit, match="requires 3 controls, found 2"):
-        run_match(tmp_path, rows, ["--ratio", "3"])
+    output_path, unmatched_path, _, counts_path, _ = run_match(tmp_path, rows, ["--ratio", "3"])
+
+    assert pd.read_csv(output_path)["ID"].tolist() == ["C1", "T1", "T2"]
+    assert pd.read_csv(unmatched_path).empty
+    counts = pd.read_csv(counts_path).set_index("case_id")
+    assert counts.loc["C1", "matched_control_count"] == 2
+    assert counts.loc["C1", "status"] == "partial"
 
 
 def test_require_full_ratio_fails_after_writing_outputs(tmp_path):
