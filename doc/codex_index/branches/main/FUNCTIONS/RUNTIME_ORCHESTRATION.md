@@ -92,12 +92,45 @@
 
 - File: `sleep2vec/infer.py`
 - Signature: `run_inference(args) -> None`
-- Purpose and contract: canonical inference driver; normalizes config, builds trainer and loader, optionally averages checkpoints, runs evaluation, and writes metrics.
+- Purpose and contract: canonical inference driver; normalizes config, applies optional NPZ preset override, builds trainer and loader, optionally averages checkpoints, runs evaluation, and writes automatic metrics, prediction CSV, overview CSV, and manifest artifacts under a run-local inference directory.
 - Important inputs/outputs: namespace in; no direct return value.
-- Side effects: optional W&B run, trainer evaluation, optional results CSV output.
-- Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, `_init_wandb`, and `save_result_csv`.
+- Side effects: optional W&B run, trainer evaluation, creation of `results/inference/<namespace>/<label>/<prediction_run_id>/`, metrics CSV writes, prediction CSV writes, shared overview append, and `run_manifest.json` write.
+- Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, `_init_wandb`, `prepare_inference_result_paths`, `save_result_csv`, `save_prediction_csv`, and `save_inference_manifest`.
 - Reuse guidance: extend here for inference-only behavior changes.
-- Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`, not in trainer code.
+- Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`; inference artifact naming and metadata belongs in `sleep2vec.results`, not trainer code.
+
+## `sleep2vec.sleep2vec_inference.extract_prediction_records`
+
+- File: `sleep2vec/sleep2vec_inference.py`
+- Signature: `extract_prediction_records(args, batch, logits, targets) -> list[dict[str, object]]`
+- Purpose and contract: convert one test/inference batch into intermediate prediction records for scalar classification, sequence classification, scalar regression, sequence regression, and multilabel outputs.
+- Important inputs/outputs: runtime args, batch metadata with `path` and optional `token_start`, logits, and targets in; record dictionaries with path, token start, labels, predictions, probabilities or scores out.
+- Side effects: none.
+- Key callers/callees: caller is `Sleep2vecFinetuning`; callees are `_extract_multilabel_prediction_records`, `_extract_classification_prediction_records`, and `_extract_regression_prediction_records`.
+- Reuse guidance: use this hook when adding non-AHI prediction export behavior rather than saving logits directly from trainer steps.
+- Duplication risk notes: task-shape-specific masking of `-1` labels belongs here.
+
+## `sleep2vec.sleep2vec_inference.build_prediction_rows`
+
+- File: `sleep2vec/sleep2vec_inference.py`
+- Signature: `build_prediction_rows(records: list[dict[str, object]]) -> list[dict[str, object]]`
+- Purpose and contract: group intermediate prediction records into one row per path, deduplicating repeated `(path, token_start)` windows before building task-family-specific row fields.
+- Important inputs/outputs: per-window records in; per-path CSV-ready row dictionaries out.
+- Side effects: none.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `_group_prediction_records`, `_build_classification_prediction_row`, `_build_regression_prediction_row`, and `_build_multilabel_prediction_row`.
+- Reuse guidance: use for non-AHI path-level prediction CSV rows.
+- Duplication risk notes: DDP duplicate-window defense is implemented here; do not recreate grouping inside CSV writers.
+
+## `sleep2vec.sleep2vec_inference.build_ahi_prediction_rows`
+
+- File: `sleep2vec/sleep2vec_inference.py`
+- Signature: `build_ahi_prediction_rows(records: list[dict[str, np.ndarray]], threshold: float) -> list[dict[str, object]]`
+- Purpose and contract: merge AHI event-window records by path and emit path-level event predictions, probability scores, threshold, true AHI, predicted AHI, TST hours, and token-start provenance.
+- Important inputs/outputs: gathered AHI records plus validation-fitted threshold in; per-path CSV-ready row dictionaries out.
+- Side effects: none.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `_merge_ahi_window_records` and `_evaluate_single_ahi_record` from `sleep2vec.metrics`.
+- Reuse guidance: use this for AHI prediction CSV output; keep AHI threshold semantics tied to validation-fitted checkpoint state.
+- Duplication risk notes: AHI prediction rows must stay aligned with event-metric merge semantics.
 
 ## `sleep2vec.checkpoints.load_pretrain_init_weights`
 
@@ -153,6 +186,50 @@
 - Key callers/callees: callers are `finetune.supervised` and `infer.run_inference`; callees include `_resolve_result_source`, `_resolve_experiment_version`, `_ordered_result_columns`, `_result_csv_lock`, and `is_rank_zero_process`.
 - Reuse guidance: reuse for any tabular experiment summary output.
 - Duplication risk notes: current column ordering and schema-expansion policy is encoded here; do not create parallel result-writer variants casually.
+
+## `sleep2vec.results.prepare_inference_result_paths`
+
+- File: `sleep2vec/results.py`
+- Signature: `prepare_inference_result_paths(args: Any, *, namespace: str = PACKAGE_NAMESPACE, root: str | Path = DEFAULT_INFERENCE_RESULTS_ROOT, checkpoint_paths: Sequence[str | Path] | None = None, timestamp: str | None = None) -> None`
+- Purpose and contract: attach inference output paths and checkpoint metadata to the runtime args namespace before writing metrics, predictions, overview rows, or manifest files.
+- Important inputs/outputs: args plus namespace/root/checkpoint inputs in; mutates `args.prediction_run_id`, `run_dir`, `inference_*_csv_path`, `manifest_path`, checkpoint tags, task family, and timestamp fields.
+- Side effects: namespace mutation only.
+- Key callers/callees: caller is `infer.run_inference`; callees include `make_prediction_run_id` and `_resolve_checkpoint_info`.
+- Reuse guidance: call this before every automatic inference export path across root and package-local variants.
+- Duplication risk notes: output layout and `prediction_run_id` construction should not be rebuilt in entrypoints.
+
+## `sleep2vec.results.make_prediction_run_id`
+
+- File: `sleep2vec/results.py`
+- Signature: `make_prediction_run_id(args: Any, *, timestamp: str | None = None, namespace: str = PACKAGE_NAMESPACE, ckpt_info: Mapping[str, Any] | None = None) -> str`
+- Purpose and contract: generate a unique, slug-safe inference run id from timestamp, namespace, experiment version, label, split, checkpoint tag, and a short hash over run inputs plus a launch nonce.
+- Important inputs/outputs: args, optional timestamp/namespace/checkpoint info in; prediction run id string out.
+- Side effects: none.
+- Key callers/callees: caller is `prepare_inference_result_paths`; callees include `_resolve_checkpoint_info`, `_resolve_experiment_version`, `_stringify_optional_path`, and `_slug_piece`.
+- Reuse guidance: use this through `prepare_inference_result_paths` for normal inference runs; call directly only in tests or tooling that needs the same id contract without path mutation.
+- Duplication risk notes: run id fields are part of metrics/prediction/manifest linkage, so do not create namespace-specific alternatives.
+
+## `sleep2vec.results.save_prediction_csv`
+
+- File: `sleep2vec/results.py`
+- Signature: `save_prediction_csv(rows: Sequence[Mapping[str, Any]], csv_path: str, args: Any | None = None) -> None`
+- Purpose and contract: write or append path-level prediction rows while preserving inference metadata, deterministic metadata column ordering, JSON serialization for list/dict values, rank-zero gating, and lockfile protection.
+- Important inputs/outputs: CSV-ready prediction rows, destination path, and optional args in; CSV file out. Empty rows still create a header-only file with prediction metadata columns.
+- Side effects: creates directories, locks a sibling file, and writes or appends to CSV.
+- Key callers/callees: caller is `infer.run_inference`; callees include `_add_inference_run_metadata`, `_serialize_prediction_value`, `_ordered_prediction_columns`, `_result_csv_lock`, and `_write_result_csv`.
+- Reuse guidance: use this writer for all per-path prediction exports.
+- Duplication risk notes: it intentionally mirrors result CSV metadata via `prediction_run_id`; do not add separate prediction metadata schemas.
+
+## `sleep2vec.results.save_inference_manifest`
+
+- File: `sleep2vec/results.py`
+- Signature: `save_inference_manifest(args: Any, metrics: Mapping[str, Any] | None = None, *, prediction_row_count: int = 0) -> None`
+- Purpose and contract: write `run_manifest.json` for an inference run with paths, checkpoint identity, runtime settings, metrics, and prediction-row count.
+- Important inputs/outputs: args namespace, metrics mapping, and row count in; JSON file out.
+- Side effects: rank-zero-gated atomic JSON write.
+- Key callers/callees: caller is `infer.run_inference`; callees include `_json_safe` and `_write_json_atomic`.
+- Reuse guidance: use with `prepare_inference_result_paths` so manifests stay aligned with metrics and prediction CSV paths.
+- Duplication risk notes: manifest schema should stay here rather than in namespace-specific inference entrypoints.
 
 ## `sleep2expert.routing_analysis.run_routing_analysis`
 

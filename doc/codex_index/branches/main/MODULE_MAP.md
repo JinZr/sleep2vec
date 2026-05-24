@@ -12,12 +12,12 @@ These are the stable cross-file boundaries that matter before editing:
 | Downstream model and head composition | `sleep2vec/downstream_model.py`, `sleep2vec/downstreams/` | Temporal aggregation, channel fusion, downstream heads, layer mix, pretrained loading, LoRA insertion | `peft`, downstream registries | New heads, fusion modes, adapter behavior | Canonical downstream feature path |
 | Lightning runtime | `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/sleep2vec_adaptation.py` | Training-loop glue, optimizer schedule, diagnostics, model averaging, AHI metrics, eval visualization logging, staged adaptation optimizer groups | PyTorch Lightning, loss/metrics, callbacks | New trainer behavior | Keep scheduler, loss, and epoch-reduction changes here |
 | Runtime entrypoints | `sleep2vec/pretrain.py`, `sleep2vec/adapt.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py` | CLI parsing, experiment folder setup, trainer creation, phase validation, checkpoint/test orchestration | `sleep2vec.common`, `sleep2vec.utils`, Lightning | New CLI flags, run naming, checkpoint policy | Thin orchestration only |
-| Runtime support | `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/distributed.py`, `sleep2vec/callbacks/`, `sleep2vec/visualization/`, `sleep2vec/diagnostics.py` | Checkpoint init/averaging, distributed rank helpers, result CSV writes, pair-accuracy monitoring, progress bars, plots, diagnostics hooks | Torch, sklearn, wandb, matplotlib | New logging/export surfaces | Mostly support code, not model semantics |
+| Runtime support | `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/sleep2vec_inference.py`, `sleep2vec/distributed.py`, `sleep2vec/callbacks/`, `sleep2vec/visualization/`, `sleep2vec/diagnostics.py` | Checkpoint init/averaging, distributed rank helpers, result CSV writes, inference prediction export, pair-accuracy monitoring, progress bars, plots, diagnostics hooks | Torch, sklearn, wandb, matplotlib | New logging/export surfaces | Mostly support code, not model semantics |
 | Dataset core | `data/default_dataset.py`, `data/psg_pretrain_dataset.py` | Build `SampleIndex` windows, validate/load presets, materialize batches, backfill built-in AHI metadata, and choose samplers | `data.utils`, `data.metadata`, `data.samplers` | New dataset formats or collate behavior | Main data contract boundary |
 | Data helpers and samplers | `data/utils.py`, `data/metadata.py`, `data/channel_selection.py`, `data/samplers.py`, `data/kaldi_io.py`, `data/kaldi_psg_dataset.py`, `sleep2vec/utils.py` | NPZ I/O, Kaldi `.scp` readers, token windowing, preset/manifest filtering, metadata tensorization, pair scheduling, bucketed batching, finetune/pretrain loader assembly | NumPy, Torch, optional `kaldi_native_io` | New samplers, metadata encodings, loader policies, storage backends | Missing-channel pretrain and Kaldi routing rely on these |
 | Preprocessing CLIs | `preprocess/*.py` | CSV splitting, preset generation/merge, NPZ-to-Kaldi conversion, required-channel prefiltering, missing-mask stats, WatchPAT conversion | pandas, pickle, NumPy, optional `kaldi_native_io`, optional EDF deps | New data-prep utilities | CLI tools are the canonical prep surface |
 | Config-policy tooling | `utils/check_configs.py` | Validate repo YAMLs against loader contracts, tokenizer parity, preset-build strictness, and repo-specific ppg policy | config loaders, preset-build helpers | New static checks | Tooling boundary, not runtime |
-| External data-cutting utilities | `utils/cut_ukb_sleep_with_asleep.py` | Use the standalone `asleep` package to cut nightly UKB `.cwa` accelerometer segments into per-night NPZ files | `asleep`, pandas, NumPy | UKB CWA night extraction | Does not import sleep2vec or write sleep2vec presets |
+| Standalone data utilities | `utils/cut_ukb_sleep_with_asleep.py`, `utils/parse_ukb_annotations_by_person.py`, `utils/collect_ukb_demographics.py`, `utils/fix_kaldi_index.py`, `utils/match_case_controls.py` | Cut UKB `.cwa` nights, parse UKB annotation exports, collect age/sex demographics, repair duplicate Kaldi key inputs, and build matched case-control cohorts | `asleep`, pandas, NumPy, patsy, statsmodels, scipy, tqdm | External data preparation and cohort construction | These utilities are intentionally outside the model runtime and preset schema |
 | Config recipes | `configs/` | Encode model/head/task variants, preset-build policy, adapt recipes, standalone `sleep2vec2` recipes, and `sleep2expert` dense/MoE recipes | Config parser + entrypoints | New recipe variants | Folder names are not always semantically authoritative |
 | Tests | `tests/` | Pin config, registry, AHI metric, checkpoint, result CSV, preset-build, pair-sampler, and visualization contracts | pytest | New contract coverage | Many important contracts live here now |
 | Formatting wrapper | `utils/style_check.sh` | Run `isort`, `black`, `flake8` over repo | Python env toolchain | None | Lint wrapper only |
@@ -41,6 +41,8 @@ These are the stable cross-file boundaries that matter before editing:
 - `pretrain.py` -> `config.py` + `common.py` + `sleep2vec.utils` + `sleep2vec_modelling.py`
 - `adapt.py` -> `config.py` + `common.py` + `sleep2vec.utils` + `sleep2vec_adaptation.py`
 - `finetune.py` / `infer.py` -> `common.py` -> `config.py` + `sleep2vec.utils` + `sleep2vec_finetuning.py`
+- `infer.py` -> `sleep2vec.results.prepare_inference_result_paths` + `save_result_csv` + `save_prediction_csv` + `save_inference_manifest`
+- `Sleep2vecFinetuning` -> `sleep2vec.sleep2vec_inference` for path-level prediction rows during test/inference
 - `sleep2vec.utils` -> `PSGPretrainDataset` for `data_backend=npz`, `KaldiPSGDataset` for `data_backend=kaldi`
 - `KaldiPSGDataset` -> `KaldiReaderPool` -> sorted `scp:` readers from `kaldi_native_io`
 - `Sleep2vecPretrainModel` -> `builders.py` -> registries/backbone/tokenizer/projection/CLS
@@ -51,6 +53,10 @@ These are the stable cross-file boundaries that matter before editing:
 - `convert_npz_to_kaldi.py` -> `PSGPretrainDataset` channel registry + `data.utils.window` + Kaldi ark/scp writers
 - `utils/check_configs.py` -> config loaders + preset-build helpers from `save_dataset_presets.py`
 - `utils/cut_ukb_sleep_with_asleep.py` -> standalone `asleep.get_sleep` helpers; no sleep2vec imports
+- `utils/parse_ukb_annotations_by_person.py` -> raw UKB `.tab` / `.html` / `.r` / withdrawal files; writes derived metadata and participant JSON
+- `utils/collect_ukb_demographics.py` -> participant JSON trees from the parser or similar UKB-style exports
+- `utils/fix_kaldi_index.py` -> index CSVs before `convert_npz_to_kaldi.py` when duplicate sample keys would be generated
+- `utils/match_case_controls.py` -> flat cohort CSVs; writes matched, unmatched, excluded, count, and balance CSVs
 - `sleep2expert.routing_analysis` -> `sleep2expert.infer._build_inference_loader` + `Sleep2vecFinetuning` + `backbone.last_moe_aux`
 
 ## Important Ownership Notes
@@ -59,9 +65,9 @@ These are the stable cross-file boundaries that matter before editing:
 - Forward-path edits usually span `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, and the downstream fusion modules.
 - AHI runtime edits usually span `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`, `sleep2vec/metrics.py`, and `sleep2vec/sleep2vec_finetuning.py`.
 - Missing-channel pretraining edits usually span `data/default_dataset.py`, `data/utils.py`, `data/samplers.py`, and `sleep2vec/utils.py`.
-- Kaldi backend edits usually span `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_io.py`, `data/kaldi_psg_dataset.py`, and `preprocess/convert_npz_to_kaldi.py`.
+- Kaldi backend edits usually span `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_io.py`, `data/kaldi_psg_dataset.py`, and `preprocess/convert_npz_to_kaldi.py`; duplicate-key index repairs belong in `utils/fix_kaldi_index.py`.
 - Adaptation edits usually span `sleep2vec/adapt.py`, `sleep2vec/sleep2vec_adaptation.py`, `sleep2vec/pretrain_model.py`, and sampler/callback surfaces used by pair scheduling.
-- Preprocessing edits should stay in `preprocess/` unless the preset schema or `SampleIndex` payload changes.
+- Preprocessing edits should stay in `preprocess/` or standalone `utils/` scripts unless the preset schema or `SampleIndex` payload changes.
 - `sleep2vec2` and `sleep2expert` edits should preserve package-local imports and mirror tests; do not route them through root `data` or `preprocess`.
 - `sleep2expert` MoE edits usually span `sleep2expert/config.py`, `sleep2expert/backbones/roformer/moe.py`, `sleep2expert/pretrain_model.py`, `sleep2expert/sleep2vec_modelling.py`, `sleep2expert/sleep2vec_finetuning.py`, and `sleep2expert/losses/moe_regularization.py`.
 
