@@ -309,9 +309,7 @@ def test_automatic_inference_paths_across_namespaces(tmp_path, package_name: str
         timestamp="20260524T000000Z",
     )
 
-    assert args.run_dir == (
-        tmp_path / "results" / "inference" / package_name / "stage5" / args.prediction_run_id
-    )
+    assert args.run_dir == (tmp_path / "results" / "inference" / package_name / "stage5" / args.prediction_run_id)
     assert args.inference_metrics_csv_path.name == "metrics__stage5__val__epoch09_step42.csv"
     assert args.inference_prediction_csv_path.name == "predictions__stage5__val__epoch09_step42.csv"
 

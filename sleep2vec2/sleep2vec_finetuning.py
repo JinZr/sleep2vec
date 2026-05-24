@@ -246,9 +246,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 self._stage_outputs[stage].append(preds)
             if stage == "test" and prediction_export_enabled(self.args):
                 targets = self._get_targets(batch)
-                self._prediction_records["test"].extend(
-                    extract_prediction_records(self.args, batch, logits, targets)
-                )
+                self._prediction_records["test"].extend(extract_prediction_records(self.args, batch, logits, targets))
 
         return loss if stage == "train" else None
 

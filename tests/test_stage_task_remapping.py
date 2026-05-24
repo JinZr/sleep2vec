@@ -14,7 +14,6 @@ from sleep2vec.metrics import compute_ahi_pointwise_metrics, compute_downstream_
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import _build_finetune_loader
 
-
 PREDICTION_EXPORT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
 
 
