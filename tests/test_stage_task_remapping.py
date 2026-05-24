@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import math
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from sleep2vec.metrics import compute_ahi_pointwise_metrics, compute_downstream_metrics
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import _build_finetune_loader
+
+
+PREDICTION_EXPORT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
 
 
 class _DummyDataset:
@@ -328,6 +333,169 @@ def test_extract_ahi_event_records_keeps_stage5_aligned_for_partially_masked_tok
     assert records[0]["score"].shape == (3,)
     assert records[0]["stage5"].tolist() == [0, 2]
     assert records[0]["second_valid_mask"].tolist() == [True, False, True, True]
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_build_scalar_classification_prediction_row_averages_probabilities(package_name: str):
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    records = [
+        {
+            "path": "sample.npz",
+            "token_start": 0,
+            "kind": "classification",
+            "groundtruth": 1,
+            "probabilities": [0.2, 0.8],
+            "prediction": 1,
+            "is_sequence": False,
+        },
+        {
+            "path": "sample.npz",
+            "token_start": 5,
+            "kind": "classification",
+            "groundtruth": 1,
+            "probabilities": [0.6, 0.4],
+            "prediction": 0,
+            "is_sequence": False,
+        },
+    ]
+
+    rows = inference_mod.build_prediction_rows(records)
+
+    row = rows[0]
+    assert row["path"] == "sample.npz"
+    assert row["groundtruth"] == 1
+    assert row["prediction"] == 1
+    assert row["n_predictions"] == 2
+    assert row["n_windows"] == 2
+    assert row["token_starts"] == [0, 5]
+    assert row["prob_0"] == pytest.approx(0.4)
+    assert row["prob_1"] == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_build_scalar_regression_prediction_row_averages_windows(package_name: str):
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    records = [
+        {
+            "path": "sample.npz",
+            "token_start": 0,
+            "kind": "regression",
+            "groundtruth": 60.0,
+            "prediction": 61.0,
+            "is_sequence": False,
+        },
+        {
+            "path": "sample.npz",
+            "token_start": 5,
+            "kind": "regression",
+            "groundtruth": 62.0,
+            "prediction": 63.0,
+            "is_sequence": False,
+        },
+    ]
+
+    rows = inference_mod.build_prediction_rows(records)
+
+    row = rows[0]
+    assert row["path"] == "sample.npz"
+    assert row["groundtruth"] == pytest.approx(61.0)
+    assert row["prediction"] == pytest.approx(62.0)
+    assert row["n_predictions"] == 2
+    assert row["n_windows"] == 2
+    assert row["token_starts"] == [0, 5]
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_build_sequence_classification_prediction_row_concatenates_by_token_start(package_name: str):
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    records = [
+        {
+            "path": "night.npz",
+            "token_start": 2,
+            "kind": "classification",
+            "groundtruth": [2],
+            "probabilities": [[0.1, 0.2, 0.7]],
+            "prediction": [2],
+            "is_sequence": True,
+        },
+        {
+            "path": "night.npz",
+            "token_start": 0,
+            "kind": "classification",
+            "groundtruth": [0, 1],
+            "probabilities": [[0.9, 0.1, 0.0], [0.1, 0.8, 0.1]],
+            "prediction": [0, 1],
+            "is_sequence": True,
+        },
+    ]
+
+    rows = inference_mod.build_prediction_rows(records)
+
+    assert rows[0]["path"] == "night.npz"
+    assert rows[0]["groundtruth"] == [0, 1, 2]
+    assert rows[0]["prediction"] == [0, 1, 2]
+    assert rows[0]["token_starts"] == [0, 2]
+    assert rows[0]["prob_0"] == pytest.approx([0.9, 0.1, 0.1])
+    assert rows[0]["prob_1"] == pytest.approx([0.1, 0.8, 0.2])
+    assert rows[0]["prob_2"] == pytest.approx([0.0, 0.1, 0.7])
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_build_ahi_prediction_row_includes_threshold_and_summary(package_name: str):
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    record = {
+        "path": "night.npz",
+        "token_start": 0,
+        "truth": np.array([0] * 5 + [1] * 12 + [0] * 13, dtype=np.int64),
+        "score": np.array([0.1] * 5 + [0.9] * 12 + [0.1] * 13, dtype=np.float32),
+        "true_ahi": 10.0,
+        "tst_hours": 3.0,
+        "stage5": np.array([2], dtype=np.int64),
+        "second_valid_mask": np.array([True] * 30),
+    }
+
+    rows = inference_mod.build_ahi_prediction_rows([record], threshold=0.5)
+
+    assert rows[0]["path"] == "night.npz"
+    assert rows[0]["groundtruth"] == record["truth"].tolist()
+    assert rows[0]["prediction"] == ([0] * 5 + [1] * 12 + [0] * 13)
+    assert rows[0]["prob"] == pytest.approx(record["score"].tolist())
+    assert rows[0]["ahi_threshold"] == 0.5
+    assert rows[0]["true_ahi"] == 10.0
+    assert rows[0]["pred_ahi"] == pytest.approx(1 / 3.0)
+    assert rows[0]["tst_hours"] == 3.0
+
+
+def _config_package_name(path: Path) -> str:
+    rel_path = path.relative_to(Path(__file__).resolve().parents[1] / "configs")
+    if rel_path.parts and rel_path.parts[0] in {"sleep2vec2", "sleep2expert"}:
+        return rel_path.parts[0]
+    return "sleep2vec"
+
+
+def _prediction_export_supports_task(task) -> bool:
+    if not task.is_seq:
+        return task.type in {"classification", "regression"}
+    if task.type != "classification":
+        return False
+    return int(task.output_dim) in {3, 4, 5, 30}
+
+
+def test_prediction_export_supports_all_finetune_recipe_task_families():
+    repo_root = Path(__file__).resolve().parents[1]
+    recipe_paths: list[Path] = []
+    for path in sorted((repo_root / "configs").rglob("*.yaml")):
+        data = yaml.safe_load(path.read_text()) or {}
+        finetune = data.get("finetune")
+        if isinstance(finetune, dict) and isinstance(finetune.get("task"), dict):
+            recipe_paths.append(path)
+
+    assert recipe_paths
+
+    for path in recipe_paths:
+        package_name = _config_package_name(path)
+        bundle = importlib.import_module(f"{package_name}.config").load_finetune_config(path)
+        assert _prediction_export_supports_task(bundle.finetune.task), str(path.relative_to(repo_root))
 
 
 def test_compute_loss_ignores_ahi_padding():

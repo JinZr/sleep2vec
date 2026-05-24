@@ -22,6 +22,12 @@ from sleep2vec.metrics import (
     compute_downstream_metrics,
     extract_ahi_summary_scatter_arrays,
 )
+from sleep2vec.sleep2vec_inference import (
+    build_ahi_prediction_rows,
+    build_prediction_rows,
+    extract_prediction_records,
+    prediction_export_enabled,
+)
 from sleep2vec.visualization.downstream_eval import DownstreamEvalVisualizer
 from sleep2vec.visualization.layer_mix import build_layer_mix_rows, render_layer_mix_heatmap
 
@@ -82,6 +88,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self.backbone.set_tokenizers_trainable(True)
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
+        self._prediction_records = {"test": []}
+        self.prediction_rows = []
         class_weights = getattr(args, "class_weights", None)
         class_weight_tensor = None
         if class_weights is not None:
@@ -236,6 +244,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
             preds = self._extract_valid_predictions(batch, logits)
             if preds is not None:
                 self._stage_outputs[stage].append(preds)
+            if stage == "test" and prediction_export_enabled(self.args):
+                targets = self._get_targets(batch)
+                self._prediction_records["test"].extend(
+                    extract_prediction_records(self.args, batch, logits, targets)
+                )
 
         return loss if stage == "train" else None
 
@@ -534,6 +547,20 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 merged.extend(item)
         return merged
 
+    def _gather_prediction_records(self, records: list[dict[str, object]]) -> list[dict[str, object]]:
+        if not is_torch_distributed_ready() or not hasattr(dist, "all_gather_object"):
+            return records
+
+        _, world_size = get_rank_world_size()
+        gathered: list[list[dict[str, object]] | None] = [None] * world_size
+        dist.all_gather_object(gathered, records)
+
+        merged: list[dict[str, object]] = []
+        for item in gathered:
+            if isinstance(item, list):
+                merged.extend(item)
+        return merged
+
     def _log_eval_loss(self, stage: str) -> None:
         eval_loss_sums = getattr(self, "_eval_loss_sums", {})
         eval_loss_counts = getattr(self, "_eval_loss_counts", {})
@@ -638,6 +665,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _finalize_epoch(self, stage: str):
         outputs = self._stage_outputs[stage]
+        if stage == "test":
+            self.prediction_rows = []
         if stage in getattr(self, "_eval_loss_sums", {}):
             self._log_eval_loss(stage)
 
@@ -685,6 +714,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     label_name=self.args.label_name,
                     current_epoch=int(self.current_epoch),
                 )
+            if stage == "test" and prediction_export_enabled(self.args):
+                self.prediction_rows = build_ahi_prediction_rows(records, eval_threshold)
             if trainer is not None and is_torch_distributed_ready() and hasattr(trainer, "strategy"):
                 trainer.strategy.barrier(f"ahi_{stage}_epoch_end")
             return records
@@ -695,6 +726,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if stage in {"val", "test"}:
             preds, gts = self._gather_eval_outputs(preds, gts)
         if preds.size == 0 or gts.size == 0:
+            if stage == "test" and prediction_export_enabled(self.args):
+                self._prediction_records["test"].clear()
             return None
 
         metrics = compute_downstream_metrics(
@@ -732,6 +765,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 current_epoch=int(self.current_epoch),
                 class_labels=getattr(self.args, "class_labels", None),
             )
+
+        if stage == "test" and prediction_export_enabled(self.args):
+            records = self._gather_prediction_records(self._prediction_records["test"])
+            self._prediction_records["test"].clear()
+            self.prediction_rows = build_prediction_rows(records)
 
         return preds, gts
 
