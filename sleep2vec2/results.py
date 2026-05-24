@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+import uuid
 
 import pandas as pd
 import torch
@@ -191,8 +192,9 @@ def make_prediction_run_id(
     namespace: str = PACKAGE_NAMESPACE,
     ckpt_info: Mapping[str, Any] | None = None,
 ) -> str:
+    launch_nonce = uuid.uuid4().hex[:8]
     if timestamp is None:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     if ckpt_info is None:
         ckpt_info = _resolve_checkpoint_info(args)
     experiment_version = _resolve_experiment_version(args)
@@ -207,6 +209,7 @@ def make_prediction_run_id(
         "label_name": label_name,
         "eval_split": eval_split,
         "timestamp_utc": timestamp,
+        "launch_nonce": launch_nonce,
     }
     short_hash = hashlib.sha1(json.dumps(hash_payload, sort_keys=True).encode("utf-8")).hexdigest()[:8]
     pieces = [timestamp, namespace, experiment_version, label_name, eval_split, ckpt_tag, short_hash]
