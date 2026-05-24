@@ -157,8 +157,15 @@ def build_prediction_rows(records: list[dict[str, object]]) -> list[dict[str, ob
 
 def _group_prediction_records(records: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
     grouped: dict[str, list[dict[str, object]]] = {}
+    seen: set[tuple[str, int]] = set()
     for record in records:
-        grouped.setdefault(str(record["path"]), []).append(record)
+        path = str(record["path"])
+        token_start = int(record.get("token_start", 0))
+        key = (path, token_start)
+        if key in seen:
+            continue
+        seen.add(key)
+        grouped.setdefault(path, []).append(record)
     for items in grouped.values():
         items.sort(key=lambda item: int(item.get("token_start", 0)))
     return grouped

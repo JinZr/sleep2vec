@@ -426,6 +426,15 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
             "prediction": [0, 1],
             "is_sequence": True,
         },
+        {
+            "path": "night.npz",
+            "token_start": 0,
+            "kind": "classification",
+            "groundtruth": [2, 2],
+            "probabilities": [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            "prediction": [2, 2],
+            "is_sequence": True,
+        },
     ]
 
     rows = inference_mod.build_prediction_rows(records)
@@ -433,6 +442,8 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
     assert rows[0]["path"] == "night.npz"
     assert rows[0]["groundtruth"] == [0, 1, 2]
     assert rows[0]["prediction"] == [0, 1, 2]
+    assert rows[0]["n_predictions"] == 3
+    assert rows[0]["n_windows"] == 2
     assert rows[0]["token_starts"] == [0, 2]
     assert rows[0]["prob_0"] == pytest.approx([0.9, 0.1, 0.1])
     assert rows[0]["prob_1"] == pytest.approx([0.1, 0.8, 0.2])

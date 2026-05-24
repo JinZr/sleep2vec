@@ -89,10 +89,12 @@ def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: A
     new_row: dict[str, Any] = dict(copy.deepcopy(pretrain_result))
     new_row["experiment_version"] = _resolve_experiment_version(args)
     new_row["result_source"] = _resolve_result_source(args)
-    new_row["prediction_run_id"] = getattr(args, "prediction_run_id", None) if args is not None else None
+    prediction_run_id = getattr(args, "prediction_run_id", None) if args is not None else None
+    if prediction_run_id not in (None, ""):
+        new_row["prediction_run_id"] = prediction_run_id
+        _add_inference_run_metadata(new_row, args)
     new_row["config_path"] = _stringify_optional_path(getattr(args, "config", None)) if args is not None else ""
     new_row["eval_split"] = getattr(args, "eval_split", None) if args is not None else None
-    _add_inference_run_metadata(new_row, args)
 
     if args is not None:
         new_row["ckpt_path"] = getattr(args, "ckpt_path", None)

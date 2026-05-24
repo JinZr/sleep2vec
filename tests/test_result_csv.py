@@ -135,6 +135,21 @@ def test_save_result_csv_records_effective_preset_path(tmp_path, monkeypatch):
     assert df.loc[0, "preset_path"] == "index_parallel/presets/ahi/cuhk_test_preset_1535.pickle"
 
 
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_finetune_result_csv_omits_inference_metadata(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "results.csv"
+
+    results_mod.save_result_csv({"test_loss": 1.0}, str(csv_path), _finetune_args(version="exp-a"))
+
+    df = pd.read_csv(csv_path)
+    assert "prediction_run_id" not in df.columns
+    assert "run_dir" not in df.columns
+    assert "prediction_csv_path" not in df.columns
+
+
 def test_prepare_inference_result_paths_builds_run_directory(tmp_path):
     ckpt_path = tmp_path / "model.ckpt"
     _write_lightning_ckpt(ckpt_path, epoch=7, step=1234)
