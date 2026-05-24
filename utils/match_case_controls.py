@@ -164,14 +164,6 @@ def prepare_rows(
     excluded_parts = []
     kept = df.copy()
 
-    if dedupe_cols:
-        duplicate_mask = kept.duplicated(subset=dedupe_cols, keep="first")
-        if duplicate_mask.any():
-            duplicates = kept.loc[duplicate_mask].copy()
-            duplicates["exclude_reason"] = f"duplicate_by:{','.join(dedupe_cols)}"
-            excluded_parts.append(duplicates)
-            kept = kept.loc[~duplicate_mask].copy()
-
     missing_mask = pd.Series(False, index=kept.index)
     missing_reasons = pd.Series("", index=kept.index, dtype="object")
     for col in required_cols:
@@ -186,6 +178,14 @@ def prepare_rows(
         missing["exclude_reason"] = missing_reasons.loc[missing_mask].values
         excluded_parts.append(missing)
         kept = kept.loc[~missing_mask].copy()
+
+    if dedupe_cols:
+        duplicate_mask = kept.duplicated(subset=dedupe_cols, keep="first")
+        if duplicate_mask.any():
+            duplicates = kept.loc[duplicate_mask].copy()
+            duplicates["exclude_reason"] = f"duplicate_by:{','.join(dedupe_cols)}"
+            excluded_parts.append(duplicates)
+            kept = kept.loc[~duplicate_mask].copy()
 
     if excluded_parts:
         excluded = pd.concat(excluded_parts, ignore_index=True)

@@ -96,6 +96,22 @@ def test_msa_like_run_writes_matched_unmatched_excluded_counts_and_balance(tmp_p
     assert balance["passes_max_smd"].all()
 
 
+def test_missing_rows_are_filtered_before_duplicate_suppression(tmp_path):
+    rows = [
+        {"Cohort": "RJ-MSA", "ID": "C1", "MSA": 1, "Age": 60, "Sex": "F"},
+        {"Cohort": "Control", "ID": "T1", "MSA": 0, "Age": "", "Sex": "F"},
+        {"Cohort": "Control", "ID": "T1", "MSA": 0, "Age": 59, "Sex": "F"},
+        {"Cohort": "Control", "ID": "T2", "MSA": 0, "Age": 62, "Sex": "F"},
+    ]
+
+    output_path, _, excluded_path, counts_path, _ = run_match(tmp_path, rows)
+
+    assert pd.read_csv(output_path)["ID"].tolist() == ["C1", "T1", "T2"]
+    assert pd.read_csv(excluded_path)["exclude_reason"].tolist() == ["missing:Age"]
+    counts = pd.read_csv(counts_path).set_index("case_id")
+    assert counts.loc["C1", "status"] == "full"
+
+
 def test_exact_matching_prevents_cross_sex_controls(tmp_path):
     rows = [
         {"Cohort": "RJ-MSA", "ID": "C1", "MSA": 1, "Age": 60, "Sex": "F"},
