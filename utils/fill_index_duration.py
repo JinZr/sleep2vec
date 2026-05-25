@@ -22,6 +22,8 @@ CHANNEL_SAMPLE_RATES = {
     "spo2": 4,
     "resp_original": 4,
     "resp_nasal_original": 4,
+    "ppg": 100,
+    "actigraphy": 32,
 }
 
 
@@ -58,6 +60,15 @@ def _is_missing(value: t.Any) -> bool:
     except (TypeError, ValueError):
         return False
     return str(value).strip() == ""
+
+
+def _needs_duration_fill(value: t.Any) -> bool:
+    if _is_missing(value):
+        return True
+    try:
+        return float(value) <= 0
+    except (TypeError, ValueError):
+        return True
 
 
 def _parse_prefix_maps(raw_maps: t.Sequence[str]) -> list[tuple[str, str]]:
@@ -131,7 +142,7 @@ def fill_duration(
     if duration_column not in fixed.columns:
         fixed[duration_column] = pd.NA
 
-    missing_indexes = [row_index for row_index, row in fixed.iterrows() if _is_missing(row[duration_column])]
+    missing_indexes = [row_index for row_index, row in fixed.iterrows() if _needs_duration_fill(row[duration_column])]
     for row_index in tqdm(missing_indexes, desc="Filling duration", unit="row"):
         row = fixed.loc[row_index]
         npz_path = _resolve_npz_path(row["path"], prefix_maps)
