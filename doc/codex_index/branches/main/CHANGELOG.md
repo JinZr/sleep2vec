@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-05-25
+
+- Refreshed the `main` branch index for commit `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`.
+- Updated tracked-file coverage counts to reflect the current branch:
+  - `sleep2vec/`: 81
+  - `data/`: 8
+  - `preprocess/`: 7
+  - `sleep2vec2/`: 103
+  - `sleep2expert/`: 107
+  - `sleep2vec_moe/`: 0
+  - `sleep2vec_hires/`: 0
+  - `configs/`: 108
+  - `tests/`: 50
+  - `utils/`: 7
+- Added current LoRA/DoRA config propagation guidance for `r`, `alpha`, `dropout`, `target_modules`, `use_dora`, and separate-adapter trainability.
+- Added current downstream metric guidance for binary specificity, macro specificity, and stage alias behavior.
+- Added inference W&B artifact guidance for metrics, predictions, manifest, overview, and `prediction_row_count` logging across root and variant inference entrypoints.
+- Added example config validation coverage for `configs/examples/**`.
+- Stale entries removed or corrected:
+  - old manifest/README commit and timestamp from `8c1989dcfb89dc51612656f460d9ebfc8adfb46c`
+  - old tracked-file counts for `configs/` and `tests/`
+  - old inference side-effect wording that omitted W&B artifact logging
+
 ## 2026-05-24
 
 - Refreshed the `main` branch index for commit `8c1989dcfb89dc51612656f460d9ebfc8adfb46c`.

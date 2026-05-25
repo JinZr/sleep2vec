@@ -49,6 +49,7 @@ Primary code path:
    - `predictions__<label>__<split>__<ckpt_tag>.csv`: one row per path, with list values serialized for CSV.
    - `overview.csv`: append-only cross-run summary.
    - `run_manifest.json`: machine-readable run metadata, paths, checkpoint identity, runtime settings, metrics, and prediction-row count.
+9. If W&B is enabled, log the metrics plus `prediction_row_count` and upload the metrics, predictions, manifest, and overview files as one `inference-<prediction_run_id>` artifact.
 
 ## Checkpoint Selection Policy
 
@@ -67,7 +68,7 @@ Primary code path:
 
 - `infer.py` is the reviewed place that handles CPU precision fallback for `bf16`.
 - Backend-specific loader construction is still delegated through `_build_finetune_loader`.
-- Inference can initialize W&B separately from training and only on rank zero.
+- Inference can initialize W&B separately from training and only on rank zero; W&B artifact logging happens after local output files are written.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
 - Prediction row extraction is split out to `sleep2vec/sleep2vec_inference.py`; CSV writing and run metadata stay in `sleep2vec/results.py`.
 - Non-AHI prediction export deduplicates repeated `(path, token_start)` records before building per-path rows.
@@ -77,6 +78,6 @@ Primary code path:
 
 - Change checkpoint averaging semantics: `sleep2vec/checkpoints.py`
 - Change eval loader, data-backend, or dataset override behavior: `sleep2vec/infer.py`, `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`
-- Change inference-only logging/W&B behavior: `sleep2vec/infer.py`
+- Change inference-only logging/W&B behavior: `sleep2vec/infer.py` plus package-local variant mirrors when parity is required
 - Change prediction row extraction: `sleep2vec/sleep2vec_inference.py`, `sleep2vec/sleep2vec_finetuning.py`
 - Change inference output layout, metadata, or CSV/manifest writes: `sleep2vec/results.py`

@@ -5,8 +5,8 @@ This directory is the branch-scoped engineering manual for `main`. Use it before
 ## Branch Scope
 
 - Branch: `main`
-- Last refresh commit: `8c1989dcfb89dc51612656f460d9ebfc8adfb46c`
-- Last refresh at: `2026-05-24T18:05:33Z`
+- Last refresh commit: `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`
+- Last refresh at: `2026-05-25T07:25:27Z`
 - Mode: `refresh`
 
 ## Purpose
@@ -41,13 +41,13 @@ Tracked files indexed from this branch:
 - `sleep2expert/`: 107 tracked files
 - `sleep2vec_moe/`: 0 tracked files
 - `sleep2vec_hires/`: 0 tracked files
-- `configs/`: 101 tracked files
-- `tests/`: 49 tracked files
+- `configs/`: 108 tracked files
+- `tests/`: 50 tracked files
 - `utils/`: 7 tracked files
 
 ## Coverage Boundaries
 
-- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation visualizations, and the tests that pin those contracts.
+- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
 - Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb`, package-local variant preprocessing notebooks, and tracked visualization font binaries under `*/visualization/assets/fonts/`.
 - Outside this index scope: tracked example data scaffolding under `egs/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
