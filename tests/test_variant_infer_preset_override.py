@@ -310,6 +310,7 @@ def test_run_inference_logs_metrics_and_files_to_wandb(
         lr=1e-4,
         n_few_shot=None,
         channel_names=["ppg"],
+        wandb_name="long-" + "x" * 160,
     )
 
     infer_mod.run_inference(args)
@@ -319,7 +320,9 @@ def test_run_inference_logs_metrics_and_files_to_wandb(
         "test_recall": 0.75,
         "prediction_row_count": 1,
     }
-    assert captured["artifact_name"] == f"inference-{args.prediction_run_id}"
+    run_id_hash = args.prediction_run_id.rsplit("__", 1)[-1]
+    assert captured["artifact_name"] == f"inference-{args.timestamp_utc}__{package_name}__{run_id_hash}"
+    assert len(captured["artifact_name"]) <= 128
     assert captured["artifact_type"] == "inference"
     assert captured["artifact_files"] == [
         (args.inference_metrics_csv_path.name, "metrics.csv"),
