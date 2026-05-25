@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 import shutil
 import typing as t
@@ -66,9 +67,10 @@ def _needs_duration_fill(value: t.Any) -> bool:
     if _is_missing(value):
         return True
     try:
-        return float(value) <= 0
+        duration = float(value)
     except (TypeError, ValueError):
         return True
+    return not math.isfinite(duration) or duration <= 0
 
 
 def _parse_prefix_maps(raw_maps: t.Sequence[str]) -> list[tuple[str, str]]:
