@@ -6,7 +6,7 @@
 - Dataclasses:
   - `ModelConfig`, `ChannelConfig`, `TokenizerConfig`, `BackboneConfig`, `ProjectionConfig`, `ClsConfig`
   - `HeadConfig`, `TemporalAggConfig`, `ChannelAggConfig`, `LayerMixConfig`
-  - `TaskConfig`, `FinetuneConfig`, `FinetuneLossConfig`, `FinetuneSamplerConfig`, `FinetuneDataConfig`, `EvalVisualizationsConfig`
+  - `TaskConfig`, `FinetuneConfig`, `LoraConfig`, `FinetuneLossConfig`, `FinetuneSamplerConfig`, `FinetuneDataConfig`, `EvalVisualizationsConfig`
   - `AdaptConfig`, `AdaptStage1Config`, `AdaptStage2Config`, `AdaptLrScalesConfig`, `AdaptPairSchedulePoint`
   - `PretrainDataConfig` with `backend`, `kaldi_data_root`, and `kaldi_manifest`
   - `PretrainConfigBundle`, `FinetuneConfigBundle`
@@ -39,7 +39,7 @@
 
 - File: `sleep2vec/config.py`
 - Signature: `load_finetune_config(path: str | Path) -> FinetuneConfigBundle`
-- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, layer-mix, imbalance loss/sampler, data backend, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
+- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, layer-mix, LoRA/DoRA settings, imbalance loss/sampler, data backend, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
 - Important inputs/outputs: YAML path in, `FinetuneConfigBundle` out.
 - Side effects: reads YAML from disk only.
 - Key callers/callees: caller is `sleep2vec.common.apply_finetune_config`; callees include `_build_layer_mix_config`, `_build_finetune_loss_config`, `_build_finetune_sampler_config`, `_build_task_config`, `_build_eval_visualizations_config`, `_validate_layer_mix_config`, and `_build_model_averaging_config`.

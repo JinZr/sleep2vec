@@ -22,7 +22,7 @@ Primary code path:
 
 1. Load and bind finetune YAML.
    - Parse typed config bundle with `load_finetune_config`.
-   - Copy channels, data paths, data-backend settings, task semantics, imbalance loss/sampler settings, LoRA flags, and eval-visualization config into `args`.
+   - Copy channels, data paths, data-backend settings, task semantics, imbalance loss/sampler settings, LoRA flags and hyperparameters, and eval-visualization config into `args`.
    - Reject mismatched `data.data_channel_names`.
 2. Resolve version name.
    - Prefer `--version-name`.
@@ -42,7 +42,7 @@ Primary code path:
    - Creates `Sleep2vecPretrainModel` backbone.
    - Wraps it in `Sleep2vecDownstreamModel`.
    - Optionally loads pretrained backbone checkpoint.
-   - Optionally freezes backbone and inserts LoRA adapters.
+   - Optionally freezes backbone and inserts LoRA or DoRA adapters with YAML-configured rank, alpha, dropout, and target modules.
    - Optionally freezes tokenizers.
    - Applies `finetune.loss.class_weights` to single-label classification and `finetune.loss.pos_weight` to multilabel/AHI BCE loss.
    - Optionally attaches a model averager.

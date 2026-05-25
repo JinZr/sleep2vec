@@ -214,6 +214,11 @@ class LoraConfig:
     freeze_backbone_and_insert_lora: bool = False
     insert_lora: bool = True
     separate_adapters: bool = False
+    r: int = 8
+    alpha: int = 16
+    dropout: float = 0.05
+    target_modules: t.List[str] = field(default_factory=lambda: ["query", "key", "value"])
+    use_dora: bool = False
 
 
 @dataclass

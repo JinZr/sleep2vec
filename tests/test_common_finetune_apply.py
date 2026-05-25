@@ -75,6 +75,11 @@ def _finetune_payload() -> dict:
                 "freeze_backbone_and_insert_lora": True,
                 "insert_lora": True,
                 "separate_adapters": True,
+                "r": 4,
+                "alpha": 12,
+                "dropout": 0.15,
+                "target_modules": ["query", "dense"],
+                "use_dora": True,
             },
             "task": {
                 "type": "classification",
@@ -341,6 +346,11 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert args.freeze_backbone_and_insert_lora is True
     assert args.insert_lora is True
     assert args.separate_adapters is True
+    assert args.lora_r == 4
+    assert args.lora_alpha == 12
+    assert args.lora_dropout == 0.15
+    assert args.lora_target_modules == ["query", "dense"]
+    assert args.lora_use_dora is True
     assert args.freeze_tokenizer is False
     assert args.eval_visualizations is None
     assert args.output_dim == 2

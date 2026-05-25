@@ -126,9 +126,9 @@
 ## `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora`
 
 - File: `sleep2vec/downstream_model.py`
-- Signature: `freeze_backbone_and_insert_lora(insert_lora: bool = True, r: int = 8, lora_alpha: int = 16, lora_dropout: float = 0.05, target_modules=("query", "key", "value"), separate_adapters: bool = False) -> None`
-- Purpose and contract: freeze backbone parameters, optionally inject LoRA adapters into the encoder, and optionally create separate adapters per channel.
-- Important inputs/outputs: LoRA config in; no return value.
+- Signature: `freeze_backbone_and_insert_lora(insert_lora: bool = True, r: int = 8, lora_alpha: int = 16, lora_dropout: float = 0.05, target_modules=("query", "key", "value"), use_dora: bool = False, separate_adapters: bool = False) -> None`
+- Purpose and contract: freeze backbone parameters, optionally inject LoRA/DoRA adapters into the encoder with configurable rank/alpha/dropout/target modules, and optionally create separate adapters per channel.
+- Important inputs/outputs: adapter enable flag, rank, alpha, dropout, target-module names, DoRA flag, and separate-adapter flag in; no return value.
 - Side effects: mutates backbone module structure and parameter trainability.
 - Key callers/callees: caller is `Sleep2vecFinetuning.__init__`; callee is `get_peft_model`.
 - Reuse guidance: this is the canonical LoRA insertion path for downstream training.
