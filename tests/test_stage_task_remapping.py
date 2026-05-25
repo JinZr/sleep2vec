@@ -661,6 +661,29 @@ def test_compute_downstream_metrics_reports_binary_recall_and_specificity():
     assert metrics["specificity"] == 0.5
 
 
+def test_compute_downstream_metrics_preserves_macro_aliases_for_two_class_stage_names():
+    metrics = compute_downstream_metrics(
+        np.array([0, 0, 0, 1]),
+        np.array(
+            [
+                [0.9, 0.1],
+                [0.1, 0.9],
+                [0.2, 0.8],
+                [0.1, 0.9],
+            ],
+            dtype=np.float32,
+        ),
+        is_classification=True,
+        output_dim=2,
+        stage_names=["Wake", "Sleep"],
+    )
+
+    assert metrics["recall"] == 1.0
+    assert metrics["specificity"] == pytest.approx(1.0 / 3.0)
+    assert metrics["sens"] == pytest.approx(2.0 / 3.0)
+    assert metrics["spec"] == pytest.approx(2.0 / 3.0)
+
+
 def test_compute_downstream_metrics_reports_binary_scores_for_ahi():
     metrics = compute_downstream_metrics(
         np.array([0, 1, 1, 0]),

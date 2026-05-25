@@ -757,8 +757,10 @@ def compute_downstream_metrics(
             for i, f1 in enumerate(f1_per_class):
                 result[f"f1_{stage_names[i]}"] = float(f1)
 
-            result["spec"] = result["specificity"]
-            result["sens"] = result["recall"]
+            # Stage aliases are macro metrics even for two-class stage collapses;
+            # binary recall/specificity above keep their class-1-vs-class-0 meaning.
+            result["spec"] = float(macro_specificity(y_true, y_pred))
+            result["sens"] = float(recall_score(y_true, y_pred, average="macro", zero_division=0))
         return result
 
     preds = preds.astype(np.float32).reshape(-1)
