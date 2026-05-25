@@ -485,7 +485,7 @@ finetune:
 
 ---
 
-## Join us
+## Join Us
 
 We're Five Seasons Medical, building the full stack of AI for human health —
 contactless sensors, foundation models for physiology, and LLM agents
