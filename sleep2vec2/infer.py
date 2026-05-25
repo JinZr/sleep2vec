@@ -82,6 +82,17 @@ def _init_wandb(args):
     return wandb.init(**init_kwargs)
 
 
+def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count):
+    wandb.log({**metrics, "prediction_row_count": prediction_row_count})
+
+    artifact = wandb.Artifact(f"inference-{args.prediction_run_id}", type="inference")
+    artifact.add_file(str(args.inference_metrics_csv_path), name="metrics.csv")
+    artifact.add_file(str(args.inference_prediction_csv_path), name="predictions.csv")
+    artifact.add_file(str(args.manifest_path), name="run_manifest.json")
+    artifact.add_file(str(args.inference_overview_csv_path), name="overview.csv")
+    wandb.log_artifact(artifact)
+
+
 def run_inference(args):
     config_bundle, model_cfg = apply_finetune_config(args)
     inference_preset_path = getattr(args, "inference_preset_path", None)
@@ -155,6 +166,15 @@ def run_inference(args):
                 timestamp=args.timestamp_utc,
             )
         logging.info("Inference metrics: %s", metrics)
+
+        prediction_rows = getattr(model, "prediction_rows", [])
+        prediction_row_count = len(prediction_rows)
+        save_result_csv(metrics, str(args.inference_metrics_csv_path), args)
+        save_result_csv(metrics, str(args.inference_overview_csv_path), args)
+        save_prediction_csv(prediction_rows, str(args.inference_prediction_csv_path), args)
+        save_inference_manifest(args, metrics, prediction_row_count=prediction_row_count)
+        if wandb_run is not None:
+            _log_inference_outputs_to_wandb(args, metrics, prediction_row_count)
     finally:
         if wandb_run is not None:
             primary_exc_active = sys.exc_info()[0] is not None
@@ -165,12 +185,6 @@ def run_inference(args):
                     logging.warning("wandb.finish() failed during inference cleanup: %s", exc)
                 else:
                     raise
-
-    prediction_rows = getattr(model, "prediction_rows", [])
-    save_result_csv(metrics, str(args.inference_metrics_csv_path), args)
-    save_result_csv(metrics, str(args.inference_overview_csv_path), args)
-    save_prediction_csv(prediction_rows, str(args.inference_prediction_csv_path), args)
-    save_inference_manifest(args, metrics, prediction_row_count=len(prediction_rows))
 
 
 def parse_args():
