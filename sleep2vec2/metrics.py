@@ -82,6 +82,14 @@ def macro_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(specs)) if specs else 0.0
 
 
+def binary_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = y_true.astype(int).reshape(-1)
+    y_pred = y_pred.astype(int).reshape(-1)
+    tn = np.logical_and(y_true == 0, y_pred == 0).sum()
+    fp = np.logical_and(y_true == 0, y_pred == 1).sum()
+    return float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+
+
 def icc2_two_raters_arrays(a: np.ndarray, b: np.ndarray) -> float:
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
@@ -226,6 +234,7 @@ def compute_binary_label_metrics(gts, preds) -> dict[str, float]:
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "specificity": binary_specificity(y_true, y_pred),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
     }
     if np.unique(y_true).size < 2:
@@ -720,16 +729,25 @@ def compute_downstream_metrics(
             preds,
             metrics=["accuracy", "cohen_kappa", "f1_weighted", "f1_macro"],
         )
+        probs = preds.astype(np.float32)
+        y_true = gts.astype(np.int64)
+        if y_true.ndim == 2:
+            y_true = y_true.argmax(axis=1)
+        y_true = y_true.reshape(-1)
+        y_pred = probs.argmax(axis=1)
+
         if output_dim == 2:
             result["roc_auc"] = roc_auc_from_two_logits(gts, preds)
+            result["recall"] = float(recall_score(y_true, y_pred, zero_division=0))
+            result["specificity"] = binary_specificity(y_true, y_pred)
+        else:
+            result["recall"] = float(recall_score(y_true, y_pred, average="macro", zero_division=0))
+            result["specificity"] = float(macro_specificity(y_true, y_pred))
         if stage_names is None and output_dim == 5:
             stage_names = ["W", "N1", "N2", "N3", "REM"]
         if stage_names is not None:
             if output_dim is None:
                 output_dim = len(stage_names)
-            probs = preds.astype(np.float32)
-            y_true = gts.astype(np.int64)
-            y_pred = probs.argmax(axis=1)
 
             labels = np.arange(output_dim)
             f1_per_class = f1_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
@@ -739,9 +757,8 @@ def compute_downstream_metrics(
             for i, f1 in enumerate(f1_per_class):
                 result[f"f1_{stage_names[i]}"] = float(f1)
 
-            sens = recall_score(y_true, y_pred, average="macro", zero_division=0)
-            result["spec"] = float(macro_specificity(y_true, y_pred))
-            result["sens"] = float(sens)
+            result["spec"] = result["specificity"]
+            result["sens"] = result["recall"]
         return result
 
     preds = preds.astype(np.float32).reshape(-1)

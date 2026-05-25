@@ -610,8 +610,55 @@ def test_compute_downstream_metrics_reports_stage_specific_scores_for_stage3_and
 
         for stage_name in stage_names:
             assert metrics[f"f1_{stage_name}"] == 1.0
+        assert metrics["recall"] == 1.0
+        assert metrics["specificity"] == 1.0
         assert metrics["sens"] == 1.0
         assert metrics["spec"] == 1.0
+
+
+def test_compute_downstream_metrics_reports_multiclass_recall_and_specificity():
+    gts = np.array([0, 0, 1, 1, 2, 2])
+    preds = np.array(
+        [
+            [0.9, 0.1, 0.0],
+            [0.1, 0.8, 0.1],
+            [0.1, 0.8, 0.1],
+            [0.2, 0.7, 0.1],
+            [0.6, 0.2, 0.2],
+            [0.1, 0.2, 0.7],
+        ],
+        dtype=np.float32,
+    )
+
+    metrics = compute_downstream_metrics(
+        gts,
+        preds,
+        is_classification=True,
+        output_dim=3,
+    )
+
+    assert metrics["recall"] == pytest.approx(2.0 / 3.0)
+    assert metrics["specificity"] == pytest.approx((0.75 + 0.75 + 1.0) / 3.0)
+
+
+def test_compute_downstream_metrics_reports_binary_recall_and_specificity():
+    metrics = compute_downstream_metrics(
+        np.array([0, 0, 1, 1]),
+        np.array(
+            [
+                [0.9, 0.1],
+                [0.1, 0.9],
+                [0.2, 0.8],
+                [0.8, 0.2],
+            ],
+            dtype=np.float32,
+        ),
+        is_classification=True,
+        output_dim=2,
+    )
+
+    assert metrics["recall"] == 0.5
+    assert metrics["specificity"] == 0.5
 
 
 def test_compute_downstream_metrics_reports_binary_scores_for_ahi():
@@ -626,6 +673,7 @@ def test_compute_downstream_metrics_reports_binary_scores_for_ahi():
     assert metrics["accuracy"] == 1.0
     assert metrics["precision"] == 1.0
     assert metrics["recall"] == 1.0
+    assert metrics["specificity"] == 1.0
     assert metrics["f1"] == 1.0
     assert metrics["roc_auc"] == 1.0
 
@@ -639,5 +687,6 @@ def test_compute_ahi_pointwise_metrics_uses_namespaced_keys():
     assert metrics["ahi_pointwise_accuracy"] == 1.0
     assert metrics["ahi_pointwise_precision"] == 1.0
     assert metrics["ahi_pointwise_recall"] == 1.0
+    assert metrics["ahi_pointwise_specificity"] == 1.0
     assert metrics["ahi_pointwise_f1"] == 1.0
     assert metrics["ahi_pointwise_roc_auc"] == 1.0

@@ -225,6 +225,111 @@ def test_run_inference_writes_automatic_prediction_outputs(
     assert captured["manifest_prediction_row_count"] == 1
 
 
+@pytest.mark.parametrize("package_name", RUNTIME_PACKAGES)
+def test_run_inference_logs_metrics_and_files_to_wandb(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, package_name: str
+):
+    infer_mod = importlib.import_module(f"{package_name}.infer")
+    results_mod = importlib.import_module(f"{package_name}.results")
+    captured: dict[str, object] = {"artifact_files": [], "events": []}
+
+    @dataclass
+    class _DummyBundle:
+        finetune: object = None
+        averaging: object = None
+
+    class _DummyModule:
+        def __init__(self, args, model_cfg, finetune_config=None, averaging_config=None):
+            self.prediction_rows = [{"path": "sample.npz", "groundtruth": 1, "prediction": 1}]
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def test(self, model=None, ckpt_path=None, dataloaders=None):
+            return [{"test_loss": 0.5, "test_recall": 0.75}]
+
+    class _DummyArtifact:
+        def __init__(self, name, type):
+            captured["artifact_name"] = name
+            captured["artifact_type"] = type
+
+        def add_file(self, path, name=None):
+            assert Path(path).exists()
+            captured["artifact_files"].append((Path(path).name, name))
+
+    def _apply_config(args):
+        args.finetune_preset_path = Path("config.pkl")
+        return _DummyBundle(), object()
+
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    monkeypatch.setattr(infer_mod, "apply_finetune_config", _apply_config)
+    monkeypatch.setattr(infer_mod, "_build_inference_loader", lambda args: "loader")
+    monkeypatch.setattr(infer_mod, "Sleep2vecFinetuning", _DummyModule)
+    monkeypatch.setattr(infer_mod.pl, "Trainer", _DummyTrainer)
+    monkeypatch.setattr(infer_mod, "_init_wandb", lambda args: object())
+    monkeypatch.setattr(
+        infer_mod,
+        "prepare_inference_result_paths",
+        lambda args, namespace, checkpoint_paths=None, timestamp=None: results_mod.prepare_inference_result_paths(
+            args,
+            namespace=namespace,
+            root=tmp_path / "results" / "inference",
+            checkpoint_paths=checkpoint_paths,
+            timestamp=timestamp or "20260524T000000Z",
+        ),
+    )
+    monkeypatch.setattr(
+        infer_mod.wandb,
+        "log",
+        lambda payload: (captured.__setitem__("wandb_log", payload), captured["events"].append("log")),
+    )
+    monkeypatch.setattr(infer_mod.wandb, "Artifact", _DummyArtifact)
+    monkeypatch.setattr(
+        infer_mod.wandb,
+        "log_artifact",
+        lambda artifact: (captured.__setitem__("logged_artifact", artifact), captured["events"].append("artifact")),
+    )
+    monkeypatch.setattr(infer_mod.wandb, "finish", lambda: captured["events"].append("finish"))
+
+    args = argparse.Namespace(
+        label_name="sex",
+        avg_ckpts=1,
+        ckpt_path="/tmp/model.ckpt",
+        avg_ckpt_dir=None,
+        config=Path("dummy.yaml"),
+        precision=32,
+        accelerator="cpu",
+        devices=[0],
+        batch_size=4,
+        eval_split="test",
+        seed=4523,
+        wandb=True,
+        inference_preset_path=None,
+        lr=1e-4,
+        n_few_shot=None,
+        channel_names=["ppg"],
+    )
+
+    infer_mod.run_inference(args)
+
+    assert captured["wandb_log"] == {
+        "test_loss": 0.5,
+        "test_recall": 0.75,
+        "prediction_row_count": 1,
+    }
+    assert captured["artifact_name"] == f"inference-{args.prediction_run_id}"
+    assert captured["artifact_type"] == "inference"
+    assert captured["artifact_files"] == [
+        (args.inference_metrics_csv_path.name, "metrics.csv"),
+        (args.inference_prediction_csv_path.name, "predictions.csv"),
+        ("run_manifest.json", "run_manifest.json"),
+        ("overview.csv", "overview.csv"),
+    ]
+    assert captured["events"] == ["log", "artifact", "finish"]
+
+
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)
 def test_variant_result_csv_records_effective_preset_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, package_name: str
