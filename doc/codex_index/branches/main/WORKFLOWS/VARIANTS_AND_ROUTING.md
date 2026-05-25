@@ -15,8 +15,9 @@ When editing `sleep2vec2` or `sleep2expert`:
 
 1. Keep imports inside the package namespace.
 2. Keep `data/` and `preprocess/` behavior package-local.
-3. Use root `sleep2vec` docs only for shared dense contracts, then apply variant-specific deltas from `FUNCTIONS/VARIANT_SURFACES.md`.
-4. Run or update variant tests when behavior changes.
+3. Keep inference prediction extraction and CSV/manifest writing mirrored through package-local `sleep2vec_inference.py` and `results.py`.
+4. Use root `sleep2vec` docs only for shared dense contracts, then apply variant-specific deltas from `FUNCTIONS/VARIANT_SURFACES.md`.
+5. Run or update variant tests when behavior changes.
 
 Primary namespace guards:
 
@@ -70,6 +71,7 @@ Important options:
 ## Edit Hotspots
 
 - Change namespace parity or mirror behavior: package-local files plus namespace/parity tests.
+- Change automatic inference prediction export in a variant: package-local `infer.py`, `results.py`, `sleep2vec_inference.py`, and `sleep2vec_finetuning.py`.
 - Change MoE schema: `sleep2expert/config.py`.
 - Change sparse routing execution: `sleep2expert/backbones/roformer/moe.py`.
 - Change MoE auxiliary losses or metrics: `sleep2expert/losses/moe_regularization.py`.

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Evaluate a downstream checkpoint on a selected split, optionally average multiple checkpoints first.
+Evaluate a downstream checkpoint on a selected split, optionally average multiple checkpoints first, and write automatic metrics, prediction, overview, and manifest artifacts.
 
 ## Entry Command
 
@@ -16,7 +16,11 @@ Primary code path:
 4. `sleep2vec.infer._build_inference_loader`
 5. optional `sleep2vec.checkpoints.select_checkpoints`
 6. optional `sleep2vec.checkpoints.average_checkpoints`
-7. Lightning `trainer.test(...)`
+7. `sleep2vec.results.prepare_inference_result_paths`
+8. Lightning `trainer.test(...)`
+9. `sleep2vec.results.save_result_csv`
+10. `sleep2vec.results.save_prediction_csv`
+11. `sleep2vec.results.save_inference_manifest`
 
 ## Detailed Flow
 
@@ -35,8 +39,16 @@ Primary code path:
    - `avg_ckpts > 1`: choose candidate files from `avg_ckpt_dir` or checkpoint parent.
    - When using `best` or `last` with averaging, `avg_ckpt_dir` is required because the alias is not a concrete file.
    - Built-in `ahi` rejects averaging because the stored threshold is checkpoint-specific.
-6. Run evaluation.
-7. Optionally append metrics to a CSV through `sleep2vec.results.save_result_csv`.
+6. Prepare inference output paths.
+   - `prediction_run_id` includes timestamp, namespace, experiment version, label, split, checkpoint tag, and a short hash.
+   - run-local outputs live under `results/inference/<namespace>/<label>/<prediction_run_id>/`.
+   - `overview.csv` lives at `results/inference/overview.csv`.
+7. Run evaluation.
+8. Write metrics, predictions, overview, and manifest outputs.
+   - `metrics__<label>__<split>__<ckpt_tag>.csv`: run-local metrics.
+   - `predictions__<label>__<split>__<ckpt_tag>.csv`: one row per path, with list values serialized for CSV.
+   - `overview.csv`: append-only cross-run summary.
+   - `run_manifest.json`: machine-readable run metadata, paths, checkpoint identity, runtime settings, metrics, and prediction-row count.
 
 ## Checkpoint Selection Policy
 
@@ -57,6 +69,8 @@ Primary code path:
 - Backend-specific loader construction is still delegated through `_build_finetune_loader`.
 - Inference can initialize W&B separately from training and only on rank zero.
 - Metric computation remains inside `Sleep2vecFinetuning`, so inference reuses finetune epoch-reduction logic rather than a separate evaluation module.
+- Prediction row extraction is split out to `sleep2vec/sleep2vec_inference.py`; CSV writing and run metadata stay in `sleep2vec/results.py`.
+- Non-AHI prediction export deduplicates repeated `(path, token_start)` records before building per-path rows.
 - AHI inference requires `ahi_eval_threshold` to be present in the checkpoint state.
 
 ## Edit Hotspots
@@ -64,3 +78,5 @@ Primary code path:
 - Change checkpoint averaging semantics: `sleep2vec/checkpoints.py`
 - Change eval loader, data-backend, or dataset override behavior: `sleep2vec/infer.py`, `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_psg_dataset.py`
 - Change inference-only logging/W&B behavior: `sleep2vec/infer.py`
+- Change prediction row extraction: `sleep2vec/sleep2vec_inference.py`, `sleep2vec/sleep2vec_finetuning.py`
+- Change inference output layout, metadata, or CSV/manifest writes: `sleep2vec/results.py`

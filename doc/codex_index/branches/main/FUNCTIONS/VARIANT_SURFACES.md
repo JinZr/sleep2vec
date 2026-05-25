@@ -2,16 +2,16 @@
 
 ## Branch State
 
-On commit `4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd`, tracked variant coverage is:
+On commit `8c1989dcfb89dc51612656f460d9ebfc8adfb46c`, tracked variant coverage is:
 
-- `sleep2vec2/`: active standalone dense mirror with 102 tracked files
-- `sleep2expert/`: active standalone MoE-capable mirror with 106 tracked files
+- `sleep2vec2/`: active standalone dense mirror with 103 tracked files
+- `sleep2expert/`: active standalone MoE-capable mirror with 107 tracked files
 
 ## `sleep2vec2` Standalone Mirror
 
 - Files: `sleep2vec2/`, `configs/sleep2vec2/`, `tests/test_sleep2vec2_namespace.py`, `tests/test_sleep2vec2_roformer_parity.py`, `tests/test_sleep2vec2_kaldi_backend.py`
 - Purpose and contract: keep a package-local dense recipe mirror whose runtime, data, preprocessing, visualization, and config imports stay under `sleep2vec2`.
-- Important inputs/outputs: same pretrain/adapt/finetune/infer contracts as root `sleep2vec`, including package-local finetune imbalance loss/sampler schema and distributed-aware weighted metadata sampler, plus package-local Kaldi conversion and dataset routing.
+- Important inputs/outputs: same pretrain/adapt/finetune/infer contracts as root `sleep2vec`, including package-local finetune imbalance loss/sampler schema, distributed-aware weighted metadata sampler, automatic inference prediction export, plus package-local Kaldi conversion and dataset routing.
 - Side effects: runtime side effects mirror root entrypoints, but W&B projects use `sleep2vec2-*` names.
 - Reuse guidance: edit the package-local implementation directly when working in `sleep2vec2`; do not shortcut through root `sleep2vec`, `data`, or `preprocess`.
 - Duplication-risk notes: behavior parity is intentional duplication. Namespace-crossing imports and silent legacy RoFormer checkpoint compatibility are regressions.
@@ -20,7 +20,7 @@ On commit `4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd`, tracked variant coverage i
 
 - Files: `sleep2expert/`, `configs/sleep2expert/`, `tests/test_sleep2expert_namespace.py`, `tests/test_sleep2expert_roformer_parity.py`, `tests/test_sleep2expert_moe_*.py`, `tests/test_sleep2expert_routing_analysis.py`
 - Purpose and contract: keep a package-local mirror that adds MoE RoFormer layers, routing aux capture, pretrain MoE regularization, finetune MoE tuning, dense-to-MoE checkpoint expansion, and routing export.
-- Important inputs/outputs: same dense runtime inputs as root for non-MoE recipes, including package-local finetune imbalance loss/sampler schema and distributed-aware weighted metadata sampler; MoE recipes add `model.backbone.moe` and optional `finetune.moe_tuning` blocks.
+- Important inputs/outputs: same dense runtime inputs as root for non-MoE recipes, including package-local finetune imbalance loss/sampler schema, distributed-aware weighted metadata sampler, and automatic inference prediction export; MoE recipes add `model.backbone.moe` and optional `finetune.moe_tuning` blocks.
 - Side effects: runtime side effects mirror root entrypoints, W&B projects use `sleep2expert-*` names, and routing analysis writes CSV/PNG artifacts.
 - Reuse guidance: route schema changes through `sleep2expert.config`, sparse routing through `sleep2expert.backbones.roformer.moe`, MoE loss through `sleep2expert.losses.moe_regularization`, and persistent routing inspection through `sleep2expert.routing_analysis`.
 - Duplication-risk notes: `last_moe_aux` is in-memory state only; use routing export for persistent analysis. Do not implement parallel router metrics inside trainers or ad hoc scripts.
@@ -43,6 +43,7 @@ Important variant-specific functions and classes:
 - `sleep2vec2.backbones.roformer.RoFormerEncoderModel`: standalone dense RoFormer parity surface.
 - `sleep2expert.config.MoeConfig` and `_validate_moe_config`: MoE backbone schema and strict validation.
 - `sleep2expert.config._build_finetune_moe_tuning_config`: MoE finetune mode, LR-scale, and regularization parser.
+- `sleep2vec2.sleep2vec_inference.*` and `sleep2expert.sleep2vec_inference.*`: package-local mirrors of root inference prediction extraction.
 - `sleep2expert.backbones.roformer.moe.TopKRouter`: learned/random/hard router implementation.
 - `sleep2expert.backbones.roformer.moe.SparseMoEFFN`: sparse expert FFN execution.
 - `sleep2expert.losses.moe_regularization.compute_moe_regularization`: pretrain MoE auxiliary loss.

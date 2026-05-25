@@ -202,3 +202,124 @@
 - Key callers/callees: called from `__main__`; callees include `asleep.get_sleep.get_parsed_data`, `asleep.get_sleep.transform_data2model_input`, and `asleep.get_sleep.get_sleep_windows`.
 - Reuse guidance: use this utility for UKB CWA night extraction instead of adding sleep2vec-dependent cutting scripts.
 - Duplication risk notes: this is intentionally outside the sleep2vec preset and Kaldi conversion contracts; downstream conversion should consume its NPZ manifest rather than mixing asleep logic into `preprocess/save_dataset_presets.py`.
+
+## `utils.parse_ukb_annotations_by_person.main`
+
+- File: `utils/parse_ukb_annotations_by_person.py`
+- Signature: `main() -> None`
+- Purpose and contract: parse UK Biobank annotation exports into a derived bundle with dataset metadata, column/coding tables, withdrawal lists, per-participant JSON files, manifest, and README.
+- Important inputs/outputs: raw UKB root or `annotations/` directory plus output root in; `datasets/<dataset_id>/` CSV/JSONL metadata, `participants/<eid_prefix>/<eid>/<dataset_id>.json`, `withdrawals/withdrawn_eids.csv`, `manifest.json`, and README out.
+- Side effects: creates derived output directories, writes many CSV/JSON/README files, and deletes stale participant JSON files for the current dataset before rewriting.
+- Key callers/callees: called from `__main__`; callees include `resolve_annotation_root`, `parse_html_dictionary`, `parse_r_codings`, `build_dataset_outputs`, `parse_withdrawals`, `parse_participants`, `write_manifest`, and `write_readme`.
+- Reuse guidance: use this parser when downstream pipelines need stable ML feature names and participant-level JSON rather than re-parsing `.tab` exports manually.
+- Duplication risk notes: UDI parsing, HTML dictionary parsing, coding-table extraction, and retry-on-EIO participant writes are centralized here.
+
+## `utils.parse_ukb_annotations_by_person.build_dataset_outputs`
+
+- File: `utils/parse_ukb_annotations_by_person.py`
+- Signature: `build_dataset_outputs(annotation_root: Path, output_root: Path, tab_path: Path) -> tuple[dict, list[dict]]`
+- Purpose and contract: derive dataset-level schema artifacts for one UKB `.tab` file from companion dictionary/coding files when available, falling back to header-only metadata when not.
+- Important inputs/outputs: annotation root, output root, and `.tab` path in; dataset metadata plus normalized column records out.
+- Side effects: writes `columns.csv`, `columns.jsonl`, `fields.csv`, `codings.csv`, and `missing_codings.csv`.
+- Key callers/callees: caller is `main`; callees include `parse_html_dictionary`, `parse_header_only`, `parse_r_codings`, `normalize_columns`, and `build_field_summary`.
+- Reuse guidance: use for dataset-level schema generation before participant JSON parsing.
+- Duplication risk notes: dictionary/coding fallback behavior belongs here.
+
+## `utils.parse_ukb_annotations_by_person.parse_participants`
+
+- File: `utils/parse_ukb_annotations_by_person.py`
+- Signature: `parse_participants(output_root: Path, tab_path: Path, dataset_id: str, columns: list[dict], withdrawn_eids: set[str], exclude_withdrawn: bool, limit_rows: int | None) -> dict`
+- Purpose and contract: stream one `.tab` file and write per-participant JSON values using the normalized feature names from the dataset schema.
+- Important inputs/outputs: output root, `.tab` path, dataset id, normalized columns, withdrawals, and optional row limit in; participant metadata summary out.
+- Side effects: removes stale participant JSON files for that dataset and writes `participants/<eid_prefix>/<eid>/<dataset_id>.json`.
+- Key callers/callees: caller is `main`; callees include `validate_tab_header`, `participant_path`, and `write_participant_json`.
+- Reuse guidance: use this when regenerating participant JSON for a parsed dataset.
+- Duplication risk notes: missing-value omission, withdrawal handling, and EIO retry behavior should stay centralized here.
+
+## `utils.collect_ukb_demographics.main`
+
+- File: `utils/collect_ukb_demographics.py`
+- Signature: `main() -> None`
+- Purpose and contract: collect `eid`, sex, and age fields from UKB-style participant JSON files, recording source keys for each derived value.
+- Important inputs/outputs: JSON root, output CSV path, optional glob pattern, and optional dedupe-by-eid flag in; one-row-per-JSON or one-row-per-eid CSV out.
+- Side effects: reads JSON files recursively and writes the destination CSV.
+- Key callers/callees: called from `__main__`; callees include `extract_record`, `get_values`, `first_present`, `find_fallback_key`, and `compute_age_from_birth_and_assessment`.
+- Reuse guidance: use after `parse_ukb_annotations_by_person.py` or equivalent UKB JSON export when age/sex covariates are needed.
+- Duplication risk notes: source-key provenance for sex and age should remain here instead of being reconstructed in spreadsheets.
+
+## `utils.collect_ukb_demographics.extract_record`
+
+- File: `utils/collect_ukb_demographics.py`
+- Signature: `extract_record(path: Path, root: Path) -> dict[str, str]`
+- Purpose and contract: extract one demographic row from a UKB-style participant JSON, including `eid`, `dataset_id`, sex code/label, age, JSON path, relative path, and source fields.
+- Important inputs/outputs: JSON path and scan root in; CSV row dictionary out.
+- Side effects: reads one JSON file.
+- Key callers/callees: caller is `main`; callees include `load_json`, `get_values`, `first_present`, `find_fallback_key`, and `compute_age_from_birth_and_assessment`.
+- Reuse guidance: use for programmatic demographic extraction when the CLI is too coarse.
+- Duplication risk notes: primary key preference and fallback source tracking belong here.
+
+## `utils.fix_kaldi_index.fix_index`
+
+- File: `utils/fix_kaldi_index.py`
+- Signature: `fix_index(df: pd.DataFrame, *, source_field: str) -> tuple[pd.DataFrame, int]`
+- Purpose and contract: ensure each row produces a unique Kaldi sample-key prefix by assigning a synthesized `session_id` only to duplicate `(source, record-key)` rows.
+- Important inputs/outputs: index dataframe and source-field name in; fixed dataframe plus changed-row count out.
+- Side effects: none.
+- Key callers/callees: caller is `main`; callees include `_key_prefix`, `_unique_session_id`, `_source_prefix`, and `_record_key_from_row`.
+- Reuse guidance: use before `convert_npz_to_kaldi.py` when duplicate sample keys would otherwise fail converter preflight.
+- Duplication risk notes: keep sample-key sanitization aligned with converter key construction.
+
+## `utils.fix_kaldi_index.main`
+
+- File: `utils/fix_kaldi_index.py`
+- Signature: `main(argv: Sequence[str] | None = None) -> int`
+- Purpose and contract: CLI wrapper around `fix_index`; overwrites the input CSV with a `.backup` by default or writes a separate output path when requested.
+- Important inputs/outputs: `--index`, optional `--output`, and `--source-field` in; repaired CSV out.
+- Side effects: may create `--index.backup`, creates output parent directories, and writes CSV.
+- Key callers/callees: called from `__main__`; callee is `fix_index`.
+- Reuse guidance: use this CLI for local Kaldi index repair instead of editing `session_id` by hand.
+- Duplication risk notes: this is a data-prep repair utility, not a runtime fallback for duplicate keys.
+
+## `utils.match_case_controls.main`
+
+- File: `utils/match_case_controls.py`
+- Signature: `main(argv=None) -> None`
+- Purpose and contract: build matched case-control cohorts from a flat CSV with exact matching, hard calipers, propensity-score features, optional genetic-style weight search, and balance diagnostics.
+- Important inputs/outputs: input CSV, matched output path, case/id/covariate settings, exact columns, calipers, ratio, minimum controls, optional quality gates, and output paths in; matched, unmatched cases, excluded rows, case match counts, and balance CSVs out.
+- Side effects: writes all requested/default CSV outputs and exits nonzero for configured quality failures such as unmatched cases or SMD threshold violations.
+- Key callers/callees: called from `__main__`; callees include `prepare_rows`, `build_design_matrices`, `estimate_propensity_scores`, `optimize_weight_matrix`, `match_cases`, `compute_balance`, and `write_csv`.
+- Reuse guidance: use this script for reproducible cohort matching rather than maintaining matching notebooks.
+- Duplication risk notes: case/control string handling, NA-token preservation, caliper semantics, and balance output schema are covered by tests and should not be cloned.
+
+## `utils.match_case_controls.match_cases`
+
+- File: `utils/match_case_controls.py`
+- Signature: `match_cases(df: pd.DataFrame, *, is_case: pd.Series, id_col: str, exact_cols: list[str], calipers: dict[str, float], ratio: int, min_controls_per_case: int, propensity: pd.Series, distance_features: pd.DataFrame, weight_matrix: np.ndarray) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[int], list[str]]`
+- Purpose and contract: greedily match ordered cases to unused controls subject to exact constraints, calipers, ratio, and minimum-control policy.
+- Important inputs/outputs: cleaned cohort data, case mask, matching constraints, propensity scores, distance features, and weight matrix in; matched rows, unmatched cases, case counts, matched indices, and matched roles out.
+- Side effects: none.
+- Key callers/callees: callers are `main` and `optimize_weight_matrix`; callees include `order_cases_like_matchit`, `passes_exact`, `passes_calipers`, and `matching_distance`.
+- Reuse guidance: use for deterministic matching once features and weights have been prepared.
+- Duplication risk notes: non-reuse of controls and partial-vs-unmatched status logic belongs here.
+
+## `utils.match_case_controls.compute_balance`
+
+- File: `utils/match_case_controls.py`
+- Signature: `compute_balance(encoded: pd.DataFrame, matched_indices: list[int], matched_roles: list[str], *, before_is_case: pd.Series, metadata: list[tuple[str, str, str]], max_smd: float | None) -> pd.DataFrame`
+- Purpose and contract: compute before/after standardized mean differences for encoded covariates and mark whether each after-match value passes an optional SMD threshold.
+- Important inputs/outputs: encoded covariate matrix, matched row indices/roles, pre-match case mask, design metadata, and optional max SMD in; balance dataframe out.
+- Side effects: none.
+- Key callers/callees: caller is `main`; callees include `smd_denominator` and `smd`.
+- Reuse guidance: use for post-match diagnostics that need the same balance schema as the CLI.
+- Duplication risk notes: pre-match denominator policy is tested here.
+
+## `utils.match_case_controls.optimize_weight_matrix`
+
+- File: `utils/match_case_controls.py`
+- Signature: `optimize_weight_matrix(df: pd.DataFrame, *, is_case: pd.Series, id_col: str, exact_cols: list[str], calipers: dict[str, float], ratio: int, min_controls_per_case: int, propensity: pd.Series, distance_features: pd.DataFrame, base_matrix: np.ndarray, encoded_balance: pd.DataFrame, metadata: list[tuple[str, str, str]], seed: int, genetic_maxiter: int, genetic_popsize: int) -> np.ndarray`
+- Purpose and contract: optionally search feature weights with SciPy differential evolution to improve match balance while penalizing unmatched or shortfall cases.
+- Important inputs/outputs: matching inputs, base covariance/identity matrix, encoded balance features, metadata, and search controls in; weighted matrix out.
+- Side effects: may run a SciPy optimizer.
+- Key callers/callees: caller is `main`; callees include `weighted_matrix`, `match_cases`, and `matching_objective`.
+- Reuse guidance: use when the default equal-weight distance is not sufficient for balance.
+- Duplication risk notes: optimization objective and penalties are part of the matching contract; avoid ad hoc external tuning loops.

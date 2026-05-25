@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-05-24
+
+- Refreshed the `main` branch index for commit `8c1989dcfb89dc51612656f460d9ebfc8adfb46c`.
+- Updated tracked-file coverage counts to reflect the current branch:
+  - `sleep2vec/`: 81
+  - `data/`: 8
+  - `preprocess/`: 7
+  - `sleep2vec2/`: 103
+  - `sleep2expert/`: 107
+  - `sleep2vec_moe/`: 0
+  - `sleep2vec_hires/`: 0
+  - `configs/`: 101
+  - `tests/`: 49
+  - `utils/`: 7
+- Added current automatic inference export guidance for run-local metrics CSVs, per-path prediction CSVs, shared `overview.csv`, `run_manifest.json`, `prediction_run_id`, and package-local variant mirrors.
+- Added missing standalone utility guidance for UKB annotation parsing, UKB demographic extraction, Kaldi index repair, and case-control matching.
+- Stale entries removed or corrected:
+  - old manifest/README commit and timestamp from `4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd`
+  - old tracked-file counts for `sleep2vec/`, `sleep2vec2/`, `sleep2expert/`, `configs/`, `tests/`, and `utils/`
+  - old variant coverage counts in `FUNCTIONS/VARIANT_SURFACES.md`
+
 ## 2026-05-11
 
 - Repaired the `main` branch index for commit `4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd`.

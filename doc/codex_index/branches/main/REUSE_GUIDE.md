@@ -37,6 +37,9 @@ This page answers the practical question: when you need to add or change behavio
 | Generic downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Single metric reducer for classification, regression, multilabel AHI pointwise, and stage remap outputs | Per-stage custom metric calculations |
 | AHI threshold search and event metrics | `sleep2vec.metrics.compute_ahi_event_metrics`, `select_best_ahi_threshold`, and the prepared-record helpers | Single contract for validation threshold search, record merging, and event/summary metrics | New AHI evaluation branches in trainers or scripts |
 | Result CSV output | `sleep2vec.results.save_result_csv` | Preserves rank-zero gating, lockfile semantics, schema expansion, and standard metadata columns | One-off CSV writers or the removed `metrics.save_result_csv` path |
+| Inference output paths and manifest | `sleep2vec.results.prepare_inference_result_paths`, `make_prediction_run_id`, and `save_inference_manifest` | Centralizes `results/inference/<namespace>/<label>/<prediction_run_id>/`, checkpoint tags, overview paths, and manifest schema | Rebuilding inference output folders in `infer.py` or trainers |
+| Inference prediction rows | `sleep2vec.sleep2vec_inference.extract_prediction_records`, `build_prediction_rows`, and `build_ahi_prediction_rows` | Converts model outputs into path-level rows for classification, regression, multilabel, and AHI tasks while deduplicating `(path, token_start)` windows | Saving raw batch logits directly from trainer loops |
+| Prediction CSV output | `sleep2vec.results.save_prediction_csv` | Preserves rank-zero gating, lockfile semantics, empty-header output, list serialization, and metadata parity with metrics CSVs | Ad hoc per-path CSV writers |
 | Downstream eval plotting | `sleep2vec.visualization.downstream_eval.DownstreamEvalVisualizer` | Centralizes confusion matrix, ROC, regression scatter, and AHI summary scatter logging | WandB logging logic inside trainer steps |
 | Preset generation | `preprocess/save_dataset_presets.py` | Canonical CLI path that exercises `PSGPretrainDataset` and YAML-driven `preset_build` side effects | External scripts that pickle `SampleIndex` lists directly |
 | Kaldi conversion | `preprocess/convert_npz_to_kaldi.py` plus package-local mirrors | Canonical NPZ-to-Kaldi root writer with split manifests, sorted scps, sharding, and semantic compression policy | One-off ark/scp writers |
@@ -44,6 +47,10 @@ This page answers the practical question: when you need to add or change behavio
 | Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness | One-off shell loops or YAML linters without repo semantics |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
 | UKB asleep night cutting | `utils/cut_ukb_sleep_with_asleep.py` | Standalone utility that mirrors UKB `.cwa` input trees and saves longest sleep block per asleep noon-to-noon interval | New sleep2vec-dependent cutting scripts |
+| UKB annotation parsing | `utils/parse_ukb_annotations_by_person.py` | Converts UKB export bundles into derived dataset metadata, codings, withdrawals, manifest, and per-participant JSON files | One-off parsers that lose UDI/feature-name provenance |
+| UKB demographic collection | `utils/collect_ukb_demographics.py` | Reads UKB-style participant JSON trees and extracts age/sex with source columns | Manual spreadsheet joins for sex/age fields |
+| Kaldi index repair | `utils/fix_kaldi_index.py` | Assigns stable unique `session_id` values so converter sample keys are unique before ark/scp writing | Editing CSV rows by hand after converter failures |
+| Case-control matching | `utils/match_case_controls.py` | MatchIt-style CSV utility with exact constraints, calipers, propensity features, optional genetic weight search, and balance outputs | Untracked notebooks for cohort matching |
 | Standalone dense variant | `sleep2vec2/*` package-local implementations | Maintains behavior parity while keeping imports under `sleep2vec2`, including data/preprocess mirrors | Cross-namespace shortcuts through root `sleep2vec`, `data`, or `preprocess` |
 | Standalone MoE config | `sleep2expert.config.MoeConfig`, `_validate_moe_config`, and `_build_finetune_moe_tuning_config` | Single source for MoE schema, router groups, finetune modes, LR scales, and unsupported regularization checks | Reading `model.backbone.moe` as loose dicts |
 | Sparse MoE routing | `sleep2expert.backbones.roformer.moe.TopKRouter` and `SparseMoEFFN` | Canonical router/expert implementation for learned, random, hard-modality, and hard-group modes | Router branches outside the standalone RoFormer layers |
@@ -95,6 +102,10 @@ This page answers the practical question: when you need to add or change behavio
   - `utils/check_configs.py`
 - Only touch `watchpat_zzp_to_edf.py` for WatchPAT-specific conversion work.
 - Use `utils/cut_ukb_sleep_with_asleep.py` for UKB `.cwa` night extraction with the external `asleep` package; keep it independent of sleep2vec runtime/data imports.
+- Use `utils/parse_ukb_annotations_by_person.py` before downstream scripts need stable UKB feature names or participant JSON.
+- Use `utils/collect_ukb_demographics.py` to derive `eid`, age, and sex tables from those JSON trees.
+- Use `utils/fix_kaldi_index.py` when duplicate Kaldi sample keys come from repeated source/session path prefixes.
+- Use `utils/match_case_controls.py` for reproducible case-control cohort matching and balance diagnostics.
 
 ### If you are changing standalone variants
 
@@ -116,6 +127,7 @@ This page answers the practical question: when you need to add or change behavio
 9. Kaldi support reuses the same `DefaultDataset` batch contract through storage hooks. Avoid adding a second collate path.
 10. `sleep2vec2` and `sleep2expert` are package-local mirrors; cross-namespace imports are regressions unless a test explicitly permits them.
 11. MoE routing aux is transient in `last_moe_aux`; persistent analysis should go through `sleep2expert.routing_analysis`.
+12. Inference metrics, overview rows, predictions, and manifests share one `prediction_run_id`; update `sleep2vec.results` and `sleep2vec.sleep2vec_inference` together instead of adding a parallel export path.
 
 ## Known Non-Reuse Zones
 
