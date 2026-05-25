@@ -88,14 +88,25 @@
 - Reuse guidance: use this exact gating if new inference artifacts need W&B.
 - Duplication risk notes: keep rank-zero gating centralized.
 
+## `sleep2vec.infer._log_inference_outputs_to_wandb`
+
+- File: `sleep2vec/infer.py`
+- Signature: `_log_inference_outputs_to_wandb(args, metrics, prediction_row_count)`
+- Purpose and contract: log inference metrics plus `prediction_row_count` to W&B, then attach metrics CSV, prediction CSV, manifest JSON, and overview CSV as one inference artifact.
+- Important inputs/outputs: prepared inference args, metrics mapping, and row count in; no return value.
+- Side effects: external W&B metric and artifact logging.
+- Key callers/callees: caller is `run_inference`; callees are `wandb.log`, `wandb.Artifact`, and `wandb.log_artifact`.
+- Reuse guidance: extend this helper for inference-only W&B artifact changes instead of putting upload logic in CSV writers.
+- Duplication risk notes: artifact contents should remain aligned with `prepare_inference_result_paths` and `save_inference_manifest`.
+
 ## `sleep2vec.infer.run_inference`
 
 - File: `sleep2vec/infer.py`
 - Signature: `run_inference(args) -> None`
-- Purpose and contract: canonical inference driver; normalizes config, applies optional NPZ preset override, builds trainer and loader, optionally averages checkpoints, runs evaluation, and writes automatic metrics, prediction CSV, overview CSV, and manifest artifacts under a run-local inference directory.
+- Purpose and contract: canonical inference driver; normalizes config, applies optional NPZ preset override, builds trainer and loader, optionally averages checkpoints, runs evaluation, writes automatic metrics, prediction CSV, overview CSV, and manifest artifacts under a run-local inference directory, and optionally logs the same outputs to W&B.
 - Important inputs/outputs: namespace in; no direct return value.
-- Side effects: optional W&B run, trainer evaluation, creation of `results/inference/<namespace>/<label>/<prediction_run_id>/`, metrics CSV writes, prediction CSV writes, shared overview append, and `run_manifest.json` write.
-- Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, `_init_wandb`, `prepare_inference_result_paths`, `save_result_csv`, `save_prediction_csv`, and `save_inference_manifest`.
+- Side effects: optional W&B run, trainer evaluation, creation of `results/inference/<namespace>/<label>/<prediction_run_id>/`, metrics CSV writes, prediction CSV writes, shared overview append, `run_manifest.json` write, and optional W&B artifact upload.
+- Key callers/callees: called from `__main__`; calls `apply_finetune_config`, `_build_inference_loader`, `select_checkpoints`, `average_checkpoints`, `_init_wandb`, `prepare_inference_result_paths`, `save_result_csv`, `save_prediction_csv`, `save_inference_manifest`, and `_log_inference_outputs_to_wandb`.
 - Reuse guidance: extend here for inference-only behavior changes.
 - Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`; inference artifact naming and metadata belongs in `sleep2vec.results`, not trainer code.
 
@@ -242,11 +253,24 @@
 - Reuse guidance: use this CLI for persistent routing inspection instead of reading `last_moe_aux` manually.
 - Duplication risk notes: `last_moe_aux` is transient runtime state; this module is the explicit export path.
 
+## `sleep2vec.metrics.binary_specificity` and `macro_specificity`
+
+- File: `sleep2vec/metrics.py`
+- Signatures:
+  - `binary_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float`
+  - `macro_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float`
+- Purpose and contract: compute true-negative-rate specificity for binary tasks and macro one-vs-rest specificity for multiclass tasks.
+- Important inputs/outputs: integer labels/predictions in; scalar float out, returning `0.0` when a denominator is empty.
+- Side effects: none.
+- Key callers/callees: callers are `compute_binary_label_metrics` and `compute_downstream_metrics`.
+- Reuse guidance: use these reducers when adding classification metrics instead of recalculating specificity in trainer code.
+- Duplication risk notes: binary specificity is class-1-vs-class-0, while stage aliases continue to report macro `spec`.
+
 ## `sleep2vec.metrics.compute_downstream_metrics`
 
 - File: `sleep2vec/metrics.py`
 - Signature: `compute_downstream_metrics(gts, preds, *, is_classification: bool, is_multilabel: bool = False, output_dim: int | None = None, stage_names=None)`
-- Purpose and contract: reduce per-sample predictions into classification, regression, or multilabel metrics, including stage-aware reporting for remapped staging tasks.
+- Purpose and contract: reduce per-sample predictions into classification, regression, or multilabel metrics, including recall/specificity for classification and stage-aware reporting for remapped staging tasks.
 - Important inputs/outputs: ground truth and predictions in, metrics dict out.
 - Side effects: none.
 - Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `compute_binary_label_metrics`, `compute_ahi_pointwise_metrics`, and `roc_auc_from_two_logits`.

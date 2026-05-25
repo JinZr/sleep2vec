@@ -74,7 +74,7 @@ Stage transitions are strict: `--ckpt-path` resumes within the same phase only, 
    - a `Sleep2vecPretrainModel` backbone
    - a `Sleep2vecDownstreamModel` head stack
    - optional pretrained-backbone loading
-   - optional LoRA insertion
+   - optional LoRA/DoRA insertion with YAML-configured rank, alpha, dropout, target modules, and separate adapters
    - optional model averaging
    - optional downstream evaluation visualization hooks
 6. Run `trainer.fit(...)`.
@@ -95,6 +95,7 @@ Built-in task semantics now include `stage3`, `stage4`, `stage5`, `ahi`, `sex`, 
 6. Run `trainer.test(...)`.
 7. Prepare a run-local inference output directory under `results/inference/<namespace>/<label>/<prediction_run_id>/`.
 8. Write run metrics, append `results/inference/overview.csv`, write path-level predictions, and write `run_manifest.json`.
+9. If W&B is enabled, log metrics plus `prediction_row_count` and upload metrics, predictions, manifest, and overview files as one inference artifact.
 
 AHI inference deliberately rejects checkpoint averaging because the fitted `ahi_eval_threshold` is checkpoint-specific.
 
@@ -177,6 +178,7 @@ The canonical Kaldi path is:
 - shared tokenizer-dimension parity
 - YAML `preset_build` strictness
 - repo-specific `ppg_*finetune*.yaml` contracts
+- tracked example recipes under `configs/examples/**`
 
 ## Outputs And Side Effects
 
@@ -188,7 +190,7 @@ The canonical Kaldi path is:
 - Per-run copied configs: `config.yaml`, plus phase-specific `config.stage1.yaml` / `config.stage2.yaml` for adaptation
 - Per-run CLI snapshot: `cli_args.yaml`, plus phase-specific adaptation snapshots
 - Downstream results table: caller-specified CSV via `sleep2vec.results.save_result_csv`
-- Inference outputs: run-local `metrics__*.csv`, `predictions__*.csv`, `run_manifest.json`, and shared `results/inference/overview.csv`
+- Inference outputs: run-local `metrics__*.csv`, `predictions__*.csv`, `run_manifest.json`, shared `results/inference/overview.csv`, and optional W&B inference artifacts
 - Visualization side effects:
   - pair-accuracy heatmaps
   - layer-mix heatmaps and tables

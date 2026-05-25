@@ -13,6 +13,17 @@
 - Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing.
 - Reuse guidance: extend these dataclasses before adding new ad hoc dict plumbing in entrypoints or Lightning modules.
 
+## `sleep2vec.config.LoraConfig`
+
+- File: `sleep2vec/config.py`
+- Signature: dataclass with `freeze_backbone_and_insert_lora`, `insert_lora`, `separate_adapters`, `r`, `alpha`, `dropout`, `target_modules`, and `use_dora`.
+- Purpose and contract: carry downstream adapter policy from YAML through config parsing, including LoRA rank/alpha/dropout/target-module settings and the DoRA toggle.
+- Important inputs/outputs: YAML `finetune.lora` mapping in; typed config fields consumed by `apply_finetune_config`.
+- Side effects: none.
+- Key callers/callees: built by `load_finetune_config`; consumed by `sleep2vec.common.apply_finetune_config`.
+- Reuse guidance: add downstream adapter schema fields here before wiring them into runtime namespaces.
+- Duplication risk notes: do not add separate CLI-only adapter hyperparameters that bypass this config object.
+
 ## `sleep2vec.config.load_model_config`
 
 - File: `sleep2vec/config.py`
@@ -83,8 +94,8 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_finetune_config(args) -> tuple[Any, Any]`
-- Purpose and contract: load finetune YAML, copy data/model/task/imbalance/LoRA/eval-visualization settings into the CLI namespace, apply data-backend settings, and enforce dataloader/model channel parity.
-- Important inputs/outputs: mutates `args`; returns `(config_bundle, model_cfg)` for convenience.
+- Purpose and contract: load finetune YAML, copy data/model/task/imbalance/LoRA/DoRA/eval-visualization settings into the CLI namespace, apply data-backend settings, and enforce dataloader/model channel parity.
+- Important inputs/outputs: mutates `args`, including `args.lora_r`, `args.lora_alpha`, `args.lora_dropout`, `args.lora_target_modules`, and `args.lora_use_dora`; returns `(config_bundle, model_cfg)` for convenience.
 - Side effects: converts configured data paths into `Path` objects and mutates many runtime flags.
 - Key callers/callees: callers are `sleep2vec.finetune` and `sleep2vec.infer`; callees are `load_finetune_config`, `apply_task_flags`, and `_validate_and_apply_imbalance_config`.
 - Reuse guidance: this is the canonical CLI binding layer for finetune/inference.

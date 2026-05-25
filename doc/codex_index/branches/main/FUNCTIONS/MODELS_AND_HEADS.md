@@ -129,10 +129,21 @@
 - Signature: `freeze_backbone_and_insert_lora(insert_lora: bool = True, r: int = 8, lora_alpha: int = 16, lora_dropout: float = 0.05, target_modules=("query", "key", "value"), use_dora: bool = False, separate_adapters: bool = False) -> None`
 - Purpose and contract: freeze backbone parameters, optionally inject LoRA/DoRA adapters into the encoder with configurable rank/alpha/dropout/target modules, and optionally create separate adapters per channel.
 - Important inputs/outputs: adapter enable flag, rank, alpha, dropout, target-module names, DoRA flag, and separate-adapter flag in; no return value.
-- Side effects: mutates backbone module structure and parameter trainability.
+- Side effects: mutates backbone module structure and parameter trainability; with separate adapters, the default LoRA adapter is frozen and only `ch_<channel>` adapter weights are trainable.
 - Key callers/callees: caller is `Sleep2vecFinetuning.__init__`; callee is `get_peft_model`.
 - Reuse guidance: this is the canonical LoRA insertion path for downstream training.
 - Duplication risk notes: adapter naming and trainable-parameter enabling should stay centralized here.
+
+## `Sleep2vecDownstreamModel._enable_all_adapters_trainable`
+
+- File: `sleep2vec/downstream_model.py`
+- Signature: `_enable_all_adapters_trainable(self) -> None`
+- Purpose and contract: after separate channel adapters are added, freeze all LoRA parameters and re-enable only the configured channel adapter weights.
+- Important inputs/outputs: uses `self.channel_adapters`; mutates encoder parameter `requires_grad` flags.
+- Side effects: changes adapter trainability.
+- Key callers/callees: caller is `freeze_backbone_and_insert_lora`.
+- Reuse guidance: keep separate-adapter trainability changes here instead of editing PEFT parameters from trainer code.
+- Duplication risk notes: default adapter parameters must not be accidentally left trainable when channel-specific adapters are requested.
 
 ## `sleep2vec.downstreams.temporal_aggregation.build_temporal_aggregator`
 
