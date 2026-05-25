@@ -8,6 +8,7 @@ import typing as t
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 TRUTHY_MASK_VALUES = frozenset({"1", "1.0", "true", "t", "yes"})
 
@@ -130,14 +131,12 @@ def fill_duration(
     if duration_column not in fixed.columns:
         fixed[duration_column] = pd.NA
 
-    changed = 0
-    for row_index, row in fixed.iterrows():
-        if not _is_missing(row[duration_column]):
-            continue
+    missing_indexes = [row_index for row_index, row in fixed.iterrows() if _is_missing(row[duration_column])]
+    for row_index in tqdm(missing_indexes, desc="Filling duration", unit="row"):
+        row = fixed.loc[row_index]
         npz_path = _resolve_npz_path(row["path"], prefix_maps)
         fixed.at[row_index, duration_column] = infer_duration(npz_path, row)
-        changed += 1
-    return fixed, changed
+    return fixed, len(missing_indexes)
 
 
 def main(argv: t.Sequence[str] | None = None) -> int:
