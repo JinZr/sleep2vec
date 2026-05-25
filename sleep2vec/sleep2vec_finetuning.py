@@ -79,6 +79,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if args.freeze_backbone_and_insert_lora:
             self.model.freeze_backbone_and_insert_lora(
                 insert_lora=args.insert_lora,
+                r=args.lora_r,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=args.lora_dropout,
+                target_modules=args.lora_target_modules,
+                use_dora=args.lora_use_dora,
                 separate_adapters=args.separate_adapters,
             )
 

@@ -271,6 +271,33 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.finetune.loss.class_weights is None
     assert bundle.finetune.loss.pos_weight is None
     assert bundle.finetune.sampler.weighted_random is False
+    assert bundle.finetune.lora.r == 8
+    assert bundle.finetune.lora.alpha == 16
+    assert bundle.finetune.lora.dropout == 0.05
+    assert bundle.finetune.lora.target_modules == ["query", "key", "value"]
+    assert bundle.finetune.lora.use_dora is False
+
+
+def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["lora"].update(
+        {
+            "r": 4,
+            "alpha": 12,
+            "dropout": 0.15,
+            "target_modules": ["query", "dense"],
+            "use_dora": True,
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.lora.r == 4
+    assert bundle.finetune.lora.alpha == 12
+    assert bundle.finetune.lora.dropout == 0.15
+    assert bundle.finetune.lora.target_modules == ["query", "dense"]
+    assert bundle.finetune.lora.use_dora is True
 
 
 @pytest.mark.parametrize(
