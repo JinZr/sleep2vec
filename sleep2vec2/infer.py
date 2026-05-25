@@ -85,7 +85,11 @@ def _init_wandb(args):
 def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count):
     wandb.log({**metrics, "prediction_row_count": prediction_row_count})
 
-    artifact = wandb.Artifact(f"inference-{args.prediction_run_id}", type="inference")
+    # W&B caps artifact names at 128 chars; CSVs and the manifest keep the full prediction_run_id.
+    run_id_hash = args.prediction_run_id.rsplit("__", 1)[-1]
+    artifact = wandb.Artifact(
+        f"inference-{args.timestamp_utc}__{args.inference_namespace}__{run_id_hash}", type="inference"
+    )
     artifact.add_file(str(args.inference_metrics_csv_path), name="metrics.csv")
     artifact.add_file(str(args.inference_prediction_csv_path), name="predictions.csv")
     artifact.add_file(str(args.manifest_path), name="run_manifest.json")
