@@ -24,8 +24,11 @@ class RoFormerConfig:
     layer_norm_eps: float = 1e-12
     pad_token_id: int = 0
     rotary_value: bool = False
+    attention_backend: str = "eager"
 
     def __post_init__(self) -> None:
+        if self.attention_backend not in ("eager", "sdpa"):
+            raise ValueError("attention_backend must be one of eager, sdpa.")
         if self.embedding_size is None:
             self.embedding_size = self.hidden_size
         if self.hidden_size <= 0:

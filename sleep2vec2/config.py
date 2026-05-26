@@ -36,6 +36,7 @@ class BackboneConfig:
     num_hidden_layers: int = 12
     num_attention_heads: int = 16
     vocab_size: int = 1
+    attention_backend: str = "eager"
     config_overrides: dict[str, t.Any] = field(default_factory=dict)
 
 
@@ -343,7 +344,21 @@ def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfi
         raise ValueError("model.cls is required in YAML.")
 
     channels = _require_channels(model_block)
-    backbone = BackboneConfig(**model_block.get("backbone"))
+    backbone_raw = model_block.get("backbone")
+    if not isinstance(backbone_raw, dict):
+        raise ValueError("model.backbone must be a mapping.")
+    attention_backend = backbone_raw.get("attention_backend", "eager")
+    if attention_backend not in ("eager", "sdpa"):
+        raise ValueError("model.backbone.attention_backend must be one of eager, sdpa.")
+    config_overrides = backbone_raw.get("config_overrides") or {}
+    if not isinstance(config_overrides, dict):
+        raise ValueError("model.backbone.config_overrides must be a mapping when provided.")
+    if "attention_backend" in config_overrides:
+        raise ValueError(
+            "model.backbone.config_overrides.attention_backend is not supported; "
+            "use model.backbone.attention_backend."
+        )
+    backbone = BackboneConfig(**backbone_raw)
     projection = ProjectionConfig(**model_block.get("projection"))
     cls_cfg = _build_cls_config(model_block)
     head = _build_head_config(model_block, required=require_head)

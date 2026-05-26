@@ -328,6 +328,36 @@ def test_load_finetune_config_parses_imbalance_blocks_across_namespaces(tmp_path
     assert bundle.finetune.sampler.weighted_random is True
 
 
+@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2expert.config"])
+def test_standalone_variants_parse_attention_backend(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    default_payload = _pretrain_payload()
+    default_path = _write_yaml(tmp_path, default_payload, name=f"{module_name.replace('.', '_')}_default.yaml")
+
+    default_bundle = loader(default_path)
+
+    assert default_bundle.model.backbone.attention_backend == "eager"
+
+    sdpa_payload = _pretrain_payload()
+    sdpa_payload["model"]["backbone"]["attention_backend"] = "sdpa"
+    sdpa_path = _write_yaml(tmp_path, sdpa_payload, name=f"{module_name.replace('.', '_')}_sdpa.yaml")
+
+    sdpa_bundle = loader(sdpa_path)
+
+    assert sdpa_bundle.model.backbone.attention_backend == "sdpa"
+
+
+@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2expert.config"])
+def test_standalone_variants_reject_invalid_attention_backend(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    payload = _pretrain_payload()
+    payload["model"]["backbone"]["attention_backend"] = "flash"
+    path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_invalid_attention.yaml")
+
+    with pytest.raises(ValueError, match="attention_backend must be one of eager, sdpa"):
+        loader(path)
+
+
 @pytest.mark.parametrize(
     ("loss_block", "match"),
     [

@@ -57,16 +57,16 @@
 - Reuse guidance: this is the canonical contrastive pretrain forward path.
 - Duplication risk notes: do not recreate channel-selection and masking flow in the Lightning module.
 
-## `sleep2vec2.backbones.roformer.RoFormerEncoderModel`
+## `sleep2vec2` / `sleep2expert` `RoFormerEncoderModel`
 
-- File: `sleep2vec2/backbones/roformer/model.py` and `sleep2vec2/backbones/roformer/modeling_roformer.py`
+- File: `sleep2vec2/backbones/roformer/model.py`, `sleep2vec2/backbones/roformer/modeling_roformer.py`, `sleep2expert/backbones/roformer/model.py`, and `sleep2expert/backbones/roformer/modeling_roformer.py`
 - Signature: `RoFormerEncoderModel.forward(input_ids=None, attention_mask=None, token_type_ids=None, inputs_embeds=None, output_attentions=None, output_hidden_states=None, return_dict=None, **kwargs)`
-- Purpose and contract: package-local standalone RoFormer encoder used by `sleep2vec2` instead of the root/Hugging Face RoFormer module.
-- Important inputs/outputs: token ids or embeddings plus attention controls in; RoFormer-style output with last hidden state, optional hidden states, and optional attentions out.
+- Purpose and contract: package-local standalone RoFormer encoder used by `sleep2vec2` and `sleep2expert` instead of the root/Hugging Face RoFormer module; `sleep2expert` layers may swap dense FFN blocks for MoE experts.
+- Important inputs/outputs: token ids or embeddings plus attention controls in; RoFormer-style output with last hidden state, optional hidden states, and optional attentions out. `model.backbone.attention_backend` selects eager attention or SDPA, while `output_attentions=True` keeps eager attention for visualization.
 - Side effects: none beyond compute.
-- Key callers/callees: built by `sleep2vec2.backbones.encoder_factory.build_roformer`; exercised by `sleep2vec2.pretrain_model.Sleep2vecPretrainModel`.
-- Reuse guidance: keep `sleep2vec2` backbone changes inside this standalone implementation and preserve parity tests against root behavior.
-- Duplication risk notes: `sleep2vec2` rejects legacy sleep2vec/HF RoFormer checkpoint key layouts; do not add silent compatibility shims.
+- Key callers/callees: built by package-local `backbones.encoder_factory.build_roformer`; exercised by package-local `pretrain_model.Sleep2vecPretrainModel` and downstream wrappers.
+- Reuse guidance: keep standalone backbone changes inside the variant namespace and preserve RoFormer parity tests.
+- Duplication risk notes: standalone variants reject legacy sleep2vec/HF RoFormer checkpoint key layouts; do not add silent compatibility shims.
 
 ## `sleep2expert.backbones.roformer.moe.TopKRouter.forward`
 

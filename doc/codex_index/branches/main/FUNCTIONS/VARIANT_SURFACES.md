@@ -20,7 +20,7 @@ On commit `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`, tracked variant coverage i
 
 - Files: `sleep2expert/`, `configs/sleep2expert/`, `tests/test_sleep2expert_namespace.py`, `tests/test_sleep2expert_roformer_parity.py`, `tests/test_sleep2expert_moe_*.py`, `tests/test_sleep2expert_routing_analysis.py`
 - Purpose and contract: keep a package-local mirror that adds MoE RoFormer layers, routing aux capture, pretrain MoE regularization, finetune MoE tuning, dense-to-MoE checkpoint expansion, and routing export.
-- Important inputs/outputs: same dense runtime inputs as root for non-MoE recipes, including package-local finetune imbalance loss/sampler schema, distributed-aware weighted metadata sampler, automatic inference prediction export, inference W&B artifacts, and downstream specificity metrics; MoE recipes add `model.backbone.moe` and optional `finetune.moe_tuning` blocks.
+- Important inputs/outputs: same dense runtime inputs as root for non-MoE recipes, including package-local finetune imbalance loss/sampler schema, distributed-aware weighted metadata sampler, automatic inference prediction export, inference W&B artifacts, downstream specificity metrics, and standalone RoFormer `model.backbone.attention_backend`; MoE recipes add `model.backbone.moe` and optional `finetune.moe_tuning` blocks.
 - Side effects: runtime side effects mirror root entrypoints, W&B projects use `sleep2expert-*` names, and routing analysis writes CSV/PNG artifacts.
 - Reuse guidance: route schema changes through `sleep2expert.config`, sparse routing through `sleep2expert.backbones.roformer.moe`, MoE loss through `sleep2expert.losses.moe_regularization`, and persistent routing inspection through `sleep2expert.routing_analysis`.
 - Duplication-risk notes: `last_moe_aux` is in-memory state only; use routing export for persistent analysis. Do not implement parallel router metrics inside trainers or ad hoc scripts.
@@ -40,7 +40,7 @@ This file indexes variant-specific deltas, not every mirrored function. For comm
 
 Important variant-specific functions and classes:
 
-- `sleep2vec2.backbones.roformer.RoFormerEncoderModel`: standalone dense RoFormer parity surface.
+- `sleep2vec2.backbones.roformer.RoFormerEncoderModel` and `sleep2expert.backbones.roformer.RoFormerEncoderModel`: standalone RoFormer parity surfaces with eager or SDPA attention backends.
 - `sleep2vec2.infer._log_inference_outputs_to_wandb` and `sleep2expert.infer._log_inference_outputs_to_wandb`: package-local mirrors of root inference W&B artifact logging.
 - `sleep2vec2.metrics.binary_specificity` and `sleep2expert.metrics.binary_specificity`: package-local mirrors of root binary specificity reporting.
 - `sleep2expert.config.MoeConfig` and `_validate_moe_config`: MoE backbone schema and strict validation.

@@ -183,6 +183,7 @@ def test_sleep2vec2_roformer_builder_uses_standalone_model():
             num_hidden_layers=2,
             num_attention_heads=4,
             vocab_size=31,
+            attention_backend="sdpa",
             config_overrides={"intermediate_size": 64, "max_position_embeddings": 64},
         )
     )
@@ -191,6 +192,62 @@ def test_sleep2vec2_roformer_builder_uses_standalone_model():
 
     assert isinstance(encoder, RoFormerEncoderModel)
     assert hidden_size == 32
+    assert encoder.config.attention_backend == "sdpa"
+
+
+def test_sleep2vec2_roformer_sdpa_matches_eager_with_padding_mask():
+    config_kwargs = {
+        "vocab_size": 37,
+        "embedding_size": 16,
+        "hidden_size": 16,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "intermediate_size": 32,
+        "hidden_dropout_prob": 0.0,
+        "attention_probs_dropout_prob": 0.0,
+        "max_position_embeddings": 32,
+        "type_vocab_size": 2,
+        "layer_norm_eps": 1e-12,
+        "pad_token_id": 0,
+        "rotary_value": False,
+    }
+    torch.manual_seed(7)
+    eager_model = RoFormerEncoderModel(RoFormerConfig(**config_kwargs, attention_backend="eager")).eval()
+    sdpa_model = RoFormerEncoderModel(RoFormerConfig(**config_kwargs, attention_backend="sdpa")).eval()
+    sdpa_model.load_state_dict(eager_model.state_dict())
+
+    inputs_embeds = torch.randn(2, 6, 16)
+    attention_mask = torch.tensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1]], dtype=torch.float32)
+
+    with torch.no_grad():
+        eager_output = eager_model(inputs_embeds=inputs_embeds, attention_mask=attention_mask).last_hidden_state
+        sdpa_output = sdpa_model(inputs_embeds=inputs_embeds, attention_mask=attention_mask).last_hidden_state
+
+    assert torch.allclose(sdpa_output, eager_output, atol=1e-5, rtol=1e-5)
+
+
+def test_sleep2vec2_roformer_sdpa_config_keeps_output_attentions():
+    config = RoFormerConfig(
+        vocab_size=37,
+        embedding_size=16,
+        hidden_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        intermediate_size=32,
+        hidden_dropout_prob=0.0,
+        attention_probs_dropout_prob=0.0,
+        max_position_embeddings=32,
+        attention_backend="sdpa",
+    )
+    model = RoFormerEncoderModel(config).eval()
+    inputs_embeds = torch.randn(2, 6, 16)
+
+    with torch.no_grad():
+        output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
+
+    assert output.attentions is not None
+    assert len(output.attentions) == config.num_hidden_layers
+    assert output.attentions[0].shape == (2, config.num_attention_heads, 6, 6)
 
 
 def test_sleep2vec2_roformer_matches_hf_forward_with_copied_weights():
