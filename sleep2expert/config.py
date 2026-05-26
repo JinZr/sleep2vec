@@ -59,6 +59,7 @@ class BackboneConfig:
     num_hidden_layers: int = 12
     num_attention_heads: int = 16
     vocab_size: int = 1
+    attention_backend: str = "eager"
     config_overrides: dict[str, t.Any] = field(default_factory=dict)
     moe: MoeConfig | None = None
 
@@ -524,6 +525,14 @@ def _build_backbone_config(raw: t.Any, *, channel_names: t.Sequence[str] | None 
     config_overrides = raw.get("config_overrides") or {}
     if not isinstance(config_overrides, dict):
         raise ValueError("model.backbone.config_overrides must be a mapping when provided.")
+    attention_backend = raw.get("attention_backend", "eager")
+    if attention_backend not in ("eager", "sdpa"):
+        raise ValueError("model.backbone.attention_backend must be one of eager, sdpa.")
+    if "attention_backend" in config_overrides:
+        raise ValueError(
+            "model.backbone.config_overrides.attention_backend is not supported; "
+            "use model.backbone.attention_backend."
+        )
     if "moe" in config_overrides:
         raise ValueError("model.backbone.config_overrides.moe is not supported; use model.backbone.moe.")
 
