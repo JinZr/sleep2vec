@@ -5,6 +5,7 @@ model:
     num_hidden_layers: 12
     num_attention_heads: 16
     vocab_size: 1
+    attention_backend: sdpa
   projection:
     name: simclr
     enabled: true
@@ -113,7 +114,7 @@ finetune:
     layer_indices: null
   lora:
     freeze_backbone_and_insert_lora: false
-    insert_lora: true
+    insert_lora: false
     separate_adapters: false
   task:
     type: classification

@@ -65,6 +65,7 @@ class BackboneConfig:
     num_hidden_layers: int = 12
     num_attention_heads: int = 16
     vocab_size: int = 1
+    attention_backend: str = "sdpa"
     config_overrides: dict[str, t.Any] = field(default_factory=dict)
 
 
@@ -281,7 +282,7 @@ class FinetuneDataConfig:
 @dataclass
 class LoraConfig:
     freeze_backbone_and_insert_lora: bool = False
-    insert_lora: bool = True
+    insert_lora: bool = False
     separate_adapters: bool = False
 
 
@@ -533,7 +534,21 @@ def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfi
         raise ValueError("model.cls is required in YAML.")
 
     channels = _require_channels(model_block)
-    backbone = BackboneConfig(**model_block.get("backbone"))
+    backbone_raw = model_block.get("backbone")
+    if not isinstance(backbone_raw, dict):
+        raise ValueError("model.backbone must be a mapping.")
+    attention_backend = backbone_raw.get("attention_backend", "sdpa")
+    if attention_backend not in ("eager", "sdpa"):
+        raise ValueError("model.backbone.attention_backend must be one of eager, sdpa.")
+    config_overrides = backbone_raw.get("config_overrides") or {}
+    if not isinstance(config_overrides, dict):
+        raise ValueError("model.backbone.config_overrides must be a mapping when provided.")
+    if "attention_backend" in config_overrides:
+        raise ValueError(
+            "model.backbone.config_overrides.attention_backend is not supported; "
+            "use model.backbone.attention_backend."
+        )
+    backbone = BackboneConfig(**backbone_raw)
     projection = ProjectionConfig(**model_block.get("projection"))
     cls_cfg = _build_cls_config(model_block)
     head = _build_head_config(model_block, required=require_head)
@@ -939,6 +954,8 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
+    if lora_cfg.freeze_backbone_and_insert_lora or lora_cfg.insert_lora or lora_cfg.separate_adapters:
+        raise ValueError("wrist2vec_flex standalone RoFormer does not support LoRA yet.")
     finetune_cfg = FinetuneConfig(
         freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
         lora=lora_cfg,

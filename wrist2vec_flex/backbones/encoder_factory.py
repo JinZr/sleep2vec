@@ -1,8 +1,8 @@
 import typing as t
 
 import torch.nn as nn
-from transformers import RoFormerConfig, RoFormerModel
 
+from wrist2vec_flex.backbones.roformer import RoFormerConfig, RoFormerEncoderModel
 from wrist2vec_flex.config import BackboneConfig
 from wrist2vec_flex.registry import register_backbone
 
@@ -56,6 +56,7 @@ class TransformerEncoderFactory:
         num_hidden_layers: int,
         num_attention_heads: int,
         vocab_size: int = 1,
+        attention_backend: str = "sdpa",
         **config_overrides: t.Any,
     ) -> "TransformerEncoderFactory":
         config = RoFormerConfig(
@@ -63,9 +64,10 @@ class TransformerEncoderFactory:
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
+            attention_backend=attention_backend,
             **config_overrides,
         )
-        return cls.from_hf_config(name="roformer", model_cls=RoFormerModel, config=config)
+        return cls.from_hf_config(name="roformer", model_cls=RoFormerEncoderModel, config=config)
 
 
 @register_backbone("roformer")
@@ -76,6 +78,7 @@ def build_roformer(cfg: BackboneConfig) -> TransformerEncoderFactory:
         num_hidden_layers=cfg.num_hidden_layers,
         num_attention_heads=cfg.num_attention_heads,
         vocab_size=cfg.vocab_size,
+        attention_backend=cfg.attention_backend,
         **overrides,
     )
 

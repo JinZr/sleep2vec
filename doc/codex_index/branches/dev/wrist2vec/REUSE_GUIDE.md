@@ -29,3 +29,4 @@ This branch exists to add a parallel `wrist2vec` namespace, not to redesign the 
 - Use `wrist2vec_flex/` and `configs/wrist2vec_flex/` for source-aware flexible-input experiments.
 - Keep baseline `wrist2vec/` and `configs/write2vec/` aligned with the committed naming-parity recipe.
 - Keep flex W&B projects and local log roots distinct from baseline wrist runs.
+- `wrist2vec_flex` intentionally uses the package-local standalone RoFormer pattern from `sleep2vec2`, including top-level `model.backbone.attention_backend`; do not apply that backbone fork to baseline `wrist2vec`.

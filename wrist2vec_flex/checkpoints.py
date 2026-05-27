@@ -92,6 +92,15 @@ def load_pretrain_init_weights(
 ) -> PretrainInitLoadResult:
     ckpt = load_checkpoint(ckpt_path, device)
     filtered_state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt, prefixes=prefixes)
+    target_keys = module.state_dict().keys()
+    target_uses_standalone_roformer = any(".attention.self_attention." in key for key in target_keys)
+    legacy_roformer_keys = [key for key in filtered_state_dict if ".attention.self." in key or ".LayerNorm." in key]
+    if target_uses_standalone_roformer and legacy_roformer_keys:
+        preview = ", ".join(legacy_roformer_keys[:3])
+        raise ValueError(
+            "wrist2vec_flex does not support loading legacy sleep2vec/HF RoFormer checkpoints into the standalone "
+            f"RoFormer backbone. Train or convert a wrist2vec_flex checkpoint instead. Legacy keys: {preview}"
+        )
     load_info = module.load_state_dict(filtered_state_dict, strict=strict)
     return PretrainInitLoadResult(
         used_prefix=used_prefix,

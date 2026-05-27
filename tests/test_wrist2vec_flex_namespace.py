@@ -2,6 +2,8 @@ import argparse
 from pathlib import Path
 import re
 
+import pytest
+
 import wrist2vec_flex
 import wrist2vec_flex.adapt as adapt_module
 import wrist2vec_flex.data as wrist_data
@@ -39,6 +41,36 @@ def test_wrist2vec_public_classes_resolve():
     assert Wrist2vecPretraining.__name__ == "Wrist2vecPretraining"
     assert Wrist2vecAdaptation.__name__ == "Wrist2vecAdaptation"
     assert Wrist2vecFinetuning.__name__ == "Wrist2vecFinetuning"
+
+
+def test_wrist2vec_flex_rejects_legacy_roformer_checkpoint_keys(tmp_path: Path):
+    torch = pytest.importorskip("torch")
+    from wrist2vec_flex.backbones.roformer import RoFormerConfig, RoFormerEncoderModel
+    from wrist2vec_flex.checkpoints import load_pretrain_init_weights
+
+    model = RoFormerEncoderModel(
+        RoFormerConfig(
+            vocab_size=37,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            intermediate_size=64,
+            max_position_embeddings=64,
+        )
+    )
+    ckpt_path = tmp_path / "legacy.ckpt"
+    torch.save(
+        {
+            "state_dict": {
+                "model.encoder.layer.0.attention.self.query.weight": torch.randn(32, 32),
+                "model.encoder.layer.0.attention.output.LayerNorm.weight": torch.ones(32),
+            }
+        },
+        ckpt_path,
+    )
+
+    with pytest.raises(ValueError, match="does not support loading legacy sleep2vec/HF RoFormer checkpoints"):
+        load_pretrain_init_weights(model, ckpt_path, device="cpu", strict=False)
 
 
 def test_wrist2vec_registry_exposes_resnet1d_tokenizer():

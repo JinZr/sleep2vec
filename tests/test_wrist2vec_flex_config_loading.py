@@ -92,7 +92,7 @@ def _finetune_payload() -> dict:
             "freeze_tokenizer": True,
             "lora": {
                 "freeze_backbone_and_insert_lora": False,
-                "insert_lora": True,
+                "insert_lora": False,
                 "separate_adapters": False,
             },
             "layer_mix": {
@@ -172,6 +172,42 @@ def test_load_wrist2vec_pretrain_config_parses_token_sec(tmp_path: Path):
     bundle = load_wrist2vec_pretrain_config(config_path)
 
     assert bundle.data.token_sec == 2
+
+
+@pytest.mark.parametrize("attention_backend", ["sdpa", "eager"])
+def test_load_wrist2vec_pretrain_config_parses_attention_backend(tmp_path: Path, attention_backend: str):
+    payload = _pretrain_payload()
+    payload["model"]["backbone"]["attention_backend"] = attention_backend
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    assert bundle.model.backbone.attention_backend == attention_backend
+
+
+def test_load_wrist2vec_pretrain_config_defaults_attention_backend_to_sdpa(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _pretrain_payload())
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    assert bundle.model.backbone.attention_backend == "sdpa"
+
+
+def test_load_wrist2vec_pretrain_config_rejects_invalid_attention_backend(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["model"]["backbone"]["attention_backend"] = "flash"
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="model.backbone.attention_backend must be one of eager, sdpa"):
+        load_wrist2vec_pretrain_config(config_path)
+
+
+def test_load_wrist2vec_pretrain_config_rejects_attention_backend_override(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["model"]["backbone"]["config_overrides"] = {"attention_backend": "eager"}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="use model.backbone.attention_backend"):
+        load_wrist2vec_pretrain_config(config_path)
 
 
 def test_load_wrist2vec_pretrain_config_rejects_non_positive_token_sec(tmp_path: Path):
@@ -332,6 +368,40 @@ def test_wrist2vec_repo_pretrain_configs_load(config_name: str):
     assert bundle.model.channels
 
 
+def test_wrist2vec_flex_finetune_configs_disable_lora():
+    config_root = Path(__file__).resolve().parents[1] / "configs" / "wrist2vec_flex"
+    expected = {
+        "freeze_backbone_and_insert_lora": False,
+        "insert_lora": False,
+        "separate_adapters": False,
+    }
+    offenders: dict[str, dict[str, object]] = {}
+
+    for path in sorted(config_root.rglob("*.yaml")):
+        data = yaml.safe_load(path.read_text())
+        finetune = data.get("finetune")
+        if not isinstance(finetune, dict):
+            continue
+        lora = finetune.get("lora")
+        actual = {key: lora.get(key) if isinstance(lora, dict) else None for key in expected}
+        if actual != expected:
+            offenders[str(path.relative_to(Path(__file__).resolve().parents[1]))] = actual
+
+    assert offenders == {}
+
+
+def test_wrist2vec_flex_repo_configs_load():
+    config_root = Path(__file__).resolve().parents[1] / "configs" / "wrist2vec_flex"
+
+    for path in sorted(config_root.rglob("*.yaml")):
+        data = yaml.safe_load(path.read_text())
+        if isinstance(data.get("finetune"), dict):
+            bundle = load_wrist2vec_finetune_config(path)
+        else:
+            bundle = load_wrist2vec_pretrain_config(path)
+        validate_wrist2vec_model_config(bundle.model)
+
+
 def test_wrist2vec_resnet1d_example_pretrain_config_loads():
     config_path = (
         Path(__file__).resolve().parents[1]
@@ -346,6 +416,7 @@ def test_wrist2vec_resnet1d_example_pretrain_config_loads():
     assert hidden_size == 384
     assert bundle.model.backbone.num_hidden_layers == 12
     assert bundle.model.backbone.num_attention_heads == 16
+    assert bundle.model.backbone.attention_backend == "sdpa"
     assert bundle.model.projection.hidden_dim == hidden_size
     assert [channel.name for channel in bundle.model.channels] == [
         "ppg_green",
@@ -416,6 +487,23 @@ def test_load_wrist2vec_finetune_config_parses_dropout_fields(tmp_path: Path):
     assert bundle.data.min_channels_after_dropout == 2
     assert bundle.data.source_dropout_rate == pytest.approx(0.4)
     assert bundle.data.min_sources_after_dropout == 3
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "freeze_backbone_and_insert_lora",
+        "insert_lora",
+        "separate_adapters",
+    ],
+)
+def test_load_wrist2vec_finetune_config_rejects_lora_flags(tmp_path: Path, flag: str):
+    payload = _finetune_payload()
+    payload["finetune"]["lora"][flag] = True
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="wrist2vec_flex standalone RoFormer does not support LoRA yet"):
+        load_wrist2vec_finetune_config(config_path)
 
 
 @pytest.mark.parametrize(
