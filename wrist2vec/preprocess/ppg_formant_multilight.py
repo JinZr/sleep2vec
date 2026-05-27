@@ -34,11 +34,11 @@ buffered in memory and flushed to the index CSV once per ``--batch-size`` files 
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import csv
 import logging
 import math
 import os
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
@@ -468,7 +468,18 @@ def process_one_csv(
         raw = _clean_series(df[raw_col])
         if raw.size == 0:
             continue
-        out, _ = process_channel(raw, fs_in, target_fs, bp_low, bp_high, flatline_window_sec, flatline_rel_tol, min_keep_samples, csv_path, npz_key)
+        out, _ = process_channel(
+            raw,
+            fs_in,
+            target_fs,
+            bp_low,
+            bp_high,
+            flatline_window_sec,
+            flatline_rel_tol,
+            min_keep_samples,
+            csv_path,
+            npz_key,
+        )
         if out is not None:
             payloads[npz_key] = out
 
@@ -479,7 +490,18 @@ def process_one_csv(
         raw = _clean_series(df[raw_col])
         if raw.size == 0:
             continue
-        out, _ = process_channel(raw, fs_in, target_fs, bp_low, bp_high, flatline_window_sec, flatline_rel_tol, min_keep_samples, csv_path, npz_key)
+        out, _ = process_channel(
+            raw,
+            fs_in,
+            target_fs,
+            bp_low,
+            bp_high,
+            flatline_window_sec,
+            flatline_rel_tol,
+            min_keep_samples,
+            csv_path,
+            npz_key,
+        )
         if out is not None:
             payloads[npz_key] = out
 
@@ -490,7 +512,18 @@ def process_one_csv(
         raw = _clean_series(df[col])
         if raw.size == 0:
             continue
-        out, _ = process_channel(raw, fs_in, target_fs, bp_low, bp_high, flatline_window_sec, flatline_rel_tol, min_keep_samples, csv_path, col)
+        out, _ = process_channel(
+            raw,
+            fs_in,
+            target_fs,
+            bp_low,
+            bp_high,
+            flatline_window_sec,
+            flatline_rel_tol,
+            min_keep_samples,
+            csv_path,
+            col,
+        )
         if out is not None:
             payloads[col] = out
 
@@ -517,7 +550,18 @@ def process_one_csv(
 
 
 def _process_csv_task(task: _CsvTask) -> dict[str, object] | None:
-    csv_path, device, out_root, target_fs, bp_low, bp_high, flatline_window_sec, flatline_rel_tol, min_keep_sec, overwrite = task
+    (
+        csv_path,
+        device,
+        out_root,
+        target_fs,
+        bp_low,
+        bp_high,
+        flatline_window_sec,
+        flatline_rel_tol,
+        min_keep_sec,
+        overwrite,
+    ) = task
     return process_one_csv(
         csv_path,
         device,

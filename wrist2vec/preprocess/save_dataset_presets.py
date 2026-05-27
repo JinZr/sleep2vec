@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+import sys
+import tempfile
+import typing as t
+
 # import debugpy
 
 # # 5679是debugpy服务器监听的端口号，确保这个端口在你的系统上是空闲的
@@ -11,12 +18,6 @@ from __future__ import annotations
 # debugpy.wait_for_client()
 # print("🚀 Debugger attached!")
 
-import argparse
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from pathlib import Path
-import sys
-import tempfile
-import typing as t
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:

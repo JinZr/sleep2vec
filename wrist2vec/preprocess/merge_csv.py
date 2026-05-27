@@ -8,10 +8,7 @@ bp_df = pd.read_csv(bp_path)
 pwv_df = pd.read_csv(pwv_path)
 
 # 前面这些基础字段保持在最前面
-base_cols = [
-    "path", "dataset", "session_id", "patient_id", "duration",
-    "age", "sex", "weight", "height", "bmi"
-]
+base_cols = ["path", "dataset", "session_id", "patient_id", "duration", "age", "sex", "weight", "height", "bmi"]
 
 # 两个表中所有 mask 列的并集
 bp_mask_cols = [c for c in bp_df.columns if c not in base_cols]

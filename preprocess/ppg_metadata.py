@@ -1,10 +1,11 @@
-import os
 import csv
 from datetime import datetime
-import pandas as pd
-from pathlib import Path
-import numpy as np
 import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 metadata_path = "/home/notebook/data/personal/S9063410/bp_data_one_channel/加入研究信息整合名单260422.csv"
 
@@ -29,15 +30,13 @@ fieldnames = [
     "bmi",
 ]
 
+
 def append_row_to_csv(csv_path: str | Path, row: dict, fieldnames: list[str]) -> None:
     csv_path = Path(csv_path)
     file_exists = csv_path.exists()
 
     # 把 None 转成空字符串，避免写成 "None"
-    clean_row = {
-        k: ("" if row.get(k) is None else row.get(k))
-        for k in fieldnames
-    }
+    clean_row = {k: ("" if row.get(k) is None else row.get(k)) for k in fieldnames}
 
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -46,6 +45,7 @@ def append_row_to_csv(csv_path: str | Path, row: dict, fieldnames: list[str]) ->
             writer.writeheader()
 
         writer.writerow(clean_row)
+
 
 metadata = pd.read_csv(metadata_path)
 metadata_formatted = {}
@@ -60,7 +60,6 @@ for i, row in metadata.iterrows():
         weight = None
     else:
         weight = row["weight"] / 1000
-    
 
     # 身高转为单位cm
     if pd.isna(row["height"]):
@@ -71,7 +70,7 @@ for i, row in metadata.iterrows():
         height = None
     else:
         height = row["height"] / 10
-    
+
     if weight is not None and height is not None:
         bmi = weight / (height / 100) ** 2
     else:
@@ -93,11 +92,11 @@ for i, row in metadata.iterrows():
             birthday_value = None
 
     metadata_formatted[str(ssoid)] = {
-        "weight": weight,     # 体重转为单位kg
-        "height": height,       # 身高转为单位cm
+        "weight": weight,  # 体重转为单位kg
+        "height": height,  # 身高转为单位cm
         "bmi": bmi,
         "sex": sex,
-        "birthday": birthday_value
+        "birthday": birthday_value,
     }
 
 
@@ -107,7 +106,7 @@ for device in device_list:
     device_dir = os.path.join(src_dir, device)
     for ssoid in os.listdir(device_dir):
         if ssoid not in metadata_formatted:
-            with open("fail_list.txt", 'a+') as f:
+            with open("fail_list.txt", "a+") as f:
                 f.write(f"{ssoid} of {device} not in 加入研究信息整合名单260422.csv")
             continue
         print(device, ssoid)
@@ -135,32 +134,32 @@ for device in device_list:
                 row = {
                     "path": npz_file,
                     "dataset": device,
-                    "session_id": file.split('.')[0],
+                    "session_id": file.split(".")[0],
                     "patient_id": ssoid,
                     "duration": duration,
                     "age": age,
                     "sex": None,
                     "weight": None,
                     "height": None,
-                    "bmi": None
+                    "bmi": None,
                 }
             else:
                 row = {
                     "path": npz_file,
                     "dataset": device,
-                    "session_id": file.split('.')[0],
+                    "session_id": file.split(".")[0],
                     "patient_id": ssoid,
                     "duration": duration,
                     "age": age,
                     "sex": sex,
                     "weight": weight,
                     "height": height,
-                    "bmi": bmi
+                    "bmi": bmi,
                 }
                 if age is not None and sex is not None and bmi is not None:
                     full_info_ssoids.append(ssoid)
             append_row_to_csv(output_path, row, fieldnames)
 
 full_info_ssoids = set(full_info_ssoids)
-with open("full_info_ssoids.json", 'w') as f:
+with open("full_info_ssoids.json", "w") as f:
     json.dump(full_info_ssoids, f, ensure_ascii=False, indent=4)

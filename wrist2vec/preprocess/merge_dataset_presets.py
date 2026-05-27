@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import argparse
-import sys
 from pathlib import Path
 import pickle
+import sys
 from typing import Iterable, List
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

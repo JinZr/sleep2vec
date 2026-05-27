@@ -23,7 +23,6 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 
-
 REQUIRED_COLUMNS = ("patient_id", "dataset")
 DEFAULT_COMPLETE_METADATA_COLUMNS = ("age", "sex", "bmi")
 
@@ -165,8 +164,12 @@ def _draw_proportional(
     n_complete = min(n_complete + max(0, target_total - n_complete - n_incomplete), len(complete))
     n_incomplete = min(target_total - n_complete, len(incomplete))
 
-    drawn = draw_subjects_by_primary_dataset(complete, primary_dataset, target_total=n_complete, rng=rng, shuffle=shuffle)
-    drawn |= draw_subjects_by_primary_dataset(incomplete, primary_dataset, target_total=n_incomplete, rng=rng, shuffle=shuffle)
+    drawn = draw_subjects_by_primary_dataset(
+        complete, primary_dataset, target_total=n_complete, rng=rng, shuffle=shuffle
+    )
+    drawn |= draw_subjects_by_primary_dataset(
+        incomplete, primary_dataset, target_total=n_incomplete, rng=rng, shuffle=shuffle
+    )
     return drawn
 
 

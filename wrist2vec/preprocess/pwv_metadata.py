@@ -28,10 +28,10 @@ NPZ channel keys recognised (and their mask columns):
 from __future__ import annotations
 
 import argparse
-import csv
-import logging
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+import csv
 from datetime import datetime
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -70,9 +70,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--demographics-csv",
         type=Path,
-        default=Path(
-            "/home/notebook/data/personal/S9063410/pwv+bp_data_multilight/pwv_label/demographics.csv"
-        ),
+        default=Path("/home/notebook/data/personal/S9063410/pwv+bp_data_multilight/pwv_label/demographics.csv"),
         help="Participant demographics with ssoid/sex/weight/height/birthday_value columns",
     )
     p.add_argument(

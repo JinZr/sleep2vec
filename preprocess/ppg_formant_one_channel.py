@@ -32,11 +32,11 @@ removed, the source CSV path is logged.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import csv
 import logging
 import math
 import os
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
@@ -647,6 +647,7 @@ def main() -> None:
                 initargs=(args.log_level,),
             ) as executor:
                 _run_pool_bounded(executor, task_iter, max_inflight, writer)
+
 
 if __name__ == "__main__":
     main()

@@ -27,11 +27,11 @@ NPZ channel keys recognised (and their mask columns):
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import csv
+from datetime import datetime
 import logging
 import math
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -41,10 +41,18 @@ LOG = logging.getLogger("ppg_metadata")
 
 # All physical channel keys that may appear in a multilight NPZ (excluding "duration").
 _NPZ_CHANNEL_KEYS: tuple[str, ...] = (
-    "G0-PD0", "G0-PD1", "G1-PD0", "G1-PD1",
-    "IR0-PD0", "IR0-PD1",
-    "gyro_x", "gyro_y", "gyro_z",
-    "acc_x", "acc_y", "acc_z",
+    "G0-PD0",
+    "G0-PD1",
+    "G1-PD0",
+    "G1-PD1",
+    "IR0-PD0",
+    "IR0-PD1",
+    "gyro_x",
+    "gyro_y",
+    "gyro_z",
+    "acc_x",
+    "acc_y",
+    "acc_z",
 )
 _MASK_COLUMNS: tuple[str, ...] = tuple(f"{k}_mask" for k in _NPZ_CHANNEL_KEYS)
 

@@ -44,13 +44,13 @@ re-reading the source JSON.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import csv
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import math
 import os
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -166,7 +166,13 @@ def infer_fs_duration(num_samples: int) -> tuple[float, float]:
     dur_s = float(num_samples) / float(fs_hz)
     LOG.warning(
         "Length %d mismatches nominal %.0fs @ %.0fHz (err=%d, tol=%d); using fs=%.1f and duration=%.3fs",
-        num_samples, dur_nom, fs_hz, best_err, tol, fs_hz, dur_s,
+        num_samples,
+        dur_nom,
+        fs_hz,
+        best_err,
+        tol,
+        fs_hz,
+        dur_s,
     )
     return fs_hz, dur_s
 
@@ -182,6 +188,7 @@ def _resample_to(x: np.ndarray, fs_in: float, fs_out: float) -> np.ndarray:
     if math.isclose(fs_in, fs_out, rel_tol=1e-4):
         return x
     from fractions import Fraction
+
     frac = Fraction(fs_out / fs_in).limit_denominator(1000)
     return signal.resample_poly(x, up=frac.numerator, down=frac.denominator)
 
@@ -280,12 +287,17 @@ def process_channel(
     if stripped:
         LOG.warning(
             "Stripped flatline segments from %s in %s (post-filter length was %d)",
-            channel_name, source_path.as_posix(), flat.size,
+            channel_name,
+            source_path.as_posix(),
+            flat.size,
         )
     if y.size < min_keep_samples:
         LOG.warning(
             "Dropping %s in %s: length %d < min_keep %d after flatline removal",
-            channel_name, source_path.as_posix(), y.size, min_keep_samples,
+            channel_name,
+            source_path.as_posix(),
+            y.size,
+            min_keep_samples,
         )
         return None, stripped
     z = _zscore(y)
@@ -358,9 +370,7 @@ def process_one_json(
     fs_in, duration_sec = infer_fs_duration(n_samples)
 
     if duration_sec not in _VALID_DURATIONS:
-        LOG.warning(
-            "Skipping %s: inferred duration %.3fs is not 30 s or 60 s", json_path.as_posix(), duration_sec
-        )
+        LOG.warning("Skipping %s: inferred duration %.3fs is not 30 s or 60 s", json_path.as_posix(), duration_sec)
         return None
 
     max_sentinel = max(1, int(round(fs_in)))
@@ -372,7 +382,10 @@ def process_one_json(
         if n_bad > max_sentinel:
             LOG.warning(
                 "Skipping %s: channel %s has %d sentinel outliers (0/10000), max allowed %d",
-                json_path.as_posix(), json_key, n_bad, max_sentinel,
+                json_path.as_posix(),
+                json_key,
+                n_bad,
+                max_sentinel,
             )
             return None
 
@@ -387,8 +400,16 @@ def process_one_json(
         if arr.size == 0:
             continue
         out, _ = process_channel(
-            arr, fs_in, target_fs, bp_low, bp_high,
-            flatline_window_sec, flatline_rel_tol, min_keep_samples, json_path, npz_key,
+            arr,
+            fs_in,
+            target_fs,
+            bp_low,
+            bp_high,
+            flatline_window_sec,
+            flatline_rel_tol,
+            min_keep_samples,
+            json_path,
+            npz_key,
         )
         if out is not None:
             payloads[npz_key] = out
@@ -411,7 +432,9 @@ def process_one_json(
 
 
 def _process_json_task(task: _JsonTask) -> dict[str, object] | None:
-    json_path, out_root, target_fs, bp_low, bp_high, flatline_window_sec, flatline_rel_tol, min_keep_sec, overwrite = task
+    json_path, out_root, target_fs, bp_low, bp_high, flatline_window_sec, flatline_rel_tol, min_keep_sec, overwrite = (
+        task
+    )
     return process_one_json(
         json_path,
         out_root,

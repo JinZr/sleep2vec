@@ -182,7 +182,9 @@ class DefaultDataset(BaseDataset):
                     _missing = pd.isna(value)
                 except (TypeError, ValueError):
                     _missing = False
-                if _missing or (isinstance(value, str) and value.strip().lower() in {"", "nan", "none", "null", "na", "n/a", "<na>"}):
+                if _missing or (
+                    isinstance(value, str) and value.strip().lower() in {"", "nan", "none", "null", "na", "n/a", "<na>"}
+                ):
                     keep = False
                     break
 
