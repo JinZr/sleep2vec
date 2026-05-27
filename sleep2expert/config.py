@@ -59,6 +59,7 @@ class BackboneConfig:
     num_hidden_layers: int = 12
     num_attention_heads: int = 16
     vocab_size: int = 1
+    attention_backend: str = "eager"
     config_overrides: dict[str, t.Any] = field(default_factory=dict)
     moe: MoeConfig | None = None
 
@@ -410,10 +411,23 @@ class FinetuneMoeTuningConfig:
 
 
 @dataclass
+class FinetuneLossConfig:
+    class_weights: t.List[float] | None = None
+    pos_weight: float | t.List[float] | None = None
+
+
+@dataclass
+class FinetuneSamplerConfig:
+    weighted_random: bool = False
+
+
+@dataclass
 class FinetuneConfig:
     freeze_tokenizer: bool = True
     lora: LoraConfig = field(default_factory=LoraConfig)
     layer_mix: LayerMixConfig | None = None
+    loss: FinetuneLossConfig = field(default_factory=FinetuneLossConfig)
+    sampler: FinetuneSamplerConfig = field(default_factory=FinetuneSamplerConfig)
     task: TaskConfig | None = None
     eval_visualizations: EvalVisualizationsConfig | None = None
     moe_tuning: FinetuneMoeTuningConfig | None = None
@@ -511,6 +525,14 @@ def _build_backbone_config(raw: t.Any, *, channel_names: t.Sequence[str] | None 
     config_overrides = raw.get("config_overrides") or {}
     if not isinstance(config_overrides, dict):
         raise ValueError("model.backbone.config_overrides must be a mapping when provided.")
+    attention_backend = raw.get("attention_backend", "eager")
+    if attention_backend not in ("eager", "sdpa"):
+        raise ValueError("model.backbone.attention_backend must be one of eager, sdpa.")
+    if "attention_backend" in config_overrides:
+        raise ValueError(
+            "model.backbone.config_overrides.attention_backend is not supported; "
+            "use model.backbone.attention_backend."
+        )
     if "moe" in config_overrides:
         raise ValueError("model.backbone.config_overrides.moe is not supported; use model.backbone.moe.")
 
@@ -701,6 +723,60 @@ def _build_task_config(raw: t.Any) -> TaskConfig | None:
         monitor=monitor,
         monitor_mod=monitor_mod,
     )
+
+
+def _is_positive_number(value: t.Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) > 0.0
+
+
+def _build_positive_float_list(raw: t.Any, *, field_name: str) -> t.List[float] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{field_name} must be null or a non-empty list of positive numbers.")
+    if not all(_is_positive_number(value) for value in raw):
+        raise ValueError(f"{field_name} must contain only positive numbers.")
+    return [float(value) for value in raw]
+
+
+def _build_finetune_loss_config(raw: t.Any) -> FinetuneLossConfig:
+    if raw is None:
+        return FinetuneLossConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.loss must be a mapping when provided.")
+
+    allowed = {"class_weights", "pos_weight"}
+    extra = sorted(set(raw.keys()) - allowed)
+    if extra:
+        raise ValueError(f"finetune.loss has unsupported fields: {extra}")
+
+    pos_weight = raw.get("pos_weight")
+    if pos_weight is not None and not _is_positive_number(pos_weight):
+        pos_weight = _build_positive_float_list(pos_weight, field_name="finetune.loss.pos_weight")
+    elif pos_weight is not None:
+        pos_weight = float(pos_weight)
+
+    return FinetuneLossConfig(
+        class_weights=_build_positive_float_list(raw.get("class_weights"), field_name="finetune.loss.class_weights"),
+        pos_weight=pos_weight,
+    )
+
+
+def _build_finetune_sampler_config(raw: t.Any) -> FinetuneSamplerConfig:
+    if raw is None:
+        return FinetuneSamplerConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.sampler must be a mapping when provided.")
+
+    allowed = {"weighted_random"}
+    extra = sorted(set(raw.keys()) - allowed)
+    if extra:
+        raise ValueError(f"finetune.sampler has unsupported fields: {extra}")
+
+    weighted_random = raw.get("weighted_random", False)
+    if not isinstance(weighted_random, bool):
+        raise ValueError("finetune.sampler.weighted_random must be a boolean.")
+    return FinetuneSamplerConfig(weighted_random=weighted_random)
 
 
 _FINETUNE_MOE_TUNING_MODES = {
@@ -1123,6 +1199,8 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     averaging_cfg = _build_model_averaging_config(data)
     model_cfg = _build_model_config(model_block, require_head=True)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
+    loss_cfg = _build_finetune_loss_config(finetune_block.get("loss"))
+    sampler_cfg = _build_finetune_sampler_config(finetune_block.get("sampler"))
     eval_visualizations_cfg = _build_eval_visualizations_config(finetune_block.get("eval_visualizations"))
     task_cfg = _build_task_config(finetune_block.get("task"))
     moe_tuning_cfg = _build_finetune_moe_tuning_config(finetune_block.get("moe_tuning"))
@@ -1136,6 +1214,8 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
         lora=lora_cfg,
         layer_mix=layer_mix_cfg,
+        loss=loss_cfg,
+        sampler=sampler_cfg,
         task=task_cfg,
         eval_visualizations=eval_visualizations_cfg,
         moe_tuning=moe_tuning_cfg,
@@ -1147,6 +1227,8 @@ __all__ = [
     "DATA_BACKEND_CHOICES",
     "FinetuneConfigBundle",
     "FinetuneConfig",
+    "FinetuneLossConfig",
+    "FinetuneSamplerConfig",
     "FinetuneLrScalesConfig",
     "FinetuneMoeRegularizationConfig",
     "FinetuneMoeTuningConfig",

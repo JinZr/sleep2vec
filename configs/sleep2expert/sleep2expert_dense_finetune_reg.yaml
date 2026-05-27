@@ -1,0 +1,112 @@
+model:
+  backbone:
+    name: roformer
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 16
+    vocab_size: 1
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  cls:
+    embedding_type: bert    # null -> no CLS, "bert" -> prepend learnable CLS token
+    downstream: cls         # "tokens" or "cls" (required)
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: breath
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eeg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: ecg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: eog_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: emg_original
+      input_dim: 3840
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: spo2
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+    - name: resp_nasal_original
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 768
+  head:
+    name: regression
+    dropout: 0.1
+    hidden_dim: null
+    channel_agg:
+      name: mean
+      kwargs: {}
+    temporal_agg:
+      name: mean
+      kwargs: {}
+data:
+  backend: npz
+  kaldi_data_root: null
+  kaldi_manifest: null
+  max_tokens: 120
+  data_channel_names: null
+  finetune_data_index: index/hsp_psg_pretrain.csv
+  finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
+  train_dataset_names: [shhs]
+  test_dataset_names: [shhs]
+  n_few_shot: 1280
+finetune:
+  freeze_tokenizer: true
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
+  layer_mix:
+    enabled: false
+    shared_across_modalities: false
+    layer_indices: null     # 1-based transformer block indices; null -> all
+  lora:
+    freeze_backbone_and_insert_lora: false
+    insert_lora: false
+    separate_adapters: false
+  eval_visualizations:
+    enabled: true
+    stages: [val, test]
+    confusion_matrix:
+      enabled: false
+    regression_scatter:
+      enabled: true
+
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

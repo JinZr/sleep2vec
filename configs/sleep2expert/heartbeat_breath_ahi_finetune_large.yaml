@@ -35,6 +35,9 @@ model:
       name: mean
       kwargs: {}
 data:
+  backend: npz
+  kaldi_data_root: null
+  kaldi_manifest: null
   max_tokens: 1535  # whole-night cap in 30 s epochs
   data_channel_names: [heartbeat, breath]
   finetune_data_index: null
@@ -44,6 +47,11 @@ data:
   n_few_shot: 0
 finetune:
   freeze_tokenizer: true
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
   layer_mix:
     enabled: false
     shared_across_modalities: false

@@ -5,9 +5,9 @@ This directory is the branch-scoped engineering manual for `main`. Use it before
 ## Branch Scope
 
 - Branch: `main`
-- Last repair commit: `4a80f9bf40ac7e8cb00143b5dc5b5eb5b15710dd`
-- Last repair at: `2026-05-11T06:28:06Z`
-- Mode: `repair`
+- Last refresh commit: `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`
+- Last refresh at: `2026-05-25T07:25:27Z`
+- Mode: `refresh`
 
 ## Purpose
 
@@ -34,18 +34,20 @@ For small, localized fixes or routine updates, it is enough to read this page pl
 
 Tracked files indexed from this branch:
 
-- `sleep2vec/`: 80 tracked files
+- `sleep2vec/`: 81 tracked files
 - `data/`: 8 tracked files
 - `preprocess/`: 7 tracked files
-- `sleep2vec2/`: 102 tracked files
-- `sleep2expert/`: 106 tracked files
-- `configs/`: 100 tracked files
-- `tests/`: 47 tracked files
-- `utils/`: 2 tracked files
+- `sleep2vec2/`: 103 tracked files
+- `sleep2expert/`: 107 tracked files
+- `sleep2vec_moe/`: 0 tracked files
+- `sleep2vec_hires/`: 0 tracked files
+- `configs/`: 108 tracked files
+- `tests/`: 50 tracked files
+- `utils/`: 7 tracked files
 
 ## Coverage Boundaries
 
-- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result writing, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation visualizations, and the tests that pin those contracts.
+- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
 - Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb`, package-local variant preprocessing notebooks, and tracked visualization font binaries under `*/visualization/assets/fonts/`.
 - Outside this index scope: tracked example data scaffolding under `egs/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
@@ -57,10 +59,10 @@ Tracked files indexed from this branch:
 - For a broader behavior or contract change, follow the full reading order above.
 
 - If you are changing YAML semantics, built-in task behavior, or config validation, start with [FUNCTIONS/CONFIG_AND_REGISTRIES.md](./FUNCTIONS/CONFIG_AND_REGISTRIES.md).
-- If you are changing pretrain, adapt, finetune, inference, checkpoint, or result-export orchestration, start with [FUNCTIONS/RUNTIME_ORCHESTRATION.md](./FUNCTIONS/RUNTIME_ORCHESTRATION.md) and the relevant workflow.
+- If you are changing pretrain, adapt, finetune, inference, checkpoint, result-export, or prediction-export orchestration, start with [FUNCTIONS/RUNTIME_ORCHESTRATION.md](./FUNCTIONS/RUNTIME_ORCHESTRATION.md) and the relevant workflow.
 - If you are changing backbone forward behavior, adaptation freeze policy, downstream heads, AHI epoch reduction, or layer mix, start with [FUNCTIONS/MODELS_AND_HEADS.md](./FUNCTIONS/MODELS_AND_HEADS.md).
 - If you are changing dataset loading, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
-- If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, or WatchPAT conversion, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
+- If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, WatchPAT conversion, Kaldi index repair, UKB annotation parsing, UKB demographic extraction, or case-control matching utilities, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
 - If you are changing evaluation plots, pair-accuracy logging, or diagnostics, start with [FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md](./FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md).
 - If you think you need `sleep2vec2/` or `sleep2expert/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first. Both are active tracked standalone namespaces on this branch.
 

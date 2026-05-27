@@ -57,16 +57,16 @@
 - Reuse guidance: this is the canonical contrastive pretrain forward path.
 - Duplication risk notes: do not recreate channel-selection and masking flow in the Lightning module.
 
-## `sleep2vec2.backbones.roformer.RoFormerEncoderModel`
+## `sleep2vec2` / `sleep2expert` `RoFormerEncoderModel`
 
-- File: `sleep2vec2/backbones/roformer/model.py` and `sleep2vec2/backbones/roformer/modeling_roformer.py`
+- File: `sleep2vec2/backbones/roformer/model.py`, `sleep2vec2/backbones/roformer/modeling_roformer.py`, `sleep2expert/backbones/roformer/model.py`, and `sleep2expert/backbones/roformer/modeling_roformer.py`
 - Signature: `RoFormerEncoderModel.forward(input_ids=None, attention_mask=None, token_type_ids=None, inputs_embeds=None, output_attentions=None, output_hidden_states=None, return_dict=None, **kwargs)`
-- Purpose and contract: package-local standalone RoFormer encoder used by `sleep2vec2` instead of the root/Hugging Face RoFormer module.
-- Important inputs/outputs: token ids or embeddings plus attention controls in; RoFormer-style output with last hidden state, optional hidden states, and optional attentions out.
+- Purpose and contract: package-local standalone RoFormer encoder used by `sleep2vec2` and `sleep2expert` instead of the root/Hugging Face RoFormer module; `sleep2expert` layers may swap dense FFN blocks for MoE experts.
+- Important inputs/outputs: token ids or embeddings plus attention controls in; RoFormer-style output with last hidden state, optional hidden states, and optional attentions out. `model.backbone.attention_backend` selects eager attention or SDPA, while `output_attentions=True` keeps eager attention for visualization.
 - Side effects: none beyond compute.
-- Key callers/callees: built by `sleep2vec2.backbones.encoder_factory.build_roformer`; exercised by `sleep2vec2.pretrain_model.Sleep2vecPretrainModel`.
-- Reuse guidance: keep `sleep2vec2` backbone changes inside this standalone implementation and preserve parity tests against root behavior.
-- Duplication risk notes: `sleep2vec2` rejects legacy sleep2vec/HF RoFormer checkpoint key layouts; do not add silent compatibility shims.
+- Key callers/callees: built by package-local `backbones.encoder_factory.build_roformer`; exercised by package-local `pretrain_model.Sleep2vecPretrainModel` and downstream wrappers.
+- Reuse guidance: keep standalone backbone changes inside the variant namespace and preserve RoFormer parity tests.
+- Duplication risk notes: standalone variants reject legacy sleep2vec/HF RoFormer checkpoint key layouts; do not add silent compatibility shims.
 
 ## `sleep2expert.backbones.roformer.moe.TopKRouter.forward`
 
@@ -126,13 +126,24 @@
 ## `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora`
 
 - File: `sleep2vec/downstream_model.py`
-- Signature: `freeze_backbone_and_insert_lora(insert_lora: bool = True, r: int = 8, lora_alpha: int = 16, lora_dropout: float = 0.05, target_modules=("query", "key", "value"), separate_adapters: bool = False) -> None`
-- Purpose and contract: freeze backbone parameters, optionally inject LoRA adapters into the encoder, and optionally create separate adapters per channel.
-- Important inputs/outputs: LoRA config in; no return value.
-- Side effects: mutates backbone module structure and parameter trainability.
+- Signature: `freeze_backbone_and_insert_lora(insert_lora: bool = True, r: int = 8, lora_alpha: int = 16, lora_dropout: float = 0.05, target_modules=("query", "key", "value"), use_dora: bool = False, separate_adapters: bool = False) -> None`
+- Purpose and contract: freeze backbone parameters, optionally inject LoRA/DoRA adapters into the encoder with configurable rank/alpha/dropout/target modules, and optionally create separate adapters per channel.
+- Important inputs/outputs: adapter enable flag, rank, alpha, dropout, target-module names, DoRA flag, and separate-adapter flag in; no return value.
+- Side effects: mutates backbone module structure and parameter trainability; with separate adapters, the default LoRA adapter is frozen and only `ch_<channel>` adapter weights are trainable.
 - Key callers/callees: caller is `Sleep2vecFinetuning.__init__`; callee is `get_peft_model`.
 - Reuse guidance: this is the canonical LoRA insertion path for downstream training.
 - Duplication risk notes: adapter naming and trainable-parameter enabling should stay centralized here.
+
+## `Sleep2vecDownstreamModel._enable_all_adapters_trainable`
+
+- File: `sleep2vec/downstream_model.py`
+- Signature: `_enable_all_adapters_trainable(self) -> None`
+- Purpose and contract: after separate channel adapters are added, freeze all LoRA parameters and re-enable only the configured channel adapter weights.
+- Important inputs/outputs: uses `self.channel_adapters`; mutates encoder parameter `requires_grad` flags.
+- Side effects: changes adapter trainability.
+- Key callers/callees: caller is `freeze_backbone_and_insert_lora`.
+- Reuse guidance: keep separate-adapter trainability changes here instead of editing PEFT parameters from trainer code.
+- Duplication risk notes: default adapter parameters must not be accidentally left trainable when channel-specific adapters are requested.
 
 ## `sleep2vec.downstreams.temporal_aggregation.build_temporal_aggregator`
 
@@ -204,7 +215,7 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `Sleep2vecFinetuning._compute_loss(logits, batch)`
-- Purpose and contract: compute classification, regression, or multilabel loss, ignoring invalid labels and returning `None` when the batch contains no valid targets.
+- Purpose and contract: compute classification, regression, or multilabel loss, ignoring invalid labels and returning `None` when the batch contains no valid targets; configured `class_weights` affect CrossEntropyLoss and configured `pos_weight` affects BCEWithLogitsLoss for multilabel/AHI.
 - Important inputs/outputs: logits and batch in; returns `(loss, valid_count)` or `None`.
 - Side effects: none.
 - Key callers/callees: caller is `_shared_step`.

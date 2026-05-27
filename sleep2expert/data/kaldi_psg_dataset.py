@@ -47,6 +47,8 @@ class KaldiPSGDataset(DefaultDataset):
         bucket_by_available_channels: bool = False,
         train_pair_probs: dict[tuple[str, str], float] | None = None,
         train_pair_track_unique_samples: bool = False,
+        weighted_random_sampler: bool = False,
+        weighted_random_sampler_target: str | None = None,
         generative: bool = False,
         is_train_set: bool = True,
         **dataloader_kwargs: t.Any,
@@ -106,6 +108,8 @@ class KaldiPSGDataset(DefaultDataset):
             meta_data_regression_names=meta_data_regression_names,
             sources=sources,
             pair_selector=pair_selector,
+            weighted_random_sampler=weighted_random_sampler,
+            weighted_random_sampler_target=weighted_random_sampler_target,
             dataloader_config=dataloader_kwargs,
         )
 

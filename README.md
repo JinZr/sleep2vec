@@ -38,18 +38,19 @@
 - Supports contrastive pretraining, staged modality adaptation for new sensors, plus downstream classification or regression finetuning.
 - Extensible registries for backbones, tokenizers, projection heads, losses, model averaging, LoRA-backed heads, and downstream heads.
 - Dataset channel names and per-token input widths now come from YAML `model.channels`, so custom modalities such as wearable `ppg` or `actigraphy_vm` can be added without editing the dataset registry.
-- WandB logging is enabled by default; inference-only runner is included for evaluating checkpoints.
+- WandB logging is enabled by default; inference-only runner is included for evaluating checkpoints and writing metrics, predictions, overview rows, and run manifests.
 
 ---
 
 ## Setup
-- Python 3.10+ (Python<3.12) with CUDA GPUs recommended; PyTorch/Lightning versions are pinned in `requirements.txt` (`torch==2.5.1`, `pytorch-lightning==2.6.1`).
+- Python 3.10+ with CUDA GPUs recommended; PyTorch/Lightning versions are pinned in `requirements.txt` (`torch==2.7.0`, `pytorch-lightning==2.6.1`).
 - Install: `pip install -r requirements.txt` (choose the correct PyTorch wheel for your CUDA version).
 - Pair-accuracy heatmap logging uses `matplotlib` + `seaborn` (already included in `requirements.txt`).
 - Authenticate to Weights & Biases before running (`WANDB_API_KEY=...` or `WANDB_MODE=offline`) because entrypoints call `wandb.login()`.
 - Default precision is bf16/bf16-mixed; pass `--precision 32` if your GPUs do not support bf16.
 - Main entrypoints: `python -m sleep2vec.pretrain ...`, `python -m sleep2vec.adapt --phase stage1|stage2 ...`, `python -m sleep2vec.finetune ...`, `python -m sleep2vec.infer ...`.
 - Parallel namespace: `python -m wrist2vec.pretrain ...`, `python -m wrist2vec.adapt --phase stage1|stage2 ...`, `python -m wrist2vec.finetune ...`, `python -m wrist2vec.infer ...`.
+- Minimal checked examples live under `configs/examples/`: one pretrain example plus built-in finetune examples for `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`. Validate configs with `python utils/check_configs.py [paths...]`.
 
 ---
 
@@ -232,6 +233,19 @@ Notes:
 - Built-in `sex` classification is a metadata task with class order `["female", "male"]`, so targets are encoded as `0=female`, `1=male`; presets missing valid `sex` labels are rejected.
 - `--pretrained-backbone-path /path/to/pretrain_or_adapt.ckpt` can be used to bootstrap downstream training from a pretrain/adaptation checkpoint; loader prefers `ema_model.` and falls back to `model.`.
 
+Imbalance controls in finetune YAML default to `null` / `false` in the provided recipes:
+```yaml
+finetune:
+  loss:
+    class_weights: [1.0, 2.4]
+    pos_weight: null
+  sampler:
+    weighted_random: true
+```
+- `finetune.loss.class_weights` is for single-label classification only; the list length must match `finetune.task.output_dim`.
+- `finetune.loss.pos_weight` is for multilabel classification only; for built-in `ahi`, a scalar expands across the 30 BCE outputs.
+- `finetune.sampler.weighted_random` affects only the train loader for binary non-sequence classification labels, such as `sex` or a custom binary metadata target.
+
 ### Finetune — regression
 ```bash
 python -m sleep2vec.finetune \
@@ -249,6 +263,7 @@ Custom metadata labels:
 - Built-in `ahi` expects a flat 1 Hz NPZ array named `ah_event`; each 30-second token is reshaped into 30 binary labels and trained with sigmoid/BCE.
 - Built-in `ahi` also requires scalar NPZ keys `ahi` and `tst`; final validation/test/infer metrics are **not** pointwise second-level metrics.
 - The built-in `ahi` evaluator fits the event threshold on validation only, saves it in the checkpoint, reuses it for test/infer, and then uses split post-processing: event detection metrics (`ahi_event_precision/recall/f1`) still operate on merged + duration-filtered events, while scalar summary AHI (`ahi_mae`, `ahi_pearson`, ICC, and severity summaries) counts stage-filtered raw predicted positive runs without merge or min-duration filtering so it aligns with scalar ground-truth `ahi`. The scalar summary denominator remains NPZ `tst`, samples with `TST < 2h` are skipped for final summary metrics, and the monitored key remains `val_ahi_pearson`.
+- Classification metrics include `recall` and `specificity`. For binary classification, `specificity` is class-1-vs-class-0 true-negative rate; for multiclass tasks it is macro one-vs-rest specificity. Stage aliases `sens` and `spec` remain macro metrics, including two-class stage collapses.
 - Example YAMLs: `configs/sleep2vec_dense_finetune_custom_reg.yaml`, `configs/sleep2vec_dense_finetune_custom_cls.yaml`.
 
 > [!Note]
@@ -320,6 +335,13 @@ Use the same `--label-name` that was used for fine-tuning; it is required.
 To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
 Use `--pretrained-backbone-path` if you want to preload a pretrain/adaptation initialization checkpoint before applying downstream weights.
 Use `--wandb` to enable W&B logging during inference (needed for confusion matrix logging).
+
+Inference writes a run-local output bundle under `results/inference/<namespace>/<label>/<prediction_run_id>/`:
+- `metrics__<label>__<split>__<ckpt_tag>.csv`
+- `predictions__<label>__<split>__<ckpt_tag>.csv`
+- `run_manifest.json`
+
+It also appends a cross-run summary to `results/inference/overview.csv`. When `--wandb` is set, inference logs the metrics plus `prediction_row_count` and uploads the metrics, predictions, manifest, and overview files as one `inference-<prediction_run_id>` artifact.
 
 ---
 
@@ -477,9 +499,15 @@ finetune:
       freeze_backbone_and_insert_lora: true
       insert_lora: true
       separate_adapters: false
+      r: 8
+      alpha: 16
+      dropout: 0.05
+      target_modules: [query, key, value]
+      use_dora: false
   ```
 - `freeze_tokenizer: true` freezes tokenizer parameters during downstream finetuning (default).
-- When enabled, `finetune.py` injects PEFT LoRA adapters into the transformer backbone and freezes base weights.
+- When enabled, `finetune.py` injects PEFT LoRA/DoRA adapters into the transformer backbone and freezes base weights.
+- `separate_adapters: true` creates channel-specific adapters named `ch_<channel>`; the default LoRA adapter is frozen and only the channel adapters are trainable.
 
 ---
 
@@ -521,7 +549,7 @@ finetune:
 
 ---
 
-## Join us
+## Join Us
 
 We're Five Seasons Medical, building the full stack of AI for human health —
 contactless sensors, foundation models for physiology, and LLM agents

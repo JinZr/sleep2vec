@@ -29,20 +29,21 @@ import typing as t
 
 import torch
 from torch.utils.data import Sampler
+from torch.utils.data.distributed import DistributedSampler
 
 from sleep2expert.distributed import get_rank_world_size
 
 Pair = tuple[str, str]
 
 
-def handles_distributed_sharding(batch_sampler: t.Any) -> bool:
-    """Return True when a batch sampler already shards across ranks."""
-    if batch_sampler is None:
+def handles_distributed_sharding(sampler: t.Any) -> bool:
+    """Return True when a sampler already shards across ranks."""
+    if sampler is None:
         return False
-    flag = getattr(batch_sampler, "handles_distributed_sharding", None)
+    flag = getattr(sampler, "handles_distributed_sharding", None)
     if flag is not None:
         return bool(flag)
-    return isinstance(batch_sampler, DistributedShardedBatchSampler)
+    return isinstance(sampler, DistributedShardedBatchSampler)
 
 
 def _resolve_available_channel_set(src: t.Any, *, allowed: set[str], sample_idx: int) -> set[str]:
@@ -112,6 +113,48 @@ class DistributedShardedBatchSampler(Sampler[list[int]]):
     """Marker base class for batch samplers that already shard by rank."""
 
     handles_distributed_sharding = True
+
+
+class WeightedRandomDistributedSampler(DistributedSampler):
+    handles_distributed_sharding = True
+
+    def __init__(self, weights: torch.Tensor, num_samples: int, *, seed: int = 0) -> None:
+        weights = torch.as_tensor(weights, dtype=torch.double)
+        if weights.ndim != 1:
+            raise ValueError("weights must be a 1D tensor.")
+        if len(weights) == 0:
+            raise ValueError("weights must not be empty.")
+        if num_samples <= 0:
+            raise ValueError(f"num_samples must be > 0, got {num_samples}")
+        if float(weights.sum().item()) <= 0.0:
+            raise ValueError("weights must contain at least one positive value.")
+
+        super().__init__(range(len(weights)), num_replicas=1, rank=0, shuffle=False, seed=int(seed))
+        self.weights = weights
+        self.num_samples = int(num_samples)
+        self.seed = int(seed)
+        self.epoch = 0
+        self._manual_epoch = False
+
+    def __len__(self) -> int:
+        _, world_size = get_rank_world_size()
+        return int(math.ceil(self.num_samples / float(world_size)))
+
+    def __iter__(self):
+        rank, world_size = get_rank_world_size()
+        local_samples = int(math.ceil(self.num_samples / float(world_size)))
+        total_samples = local_samples * world_size
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        if not self._manual_epoch:
+            self.epoch += 1
+
+        indices = torch.multinomial(self.weights, total_samples, replacement=True, generator=generator).tolist()
+        return iter(indices[rank:total_samples:world_size])
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+        self._manual_epoch = True
 
 
 class AvailableChannelsBucketBatchSampler(DistributedShardedBatchSampler):

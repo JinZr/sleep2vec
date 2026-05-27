@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import argparse
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 import yaml
 
+from sleep2vec.common import apply_finetune_config
 from utils.check_configs import check_config_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_FINETUNE_CONFIGS = [
+    ("stage3", REPO_ROOT / "configs" / "examples" / "stage3" / "FINETUNE_EXAMPLE.yaml"),
+    ("stage4", REPO_ROOT / "configs" / "examples" / "stage4" / "FINETUNE_EXAMPLE.yaml"),
+    ("stage5", REPO_ROOT / "configs" / "examples" / "stage5" / "FINETUNE_EXAMPLE.yaml"),
+    ("ahi", REPO_ROOT / "configs" / "examples" / "ahi" / "FINETUNE_EXAMPLE.yaml"),
+    ("sex", REPO_ROOT / "configs" / "examples" / "sex" / "FINETUNE_EXAMPLE.yaml"),
+    ("age", REPO_ROOT / "configs" / "examples" / "age" / "FINETUNE_EXAMPLE.yaml"),
+]
 
 
 def _write_yaml(path: Path, payload: dict) -> Path:
@@ -103,6 +113,21 @@ def test_check_config_file_accepts_repo_ppg_ahi_large_config():
 def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_conv_config():
     path = REPO_ROOT / "configs" / "ppg_ahi_finetune_large_temporal_conv.yaml"
     check_config_file(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [REPO_ROOT / "configs" / "examples" / "PRETRAIN_EXAMPLE.yaml"] + [path for _, path in EXAMPLE_FINETUNE_CONFIGS],
+)
+def test_check_config_file_accepts_example_configs(path: Path):
+    check_config_file(path)
+
+
+@pytest.mark.parametrize(("label_name", "path"), EXAMPLE_FINETUNE_CONFIGS)
+def test_apply_finetune_config_accepts_builtin_task_examples(label_name: str, path: Path):
+    args = argparse.Namespace(config=str(path), label_name=label_name)
+
+    apply_finetune_config(args)
 
 
 def test_check_config_file_accepts_sleep2expert_moe_pretrain_config():

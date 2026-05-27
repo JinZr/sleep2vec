@@ -6,12 +6,23 @@
 - Dataclasses:
   - `ModelConfig`, `ChannelConfig`, `TokenizerConfig`, `BackboneConfig`, `ProjectionConfig`, `ClsConfig`
   - `HeadConfig`, `TemporalAggConfig`, `ChannelAggConfig`, `LayerMixConfig`
-  - `TaskConfig`, `FinetuneConfig`, `FinetuneDataConfig`, `EvalVisualizationsConfig`
+  - `TaskConfig`, `FinetuneConfig`, `LoraConfig`, `FinetuneLossConfig`, `FinetuneSamplerConfig`, `FinetuneDataConfig`, `EvalVisualizationsConfig`
   - `AdaptConfig`, `AdaptStage1Config`, `AdaptStage2Config`, `AdaptLrScalesConfig`, `AdaptPairSchedulePoint`
   - `PretrainDataConfig` with `backend`, `kaldi_data_root`, and `kaldi_manifest`
   - `PretrainConfigBundle`, `FinetuneConfigBundle`
 - Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing.
 - Reuse guidance: extend these dataclasses before adding new ad hoc dict plumbing in entrypoints or Lightning modules.
+
+## `sleep2vec.config.LoraConfig`
+
+- File: `sleep2vec/config.py`
+- Signature: dataclass with `freeze_backbone_and_insert_lora`, `insert_lora`, `separate_adapters`, `r`, `alpha`, `dropout`, `target_modules`, and `use_dora`.
+- Purpose and contract: carry downstream adapter policy from YAML through config parsing, including LoRA rank/alpha/dropout/target-module settings and the DoRA toggle.
+- Important inputs/outputs: YAML `finetune.lora` mapping in; typed config fields consumed by `apply_finetune_config`.
+- Side effects: none.
+- Key callers/callees: built by `load_finetune_config`; consumed by `sleep2vec.common.apply_finetune_config`.
+- Reuse guidance: add downstream adapter schema fields here before wiring them into runtime namespaces.
+- Duplication risk notes: do not add separate CLI-only adapter hyperparameters that bypass this config object.
 
 ## `sleep2vec.config.load_model_config`
 
@@ -39,10 +50,10 @@
 
 - File: `sleep2vec/config.py`
 - Signature: `load_finetune_config(path: str | Path) -> FinetuneConfigBundle`
-- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, layer-mix, data backend, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
+- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, layer-mix, LoRA/DoRA settings, imbalance loss/sampler, data backend, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
 - Important inputs/outputs: YAML path in, `FinetuneConfigBundle` out.
 - Side effects: reads YAML from disk only.
-- Key callers/callees: caller is `sleep2vec.common.apply_finetune_config`; callees include `_build_layer_mix_config`, `_build_task_config`, `_build_eval_visualizations_config`, `_validate_layer_mix_config`, and `_build_model_averaging_config`.
+- Key callers/callees: caller is `sleep2vec.common.apply_finetune_config`; callees include `_build_layer_mix_config`, `_build_finetune_loss_config`, `_build_finetune_sampler_config`, `_build_task_config`, `_build_eval_visualizations_config`, `_validate_layer_mix_config`, and `_build_model_averaging_config`.
 - Reuse guidance: this is the canonical finetune schema boundary.
 - Duplication risk notes: do not reimplement task/head/visualization parsing in trainers or CLI code.
 
@@ -72,7 +83,7 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None`
-- Purpose and contract: populate `args.output_dim`, `args.is_classification`, `args.is_seq`, `args.monitor`, `args.monitor_mod`, and built-in label metadata from either built-in task semantics or explicit `finetune.task`.
+- Purpose and contract: populate `args.output_dim`, `args.is_classification`, `args.is_seq`, `args.monitor`, `args.monitor_mod`, and built-in label metadata from either built-in task semantics or explicit `finetune.task`; built-in classification recipes may monitor `val_accuracy`, `val_f1_macro`, `val_f1_weighted`, `val_cohen_kappa`, and binary `val_roc_auc`.
 - Important inputs/outputs: mutates `argparse.Namespace` in place.
 - Side effects: namespace mutation only.
 - Key callers/callees: caller is `apply_finetune_config`; callees are `_validate_builtin_task_cfg`, `_validate_metadata_label_support`, and the built-in task helpers such as `get_task_label_source_name`, `get_task_label_merge_map`, and `get_task_auxiliary_label_source_names`.
@@ -83,10 +94,10 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_finetune_config(args) -> tuple[Any, Any]`
-- Purpose and contract: load finetune YAML, copy data/model/task/LoRA/eval-visualization settings into the CLI namespace, apply data-backend settings, and enforce dataloader/model channel parity.
-- Important inputs/outputs: mutates `args`; returns `(config_bundle, model_cfg)` for convenience.
+- Purpose and contract: load finetune YAML, copy data/model/task/imbalance/LoRA/DoRA/eval-visualization settings into the CLI namespace, apply data-backend settings, and enforce dataloader/model channel parity.
+- Important inputs/outputs: mutates `args`, including `args.lora_r`, `args.lora_alpha`, `args.lora_dropout`, `args.lora_target_modules`, and `args.lora_use_dora`; returns `(config_bundle, model_cfg)` for convenience.
 - Side effects: converts configured data paths into `Path` objects and mutates many runtime flags.
-- Key callers/callees: callers are `sleep2vec.finetune` and `sleep2vec.infer`; callee is `load_finetune_config`.
+- Key callers/callees: callers are `sleep2vec.finetune` and `sleep2vec.infer`; callees are `load_finetune_config`, `apply_task_flags`, and `_validate_and_apply_imbalance_config`.
 - Reuse guidance: this is the canonical CLI binding layer for finetune/inference.
 - Duplication risk notes: do not partially mirror its behavior in entrypoints.
 

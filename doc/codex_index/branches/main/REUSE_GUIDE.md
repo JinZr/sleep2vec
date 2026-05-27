@@ -7,7 +7,7 @@ This page answers the practical question: when you need to add or change behavio
 | Responsibility | Canonical implementation to reuse | Why it is canonical | Do not bypass with |
 | --- | --- | --- | --- |
 | Pretrain YAML parsing | `sleep2vec.config.load_pretrain_config` | Enforces required model/loss/data blocks and typed config-bundle creation, including `adapt` | Hand-written YAML parsing in `pretrain.py` or `adapt.py` |
-| Finetune YAML parsing | `sleep2vec.config.load_finetune_config` | Centralizes task, head, layer-mix, LoRA, evaluation-visualization, and model-averaging parsing | Entry-point specific YAML parsing |
+| Finetune YAML parsing | `sleep2vec.config.load_finetune_config` | Centralizes task, head, layer-mix, LoRA/DoRA hyperparameters, evaluation-visualization, and model-averaging parsing | Entry-point specific YAML parsing |
 | Config-only model loading | `sleep2vec.config.load_model_config` | Smallest schema-only loader when callers need channel/backbone structure without a full runtime bundle | Ad hoc YAML slicing |
 | Task semantics | `sleep2vec.common.apply_task_flags` plus `get_task_label_source_name`, `get_task_auxiliary_label_source_names`, and `remap_stage_labels` | Single source for built-in `stage3`/`stage4`/`stage5`/`ahi`/`sex`/`age` semantics | Duplicated task/type/monitor/remap logic |
 | Finetune CLI normalization | `sleep2vec.common.apply_finetune_config` | Binds YAML into `args`, enforces channel parity, and derives task flags | Re-copying YAML fields in `finetune.py` or `infer.py` |
@@ -21,7 +21,7 @@ This page answers the practical question: when you need to add or change behavio
 | Downstream feature path | `Sleep2vecDownstreamModel.forward` | Central path for per-modality encoding, temporal aggregation, channel fusion, layer mix, and head invocation | Parallel forward paths in trainer code |
 | Pretrained backbone loading | `Sleep2vecDownstreamModel.load_pretrained_backbone` | Encodes prefix handling, EMA fallback, and CLS mismatch warnings | Custom checkpoint slicing logic |
 | Pretrain init loading for adapt/resume | `sleep2vec.checkpoints.load_pretrain_init_weights` | Shared loader for `model.` vs averaged-model prefixes with explicit load reporting | Custom state-dict prefix stripping |
-| LoRA insertion | `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora` | Centralizes freeze policy and adapter insertion | Direct `peft` calls in trainer code |
+| LoRA insertion | `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora` | Centralizes freeze policy, LoRA/DoRA hyperparameters, adapter insertion, and separate-adapter trainability | Direct `peft` calls in trainer code |
 | Pretrain data loaders | `sleep2vec.utils.get_pretrain_dataloader` | Owns missing-channel mode, sequential pair-eval validation, worker defaults, and sampler choice | Building `PSGPretrainDataset` loaders manually in entrypoints |
 | Finetune/infer data loaders | `sleep2vec.utils._build_finetune_loader` and `get_finetune_dataloaders` | Own split/source choices, built-in sequence label channels, and AHI auxiliary `stage5` injection | Hand-rolled finetune loader creation |
 | Dataset backend dispatch | `sleep2vec.utils._dataset_class_for_args` | Chooses `PSGPretrainDataset` or `KaldiPSGDataset` from normalized `args.data_backend` | Entry-point-specific dataset class branching |
@@ -34,9 +34,13 @@ This page answers the practical question: when you need to add or change behavio
 | Missing-channel training batches | `PairFirstBatchSampler` | Canonical train-time sampler for pair-first missing-channel pretraining/adaptation | Ad hoc pair scheduling loops |
 | Missing-channel homogeneous eval/train fallback | `AvailableChannelsBucketBatchSampler` | Canonical bucketed sampler when pair-first is not active | New bucket logic in entrypoints |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
-| Generic downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Single metric reducer for classification, regression, multilabel AHI pointwise, and stage remap outputs | Per-stage custom metric calculations |
+| Generic downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Single metric reducer for classification recall/specificity, regression, multilabel AHI pointwise, and stage remap outputs | Per-stage custom metric calculations |
 | AHI threshold search and event metrics | `sleep2vec.metrics.compute_ahi_event_metrics`, `select_best_ahi_threshold`, and the prepared-record helpers | Single contract for validation threshold search, record merging, and event/summary metrics | New AHI evaluation branches in trainers or scripts |
 | Result CSV output | `sleep2vec.results.save_result_csv` | Preserves rank-zero gating, lockfile semantics, schema expansion, and standard metadata columns | One-off CSV writers or the removed `metrics.save_result_csv` path |
+| Inference output paths and manifest | `sleep2vec.results.prepare_inference_result_paths`, `make_prediction_run_id`, and `save_inference_manifest` | Centralizes `results/inference/<namespace>/<label>/<prediction_run_id>/`, checkpoint tags, overview paths, and manifest schema | Rebuilding inference output folders in `infer.py` or trainers |
+| Inference W&B artifacts | `sleep2vec.infer._log_inference_outputs_to_wandb` | Logs metrics plus `prediction_row_count` and uploads the metrics, predictions, manifest, and overview files together | W&B upload logic in result writers or variant-specific one-offs |
+| Inference prediction rows | `sleep2vec.sleep2vec_inference.extract_prediction_records`, `build_prediction_rows`, and `build_ahi_prediction_rows` | Converts model outputs into path-level rows for classification, regression, multilabel, and AHI tasks while deduplicating `(path, token_start)` windows | Saving raw batch logits directly from trainer loops |
+| Prediction CSV output | `sleep2vec.results.save_prediction_csv` | Preserves rank-zero gating, lockfile semantics, empty-header output, list serialization, and metadata parity with metrics CSVs | Ad hoc per-path CSV writers |
 | Downstream eval plotting | `sleep2vec.visualization.downstream_eval.DownstreamEvalVisualizer` | Centralizes confusion matrix, ROC, regression scatter, and AHI summary scatter logging | WandB logging logic inside trainer steps |
 | Preset generation | `preprocess/save_dataset_presets.py` | Canonical CLI path that exercises `PSGPretrainDataset` and YAML-driven `preset_build` side effects | External scripts that pickle `SampleIndex` lists directly |
 | Kaldi conversion | `preprocess/convert_npz_to_kaldi.py` plus package-local mirrors | Canonical NPZ-to-Kaldi root writer with split manifests, sorted scps, sharding, and semantic compression policy | One-off ark/scp writers |
@@ -44,6 +48,10 @@ This page answers the practical question: when you need to add or change behavio
 | Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness | One-off shell loops or YAML linters without repo semantics |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
 | UKB asleep night cutting | `utils/cut_ukb_sleep_with_asleep.py` | Standalone utility that mirrors UKB `.cwa` input trees and saves longest sleep block per asleep noon-to-noon interval | New sleep2vec-dependent cutting scripts |
+| UKB annotation parsing | `utils/parse_ukb_annotations_by_person.py` | Converts UKB export bundles into derived dataset metadata, codings, withdrawals, manifest, and per-participant JSON files | One-off parsers that lose UDI/feature-name provenance |
+| UKB demographic collection | `utils/collect_ukb_demographics.py` | Reads UKB-style participant JSON trees and extracts age/sex with source columns | Manual spreadsheet joins for sex/age fields |
+| Kaldi index repair | `utils/fix_kaldi_index.py` | Assigns stable unique `session_id` values so converter sample keys are unique before ark/scp writing | Editing CSV rows by hand after converter failures |
+| Case-control matching | `utils/match_case_controls.py` | MatchIt-style CSV utility with exact constraints, calipers, propensity features, optional genetic weight search, and balance outputs | Untracked notebooks for cohort matching |
 | Standalone dense variant | `sleep2vec2/*` package-local implementations | Maintains behavior parity while keeping imports under `sleep2vec2`, including data/preprocess mirrors | Cross-namespace shortcuts through root `sleep2vec`, `data`, or `preprocess` |
 | Standalone MoE config | `sleep2expert.config.MoeConfig`, `_validate_moe_config`, and `_build_finetune_moe_tuning_config` | Single source for MoE schema, router groups, finetune modes, LR scales, and unsupported regularization checks | Reading `model.backbone.moe` as loose dicts |
 | Sparse MoE routing | `sleep2expert.backbones.roformer.moe.TopKRouter` and `SparseMoEFFN` | Canonical router/expert implementation for learned, random, hard-modality, and hard-group modes | Router branches outside the standalone RoFormer layers |
@@ -95,11 +103,16 @@ This page answers the practical question: when you need to add or change behavio
   - `utils/check_configs.py`
 - Only touch `watchpat_zzp_to_edf.py` for WatchPAT-specific conversion work.
 - Use `utils/cut_ukb_sleep_with_asleep.py` for UKB `.cwa` night extraction with the external `asleep` package; keep it independent of sleep2vec runtime/data imports.
+- Use `utils/parse_ukb_annotations_by_person.py` before downstream scripts need stable UKB feature names or participant JSON.
+- Use `utils/collect_ukb_demographics.py` to derive `eid`, age, and sex tables from those JSON trees.
+- Use `utils/fix_kaldi_index.py` when duplicate Kaldi sample keys come from repeated source/session path prefixes.
+- Use `utils/match_case_controls.py` for reproducible case-control cohort matching and balance diagnostics.
 
 ### If you are changing standalone variants
 
 - Keep `sleep2vec2` and `sleep2expert` imports package-local.
 - Mirror root data/preprocess behavior only when the contract is meant to stay identical.
+- Keep standalone RoFormer attention-backend changes aligned across `sleep2vec2` and `sleep2expert`.
 - Use variant-specific tests such as `tests/test_sleep2vec2_namespace.py`, `tests/test_sleep2expert_namespace.py`, `tests/test_variant_data_protocol.py`, and the Kaldi backend parity tests to guard namespace drift.
 - For `sleep2expert` MoE behavior, route schema changes through `sleep2expert.config`, routing changes through `sleep2expert.backbones.roformer.moe`, and export changes through `sleep2expert.routing_analysis`.
 
@@ -116,6 +129,8 @@ This page answers the practical question: when you need to add or change behavio
 9. Kaldi support reuses the same `DefaultDataset` batch contract through storage hooks. Avoid adding a second collate path.
 10. `sleep2vec2` and `sleep2expert` are package-local mirrors; cross-namespace imports are regressions unless a test explicitly permits them.
 11. MoE routing aux is transient in `last_moe_aux`; persistent analysis should go through `sleep2expert.routing_analysis`.
+12. Inference metrics, overview rows, predictions, manifests, and W&B artifacts share one `prediction_run_id`; update `sleep2vec.results`, `sleep2vec.sleep2vec_inference`, and inference W&B logging together instead of adding a parallel export path.
+13. Binary `specificity` and stage alias `spec` intentionally have different averaging semantics for two-class stage collapses; use `compute_downstream_metrics` instead of recalculating them outside `metrics.py`.
 
 ## Known Non-Reuse Zones
 

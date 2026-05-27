@@ -80,6 +80,11 @@ data:
   n_few_shot: 1280
 finetune:
   freeze_tokenizer: true
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
   layer_mix:
     enabled: false
     shared_across_modalities: false

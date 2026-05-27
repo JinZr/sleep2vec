@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Prepare CSV splits, inspect channel-mask coverage, generate preset pickles, optionally merge presets, convert NPZ windows to Kaldi roots, and convert WatchPAT `.zzp` archives when needed.
+Prepare CSV splits, inspect channel-mask coverage, generate preset pickles, optionally merge presets, convert NPZ windows to Kaldi roots, convert WatchPAT `.zzp` archives, parse UKB metadata, repair Kaldi indexes, and build matched cohorts when needed.
 
 ## Canonical Paths
 
@@ -29,6 +29,21 @@ Prepare CSV splits, inspect channel-mask coverage, generate preset pickles, opti
 
 1. `utils/cut_ukb_sleep_with_asleep.py`
 2. optional sleep2vec preset or Kaldi conversion later, from the generated NPZ manifest
+
+### UKB Annotation And Demographics Path
+
+1. `utils/parse_ukb_annotations_by_person.py`
+2. optional `utils/collect_ukb_demographics.py`
+
+### Kaldi Index Repair Path
+
+1. `utils/fix_kaldi_index.py`
+2. `preprocess/convert_npz_to_kaldi.py`
+
+### Case-Control Matching Path
+
+1. `utils/match_case_controls.py`
+2. downstream preset or Kaldi prep from the matched cohort CSV
 
 ### Config Validation Path
 
@@ -130,6 +145,50 @@ This path is operationally separate from preset generation and is not used by `P
 
 This output is an external data-cutting artifact. It does not create `SampleIndex` presets and does not exercise `PSGPretrainDataset`.
 
+## UKB Annotation Parsing And Demographics
+
+`parse_ukb_annotations_by_person.py`:
+
+- accepts a raw UKB root or its `annotations/` subdirectory
+- parses `ukb*.tab` files and companion `.html` dictionaries / `.r` codings when present
+- writes dataset-level column, field, coding, and missing-coding tables
+- writes participant JSON files under `participants/<eid_prefix>/<eid>/<dataset_id>.json`
+- normalizes withdrawals into `withdrawals/withdrawn_eids.csv`
+- writes a derived `manifest.json` and README
+
+`collect_ukb_demographics.py`:
+
+- scans a participant JSON tree
+- extracts primary or fallback sex and age fields
+- can compute age from birth year/month and assessment date when explicit age fields are absent
+- writes source columns so downstream users know which UKB field supplied each value
+
+These utilities are external metadata-prep tools. They do not load sleep2vec configs or mutate dataset presets.
+
+## Kaldi Index Repair
+
+`fix_kaldi_index.py`:
+
+- reads an index CSV before Kaldi conversion
+- requires `path` plus the configured source field
+- creates `session_id` when missing
+- only changes rows whose source/session-derived Kaldi sample-key prefix would duplicate an earlier row
+- overwrites the input with a `.backup` by default, or writes `--output`
+
+Use this when converter preflight reports duplicate sample keys from repeated source/path stems.
+
+## Case-Control Matching
+
+`match_case_controls.py`:
+
+- reads a flat cohort CSV
+- filters missing required fields before duplicate suppression
+- estimates propensity scores with Patsy/statsmodels design matrices
+- supports exact-match columns, numeric calipers, non-reused controls, partial matches, and optional genetic-style weight search
+- writes matched rows, unmatched cases, excluded rows, case match counts, and balance diagnostics
+
+This is a cohort-construction utility. It should feed later split/preset/Kaldi prep rather than being imported into runtime dataset classes.
+
 ## Config Validation
 
 `utils/check_configs.py`:
@@ -155,3 +214,6 @@ Use this tool when config changes alter loader behavior, built-in task semantics
 - Change config-policy checks: `utils/check_configs.py`
 - Change WatchPAT conversion: `preprocess/watchpat_zzp_to_edf.py`
 - Change standalone UKB/asleep night extraction: `utils/cut_ukb_sleep_with_asleep.py`
+- Change UKB annotation parsing or demographics extraction: `utils/parse_ukb_annotations_by_person.py`, `utils/collect_ukb_demographics.py`
+- Change duplicate-key repair for Kaldi prep: `utils/fix_kaldi_index.py`
+- Change matching/cohort construction: `utils/match_case_controls.py`

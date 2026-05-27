@@ -229,6 +229,8 @@ __marimo__/
 *.npy
 *.npz
 egs/data_hub/
+index/
+npz_lists/
 
 # Serialized Python objects
 *.pkl

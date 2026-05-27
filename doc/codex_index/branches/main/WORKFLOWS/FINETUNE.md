@@ -22,7 +22,7 @@ Primary code path:
 
 1. Load and bind finetune YAML.
    - Parse typed config bundle with `load_finetune_config`.
-   - Copy channels, data paths, data-backend settings, task semantics, LoRA flags, and eval-visualization config into `args`.
+   - Copy channels, data paths, data-backend settings, task semantics, imbalance loss/sampler settings, LoRA flags and hyperparameters, and eval-visualization config into `args`.
    - Reject mismatched `data.data_channel_names`.
 2. Resolve version name.
    - Prefer `--version-name`.
@@ -37,12 +37,14 @@ Primary code path:
    - Built-in sequence tasks append runtime label channels to `dataset_channel_names`.
    - `stage3` and `stage4` still pull raw labels from `stage5`.
    - `ahi` adds `ahi` as the primary token label source and `stage5` as an auxiliary label source.
+   - `finetune.sampler.weighted_random` only affects the train loader for binary non-sequence classification labels and uses a distributed-aware weighted sampler under DDP.
 5. Instantiate `Sleep2vecFinetuning`.
    - Creates `Sleep2vecPretrainModel` backbone.
    - Wraps it in `Sleep2vecDownstreamModel`.
    - Optionally loads pretrained backbone checkpoint.
-   - Optionally freezes backbone and inserts LoRA adapters.
+   - Optionally freezes backbone and inserts LoRA or DoRA adapters with YAML-configured rank, alpha, dropout, and target modules.
    - Optionally freezes tokenizers.
+   - Applies `finetune.loss.class_weights` to single-label classification and `finetune.loss.pos_weight` to multilabel/AHI BCE loss.
    - Optionally attaches a model averager.
    - Optionally enables downstream evaluation visualizations.
 6. Fit.

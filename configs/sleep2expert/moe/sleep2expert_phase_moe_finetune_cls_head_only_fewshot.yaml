@@ -46,7 +46,7 @@ model:
     hidden_dim: 768
     out_dim: 128
   cls:
-    embedding_type: null
+    embedding_type: bert
     downstream: tokens
   channels:
     - name: heartbeat
@@ -105,6 +105,9 @@ model:
       name: mean
       kwargs: {}
 data:
+  backend: npz
+  kaldi_data_root: null
+  kaldi_manifest: null
   max_tokens: 120
   data_channel_names: null
   finetune_data_index: index/hsp_psg_pretrain.csv
@@ -114,6 +117,11 @@ data:
   n_few_shot: 128
 finetune:
   freeze_tokenizer: true
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
   moe_tuning:
     mode: head_only
     lr_scales:

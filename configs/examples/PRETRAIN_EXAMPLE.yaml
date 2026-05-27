@@ -1,0 +1,86 @@
+# Example pretrain YAML showing the root sleep2vec config surface.
+# Values are intentionally small; scale model/data values for real runs.
+model:
+  backbone:
+    name: roformer          # roformer | hf_bert
+    hidden_size: 128
+    num_hidden_layers: 4
+    num_attention_heads: 4
+    vocab_size: 1
+    # sleep2vec2/sleep2expert only:
+    # attention_backend: sdpa  # eager | sdpa
+    config_overrides: {}
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 128
+    out_dim: 64
+    kwargs: {}
+  cls:
+    embedding_type: null    # null | bert
+    downstream: tokens      # tokens | cls
+    kwargs: {}
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      tokenizer:
+        name: sundial       # linear | sundial | sundial2
+        out_dim: 128
+        kwargs:
+          norm_layer: true
+    - name: breath
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 128
+        kwargs:
+          norm_layer: true
+    - name: ppg
+      input_dim: 3000
+      tokenizer:
+        name: sundial2
+        out_dim: 128
+        kwargs:
+          norm_layer: true
+          pre_norm: true
+          residual_scale: 0.5
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+loss:
+  name: weighted_info_nce   # info_nce | weighted_info_nce
+  temperature: 0.2
+  params:
+    hard_scale: 0.1
+    pos_margin: 0.0
+data:
+  backend: npz              # npz | kaldi
+  kaldi_data_root: null
+  kaldi_manifest: null
+  mask_rate: 0.15
+  max_tokens: 120
+adapt:
+  new_channels: [ppg]
+  stage1:
+    train_shared_projection: false
+  stage2:
+    lr_scales:
+      encoder: 0.1
+      shared_legacy: 0.5
+      new_modalities: 1.0
+    pair_schedule:
+      - until: 0.25
+        new_pair_ratio: 1.0
+      - until: 0.5
+        new_pair_ratio: 0.7
+      - until: 0.75
+        new_pair_ratio: 0.5
+      - until: 1.0
+        new_pair_ratio: 0.0
+model_averaging:
+  name: ema                 # ema | running_mean
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

@@ -8,7 +8,7 @@ The repository is a config-driven multimodal sleep modeling system with five ope
 2. Construction and extension: `sleep2vec/registry.py`, `sleep2vec/builders.py`, `sleep2vec/backbones/`, `sleep2vec/modules/`, `sleep2vec/cls/`, `sleep2vec/downstreams/`
 3. Model and trainer runtime: `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/sleep2vec_adaptation.py`
 4. Data and preprocessing: `data/`, `preprocess/`, `sleep2vec/utils.py`, including both NPZ and Kaldi manifest backends
-5. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`
+5. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/sleep2vec_inference.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`, and standalone utilities under `utils/`
 
 `sleep2vec2/` and `sleep2expert/` are tracked standalone namespaces on this branch. They mirror the root runtime surface with package-local `data/` and `preprocess/` modules instead of importing root `data` or `preprocess`. `sleep2expert/` also owns the MoE RoFormer, MoE regularization, finetune tuning policy, and routing-analysis export path.
 
@@ -74,7 +74,7 @@ Stage transitions are strict: `--ckpt-path` resumes within the same phase only, 
    - a `Sleep2vecPretrainModel` backbone
    - a `Sleep2vecDownstreamModel` head stack
    - optional pretrained-backbone loading
-   - optional LoRA insertion
+   - optional LoRA/DoRA insertion with YAML-configured rank, alpha, dropout, target modules, and separate adapters
    - optional model averaging
    - optional downstream evaluation visualization hooks
 6. Run `trainer.fit(...)`.
@@ -93,7 +93,9 @@ Built-in task semantics now include `stage3`, `stage4`, `stage5`, `ahi`, `sex`, 
 4. Instantiate `Sleep2vecFinetuning`.
 5. Optionally select and average checkpoints with `select_checkpoints` and `average_checkpoints`.
 6. Run `trainer.test(...)`.
-7. Optionally append metrics to `results.csv`.
+7. Prepare a run-local inference output directory under `results/inference/<namespace>/<label>/<prediction_run_id>/`.
+8. Write run metrics, append `results/inference/overview.csv`, write path-level predictions, and write `run_manifest.json`.
+9. If W&B is enabled, log metrics plus `prediction_row_count` and upload metrics, predictions, manifest, and overview files as one inference artifact.
 
 AHI inference deliberately rejects checkpoint averaging because the fitted `ahi_eval_threshold` is checkpoint-specific.
 
@@ -147,7 +149,7 @@ The canonical creation path is:
 
 ## Preprocessing And Config Validation
 
-The preprocessing surface is split between reusable CLIs and one notebook:
+The preprocessing surface is split between reusable CLIs, standalone data utilities, and one notebook:
 
 - `split_index_by_dataset.py`: assign `train/val/test/external`, normalize mask truthiness, optionally enforce global pair coverage
 - `mask_missing_stats.py`: summarize `_mask` coverage
@@ -155,6 +157,11 @@ The preprocessing surface is split between reusable CLIs and one notebook:
 - `merge_dataset_presets.py`: concatenate multiple preset pickles
 - `convert_npz_to_kaldi.py`: convert CSV-indexed NPZ windows into split-specific Kaldi ark/scp roots plus `manifest.json` format v2
 - `watchpat_zzp_to_edf.py`: convert WatchPAT `.zzp` archives to EDF and optional JSON summary
+- `utils/cut_ukb_sleep_with_asleep.py`: cut UKB `.cwa` nights with the standalone `asleep` package
+- `utils/parse_ukb_annotations_by_person.py`: parse UKB annotation bundles into dataset metadata and per-participant JSON
+- `utils/collect_ukb_demographics.py`: collect age/sex fields from participant JSON trees
+- `utils/fix_kaldi_index.py`: repair duplicate Kaldi sample-key prefixes by assigning unique `session_id` values
+- `utils/match_case_controls.py`: build matched case-control cohorts with exact matching, calipers, propensity scores, and balance diagnostics
 - `preprocess_pipeline.ipynb`: manual, dataset-specific workflow history
 
 The canonical NPZ preset path is:
@@ -171,6 +178,7 @@ The canonical Kaldi path is:
 - shared tokenizer-dimension parity
 - YAML `preset_build` strictness
 - repo-specific `ppg_*finetune*.yaml` contracts
+- tracked example recipes under `configs/examples/**`
 
 ## Outputs And Side Effects
 
@@ -182,6 +190,7 @@ The canonical Kaldi path is:
 - Per-run copied configs: `config.yaml`, plus phase-specific `config.stage1.yaml` / `config.stage2.yaml` for adaptation
 - Per-run CLI snapshot: `cli_args.yaml`, plus phase-specific adaptation snapshots
 - Downstream results table: caller-specified CSV via `sleep2vec.results.save_result_csv`
+- Inference outputs: run-local `metrics__*.csv`, `predictions__*.csv`, `run_manifest.json`, shared `results/inference/overview.csv`, and optional W&B inference artifacts
 - Visualization side effects:
   - pair-accuracy heatmaps
   - layer-mix heatmaps and tables

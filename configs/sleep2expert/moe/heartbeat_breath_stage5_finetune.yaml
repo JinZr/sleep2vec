@@ -46,7 +46,7 @@ model:
     hidden_dim: 768
     out_dim: 128
   cls:
-    embedding_type: null
+    embedding_type: bert
     downstream: tokens
   channels:
     - name: heartbeat
@@ -70,6 +70,9 @@ model:
       name: mean
       kwargs: {}
 data:
+  backend: npz
+  kaldi_data_root: null
+  kaldi_manifest: null
   max_tokens: 1535
   data_channel_names: [heartbeat, breath]
   finetune_data_index: null
@@ -79,6 +82,11 @@ data:
   n_few_shot: 0
 finetune:
   freeze_tokenizer: true
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
   moe_tuning:
     mode: conservative_full_router_frozen
     lr_scales:

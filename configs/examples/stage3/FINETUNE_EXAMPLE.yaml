@@ -1,0 +1,101 @@
+# Built-in task example: --label-name stage3
+model:
+  backbone:
+    name: roformer
+    hidden_size: 128
+    num_hidden_layers: 4
+    num_attention_heads: 4
+    vocab_size: 1
+    config_overrides: {}
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 128
+    out_dim: 64
+    kwargs: {}
+  cls:
+    embedding_type: null
+    downstream: tokens
+    kwargs: {}
+  channels:
+    - name: heartbeat
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 128
+        kwargs: {}
+    - name: breath
+      input_dim: 120
+      tokenizer:
+        name: sundial
+        out_dim: 128
+        kwargs: {}
+  head:
+    name: classification    # classification | temporal_conv | temporal_transformer
+    hidden_dim: 128
+    dropout: 0.1
+    act: elu
+    channel_agg:
+      name: gated_scalar    # mean | concat | gated_scalar
+      kwargs: {}
+    temporal_agg:
+      name: mean            # mean | attn
+      kwargs: {}
+    kwargs: {}
+data:
+  backend: npz
+  kaldi_data_root: null
+  kaldi_manifest: null
+  max_tokens: 120
+  data_channel_names: [heartbeat, breath]
+  finetune_data_index: index/example_finetune.csv
+  finetune_preset_path: null
+  train_dataset_names: []
+  test_dataset_names: []
+  n_few_shot: 1280
+finetune:
+  freeze_tokenizer: true
+  loss:
+    class_weights: [1.0, 1.0, 1.0]
+    pos_weight: null
+  sampler:
+    weighted_random: false
+  layer_mix:
+    enabled: true
+    shared_across_modalities: false
+    layer_indices: [2, 4]
+  lora:
+    freeze_backbone_and_insert_lora: false
+    insert_lora: true
+    separate_adapters: false
+    r: 8
+    alpha: 16
+    dropout: 0.05
+    target_modules: [query, key, value]
+    use_dora: false
+  task:
+    type: classification
+    output_dim: 3
+    is_seq: true
+    monitor: val_accuracy
+    monitor_mod: max
+  eval_visualizations:
+    enabled: true
+    stages: [val, test]
+    confusion_matrix:
+      enabled: true
+      show_raw_counts: true
+    roc_curve:
+      enabled: false
+    regression_scatter:
+      enabled: false
+preset_build:
+  required_channels: [heartbeat, breath, stage5]
+  min_channels: 3
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

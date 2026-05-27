@@ -18,7 +18,12 @@ if str(REPO_ROOT) not in sys.path:
 from sleep2vec2.checkpoints import average_checkpoints, select_checkpoints
 from sleep2vec2.common import apply_finetune_config
 from sleep2vec2.distributed import is_rank_zero_process
-from sleep2vec2.results import save_result_csv
+from sleep2vec2.results import (
+    prepare_inference_result_paths,
+    save_inference_manifest,
+    save_prediction_csv,
+    save_result_csv,
+)
 from sleep2vec2.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec2.utils import _build_finetune_loader
 
@@ -77,6 +82,21 @@ def _init_wandb(args):
     return wandb.init(**init_kwargs)
 
 
+def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count):
+    wandb.log({**metrics, "prediction_row_count": prediction_row_count})
+
+    # W&B caps artifact names at 128 chars; CSVs and the manifest keep the full prediction_run_id.
+    run_id_hash = args.prediction_run_id.rsplit("__", 1)[-1]
+    artifact = wandb.Artifact(
+        f"inference-{args.timestamp_utc}__{args.inference_namespace}__{run_id_hash}", type="inference"
+    )
+    artifact.add_file(str(args.inference_metrics_csv_path), name="metrics.csv")
+    artifact.add_file(str(args.inference_prediction_csv_path), name="predictions.csv")
+    artifact.add_file(str(args.manifest_path), name="run_manifest.json")
+    artifact.add_file(str(args.inference_overview_csv_path), name="overview.csv")
+    wandb.log_artifact(artifact)
+
+
 def run_inference(args):
     config_bundle, model_cfg = apply_finetune_config(args)
     inference_preset_path = getattr(args, "inference_preset_path", None)
@@ -115,6 +135,7 @@ def run_inference(args):
     )
 
     ckpt_path = args.ckpt_path
+    selected_ckpt_paths = None
     if args.avg_ckpts > 1:
         ckpt_dir = args.avg_ckpt_dir
         end_ckpt = None if args.ckpt_path in {"best", "last"} else Path(args.ckpt_path)
@@ -123,6 +144,7 @@ def run_inference(args):
                 raise ValueError("Use --avg-ckpt-dir when averaging with ckpt-path=best/last.")
             ckpt_dir = end_ckpt.parent
         ckpt_paths = select_checkpoints(Path(ckpt_dir), end_ckpt=end_ckpt, num_ckpts=args.avg_ckpts)
+        selected_ckpt_paths = ckpt_paths
         logging.info("Averaging checkpoints: %s", ", ".join(str(p) for p in ckpt_paths))
         avg_state = average_checkpoints(ckpt_paths, device=torch.device("cpu"))
         missing_keys, unexpected_keys = model.load_state_dict(avg_state, strict=False)
@@ -132,12 +154,31 @@ def run_inference(args):
             logging.warning("Unexpected keys when loading averaged checkpoint: %s", unexpected_keys)
         ckpt_path = None
 
+    prepare_inference_result_paths(args, namespace="sleep2vec2", checkpoint_paths=selected_ckpt_paths)
     logging.info("Running inference on split=%s with %s samples/batch", args.eval_split, args.batch_size)
     wandb_run = _init_wandb(args)
     try:
         test_results = trainer.test(model=model, ckpt_path=ckpt_path, dataloaders=dataloader)
         metrics = test_results[0] if test_results else {}
+        resolved_ckpt_path = getattr(trainer, "ckpt_path", None)
+        if args.ckpt_path in {"best", "last"} and resolved_ckpt_path not in (None, "", args.ckpt_path):
+            args.ckpt_resolved_path = str(resolved_ckpt_path)
+            prepare_inference_result_paths(
+                args,
+                namespace="sleep2vec2",
+                checkpoint_paths=selected_ckpt_paths,
+                timestamp=args.timestamp_utc,
+            )
         logging.info("Inference metrics: %s", metrics)
+
+        prediction_rows = getattr(model, "prediction_rows", [])
+        prediction_row_count = len(prediction_rows)
+        save_result_csv(metrics, str(args.inference_metrics_csv_path), args)
+        save_result_csv(metrics, str(args.inference_overview_csv_path), args)
+        save_prediction_csv(prediction_rows, str(args.inference_prediction_csv_path), args)
+        save_inference_manifest(args, metrics, prediction_row_count=prediction_row_count)
+        if wandb_run is not None:
+            _log_inference_outputs_to_wandb(args, metrics, prediction_row_count)
     finally:
         if wandb_run is not None:
             primary_exc_active = sys.exc_info()[0] is not None
@@ -148,9 +189,6 @@ def run_inference(args):
                     logging.warning("wandb.finish() failed during inference cleanup: %s", exc)
                 else:
                     raise
-
-    if args.results_csv_path and metrics:
-        save_result_csv(metrics, str(args.results_csv_path), args)
 
 
 def parse_args():
@@ -220,12 +258,6 @@ def parse_args():
         type=Path,
         default=None,
         help="Optional preset pickle path for this inference run; overrides data.finetune_preset_path from YAML.",
-    )
-    parser.add_argument(
-        "--results-csv-path",
-        type=Path,
-        default=None,
-        help="Optional CSV path to append aggregated inference metrics.",
     )
     parser.add_argument(
         "--precision",

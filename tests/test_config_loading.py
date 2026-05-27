@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import importlib
 from itertools import combinations
 from pathlib import Path
 
@@ -89,6 +90,13 @@ def _finetune_payload() -> dict:
         },
         "finetune": {
             "freeze_tokenizer": True,
+            "loss": {
+                "class_weights": None,
+                "pos_weight": None,
+            },
+            "sampler": {
+                "weighted_random": False,
+            },
             "lora": {
                 "freeze_backbone_and_insert_lora": False,
                 "insert_lora": True,
@@ -332,6 +340,119 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.data.kaldi_manifest is None
     assert bundle.finetune.task is not None
     assert bundle.finetune.task.output_dim == 2
+    assert bundle.finetune.loss.class_weights is None
+    assert bundle.finetune.loss.pos_weight is None
+    assert bundle.finetune.sampler.weighted_random is False
+    assert bundle.finetune.lora.r == 8
+    assert bundle.finetune.lora.alpha == 16
+    assert bundle.finetune.lora.dropout == 0.05
+    assert bundle.finetune.lora.target_modules == ["query", "key", "value"]
+    assert bundle.finetune.lora.use_dora is False
+
+
+def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["lora"].update(
+        {
+            "r": 4,
+            "alpha": 12,
+            "dropout": 0.15,
+            "target_modules": ["query", "dense"],
+            "use_dora": True,
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.lora.r == 4
+    assert bundle.finetune.lora.alpha == 12
+    assert bundle.finetune.lora.dropout == 0.15
+    assert bundle.finetune.lora.target_modules == ["query", "dense"]
+    assert bundle.finetune.lora.use_dora is True
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_finetune_config_parses_imbalance_blocks_across_namespaces(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
+    payload = _finetune_payload()
+    if module_name != "sleep2vec.config":
+        payload["finetune"]["lora"] = {
+            "freeze_backbone_and_insert_lora": False,
+            "insert_lora": False,
+            "separate_adapters": False,
+        }
+    payload["finetune"]["loss"] = {"class_weights": [1, 2.5], "pos_weight": 3}
+    payload["finetune"]["sampler"] = {"weighted_random": True}
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.loss.class_weights == [1.0, 2.5]
+    assert bundle.finetune.loss.pos_weight == 3.0
+    assert bundle.finetune.sampler.weighted_random is True
+
+
+@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2expert.config"])
+def test_standalone_variants_parse_attention_backend(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    default_payload = _pretrain_payload()
+    default_path = _write_yaml(tmp_path, default_payload, name=f"{module_name.replace('.', '_')}_default.yaml")
+
+    default_bundle = loader(default_path)
+
+    assert default_bundle.model.backbone.attention_backend == "eager"
+
+    sdpa_payload = _pretrain_payload()
+    sdpa_payload["model"]["backbone"]["attention_backend"] = "sdpa"
+    sdpa_path = _write_yaml(tmp_path, sdpa_payload, name=f"{module_name.replace('.', '_')}_sdpa.yaml")
+
+    sdpa_bundle = loader(sdpa_path)
+
+    assert sdpa_bundle.model.backbone.attention_backend == "sdpa"
+
+
+@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2expert.config"])
+def test_standalone_variants_reject_invalid_attention_backend(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    payload = _pretrain_payload()
+    payload["model"]["backbone"]["attention_backend"] = "flash"
+    path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_invalid_attention.yaml")
+
+    with pytest.raises(ValueError, match="attention_backend must be one of eager, sdpa"):
+        loader(path)
+
+
+@pytest.mark.parametrize(
+    ("loss_block", "match"),
+    [
+        ({"class_weights": [1.0, 0.0], "pos_weight": None}, "class_weights must contain only positive numbers"),
+        ({"class_weights": None, "pos_weight": [1.0, -1.0]}, "pos_weight must contain only positive numbers"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_imbalance_loss_values(tmp_path: Path, loss_block: dict, match: str):
+    payload = _finetune_payload()
+    payload["finetune"]["loss"] = loss_block
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=match):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_non_boolean_weighted_random(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["sampler"] = {"weighted_random": "true"}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="weighted_random must be a boolean"):
+        load_finetune_config(config_path)
 
 
 def test_load_finetune_config_parses_kaldi_data_fields(tmp_path: Path):

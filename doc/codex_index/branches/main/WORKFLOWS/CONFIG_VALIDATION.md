@@ -22,6 +22,7 @@ Primary code path:
 1. Resolve target config paths.
    - No args: validate every YAML under `configs/`.
    - Paths may be files or directories.
+   - Tracked example recipes under `configs/examples/**` are part of the checked config surface.
 2. Load the raw YAML mapping.
 3. Validate runtime loader compatibility.
    - Root configs load through `sleep2vec.config`.
@@ -45,6 +46,7 @@ Primary code path:
 - This workflow intentionally reuses runtime config loaders rather than linting YAML shape independently.
 - Variant directories are validated with package-local loaders and package-local preset helpers.
 - Repo policy enforcement lives here, not inside `sleep2vec/config.py`.
+- Example configs are validated both by `check_config_file` and by `apply_finetune_config` for built-in finetune tasks.
 - Failures are reported per file so the command can validate the entire tree in one pass.
 
 ## Outputs

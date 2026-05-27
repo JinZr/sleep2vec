@@ -64,6 +64,8 @@ class DefaultDataset(BaseDataset):
         meta_data_regression_names: t.Optional[t.List[str]] = None,
         sources=None,  # ← 新增参数
         pair_selector: t.Any | None = None,
+        weighted_random_sampler: bool = False,
+        weighted_random_sampler_target: str | None = None,
         seed: int = 42,
         filter_max_workers: int | None = None,
     ) -> None:
@@ -86,6 +88,8 @@ class DefaultDataset(BaseDataset):
         self.tokenizers = tokenizers
         self.mask_generators = mask_generators
         self.pair_selector = pair_selector
+        self.weighted_random_sampler = bool(weighted_random_sampler)
+        self.weighted_random_sampler_target = weighted_random_sampler_target
         # self.collators = collators
         self.dataloader_config = dataloader_config
 
@@ -488,26 +492,12 @@ class DefaultDataset(BaseDataset):
             return batch
 
         sampler = None
-        if (
-            self.meta_data_names
-            and self.meta_data_names[0]
-            in [
-                "allergiesorsinusproblems",
-                "asthma",
-                "bronchitis",
-                "cerebrovasculardisease",
-                "chronicobstructivepulmonarydiseasecopd",
-                "coronaryheartdisease",
-                "diabetes",
-                "heartfailure",
-                "hypertension",
-                "restlesslegsyndromerls",
-            ]
-            and self.is_train_set
-        ):
-            target_name = self.meta_data_names[0]  # 或者显式传入
+        if self.weighted_random_sampler and self.weighted_random_sampler_target and self.is_train_set:
+            target_name = self.weighted_random_sampler_target
             labels = extract_binary_labels(self, target_name)
-            sampler = make_weighted_sampler_from_labels(labels)
+            sampler = make_weighted_sampler_from_labels(labels, seed=self.seed)
+            if sampler is None:
+                raise ValueError(f"weighted_random found no valid binary labels for '{target_name}'.")
 
         dl_kwargs = dict(self.dataloader_config)
         if sampler is not None:
