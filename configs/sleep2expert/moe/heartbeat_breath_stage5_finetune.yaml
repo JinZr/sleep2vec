@@ -70,6 +70,9 @@ model:
       name: mean
       kwargs: {}
 data:
+  backend: npz
+  kaldi_data_root: null
+  kaldi_manifest: null
   max_tokens: 1535
   data_channel_names: [heartbeat, breath]
   finetune_data_index: null
