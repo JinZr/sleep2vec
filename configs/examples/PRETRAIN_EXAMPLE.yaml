@@ -7,7 +7,8 @@ model:
     num_hidden_layers: 4
     num_attention_heads: 4
     vocab_size: 1
-    # sleep2vec2/sleep2expert only: attention_backend: sdpa  # eager | sdpa
+    # sleep2vec2/sleep2expert only: 
+    # attention_backend: sdpa  # eager | sdpa
     config_overrides: {}
   projection:
     name: simclr
