@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 from pathlib import Path
 
 import pytest
@@ -360,6 +361,30 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert args.pos_weight is None
     assert args.weighted_random_sampler is False
     assert config_bundle.finetune.task is not None
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec2.common",
+        "sleep2expert.common",
+    ],
+)
+def test_variant_apply_finetune_config_populates_lora_namespace(tmp_path: Path, module_name: str):
+    apply_config = importlib.import_module(module_name).apply_finetune_config
+    config_path = _write_yaml(tmp_path, _finetune_payload())
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    apply_config(args)
+
+    assert args.freeze_backbone_and_insert_lora is True
+    assert args.insert_lora is True
+    assert args.separate_adapters is True
+    assert args.lora_r == 4
+    assert args.lora_alpha == 12
+    assert args.lora_dropout == 0.15
+    assert args.lora_target_modules == ["query", "dense"]
+    assert args.lora_use_dora is True
 
 
 def test_apply_finetune_config_applies_binary_imbalance_knobs(tmp_path: Path):

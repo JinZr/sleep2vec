@@ -377,6 +377,11 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.freeze_backbone_and_insert_lora = lora_cfg.freeze_backbone_and_insert_lora
     args.insert_lora = lora_cfg.insert_lora
     args.separate_adapters = lora_cfg.separate_adapters
+    args.lora_r = lora_cfg.r
+    args.lora_alpha = lora_cfg.alpha
+    args.lora_dropout = lora_cfg.dropout
+    args.lora_target_modules = lora_cfg.target_modules
+    args.lora_use_dora = lora_cfg.use_dora
     args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
     args.eval_visualizations = finetune_cfg.eval_visualizations
     args.head_kwargs = {}

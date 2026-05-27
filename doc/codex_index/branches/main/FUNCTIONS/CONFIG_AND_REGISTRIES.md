@@ -13,15 +13,15 @@
 - Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing.
 - Reuse guidance: extend these dataclasses before adding new ad hoc dict plumbing in entrypoints or Lightning modules.
 
-## `sleep2vec.config.LoraConfig`
+## `sleep2vec.config.LoraConfig` and package-local variant mirrors
 
-- File: `sleep2vec/config.py`
+- File: `sleep2vec/config.py`, `sleep2vec2/config.py`, `sleep2expert/config.py`
 - Signature: dataclass with `freeze_backbone_and_insert_lora`, `insert_lora`, `separate_adapters`, `r`, `alpha`, `dropout`, `target_modules`, and `use_dora`.
-- Purpose and contract: carry downstream adapter policy from YAML through config parsing, including LoRA rank/alpha/dropout/target-module settings and the DoRA toggle.
+- Purpose and contract: carry downstream adapter policy from YAML through config parsing, including LoRA rank/alpha/dropout/target-module settings and the DoRA toggle. `sleep2expert` rejects router target modules at config load time.
 - Important inputs/outputs: YAML `finetune.lora` mapping in; typed config fields consumed by `apply_finetune_config`.
 - Side effects: none.
-- Key callers/callees: built by `load_finetune_config`; consumed by `sleep2vec.common.apply_finetune_config`.
-- Reuse guidance: add downstream adapter schema fields here before wiring them into runtime namespaces.
+- Key callers/callees: built by `load_finetune_config`; consumed by `sleep2vec.common.apply_finetune_config` and package-local variant mirrors.
+- Reuse guidance: add downstream adapter schema fields to the canonical root contract first, then mirror the same shape in standalone namespaces without adding shared helpers.
 - Duplication risk notes: do not add separate CLI-only adapter hyperparameters that bypass this config object.
 
 ## `sleep2vec.config.load_model_config`
@@ -217,11 +217,11 @@
 
 - File: `sleep2expert/config.py`
 - Signature: `_build_finetune_moe_tuning_config(raw: Any) -> FinetuneMoeTuningConfig | None`
-- Purpose and contract: parse finetune-time MoE tuning policy, including `head_only`, conservative full-router modes, `top_moe_layer_expert_only`, custom freeze flags, LR scales, and downstream MoE regularization.
+- Purpose and contract: parse finetune-time MoE tuning policy, including `head_only`, conservative full-router modes, `top_moe_layer_expert_only`, custom freeze flags, LR scales, LoRA adapter LR scale, and downstream MoE regularization.
 - Important inputs/outputs: raw YAML block in; typed `FinetuneMoeTuningConfig` or `None` out.
 - Side effects: none, except `_validate_finetune_moe_tuning_config` may fill a default top MoE layer when `top_moe_layer_expert_only` omits `train_moe_layer_indices`.
 - Key callers/callees: caller is `load_finetune_config`; callees include `_build_finetune_lr_scales_config`, `_build_finetune_moe_regularization_config`, and `_validate_finetune_moe_tuning_config`.
-- Reuse guidance: use this path for sleep2expert MoE finetune recipes instead of adding CLI-only tuning switches.
+- Reuse guidance: use this path for sleep2expert MoE finetune recipes instead of adding CLI-only tuning switches; `finetune.moe_tuning.lr_scales.lora` controls adapter trainability and optimizer LR scale.
 - Duplication risk notes: downstream load-balance, modality-balance, route-consistency, and entropy regularization are currently rejected for finetune; keep that unsupported subset centralized here.
 
 ## `sleep2vec.modules.tokenizers.build_tokenizer_from_channel` and `build_tokenizer_mapping`

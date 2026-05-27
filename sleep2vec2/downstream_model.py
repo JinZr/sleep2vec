@@ -422,6 +422,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         lora_alpha: int = 16,
         lora_dropout: float = 0.05,
         target_modules=("query", "key", "value"),  # 只打注意力；若也想打FFN，加 "dense"
+        use_dora: bool = False,
         separate_adapters: bool = False,
     ):
         # 0) 先冻结 backbone 全部参数
@@ -440,6 +441,7 @@ class Sleep2vecDownstreamModel(nn.Module):
                 # layers_to_transform=[6, 7],      # 想只打高层就改成 [4,5,6,7] 之类
                 task_type=TaskType.FEATURE_EXTRACTION,
                 target_modules=list(target_modules),
+                use_dora=use_dora,
             )
             encoder_with_lora = get_peft_model(self._backbone_encoder(), cfg)
             self._replace_backbone_encoder(encoder_with_lora)
@@ -483,14 +485,14 @@ class Sleep2vecDownstreamModel(nn.Module):
     def _enable_all_adapters_trainable(self):
         encoder = self._backbone_encoder()
         for n, p in encoder.named_parameters():
-            # 只放开 LoRA 权重；底座仍然冻结
             if "lora_" in n:
-                # 仅放开这些 adapter 的参数（避免误放开 default）
-                if any(
-                    (f".{adp}." in n or f"_{adp}." in n or n.endswith(f".{adp}.weight"))
-                    for adp in self.channel_adapters
-                ):
-                    p.requires_grad = True
+                p.requires_grad = False
+        for n, p in encoder.named_parameters():
+            # 仅放开这些 adapter 的参数（避免误放开 default）
+            if "lora_" in n and any(
+                (f".{adp}." in n or f"_{adp}." in n or n.endswith(f".{adp}.weight")) for adp in self.channel_adapters
+            ):
+                p.requires_grad = True
 
     # ---- helpers ----
     @staticmethod

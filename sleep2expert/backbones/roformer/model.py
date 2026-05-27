@@ -61,22 +61,30 @@ class RoFormerEncoderModel(nn.Module):
 
     def forward(
         self,
-        inputs_embeds: torch.Tensor,
+        inputs_embeds: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         output_hidden_states: bool = False,
         output_attentions: bool = False,
         return_dict: bool = True,
         modality_name: str | None = None,
         collect_moe_aux: bool = False,
+        input_ids: torch.LongTensor | None = None,
+        token_type_ids: torch.LongTensor | None = None,
     ):
-        if inputs_embeds is None:
-            raise ValueError("inputs_embeds must be provided for RoFormerEncoderModel.forward")
+        if inputs_embeds is not None:
+            input_shape = inputs_embeds.size()[:-1]
+        elif input_ids is not None:
+            input_shape = input_ids.size()
+        else:
+            raise ValueError("Either input_ids or inputs_embeds must be provided for RoFormerEncoderModel.forward")
 
-        input_shape = inputs_embeds.size()[:-1]
         if attention_mask is None:
-            attention_mask = torch.ones(input_shape, device=inputs_embeds.device)
+            device = inputs_embeds.device if inputs_embeds is not None else input_ids.device
+            attention_mask = torch.ones(input_shape, device=device)
 
-        embedding_output = self.embeddings(inputs_embeds=inputs_embeds)
+        embedding_output = self.embeddings(
+            input_ids=input_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
+        )
         if hasattr(self, "embeddings_project"):
             embedding_output = self.embeddings_project(embedding_output)
 

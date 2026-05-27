@@ -278,7 +278,16 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.finetune.lora.use_dora is False
 
 
-def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path):
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
     payload = _finetune_payload()
     payload["finetune"]["lora"].update(
         {
@@ -291,7 +300,7 @@ def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path):
     )
     config_path = _write_yaml(tmp_path, payload)
 
-    bundle = load_finetune_config(config_path)
+    bundle = loader(config_path)
 
     assert bundle.finetune.lora.r == 4
     assert bundle.finetune.lora.alpha == 12

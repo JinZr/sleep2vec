@@ -6,8 +6,8 @@ Work safely in the active standalone variants and export sleep2expert MoE routin
 
 ## Active Variant Namespaces
 
-- `sleep2vec2/`: dense standalone mirror with package-local runtime, data, preprocessing, visualization, and standalone RoFormer code.
-- `sleep2expert/`: standalone mirror with MoE RoFormer, MoE regularization, MoE finetune tuning, checkpoint expansion, and routing export.
+- `sleep2vec2/`: dense standalone mirror with package-local runtime, data, preprocessing, visualization, LoRA/DoRA adapter support, and standalone RoFormer code.
+- `sleep2expert/`: standalone mirror with MoE RoFormer, MoE regularization, MoE finetune tuning, LoRA/DoRA adapter support, checkpoint expansion, and routing export.
 
 ## Package-Local Rule
 
@@ -32,7 +32,8 @@ Primary namespace guards:
 3. Build sparse RoFormer layers through `sleep2expert.backbones.roformer.moe`.
 4. During pretraining, consume `Sleep2vecPretrainModel.last_moe_aux` through `compute_moe_regularization`.
 5. During finetuning, set `finetune.moe_tuning` for trainability groups, LR scales, and the supported downstream MoE regularization subset.
-6. Use `sleep2expert.checkpoints.load_pretrain_init_weights` for checkpoint initialization; it handles compatible dense-to-MoE expansion and rejects legacy standalone-incompatible RoFormer keys.
+6. If LoRA is enabled, use attention target modules by default or opt into expert targets with `dense_in` / `dense_out`; router LoRA targets are unsupported.
+7. Use `sleep2expert.checkpoints.load_pretrain_init_weights` for checkpoint initialization; it handles compatible dense-to-MoE expansion and rejects legacy standalone-incompatible RoFormer keys.
 
 ## Routing Export
 
@@ -72,8 +73,9 @@ Important options:
 
 - Change namespace parity or mirror behavior: package-local files plus namespace/parity tests.
 - Change automatic inference prediction export in a variant: package-local `infer.py`, `results.py`, `sleep2vec_inference.py`, and `sleep2vec_finetuning.py`.
+- Change LoRA adapter parity in a variant: package-local `config.py`, `common.py`, `downstream_model.py`, `sleep2vec_finetuning.py`, and variant namespace tests.
 - Change MoE schema: `sleep2expert/config.py`.
 - Change sparse routing execution: `sleep2expert/backbones/roformer/moe.py`.
 - Change MoE auxiliary losses or metrics: `sleep2expert/losses/moe_regularization.py`.
-- Change MoE finetune trainability or optimizer grouping: `sleep2expert/sleep2vec_finetuning.py`.
+- Change MoE finetune trainability or optimizer grouping, including the `lora` group: `sleep2expert/sleep2vec_finetuning.py`.
 - Change routing export row schema or heatmaps: `sleep2expert/routing_analysis.py`, `sleep2expert/visualization/routing_heatmap.py`.

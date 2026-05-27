@@ -372,3 +372,45 @@ def test_sleep2expert_downstream_train_collects_moe_aux_when_enabled():
     for record in backbone.last_moe_aux:
         assert record["aux"] is not None
         assert [aux.layer_idx for aux in record["aux"]] == [1, 3]
+
+
+def test_sleep2expert_expert_lora_real_peft_forward_backward_smoke():
+    pytest.importorskip("peft")
+    torch.manual_seed(0)
+    model_config = _sleep2expert_model_config(moe=_moe_config(), with_head=True)
+    backbone = Sleep2vecPretrainModel(model_config=model_config, device="cpu")
+    downstream = Sleep2vecDownstreamModel(
+        target="stage",
+        backbone=backbone,
+        channel_names=["eeg", "ppg"],
+        output_dim=2,
+        is_classification=True,
+        is_seq=False,
+        device="cpu",
+        model_config=model_config,
+        head_config=model_config.head,
+    ).train()
+    downstream.collect_train_moe_aux = True
+    downstream.freeze_backbone_and_insert_lora(
+        insert_lora=True,
+        r=2,
+        lora_alpha=4,
+        lora_dropout=0.0,
+        target_modules=["query", "key", "value", "dense_in", "dense_out"],
+    )
+
+    output = downstream(_sleep2expert_batch())
+    loss = output.square().mean()
+    loss.backward()
+
+    lora_params = [(name, param) for name, param in downstream.named_parameters() if "lora_" in name]
+    expert_lora_params = [
+        (name, param)
+        for name, param in lora_params
+        if ".moe_ffn.experts." in name and (".dense_in." in name or ".dense_out." in name)
+    ]
+    assert output.shape == (2, 2)
+    assert backbone.last_moe_aux is not None
+    assert expert_lora_params
+    assert not any("moe_ffn.router" in name for name, _ in lora_params)
+    assert any(param.grad is not None and param.grad.abs().sum() > 0 for _, param in expert_lora_params)
