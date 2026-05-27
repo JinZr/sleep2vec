@@ -215,6 +215,29 @@ def test_check_config_file_accepts_all_repo_wrist2vec_configs():
         check_config_file(path)
 
 
+def test_check_config_file_accepts_all_repo_wrist2vec_flex_configs():
+    config_dir = Path(__file__).resolve().parents[1] / "configs" / "wrist2vec_flex"
+    wrist2vec_flex_paths = sorted(config_dir.rglob("*.yaml"))
+
+    assert wrist2vec_flex_paths
+    for path in wrist2vec_flex_paths:
+        check_config_file(path)
+
+
+def test_check_config_file_routes_wrist2vec_flex_configs_to_flex_loader(monkeypatch):
+    import sleep2vec.config as base_config
+    import wrist2vec.config as wrist_config
+
+    def fail_loader(*args, **kwargs):
+        raise AssertionError("non-flex loader should not validate wrist2vec_flex configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_loader)
+    monkeypatch.setattr(wrist_config, "load_pretrain_config", fail_loader)
+
+    path = REPO_ROOT / "configs" / "wrist2vec_flex" / "wrist2vec_flex_multilight_ppg_accgyro_pretrain_resnet1d.yaml"
+    check_config_file(path)
+
+
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
     _write_yaml(path, _ppg_finetune_payload(is_seq=True, preset_build=None))

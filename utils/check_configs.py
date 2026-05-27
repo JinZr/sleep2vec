@@ -38,6 +38,7 @@ CONFIG_VARIANTS = {
     "sleep2expert": ConfigVariant("sleep2expert.config", "sleep2expert.preprocess.save_dataset_presets"),
     "sleep2vec2": ConfigVariant("sleep2vec2.config", "sleep2vec2.preprocess.save_dataset_presets"),
     "wrist2vec": ConfigVariant("wrist2vec.config", "wrist2vec.preprocess.save_dataset_presets"),
+    "wrist2vec_flex": ConfigVariant("wrist2vec_flex.config", "wrist2vec_flex.preprocess.save_dataset_presets"),
     "write2vec": ConfigVariant("wrist2vec.config", "wrist2vec.preprocess.save_dataset_presets"),
 }
 
