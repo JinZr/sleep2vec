@@ -311,13 +311,11 @@ def test_wrist2vec_resnet1d_example_pretrain_config_loads():
     assert bundle.model.projection.hidden_dim == hidden_size
     assert [channel.name for channel in bundle.model.channels] == [
         "ppg_green",
-        "ppg_red",
         "ppg_infrared",
         "gyro_vm",
         "acc_vm",
     ]
     assert [channel.tokenizer.name for channel in bundle.model.channels] == [
-        "resnet1d",
         "resnet1d",
         "resnet1d",
         "sundial2",
