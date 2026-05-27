@@ -70,6 +70,9 @@ model:
       name: mean
       kwargs: {}
 data:
+  backend: npz
+  kaldi_data_root: null
+  kaldi_manifest: null
   max_tokens: 120
   data_channel_names: null
   finetune_data_index: index/hsp_psg_pretrain.csv

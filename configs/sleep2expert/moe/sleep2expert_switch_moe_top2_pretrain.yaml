@@ -86,6 +86,9 @@ loss:
     hard_scale: 0.10
     pos_margin: 0.0
 data:
+  backend: npz
+  kaldi_data_root: null
+  kaldi_manifest: null
   mask_rate: 0.15
   max_tokens: 120
 model_averaging:
