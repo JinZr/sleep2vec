@@ -146,20 +146,35 @@ def test_sleep2vec2_finetune_configs_disable_lora():
 
 
 @pytest.mark.parametrize(
-    "flag",
-    [
-        "freeze_backbone_and_insert_lora",
-        "insert_lora",
-        "separate_adapters",
-    ],
+    "target_modules",
+    [["query", "key", "value"], ["query", "dense"]],
 )
-def test_sleep2vec2_finetune_config_rejects_lora_flags(tmp_path: Path, flag: str):
+def test_sleep2vec2_finetune_config_accepts_lora_flags(tmp_path: Path, target_modules: list[str]):
     source = REPO_ROOT / "configs" / "sleep2vec2" / "ppg_ahi_finetune.yaml"
     data = yaml.safe_load(source.read_text())
     payload = deepcopy(data)
-    payload["finetune"]["lora"][flag] = True
+    payload["finetune"]["lora"].update(
+        {
+            "freeze_backbone_and_insert_lora": True,
+            "insert_lora": True,
+            "separate_adapters": True,
+            "r": 4,
+            "alpha": 12,
+            "dropout": 0.15,
+            "target_modules": target_modules,
+            "use_dora": True,
+        }
+    )
     path = tmp_path / "lora_enabled.yaml"
     path.write_text(yaml.safe_dump(payload))
 
-    with pytest.raises(ValueError, match="sleep2vec2 standalone RoFormer does not support LoRA yet"):
-        load_finetune_config(path)
+    bundle = load_finetune_config(path)
+
+    assert bundle.finetune.lora.freeze_backbone_and_insert_lora is True
+    assert bundle.finetune.lora.insert_lora is True
+    assert bundle.finetune.lora.separate_adapters is True
+    assert bundle.finetune.lora.r == 4
+    assert bundle.finetune.lora.alpha == 12
+    assert bundle.finetune.lora.dropout == 0.15
+    assert bundle.finetune.lora.target_modules == target_modules
+    assert bundle.finetune.lora.use_dora is True

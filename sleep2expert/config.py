@@ -368,6 +368,11 @@ class LoraConfig:
     freeze_backbone_and_insert_lora: bool = False
     insert_lora: bool = False
     separate_adapters: bool = False
+    r: int = 8
+    alpha: int = 16
+    dropout: float = 0.05
+    target_modules: t.List[str] = field(default_factory=lambda: ["query", "key", "value"])
+    use_dora: bool = False
 
 
 @dataclass
@@ -387,6 +392,7 @@ class FinetuneLrScalesConfig:
     routers: float = 0.0
     tokenizers: float = 0.0
     projection: float = 0.0
+    lora: float = 1.0
 
 
 @dataclass
@@ -830,6 +836,7 @@ def _default_finetune_moe_lr_scales(mode: str) -> dict[str, float]:
             "routers": 0.0,
             "tokenizers": 0.0,
             "projection": 0.0,
+            "lora": 1.0,
         }
     if mode == "conservative_full_router_trainable":
         return {
@@ -839,6 +846,7 @@ def _default_finetune_moe_lr_scales(mode: str) -> dict[str, float]:
             "routers": 0.01,
             "tokenizers": 0.0,
             "projection": 0.0,
+            "lora": 1.0,
         }
     if mode == "top_moe_layer_expert_only":
         return {
@@ -848,6 +856,7 @@ def _default_finetune_moe_lr_scales(mode: str) -> dict[str, float]:
             "routers": 0.0,
             "tokenizers": 0.0,
             "projection": 0.0,
+            "lora": 1.0,
         }
     return {
         "head": 1.0,
@@ -856,11 +865,12 @@ def _default_finetune_moe_lr_scales(mode: str) -> dict[str, float]:
         "routers": 0.0,
         "tokenizers": 0.0,
         "projection": 0.0,
+        "lora": 1.0,
     }
 
 
 def _build_finetune_lr_scales_config(raw: t.Any, mode: str) -> FinetuneLrScalesConfig:
-    allowed = {"head", "backbone", "experts", "routers", "tokenizers", "projection"}
+    allowed = {"head", "backbone", "experts", "routers", "tokenizers", "projection", "lora"}
     values = _default_finetune_moe_lr_scales(mode)
     if raw is not None:
         if not isinstance(raw, dict):
@@ -1208,8 +1218,9 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     _validate_finetune_moe_tuning_config(moe_tuning_cfg, model_cfg)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
-    if lora_cfg.freeze_backbone_and_insert_lora or lora_cfg.insert_lora or lora_cfg.separate_adapters:
-        raise ValueError("sleep2expert standalone RoFormer does not support LoRA yet.")
+    router_targets = [target for target in lora_cfg.target_modules if "router" in target.lower()]
+    if router_targets:
+        raise ValueError("sleep2expert LoRA does not support router target modules.")
     finetune_cfg = FinetuneConfig(
         freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
         lora=lora_cfg,

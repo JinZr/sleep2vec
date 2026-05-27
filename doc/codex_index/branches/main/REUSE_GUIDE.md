@@ -21,7 +21,7 @@ This page answers the practical question: when you need to add or change behavio
 | Downstream feature path | `Sleep2vecDownstreamModel.forward` | Central path for per-modality encoding, temporal aggregation, channel fusion, layer mix, and head invocation | Parallel forward paths in trainer code |
 | Pretrained backbone loading | `Sleep2vecDownstreamModel.load_pretrained_backbone` | Encodes prefix handling, EMA fallback, and CLS mismatch warnings | Custom checkpoint slicing logic |
 | Pretrain init loading for adapt/resume | `sleep2vec.checkpoints.load_pretrain_init_weights` | Shared loader for `model.` vs averaged-model prefixes with explicit load reporting | Custom state-dict prefix stripping |
-| LoRA insertion | `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora` | Centralizes freeze policy, LoRA/DoRA hyperparameters, adapter insertion, and separate-adapter trainability | Direct `peft` calls in trainer code |
+| LoRA insertion | `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora` and package-local variant mirrors | Centralizes freeze policy, LoRA/DoRA hyperparameters, adapter insertion, and separate-adapter trainability | Direct `peft` calls in trainer code |
 | Pretrain data loaders | `sleep2vec.utils.get_pretrain_dataloader` | Owns missing-channel mode, sequential pair-eval validation, worker defaults, and sampler choice | Building `PSGPretrainDataset` loaders manually in entrypoints |
 | Finetune/infer data loaders | `sleep2vec.utils._build_finetune_loader` and `get_finetune_dataloaders` | Own split/source choices, built-in sequence label channels, and AHI auxiliary `stage5` injection | Hand-rolled finetune loader creation |
 | Dataset backend dispatch | `sleep2vec.utils._dataset_class_for_args` | Chooses `PSGPretrainDataset` or `KaldiPSGDataset` from normalized `args.data_backend` | Entry-point-specific dataset class branching |
@@ -52,8 +52,8 @@ This page answers the practical question: when you need to add or change behavio
 | UKB demographic collection | `utils/collect_ukb_demographics.py` | Reads UKB-style participant JSON trees and extracts age/sex with source columns | Manual spreadsheet joins for sex/age fields |
 | Kaldi index repair | `utils/fix_kaldi_index.py` | Assigns stable unique `session_id` values so converter sample keys are unique before ark/scp writing | Editing CSV rows by hand after converter failures |
 | Case-control matching | `utils/match_case_controls.py` | MatchIt-style CSV utility with exact constraints, calipers, propensity features, optional genetic weight search, and balance outputs | Untracked notebooks for cohort matching |
-| Standalone dense variant | `sleep2vec2/*` package-local implementations | Maintains behavior parity while keeping imports under `sleep2vec2`, including data/preprocess mirrors | Cross-namespace shortcuts through root `sleep2vec`, `data`, or `preprocess` |
-| Standalone MoE config | `sleep2expert.config.MoeConfig`, `_validate_moe_config`, and `_build_finetune_moe_tuning_config` | Single source for MoE schema, router groups, finetune modes, LR scales, and unsupported regularization checks | Reading `model.backbone.moe` as loose dicts |
+| Standalone dense variant | `sleep2vec2/*` package-local implementations | Maintains behavior parity while keeping imports under `sleep2vec2`, including data/preprocess and LoRA/DoRA mirrors | Cross-namespace shortcuts through root `sleep2vec`, `data`, or `preprocess` |
+| Standalone MoE config | `sleep2expert.config.MoeConfig`, `_validate_moe_config`, and `_build_finetune_moe_tuning_config` | Single source for MoE schema, router groups, finetune modes, LR scales including `lora`, and unsupported regularization/router-LoRA checks | Reading `model.backbone.moe` as loose dicts |
 | Sparse MoE routing | `sleep2expert.backbones.roformer.moe.TopKRouter` and `SparseMoEFFN` | Canonical router/expert implementation for learned, random, hard-modality, and hard-group modes | Router branches outside the standalone RoFormer layers |
 | MoE regularization | `sleep2expert.losses.moe_regularization.compute_moe_regularization` and `compute_downstream_moe_regularization` | Centralizes load balance, modality balance, route consistency, router z-loss, entropy, and downstream-supported subset | Trainer-local MoE loss calculations |
 | MoE checkpoint expansion | `sleep2expert.checkpoints.initialize_moe_from_dense_if_possible` | Clones compatible dense FFN weights into MoE experts and rejects incomplete or shape-incompatible states | Ad hoc state-dict rewrites before load |
@@ -113,6 +113,7 @@ This page answers the practical question: when you need to add or change behavio
 - Keep `sleep2vec2` and `sleep2expert` imports package-local.
 - Mirror root data/preprocess behavior only when the contract is meant to stay identical.
 - Keep standalone RoFormer attention-backend changes aligned across `sleep2vec2` and `sleep2expert`.
+- Keep LoRA/DoRA config and downstream insertion behavior aligned with root; for `sleep2expert`, use `finetune.moe_tuning.lr_scales.lora` for adapter optimizer grouping.
 - Use variant-specific tests such as `tests/test_sleep2vec2_namespace.py`, `tests/test_sleep2expert_namespace.py`, `tests/test_variant_data_protocol.py`, and the Kaldi backend parity tests to guard namespace drift.
 - For `sleep2expert` MoE behavior, route schema changes through `sleep2expert.config`, routing changes through `sleep2expert.backbones.roformer.moe`, and export changes through `sleep2expert.routing_analysis`.
 

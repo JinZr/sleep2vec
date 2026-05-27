@@ -21,8 +21,8 @@ These are the stable cross-file boundaries that matter before editing:
 | Config recipes | `configs/` | Encode model/head/task variants, preset-build policy, adapt recipes, example recipes, standalone `sleep2vec2` recipes, and `sleep2expert` dense/MoE recipes | Config parser + entrypoints | New recipe variants | Folder names are not always semantically authoritative |
 | Tests | `tests/` | Pin config, registry, LoRA adapter, AHI/specificity metric, checkpoint, result CSV, inference W&B artifact, preset-build, pair-sampler, and visualization contracts | pytest | New contract coverage | Many important contracts live here now |
 | Formatting wrapper | `utils/style_check.sh` | Run `isort`, `black`, `flake8` over repo | Python env toolchain | None | Lint wrapper only |
-| Standalone dense variant | `sleep2vec2/`, `configs/sleep2vec2/` | Package-local mirror of root runtime/data/preprocess plus standalone RoFormer, with tests for namespace isolation, Kaldi backend, and parity | root contracts for behavior parity, local package imports | Variant-specific dense recipe changes | No LoRA support for standalone RoFormer checkpoints |
-| Standalone MoE variant | `sleep2expert/`, `configs/sleep2expert/` | Package-local mirror plus MoE RoFormer, routing regularization, MoE finetune tuning, checkpoint expansion, routing export, and routing visualizations | `sleep2expert.config`, `sleep2expert.backbones.roformer.moe`, `sleep2expert.losses.moe_regularization` | MoE architecture, tuning, routing analysis | Active tracked variant namespace on `main` |
+| Standalone dense variant | `sleep2vec2/`, `configs/sleep2vec2/` | Package-local mirror of root runtime/data/preprocess plus standalone RoFormer, with tests for namespace isolation, Kaldi backend, LoRA/DoRA adapter parity, and dense parity | root contracts for behavior parity, local package imports | Variant-specific dense recipe changes | LoRA/DoRA support follows the root downstream adapter contract |
+| Standalone MoE variant | `sleep2expert/`, `configs/sleep2expert/` | Package-local mirror plus MoE RoFormer, routing regularization, MoE finetune tuning, LoRA/DoRA adapter support, checkpoint expansion, routing export, and routing visualizations | `sleep2expert.config`, `sleep2expert.backbones.roformer.moe`, `sleep2expert.losses.moe_regularization` | MoE architecture, tuning, routing analysis | Router LoRA is intentionally unsupported; adapter params use a separate MoE finetune LR group |
 
 ## Key Dependencies
 
@@ -65,13 +65,13 @@ These are the stable cross-file boundaries that matter before editing:
 - Config/task edits usually span `sleep2vec/config.py` and `sleep2vec/common.py`.
 - Forward-path edits usually span `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, and the downstream fusion modules.
 - AHI runtime edits usually span `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`, `sleep2vec/metrics.py`, and `sleep2vec/sleep2vec_finetuning.py`.
-- LoRA/DoRA adapter edits usually span `sleep2vec/config.py`, `sleep2vec/common.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_finetuning.py`, and `tests/test_downstream_separate_adapters.py`.
+- LoRA/DoRA adapter edits usually span `sleep2vec/config.py`, `sleep2vec/common.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_finetuning.py`, and `tests/test_downstream_separate_adapters.py`; package-local variant edits mirror those files under `sleep2vec2/` or `sleep2expert/`.
 - Missing-channel pretraining edits usually span `data/default_dataset.py`, `data/utils.py`, `data/samplers.py`, and `sleep2vec/utils.py`.
 - Kaldi backend edits usually span `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/kaldi_io.py`, `data/kaldi_psg_dataset.py`, and `preprocess/convert_npz_to_kaldi.py`; duplicate-key index repairs belong in `utils/fix_kaldi_index.py`.
 - Adaptation edits usually span `sleep2vec/adapt.py`, `sleep2vec/sleep2vec_adaptation.py`, `sleep2vec/pretrain_model.py`, and sampler/callback surfaces used by pair scheduling.
 - Preprocessing edits should stay in `preprocess/` or standalone `utils/` scripts unless the preset schema or `SampleIndex` payload changes.
 - `sleep2vec2` and `sleep2expert` edits should preserve package-local imports and mirror tests; do not route them through root `data` or `preprocess`.
-- `sleep2expert` MoE edits usually span `sleep2expert/config.py`, `sleep2expert/backbones/roformer/moe.py`, `sleep2expert/pretrain_model.py`, `sleep2expert/sleep2vec_modelling.py`, `sleep2expert/sleep2vec_finetuning.py`, and `sleep2expert/losses/moe_regularization.py`.
+- `sleep2expert` MoE edits usually span `sleep2expert/config.py`, `sleep2expert/backbones/roformer/moe.py`, `sleep2expert/pretrain_model.py`, `sleep2expert/sleep2vec_modelling.py`, `sleep2expert/sleep2vec_finetuning.py`, and `sleep2expert/losses/moe_regularization.py`; MoE LoRA trainability and LR-scale grouping belongs in `sleep2expert/sleep2vec_finetuning.py`.
 
 ## Ambiguities Worth Remembering
 

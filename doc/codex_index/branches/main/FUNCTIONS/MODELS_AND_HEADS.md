@@ -59,9 +59,9 @@
 
 ## `sleep2vec2` / `sleep2expert` `RoFormerEncoderModel`
 
-- File: `sleep2vec2/backbones/roformer/model.py`, `sleep2vec2/backbones/roformer/modeling_roformer.py`, `sleep2expert/backbones/roformer/model.py`, and `sleep2expert/backbones/roformer/modeling_roformer.py`
-- Signature: `RoFormerEncoderModel.forward(input_ids=None, attention_mask=None, token_type_ids=None, inputs_embeds=None, output_attentions=None, output_hidden_states=None, return_dict=None, **kwargs)`
-- Purpose and contract: package-local standalone RoFormer encoder used by `sleep2vec2` and `sleep2expert` instead of the root/Hugging Face RoFormer module; `sleep2expert` layers may swap dense FFN blocks for MoE experts.
+- File: `sleep2vec2/backbones/roformer/configuration.py`, `sleep2vec2/backbones/roformer/model.py`, `sleep2vec2/backbones/roformer/modeling_roformer.py`, `sleep2expert/backbones/roformer/configuration.py`, `sleep2expert/backbones/roformer/model.py`, and `sleep2expert/backbones/roformer/modeling_roformer.py`
+- Signature: `RoFormerEncoderModel.forward(...)` accepts embeddings-first runtime calls plus optional `input_ids` / `token_type_ids` kwargs that PEFT may pass through; `sleep2expert` also accepts `modality_name` and `collect_moe_aux`.
+- Purpose and contract: package-local standalone RoFormer encoder used by `sleep2vec2` and `sleep2expert` instead of the root/Hugging Face RoFormer module; `sleep2expert` layers may swap dense FFN blocks for MoE experts. The lightweight config exposes dict-like `get` for PEFT compatibility while keeping attribute-based runtime access.
 - Important inputs/outputs: token ids or embeddings plus attention controls in; RoFormer-style output with last hidden state, optional hidden states, and optional attentions out. `model.backbone.attention_backend` selects eager attention or SDPA, while `output_attentions=True` keeps eager attention for visualization.
 - Side effects: none beyond compute.
 - Key callers/callees: built by package-local `backbones.encoder_factory.build_roformer`; exercised by package-local `pretrain_model.Sleep2vecPretrainModel` and downstream wrappers.
@@ -123,20 +123,20 @@
 - Reuse guidance: use for any downstream weight initialization from pretrain checkpoints.
 - Duplication risk notes: prefix selection and fallback behavior are non-trivial; do not slice checkpoint keys manually in callers.
 
-## `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora`
+## `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora` and package-local variant mirrors
 
-- File: `sleep2vec/downstream_model.py`
+- File: `sleep2vec/downstream_model.py`, `sleep2vec2/downstream_model.py`, `sleep2expert/downstream_model.py`
 - Signature: `freeze_backbone_and_insert_lora(insert_lora: bool = True, r: int = 8, lora_alpha: int = 16, lora_dropout: float = 0.05, target_modules=("query", "key", "value"), use_dora: bool = False, separate_adapters: bool = False) -> None`
-- Purpose and contract: freeze backbone parameters, optionally inject LoRA/DoRA adapters into the encoder with configurable rank/alpha/dropout/target modules, and optionally create separate adapters per channel.
+- Purpose and contract: freeze backbone parameters, optionally inject LoRA/DoRA adapters into the encoder with configurable rank/alpha/dropout/target modules, and optionally create separate adapters per channel. `sleep2expert` can opt in expert targets by naming `dense_in` or `dense_out`; router targets are rejected by config parsing.
 - Important inputs/outputs: adapter enable flag, rank, alpha, dropout, target-module names, DoRA flag, and separate-adapter flag in; no return value.
 - Side effects: mutates backbone module structure and parameter trainability; with separate adapters, the default LoRA adapter is frozen and only `ch_<channel>` adapter weights are trainable.
 - Key callers/callees: caller is `Sleep2vecFinetuning.__init__`; callee is `get_peft_model`.
-- Reuse guidance: this is the canonical LoRA insertion path for downstream training.
+- Reuse guidance: this is the canonical LoRA insertion path for downstream training; standalone variants keep package-local copies aligned with this contract.
 - Duplication risk notes: adapter naming and trainable-parameter enabling should stay centralized here.
 
-## `Sleep2vecDownstreamModel._enable_all_adapters_trainable`
+## `Sleep2vecDownstreamModel._enable_all_adapters_trainable` and package-local variant mirrors
 
-- File: `sleep2vec/downstream_model.py`
+- File: `sleep2vec/downstream_model.py`, `sleep2vec2/downstream_model.py`, `sleep2expert/downstream_model.py`
 - Signature: `_enable_all_adapters_trainable(self) -> None`
 - Purpose and contract: after separate channel adapters are added, freeze all LoRA parameters and re-enable only the configured channel adapter weights.
 - Important inputs/outputs: uses `self.channel_adapters`; mutates encoder parameter `requires_grad` flags.

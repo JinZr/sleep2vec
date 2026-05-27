@@ -215,6 +215,11 @@ class LoraConfig:
     freeze_backbone_and_insert_lora: bool = False
     insert_lora: bool = False
     separate_adapters: bool = False
+    r: int = 8
+    alpha: int = 16
+    dropout: float = 0.05
+    target_modules: t.List[str] = field(default_factory=lambda: ["query", "key", "value"])
+    use_dora: bool = False
 
 
 @dataclass
@@ -784,8 +789,6 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
-    if lora_cfg.freeze_backbone_and_insert_lora or lora_cfg.insert_lora or lora_cfg.separate_adapters:
-        raise ValueError("sleep2vec2 standalone RoFormer does not support LoRA yet.")
     finetune_cfg = FinetuneConfig(
         freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
         lora=lora_cfg,

@@ -204,4 +204,4 @@ The canonical Kaldi path is:
 
 ## Variant State On This Branch
 
-`sleep2vec2/` is an active tracked standalone mirror of the root recipe with a package-local RoFormer implementation and no LoRA support for its standalone backbone. `sleep2expert/` is an active tracked standalone variant that adds MoE configuration, sparse RoFormer FFN routing, MoE pretrain/finetune regularization, MoE checkpoint initialization, and routing export/visualization.
+`sleep2vec2/` is an active tracked standalone mirror of the root recipe with a package-local RoFormer implementation and LoRA/DoRA adapter support aligned with root downstream behavior. `sleep2expert/` is an active tracked standalone variant that adds MoE configuration, sparse RoFormer FFN routing, MoE pretrain/finetune regularization, MoE-aware LoRA optimizer grouping, MoE checkpoint initialization, and routing export/visualization.

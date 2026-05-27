@@ -80,6 +80,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if args.freeze_backbone_and_insert_lora:
             self.model.freeze_backbone_and_insert_lora(
                 insert_lora=args.insert_lora,
+                r=args.lora_r,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=args.lora_dropout,
+                target_modules=args.lora_target_modules,
+                use_dora=args.lora_use_dora,
                 separate_adapters=args.separate_adapters,
             )
 
@@ -143,18 +148,21 @@ class Sleep2vecFinetuning(pl.LightningModule):
             "routers": float(lr_scales.routers),
             "tokenizers": float(lr_scales.tokenizers),
             "projection": float(lr_scales.projection),
+            "lora": float(lr_scales.lora),
         }
         self._set_param_trainability_from_policy(cfg)
         self._log_finetune_param_group_summary()
 
     def _semantic_group_for_param(self, name: str) -> str:
+        if "lora_" in name:
+            return "lora"
         if name.startswith(("head.", "temporal_agg.", "layer_mix.")):
             return "head"
         if name.startswith("backbone.tokenizer_mapping."):
             return "tokenizers"
-        if name.startswith("backbone.encoder.encoder.layer.") and ".moe_ffn.router." in name:
+        if ".moe_ffn.router." in name:
             return "routers"
-        if name.startswith("backbone.encoder.encoder.layer.") and ".moe_ffn.experts." in name:
+        if ".moe_ffn.experts." in name:
             return "experts"
         if name.startswith(("backbone.proj_head.", "backbone.mask_embed.")):
             return "projection"
@@ -163,7 +171,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return "head"
 
     def _set_param_trainability_from_policy(self, cfg):
-        groups = ("head", "backbone", "experts", "routers", "tokenizers", "projection")
+        groups = ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora")
         self._finetune_param_to_group = {}
         self._finetune_group_summary = {
             group: {"total_params": 0, "trainable_params": 0, "total_tensors": 0, "trainable_tensors": 0}
@@ -173,10 +181,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         selected_expert_param_count = 0
 
         def expert_layer_idx(name: str) -> int | None:
-            prefix = "backbone.encoder.encoder.layer."
-            if not name.startswith(prefix):
+            marker = ".encoder.layer."
+            marker_pos = name.find(marker)
+            if marker_pos < 0:
                 return None
-            idx_text, _, suffix = name[len(prefix) :].partition(".")
+            idx_text, _, suffix = name[marker_pos + len(marker) :].partition(".")
             if not suffix.startswith("moe_ffn.experts."):
                 return None
             try:
@@ -195,7 +204,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self._finetune_param_to_group[name] = group
 
             trainable = False
-            if cfg.mode == "head_only":
+            if group == "lora":
+                trainable = self._finetune_lr_scales[group] > 0.0
+            elif cfg.mode == "head_only":
                 trainable = group == "head"
             elif cfg.mode == "conservative_full_router_frozen":
                 trainable = group in {"head", "backbone", "experts"}
@@ -232,7 +243,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
             offenders = [
                 name
                 for name, param in self.model.named_parameters()
-                if name.startswith("backbone.") and param.requires_grad
+                if name.startswith("backbone.")
+                and param.requires_grad
+                and self._semantic_group_for_param(name) != "lora"
             ]
             if offenders:
                 raise ValueError(f"head_only MoE tuning left backbone parameters trainable: {offenders[:5]}")
@@ -259,7 +272,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             offenders = [
                 name
                 for name, param in self.model.named_parameters()
-                if name.startswith("backbone.") and param.requires_grad and not is_selected_expert(name)
+                if name.startswith("backbone.")
+                and param.requires_grad
+                and self._semantic_group_for_param(name) != "lora"
+                and not is_selected_expert(name)
             ]
             if offenders:
                 raise ValueError(
@@ -271,7 +287,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         total_params = sum(summary["total_params"] for summary in self._finetune_group_summary.values())
         trainable_params = sum(summary["trainable_params"] for summary in self._finetune_group_summary.values())
         logging.info("[finetune_moe_tuning] mode=%s", cfg.mode)
-        for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection"):
+        for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora"):
             summary = self._finetune_group_summary[group]
             logging.info(
                 "[finetune_moe_tuning] group=%s trainable_params=%s total_params=%s lr_scale=%s",
@@ -1093,7 +1109,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if moe_tuning is not None:
             grouped_params = {
                 (group, decay_type): []
-                for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection")
+                for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora")
                 for decay_type in ("decay", "no_decay")
             }
             for n, p in self.model.named_parameters():
@@ -1113,7 +1129,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 grouped_params[(group, decay_type)].append(p)
 
             optimizer_groups = []
-            for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection"):
+            for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora"):
                 for decay_type in ("decay", "no_decay"):
                     params = grouped_params[(group, decay_type)]
                     if not params:

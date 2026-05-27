@@ -9,6 +9,9 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("pytorch_lightning")
 
+import torch.nn as nn
+
+from sleep2expert import downstream_model as downstream_module
 from sleep2expert.backbones.roformer.moe import MoERoutingOutput
 from sleep2expert.config import (
     BackboneConfig,
@@ -75,7 +78,25 @@ def _model_config() -> ModelConfig:
     )
 
 
-def _args(*, freeze_tokenizer: bool = True) -> SimpleNamespace:
+class _FakePeftEncoder(nn.Module):
+    def __init__(self, base_encoder: nn.Module, cfg):
+        super().__init__()
+        self.base_encoder = base_encoder
+        self.peft_config = {"default": cfg}
+        self.lora_A = nn.ModuleDict({"default": nn.Linear(1, 1, bias=False)})
+        self.lora_B = nn.ModuleDict({"default": nn.Linear(1, 1, bias=False)})
+
+
+def _fake_get_peft_model(encoder, cfg):
+    return _FakePeftEncoder(encoder, cfg)
+
+
+def _args(
+    *,
+    freeze_tokenizer: bool = True,
+    enable_lora: bool = False,
+    lora_target_modules: list[str] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         device="cpu",
         label_name="stage5",
@@ -83,9 +104,14 @@ def _args(*, freeze_tokenizer: bool = True) -> SimpleNamespace:
         is_classification=True,
         is_seq=True,
         pretrained_backbone_path=None,
-        freeze_backbone_and_insert_lora=False,
-        insert_lora=False,
+        freeze_backbone_and_insert_lora=enable_lora,
+        insert_lora=enable_lora,
         separate_adapters=False,
+        lora_r=4,
+        lora_alpha=12,
+        lora_dropout=0.15,
+        lora_target_modules=lora_target_modules or ["query", "key", "value"],
+        lora_use_dora=False,
         freeze_tokenizer=freeze_tokenizer,
         print_diagnostics=False,
         diagnostics_steps=5,
@@ -101,6 +127,7 @@ def _tuning(
     *,
     train_moe_layer_indices: list[int] | None = None,
     moe_regularization: FinetuneMoeRegularizationConfig | None = None,
+    lora_lr: float = 1.0,
 ) -> FinetuneMoeTuningConfig:
     lr_scales = FinetuneLrScalesConfig()
     if mode == "head_only":
@@ -111,6 +138,7 @@ def _tuning(
             routers=0.0,
             tokenizers=0.0,
             projection=0.0,
+            lora=lora_lr,
         )
     elif mode == "conservative_full_router_trainable":
         lr_scales = FinetuneLrScalesConfig(
@@ -120,6 +148,7 @@ def _tuning(
             routers=0.01,
             tokenizers=0.0,
             projection=0.0,
+            lora=lora_lr,
         )
     elif mode == "top_moe_layer_expert_only":
         lr_scales = FinetuneLrScalesConfig(
@@ -129,7 +158,10 @@ def _tuning(
             routers=0.0,
             tokenizers=0.0,
             projection=0.0,
+            lora=lora_lr,
         )
+    else:
+        lr_scales.lora = lora_lr
     kwargs = {}
     if moe_regularization is not None:
         kwargs["moe_regularization"] = moe_regularization
@@ -147,6 +179,9 @@ def _module(
     freeze_tokenizer: bool = True,
     train_moe_layer_indices: list[int] | None = None,
     moe_regularization: FinetuneMoeRegularizationConfig | None = None,
+    enable_lora: bool = False,
+    lora_target_modules: list[str] | None = None,
+    lora_lr: float = 1.0,
 ) -> Sleep2vecFinetuning:
     finetune_config = FinetuneConfig(
         freeze_tokenizer=freeze_tokenizer,
@@ -155,13 +190,18 @@ def _module(
                 mode,
                 train_moe_layer_indices=train_moe_layer_indices,
                 moe_regularization=moe_regularization,
+                lora_lr=lora_lr,
             )
             if mode is not None
             else None
         ),
     )
     return Sleep2vecFinetuning(
-        _args(freeze_tokenizer=freeze_tokenizer),
+        _args(
+            freeze_tokenizer=freeze_tokenizer,
+            enable_lora=enable_lora,
+            lora_target_modules=lora_target_modules,
+        ),
         _model_config(),
         finetune_config=finetune_config,
     )
@@ -184,7 +224,7 @@ def _routing_aux(router_probs: torch.Tensor, *, layer_idx: int = 1) -> MoERoutin
     importance = router_probs.sum(dim=(0, 1))
     entropy = -(router_probs * router_probs.clamp_min(torch.finfo(router_probs.dtype).eps).log()).sum(dim=-1)
     return MoERoutingOutput(
-        router_logits=router_probs.clamp_min(torch.finfo(router_probs.dtype).eps).log(),
+        router_logits=router_probs.clamp_min(torch.finfo(router_probs.dtype).eps).log() + 0.5,
         router_probs=router_probs,
         topk_indices=topk_indices,
         topk_probs=topk_probs,
@@ -306,6 +346,49 @@ def test_zero_lr_groups_are_not_in_optimizer():
     assert "routers" not in semantic_groups
     assert "tokenizers" not in semantic_groups
     assert "projection" not in semantic_groups
+
+
+def test_lora_uses_independent_moe_optimizer_group(monkeypatch):
+    monkeypatch.setattr(downstream_module, "get_peft_model", _fake_get_peft_model)
+    module = _module(
+        "conservative_full_router_frozen",
+        enable_lora=True,
+        lora_target_modules=["query", "key", "value", "dense_in", "dense_out"],
+        lora_lr=0.25,
+    )
+    _set_fake_trainer(module)
+
+    lora_params = _named_params(module, "lora_")
+    routers = _named_params(module, "moe_ffn.router.")
+    experts = _named_params(module, "moe_ffn.experts.")
+    assert lora_params
+    assert routers
+    assert experts
+    assert all(param.requires_grad for _, param in lora_params)
+    assert all(not param.requires_grad for _, param in routers)
+    assert all(param.requires_grad for _, param in experts)
+
+    optimizers, _ = module.configure_optimizers()
+    groups = {group["name"]: group["lr"] for group in optimizers[0].param_groups}
+    assert groups["lora/decay"] == pytest.approx(module.args.lr * 0.25)
+    assert groups["experts/decay"] == pytest.approx(module.args.lr * 0.1)
+    assert "routers/decay" not in groups
+    assert module.moe_finetune_status["param_groups"]["lora"]["trainable_params"] > 0
+
+
+def test_zero_lora_lr_freezes_lora_params_and_omits_optimizer_group(monkeypatch):
+    monkeypatch.setattr(downstream_module, "get_peft_model", _fake_get_peft_model)
+    module = _module("conservative_full_router_trainable", enable_lora=True, lora_lr=0.0)
+    _set_fake_trainer(module)
+
+    lora_params = _named_params(module, "lora_")
+    assert lora_params
+    assert all(not param.requires_grad for _, param in lora_params)
+
+    optimizers, _ = module.configure_optimizers()
+    semantic_groups = {group["name"].split("/")[0] for group in optimizers[0].param_groups}
+    assert "lora" not in semantic_groups
+    assert module.moe_finetune_status["param_groups"]["lora"]["trainable_params"] == 0
 
 
 def test_no_moe_tuning_uses_legacy_two_groups():
