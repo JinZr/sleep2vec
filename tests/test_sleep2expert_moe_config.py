@@ -85,7 +85,7 @@ def _write_config(tmp_path: Path, payload: dict[str, t.Any]) -> Path:
 
 
 def test_sleep2expert_dense_yaml_has_no_moe_config():
-    path = REPO_ROOT / "configs" / "sleep2expert" / "sleep2vec_dense_pretrain.yaml"
+    path = REPO_ROOT / "configs" / "sleep2expert" / "sleep2expert_dense_pretrain.yaml"
 
     bundle = load_pretrain_config(path)
 
@@ -221,7 +221,7 @@ def test_sleep2expert_non_learned_router_ablations_keep_aux_losses_disabled(rela
 @pytest.mark.parametrize(
     "relative_path",
     [
-        "configs/sleep2expert/sleep2vec_dense_finetune_cls.yaml",
+        "configs/sleep2expert/sleep2expert_dense_finetune_cls.yaml",
         "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls.yaml",
     ],
 )

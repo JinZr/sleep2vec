@@ -30,7 +30,7 @@ model:
     hidden_dim: 768
     out_dim: 128
   cls:
-    embedding_type: null
+    embedding_type: bert
     downstream: tokens
   channels:
     - name: heartbeat

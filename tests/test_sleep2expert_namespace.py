@@ -112,7 +112,7 @@ def test_sleep2expert_configs_parse_with_sleep2expert_loaders():
     config_root = REPO_ROOT / "configs" / "sleep2expert"
     config_paths = sorted(config_root.rglob("*.yaml"))
 
-    assert (config_root / "sleep2vec_dense_pretrain.yaml") in config_paths
+    assert (config_root / "sleep2expert_dense_pretrain.yaml") in config_paths
 
     for path in config_paths:
         data = yaml.safe_load(path.read_text())
