@@ -5,6 +5,7 @@ model:
     num_hidden_layers: 12
     num_attention_heads: 16
     vocab_size: 1
+    attention_backend: sdpa
   projection:
     name: simclr
     enabled: true
