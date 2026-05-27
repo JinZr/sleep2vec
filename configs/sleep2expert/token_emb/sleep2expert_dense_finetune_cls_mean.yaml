@@ -11,7 +11,7 @@ model:
     hidden_dim: 768
     out_dim: 128
   cls:
-    embedding_type: null    # null -> no CLS token, operate on per-token embeddings
+    embedding_type: bert    # null -> no CLS, "bert" -> prepend learnable CLS token
     downstream: tokens      # use token sequence for downstream pooling
   channels:
     - name: heartbeat
@@ -60,7 +60,7 @@ model:
         name: sundial
         out_dim: 768
   head:
-    name: regression
+    name: classification
     dropout: 0.1
     hidden_dim: null
     channel_agg:

@@ -11,8 +11,8 @@ model:
     hidden_dim: 768
     out_dim: 128
   cls:
-    embedding_type: null    # null -> no CLS, "bert" -> prepend learnable CLS token
-    downstream: tokens      # "tokens" or "cls" (required)
+    embedding_type: bert    # null -> no CLS, "bert" -> prepend learnable CLS token
+    downstream: tokens      # use token sequence for downstream pooling
   channels:
     - name: heartbeat
       input_dim: 120
@@ -60,15 +60,18 @@ model:
         name: sundial
         out_dim: 768
   head:
-    name: classification
+    name: regression
     dropout: 0.1
     hidden_dim: null
     channel_agg:
       name: gated_scalar
       kwargs: {}
     temporal_agg:
-      name: mean
-      kwargs: {}
+      name: attn
+      kwargs:
+        heads: 1
+        temp: 1.0
+        dropout: 0.0
 data:
   max_tokens: 120
   data_channel_names: null
@@ -92,15 +95,6 @@ finetune:
     freeze_backbone_and_insert_lora: false
     insert_lora: false
     separate_adapters: false
-  eval_visualizations:
-    enabled: true
-    stages: [val, test]
-    confusion_matrix:
-      enabled: true
-    roc_curve:
-      enabled: true
-    regression_scatter:
-      enabled: false
 
 model_averaging:
   name: ema

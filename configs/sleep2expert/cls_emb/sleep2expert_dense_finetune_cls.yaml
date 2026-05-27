@@ -5,14 +5,13 @@ model:
     num_hidden_layers: 12
     num_attention_heads: 16
     vocab_size: 1
-    attention_backend: sdpa
   projection:
     name: simclr
     enabled: true
     hidden_dim: 768
     out_dim: 128
   cls:
-    embedding_type: null    # null -> no CLS, "bert" -> prepend learnable CLS token
+    embedding_type: bert    # null -> no CLS, "bert" -> prepend learnable CLS token
     downstream: tokens      # "tokens" or "cls" (required)
   channels:
     - name: heartbeat
@@ -60,15 +59,41 @@ model:
       tokenizer:
         name: sundial
         out_dim: 768
-loss:
-  name: weighted_info_nce
-  temperature: 0.2
-  params:
-    hard_scale: 0.10
-    pos_margin: 0.0
+  head:
+    name: classification
+    dropout: 0.1
+    hidden_dim: null
+    channel_agg:
+      name: gated_scalar
+      kwargs: {}
+    temporal_agg:
+      # unused for cls embedding downstream
+      name: mean
+      kwargs: {}
 data:
-  mask_rate: 0.15
   max_tokens: 120
+  data_channel_names: null
+  finetune_data_index: index/hsp_psg_pretrain.csv
+  finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
+  train_dataset_names: [shhs]
+  test_dataset_names: [shhs]
+  n_few_shot: 1280
+finetune:
+  freeze_tokenizer: true
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
+  layer_mix:
+    enabled: false
+    shared_across_modalities: false
+    layer_indices: null     # 1-based transformer block indices; null -> all
+  lora:
+    freeze_backbone_and_insert_lora: false
+    insert_lora: false
+    separate_adapters: false
+
 model_averaging:
   name: ema
   params:
