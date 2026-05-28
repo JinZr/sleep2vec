@@ -85,6 +85,11 @@ def parse_args() -> argparse.Namespace:
         help="Stride between windows. Default: 0 when n_tokens=1535, otherwise n_tokens.",
     )
     parser.add_argument(
+        "--include-overlap-eval-splits",
+        action="store_true",
+        help="Keep val/test splits when overlapping windows are enabled.",
+    )
+    parser.add_argument(
         "--meta-data-names",
         nargs="*",
         default=[],
@@ -589,6 +594,13 @@ def main() -> None:
     stride_tokens = (
         args.stride_tokens if args.stride_tokens is not None else (0 if args.n_tokens == 1535 else args.n_tokens)
     )
+    if 0 < stride_tokens < args.n_tokens and not args.include_overlap_eval_splits:
+        original_splits = list(splits)
+        splits = [split for split in splits if split not in {"val", "test"}]
+        if splits != original_splits:
+            print("Overlap windows enabled; excluding val/test splits unless --include-overlap-eval-splits is set.")
+        if not splits:
+            raise ValueError("Overlap windows excluded val/test splits and no splits remain.")
 
     print(f"Dataset name: {dataset_name}")
     print(f"Config YAML: {args.config}")

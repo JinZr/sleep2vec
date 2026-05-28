@@ -269,6 +269,7 @@ def test_strict_mode_single_channel_subset_does_not_need_min_channel_validation(
     "module_name",
     [
         "preprocess.save_dataset_presets",
+        "wrist2vec.preprocess.save_dataset_presets",
         "sleep2expert.preprocess.save_dataset_presets",
         "sleep2vec2.preprocess.save_dataset_presets",
     ],
@@ -324,6 +325,8 @@ def test_main_prunes_overlap_eval_splits_in_preset_planning(
     [
         ("preprocess.save_dataset_presets", "val"),
         ("preprocess.save_dataset_presets", "test"),
+        ("wrist2vec.preprocess.save_dataset_presets", "val"),
+        ("wrist2vec.preprocess.save_dataset_presets", "test"),
         ("sleep2expert.preprocess.save_dataset_presets", "val"),
         ("sleep2expert.preprocess.save_dataset_presets", "test"),
         ("sleep2vec2.preprocess.save_dataset_presets", "val"),
@@ -377,6 +380,7 @@ def test_main_include_overlap_eval_splits_keeps_requested_eval_split(
     "module_name",
     [
         "preprocess.save_dataset_presets",
+        "wrist2vec.preprocess.save_dataset_presets",
         "sleep2expert.preprocess.save_dataset_presets",
         "sleep2vec2.preprocess.save_dataset_presets",
     ],
@@ -427,6 +431,7 @@ def test_main_keeps_eval_split_when_stride_is_not_overlapping(
     "module_name",
     [
         "preprocess.save_dataset_presets",
+        "wrist2vec.preprocess.save_dataset_presets",
         "sleep2expert.preprocess.save_dataset_presets",
         "sleep2vec2.preprocess.save_dataset_presets",
     ],
