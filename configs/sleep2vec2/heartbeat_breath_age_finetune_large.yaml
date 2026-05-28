@@ -17,13 +17,27 @@ model:
     - name: heartbeat
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: true
+          residual_scale: 0.5
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
     - name: breath
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: true
+          residual_scale: 0.5
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
   head:
     name: regression
     dropout: 0.1

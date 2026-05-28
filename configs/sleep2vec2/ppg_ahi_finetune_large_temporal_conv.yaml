@@ -17,8 +17,15 @@ model:
     - name: ppg
       input_dim: 3000  # 30 s * 100 Hz; change if your PPG sampling rate differs
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: true
+          residual_scale: 0.5
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
   head:
     name: temporal_conv
     dropout: 0.1
