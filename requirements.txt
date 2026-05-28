@@ -13,7 +13,7 @@ patsy==1.0.1
 matplotlib==3.10.9
 seaborn==0.13.2
 tqdm==4.67.3
-transformers==4.57.6
+transformers==5.0.0rc3
 peft==0.19.1
 pyhealth==1.1.6
 pyyaml==6.0.3
