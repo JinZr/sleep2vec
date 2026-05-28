@@ -18,6 +18,9 @@
   - [Overview](#overview)
   - [Setup](#setup)
   - [Recipe Map](#recipe-map)
+    - [Start with checked examples](#start-with-checked-examples)
+    - [Base `sleep2vec` recipes](#base-sleep2vec-recipes)
+    - [Variant recipe namespaces](#variant-recipe-namespaces)
   - [Data Format \& Caches](#data-format--caches)
   - [Kaldi Backend Recipes](#kaldi-backend-recipes)
   - [Quick Start](#quick-start)
@@ -31,6 +34,7 @@
   - [Diagnostics Mode](#diagnostics-mode)
   - [Working Tips](#working-tips)
   - [Repository Layout](#repository-layout)
+  - [Join Us](#join-us)
 
 ---
 
