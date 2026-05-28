@@ -8,7 +8,7 @@
 
 ---
 
-**Quick links** · `configs/` recipes · `sleep2vec/` source · `wrist2vec/` source · `data/` datasets & loaders · `preprocess/` caching scripts · `utils/` helpers
+**Quick links** · [Recipe map](#recipe-map) · `configs/examples/` checked examples · `configs/` recipes · `sleep2vec/` source · `wrist2vec/` source · `data/` loaders · `preprocess/` caching scripts
 
 ---
 
@@ -17,6 +17,7 @@
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
   - [Setup](#setup)
+  - [Recipe Map](#recipe-map)
   - [Data Format \& Caches](#data-format--caches)
   - [Kaldi Backend Recipes](#kaldi-backend-recipes)
   - [Quick Start](#quick-start)
@@ -49,8 +50,41 @@
 - Authenticate to Weights & Biases before running (`WANDB_API_KEY=...` or `WANDB_MODE=offline`) because entrypoints call `wandb.login()`.
 - Default precision is bf16/bf16-mixed; pass `--precision 32` if your GPUs do not support bf16.
 - Main entrypoints: `python -m sleep2vec.pretrain ...`, `python -m sleep2vec.adapt --phase stage1|stage2 ...`, `python -m sleep2vec.finetune ...`, `python -m sleep2vec.infer ...`.
-- Parallel namespace: `python -m wrist2vec.pretrain ...`, `python -m wrist2vec.adapt --phase stage1|stage2 ...`, `python -m wrist2vec.finetune ...`, `python -m wrist2vec.infer ...`.
+- Parallel namespace: `python -m wrist2vec.pretrain ...`, `python -m wrist2vec.finetune ...`, `python -m wrist2vec.infer ...`; checked wrist recipes live under `configs/write2vec/`.
 - Minimal checked examples live under `configs/examples/`: one pretrain example plus built-in finetune examples for `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`. Validate configs with `python utils/check_configs.py [paths...]`.
+
+---
+
+## Recipe Map
+Use the README as a decision tree: pick a recipe family here, check the data contract in [Data Format & Caches](#data-format--caches), then run it with the command shape in [Quick Start](#quick-start). Keep structural model/task edits in YAML and training schedules on the CLI.
+
+### Start with checked examples
+| Need | Start here | Notes |
+| --- | --- | --- |
+| Minimal pretrain schema | `configs/examples/PRETRAIN_EXAMPLE.yaml` | Loader-valid reference for model channels, tokenizer/projection/backbone, loss, and model averaging. |
+| Built-in downstream task schema | `configs/examples/<task>/FINETUNE_EXAMPLE.yaml` | One file each for `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`. |
+| Config validation | `python utils/check_configs.py configs/examples` | Use the same checker on edited recipe paths before running expensive jobs. |
+
+### Base `sleep2vec` recipes
+| Family | Paths | Use when |
+| --- | --- | --- |
+| PSG pretrain | `configs/sleep2vec_dense_pretrain*.yaml`, `configs/sleep2vec_large_pretrain*.yaml` | Contrastive foundation pretraining; `*_cls` variants enable CLS-token plumbing. |
+| PSG downstream | `configs/sleep2vec_dense_finetune_{cls,reg}.yaml`, `configs/sleep2vec_dense_finetune_custom_{cls,reg}.yaml` | Baseline classification/regression and custom metadata targets. |
+| Wearable adaptation | `configs/sleep2vec_{dense,large}_adapt_ppg_actigraphy*.yaml` | Two-stage expansion from PSG checkpoints to PPG/actigraphy channels. |
+| PPG downstream | `configs/ppg_*_finetune*.yaml` | PPG recipes for `stage3`, `stage4`, `stage5`, `ahi`, `age`, and `sex`, including large and temporal-conv variants. |
+| Heartbeat/breath downstream | `configs/heartbeat_breath_*_finetune_large.yaml` | Large heartbeat/breath recipes for `age`, `ahi`, and `sex`. |
+| Head/representation ablations | `configs/cls_emb/`, `configs/token_emb/` | CLS-embedding and token-aggregation recipe variants. |
+| Kaldi-backed finetune | `configs/stage5_all_9_channels_finetune_kaldi.yaml` plus YAML `data.backend: kaldi` blocks | Kaldi storage path; see [Kaldi Backend Recipes](#kaldi-backend-recipes). |
+
+### Variant recipe namespaces
+| Namespace | Paths | Rule of thumb |
+| --- | --- | --- |
+| `sleep2vec2` | `configs/sleep2vec2/` | Standalone package-local RoFormer recipes that mirror the base task surface. |
+| `sleep2expert` | `configs/sleep2expert/`, `configs/sleep2expert/moe/` | Dense and MoE expert recipes; keep MoE ablations inside the MoE subtree. |
+| `wrist2vec` | `configs/write2vec/` | Wrist-branded wearable recipes for PPG/gyro/acc, one-channel, multilight, 250 Hz, and PWV/BP work. |
+| `wrist2vec_flex` | `configs/wrist2vec_flex/` | Source-aware flexible-input experiments; do not mix these with baseline `wrist2vec` recipes. |
+
+Filename cues are intentional: `pretrain`, `adapt`, and `finetune` pick the entrypoint; `cls`, `reg`, `stage*`, `ahi`, `age`, and `sex` identify the task; suffixes such as `large`, `temporal_conv`, `kaldi`, `resnet1d`, `250hz`, `onechannel`, and `multilight` identify scale, backend, tokenizer, sampling rate, or sensor layout.
 
 ---
 
@@ -270,49 +304,40 @@ Custom metadata labels:
 > `--version-name` is required for pretraining/adaptation run naming; downstream runs auto-generate a version when omitted. Ensure your YAML `data.*` paths point to real preset pickles.
 
 ### Parallel `wrist2vec` Namespace
-`wrist2vec/` is a side-by-side naming-parity fork of the base `sleep2vec/` runtime. Use it when you want the same behavior under wrist-branded module, config, W&B, and log-path names.
+`wrist2vec/` is a side-by-side naming-parity fork of the base `sleep2vec/` runtime. Use it when you want wrist-branded module, config, W&B, and log-path names for checked wrist recipes.
 
 Pretrain:
 ```bash
 python -m wrist2vec.pretrain \
-  --config configs/write2vec/wrist2vec_dense_pretrain.yaml \
+  --config configs/write2vec/wrist2vec_multilight_ppg_accgyro_pretrain_resnet1d.yaml \
   --pretrain-data-index /path/to/index.csv \
   --pretrain-preset-path /path/to/pretrain_cache.pkl \
   --version-name wrist-exp001
 ```
 
-Adapt:
-```bash
-python -m wrist2vec.adapt \
-  --config configs/write2vec/wrist2vec_dense_adapt_ppg_actigraphy.yaml \
-  --phase stage1 \
-  --pretrained-backbone-path /path/to/base_pretrain.ckpt \
-  --pretrain-data-index /path/to/index.csv \
-  --pretrain-preset-path /path/to/wearable_cache.pkl \
-  --version-name wrist-wearable-v1
-```
-
 Finetune:
 ```bash
 python -m wrist2vec.finetune \
-  --config configs/write2vec/wrist2vec_dense_finetune_cls.yaml \
-  --label-name stage5 --results-csv-path outputs.csv \
-  --version-name wrist-stage5
+  --config configs/write2vec/wrist2vec_multilight_ppg_accgyro_finetune_cls_resnet1d.yaml \
+  --label-name outcome --results-csv-path outputs.csv \
+  --version-name wrist-outcome
 ```
 
 Infer:
 ```bash
 python -m wrist2vec.infer \
-  --config configs/write2vec/wrist2vec_dense_finetune_cls.yaml \
-  --ckpt-path log-wrist2vec-finetune/wrist-stage5/checkpoints/best.ckpt \
-  --label-name stage5 --batch-size 12 --devices 0 \
-  --inference-preset-path /path/to/test_preset_1535.pickle \
+  --config configs/write2vec/wrist2vec_multilight_ppg_accgyro_finetune_cls_resnet1d.yaml \
+  --ckpt-path log-wrist2vec-finetune/wrist-outcome/checkpoints/best.ckpt \
+  --label-name outcome --batch-size 12 --devices 0 \
+  --inference-preset-path /path/to/test_preset_30.pickle \
   --eval-split test --results-csv-path outputs.csv
 ```
 
 Notes:
-- Every top-level example config under `configs/` now has a `configs/write2vec/wrist2vec_*.yaml` companion.
-- For generic wearable/downstream recipes, use files such as `configs/write2vec/wrist2vec_ppg_ahi_finetune.yaml` and `configs/write2vec/wrist2vec_heartbeat_breath_age_finetune_large.yaml`.
+- `configs/write2vec/` currently contains wrist wearable recipes for multilight PPG+acc/gyro, one-channel PPG+acc/gyro, 250 Hz variants, and PWV/BP pretraining.
+- Use `configs/write2vec/wrist2vec_multilight_ppg_accgyro_finetune_reg_resnet1d.yaml` for scalar regression with the same wrist sensor layout.
+- There is no checked `configs/write2vec/*adapt*.yaml` on this branch; use the base `sleep2vec` adaptation recipes unless a wrist-specific YAML is added.
+- For source-aware flexible-input experiments, use `wrist2vec_flex/` and `configs/wrist2vec_flex/` rather than baseline `wrist2vec/`.
 - `wrist2vec.infer` supports `--inference-preset-path`; result CSV rows record the effective preset in `preset_path`.
 - Wrist runs write to `log-wrist2vec-pretrain/`, `log-wrist2vec-adapt/`, and `log-wrist2vec-finetune/`.
 
