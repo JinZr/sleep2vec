@@ -20,7 +20,7 @@ pyyaml==6.0.3
 kaldi_native_io==1.22.1
 
 # Testing dependencies
-pytest==8.4.2
+pytest==9.0.3
 
 # Formatting and linting dependencies
 black==26.3.1
