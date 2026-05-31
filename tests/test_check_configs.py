@@ -206,6 +206,38 @@ def test_check_config_file_accepts_out_of_tree_sleep2vec2_config_with_path_hint(
     check_config_file(path)
 
 
+def test_check_config_file_accepts_all_repo_wrist2vec_configs():
+    config_dir = Path(__file__).resolve().parents[1] / "configs"
+    wrist2vec_paths = sorted(config_dir.rglob("write2vec/wrist2vec*.yaml"))
+
+    assert wrist2vec_paths
+    for path in wrist2vec_paths:
+        check_config_file(path)
+
+
+def test_check_config_file_accepts_all_repo_wrist2vec_flex_configs():
+    config_dir = Path(__file__).resolve().parents[1] / "configs" / "wrist2vec_flex"
+    wrist2vec_flex_paths = sorted(config_dir.rglob("*.yaml"))
+
+    assert wrist2vec_flex_paths
+    for path in wrist2vec_flex_paths:
+        check_config_file(path)
+
+
+def test_check_config_file_routes_wrist2vec_flex_configs_to_flex_loader(monkeypatch):
+    import sleep2vec.config as base_config
+    import wrist2vec.config as wrist_config
+
+    def fail_loader(*args, **kwargs):
+        raise AssertionError("non-flex loader should not validate wrist2vec_flex configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_loader)
+    monkeypatch.setattr(wrist_config, "load_pretrain_config", fail_loader)
+
+    path = REPO_ROOT / "configs" / "wrist2vec_flex" / "wrist2vec_flex_multilight_ppg_accgyro_pretrain_resnet1d.yaml"
+    check_config_file(path)
+
+
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
     _write_yaml(path, _ppg_finetune_payload(is_seq=True, preset_build=None))
@@ -218,6 +250,18 @@ def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_pat
 
 def test_check_config_file_rejects_wrong_required_channels_for_ppg_stage_config(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
+    payload = _ppg_finetune_payload(
+        is_seq=True,
+        preset_build={"required_channels": ["ppg"], "min_channels": 1},
+    )
+    _write_yaml(path, payload)
+
+    with pytest.raises(ValueError, match="must set preset_build.required_channels to \\[ppg, stage5\\]"):
+        check_config_file(path)
+
+
+def test_check_config_file_rejects_wrong_required_channels_for_wrist2vec_ppg_stage_config(tmp_path: Path):
+    path = tmp_path / "configs" / "write2vec" / "wrist2vec_ppg_stage3_finetune.yaml"
     payload = _ppg_finetune_payload(
         is_seq=True,
         preset_build={"required_channels": ["ppg"], "min_channels": 1},

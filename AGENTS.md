@@ -2,6 +2,7 @@
 
 ## Project Structure & Module Organization
 - `sleep2vec/` is the core library and CLI entrypoints (e.g., `pretrain.py`, `finetune.py`, `infer.py`).
+- `wrist2vec/` is the side-by-side naming-parity fork of the base runtime; keep it behaviorally aligned with `sleep2vec/` unless a task explicitly asks for divergence.
 - `configs/` holds YAML recipes that define model/loss/head settings.
 - `data/` contains dataset loaders, samplers, and metadata helpers.
 - `preprocess/` hosts scripts for building index CSVs and preset pickles.
@@ -11,6 +12,7 @@
 - Config-driven design: model/loss/head selection lives in YAML under `configs/`, while schedule and runtime options are passed on the CLI.
 - Modular registries enable plug-in components (backbones, tokenizers, projections, losses, and downstream heads).
 - Training flow: pretrain (`sleep2vec.pretrain`) builds the backbone; finetune (`sleep2vec.finetune`) attaches a downstream head; infer (`sleep2vec.infer`) evaluates checkpoints without training.
+- Parallel naming flow: `wrist2vec.pretrain`, `wrist2vec.adapt`, `wrist2vec.finetune`, and `wrist2vec.infer` mirror the base runtime under wrist-branded module/config names.
 
 ## Build, Test, and Development Commands
 Install dependencies (select the correct PyTorch wheel for your CUDA version):
@@ -22,6 +24,7 @@ Common entrypoints:
 python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml ...
 python -m sleep2vec.finetune --config configs/sleep2vec_dense_finetune_cls.yaml ...
 python -m sleep2vec.infer --config configs/sleep2vec_dense_finetune_cls.yaml ...
+python -m wrist2vec.pretrain --config configs/write2vec/wrist2vec_dense_pretrain.yaml ...
 ```
 Formatting/linting:
 ```bash

@@ -22,6 +22,10 @@ from sleep2vec.config import (
     load_pretrain_config,
     validate_model_config,
 )
+from wrist2vec.config import (
+    load_pretrain_config as load_wrist2vec_pretrain_config,
+    validate_model_config as validate_wrist2vec_model_config,
+)
 
 
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "config.yaml") -> Path:
@@ -167,6 +171,25 @@ def test_load_pretrain_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.data.max_tokens == 4
 
 
+def test_load_wrist2vec_pretrain_config_parses_token_sec(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["data"]["token_sec"] = 2
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    assert bundle.data.token_sec == 2
+
+
+def test_load_wrist2vec_pretrain_config_rejects_non_positive_token_sec(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["data"]["token_sec"] = 0
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="data.token_sec must be a positive integer"):
+        load_wrist2vec_pretrain_config(config_path)
+
+
 def test_load_pretrain_config_parses_kaldi_data_fields(tmp_path: Path):
     payload = _pretrain_payload()
     payload["data"].update(
@@ -255,6 +278,53 @@ def test_ppg_actigraphy_adapt_configs_keep_uniform_final_stage_sampling(config_n
 
     assert final_ratio > 0.0
     assert final_ratio == pytest.approx(new_pair_count / len(all_pairs))
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "wrist2vec_multilight_ppg_accgyro_pretrain_resnet1d.yaml",
+    ],
+)
+def test_wrist2vec_repo_pretrain_configs_load(config_name: str):
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "write2vec" / config_name
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    validate_wrist2vec_model_config(bundle.model)
+    assert bundle.model.channels
+
+
+def test_wrist2vec_resnet1d_example_pretrain_config_loads():
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "write2vec"
+        / "wrist2vec_multilight_ppg_accgyro_pretrain_resnet1d.yaml"
+    )
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    validate_wrist2vec_model_config(bundle.model)
+    hidden_size = bundle.model.backbone.hidden_size
+    assert hidden_size == 384
+    assert bundle.model.backbone.num_hidden_layers == 12
+    assert bundle.model.backbone.num_attention_heads == 16
+    assert bundle.model.projection.hidden_dim == hidden_size
+    assert [channel.name for channel in bundle.model.channels] == [
+        "ppg_green",
+        "ppg_infrared",
+        "gyro_vm",
+        "acc_vm",
+    ]
+    assert [channel.tokenizer.name for channel in bundle.model.channels] == [
+        "resnet1d",
+        "resnet1d",
+        "sundial2",
+        "sundial2",
+    ]
+    assert all(channel.tokenizer.out_dim == hidden_size for channel in bundle.model.channels)
+    assert bundle.model.channels[0].tokenizer.kwargs["block_counts"] == [2, 2, 2]
+    assert bundle.loss.name == "info_nce"
+    assert bundle.data.token_sec == 2
 
 
 def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):

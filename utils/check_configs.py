@@ -37,6 +37,9 @@ BASE_VARIANT = ConfigVariant("sleep2vec.config", "preprocess.save_dataset_preset
 CONFIG_VARIANTS = {
     "sleep2expert": ConfigVariant("sleep2expert.config", "sleep2expert.preprocess.save_dataset_presets"),
     "sleep2vec2": ConfigVariant("sleep2vec2.config", "sleep2vec2.preprocess.save_dataset_presets"),
+    "wrist2vec": ConfigVariant("wrist2vec.config", "wrist2vec.preprocess.save_dataset_presets"),
+    "wrist2vec_flex": ConfigVariant("wrist2vec_flex.config", "wrist2vec_flex.preprocess.save_dataset_presets"),
+    "write2vec": ConfigVariant("wrist2vec.config", "wrist2vec.preprocess.save_dataset_presets"),
 }
 
 
@@ -162,10 +165,12 @@ def _validate_preset_build_contract(
 
 
 def _is_ppg_finetune_config(path: Path) -> bool:
-    return path.name.startswith("ppg_") and "finetune" in path.name and path.suffix == ".yaml"
+    normalized_name = path.name.removeprefix("wrist2vec_")
+    return normalized_name.startswith("ppg_") and "finetune" in normalized_name and path.suffix == ".yaml"
 
 
 def _validate_repo_policy(path: Path, config_data: dict[str, t.Any], tools: ConfigTools) -> None:
+    normalized_name = path.name.removeprefix("wrist2vec_")
     model_channels, _ = tools.load_model_channels(config_data)
     finetune_block = config_data.get("finetune")
     task_block = finetune_block.get("task") if isinstance(finetune_block, dict) else None
@@ -184,7 +189,7 @@ def _validate_repo_policy(path: Path, config_data: dict[str, t.Any], tools: Conf
 
     is_seq = bool(task_block.get("is_seq", False))
     if is_seq:
-        if path.name.startswith("ppg_ahi_finetune"):
+        if normalized_name.startswith("ppg_ahi_finetune"):
             if preset_required_channels != ["ppg", "ahi", "stage5"]:
                 raise ValueError(
                     "single-channel ppg ahi configs must set preset_build.required_channels to [ppg, ahi, stage5]."
