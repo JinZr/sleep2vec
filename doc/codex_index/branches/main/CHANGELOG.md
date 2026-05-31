@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-31
+
+- Added token embedding extraction guidance for `sleep2vec.extract_embeddings` and package-local `sleep2vec2` / `sleep2expert` mirrors, including selected-layer hidden-state export and NPZ/Kaldi manifest outputs.
+
 ## 2026-05-25
 
 - Refreshed the `main` branch index for commit `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`.

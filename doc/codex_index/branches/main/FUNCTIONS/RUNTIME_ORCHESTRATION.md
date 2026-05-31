@@ -110,6 +110,17 @@
 - Reuse guidance: extend here for inference-only behavior changes.
 - Duplication risk notes: checkpoint averaging policy belongs here plus `checkpoints.py`; inference artifact naming and metadata belongs in `sleep2vec.results`, not trainer code.
 
+## `sleep2vec.extract_embeddings.run_extraction`
+
+- File: `sleep2vec/extract_embeddings.py`
+- Signature: `run_extraction(args, *, namespace: str = "sleep2vec") -> Path`
+- Purpose and contract: export token-level backbone hidden states from a pretrain or downstream checkpoint for a selected layer, trimming CLS/padding and writing manifest-style NPZ or Kaldi outputs.
+- Important inputs/outputs: config path, checkpoint path, output directory/format, layer index, split, data backend, optional NPZ index/preset or Kaldi manifest in; output `manifest.json` path out.
+- Side effects: loads checkpoint weights strictly, builds a deterministic extraction dataloader, writes per-split manifest CSV, per-channel embedding files or ark/scp files, and root `manifest.json`.
+- Key callers/callees: called from `__main__`; calls `load_pretrain_config` or `load_finetune_config`, `apply_data_backend_args`, `PSGPretrainDataset` or `KaldiPSGDataset`, optional downstream adapter insertion when finetune LoRA is enabled, and `Sleep2vecPretrainModel._token_embeddings_to_hidden`.
+- Reuse guidance: use this entrypoint for persistent token embedding exports rather than routing through downstream prediction code.
+- Duplication risk notes: package-local mirrors under `sleep2vec2` and `sleep2expert` must keep imports inside their namespaces; `sleep2expert` passes modality names into the MoE-capable backbone but does not collect MoE aux for embedding export.
+
 ## `sleep2vec.sleep2vec_inference.extract_prediction_records`
 
 - File: `sleep2vec/sleep2vec_inference.py`
