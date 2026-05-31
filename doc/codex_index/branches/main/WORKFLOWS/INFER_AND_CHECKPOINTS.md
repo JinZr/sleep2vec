@@ -8,6 +8,12 @@ Evaluate a downstream checkpoint on a selected split, optionally average multipl
 
 Canonical entrypoint: `python -m sleep2vec.infer --config ... --ckpt-path ... --label-name ...`
 
+Token embedding extraction entrypoints:
+
+`python -m sleep2vec.extract_embeddings --config ... --ckpt-path ... --output-dir ... --output-format npz|kaldi`
+
+Package-local mirrors: `python -m sleep2vec2.extract_embeddings ...` and `python -m sleep2expert.extract_embeddings ...`.
+
 Primary code path:
 
 1. `sleep2vec.infer.parse_args`
@@ -81,3 +87,4 @@ Primary code path:
 - Change inference-only logging/W&B behavior: `sleep2vec/infer.py` plus package-local variant mirrors when parity is required
 - Change prediction row extraction: `sleep2vec/sleep2vec_inference.py`, `sleep2vec/sleep2vec_finetuning.py`
 - Change inference output layout, metadata, or CSV/manifest writes: `sleep2vec/results.py`
+- Change token embedding extraction layout, checkpoint-prefix inference, or selected-layer handling: `sleep2vec/extract_embeddings.py` plus package-local `sleep2vec2` and `sleep2expert` mirrors
