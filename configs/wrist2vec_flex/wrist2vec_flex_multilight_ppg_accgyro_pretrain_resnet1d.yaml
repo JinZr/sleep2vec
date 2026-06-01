@@ -15,64 +15,9 @@ model:
     embedding_type: null
     downstream: tokens
   channels:
-    # Multi-source examples:
-    # Keep each effective branch single-channel. The current resnet1d tokenizer
-    # only supports [N, T] or [B, L, T] windows, so do not pack multiple sensor
-    # axes/sites into one [B, L, C, T] tensor. Instead, use source_names to fan
-    # one logical channel out into multiple physical branches.
-    #
-    # Example: two physical green-PPG sites mapped to one logical channel.
-    # - name: ppg_green
-    #   source_names: [ppg_green_gd1, ppg_green_gd2]
-    #   input_dim: 512
-    #   tokenizer:
-    #     name: resnet1d
-    #     out_dim: 384  # keep aligned with backbone.hidden_size
-    #     kwargs:
-    #       block_counts: [2, 2, 2]
-    #       channel_schedule: [64, 128, 256]
-    #       stride_schedule: [2, 2, 2]
-    #       front_kernel_size: 7
-    #       front_stride: 2
-    #       front_pool: max
-    #       front_pool_stride: 2
-    #       norm: group
-    #       norm_groups: 8
-    #       act: relu
-    #       dropout: 0.1
-    #
-    # Example: three accelerometer axes mapped to one logical channel.
-    # - name: acc
-    #   source_names: [acc_x, acc_y, acc_z]
-    #   input_dim: 200
-    #   tokenizer:
-    #     name: sundial2
-    #     out_dim: 384  # keep aligned with backbone.hidden_size
-    #     kwargs:
-    #       pre_norm: true
-    #       residual_scale: 0.5
-    #       ff_scale: 1.0
-    #       clamp_value: null
-    #       modality_scale: 1.0
     - name: ppg_green
-      input_dim: 512  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
-      tokenizer:
-        name: resnet1d
-        out_dim: 384
-        kwargs:
-          block_counts: [2, 2, 2]
-          channel_schedule: [64, 128, 256]
-          stride_schedule: [2, 2, 2]
-          front_kernel_size: 7
-          front_stride: 2
-          front_pool: max
-          front_pool_stride: 2
-          norm: group
-          norm_groups: 8
-          act: relu
-          dropout: 0.1
-    - name: ppg_red
-      input_dim: 512  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
+      source_names: ['G0-PD0', 'G0-PD1', 'G1-PD0', 'G1-PD1']
+      input_dim: 500  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
       tokenizer:
         name: resnet1d
         out_dim: 384
@@ -89,7 +34,8 @@ model:
           act: relu
           dropout: 0.1
     - name: ppg_infrared
-      input_dim: 512  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
+      source_names: ['IR0-PD0', 'IR0-PD1']
+      input_dim: 500  # 2 s * 256 Hz per token; token windows remain non-overlapping in the current data pipeline
       tokenizer:
         name: resnet1d
         out_dim: 384
@@ -106,7 +52,8 @@ model:
           act: relu
           dropout: 0.1
     - name: gyro_vm
-      input_dim: 200  # 2 s * 100 Hz per token; adjust if your gyroscope VM sampling rate differs
+      source_names: ["gyro_x", "gyro_y", "gyro_z"]
+      input_dim: 500  # 2 s * 100 Hz per token; adjust if your gyroscope VM sampling rate differs
       tokenizer:
         name: sundial2
         out_dim: 384
@@ -117,7 +64,8 @@ model:
           clamp_value: null
           modality_scale: 1.0
     - name: acc_vm
-      input_dim: 200  # 2 s * 100 Hz per token; adjust if your accelerometer VM sampling rate differs
+      source_names: ["acc_x", "acc_y", "acc_z"]
+      input_dim: 500  # 2 s * 100 Hz per token; adjust if your accelerometer VM sampling rate differs
       tokenizer:
         name: sundial2
         out_dim: 384
