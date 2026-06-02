@@ -251,3 +251,4 @@ wandb_logs/
 
 # VSCode settings folder
 .vscode/
+artifacts/
