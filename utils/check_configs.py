@@ -37,6 +37,7 @@ BASE_VARIANT = ConfigVariant("sleep2vec.config", "preprocess.save_dataset_preset
 CONFIG_VARIANTS = {
     "sleep2expert": ConfigVariant("sleep2expert.config", "sleep2expert.preprocess.save_dataset_presets"),
     "sleep2vec2": ConfigVariant("sleep2vec2.config", "sleep2vec2.preprocess.save_dataset_presets"),
+    "sleep2vec_hires": ConfigVariant("sleep2vec_hires.config", "sleep2vec_hires.preprocess.save_dataset_presets"),
 }
 
 

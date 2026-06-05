@@ -367,6 +367,7 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     "module_name",
     [
         "sleep2vec2.common",
+        "sleep2vec_hires.common",
         "sleep2expert.common",
     ],
 )

@@ -15,7 +15,7 @@ from sleep2vec.results import (
     save_result_csv,
 )
 
-RESULT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
+RESULT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2vec_hires", "sleep2expert")
 
 
 def _finetune_args(*, version: str) -> argparse.Namespace:

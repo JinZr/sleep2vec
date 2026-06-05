@@ -7,11 +7,12 @@ Work safely in the active standalone variants and export sleep2expert MoE routin
 ## Active Variant Namespaces
 
 - `sleep2vec2/`: dense standalone mirror with package-local runtime, data, preprocessing, visualization, LoRA/DoRA adapter support, and standalone RoFormer code.
+- `sleep2vec_hires/`: high-resolution-token standalone mirror seeded from `sleep2vec2`, with package-local runtime, data, preprocessing, visualization, LoRA/DoRA adapter support, and standalone RoFormer code.
 - `sleep2expert/`: standalone mirror with MoE RoFormer, MoE regularization, MoE finetune tuning, LoRA/DoRA adapter support, checkpoint expansion, and routing export.
 
 ## Package-Local Rule
 
-When editing `sleep2vec2` or `sleep2expert`:
+When editing `sleep2vec2`, `sleep2vec_hires`, or `sleep2expert`:
 
 1. Keep imports inside the package namespace.
 2. Keep `data/` and `preprocess/` behavior package-local.
@@ -22,6 +23,7 @@ When editing `sleep2vec2` or `sleep2expert`:
 Primary namespace guards:
 
 - `tests/test_sleep2vec2_namespace.py`
+- `tests/test_sleep2vec_hires_namespace.py`
 - `tests/test_sleep2expert_namespace.py`
 - `tests/test_variant_data_protocol.py`
 

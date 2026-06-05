@@ -8,12 +8,12 @@
       "sleep2vec": 81,
       "data": 8,
       "preprocess": 7,
-      "sleep2vec2": 103,
+      "sleep2vec2": 104,
       "sleep2expert": 107,
       "sleep2vec_moe": 0,
-      "sleep2vec_hires": 0,
-      "configs": 108,
-      "tests": 50,
+      "sleep2vec_hires": 104,
+      "configs": 140,
+      "tests": 52,
       "utils": 7
     },
     "function_catalog_scope": [
@@ -23,7 +23,7 @@
       "runtime entrypoints for pretrain, adapt, finetune, and inference",
       "checkpoint initialization, averaging, distributed helpers, result CSV writes, prediction CSV writes, inference run manifests, and inference W&B artifacts",
       "core backbone, downstream, LoRA separate-adapter trainability, AHI-eval, layer-mix, and adaptation-freeze contracts",
-      "standalone sleep2vec2 and sleep2expert variant surfaces, including RoFormer parity and package-local data/preprocess mirrors",
+      "standalone sleep2vec2, sleep2vec_hires, and sleep2expert variant surfaces, including RoFormer parity and package-local data/preprocess mirrors",
       "sleep2expert MoE config, routing, finetune tuning, checkpoint initialization, regularization, and routing export",
       "dataset, metadata, sampler, and missing-channel batching contracts",
       "preset generation, split assignment, mask normalization, and WatchPAT conversion CLIs",
@@ -43,12 +43,12 @@
   "exclusions": [
     "AGENTS.md is referenced for ownership context but not duplicated here",
     "preprocess/preprocess_pipeline.ipynb is summarized only at workflow level",
-    "sleep2vec2/preprocess/preprocess_pipeline.ipynb and sleep2expert/preprocess/preprocess_pipeline.ipynb are summarized only at workflow level",
-    "sleep2vec_moe/ and sleep2vec_hires/ have no tracked files on this branch",
+    "sleep2vec2/preprocess/preprocess_pipeline.ipynb, sleep2vec_hires/preprocess/preprocess_pipeline.ipynb, and sleep2expert/preprocess/preprocess_pipeline.ipynb are summarized only at workflow level",
+    "sleep2vec_moe/ has no tracked files on this branch",
     "egs/ contains tracked example data scaffolding but is outside this branch-index coverage scope",
     "tracked visualization font binaries are noted at directory level, not indexed function-by-function",
     "__pycache__, .DS_Store, and ignored local artifacts are excluded",
     "untracked workspaces such as index/ and new_index/ are excluded",
-    "product code outside doc/codex_index/branches/main/ was not modified"
+    "sleep2vec_hires/ was seeded from sleep2vec2/ after the last full index refresh"
   ]
 }

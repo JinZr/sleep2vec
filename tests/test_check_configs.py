@@ -206,6 +206,24 @@ def test_check_config_file_accepts_out_of_tree_sleep2vec2_config_with_path_hint(
     check_config_file(path)
 
 
+def test_check_config_file_accepts_out_of_tree_sleep2vec_hires_config_with_path_hint(
+    monkeypatch,
+    tmp_path: Path,
+):
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate copied sleep2vec_hires configs")
+
+    monkeypatch.setattr(base_config, "load_pretrain_config", fail_base_loader)
+    source = REPO_ROOT / "configs" / "sleep2vec_hires" / "sleep2vec_dense_pretrain.yaml"
+    path = tmp_path / "sleep2vec_hires" / "sleep2vec_dense_pretrain.yaml"
+    path.parent.mkdir()
+    path.write_text(source.read_text())
+
+    check_config_file(path)
+
+
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
     _write_yaml(path, _ppg_finetune_payload(is_seq=True, preset_build=None))

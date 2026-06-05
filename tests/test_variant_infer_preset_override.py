@@ -6,8 +6,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-VARIANT_PACKAGES = ("sleep2vec2", "sleep2expert")
-RUNTIME_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
+VARIANT_PACKAGES = ("sleep2vec2", "sleep2vec_hires", "sleep2expert")
+RUNTIME_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2vec_hires", "sleep2expert")
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)

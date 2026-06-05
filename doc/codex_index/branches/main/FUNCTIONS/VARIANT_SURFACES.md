@@ -4,7 +4,8 @@
 
 On commit `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`, tracked variant coverage is:
 
-- `sleep2vec2/`: active standalone dense mirror with 103 tracked files
+- `sleep2vec2/`: active standalone dense mirror with 104 tracked files
+- `sleep2vec_hires/`: active standalone high-resolution-token mirror seeded from `sleep2vec2` with 104 tracked files
 - `sleep2expert/`: active standalone MoE-capable mirror with 107 tracked files
 
 ## `sleep2vec2` Standalone Mirror
@@ -15,6 +16,15 @@ On commit `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`, tracked variant coverage i
 - Side effects: runtime side effects mirror root entrypoints, including inference artifact writes and optional W&B artifact logging, but W&B projects use `sleep2vec2-*` names.
 - Reuse guidance: edit the package-local implementation directly when working in `sleep2vec2`; do not shortcut through root `sleep2vec`, `data`, or `preprocess`.
 - Duplication-risk notes: behavior parity is intentional duplication. Namespace-crossing imports and silent legacy RoFormer checkpoint compatibility are regressions.
+
+## `sleep2vec_hires` Standalone High-Resolution Mirror
+
+- Files: `sleep2vec_hires/`, `configs/sleep2vec_hires/`, `tests/test_sleep2vec_hires_namespace.py`
+- Purpose and contract: keep a package-local dense mirror seeded from `sleep2vec2` as the ownership boundary for future high-resolution token behavior, while initially preserving `sleep2vec2` dense runtime/data/preprocess semantics.
+- Important inputs/outputs: same dense pretrain/adapt/finetune/infer contracts as `sleep2vec2` at creation time, including package-local Kaldi routing, preprocessing, LoRA/DoRA adapter schema, inference export, and standalone RoFormer code.
+- Side effects: runtime side effects mirror `sleep2vec2`, but W&B projects and result namespaces use `sleep2vec_hires-*` / `sleep2vec_hires`.
+- Reuse guidance: edit this package directly for high-resolution token contracts; do not route `sleep2vec_hires` data, preprocess, or runtime imports through `sleep2vec2`.
+- Duplication-risk notes: this namespace intentionally starts as a mirror. Future high-resolution changes should stay package-local unless deliberately promoted back to shared dense contracts.
 
 ## `sleep2expert` Standalone MoE Mirror
 
@@ -27,7 +37,7 @@ On commit `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`, tracked variant coverage i
 
 ## Package-Local Data And Preprocess Mirrors
 
-- Files: `sleep2vec2/data/`, `sleep2vec2/preprocess/`, `sleep2expert/data/`, `sleep2expert/preprocess/`
+- Files: `sleep2vec2/data/`, `sleep2vec2/preprocess/`, `sleep2vec_hires/data/`, `sleep2vec_hires/preprocess/`, `sleep2expert/data/`, `sleep2expert/preprocess/`
 - Purpose and contract: preserve standalone recipe operation for data loading, Kaldi backends, preset generation, split assignment, and WatchPAT conversion.
 - Important inputs/outputs: same `SampleIndex`, NPZ preset, Kaldi manifest, and batch contracts as root unless a package-local test says otherwise.
 - Side effects: mirror root data/preprocessing file writes and optional `kaldi_native_io` usage.
@@ -58,6 +68,7 @@ Important variant-specific functions and classes:
 ## Ownership Notes
 
 - `sleep2vec2/` is a dense standalone variant boundary. Keep it package-local and parity-tested, including LoRA/DoRA adapter parity.
+- `sleep2vec_hires/` is the high-resolution-token variant boundary. Keep package-local imports and let future high-resolution token semantics diverge here before touching shared dense contracts.
 - `sleep2expert/` is the active MoE standalone variant boundary. Keep MoE schema, routing, regularization, tuning, LoRA grouping, and export changes inside this namespace unless deliberately changing root contracts.
 
 ## Unknowns

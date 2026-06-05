@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-VARIANT_PACKAGES = ["sleep2vec2", "sleep2expert"]
+VARIANT_PACKAGES = ["sleep2vec2", "sleep2vec_hires", "sleep2expert"]
 
 
 def _write_ahi_npz(path: Path) -> None:

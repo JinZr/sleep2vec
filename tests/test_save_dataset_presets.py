@@ -271,6 +271,7 @@ def test_strict_mode_single_channel_subset_does_not_need_min_channel_validation(
         "preprocess.save_dataset_presets",
         "sleep2expert.preprocess.save_dataset_presets",
         "sleep2vec2.preprocess.save_dataset_presets",
+        "sleep2vec_hires.preprocess.save_dataset_presets",
     ],
 )
 def test_main_prunes_overlap_eval_splits_in_preset_planning(
@@ -328,6 +329,8 @@ def test_main_prunes_overlap_eval_splits_in_preset_planning(
         ("sleep2expert.preprocess.save_dataset_presets", "test"),
         ("sleep2vec2.preprocess.save_dataset_presets", "val"),
         ("sleep2vec2.preprocess.save_dataset_presets", "test"),
+        ("sleep2vec_hires.preprocess.save_dataset_presets", "val"),
+        ("sleep2vec_hires.preprocess.save_dataset_presets", "test"),
     ],
 )
 def test_main_include_overlap_eval_splits_keeps_requested_eval_split(
@@ -379,6 +382,7 @@ def test_main_include_overlap_eval_splits_keeps_requested_eval_split(
         "preprocess.save_dataset_presets",
         "sleep2expert.preprocess.save_dataset_presets",
         "sleep2vec2.preprocess.save_dataset_presets",
+        "sleep2vec_hires.preprocess.save_dataset_presets",
     ],
 )
 def test_main_keeps_eval_split_when_stride_is_not_overlapping(
@@ -429,6 +433,7 @@ def test_main_keeps_eval_split_when_stride_is_not_overlapping(
         "preprocess.save_dataset_presets",
         "sleep2expert.preprocess.save_dataset_presets",
         "sleep2vec2.preprocess.save_dataset_presets",
+        "sleep2vec_hires.preprocess.save_dataset_presets",
     ],
 )
 def test_main_rejects_overlap_eval_only_preset_splits(

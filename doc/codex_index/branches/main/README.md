@@ -37,17 +37,17 @@ Tracked files indexed from this branch:
 - `sleep2vec/`: 81 tracked files
 - `data/`: 8 tracked files
 - `preprocess/`: 7 tracked files
-- `sleep2vec2/`: 103 tracked files
+- `sleep2vec2/`: 104 tracked files
 - `sleep2expert/`: 107 tracked files
 - `sleep2vec_moe/`: 0 tracked files
-- `sleep2vec_hires/`: 0 tracked files
-- `configs/`: 108 tracked files
-- `tests/`: 50 tracked files
+- `sleep2vec_hires/`: 104 tracked files
+- `configs/`: 140 tracked files
+- `tests/`: 52 tracked files
 - `utils/`: 7 tracked files
 
 ## Coverage Boundaries
 
-- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
+- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, example config validation, standalone `sleep2vec2`/`sleep2vec_hires`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
 - Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb`, package-local variant preprocessing notebooks, and tracked visualization font binaries under `*/visualization/assets/fonts/`.
 - Outside this index scope: tracked example data scaffolding under `egs/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
@@ -64,7 +64,7 @@ Tracked files indexed from this branch:
 - If you are changing dataset loading, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
 - If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, WatchPAT conversion, Kaldi index repair, UKB annotation parsing, UKB demographic extraction, or case-control matching utilities, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
 - If you are changing evaluation plots, pair-accuracy logging, or diagnostics, start with [FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md](./FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md).
-- If you think you need `sleep2vec2/` or `sleep2expert/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first. Both are active tracked standalone namespaces on this branch.
+- If you think you need `sleep2vec2/`, `sleep2vec_hires/`, or `sleep2expert/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first. All three are active tracked standalone namespaces on this branch.
 
 ## Deliverable Layout
 

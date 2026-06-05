@@ -14,7 +14,7 @@ from sleep2vec.metrics import compute_ahi_pointwise_metrics, compute_downstream_
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import _build_finetune_loader
 
-PREDICTION_EXPORT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
+PREDICTION_EXPORT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2vec_hires", "sleep2expert")
 
 
 class _DummyDataset:
@@ -478,7 +478,7 @@ def test_build_ahi_prediction_row_includes_threshold_and_summary(package_name: s
 
 def _config_package_name(path: Path) -> str:
     rel_path = path.relative_to(Path(__file__).resolve().parents[1] / "configs")
-    if rel_path.parts and rel_path.parts[0] in {"sleep2vec2", "sleep2expert"}:
+    if rel_path.parts and rel_path.parts[0] in {"sleep2vec2", "sleep2vec_hires", "sleep2expert"}:
         return rel_path.parts[0]
     return "sleep2vec"
 

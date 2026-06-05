@@ -60,6 +60,7 @@ def _downstream_with_backbone(model_cls, channel_names):
     [
         "sleep2vec.downstream_model",
         "sleep2vec2.downstream_model",
+        "sleep2vec_hires.downstream_model",
         "sleep2expert.downstream_model",
     ],
 )

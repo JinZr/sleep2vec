@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-02
+
+- Added `sleep2vec_hires/` and `configs/sleep2vec_hires/` as a package-local high-resolution-token variant seeded from `sleep2vec2`, with namespace guard coverage in `tests/test_sleep2vec_hires_namespace.py`.
+- Updated variant index coverage counts and routing guidance so `sleep2vec_hires` is treated as an active standalone namespace rather than an empty placeholder.
+
 ## 2026-05-31
 
 - Added token embedding extraction guidance for `sleep2vec.extract_embeddings` and package-local `sleep2vec2` / `sleep2expert` mirrors, including selected-layer hidden-state export and NPZ/Kaldi manifest outputs.

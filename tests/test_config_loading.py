@@ -283,6 +283,7 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     [
         "sleep2vec.config",
         "sleep2vec2.config",
+        "sleep2vec_hires.config",
         "sleep2expert.config",
     ],
 )
@@ -314,6 +315,7 @@ def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path, module
     [
         "sleep2vec.config",
         "sleep2vec2.config",
+        "sleep2vec_hires.config",
         "sleep2expert.config",
     ],
 )
@@ -337,7 +339,7 @@ def test_load_finetune_config_parses_imbalance_blocks_across_namespaces(tmp_path
     assert bundle.finetune.sampler.weighted_random is True
 
 
-@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2expert.config"])
+@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2vec_hires.config", "sleep2expert.config"])
 def test_standalone_variants_parse_attention_backend(tmp_path: Path, module_name: str):
     loader = importlib.import_module(module_name).load_pretrain_config
     default_payload = _pretrain_payload()
@@ -356,7 +358,7 @@ def test_standalone_variants_parse_attention_backend(tmp_path: Path, module_name
     assert sdpa_bundle.model.backbone.attention_backend == "sdpa"
 
 
-@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2expert.config"])
+@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2vec_hires.config", "sleep2expert.config"])
 def test_standalone_variants_reject_invalid_attention_backend(tmp_path: Path, module_name: str):
     loader = importlib.import_module(module_name).load_pretrain_config
     payload = _pretrain_payload()
