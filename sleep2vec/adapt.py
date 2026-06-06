@@ -304,6 +304,7 @@ def sleep2vec_adapt(args):
         num_sanity_val_steps=0,
         precision=args.precision,
         gradient_clip_val=args.gradient_clip_val,
+        accumulate_grad_batches=args.accumulate_grad_batches,
     )
     if args.print_diagnostics:
         callbacks = []
@@ -356,6 +357,12 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=20, help="Early stopping patience in epochs.")
     parser.add_argument("--device", type=str, default="cuda", help="Torch device used by dataloader.")
     parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="Gradient clipping value.")
+    parser.add_argument(
+        "--accumulate-grad-batches",
+        type=int,
+        default=1,
+        help="Number of batches to accumulate before each optimizer step.",
+    )
     parser.add_argument(
         "--precision",
         type=str,
