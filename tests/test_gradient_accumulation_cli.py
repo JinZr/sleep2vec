@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAINING_ENTRYPOINTS = (
     Path("sleep2vec/pretrain.py"),
@@ -40,9 +39,7 @@ def _is_add_argument_call(node: ast.AST, argument_name: str) -> bool:
 @pytest.mark.parametrize("relative_path", TRAINING_ENTRYPOINTS)
 def test_training_entrypoints_define_accumulate_grad_batches_cli(relative_path: Path):
     calls = [
-        node
-        for node in ast.walk(_parse(relative_path))
-        if _is_add_argument_call(node, "--accumulate-grad-batches")
+        node for node in ast.walk(_parse(relative_path)) if _is_add_argument_call(node, "--accumulate-grad-batches")
     ]
 
     assert len(calls) == 1
