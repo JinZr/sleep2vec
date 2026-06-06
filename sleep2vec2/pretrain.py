@@ -157,6 +157,7 @@ def sleep2vec_pretrain(args):
         num_sanity_val_steps=0,
         precision=args.precision,
         gradient_clip_val=args.gradient_clip_val,
+        accumulate_grad_batches=args.accumulate_grad_batches,
     )
     if args.print_diagnostics:
         # short diagnostic run: disable bar/ckpt/val to keep output clean
@@ -369,6 +370,12 @@ if __name__ == "__main__":
         help="Number of training steps to accumulate diagnostics before stopping.",
     )
     parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
+    parser.add_argument(
+        "--accumulate-grad-batches",
+        type=int,
+        default=1,
+        help="Number of batches to accumulate before each optimizer step.",
+    )
     parser.add_argument(
         "--strategy",
         type=str,

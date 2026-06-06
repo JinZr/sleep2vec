@@ -126,6 +126,7 @@ def supervised(args, config_bundle):
             logger=logger,
             max_epochs=args.epochs,
             gradient_clip_val=args.gradient_clip_val,
+            accumulate_grad_batches=args.accumulate_grad_batches,
             precision=args.precision,
             check_val_every_n_epoch=args.check_val_every_n_epoch,
         )
@@ -265,6 +266,12 @@ if __name__ == "__main__":
         help="early stopping patience in epochs (no improvement)",
     )
     parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
+    parser.add_argument(
+        "--accumulate-grad-batches",
+        type=int,
+        default=1,
+        help="Number of batches to accumulate before each optimizer step.",
+    )
     parser.add_argument(
         "--precision",
         type=str,
