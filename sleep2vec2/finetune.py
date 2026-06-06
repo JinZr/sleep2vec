@@ -44,6 +44,10 @@ def _is_distributed_ahi_finetune(args) -> bool:
 
 
 def supervised(args, config_bundle):
+    # Programmatic callers may build Namespace without CLI defaults.
+    if not hasattr(args, "accumulate_grad_batches"):
+        args.accumulate_grad_batches = 1
+
     model_config = config_bundle.model
     averaging_config = config_bundle.averaging
 
