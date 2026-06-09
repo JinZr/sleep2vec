@@ -75,3 +75,16 @@ def test_training_entrypoints_pass_accumulate_grad_batches_to_trainer(relative_p
         return
 
     pytest.fail(f"{relative_path} does not pass accumulate_grad_batches into trainer_kwargs")
+
+
+@pytest.mark.parametrize("relative_path", TRAINING_ENTRYPOINTS)
+def test_training_entrypoints_instantiate_grad_scale_logger(relative_path: Path):
+    calls = [
+        node
+        for node in ast.walk(_parse(relative_path))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "GradScaleLoggerCallback"
+    ]
+
+    assert len(calls) == 1

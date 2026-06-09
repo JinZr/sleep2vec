@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2expert.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2expert.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2expert.checkpoints import load_pretrain_init_weights
 from sleep2expert.common import apply_data_backend_args, apply_model_config_args, persist_run_config_and_args
@@ -163,7 +164,7 @@ def sleep2vec_pretrain(args):
         train_pair_skew_warn_threshold=args.train_pair_skew_warn_threshold,
         train_pair_min_unique_coverage_warn_threshold=args.train_pair_min_unique_coverage_warn_threshold,
     )
-    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb]
+    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb, GradScaleLoggerCallback()]
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,

@@ -23,6 +23,7 @@ def _load_adapt_module() -> ModuleType:
         "pytorch_lightning.strategies": types.ModuleType("pytorch_lightning.strategies"),
         "wandb": types.ModuleType("wandb"),
         "data.samplers": types.ModuleType("data.samplers"),
+        "sleep2vec.callbacks.grad_scale_logger": types.ModuleType("sleep2vec.callbacks.grad_scale_logger"),
         "sleep2vec.callbacks.pair_acc_logger": types.ModuleType("sleep2vec.callbacks.pair_acc_logger"),
         "sleep2vec.common": types.ModuleType("sleep2vec.common"),
         "sleep2vec.config": types.ModuleType("sleep2vec.config"),
@@ -38,6 +39,7 @@ def _load_adapt_module() -> ModuleType:
     stubbed_modules["pytorch_lightning.strategies"].DDPStrategy = object
     stubbed_modules["pytorch_lightning.strategies"].DeepSpeedStrategy = object
     stubbed_modules["data.samplers"].handles_distributed_sharding = lambda _sampler: False
+    stubbed_modules["sleep2vec.callbacks.grad_scale_logger"].GradScaleLoggerCallback = object
     stubbed_modules["sleep2vec.callbacks.pair_acc_logger"].PairAccLoggerCallback = object
     stubbed_modules["sleep2vec.common"].apply_data_backend_args = lambda *args, **kwargs: None
     stubbed_modules["sleep2vec.common"].apply_model_config_args = lambda *args, **kwargs: None

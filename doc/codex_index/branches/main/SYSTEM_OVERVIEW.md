@@ -42,6 +42,7 @@ The package-local variant mirrors expose equivalent pretrain/adapt/finetune/infe
    - `EarlyStopping`
    - `LearningRateMonitor`
    - `PairAccLoggerCallback`
+   - `GradScaleLoggerCallback`
 7. Persist `config.yaml` and `cli_args.yaml`.
 8. Train with `trainer.fit(...)`.
 
