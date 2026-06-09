@@ -82,9 +82,7 @@ def test_training_entrypoints_instantiate_grad_scale_logger(relative_path: Path)
     calls = [
         node
         for node in ast.walk(_parse(relative_path))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "GradScaleLoggerCallback"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "GradScaleLoggerCallback"
     ]
 
     assert len(calls) == 1
