@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 from dataclasses import dataclass
+import importlib
 from pathlib import Path
 
 import numpy as np
