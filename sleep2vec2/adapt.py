@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2vec2.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2vec2.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2vec2.common import apply_data_backend_args, apply_model_config_args, persist_run_config_and_args
 from sleep2vec2.config import load_pretrain_config
@@ -282,7 +283,7 @@ def sleep2vec_adapt(args):
         train_pair_skew_warn_threshold=args.train_pair_skew_warn_threshold,
         train_pair_min_unique_coverage_warn_threshold=args.train_pair_min_unique_coverage_warn_threshold,
     )
-    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb]
+    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb, GradScaleLoggerCallback()]
     if args.phase == "stage2":
         callbacks.append(
             AdaptPairScheduleCallback(

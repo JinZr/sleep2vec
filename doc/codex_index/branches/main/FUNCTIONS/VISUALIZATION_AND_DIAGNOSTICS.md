@@ -33,6 +33,17 @@
 - Reuse guidance: use this callback path to observe pair-first sampling behavior.
 - Duplication risk notes: depends on sampler-side auxiliary APIs; keep those interfaces aligned.
 
+## `GradScaleLoggerCallback.on_before_optimizer_step`
+
+- File: `sleep2vec/callbacks/grad_scale_logger.py`
+- Signature: `GradScaleLoggerCallback.on_before_optimizer_step(self, trainer, pl_module, optimizer) -> None`
+- Purpose and contract: log the active AMP scaler value as `train/grad_scale` once per optimizer step when Lightning exposes `trainer.precision_plugin.scaler.get_scale()`.
+- Important inputs/outputs: Lightning trainer precision plugin in; no return value.
+- Side effects: Lightning/W&B scalar metric emission on global zero only.
+- Key callers/callees: called by Lightning; callee is `pl_module.log`.
+- Reuse guidance: use this callback for grad-scale monitoring instead of reading the precision plugin in entrypoints or Lightning modules.
+- Duplication risk notes: package-local mirrors under `sleep2vec2` and `sleep2expert` keep variant runtime imports local.
+
 ## `sleep2vec.callbacks.progress_bar.build_distributed_ahi_progress_bar`
 
 - File: `sleep2vec/callbacks/progress_bar.py`
@@ -125,7 +136,7 @@
 
 - File: `sleep2vec/visualization/pair_acc.py`
 - Signature: `render_pair_acc_heatmap(matrix, modality_names, *, title="Alignment Accuracy (Top-1)") -> plt.Figure`
-- Purpose and contract: render a symmetric modality-pair accuracy heatmap, forcing diagonal values to `1.0`.
+- Purpose and contract: render a symmetric modality-pair accuracy heatmap with compact annotation typography and margins for 9-11 modality matrices, forcing diagonal values to `1.0`.
 - Important inputs/outputs: square accuracy matrix in; figure out.
 - Side effects: none beyond figure creation.
 - Key callers/callees: caller is `PairAccLoggerCallback.on_validation_epoch_end`.

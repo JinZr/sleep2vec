@@ -70,10 +70,47 @@ def test_render_pair_acc_heatmap_draws_full_axis_title_boxes_clear_of_long_label
             for label in ax.get_yticklabels()
         )
 
-        assert x_title_box.get_y() + x_title_box.get_height() <= x_tick_bottom - 0.017
-        assert y_title_box.get_x() + y_title_box.get_width() <= y_tick_left - 0.017
-        assert x_title_box.get_y() >= 0.018
-        assert y_title_box.get_x() >= 0.018
+        assert x_title_box.get_y() + x_title_box.get_height() <= x_tick_bottom - 0.011
+        assert y_title_box.get_x() + y_title_box.get_width() <= y_tick_left - 0.011
+        assert x_title_box.get_y() >= 0.012
+        assert y_title_box.get_x() >= 0.012
         assert {text.get_text() for text in fig.texts} >= {"Gallery Modality", "Query Modality"}
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "render_heatmap",
+    [render_pair_acc_heatmap, render_sleep2vec2_pair_acc_heatmap, render_sleep2expert_pair_acc_heatmap],
+)
+def test_render_pair_acc_heatmap_uses_compact_large_matrix_layout(render_heatmap):
+    labels = [
+        "heartbeat",
+        "breath",
+        "eeg_original",
+        "ecg_original",
+        "eog_original",
+        "emg_original",
+        "spo2",
+        "resp_original",
+        "resp_nasal_original",
+        "ppg",
+        "actigraphy",
+    ]
+    matrix = np.zeros((len(labels), len(labels)), dtype=np.float32)
+    fig = render_heatmap(matrix, labels)
+
+    try:
+        ax = fig.axes[0]
+        fig.canvas.draw()
+        axis_box = ax.get_position()
+
+        assert fig.get_size_inches()[0] <= 8.3
+        assert axis_box.x0 <= 0.27
+        assert axis_box.width >= 0.62
+        assert {text.get_fontsize() for text in ax.texts} == {8.0}
+        assert {text.get_fontweight() for text in ax.texts} == {"normal"}
+        assert {label.get_fontsize() for label in ax.get_xticklabels()} == {8.0}
+        assert {label.get_fontsize() for label in ax.get_yticklabels()} == {8.0}
     finally:
         plt.close(fig)

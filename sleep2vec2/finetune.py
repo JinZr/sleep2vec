@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sleep2vec2.callbacks import build_distributed_ahi_progress_bar
+from sleep2vec2.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2vec2.common import apply_finetune_config, persist_run_config_and_args
 from sleep2vec2.results import save_result_csv
 from sleep2vec2.sleep2vec_finetuning import Sleep2vecFinetuning
@@ -101,7 +102,13 @@ def supervised(args, config_bundle):
         )
 
         lr_monitor = LearningRateMonitor(logging_interval="step")
-        callbacks = [early_stop_callback, checkpoint_callback, best_checkpoint_callback, lr_monitor]
+        callbacks = [
+            early_stop_callback,
+            checkpoint_callback,
+            best_checkpoint_callback,
+            lr_monitor,
+            GradScaleLoggerCallback(),
+        ]
         if _is_distributed_ahi_finetune(args):
             callbacks.append(build_distributed_ahi_progress_bar())
         enable_checkpointing = True
