@@ -10,7 +10,10 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
+import torch
 import wandb
+
+torch.set_float32_matmul_precision("high")
 
 # Make sure the repository root is importable when running this file directly
 REPO_ROOT = Path(__file__).resolve().parent.parent
