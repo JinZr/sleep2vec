@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import importlib
 from pathlib import Path
 
 import numpy as np
@@ -914,6 +915,106 @@ def test_supervised_does_not_inject_ahi_test_search_thresholds(monkeypatch: pyte
     supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
 
     assert captured["has_ahi_test_search_thresholds"] is False
+
+
+@pytest.mark.parametrize("module_name", ["sleep2vec.finetune", "sleep2vec2.finetune", "sleep2expert.finetune"])
+def test_supervised_separates_periodic_and_best_checkpoint_callbacks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, module_name: str
+):
+    finetune_mod = importlib.import_module(module_name)
+    captured: dict[str, object] = {}
+    checkpoints: list[object] = []
+    copies: list[tuple[object, object]] = []
+
+    @dataclass
+    class _DummyBundle:
+        model: object
+        averaging: object = None
+        finetune: object = None
+
+    class _DummyModel:
+        moe_finetune_status = {}
+
+        def moe_finetune_hparams(self):
+            return {}
+
+        def moe_finetune_param_group_rows(self):
+            return []
+
+    class _DummyLogger:
+        experiment = argparse.Namespace(log=lambda *args, **kwargs: None)
+
+        def log_hyperparams(self, *args, **kwargs):
+            return None
+
+    class _DummyCheckpoint:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self.dirpath = kwargs["dirpath"]
+            self.best_model_path = str(tmp_path / f"{len(checkpoints)}.ckpt")
+            checkpoints.append(self)
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            captured["callbacks"] = kwargs["callbacks"]
+            self.is_global_zero = True
+
+        def fit(self, *args, **kwargs):
+            return None
+
+        def test(self, *args, **kwargs):
+            captured["ckpt_path"] = kwargs["ckpt_path"]
+            return [{"metric": 0.5}]
+
+    args_ns = argparse.Namespace(
+        version="unit-test",
+        monitor="val_roc_auc",
+        monitor_mod="max",
+        patience=1,
+        ckpt_every_n_epochs=5,
+        devices=[0],
+        epochs=1,
+        gradient_clip_val=0.0,
+        precision=32,
+        check_val_every_n_epoch=1,
+        print_diagnostics=False,
+        ckpt_path="",
+        results_csv_path=tmp_path / "results.csv",
+        label_name="custom",
+    )
+
+    monkeypatch.setattr(finetune_mod, "persist_run_config_and_args", lambda *args, **kwargs: None)
+    monkeypatch.setattr(finetune_mod, "prepare_dataloader", lambda args: ("train", "val", "test"))
+    monkeypatch.setattr(finetune_mod, "Sleep2vecFinetuning", lambda *args, **kwargs: _DummyModel())
+    monkeypatch.setattr(finetune_mod, "WandbLogger", lambda *args, **kwargs: _DummyLogger())
+    monkeypatch.setattr(finetune_mod, "EarlyStopping", lambda *args, **kwargs: object())
+    monkeypatch.setattr(finetune_mod, "LearningRateMonitor", lambda *args, **kwargs: object())
+    monkeypatch.setattr(finetune_mod, "ModelCheckpoint", _DummyCheckpoint)
+    monkeypatch.setattr(finetune_mod.pl, "Trainer", _DummyTrainer)
+    monkeypatch.setattr(finetune_mod.shutil, "copy2", lambda *args, **kwargs: copies.append((args[0], args[1])))
+    monkeypatch.setattr(finetune_mod, "save_result_csv", lambda *args, **kwargs: None)
+    if hasattr(finetune_mod, "is_rank_zero_process"):
+        monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+
+    finetune_mod.supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
+
+    assert len(checkpoints) == 2
+    periodic_checkpoint, best_checkpoint = checkpoints
+    assert periodic_checkpoint.kwargs["save_top_k"] == -1
+    assert periodic_checkpoint.kwargs["save_last"] is True
+    assert periodic_checkpoint.kwargs["every_n_epochs"] == 5
+    assert periodic_checkpoint.kwargs["filename"] == "{epoch:02d}"
+    assert "every_n_epochs" not in best_checkpoint.kwargs
+    assert best_checkpoint.kwargs["monitor"] == "val_roc_auc"
+    assert best_checkpoint.kwargs["mode"] == "max"
+    assert best_checkpoint.kwargs["save_top_k"] == 1
+    assert best_checkpoint.kwargs["save_last"] is False
+    assert best_checkpoint.kwargs["filename"] == "best-{epoch:02d}"
+    assert best_checkpoint.kwargs["save_on_train_epoch_end"] is False
+    assert periodic_checkpoint in captured["callbacks"]
+    assert best_checkpoint in captured["callbacks"]
+    assert captured["ckpt_path"] == best_checkpoint.best_model_path
+    assert copies == [(best_checkpoint.best_model_path, Path(best_checkpoint.dirpath) / "best.ckpt")]
 
 
 def test_supervised_finishes_owned_wandb_run_after_writing_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

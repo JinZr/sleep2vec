@@ -108,16 +108,23 @@ def supervised(args, config_bundle):
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
-            monitor=args.monitor,  # 监控验证集 Cohen κ
-            mode=args.monitor_mod,  # 越大越好
             save_top_k=-1,  # 保留全部 checkpoint
             save_last=True,  # 额外保存 last.ckpt
             every_n_epochs=args.ckpt_every_n_epochs,  # 控制保存频率
             filename="{epoch:02d}",
         )
+        best_checkpoint_callback = ModelCheckpoint(
+            dirpath=f"log-finetune/{version}/checkpoints",
+            monitor=args.monitor,
+            mode=args.monitor_mod,
+            save_top_k=1,
+            save_last=False,
+            filename="best-{epoch:02d}",
+            save_on_train_epoch_end=False,
+        )
 
         lr_monitor = LearningRateMonitor(logging_interval="step")
-        callbacks = [early_stop_callback, checkpoint_callback, lr_monitor]
+        callbacks = [early_stop_callback, checkpoint_callback, best_checkpoint_callback, lr_monitor]
         if _is_distributed_ahi_finetune(args):
             callbacks.append(build_distributed_ahi_progress_bar())
         enable_checkpointing = True
@@ -161,9 +168,9 @@ def supervised(args, config_bundle):
             )
             # Persist a stable best.ckpt for downstream convenience.
             if enable_checkpointing and trainer.is_global_zero:
-                best_path = checkpoint_callback.best_model_path
+                best_path = best_checkpoint_callback.best_model_path
                 if best_path:
-                    best_dest = Path(checkpoint_callback.dirpath) / "best.ckpt"
+                    best_dest = Path(best_checkpoint_callback.dirpath) / "best.ckpt"
                     try:
                         if Path(best_path).resolve() != best_dest.resolve():
                             shutil.copy2(best_path, best_dest)
@@ -176,7 +183,7 @@ def supervised(args, config_bundle):
 
         # test the model
         if args.epochs > 0:
-            ckpt_path = checkpoint_callback.best_model_path or "last"
+            ckpt_path = best_checkpoint_callback.best_model_path or "last"
         else:
             ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
         pretrain_result = trainer.test(
