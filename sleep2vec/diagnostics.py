@@ -517,7 +517,10 @@ def get_class_name(module: nn.Module):
     # might have different member names.
     if ans == "Balancer" or ans == "ActivationBalancer":
         try:
-            ans += f"[{float(module.min_positive)},{float(module.max_positive)},{float(module.min_abs)},{float(module.max_abs)}]"
+            ans += (
+                f"[{float(module.min_positive)},{float(module.max_positive)},"
+                f"{float(module.min_abs)},{float(module.max_abs)}]"
+            )
         except:
             pass
     elif ans == "AbsValuePenalizer":
@@ -639,7 +642,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
             parameter.register_hook(param_backward_hook)
         except:
             logging.warning(
-                f"Warning: could not register backward hook for parameter {name}, " f"it might not be differentiable."
+                f"Warning: could not register backward hook for parameter {name}, it might not be differentiable."
             )
 
     return ans

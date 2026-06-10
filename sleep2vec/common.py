@@ -193,7 +193,8 @@ def _validate_metadata_label_support(args) -> None:
         and not is_builtin_seq_task(getattr(args, "label_name", None))
     ):
         raise ValueError(
-            "Metadata classification currently supports only binary labels (output_dim=2) for non-built-in sequence tasks. "
+            "Metadata classification currently supports only binary labels (output_dim=2) "
+            "for non-built-in sequence tasks. "
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
             "Extend metadata label encoding before using multiclass metadata targets."
         )
@@ -432,7 +433,7 @@ def apply_data_backend_args(args, data_cfg, *, preset_attr: str | None = None) -
         missing.append("kaldi_manifest")
     if missing:
         raise ValueError(
-            "Kaldi backend requires explicit kaldi_data_root and kaldi_manifest; " f"missing {', '.join(missing)}."
+            f"Kaldi backend requires explicit kaldi_data_root and kaldi_manifest; missing {', '.join(missing)}."
         )
 
     if preset_attr and getattr(args, preset_attr, None):
