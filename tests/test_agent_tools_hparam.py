@@ -242,7 +242,12 @@ def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: 
     (ckpt_dir / "epoch=20.ckpt").write_text("fixed20")
     (ckpt_dir / "best-epoch=20.ckpt").write_text("alias")
     (history_dir / "wandb-history.jsonl").write_text(
-        json.dumps({"epoch": 13, "val_auroc": 0.72}) + "\n" + json.dumps({"epoch": 20, "val_auroc": 0.81}) + "\n"
+        json.dumps({"epoch": 2, "val_auroc": 0.99})
+        + "\n"
+        + json.dumps({"epoch": 13, "val_auroc": 0.72})
+        + "\n"
+        + json.dumps({"epoch": 20, "val_auroc": 0.81})
+        + "\n"
     )
     (run_dir / "run_manifest.json").write_text(
         json.dumps(
@@ -264,6 +269,7 @@ def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: 
     assert rows[0]["checkpoint_path"].endswith("epoch=20.ckpt")
     assert "best-epoch" not in rows[0]["checkpoint_path"]
     assert rows[0]["source"] == "history"
+    assert {row["epoch"] for row in rows} == {"13", "20"}
 
 
 def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):

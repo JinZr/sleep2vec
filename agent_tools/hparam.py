@@ -380,8 +380,8 @@ def _history_epoch(record: dict[str, Any]) -> int | None:
 
 def _checkpoint_for_epoch(manifest_path: Path, epoch: int) -> Path | None:
     ckpt_dir = manifest_path.parent / "checkpoints"
-    for path in sorted(ckpt_dir.glob(f"epoch={epoch}*.ckpt")):
-        if not path.name.startswith("best-"):
+    for path in sorted(ckpt_dir.glob("epoch=*.ckpt")):
+        if not path.name.startswith("best-") and _epoch_from_checkpoint_name(path.name) == str(epoch):
             return path
     return None
 

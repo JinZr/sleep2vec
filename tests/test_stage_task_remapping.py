@@ -344,6 +344,7 @@ def test_build_scalar_classification_prediction_row_averages_probabilities(packa
             "kind": "classification",
             "groundtruth": 1,
             "probabilities": [0.2, 0.8],
+            "logits": [0.0, 2.0],
             "prediction": 1,
             "is_sequence": False,
         },
@@ -353,6 +354,7 @@ def test_build_scalar_classification_prediction_row_averages_probabilities(packa
             "kind": "classification",
             "groundtruth": 1,
             "probabilities": [0.6, 0.4],
+            "logits": [1.0, 0.0],
             "prediction": 0,
             "is_sequence": False,
         },
@@ -369,6 +371,28 @@ def test_build_scalar_classification_prediction_row_averages_probabilities(packa
     assert row["token_starts"] == [0, 5]
     assert row["prob_0"] == pytest.approx(0.4)
     assert row["prob_1"] == pytest.approx(0.6)
+    assert row["logit_0"] == pytest.approx(0.5)
+    assert row["logit_1"] == pytest.approx(1.0)
+    assert row["logit"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_extract_scalar_classification_prediction_records_preserves_logits(package_name: str):
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    args = argparse.Namespace(is_multilabel=False, is_classification=True)
+    batch = {
+        "metadata": {"path": ["a.npz", "b.npz"]},
+        "token_start": torch.tensor([0, 5]),
+    }
+    logits = torch.tensor([[-1.0, 2.0], [3.0, 0.0]])
+    targets = torch.tensor([1, 0])
+
+    records = inference_mod.extract_prediction_records(args, batch, logits, targets)
+
+    assert records[0]["logits"] == pytest.approx([-1.0, 2.0])
+    assert records[0]["probabilities"] == pytest.approx(torch.softmax(logits[0], dim=-1).tolist())
+    assert records[1]["logits"] == pytest.approx([3.0, 0.0])
+    assert records[1]["probabilities"] == pytest.approx(torch.softmax(logits[1], dim=-1).tolist())
 
 
 @pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
@@ -414,6 +438,7 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
             "kind": "classification",
             "groundtruth": [2],
             "probabilities": [[0.1, 0.2, 0.7]],
+            "logits": [[0.0, 1.0, 2.0]],
             "prediction": [2],
             "is_sequence": True,
         },
@@ -423,6 +448,7 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
             "kind": "classification",
             "groundtruth": [0, 1],
             "probabilities": [[0.9, 0.1, 0.0], [0.1, 0.8, 0.1]],
+            "logits": [[2.0, 0.0, -1.0], [0.0, 2.0, 0.0]],
             "prediction": [0, 1],
             "is_sequence": True,
         },
@@ -432,6 +458,7 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
             "kind": "classification",
             "groundtruth": [2, 2],
             "probabilities": [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            "logits": [[-1.0, -1.0, 3.0], [-1.0, -1.0, 3.0]],
             "prediction": [2, 2],
             "is_sequence": True,
         },
@@ -448,6 +475,9 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
     assert rows[0]["prob_0"] == pytest.approx([0.9, 0.1, 0.1])
     assert rows[0]["prob_1"] == pytest.approx([0.1, 0.8, 0.2])
     assert rows[0]["prob_2"] == pytest.approx([0.0, 0.1, 0.7])
+    assert rows[0]["logit_0"] == pytest.approx([2.0, 0.0, 0.0])
+    assert rows[0]["logit_1"] == pytest.approx([0.0, 2.0, 1.0])
+    assert rows[0]["logit_2"] == pytest.approx([-1.0, 0.0, 2.0])
 
 
 @pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
