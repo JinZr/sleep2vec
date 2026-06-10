@@ -22,7 +22,7 @@ high_impact_fields:
   - id: label_name
     description: "The downstream label must be explicit for finetuning, inference, evaluation, and tuning."
     required_for_tasks: ["finetune", "infer", "evaluate", "hparam_tune"]
-    question: "Which label should this task use, for example ahi, age, sex, src_isDep, stage5, or another label?"
+    question: "Which label should this task use, for example ahi, age, sex, stage5, or a custom metadata label?"
 
   - id: data_backend
     description: "The data backend must be explicit when both preset and Kaldi-style inputs are possible."

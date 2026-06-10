@@ -13,6 +13,7 @@ def index_summary(
     index_paths: list[str | Path],
     *,
     config: str | Path | None = None,
+    label_name: str | None = None,
     sample_path_check: int = 0,
     sample_npz_check: int = 0,
 ) -> dict[str, Any]:
@@ -32,6 +33,8 @@ def index_summary(
                 "max": float(duration_series.max()),
             }
     labels = ["age", "sex", "ahi", "stage3", "stage4", "stage5"]
+    if label_name and label_name not in labels:
+        labels.append(label_name)
     label_presence = {
         label: {"exists": label in df.columns, "non_null": int(df[label].notna().sum()) if label in df.columns else 0}
         for label in labels
@@ -58,7 +61,7 @@ def index_summary(
             available = mask_columns.get(mask_column, {}).get("true_count", len(df) if not df.empty else 0)
             channel_coverage[channel] = {"mask_column": mask_column, "available_rows": int(available)}
     source_col = _first_existing(df, ["source", "dataset", "sample_source", "original_dataset"])
-    label_cols = _label_columns(df)
+    label_cols = _label_columns(df, label_name=label_name)
     split_source_label_counts = {}
     if "split" in df.columns and source_col:
         for label in label_cols:
@@ -134,8 +137,11 @@ def _first_existing(df: pd.DataFrame, names: list[str]) -> str | None:
     return None
 
 
-def _label_columns(df: pd.DataFrame) -> list[str]:
-    candidates = ["label", "src_isDep", "isDep", "src_Dx", "sex", "age", "ahi"]
+def _label_columns(df: pd.DataFrame, *, label_name: str | None = None) -> list[str]:
+    candidates = ["label", "target", "groundtruth", "sex", "age", "ahi"]
+    if label_name:
+        candidates.insert(0, label_name)
+    candidates = list(dict.fromkeys(candidates))
     labels: list[str] = []
     for column in candidates:
         if column not in df.columns:

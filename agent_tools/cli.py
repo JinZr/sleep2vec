@@ -62,6 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
     index = sub.add_parser("index-summary")
     index.add_argument("--index", nargs="+", required=True)
     index.add_argument("--config")
+    index.add_argument("--label-name")
     index.add_argument("--sample-path-check", type=int, default=0)
     index.add_argument("--sample-npz-check", type=int, default=0)
     index.add_argument("--json", action="store_true")
@@ -245,6 +246,7 @@ def _cmd_index_summary(args: argparse.Namespace) -> int:
         index_summary(
             args.index,
             config=args.config,
+            label_name=args.label_name,
             sample_path_check=args.sample_path_check,
             sample_npz_check=args.sample_npz_check,
         ),

@@ -96,7 +96,7 @@ decisions:
   label_name:
     value: ASK_USER
     source: unresolved
-    question: "Should the task use ahi, stage5, age, sex, or src_isDep?"
+    question: "Should the task use ahi, stage5, age, sex, or a custom metadata label?"
 ```
 
 High-impact fields must not be silently inferred from filenames, nearby configs, or previous runs.

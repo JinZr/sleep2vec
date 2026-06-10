@@ -356,8 +356,9 @@ def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> P
         test_path = _first_value(row, ["test_predictions_path", "test_logits_path"])
         if not val_path or not test_path:
             continue
-        val = _read_binary_predictions(val_path)
-        test = _read_binary_predictions(test_path)
+        label_name = _first_value(row, ["label_name", "target_name", "target_label"])
+        val = _read_binary_predictions(val_path, label_name=label_name)
+        test = _read_binary_predictions(test_path, label_name=label_name)
         threshold = _best_f1_threshold(val["y"], val["p"])
         val_metrics = _binary_metrics(val["y"], val["p"], threshold)
         test_metrics = _binary_metrics(test["y"], test["p"], threshold)
@@ -917,23 +918,67 @@ def _copy_logits_csv(prediction_path: Path, output_path: Path) -> None:
     shutil.copyfile(prediction_path, output_path)
 
 
-def _read_binary_predictions(path: str | Path) -> dict[str, list[float]]:
+def _read_binary_predictions(path: str | Path, *, label_name: str | None = None) -> dict[str, list[float]]:
     df = pd.read_csv(path)
-    label_col = _first_column(df, ["label", "true", "y_true", "target", "src_isDep"])
-    score_col = _first_column(df, ["score", "prob", "prob_1", "pred_prob", "positive_prob", "logit"])
+    label_col = _first_column(df, _prediction_label_columns(label_name))
+    score_col = _first_column(df, ["score", "prob_1", "prob", "pred_prob", "positive_prob", "logit"])
     if label_col is None or score_col is None:
         raise ValueError(f"Prediction file must contain label and score columns: {path}")
-    y = [int(value) for value in pd.to_numeric(df[label_col], errors="coerce").fillna(0)]
-    raw = [float(value) for value in pd.to_numeric(df[score_col], errors="coerce").fillna(0)]
+
+    y: list[int] = []
+    raw: list[float] = []
+    for row_index, row in df.iterrows():
+        labels = _prediction_values(row[label_col])
+        scores = _prediction_values(row[score_col])
+        if len(labels) != len(scores):
+            raise ValueError(
+                f"Prediction file has mismatched label/score lengths at row {row_index}: "
+                f"{label_col} has {len(labels)}, {score_col} has {len(scores)} ({path})"
+            )
+        y.extend(int(float(value)) for value in labels)
+        raw.extend(float(value) for value in scores)
+
     if raw and (min(raw) < 0 or max(raw) > 1):
         raw = [1 / (1 + math.exp(-value)) for value in raw]
     return {"y": y, "p": raw}
 
 
+def _prediction_label_columns(label_name: str | None) -> list[str]:
+    columns = []
+    if label_name:
+        columns.append(label_name)
+    columns.extend(["label", "true", "y_true", "target", "groundtruth"])
+    return list(dict.fromkeys(columns))
+
+
+def _prediction_values(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, float) and math.isnan(value):
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() == "nan":
+            return []
+        if text.startswith("["):
+            loaded = json.loads(text)
+            if not isinstance(loaded, list):
+                raise ValueError(f"Expected a JSON list prediction value, got: {value!r}")
+            return [float(item) for item in loaded]
+        return [float(text)]
+    if isinstance(value, list):
+        return [float(item) for item in value]
+    return [float(value)]
+
+
 def _ensemble_summary_row(rows: list[dict[str, str]]) -> dict[str, Any]:
     ids = [_candidate_id(row) for row in rows]
     val_sets = [
-        _read_binary_predictions(_first_value(row, ["val_predictions_path", "val_logits_path"])) for row in rows
+        _read_binary_predictions(
+            _first_value(row, ["val_predictions_path", "val_logits_path"]),
+            label_name=_first_value(row, ["label_name", "target_name", "target_label"]),
+        )
+        for row in rows
     ]
     y_val, p_val = _average_binary_predictions(val_sets)
     threshold = _best_f1_threshold(y_val, p_val)
@@ -947,7 +992,15 @@ def _ensemble_summary_row(rows: list[dict[str, str]]) -> dict[str, Any]:
     }
     test_paths = [_first_value(row, ["test_predictions_path", "test_logits_path"]) for row in rows]
     if all(test_paths):
-        y_test, p_test = _average_binary_predictions([_read_binary_predictions(path) for path in test_paths])
+        y_test, p_test = _average_binary_predictions(
+            [
+                _read_binary_predictions(
+                    path,
+                    label_name=_first_value(row, ["label_name", "target_name", "target_label"]),
+                )
+                for row, path in zip(rows, test_paths, strict=True)
+            ]
+        )
         test_metrics = _binary_metrics(y_test, p_test, threshold)
         summary.update({f"exploratory_test_{key}": value for key, value in test_metrics.items()})
     return summary

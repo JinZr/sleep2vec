@@ -70,7 +70,7 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(tmp_pat
             "gpu_pool": [6, 7],
             "gpus_per_trial": 2,
             "max_concurrent": 1,
-            "wandb_project": "sleep2vec-depression-matched",
+            "wandb_project": "sleep2vec-unit-hparam",
             "wandb_group": "unit",
         },
     )
@@ -88,7 +88,7 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(tmp_pat
     assert "ssh baichuan3" in rows[0]["command"]
     assert "conda run --no-capture-output -n ywx" in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=6,7" in rows[0]["command"]
-    assert "WANDB_PROJECT=sleep2vec-depression-matched" in rows[0]["command"]
+    assert "WANDB_PROJECT=sleep2vec-unit-hparam" in rows[0]["command"]
     assert rows[0]["log_path"].endswith("logs/trial_000.log")
     assert rows[0]["pid_path"].endswith("pids/trial_000.pid")
 
@@ -403,3 +403,90 @@ def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
     assert len(search_rows) == 6
     assert search_rows[0]["rank"] == "1"
     assert any(row["n_models"] == "2" for row in search_rows)
+
+
+def test_hparam_threshold_and_ensemble_read_repo_prediction_csv_lists(tmp_path: Path):
+    val_seq = tmp_path / "val_seq.csv"
+    test_seq = tmp_path / "test_seq.csv"
+    val_ahi = tmp_path / "val_ahi.csv"
+    test_ahi = tmp_path / "test_ahi.csv"
+    val_logit = tmp_path / "val_logit.csv"
+    test_logit = tmp_path / "test_logit.csv"
+    val_custom = tmp_path / "val_custom.csv"
+    test_custom = tmp_path / "test_custom.csv"
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz"],
+            "groundtruth": [json.dumps([0, 0]), json.dumps([1, 1])],
+            "prob_1": [json.dumps([0.1, 0.2]), json.dumps([0.8, 0.9])],
+        }
+    ).to_csv(val_seq, index=False)
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz"],
+            "groundtruth": [json.dumps([0, 0]), json.dumps([1, 1])],
+            "prob_1": [json.dumps([0.1, 0.2]), json.dumps([0.8, 0.9])],
+        }
+    ).to_csv(test_seq, index=False)
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz"],
+            "groundtruth": [json.dumps([0, 0]), json.dumps([1, 1])],
+            "prob": [json.dumps([0.1, 0.2]), json.dumps([0.8, 0.9])],
+        }
+    ).to_csv(val_ahi, index=False)
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz"],
+            "groundtruth": [json.dumps([0, 0]), json.dumps([1, 1])],
+            "prob": [json.dumps([0.1, 0.2]), json.dumps([0.8, 0.9])],
+        }
+    ).to_csv(test_ahi, index=False)
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz"],
+            "groundtruth": [json.dumps([0, 0]), json.dumps([1, 1])],
+            "logit": [json.dumps([-2.0, -1.0]), json.dumps([1.0, 2.0])],
+        }
+    ).to_csv(val_logit, index=False)
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz"],
+            "groundtruth": [json.dumps([0, 0]), json.dumps([1, 1])],
+            "logit": [json.dumps([-2.0, -1.0]), json.dumps([1.0, 2.0])],
+        }
+    ).to_csv(test_logit, index=False)
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz"],
+            "custom_label": [json.dumps([0, 0]), json.dumps([1, 1])],
+            "prob": [json.dumps([0.1, 0.2]), json.dumps([0.8, 0.9])],
+        }
+    ).to_csv(val_custom, index=False)
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz"],
+            "custom_label": [json.dumps([0, 0]), json.dumps([1, 1])],
+            "prob": [json.dumps([0.1, 0.2]), json.dumps([0.8, 0.9])],
+        }
+    ).to_csv(test_custom, index=False)
+    selected = tmp_path / "selected_repo_predictions.csv"
+    selected.write_text(
+        "trial_id,label_name,val_predictions_path,test_predictions_path\n"
+        f"trial_seq,,{val_seq},{test_seq}\n"
+        f"trial_ahi,,{val_ahi},{test_ahi}\n"
+        f"trial_logit,,{val_logit},{test_logit}\n"
+        f"trial_custom,custom_label,{val_custom},{test_custom}\n"
+    )
+
+    threshold = _run("hparam-threshold", "--run-dir", str(tmp_path), "--selected", str(selected))
+    ensemble = _run("hparam-ensemble", "--run-dir", str(tmp_path), "--candidates", str(selected))
+
+    assert threshold.returncode == 0, threshold.stderr
+    threshold_rows = _read_table(tmp_path / "threshold_summary.csv")
+    assert len(threshold_rows) == 4
+    assert all(float(row["test_auroc"]) == 1.0 for row in threshold_rows)
+    assert all(float(row["test_accuracy"]) == 1.0 for row in threshold_rows)
+    assert ensemble.returncode == 0, ensemble.stderr
+    ensemble_rows = _read_table(tmp_path / "ensemble_summary.csv")
+    assert float(ensemble_rows[0]["exploratory_test_auroc"]) == 1.0
