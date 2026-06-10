@@ -5,9 +5,9 @@ This directory is the branch-scoped engineering manual for `main`. Use it before
 ## Branch Scope
 
 - Branch: `main`
-- Last refresh commit: `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`
-- Last refresh at: `2026-05-25T07:25:27Z`
-- Mode: `refresh`
+- Last refresh commit: `dbe6a5e4cf40811138a35870b011a2a6d1bf8b83`
+- Last refresh at: `2026-06-10T18:45:58Z`
+- Mode: `repair`
 
 ## Purpose
 
@@ -34,19 +34,19 @@ For small, localized fixes or routine updates, it is enough to read this page pl
 
 Tracked files indexed from this branch:
 
-- `sleep2vec/`: 81 tracked files
+- `sleep2vec/`: 83 tracked files
 - `data/`: 8 tracked files
 - `preprocess/`: 7 tracked files
-- `sleep2vec2/`: 103 tracked files
-- `sleep2expert/`: 107 tracked files
+- `sleep2vec2/`: 105 tracked files
+- `sleep2expert/`: 109 tracked files
 - `sleep2vec_moe/`: 0 tracked files
 - `sleep2vec_hires/`: 0 tracked files
 - `configs/`: 108 tracked files
-- `tests/`: 50 tracked files
-- `utils/`: 7 tracked files
-- `agent_tools/`: 14 tracked files
-- `skills/`: 27 tracked files
-- `recipes/`: 6 tracked files
+- `tests/`: 68 tracked files
+- `utils/`: 8 tracked files
+- `agent_tools/`: 18 tracked files
+- `skills/`: 33 tracked files
+- `recipes/`: 16 tracked files
 - `agent_policies/` and `doc/agent_contracts/`: 9 tracked files
 
 ## Coverage Boundaries
@@ -68,6 +68,7 @@ Tracked files indexed from this branch:
 - If you are changing dataset loading, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
 - If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, WatchPAT conversion, Kaldi index repair, UKB annotation parsing, UKB demographic extraction, or case-control matching utilities, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
 - If you are changing evaluation plots, pair-accuracy logging, or diagnostics, start with [FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md](./FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md).
+- If you are changing agent-facing recipes, consultation gates, command plans, hparam orchestration, experiment monitoring, or progress files, start with [FUNCTIONS/AGENT_TOOLING.md](./FUNCTIONS/AGENT_TOOLING.md) and [WORKFLOWS/AGENT_TOOLING.md](./WORKFLOWS/AGENT_TOOLING.md).
 - If you think you need `sleep2vec2/` or `sleep2expert/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first. Both are active tracked standalone namespaces on this branch.
 
 ## Deliverable Layout

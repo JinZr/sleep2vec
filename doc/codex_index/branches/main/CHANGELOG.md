@@ -2,10 +2,19 @@
 
 ## 2026-06-10
 
+- Repaired the `main` branch index for commit `dbe6a5e4cf40811138a35870b011a2a6d1bf8b83`.
+- Updated README/MANIFEST metadata and tracked-file coverage counts for `sleep2vec/`, `sleep2vec2/`, `sleep2expert/`, `tests/`, `utils/`, `agent_tools/`, `skills/`, and `recipes/`.
+- Added `FUNCTIONS/AGENT_TOOLING.md` for the new agent CLI, consultation, plan, hparam, experiment, adaptive-hparam, and progress surfaces.
+- Added hparam logit export guidance and edit hotspots for `agent_tools/hparam.py`, `agent_tools/experiments.py`, `agent_tools/adaptive_hparam.py`, and `agent_tools/progress.py`.
+- Stale entries removed or corrected:
+  - old manifest commit/timestamp from `dbbbe24c24252593f28fdf354cbf3b17bc59e17a`
+  - old README commit/timestamp from `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`
+  - stale `agent_tools.context` references, replaced with `agent_tools.plans.build_context`
+  - old variant coverage counts for `sleep2vec2/` and `sleep2expert/`
 - Added agent tooling workflow coverage for `agent_tools/`, `skills/`, `recipes/`, `agent_policies/`, and `doc/agent_contracts/`.
 - Documented stop-and-consult gates, `NEEDS_USER_INPUT` exit code `2`, blocked context/plan artifacts, and external-test unlock policy.
 - Tightened agent-tooling guidance for variant-aware `sleep2vec` / `sleep2vec2` / `sleep2expert` command generation, explicit final-test checkpoint selection, overwrite guards, and namespaced hparam search keys.
-- Updated reuse guidance to route agent-facing workflow support through `agent_tools.context`, `agent_tools.recipes`, `agent_tools.plans`, and `agent_tools.decisions`.
+- Updated reuse guidance to route agent-facing workflow support through `agent_tools.plans`, `agent_tools.recipes`, `agent_tools.decisions`, `agent_tools.hparam`, `agent_tools.experiments`, `agent_tools.adaptive_hparam`, and `agent_tools.progress`.
 - Corrected PPG AHI config-validation wording to require `[ppg, ahi, stage5]` with `min_channels=3`.
 
 ## 2026-05-31
