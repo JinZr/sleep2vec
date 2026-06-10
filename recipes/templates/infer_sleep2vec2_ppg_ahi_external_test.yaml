@@ -1,0 +1,38 @@
+schema_version: 1
+name: sleep2vec2_ppg_ahi_external_infer_example
+task: infer
+variant: sleep2vec2
+
+inputs:
+  config: configs/sleep2vec2/ppg_ahi_finetune_large.yaml
+  label_name: ahi
+  ckpt_path: ASK_USER
+  eval_split: test
+
+runtime:
+  devices: [0]
+  precision: bf16-mixed
+
+evaluation_policy:
+  external_test_locked: true
+  final_eval_split: test
+  final_test_unlocked: false
+
+decisions:
+  task:
+    value: infer
+    source: explicit_recipe
+  label_name:
+    value: ahi
+    source: explicit_recipe
+  ckpt_path:
+    value: ASK_USER
+    source: unresolved
+    question: "Which sleep2vec2 checkpoint should be evaluated?"
+  final_eval_unlock:
+    value: ASK_USER
+    source: unresolved
+    question: "Should the selected sleep2vec2 model now be evaluated on the external test set?"
+  overwrite_policy:
+    value: false
+    source: explicit_recipe

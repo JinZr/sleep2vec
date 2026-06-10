@@ -1,0 +1,2 @@
+path,split,duration,ppg_mask,ah_event_mask,stage_mask
+fixtures/sample.npz,train,60,1,1,1

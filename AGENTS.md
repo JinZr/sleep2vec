@@ -48,7 +48,8 @@ bash utils/style_check.sh
 - In the final response, briefly state whether an indexed implementation was reused or a new one was intentionally introduced.
 
 ## Testing Guidelines
-- There is no dedicated test suite checked in; use diagnostics and short runs for sanity checks.
+- Use targeted pytest files for contract changes and smoke commands for runtime changes.
+- There is a checked `tests/` suite; prefer the smallest relevant test set for the ownership boundary touched.
 - Quick smoke test example:
 ```bash
 python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
@@ -63,6 +64,17 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 ## Configuration & Secrets
 - W&B login is required by default; set `WANDB_API_KEY` or use `WANDB_MODE=offline`.
 - Keep dataset paths and preset pickles in config/CLI (not hardcoded); document any new index CSV columns.
+
+## Agent Stop-And-Consult Policy
+Agents must not silently guess high-impact experiment decisions.
+
+Before generating runnable commands for preset preparation, finetuning, inference, evaluation, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor`, `agent_tools context`, or `agent_tools plan`.
+
+If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. Do not run training. Do not generate executable scripts. Do not evaluate external test data.
+
+Generated runtime commands must respect recipe `variant`; do not route `sleep2vec2` or `sleep2expert` recipes through root `sleep2vec` entrypoints.
+
+High-impact decisions include label selection, split policy, external-test locking, checkpoint selection, pretrained-backbone choice, preset regeneration, overwrite behavior, required channels, selection metric, metric direction, and hyper-parameter search budget.
 
 ## Config Strictness Policy
 - Follow “let it crash” for model/data semantics: missing or inconsistent YAML fields that affect model shape, task semantics, or evaluation should raise immediately.
@@ -81,11 +93,11 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 - Owns: `data/default_dataset.py`, `data/psg_pretrain_dataset.py`, `data/utils.py`, `data/samplers.py`, `data/channel_selection.py`, `data/metadata.py`.
 - Responsibilities: sample index semantics, `available_channels`, `source` and metadata filtering, token-window validity, few-shot behavior, pair-first batching, collate invariants.
 - Invoke when: changing dataset fields, preset payload shape, filtering rules, missing-channel handling, sampler behavior, or data/label loading semantics.
-- Must not be split from: pair-first tests in `tests/test_pair_first_sampler.py` and `tests/test_pretrain_pair_filtering.py`.
+- Must not be split from: pair-first and available-channel tests in `tests/test_pair_first_sampler.py`, `tests/test_bucket_sampler.py`, and `tests/test_data_utils.py`.
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall data tests
-python3.10 -m pytest -q tests/test_pair_first_sampler.py tests/test_pretrain_pair_filtering.py
+python3.10 -m pytest -q tests/test_pair_first_sampler.py tests/test_bucket_sampler.py tests/test_data_utils.py
 ```
 
 #### `config-task-contract`
@@ -163,6 +175,18 @@ PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec_moe s
 python3.10 -m pytest -q tests/test_checkpoints.py tests/test_config_loading.py
 ```
 
+#### `agent-tooling-maintainer`
+- Owns: `skills/`, `agent_tools/`, `recipes/`, `agent_policies/`, `doc/agent_contracts/`, and agent-facing workflow examples.
+- Responsibilities: task playbooks, machine-readable recipe schemas, context bundle generation, command-plan generation, skill validation, run-manifest conventions, agent documentation consistency, stop-and-consult policy enforcement, and external-test unlock checks.
+- Invoke when: adding or changing agent skills, recipe schemas, context-gathering tools, run-plan generators, consultation policies, user-decision files, or agent-facing documentation.
+- Must not be split from: `runtime-orchestrator` when the change affects training/inference command semantics; `preset-pipeline` when the change affects preset preparation; `regression-guard` when adding new agent-tool contracts.
+- Verification gate:
+```bash
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall agent_tools tests
+python3 -m pytest -q tests/test_agent_tools_*.py tests/test_agent_consultation_policy.py tests/test_agent_user_decisions.py tests/test_agent_plan_blocks_on_ambiguity.py
+python -m agent_tools skills --validate
+```
+
 #### `regression-guard`
 - Owns: the `tests/` strategy rather than a product module.
 - Responsibilities: add or extend tests when a contract changes, identify missing coverage, and prevent silent regressions in data/config/runtime/variant flows.
@@ -175,6 +199,7 @@ python3.10 -m pytest -q tests/test_checkpoints.py tests/test_config_loading.py
 - If a task changes model forward paths, head/loss contracts, LoRA, or layer-mix behavior, route first to `model-integration`.
 - If a task changes entrypoints, checkpoints, metrics, callbacks, diagnostics, or inference/export behavior, route first to `runtime-orchestrator`.
 - If a task changes preprocessing scripts or preset generation logic, route first to `preset-pipeline`.
+- If a task changes agent-facing skills, recipes, context bundles, command plans, consultation gates, or user-decision schemas, route first to `agent-tooling-maintainer`.
 - If a task touches `sleep2vec_moe/`, `configs_moe/`, or `sleep2vec2/`, require `variant-maintainer` review before completion.
 - If a task changes a contract already covered by tests, or should be covered but is not, involve `regression-guard`.
 

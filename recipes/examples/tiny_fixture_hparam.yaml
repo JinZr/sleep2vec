@@ -1,0 +1,45 @@
+schema_version: 1
+name: tiny_fixture_hparam
+task: hparam_tune
+variant: sleep2vec
+
+base_recipe: tiny_fixture_finetune.yaml
+
+search:
+  method: grid
+  max_trials: 1
+  parameters:
+    runtime.lr: [1.0e-6]
+
+evaluation_policy:
+  selection_metric: val_ahi_pearson
+  selection_mode: max
+  selection_split: val
+  external_test_locked: true
+  test_after_fit: false
+  final_eval_split: test
+  final_test_unlocked: false
+  require_manual_unlock_for_final_test: true
+
+artifacts:
+  generated_config_dir: runs/generated/tiny_fixture_hparam/configs
+
+decisions:
+  task:
+    value: hparam_tune
+    source: explicit_recipe
+  label_name:
+    value: ahi
+    source: explicit_recipe
+  external_test_locked:
+    value: true
+    source: explicit_recipe
+  train_val_test_policy:
+    value: "select on val; keep test locked"
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe
+  final_eval_unlock:
+    value: false
+    source: explicit_recipe

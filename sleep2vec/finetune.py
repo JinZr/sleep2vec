@@ -22,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 from sleep2vec.callbacks import build_distributed_ahi_progress_bar
 from sleep2vec.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2vec.common import apply_finetune_config, persist_run_config_and_args
-from sleep2vec.results import save_result_csv
+from sleep2vec.results import save_result_csv, save_training_run_manifest
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import get_finetune_dataloaders
 
@@ -51,6 +51,8 @@ def supervised(args, config_bundle):
     # Programmatic callers may build Namespace without CLI defaults.
     if not hasattr(args, "accumulate_grad_batches"):
         args.accumulate_grad_batches = 1
+    if not hasattr(args, "test_after_fit"):
+        args.test_after_fit = True
 
     model_config = config_bundle.model
     averaging_config = config_bundle.averaging
@@ -80,6 +82,9 @@ def supervised(args, config_bundle):
         log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )
     try:
+        manifest_path = exp_root / "run_manifest.json"
+        best_checkpoint_callback = None
+        checkpoint_callback = None
         early_stop_callback = EarlyStopping(
             monitor=args.monitor,
             patience=args.patience,
@@ -168,6 +173,22 @@ def supervised(args, config_bundle):
             # only collect diagnostics, skip evaluation
             return
 
+        if not args.test_after_fit:
+            logging.info("Test-after-fit disabled; skipping trainer.test and results CSV append.")
+            save_training_run_manifest(
+                args,
+                manifest_path=manifest_path,
+                status="skipped_test",
+                monitor=args.monitor,
+                monitor_mode=args.monitor_mod,
+                best_model_path=getattr(best_checkpoint_callback, "best_model_path", None),
+                best_model_score=getattr(best_checkpoint_callback, "best_model_score", None),
+                last_checkpoint_path=getattr(checkpoint_callback, "last_model_path", None),
+                results_csv_path=None,
+                metrics={},
+            )
+            return
+
         # test the model
         if args.epochs > 0:
             ckpt_path = best_checkpoint_callback.best_model_path or "last"
@@ -180,6 +201,36 @@ def supervised(args, config_bundle):
         )[0]
         logging.info(pretrain_result)
         save_result_csv(pretrain_result, args.results_csv_path, args)
+        save_training_run_manifest(
+            args,
+            manifest_path=manifest_path,
+            status="completed",
+            monitor=args.monitor,
+            monitor_mode=args.monitor_mod,
+            best_model_path=getattr(best_checkpoint_callback, "best_model_path", None),
+            best_model_score=getattr(best_checkpoint_callback, "best_model_score", None),
+            last_checkpoint_path=getattr(checkpoint_callback, "last_model_path", None),
+            results_csv_path=args.results_csv_path,
+            metrics=pretrain_result,
+        )
+    except BaseException:
+        if "manifest_path" in locals() and not getattr(args, "print_diagnostics", False):
+            try:
+                save_training_run_manifest(
+                    args,
+                    manifest_path=manifest_path,
+                    status="failed",
+                    monitor=getattr(args, "monitor", None),
+                    monitor_mode=getattr(args, "monitor_mod", None),
+                    best_model_path=getattr(best_checkpoint_callback, "best_model_path", None),
+                    best_model_score=getattr(best_checkpoint_callback, "best_model_score", None),
+                    last_checkpoint_path=getattr(checkpoint_callback, "last_model_path", None),
+                    results_csv_path=getattr(args, "results_csv_path", None),
+                    metrics={},
+                )
+            except Exception as exc:
+                logging.warning(f"Failed to write failed-run manifest: {exc}")
+        raise
     finally:
         # Finish only the run this call created, and do not let teardown hide
         # the primary training / evaluation error if one is already active.
@@ -368,6 +419,15 @@ if __name__ == "__main__":
         type=Path,
         required=True,
         help="path to the CSV file storing aggregated evaluation metrics",
+    )
+    parser.add_argument(
+        "--test-after-fit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Run test evaluation after training. Use --no-test-after-fit during hyper-parameter search to keep "
+            "external test locked."
+        ),
     )
     parser.add_argument(
         "--check-val-every-n-epoch",

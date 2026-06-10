@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 from typing import Any
 import uuid
@@ -318,6 +319,65 @@ def save_inference_manifest(
         "prediction_row_count": prediction_row_count,
     }
     _write_json_atomic(_json_safe(manifest), Path(manifest_path))
+
+
+def save_training_run_manifest(
+    args: Any,
+    *,
+    manifest_path: str | Path,
+    status: str,
+    monitor: str | None = None,
+    monitor_mode: str | None = None,
+    best_model_path: str | Path | None = None,
+    best_model_score: Any = None,
+    last_checkpoint_path: str | Path | None = None,
+    results_csv_path: str | Path | None = None,
+    metrics: Mapping[str, Any] | None = None,
+) -> None:
+    if not is_rank_zero_process():
+        return
+    path = Path(manifest_path)
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    manifest = {
+        "schema_version": 1,
+        "kind": "sleep2vec_finetune_run",
+        "status": status,
+        "created_at_utc": created_at,
+        "finished_at_utc": created_at,
+        "version": getattr(args, "version", None),
+        "config_path": _stringify_optional_path(getattr(args, "config", None)),
+        "config_copy_path": _stringify_optional_path(Path(f"log-finetune/{getattr(args, 'version', '')}/config.yaml")),
+        "cli_args_path": _stringify_optional_path(Path(f"log-finetune/{getattr(args, 'version', '')}/cli_args.yaml")),
+        "label_name": getattr(args, "label_name", None),
+        "monitor": monitor,
+        "monitor_mode": monitor_mode,
+        "best_model_path": _stringify_optional_path(best_model_path),
+        "best_model_score": _json_safe(best_model_score),
+        "last_checkpoint_path": _stringify_optional_path(last_checkpoint_path),
+        "test_after_fit": getattr(args, "test_after_fit", None),
+        "results_csv_path": _stringify_optional_path(results_csv_path),
+        "metrics": dict(metrics or {}),
+        "git": _git_manifest(),
+    }
+    _write_json_atomic(_json_safe(manifest), path)
+
+
+def _git_manifest() -> dict[str, Any]:
+    try:
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"], check=False, capture_output=True, text=True
+        ).stdout.strip()
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=False, capture_output=True, text=True
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--short"], check=False, capture_output=True, text=True
+            ).stdout.strip()
+        )
+    except OSError:
+        return {"available": False}
+    return {"available": True, "branch": branch, "commit": commit, "dirty": dirty}
 
 
 def _add_inference_run_metadata(row: dict[str, Any], args: Any | None) -> None:

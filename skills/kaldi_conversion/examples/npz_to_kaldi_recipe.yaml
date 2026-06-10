@@ -1,0 +1,8 @@
+schema_version: 1
+name: npz_to_kaldi_example
+task: kaldi_convert
+variant: sleep2vec
+inputs:
+  config: configs/ppg_ahi_finetune_large.yaml
+  index: [index/example.csv]
+  output_dir: artifacts/kaldi/example

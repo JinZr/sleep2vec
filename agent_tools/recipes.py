@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .models import repo_relative, resolve_repo_path
+
+
+def load_yaml_file(path: str | Path) -> dict[str, Any]:
+    resolved = resolve_repo_path(path)
+    if resolved is None:
+        raise FileNotFoundError("Path is required.")
+    data = yaml.safe_load(resolved.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML must be a mapping: {resolved}")
+    return data
+
+
+def load_recipe(path: str | Path) -> dict[str, Any]:
+    recipe = load_yaml_file(path)
+    recipe["_recipe_path"] = repo_relative(resolve_repo_path(path))
+    return recipe
+
+
+def load_recipe_with_base(path: str | Path) -> dict[str, Any]:
+    recipe_path = resolve_repo_path(path)
+    if recipe_path is None:
+        raise FileNotFoundError("Path is required.")
+    recipe = load_recipe(recipe_path)
+    base_path = recipe.get("base_recipe")
+    if not base_path:
+        return recipe
+    base = load_recipe(_resolve_base_recipe_path(base_path, recipe_path))
+    merged = _deep_merge(base, recipe)
+    merged["_base_recipe"] = base
+    merged["_local_recipe"] = recipe
+    merged["_recipe_path"] = recipe["_recipe_path"]
+    return merged
+
+
+def load_user_decisions(path: str | Path | None) -> dict[str, Any]:
+    if path in (None, ""):
+        return {}
+    data = load_yaml_file(path)
+    decisions = data.get("decisions")
+    if not isinstance(decisions, dict):
+        return {}
+    return decisions
+
+
+def load_policy_files() -> tuple[dict[str, Any], dict[str, Any]]:
+    policy = load_yaml_file("agent_policies/consultation_policy.yaml")
+    defaults = load_yaml_file("agent_policies/approved_defaults.yaml")
+    return policy, defaults
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if key.startswith("_"):
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _resolve_base_recipe_path(base_path: str | Path, recipe_path: Path | None) -> Path | str:
+    candidate = Path(base_path).expanduser()
+    if candidate.is_absolute() or recipe_path is None:
+        return candidate
+    recipe_relative = recipe_path.parent / candidate
+    if recipe_relative.exists():
+        return recipe_relative
+    return base_path
+
+
+def recipe_name(recipe: dict[str, Any]) -> str:
+    return str(recipe.get("name") or Path(str(recipe.get("_recipe_path", "recipe"))).stem)

@@ -49,6 +49,7 @@
 - Default precision is bf16/bf16-mixed; pass `--precision 32` if your GPUs do not support bf16.
 - Main entrypoints: `python -m sleep2vec.pretrain ...`, `python -m sleep2vec.adapt --phase stage1|stage2 ...`, `python -m sleep2vec.finetune ...`, `python -m sleep2vec.infer ...`.
 - Minimal checked examples live under `configs/examples/`: one pretrain example plus built-in finetune examples for `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`. Validate configs with `python utils/check_configs.py [paths...]`.
+- Agent-facing tooling lives under `agent_tools/`, `skills/`, `recipes/`, `agent_policies/`, and `doc/agent_contracts/`. Use `python -m agent_tools doctor --recipe <recipe>` before generating runnable commands; `NEEDS_USER_INPUT` exits with code `2` and means the agent must ask the user before continuing.
 
 ---
 

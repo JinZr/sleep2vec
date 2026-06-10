@@ -246,8 +246,13 @@ npz_lists/
 *.tmp
 *.bak
 .DS_Store
+__MACOSX/
 log-*/
 wandb_logs/
+artifacts/agent_context/
+artifacts/agent_plans/
+runs/generated/
+plans/generated/
 
 # VSCode settings folder
 .vscode/

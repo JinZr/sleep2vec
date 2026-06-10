@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime, timezone
+import json
 from pathlib import Path
+import pickle
 import sys
 import tempfile
 import typing as t
 
 import pandas as pd
 import yaml
-
-from preprocess.split_index_by_dataset import normalize_mask_frame
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -92,7 +93,10 @@ def parse_args() -> argparse.Namespace:
         "--channels",
         nargs="+",
         default=None,
-        help="Optional subset of channels declared in YAML model.channels. Built-in validation channels 'stage5' and 'ahi' are also allowed.",
+        help=(
+            "Optional subset of channels declared in YAML model.channels. "
+            "Built-in validation channels 'stage5' and 'ahi' are also allowed."
+        ),
     )
     parser.add_argument("--batch-size", type=int, default=16, help="Dataloader batch size in preset filtering.")
     parser.add_argument(
@@ -129,6 +133,18 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Print planned outputs without writing files.",
+    )
+    parser.add_argument(
+        "--manifest-output",
+        type=Path,
+        default=None,
+        help="Optional aggregate JSON manifest path for generated presets.",
+    )
+    parser.add_argument(
+        "--write-sidecar-manifest",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write <preset>.manifest.json next to each generated preset.",
     )
     return parser.parse_args()
 
@@ -277,7 +293,8 @@ def _resolve_validation_channels(
     unknown = [name for name in resolved if name not in channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
     if unknown:
         raise ValueError(
-            "Channels must be declared in YAML model.channels or preset_build.required_channels must use built-ins only. "
+            "Channels must be declared in YAML model.channels or preset_build.required_channels must use "
+            "built-ins only. "
             f"Unknown: {unknown}; model channels: {model_channels}"
         )
 
@@ -303,7 +320,8 @@ def _resolve_effective_min_channels(
         raise ValueError("min_channels must be >= 1.")
     if resolved > len(channel_names):
         raise ValueError(
-            f"min_channels={resolved} exceeds the number of validation channels ({len(channel_names)}): {list(channel_names)}"
+            f"min_channels={resolved} exceeds the number of validation channels "
+            f"({len(channel_names)}): {list(channel_names)}"
         )
     return resolved
 
@@ -348,6 +366,8 @@ def _load_index_df(index_paths: list[str]) -> pd.DataFrame:
 
 
 def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: list[str]) -> pd.DataFrame:
+    from preprocess.split_index_by_dataset import normalize_mask_frame
+
     required = _dedupe_keep_order(required_channels)
     if not required:
         return df
@@ -428,6 +448,70 @@ def _build_preset_job(
             Path(filtered_index_path).unlink(missing_ok=True)
 
 
+def _summarize_preset_items(output_path: Path) -> tuple[dict[str, int], dict[str, int]]:
+    if not output_path.exists():
+        return {}, {}
+    with output_path.open("rb") as file_obj:
+        items = pickle.load(file_obj)
+    available_channels_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+    for item in items if isinstance(items, list) else []:
+        payload = getattr(item, "payload", {})
+        if isinstance(payload, dict):
+            for channel in payload.get("available_channels", []) or []:
+                available_channels_counts[str(channel)] = available_channels_counts.get(str(channel), 0) + 1
+        metadata = getattr(item, "metadata", {})
+        if isinstance(metadata, dict):
+            source = metadata.get("source")
+            if source not in (None, ""):
+                source_counts[str(source)] = source_counts.get(str(source), 0) + 1
+    return available_channels_counts, source_counts
+
+
+def _preset_manifest_payload(
+    *,
+    output_path: Path,
+    config_path: Path,
+    index_paths: list[Path],
+    dataset_name: str,
+    split: str,
+    n_tokens: int,
+    stride_tokens: int,
+    channels: list[str],
+    allow_missing_channels: bool,
+    min_channels: int,
+    meta_data_name: str | None,
+    sample_count: int,
+) -> dict[str, t.Any]:
+    available_counts, source_counts = _summarize_preset_items(output_path)
+    return {
+        "schema_version": 1,
+        "kind": "sleep2vec_preset",
+        "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "script": "preprocess/save_dataset_presets.py",
+        "config_path": str(config_path),
+        "index_paths": [str(path) for path in index_paths],
+        "dataset_name": dataset_name,
+        "split": split,
+        "n_tokens": n_tokens,
+        "stride_tokens": stride_tokens,
+        "channels": channels,
+        "allow_missing_channels": allow_missing_channels,
+        "min_channels": min_channels,
+        "meta_data_name": meta_data_name,
+        "output_path": str(output_path),
+        "sample_count": sample_count,
+        "available_channels_counts": available_counts,
+        "source_counts": source_counts,
+        "warnings": [],
+    }
+
+
+def _write_json(path: Path, payload: t.Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
 def main() -> None:
     args = parse_args()
 
@@ -493,6 +577,7 @@ def main() -> None:
     created = 0
     skipped = 0
     jobs: list[dict[str, object]] = []
+    manifests: list[dict[str, t.Any]] = []
 
     for meta_data_name in meta_data_variants:
         for split in splits:
@@ -531,16 +616,38 @@ def main() -> None:
                     "min_channels": effective_min_channels,
                     "batch_size": args.batch_size,
                     "shuffle": args.shuffle,
+                    "dataset_name": dataset_name,
+                    "config_path": args.config,
                 }
             )
 
     if not args.dry_run:
         if len(jobs) <= 1:
             for job in jobs:
+                build_job = dict(job)
+                dataset_name_for_manifest = t.cast(str, build_job.pop("dataset_name"))
+                config_path_for_manifest = t.cast(Path, build_job.pop("config_path"))
                 output_path, sample_count = _build_preset_job(
-                    **job,
+                    **build_job,
                     filter_max_workers=args.num_workers,
                 )
+                manifest = _preset_manifest_payload(
+                    output_path=output_path,
+                    config_path=config_path_for_manifest,
+                    index_paths=index_paths,
+                    dataset_name=dataset_name_for_manifest,
+                    split=t.cast(str, job["split"]),
+                    n_tokens=t.cast(int, job["n_tokens"]),
+                    stride_tokens=t.cast(int, job["stride_tokens"]),
+                    channels=t.cast(list[str], job["channel_names"]),
+                    allow_missing_channels=t.cast(bool, job["allow_missing_channels"]),
+                    min_channels=t.cast(int, job["min_channels"]),
+                    meta_data_name=t.cast(str | None, job["meta_data_name"]),
+                    sample_count=sample_count,
+                )
+                manifests.append(manifest)
+                if args.write_sidecar_manifest:
+                    _write_json(output_path.with_name(f"{output_path.name}.manifest.json"), manifest)
                 print(f"  done: {output_path} ({sample_count} samples)")
                 created += 1
         else:
@@ -549,15 +656,35 @@ def main() -> None:
                 future_to_job = {
                     executor.submit(
                         _build_preset_job,
-                        **job,
+                        **{key: value for key, value in job.items() if key not in {"dataset_name", "config_path"}},
                         filter_max_workers=args.num_workers,
                     ): job
                     for job in jobs
                 }
                 for future in as_completed(future_to_job):
+                    job = future_to_job[future]
                     output_path, sample_count = future.result()
+                    manifest = _preset_manifest_payload(
+                        output_path=output_path,
+                        config_path=t.cast(Path, job["config_path"]),
+                        index_paths=index_paths,
+                        dataset_name=t.cast(str, job["dataset_name"]),
+                        split=t.cast(str, job["split"]),
+                        n_tokens=t.cast(int, job["n_tokens"]),
+                        stride_tokens=t.cast(int, job["stride_tokens"]),
+                        channels=t.cast(list[str], job["channel_names"]),
+                        allow_missing_channels=t.cast(bool, job["allow_missing_channels"]),
+                        min_channels=t.cast(int, job["min_channels"]),
+                        meta_data_name=t.cast(str | None, job["meta_data_name"]),
+                        sample_count=sample_count,
+                    )
+                    manifests.append(manifest)
+                    if args.write_sidecar_manifest:
+                        _write_json(output_path.with_name(f"{output_path.name}.manifest.json"), manifest)
                     print(f"  done: {output_path} ({sample_count} samples)")
                     created += 1
+        if args.manifest_output is not None:
+            _write_json(args.manifest_output.expanduser(), {"schema_version": 1, "presets": manifests})
 
     if args.dry_run:
         print(f"Dry run complete. Planned {planned} preset(s); no files were written.")

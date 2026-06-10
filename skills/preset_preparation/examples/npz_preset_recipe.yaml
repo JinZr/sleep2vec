@@ -1,0 +1,8 @@
+schema_version: 1
+name: npz_preset_example
+task: preset_prepare
+variant: sleep2vec
+inputs:
+  config: configs/ppg_ahi_finetune_large.yaml
+  index: [index/example.csv]
+  dataset_name: example

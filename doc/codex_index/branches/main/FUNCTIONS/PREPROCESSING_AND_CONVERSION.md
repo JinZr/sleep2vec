@@ -66,6 +66,17 @@
 - Reuse guidance: use this helper for parallel preset-build orchestration.
 - Duplication risk notes: source restoration after strict prefiltering is easy to forget; keep it centralized here.
 
+## `preprocess.save_dataset_presets._preset_manifest_payload`
+
+- File: `preprocess/save_dataset_presets.py`
+- Signature: `_preset_manifest_payload(*, output_path: Path, config_path: Path, index_paths: list[Path], dataset_name: str, split: str, n_tokens: int, stride_tokens: int, channels: list[str], allow_missing_channels: bool, min_channels: int, meta_data_name: str | None, sample_count: int) -> dict`
+- Purpose and contract: build the sidecar manifest payload for a generated preset pickle, including input paths, split/window policy, required channels, sample count, available-channel counts, and source counts.
+- Important inputs/outputs: generated preset path and build metadata in; JSON-serializable manifest mapping out.
+- Side effects: reads the generated preset pickle to summarize `payload["available_channels"]` and metadata source counts.
+- Key callers/callees: caller is `main`; callee is `_summarize_preset_items`.
+- Reuse guidance: use this helper when preset manifests need the same schema as the CLI sidecars.
+- Duplication risk notes: sidecar manifest schema should stay aligned with `doc/agent_contracts/run_manifest.md`.
+
 ## `preprocess.save_dataset_presets._infer_dataset_name` and `_render_output_path`
 
 - File: `preprocess/save_dataset_presets.py`

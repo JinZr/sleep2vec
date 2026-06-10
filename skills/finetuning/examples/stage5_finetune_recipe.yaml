@@ -1,0 +1,7 @@
+schema_version: 1
+name: stage5_finetune_example
+task: finetune
+variant: sleep2vec
+inputs:
+  config: configs/examples/stage5/FINETUNE_EXAMPLE.yaml
+  label_name: stage5

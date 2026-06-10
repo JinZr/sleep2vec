@@ -1,0 +1,7 @@
+schema_version: 1
+name: ahi_finetune_example
+task: finetune
+variant: sleep2vec
+inputs:
+  config: configs/examples/ahi/FINETUNE_EXAMPLE.yaml
+  label_name: ahi

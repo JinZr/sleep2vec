@@ -1,0 +1,6 @@
+schema_version: 1
+name: dense_pretrain_example
+task: pretrain
+variant: sleep2vec
+inputs:
+  config: configs/examples/PRETRAIN_EXAMPLE.yaml

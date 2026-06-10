@@ -1,0 +1,42 @@
+schema_version: 1
+name: ppg_ahi_preset_example
+task: preset_prepare
+variant: sleep2vec
+
+inputs:
+  config: configs/ppg_ahi_finetune_large.yaml
+  index:
+    - index/my_dataset.csv
+  dataset_name: my_dataset
+
+preset:
+  n_tokens: 1535
+  stride_tokens: 0
+  split: [train, val, test]
+  channels: null
+  meta_data_names: []
+  include_no_metadata: false
+  allow_missing_channels: true
+  min_channels: 3
+  output_template: data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle
+  overwrite: false
+
+validation:
+  dry_run_first: true
+
+decisions:
+  task:
+    value: preset_prepare
+    source: explicit_recipe
+  preset_regeneration:
+    value: true
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe
+  required_channels:
+    value: [ppg, ahi, stage5]
+    source: explicit_config
+  min_channels:
+    value: 3
+    source: explicit_recipe

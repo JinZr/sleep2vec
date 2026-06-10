@@ -17,6 +17,7 @@ from preprocess.save_dataset_presets import (
     _load_index_df,
     _load_model_channels,
     _load_preset_build_block,
+    _preset_manifest_payload,
     _resolve_channels_and_dims,
     _resolve_effective_min_channels,
     _resolve_validation_channels,
@@ -974,3 +975,39 @@ def test_load_index_df_rejects_multiple_index_paths(tmp_path: Path):
 
     with pytest.raises(ValueError, match="accepts exactly one index CSV"):
         _load_index_df([str(first), str(second)])
+
+
+def test_preset_manifest_payload_summarizes_available_channels_and_source(tmp_path: Path):
+    output_path = tmp_path / "preset.pkl"
+    samples = [
+        types.SimpleNamespace(
+            payload={"available_channels": ["ppg", "stage5"]},
+            metadata={"source": "mesa"},
+        ),
+        types.SimpleNamespace(
+            payload={"available_channels": ["ppg", "ahi", "stage5"]},
+            metadata={"source": "mesa"},
+        ),
+    ]
+    with output_path.open("wb") as file_obj:
+        pickle.dump(samples, file_obj)
+
+    manifest = _preset_manifest_payload(
+        output_path=output_path,
+        config_path=tmp_path / "config.yaml",
+        index_paths=[tmp_path / "index.csv"],
+        dataset_name="mesa",
+        split="train",
+        n_tokens=1535,
+        stride_tokens=0,
+        channels=["ppg", "ahi", "stage5"],
+        allow_missing_channels=True,
+        min_channels=2,
+        meta_data_name=None,
+        sample_count=2,
+    )
+
+    assert manifest["kind"] == "sleep2vec_preset"
+    assert manifest["sample_count"] == 2
+    assert manifest["available_channels_counts"] == {"ppg": 2, "stage5": 2, "ahi": 1}
+    assert manifest["source_counts"] == {"mesa": 2}

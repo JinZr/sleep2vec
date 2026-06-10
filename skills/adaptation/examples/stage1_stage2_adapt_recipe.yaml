@@ -1,0 +1,7 @@
+schema_version: 1
+name: stage1_stage2_adapt_example
+task: adapt
+variant: sleep2vec
+inputs:
+  config: configs/sleep2vec_dense_adapt_ppg_actigraphy.yaml
+  phase: stage1
