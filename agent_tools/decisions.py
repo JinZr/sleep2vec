@@ -350,6 +350,7 @@ def _task_specific_issues(
     preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
 
     if task == "preset_prepare":
         for field, value in {
@@ -471,6 +472,7 @@ def _task_specific_issues(
         else:
             issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
         issues.extend(_hparam_execution_issues(execution))
+        issues.extend(_hparam_adaptive_issues(adaptive))
         max_trials = search.get("max_trials")
         if max_trials in (None, ""):
             issues.append(_needs("hparam_budget", "search.max_trials is required.", high_impact))
@@ -631,6 +633,69 @@ def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
                 {"env": execution.get("env")},
             )
         )
+    return issues
+
+
+def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
+    if not adaptive:
+        return issues
+    if adaptive.get("enabled") is not True:
+        return issues
+    objective = str(adaptive.get("objective_metric") or "test_auroc")
+    if (objective.startswith("test_") or objective.startswith("external_")) and adaptive.get(
+        "test_feedback_for_selection"
+    ) is not True:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "adaptive.test_feedback_for_selection",
+                "adaptive.test_feedback_for_selection=true is required when adaptive objective uses test/external metrics.",
+                None,
+                {"objective_metric": objective},
+            )
+        )
+    if adaptive.get("objective_mode", "max") not in {"max", "min"}:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "adaptive.objective_mode",
+                "adaptive.objective_mode must be max or min.",
+                None,
+                {"objective_mode": adaptive.get("objective_mode")},
+            )
+        )
+    for field in ("max_rounds", "max_trials_total", "round_size", "poll_seconds"):
+        if field not in adaptive:
+            continue
+        try:
+            if int(adaptive[field]) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    f"adaptive.{field}",
+                    f"adaptive.{field} must be a positive integer.",
+                    None,
+                    {field: adaptive.get(field)},
+                )
+            )
+    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
+    if replacement and replacement.get("kill_margin") is not None:
+        try:
+            if float(replacement["kill_margin"]) < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "adaptive.replacement.kill_margin",
+                    "adaptive.replacement.kill_margin must be a non-negative number.",
+                    None,
+                    {"kill_margin": replacement.get("kill_margin")},
+                )
+            )
     return issues
 
 

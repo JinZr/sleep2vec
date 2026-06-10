@@ -45,6 +45,24 @@ execution:
   pid_dir: pids
   env: {}
 
+adaptive:
+  enabled: false
+  objective_metric: test_auroc
+  objective_mode: max
+  test_feedback_for_selection: false
+  max_rounds: 3
+  max_trials_total: 24
+  round_size: 3
+  poll_seconds: 60
+  replacement:
+    enabled: true
+    allow_running_stop: true
+    grace_epochs: 1
+    grace_minutes: 10
+    kill_margin: 0.05
+  suggest:
+    strategy: best_neighborhood
+
 evaluation_policy:
   selection_split: val
   final_eval_split: test
@@ -95,6 +113,7 @@ Common top-level fields:
 - `runtime`: low-impact runtime knobs and CLI hyperparameters.
 - `artifacts`: generated output paths and version names.
 - `execution`: optional hparam orchestration settings. Existing recipes may omit this and still generate local scripts only.
+- `adaptive`: optional append-only hparam workflow. Existing recipes may omit this and remain static validation-only tuning.
 - `evaluation_policy`: split, selection, and external-test locking policy.
 - `search`: hyper-parameter tuning method, budget, and parameters. V1 supports `method: grid` only.
 - `search.parameters`: keys must be `runtime.lr`, `runtime.weight_decay`, `runtime.batch_size`, `runtime.epochs`, `runtime.num_workers`, `runtime.precision`, `runtime.gradient_clip_val`, `runtime.accumulate_grad_batches`, `runtime.warmup_steps`, `runtime.patience`, `runtime.check_val_every_n_epoch`, `runtime.ckpt_every_n_epochs`, or `yaml:/json/pointer/path`.
@@ -103,4 +122,9 @@ Common top-level fields:
 - `execution.gpu_pool`: GPU ids used by `agent_tools hparam-launch` for `CUDA_VISIBLE_DEVICES`.
 - `execution.max_concurrent`: maximum trials launched immediately by `hparam-launch --execute`.
 - `execution.conda_env`, `execution.wandb_project`, `execution.wandb_group`, `execution.log_dir`, `execution.pid_dir`, and `execution.env`: runtime wrapper settings only; they do not change generated trainer configs.
+- `adaptive.enabled`: when true, `agent_tools hparam-adaptive-*` commands create `adaptive/` ledgers and per-round plans without modifying old trials.
+- `adaptive.objective_metric`: defaults to `test_auroc` for external-optimized tuning.
+- `adaptive.test_feedback_for_selection`: must be true if `objective_metric` starts with `test_` or `external_`.
+- `adaptive.replacement.allow_running_stop`: allows stopping manifest-recorded running jobs only when failure/timeout/live-metric evidence says they are bad.
+- `adaptive.suggest.strategy`: v1 supports `best_neighborhood`.
 - `decisions`: explicit high-impact decision sources.

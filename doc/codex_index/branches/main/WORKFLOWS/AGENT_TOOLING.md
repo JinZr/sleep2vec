@@ -22,6 +22,11 @@ Generate agent context bundles, validate task recipes, enforce stop-and-consult 
 - `python -m agent_tools hparam-external-eval --run-dir <dir> --selected <csv> --unlock-final-test`
 - `python -m agent_tools hparam-threshold --run-dir <dir> --selected <csv>`
 - `python -m agent_tools hparam-ensemble --run-dir <dir> --candidates <csv>`
+- `python -m agent_tools hparam-digest --run-dir <dir>`
+- `python -m agent_tools hparam-suggest --workflow-dir <dir>`
+- `python -m agent_tools hparam-adaptive-init --recipe <recipe.yaml> --output-dir <dir>`
+- `python -m agent_tools hparam-adaptive-step --workflow-dir <dir> [--execute]`
+- `python -m agent_tools hparam-adaptive-loop --workflow-dir <dir> --execute`
 
 ## Layers
 
@@ -63,6 +68,8 @@ Generated finetune, hparam trial, infer, and final-test commands should propagat
 Hyper-parameter search uses `runtime.<name>` keys for supported CLI knobs and `yaml:/json/pointer/path` keys for generated config overrides. Bare search keys are invalid, and `search.max_trials` must be a positive integer. Hparam recipes also inherit base finetune consultation gates; a base config with no usable preset/index or missing high-impact finetune decision blocks tuning. Generated `run_all.sh` scripts are written so they can find sibling `trial_*.sh` files when invoked from outside the plan directory.
 
 Optional hparam `execution` fields enable active orchestration after a plan has been generated. `hparam-launch` reads the generated `plan.json` and trial scripts, assigns GPUs from `execution.gpu_pool`, wraps commands with optional `conda run`, W&B project/group environment variables, nohup logs, and PID files, then writes `launch_manifest.tsv` and `trial_status.tsv`. Dry-run is the default; `--execute` is required to start processes. `hparam-stop` only terminates a PID recorded in the launch manifest. `hparam-monitor` updates trial state from recorded PIDs, logs, run manifests, W&B summaries, and checkpoint directories. `hparam-select` ranks trials by validation metrics and writes fixed `epoch=XX.ckpt` checkpoint paths rather than moving best aliases. `hparam-external-eval` remains locked unless `--unlock-final-test` is present and only copies selected trial YAMLs while replacing data entry fields.
+
+Optional hparam `adaptive` fields enable append-only external-optimized tuning. `hparam-adaptive-init` creates `adaptive/rounds/round_000/` from the recipe and records `adaptive/events.jsonl`, `trial_registry.tsv`, and `workflow.json`. `hparam-digest` summarizes trial status, logs, run manifests, checkpoints, and metrics into `adaptive/digests/`. `hparam-suggest` writes deterministic `best_neighborhood` next-round recipes into `adaptive/suggestions/`. `hparam-adaptive-step` performs monitor, digest, suggestion, pending-trial supersede events, optional PID-safe bad-running-trial stops, and optional next-round launch. Adaptive workflows may use test/external metrics only when `adaptive.test_feedback_for_selection=true`; all adaptive reports are marked `external_optimized=true`.
 
 Preset generation commands should render explicit supported `preset:` fields such as stride, channels, metadata, missing-channel policy, output template, overwrite, dry-run, manifest, and sidecar-manifest flags.
 

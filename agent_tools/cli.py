@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from .adaptive_hparam import adaptive_loop, adaptive_step, digest_hparam_run, init_adaptive_workflow, suggest_next_round
 from .configs import config_summary
 from .decisions import DecisionStatus
 from .hparam import (
@@ -138,6 +139,29 @@ def _build_parser() -> argparse.ArgumentParser:
     ensemble.add_argument("--run-dir", required=True)
     ensemble.add_argument("--candidates", required=True)
     ensemble.set_defaults(func=_cmd_hparam_ensemble)
+
+    digest = sub.add_parser("hparam-digest")
+    digest.add_argument("--run-dir", required=True)
+    digest.set_defaults(func=_cmd_hparam_digest)
+
+    suggest = sub.add_parser("hparam-suggest")
+    suggest.add_argument("--workflow-dir", required=True)
+    suggest.set_defaults(func=_cmd_hparam_suggest)
+
+    adaptive_init = sub.add_parser("hparam-adaptive-init")
+    adaptive_init.add_argument("--recipe", required=True)
+    adaptive_init.add_argument("--output-dir", required=True)
+    adaptive_init.set_defaults(func=_cmd_hparam_adaptive_init)
+
+    adaptive_step_cmd = sub.add_parser("hparam-adaptive-step")
+    adaptive_step_cmd.add_argument("--workflow-dir", required=True)
+    adaptive_step_cmd.add_argument("--execute", action="store_true")
+    adaptive_step_cmd.set_defaults(func=_cmd_hparam_adaptive_step)
+
+    adaptive_loop_cmd = sub.add_parser("hparam-adaptive-loop")
+    adaptive_loop_cmd.add_argument("--workflow-dir", required=True)
+    adaptive_loop_cmd.add_argument("--execute", action="store_true")
+    adaptive_loop_cmd.set_defaults(func=_cmd_hparam_adaptive_loop)
     return parser
 
 
@@ -276,6 +300,36 @@ def _cmd_hparam_threshold(args: argparse.Namespace) -> int:
 def _cmd_hparam_ensemble(args: argparse.Namespace) -> int:
     summary = ensemble_hparam_outputs(args.run_dir, args.candidates)
     print(f"Wrote {summary}")
+    return 0
+
+
+def _cmd_hparam_digest(args: argparse.Namespace) -> int:
+    digest = digest_hparam_run(args.run_dir)
+    print(f"Wrote {digest}")
+    return 0
+
+
+def _cmd_hparam_suggest(args: argparse.Namespace) -> int:
+    suggestion = suggest_next_round(args.workflow_dir)
+    print(f"Wrote {suggestion}")
+    return 0
+
+
+def _cmd_hparam_adaptive_init(args: argparse.Namespace) -> int:
+    root = init_adaptive_workflow(args.recipe, args.output_dir)
+    print(f"Wrote {root}")
+    return 0
+
+
+def _cmd_hparam_adaptive_step(args: argparse.Namespace) -> int:
+    suggestion = adaptive_step(args.workflow_dir, execute=args.execute)
+    print(f"Wrote {suggestion}")
+    return 0
+
+
+def _cmd_hparam_adaptive_loop(args: argparse.Namespace) -> int:
+    result = adaptive_loop(args.workflow_dir, execute=args.execute)
+    print(f"Wrote {result}")
     return 0
 
 
