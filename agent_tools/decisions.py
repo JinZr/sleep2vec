@@ -437,7 +437,10 @@ def _task_specific_issues(
                     DecisionIssue(
                         DecisionStatus.FAIL,
                         "config",
-                        "Hparam plan generation needs local config YAML content; remote path validation may be deferred, but YAML overrides cannot be generated from an unreadable config.",
+                        (
+                            "Hparam plan generation needs local config YAML content; remote path validation may be "
+                            "deferred, but YAML overrides cannot be generated from an unreadable config."
+                        ),
                         None,
                         {"config": base_config},
                     )
@@ -686,7 +689,10 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
             DecisionIssue(
                 DecisionStatus.FAIL,
                 "adaptive.test_feedback_for_selection",
-                "adaptive.test_feedback_for_selection=true is required when adaptive objective uses test/external metrics.",
+                (
+                    "adaptive.test_feedback_for_selection=true is required when adaptive objective "
+                    "uses test/external metrics."
+                ),
                 None,
                 {"objective_metric": objective},
             )

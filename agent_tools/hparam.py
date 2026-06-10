@@ -98,7 +98,11 @@ def stop_hparam_trial(run_dir: str | Path, trial_id: str) -> Path:
     if pid is None:
         raise ValueError(f"No recorded PID for trial_id: {trial_id}")
     if row.get("target") == "ssh":
-        subprocess.run(["ssh", row["host"], f"kill -TERM {pid}"], check=False, timeout=SSH_TIMEOUT_SECONDS)
+        subprocess.run(
+            ["ssh", row["host"], f"kill -TERM {pid}"],
+            check=False,
+            timeout=SSH_TIMEOUT_SECONDS,
+        )
     else:
         os.kill(pid, signal.SIGTERM)
     status_path = root / "trial_status.tsv"
@@ -135,7 +139,11 @@ def select_hparam_candidates(run_dir: str | Path, metric: str, mode: str) -> Pat
             }
         )
     reverse = mode == "max"
-    ranked = sorted(rows, key=lambda row: _sortable_score(row.get("score"), reverse), reverse=reverse)
+    ranked = sorted(
+        rows,
+        key=lambda row: _sortable_score(row.get("score"), reverse),
+        reverse=reverse,
+    )
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
     out = root / "candidate_ranking.csv"
@@ -198,7 +206,11 @@ def generate_external_eval(
         commands.append(command)
         manifest_rows.append({**row, "external_config": str(target_config), "external_command": command})
     _write_rows(root / "external_eval_manifest.tsv", manifest_rows)
-    write_text(root / "external_eval.sh", "\n".join(_script_lines(commands)) + "\n", executable=True)
+    write_text(
+        root / "external_eval.sh",
+        "\n".join(_script_lines(commands)) + "\n",
+        executable=True,
+    )
     return root / "external_eval.sh"
 
 
@@ -229,7 +241,7 @@ def export_hparam_logits(
     execute: bool = False,
 ) -> Path:
     if not skip_test and not unlock_final_test:
-        raise ValueError("hparam-export-logits requires --unlock-final-test unless --skip-test is used.")
+        raise ValueError("hparam-export-logits requires --unlock-final-test unless --skip-test is used.")  # noqa: E501
 
     root = Path(run_dir)
     plan = _read_plan(root)
@@ -238,7 +250,9 @@ def export_hparam_logits(
     base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
     resolved_label = label_name or base_inputs.get("label_name") or (recipe.get("inputs") or {}).get("label_name")
     if not resolved_label:
-        raise ValueError("hparam-export-logits requires --label-name when the hparam plan has no base label_name.")
+        raise ValueError(
+            "hparam-export-logits requires --label-name when the hparam plan has no base label_name."  # noqa: E501
+        )
 
     rows = _selected_candidate_rows(_read_rows(selected_csv), top_k=top_k, all_candidates=all_candidates)
     config_dir = root / "logits_export_configs"
@@ -348,7 +362,11 @@ def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_
         manifest = _read_json(manifest_path) if manifest_path else {}
         rows.extend(_checkpoint_scan_rows(trial, str(version), metric, manifest_path, manifest))
     reverse = mode == "max"
-    ranked = sorted(rows, key=lambda row: _sortable_score(row.get("score"), reverse), reverse=reverse)
+    ranked = sorted(
+        rows,
+        key=lambda row: _sortable_score(row.get("score"), reverse),
+        reverse=reverse,
+    )
     if top_k is not None:
         ranked = ranked[:top_k]
     for rank, row in enumerate(ranked, start=1):
@@ -403,7 +421,11 @@ def ensemble_hparam_outputs(
             for combo in combinations(usable, size):
                 summary.append(_ensemble_summary_row(list(combo)))
         reverse = mode == "max"
-        summary = sorted(summary, key=lambda row: _sortable_score(row.get(metric), reverse), reverse=reverse)
+        summary = sorted(
+            summary,
+            key=lambda row: _sortable_score(row.get(metric), reverse),
+            reverse=reverse,
+        )
         if top_k is not None:
             summary = summary[:top_k]
         for rank, row in enumerate(summary, start=1):
@@ -594,7 +616,11 @@ def _assigned_gpus(recipe: dict[str, Any], trial_index: int) -> list[Any]:
 
 
 def _launch_command(
-    execution: dict[str, Any], script: Path, log_path: str | Path, pid_path: str | Path, gpus: list[Any]
+    execution: dict[str, Any],
+    script: Path,
+    log_path: str | Path,
+    pid_path: str | Path,
+    gpus: list[Any],
 ) -> str:
     env = dict(execution.get("env") or {})
     if execution.get("wandb_project"):
@@ -606,7 +632,14 @@ def _launch_command(
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(item) for item in gpus)
     run = ["bash", str(script)]
     if execution.get("conda_env"):
-        run = ["conda", "run", "--no-capture-output", "-n", str(execution["conda_env"]), *run]
+        run = [
+            "conda",
+            "run",
+            "--no-capture-output",
+            "-n",
+            str(execution["conda_env"]),
+            *run,
+        ]
     env_prefix = " ".join(f"{key}={_sh(value)}" for key, value in sorted(env.items()))
     run_command = " ".join(_sh(part) for part in run)
     if env_prefix:
@@ -619,7 +652,9 @@ def _launch_command(
             f"(nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"
         )
         return f"ssh {_sh(execution['host'])} {_sh(inner)}"
-    inner = f"cd {_sh(workdir)} && (nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"
+    inner = (
+        f"cd {_sh(workdir)} && (nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"  # noqa: E501
+    )
     return inner
 
 
@@ -630,7 +665,12 @@ def _parent_path(path: str | Path) -> str:
 
 
 def _start_process(execution: dict[str, Any], command: str) -> str:
-    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=SSH_TIMEOUT_SECONDS)
+    result = subprocess.run(
+        ["bash", "-lc", command],
+        text=True,
+        capture_output=True,
+        timeout=SSH_TIMEOUT_SECONDS,
+    )
     return "launched" if result.returncode == 0 else "launch_failed"
 
 
@@ -719,7 +759,15 @@ def _log_has_failure(path: Any, row: dict[str, Any] | None = None) -> bool:
         if not log_path.exists():
             return False
         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
-    return any(marker in tail for marker in ["Traceback", "RuntimeError", "CUDA out of memory", "Error executing job"])
+    return any(
+        marker in tail
+        for marker in [
+            "Traceback",
+            "RuntimeError",
+            "CUDA out of memory",
+            "Error executing job",
+        ]
+    )
 
 
 def _log_tail(path: Any, row: dict[str, Any] | None = None, lines: int = 8) -> str:
@@ -812,7 +860,7 @@ def _gpu_summary(row: dict[str, Any], pid: int | None) -> str:
         return ""
     apps = _run_row_command(
         row,
-        "nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader,nounits",
+        "nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader,nounits",  # noqa: E501
     )
     if apps.returncode != 0:
         return ""
@@ -825,7 +873,7 @@ def _gpu_summary(row: dict[str, Any], pid: int | None) -> str:
         return ""
     gpu_state = _run_row_command(
         row,
-        "nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits",
+        "nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits",  # noqa: E501
     )
     summary = "; ".join(matched)
     if gpu_state.returncode == 0 and gpu_state.stdout.strip():
@@ -839,7 +887,7 @@ def _log_age_seconds(path: Any, row: dict[str, Any]) -> int | None:
     if _is_remote_row(row):
         result = _run_row_command(
             row,
-            f"now=$(date +%s); m=$(stat -c %Y {_sh(path)} 2>/dev/null) || exit 1; echo $((now-m))",
+            f"now=$(date +%s); m=$(stat -c %Y {_sh(path)} 2>/dev/null) || exit 1; echo $((now-m))",  # noqa: E501
         )
         if result.returncode != 0:
             return None
@@ -931,7 +979,12 @@ def _run_row_command(row: dict[str, Any], command: str) -> subprocess.CompletedP
                 capture_output=True,
                 timeout=SSH_TIMEOUT_SECONDS,
             )
-        return subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=SSH_TIMEOUT_SECONDS)
+        return subprocess.run(
+            ["bash", "-lc", command],
+            text=True,
+            capture_output=True,
+            timeout=SSH_TIMEOUT_SECONDS,
+        )
     except subprocess.TimeoutExpired as exc:
         args = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
         return subprocess.CompletedProcess(args, 124, "", f"timed out after {SSH_TIMEOUT_SECONDS}s")
@@ -1224,13 +1277,14 @@ def _copy_logits_csv(prediction_path: Path, output_path: Path) -> None:
     shutil.copyfile(prediction_path, output_path)
 
 
-def _read_binary_predictions(path: str | Path, *, label_name: str | None = None) -> dict[str, list[float]]:
+def _read_binary_predictions(path: str | Path, *, label_name: str | None = None) -> dict[str, list[Any]]:
     df = pd.read_csv(path)
     label_col = _first_column(df, _prediction_label_columns(label_name))
     score_col = _first_column(df, ["score", "prob_1", "prob", "pred_prob", "positive_prob", "logit"])
     if label_col is None or score_col is None:
         raise ValueError(f"Prediction file must contain label and score columns: {path}")
 
+    ids: list[str] = []
     y: list[int] = []
     raw: list[float] = []
     for row_index, row in df.iterrows():
@@ -1238,15 +1292,16 @@ def _read_binary_predictions(path: str | Path, *, label_name: str | None = None)
         scores = _prediction_values(row[score_col])
         if len(labels) != len(scores):
             raise ValueError(
-                f"Prediction file has mismatched label/score lengths at row {row_index}: "
+                f"Prediction file has mismatched label/score lengths at row {row_index}: "  # noqa: E501
                 f"{label_col} has {len(labels)}, {score_col} has {len(scores)} ({path})"
             )
+        ids.extend(_prediction_ids(row, row_index, len(labels)))
         y.extend(int(float(value)) for value in labels)
         raw.extend(float(value) for value in scores)
 
     if raw and (min(raw) < 0 or max(raw) > 1):
         raw = [1 / (1 + math.exp(-value)) for value in raw]
-    return {"y": y, "p": raw}
+    return {"id": ids, "y": y, "p": raw}
 
 
 def _prediction_label_columns(label_name: str | None) -> list[str]:
@@ -1275,6 +1330,35 @@ def _prediction_values(value: Any) -> list[float]:
     if isinstance(value, list):
         return [float(item) for item in value]
     return [float(value)]
+
+
+def _prediction_ids(row: pd.Series, row_index: int, count: int) -> list[str]:
+    sample = _prediction_sample_id(row, row_index)
+    tokens = _prediction_token_ids(row, count)
+    return [f"{sample}|{token}" for token in tokens]
+
+
+def _prediction_sample_id(row: pd.Series, row_index: int) -> str:
+    for column in ("path", "sample_id", "patient_id", "record_key", "eid"):
+        if column in row and row[column] not in (None, "") and not pd.isna(row[column]):
+            return f"{column}={row[column]}"
+    return f"row={row_index}"
+
+
+def _prediction_token_ids(row: pd.Series, count: int) -> list[str]:
+    if "token_start" in row and row["token_start"] not in (None, "") and not pd.isna(row["token_start"]):
+        start = int(float(row["token_start"]))
+        return [f"token_start={start + offset}" for offset in range(count)]
+    if "token_starts" in row and row["token_starts"] not in (None, "") and not pd.isna(row["token_starts"]):
+        starts = _prediction_values(row["token_starts"])
+        if len(starts) == count:
+            return [f"token_start={int(value)}" for value in starts]
+        if len(starts) == 1:
+            start = int(starts[0])
+            return [f"token_start={start + offset}" for offset in range(count)]
+        encoded = ",".join(str(int(value)) for value in starts)
+        return [f"token_starts={encoded};offset={offset}" for offset in range(count)]
+    return [f"offset={offset}" for offset in range(count)]
 
 
 def _ensemble_summary_row(rows: list[dict[str, str]]) -> dict[str, Any]:
@@ -1312,13 +1396,32 @@ def _ensemble_summary_row(rows: list[dict[str, str]]) -> dict[str, Any]:
     return summary
 
 
-def _average_binary_predictions(items: list[dict[str, list[float]]]) -> tuple[list[int], list[float]]:
-    y = items[0]["y"]
+def _average_binary_predictions(
+    items: list[dict[str, list[Any]]],
+) -> tuple[list[int], list[float]]:
+    order = list(items[0]["id"])
+    y = list(items[0]["y"])
+    _ensure_unique_prediction_ids(order)
+    aligned_scores = [list(items[0]["p"])]
     for item in items[1:]:
-        if item["y"] != y:
-            raise ValueError("Prediction files must have aligned labels for ensembling.")
-    p = [sum(values) / len(values) for values in zip(*(item["p"] for item in items))]
+        _ensure_unique_prediction_ids(item["id"])
+        lookup = {sample_id: (label, score) for sample_id, label, score in zip(item["id"], item["y"], item["p"])}
+        if set(lookup) != set(order):
+            raise ValueError("Prediction files must contain the same sample identifiers for ensembling.")  # noqa: E501
+        scores = []
+        for sample_id, label in zip(order, y):
+            other_label, score = lookup[sample_id]
+            if other_label != label:
+                raise ValueError("Prediction files must have aligned labels for ensembling.")
+            scores.append(score)
+        aligned_scores.append(scores)
+    p = [sum(values) / len(values) for values in zip(*aligned_scores)]
     return y, p
+
+
+def _ensure_unique_prediction_ids(ids: list[Any]) -> None:
+    if len(ids) != len(set(ids)):
+        raise ValueError("Prediction files must not contain duplicate sample identifiers for ensembling.")  # noqa: E501
 
 
 def _first_column(df: pd.DataFrame, names: list[str]) -> str | None:
@@ -1355,7 +1458,8 @@ def _best_f1_threshold(y_true: list[int], prob: list[float]) -> float:
     if not thresholds:
         return 0.5
     best = max(
-        ((_binary_metrics(y_true, prob, threshold)["f1"], threshold) for threshold in thresholds), key=lambda x: x[0]
+        ((_binary_metrics(y_true, prob, threshold)["f1"], threshold) for threshold in thresholds),
+        key=lambda x: x[0],
     )
     return float(best[1])
 

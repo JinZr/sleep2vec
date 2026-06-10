@@ -9,6 +9,7 @@ import sys
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pandas as pd
+import pytest
 import yaml
 
 from agent_tools import hparam
@@ -29,7 +30,11 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
             "task": "hparam_tune",
             "variant": "sleep2vec",
             "base_recipe": str(base),
-            "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-6]}},
+            "search": {
+                "method": "grid",
+                "max_trials": 1,
+                "parameters": {"runtime.lr": [1e-6]},
+            },
             "execution": execution or {},
             "evaluation_policy": {
                 "selection_metric": "val_ahi_pearson",
@@ -45,7 +50,10 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
                 "task": {"value": "hparam_tune", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {
+                    "value": "select on val",
+                    "source": "explicit_recipe",
+                },
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
@@ -59,7 +67,9 @@ def _read_table(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(file_obj, delimiter=delimiter))
 
 
-def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(tmp_path: Path):
+def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
+    tmp_path: Path,
+):
     recipe = _hparam_recipe(
         tmp_path,
         execution={
@@ -102,14 +112,30 @@ def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
     plan_dir = tmp_path / "relative_plan"
 
     plan = subprocess.run(
-        [sys.executable, "-m", "agent_tools", "plan", "--recipe", str(recipe), "--output-dir", "relative_plan"],
+        [
+            sys.executable,
+            "-m",
+            "agent_tools",
+            "plan",
+            "--recipe",
+            str(recipe),
+            "--output-dir",
+            "relative_plan",
+        ],
         cwd=tmp_path,
         text=True,
         capture_output=True,
         env={**os.environ, "PYTHONPATH": str(Path.cwd())},
     )
     launch = subprocess.run(
-        [sys.executable, "-m", "agent_tools", "hparam-launch", "--plan-dir", "relative_plan"],
+        [
+            sys.executable,
+            "-m",
+            "agent_tools",
+            "hparam-launch",
+            "--plan-dir",
+            "relative_plan",
+        ],
         cwd=tmp_path,
         text=True,
         capture_output=True,
@@ -145,14 +171,33 @@ def test_hparam_monitor_handles_running_finished_and_failed_rows(tmp_path: Path)
         writer = csv.DictWriter(
             file_obj,
             delimiter="\t",
-            fieldnames=["trial_id", "version", "target", "pid_path", "log_path", "status"],
+            fieldnames=[
+                "trial_id",
+                "version",
+                "target",
+                "pid_path",
+                "log_path",
+                "status",
+            ],
         )
         writer.writeheader()
         writer.writerow(
-            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+            {
+                "trial_id": "running",
+                "version": "v1",
+                "target": "local",
+                "pid_path": pid_path,
+                "status": "launched",
+            }
         )
         writer.writerow(
-            {"trial_id": "missing", "version": "v2", "target": "local", "pid_path": missing_pid, "status": "launched"}
+            {
+                "trial_id": "missing",
+                "version": "v2",
+                "target": "local",
+                "pid_path": missing_pid,
+                "status": "launched",
+            }
         )
         writer.writerow(
             {
@@ -184,7 +229,13 @@ def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):
         )
         writer.writeheader()
         writer.writerow(
-            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+            {
+                "trial_id": "running",
+                "version": "v1",
+                "target": "local",
+                "pid_path": pid_path,
+                "status": "launched",
+            }
         )
     monkeypatch.setattr(hparam, "_process_running", lambda row, pid: True)
 
@@ -201,11 +252,24 @@ def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeyp
         writer = csv.DictWriter(
             file_obj,
             delimiter="\t",
-            fieldnames=["trial_id", "version", "target", "pid_path", "log_path", "status"],
+            fieldnames=[
+                "trial_id",
+                "version",
+                "target",
+                "pid_path",
+                "log_path",
+                "status",
+            ],
         )
         writer.writeheader()
         writer.writerow(
-            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+            {
+                "trial_id": "running",
+                "version": "v1",
+                "target": "local",
+                "pid_path": pid_path,
+                "status": "launched",
+            }
         )
     monkeypatch.setattr(hparam, "_process_running", lambda row, pid: True)
     monkeypatch.setattr(hparam, "_gpu_summary", lambda row, pid: "123, GPU-1, 1024")
@@ -231,7 +295,13 @@ def test_hparam_monitor_health_classifies_data_loading_from_io_delta(tmp_path: P
         )
         writer.writeheader()
         writer.writerow(
-            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+            {
+                "trial_id": "running",
+                "version": "v1",
+                "target": "local",
+                "pid_path": pid_path,
+                "status": "launched",
+            }
         )
     (tmp_path / "trial_status.tsv").write_text(
         "trial_id\tstatus\tio_read_bytes\tio_write_bytes\tcheckpoint_count\nrunning\trunning\t100\t50\t0\n"
@@ -260,7 +330,13 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
         )
         writer.writeheader()
         writer.writerow(
-            {"trial_id": "stalled", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+            {
+                "trial_id": "stalled",
+                "version": "v1",
+                "target": "local",
+                "pid_path": pid_path,
+                "status": "launched",
+            }
         )
         writer.writerow(
             {
@@ -300,7 +376,13 @@ def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypat
         )
         writer.writeheader()
         writer.writerow(
-            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+            {
+                "trial_id": "running",
+                "version": "v1",
+                "target": "local",
+                "pid_path": pid_path,
+                "status": "launched",
+            }
         )
     (tmp_path / "trial_status.tsv").write_text(
         "trial_id\tstatus\tprogress_processed\tprogress_updated_at\tcheckpoint_count\n"
@@ -313,7 +395,11 @@ def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypat
     monkeypatch.setattr(
         hparam,
         "_read_trial_progress",
-        lambda run_dir, row: {"status": "running", "processed": 5, "updated_at": "2000-01-01T00:00:00Z"},
+        lambda run_dir, row: {
+            "status": "running",
+            "processed": 5,
+            "updated_at": "2000-01-01T00:00:00Z",
+        },
     )
 
     monitor_hparam_trials(tmp_path, health=True)
@@ -355,7 +441,15 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
         )
     )
 
-    result = _run("hparam-select", "--run-dir", str(plan_dir), "--metric", "val_ahi_pearson", "--mode", "max")
+    result = _run(
+        "hparam-select",
+        "--run-dir",
+        str(plan_dir),
+        "--metric",
+        "val_ahi_pearson",
+        "--mode",
+        "max",
+    )
 
     assert result.returncode == 0, result.stderr
     rows = _read_table(plan_dir / "candidate_ranking.csv")
@@ -385,14 +479,24 @@ def test_hparam_select_preserves_zero_padded_epoch_checkpoint(tmp_path: Path):
         )
     )
 
-    result = _run("hparam-select", "--run-dir", str(plan_dir), "--metric", "val_ahi_pearson", "--mode", "max")
+    result = _run(
+        "hparam-select",
+        "--run-dir",
+        str(plan_dir),
+        "--metric",
+        "val_ahi_pearson",
+        "--mode",
+        "max",
+    )
 
     assert result.returncode == 0, result.stderr
     rows = _read_table(plan_dir / "candidate_ranking.csv")
     assert rows[0]["checkpoint_path"] == str(fixed)
 
 
-def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_path: Path):
+def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
+    tmp_path: Path,
+):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
@@ -403,9 +507,9 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "trial_id,rank,config,checkpoint_path\n"
-        f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"
-        f"trial_001,2,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=2.ckpt'}\n"
-        f"trial_002,3,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=3.ckpt'}\n"
+        f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"  # noqa: E501
+        f"trial_001,2,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=2.ckpt'}\n"  # noqa: E501
+        f"trial_002,3,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=3.ckpt'}\n"  # noqa: E501
     )
 
     locked = _run("hparam-external-eval", "--run-dir", str(plan_dir), "--selected", str(selected))
@@ -486,8 +590,8 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "trial_id,rank,config,checkpoint_path\n"
-        f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"
-        f"trial_001,2,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=2.ckpt'}\n"
+        f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"  # noqa: E501
+        f"trial_001,2,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=2.ckpt'}\n"  # noqa: E501
     )
 
     locked = _run("hparam-export-logits", "--run-dir", str(plan_dir), "--selected", str(selected))
@@ -560,7 +664,7 @@ def test_hparam_export_logits_execute_uses_manifest_paths(tmp_path: Path, monkey
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "trial_id,rank,config,checkpoint_path\n"
-        f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"
+        f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"  # noqa: E501
     )
     calls = []
 
@@ -620,7 +724,15 @@ def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: 
         )
     )
 
-    result = _run("hparam-checkpoint-scan", "--run-dir", str(plan_dir), "--metric", "val_auroc", "--mode", "max")
+    result = _run(
+        "hparam-checkpoint-scan",
+        "--run-dir",
+        str(plan_dir),
+        "--metric",
+        "val_auroc",
+        "--mode",
+        "max",
+    )
 
     assert result.returncode == 0, result.stderr
     rows = _read_table(plan_dir / "checkpoint_ranking.csv")
@@ -771,6 +883,37 @@ def test_hparam_threshold_and_ensemble_read_repo_prediction_csv_lists(tmp_path: 
     assert ensemble.returncode == 0, ensemble.stderr
     ensemble_rows = _read_table(tmp_path / "ensemble_summary.csv")
     assert float(ensemble_rows[0]["exploratory_test_auroc"]) == 1.0
+
+
+def test_hparam_ensemble_aligns_predictions_by_sample_identity(tmp_path: Path):
+    first = tmp_path / "first.csv"
+    second = tmp_path / "second.csv"
+    pd.DataFrame(
+        {
+            "path": ["a.npz", "b.npz", "c.npz", "d.npz"],
+            "token_start": [0, 0, 0, 0],
+            "groundtruth": [0, 0, 1, 1],
+            "prob": [0.1, 0.2, 0.8, 0.9],
+        }
+    ).to_csv(first, index=False)
+    pd.DataFrame(
+        {
+            "path": ["b.npz", "a.npz", "d.npz", "c.npz"],
+            "token_start": [0, 0, 0, 0],
+            "groundtruth": [0, 0, 1, 1],
+            "prob": [0.6, 0.1, 0.8, 0.9],
+        }
+    ).to_csv(second, index=False)
+
+    y, p = hparam._average_binary_predictions(
+        [
+            hparam._read_binary_predictions(first),
+            hparam._read_binary_predictions(second),
+        ]
+    )
+
+    assert y == [0, 0, 1, 1]
+    assert p == pytest.approx([0.1, 0.4, 0.85, 0.85])
 
 
 def test_hparam_export_logits_copy_accepts_probability_prediction_csv(tmp_path: Path):
