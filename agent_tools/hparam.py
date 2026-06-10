@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import csv
 import importlib
 from itertools import combinations
@@ -20,6 +21,8 @@ from .manifests import write_text
 from .models import module_for_variant
 from .progress import read_progress
 
+SSH_TIMEOUT_SECONDS = 10
+
 
 def launch_hparam_trials(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     run_dir = Path(plan_dir)
@@ -27,18 +30,20 @@ def launch_hparam_trials(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     trials = plan.get("trials") if isinstance(plan.get("trials"), list) else []
-    log_dir = _local_dir(run_dir, execution.get("log_dir"), "logs")
-    pid_dir = _local_dir(run_dir, execution.get("pid_dir"), "pids")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    pid_dir.mkdir(parents=True, exist_ok=True)
+    target = str(execution.get("target", "local") or "local")
+    log_dir = _artifact_dir(run_dir, execution, "log_dir", "logs")
+    pid_dir = _artifact_dir(run_dir, execution, "pid_dir", "pids")
+    if target != "ssh":
+        Path(str(log_dir)).mkdir(parents=True, exist_ok=True)
+        Path(str(pid_dir)).mkdir(parents=True, exist_ok=True)
     max_concurrent = int(execution.get("max_concurrent") or len(trials) or 1)
     rows = []
     for index, trial in enumerate(trials):
         trial_id = str(trial["trial_id"])
         script = run_dir / str(trial["script"])
         gpus = _assigned_gpus(recipe, index)
-        log_path = log_dir / f"{trial_id}.log"
-        pid_path = pid_dir / f"{trial_id}.pid"
+        log_path = _join_artifact_path(log_dir, f"{trial_id}.log", target=target)
+        pid_path = _join_artifact_path(pid_dir, f"{trial_id}.pid", target=target)
         command = _launch_command(execution, script, log_path, pid_path, gpus)
         status = "planned"
         if not dry_run and index < max_concurrent:
@@ -91,7 +96,7 @@ def stop_hparam_trial(run_dir: str | Path, trial_id: str) -> Path:
     if pid is None:
         raise ValueError(f"No recorded PID for trial_id: {trial_id}")
     if row.get("target") == "ssh":
-        subprocess.run(["ssh", row["host"], f"kill -TERM {pid}"], check=False)
+        subprocess.run(["ssh", row["host"], f"kill -TERM {pid}"], check=False, timeout=SSH_TIMEOUT_SECONDS)
     else:
         os.kill(pid, signal.SIGTERM)
     status_path = root / "trial_status.tsv"
@@ -539,6 +544,23 @@ def _local_dir(run_dir: Path, raw: Any, default_name: str) -> Path:
     return path if path.is_absolute() else run_dir / path
 
 
+def _artifact_dir(run_dir: Path, execution: dict[str, Any], key: str, default_name: str) -> str | Path:
+    raw = execution.get(key)
+    if execution.get("target", "local") == "ssh":
+        base = str(execution.get("workdir") or run_dir)
+        value = str(raw or default_name)
+        if value.startswith("/"):
+            return value
+        return f"{base.rstrip('/')}/{value}"
+    return _local_dir(run_dir, raw, default_name)
+
+
+def _join_artifact_path(directory: str | Path, name: str, *, target: str) -> str | Path:
+    if target == "ssh":
+        return f"{str(directory).rstrip('/')}/{name}"
+    return Path(str(directory)) / name
+
+
 def _assigned_gpus(recipe: dict[str, Any], trial_index: int) -> list[Any]:
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     base = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
@@ -551,7 +573,9 @@ def _assigned_gpus(recipe: dict[str, Any], trial_index: int) -> list[Any]:
     return [pool[(start + offset) % len(pool)] for offset in range(per_trial)]
 
 
-def _launch_command(execution: dict[str, Any], script: Path, log_path: Path, pid_path: Path, gpus: list[Any]) -> str:
+def _launch_command(
+    execution: dict[str, Any], script: Path, log_path: str | Path, pid_path: str | Path, gpus: list[Any]
+) -> str:
     env = dict(execution.get("env") or {})
     if execution.get("wandb_project"):
         env["WANDB_PROJECT"] = execution["wandb_project"]
@@ -568,14 +592,25 @@ def _launch_command(execution: dict[str, Any], script: Path, log_path: Path, pid
     if env_prefix:
         run_command = f"{env_prefix} {run_command}"
     workdir = execution.get("workdir") or str(script.parent)
-    inner = f"cd {_sh(workdir)} && nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)}"
     if execution.get("target", "local") == "ssh":
+        mkdir = f"mkdir -p {_sh(_parent_path(log_path))} {_sh(_parent_path(pid_path))}"
+        inner = (
+            f"{mkdir} && cd {_sh(workdir)} && "
+            f"(nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"
+        )
         return f"ssh {_sh(execution['host'])} {_sh(inner)}"
+    inner = f"cd {_sh(workdir)} && (nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"
     return inner
 
 
+def _parent_path(path: str | Path) -> str:
+    text = str(path)
+    parent = text.rsplit("/", 1)[0] if "/" in text else "."
+    return parent or "/"
+
+
 def _start_process(execution: dict[str, Any], command: str) -> str:
-    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
+    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=SSH_TIMEOUT_SECONDS)
     return "launched" if result.returncode == 0 else "launch_failed"
 
 
@@ -640,8 +675,8 @@ def _process_running(row: dict[str, Any], pid: int | None) -> bool | None:
     if pid is None:
         return False
     if row.get("target") == "ssh" and row.get("host"):
-        result = subprocess.run(["ssh", row["host"], f"ps -p {pid} -o pid="], text=True, capture_output=True)
-        if result.returncode == 255:
+        result = _run_row_command(row, f"ps -p {pid} -o pid=")
+        if result.returncode in {124, 255}:
             return None
         return result.returncode == 0 and str(pid) in result.stdout
     try:
@@ -704,6 +739,7 @@ def _health_fields(
         io_read_delta=read_delta,
         io_write_delta=write_delta,
         progress=progress,
+        progress_is_fresh=_progress_is_fresh(progress, previous),
         log_age_seconds=log_age,
         checkpoint_count=checkpoint_count,
         previous_checkpoint_count=_to_int(previous.get("checkpoint_count")),
@@ -719,6 +755,7 @@ def _health_fields(
         "progress_processed": progress.get("processed", ""),
         "progress_total": progress.get("total", ""),
         "progress_updated_at": progress.get("updated_at", ""),
+        "progress_age_seconds": _progress_age_seconds(progress),
         "log_age_seconds": "" if log_age is None else log_age,
         "checkpoint_count": checkpoint_count,
     }
@@ -801,6 +838,7 @@ def _classify_health(
     io_read_delta: int | None,
     io_write_delta: int | None,
     progress: dict[str, Any],
+    progress_is_fresh: bool,
     log_age_seconds: int | None,
     checkpoint_count: int,
     previous_checkpoint_count: int | None,
@@ -817,7 +855,7 @@ def _classify_health(
         return "compute_active"
     if (io_read_delta or 0) > 0 or (io_write_delta or 0) > 0:
         return "data_loading"
-    if progress.get("status") == "running":
+    if progress.get("status") == "running" and progress_is_fresh:
         return "healthy_running"
     if log_age_seconds is not None and log_age_seconds < 300:
         return "healthy_running"
@@ -842,10 +880,41 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
+def _progress_is_fresh(progress: dict[str, Any], previous: dict[str, Any]) -> bool:
+    if progress.get("status") != "running":
+        return False
+    processed = _to_int(progress.get("processed"))
+    previous_processed = _to_int(previous.get("progress_processed"))
+    if processed is not None and previous_processed is not None and processed > previous_processed:
+        return True
+    age = _progress_age_seconds(progress)
+    return age is not None and age < 300
+
+
+def _progress_age_seconds(progress: dict[str, Any]) -> int | None:
+    updated = progress.get("updated_at")
+    if not updated:
+        return None
+    try:
+        parsed = time.strptime(str(updated), "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return max(int(time.time() - calendar.timegm(parsed)), 0)
+
+
 def _run_row_command(row: dict[str, Any], command: str) -> subprocess.CompletedProcess:
-    if _is_remote_row(row):
-        return subprocess.run(["ssh", str(row["host"]), command], text=True, capture_output=True)
-    return subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
+    try:
+        if _is_remote_row(row):
+            return subprocess.run(
+                ["ssh", str(row["host"]), command],
+                text=True,
+                capture_output=True,
+                timeout=SSH_TIMEOUT_SECONDS,
+            )
+        return subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=SSH_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        args = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
+        return subprocess.CompletedProcess(args, 124, "", f"timed out after {SSH_TIMEOUT_SECONDS}s")
 
 
 def _is_remote_row(row: dict[str, Any] | None) -> bool:

@@ -41,7 +41,7 @@ def test_progress_remote_uses_single_ssh_cat(monkeypatch):
     calls = []
 
     def fake_run(command, **kwargs):
-        calls.append(command)
+        calls.append((command, kwargs))
         return subprocess.CompletedProcess(
             command,
             0,
@@ -54,7 +54,8 @@ def test_progress_remote_uses_single_ssh_cat(monkeypatch):
     data = read_progress("/wujidata/run", remote="baichuan3")
 
     assert data["task"] == "remote_task"
-    assert calls == [["ssh", "baichuan3", "cat /wujidata/run/status/progress.json"]]
+    assert calls[0][0] == ["ssh", "baichuan3", "cat /wujidata/run/status/progress.json"]
+    assert "timeout" in calls[0][1]
 
 
 def test_progress_missing_returns_structured_status(tmp_path: Path):

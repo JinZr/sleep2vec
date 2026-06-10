@@ -10,6 +10,7 @@ from .models import json_ready
 
 PROGRESS_RELATIVE_PATH = Path("status") / "progress.json"
 EVENTS_RELATIVE_PATH = Path("status") / "events.jsonl"
+DEFAULT_SSH_TIMEOUT_SECONDS = 10
 
 
 def progress_path(run_dir: str | Path) -> Path:
@@ -67,14 +68,29 @@ def append_event(run_dir: str | Path, event: str, payload: dict[str, Any] | None
     return path
 
 
-def read_progress(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
+def read_progress(
+    run_dir: str | Path,
+    *,
+    remote: str | None = None,
+    timeout_seconds: int = DEFAULT_SSH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     path = progress_path(run_dir)
     if remote:
-        result = subprocess.run(
-            ["ssh", remote, f"cat {_sh(path)}"],
-            text=True,
-            capture_output=True,
-        )
+        try:
+            result = subprocess.run(
+                ["ssh", remote, f"cat {_sh(path)}"],
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "unknown_remote",
+                "task": None,
+                "path": str(path),
+                "remote": remote,
+                "message": f"progress read timed out after {timeout_seconds}s",
+            }
         if result.returncode != 0:
             return {
                 "status": "missing",

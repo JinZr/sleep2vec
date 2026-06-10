@@ -10,6 +10,13 @@ from typing import Any
 from .adaptive_hparam import adaptive_loop, adaptive_step, digest_hparam_run, init_adaptive_workflow, suggest_next_round
 from .configs import config_summary
 from .decisions import DecisionStatus
+from .experiments import (
+    index_checkpoints,
+    init_experiment,
+    monitor_experiment,
+    rank_experiment_candidates,
+    sync_wandb_runs,
+)
 from .hparam import (
     ensemble_hparam_outputs,
     export_hparam_logits,
@@ -120,6 +127,38 @@ def _build_parser() -> argparse.ArgumentParser:
     progress.add_argument("--remote")
     progress.add_argument("--json", action="store_true")
     progress.set_defaults(func=_cmd_progress)
+
+    experiment_init = sub.add_parser("experiment-init")
+    experiment_init.add_argument("--run-dir", required=True)
+    experiment_init.add_argument("--name", required=True)
+    experiment_init.add_argument("--remote")
+    experiment_init.set_defaults(func=_cmd_experiment_init)
+
+    experiment_wandb = sub.add_parser("experiment-wandb-sync")
+    experiment_wandb.add_argument("--run-dir", required=True)
+    experiment_wandb.add_argument("--entity", required=True)
+    experiment_wandb.add_argument("--project", required=True)
+    experiment_wandb.add_argument("--group")
+    experiment_wandb.add_argument("--remote")
+    experiment_wandb.set_defaults(func=_cmd_experiment_wandb_sync)
+
+    experiment_checkpoints = sub.add_parser("experiment-index-checkpoints")
+    experiment_checkpoints.add_argument("--run-dir", required=True)
+    experiment_checkpoints.add_argument("--remote")
+    experiment_checkpoints.set_defaults(func=_cmd_experiment_index_checkpoints)
+
+    experiment_monitor = sub.add_parser("experiment-monitor")
+    experiment_monitor.add_argument("--run-dir", required=True)
+    experiment_monitor.add_argument("--remote")
+    experiment_monitor.add_argument("--json", action="store_true")
+    experiment_monitor.set_defaults(func=_cmd_experiment_monitor)
+
+    experiment_rank = sub.add_parser("experiment-rank")
+    experiment_rank.add_argument("--run-dir", required=True)
+    experiment_rank.add_argument("--metric", required=True)
+    experiment_rank.add_argument("--mode", choices=["max", "min"], required=True)
+    experiment_rank.add_argument("--remote")
+    experiment_rank.set_defaults(func=_cmd_experiment_rank)
 
     stop = sub.add_parser("hparam-stop")
     stop.add_argument("--run-dir", required=True)
@@ -324,6 +363,49 @@ def _cmd_progress(args: argparse.Namespace) -> int:
         _emit(data, as_json=True)
     else:
         print(format_progress(data), end="")
+    return 0
+
+
+def _cmd_experiment_init(args: argparse.Namespace) -> int:
+    manifest = init_experiment(args.run_dir, args.name, remote=args.remote)
+    print(f"Wrote {manifest}")
+    return 0
+
+
+def _cmd_experiment_wandb_sync(args: argparse.Namespace) -> int:
+    try:
+        output = sync_wandb_runs(
+            args.run_dir,
+            entity=args.entity,
+            project=args.project,
+            group=args.group,
+            remote=args.remote,
+        )
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"Wrote {output}")
+    return 0
+
+
+def _cmd_experiment_index_checkpoints(args: argparse.Namespace) -> int:
+    manifest = index_checkpoints(args.run_dir, remote=args.remote)
+    print(f"Wrote {manifest}")
+    return 0
+
+
+def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
+    result = monitor_experiment(args.run_dir, remote=args.remote)
+    if args.json:
+        _emit(result, as_json=True)
+    else:
+        print(f"Wrote {result['report']}")
+    return 0
+
+
+def _cmd_experiment_rank(args: argparse.Namespace) -> int:
+    ranking = rank_experiment_candidates(args.run_dir, metric=args.metric, mode=args.mode, remote=args.remote)
+    print(f"Wrote {ranking}")
     return 0
 
 

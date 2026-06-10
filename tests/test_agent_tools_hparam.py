@@ -86,11 +86,15 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(tmp_pat
     assert rows[0]["host"] == "baichuan3"
     assert rows[0]["gpus"] == "6,7"
     assert "ssh baichuan3" in rows[0]["command"]
+    assert "mkdir -p" in rows[0]["command"]
+    assert "(nohup" in rows[0]["command"]
     assert "conda run --no-capture-output -n ywx" in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=6,7" in rows[0]["command"]
     assert "WANDB_PROJECT=sleep2vec-unit-hparam" in rows[0]["command"]
     assert rows[0]["log_path"].endswith("logs/trial_000.log")
     assert rows[0]["pid_path"].endswith("pids/trial_000.pid")
+    assert not (plan_dir / "logs").exists()
+    assert not (plan_dir / "pids").exists()
 
 
 def test_hparam_doctor_rejects_invalid_execution_target(tmp_path: Path):
@@ -256,6 +260,50 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
     status = {row["trial_id"]: row["health_status"] for row in _read_table(tmp_path / "trial_status.tsv")}
     assert status["stalled"] == "possibly_stalled"
     assert status["remote"] == "unknown_remote"
+
+
+def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "running.pid"
+    pid_path.write_text("123")
+    with (tmp_path / "launch_manifest.tsv").open("w", newline="") as file_obj:
+        writer = csv.DictWriter(
+            file_obj,
+            delimiter="\t",
+            fieldnames=["trial_id", "version", "target", "pid_path", "status"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+        )
+    (tmp_path / "trial_status.tsv").write_text(
+        "trial_id\tstatus\tprogress_processed\tprogress_updated_at\tcheckpoint_count\n"
+        "running\trunning\t5\t2000-01-01T00:00:00Z\t0\n"
+    )
+    monkeypatch.setattr(hparam, "_process_running", lambda row, pid: True)
+    monkeypatch.setattr(hparam, "_gpu_summary", lambda row, pid: "")
+    monkeypatch.setattr(hparam, "_proc_io", lambda row, pid: {})
+    monkeypatch.setattr(hparam, "_log_age_seconds", lambda path, row: 500)
+    monkeypatch.setattr(
+        hparam,
+        "_read_trial_progress",
+        lambda run_dir, row: {"status": "running", "processed": 5, "updated_at": "2000-01-01T00:00:00Z"},
+    )
+
+    monitor_hparam_trials(tmp_path, health=True)
+
+    row = _read_table(tmp_path / "trial_status.tsv")[0]
+    assert row["health_status"] == "possibly_stalled"
+
+
+def test_hparam_remote_command_timeout_returns_unknown_remote(monkeypatch):
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["ssh", "baichuan3", "ps"], 10)
+
+    monkeypatch.setattr(hparam.subprocess, "run", fake_run)
+
+    result = hparam._run_row_command({"target": "ssh", "host": "baichuan3"}, "ps")
+
+    assert result.returncode == 124
 
 
 def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path):
