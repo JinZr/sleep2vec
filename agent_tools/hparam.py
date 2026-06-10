@@ -18,7 +18,7 @@ import pandas as pd
 import yaml
 
 from .manifests import write_text
-from .models import module_for_variant
+from .models import REPO_ROOT, module_for_variant
 from .progress import read_progress
 
 SSH_TIMEOUT_SECONDS = 10
@@ -651,12 +651,21 @@ def _assigned_gpus(recipe: dict[str, Any], trial_index: int) -> list[Any]:
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     base = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
     base_runtime = base.get("runtime") if isinstance(base.get("runtime"), dict) else {}
-    pool = execution.get("gpu_pool") or base_runtime.get("devices") or []
-    if not isinstance(pool, list) or not pool:
+    base_devices = _as_list(base_runtime.get("devices"))
+    pool = _as_list(execution.get("gpu_pool")) or base_devices
+    if not pool:
         return []
-    per_trial = int(execution.get("gpus_per_trial") or len(base_runtime.get("devices") or [pool[0]]))
+    per_trial = int(execution.get("gpus_per_trial") or len(base_devices) or 1)
     start = (trial_index * per_trial) % len(pool)
     return [pool[(start + offset) % len(pool)] for offset in range(per_trial)]
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value in (None, "", "ASK_USER"):
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 def _launch_command(
@@ -1580,6 +1589,9 @@ def _script_lines(commands: list[str]) -> list[str]:
     return [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
+        "",
+        f"cd {_sh(REPO_ROOT)}",
+        f"export PYTHONPATH={_sh(REPO_ROOT)}${{PYTHONPATH:+:$PYTHONPATH}}",
         "",
         "# External test evaluation was explicitly unlocked.",
         *commands,

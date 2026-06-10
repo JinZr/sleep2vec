@@ -107,6 +107,24 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
     assert not (plan_dir / "pids").exists()
 
 
+def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["runtime"]["devices"] = 2
+    write_yaml(base_recipe, base_payload)
+    plan_dir = tmp_path / "plan"
+
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    result = _run("hparam-launch", "--plan-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert rows[0]["gpus"] == "2"
+    assert "CUDA_VISIBLE_DEVICES=2" in rows[0]["command"]
+
+
 def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "relative_plan"
@@ -600,7 +618,10 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     assert external["data"]["finetune_data_index"] == "external_index.csv"
     assert external["data"]["finetune_preset_path"] is None
     assert external["model"] == original["model"]
-    assert (plan_dir / "external_eval.sh").read_text().count("python -m sleep2vec.infer") == 1
+    external_script = (plan_dir / "external_eval.sh").read_text()
+    assert f"cd {hparam._sh(hparam.REPO_ROOT)}" in external_script
+    assert f"export PYTHONPATH={hparam._sh(hparam.REPO_ROOT)}${{PYTHONPATH:+:$PYTHONPATH}}" in external_script
+    assert external_script.count("python -m sleep2vec.infer") == 1
 
     kaldi_eval = _run(
         "hparam-external-eval",
