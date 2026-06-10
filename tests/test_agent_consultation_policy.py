@@ -4,9 +4,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import config_payload, write_finetune_recipe, write_yaml
 import yaml
 
+from agent_tools.configs import config_summary
 from agent_tools.decisions import DecisionStatus, evaluate_consultation_gates
 from agent_tools.recipes import load_policy_files
 
@@ -60,6 +61,23 @@ def test_local_missing_config_path_still_fails(tmp_path: Path):
 
     assert result.returncode == 1
     assert "Required input path does not exist" in result.stdout
+
+
+def test_local_config_path_expands_home_before_validation(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,ppg_mask,ah_event_mask,stage_mask\nx.npz,train,60,1,1,1\n")
+    write_yaml(home / "config.yaml", config_payload(index))
+    monkeypatch.setenv("HOME", str(home))
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["config"] = "~/config.yaml"
+    policy, defaults = load_policy_files()
+
+    report = evaluate_consultation_gates("finetune", payload, config_summary("~/config.yaml"), {}, policy, defaults)
+
+    assert report.exit_code == 0
 
 
 def test_remote_ssh_path_validation_uses_short_test_command(tmp_path: Path, monkeypatch):

@@ -968,7 +968,7 @@ def _validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured:
             )
         return None
 
-    path = REPO_ROOT / str(raw_path) if not str(raw_path).startswith("/") else Path(str(raw_path)).expanduser()
+    path = Path(str(raw_path)).expanduser()
     if not path.is_absolute():
         path = REPO_ROOT / path
     if path.exists():

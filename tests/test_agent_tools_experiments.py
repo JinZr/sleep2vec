@@ -55,12 +55,12 @@ def test_experiment_indexes_checkpoints_and_ranks_validation_metric(tmp_path: Pa
     run_dir = tmp_path / "log-finetune" / "trial_a"
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True)
-    ckpt = ckpt_dir / "epoch=2-step=20.ckpt"
+    ckpt = ckpt_dir / "epoch=02-step=20.ckpt"
     ckpt.write_text("checkpoint")
     (run_dir / "run_manifest.json").write_text(
         json.dumps(
             {
-                "best_model_path": str(ckpt_dir / "best-epoch=2-step=20.ckpt"),
+                "best_model_path": str(ckpt_dir / "best-epoch=02-step=20.ckpt"),
                 "epoch": 2,
                 "metrics": {"val_auroc": 0.8},
             }
@@ -78,11 +78,11 @@ def test_experiment_indexes_checkpoints_and_ranks_validation_metric(tmp_path: Pa
     assert checkpoints.returncode == 0, checkpoints.stderr
     assert ranking.returncode == 0, ranking.stderr
     checkpoint_rows = _read_table(tmp_path / "checkpoint_manifest.tsv")
-    assert checkpoint_rows[0]["epoch"] == "2"
+    assert checkpoint_rows[0]["epoch"] == "02"
     ranked = _read_table(tmp_path / "candidate_ranking.tsv")
     assert ranked[0]["version"] == "trial_a"
     assert ranked[0]["score"] == "0.8"
-    assert ranked[0]["checkpoint_path"].endswith("epoch=2-step=20.ckpt")
+    assert ranked[0]["checkpoint_path"].endswith("epoch=02-step=20.ckpt")
 
 
 def test_experiment_wandb_sync_exports_summary_history_and_metrics(tmp_path: Path, monkeypatch):

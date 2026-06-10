@@ -8,6 +8,8 @@ import sys
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import yaml
 
+from agent_tools.models import REPO_ROOT
+
 
 def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
@@ -319,8 +321,53 @@ def test_sleep2expert_variant_controls_generated_hparam_module(tmp_path: Path):
 
     assert result.returncode == 0
     script = (output_dir / "trial_000.sh").read_text()
+    assert f"cd {shlex_quote(str(REPO_ROOT))}" in script
+    assert f"export PYTHONPATH={shlex_quote(str(REPO_ROOT))}" in script
     assert "python -m sleep2expert.finetune" in script
     assert "--no-test-after-fit" in script
+    assert f"--results-csv-path {shlex_quote(str(tmp_path / 'results.csv'))}" in script
+
+
+def test_pretrain_and_adapt_tasks_fail_instead_of_generating_empty_scripts(tmp_path: Path):
+    pretrained = tmp_path / "pretrained.ckpt"
+    pretrained.write_text("checkpoint")
+    recipes = []
+    for task in ("pretrain", "adapt"):
+        recipe = {
+            "schema_version": 1,
+            "name": f"unit_{task}",
+            "task": task,
+            "variant": "sleep2vec",
+            "inputs": {},
+            "artifacts": {"output_dir": str(tmp_path / task)},
+            "decisions": {"task": {"value": task, "source": "explicit_recipe"}},
+        }
+        if task == "adapt":
+            recipe["inputs"]["pretrained_backbone_path"] = str(pretrained)
+            recipe["decisions"]["pretrained_backbone_path"] = {
+                "value": str(pretrained),
+                "source": "explicit_recipe",
+            }
+        recipes.append((task, write_yaml(tmp_path / f"{task}.yaml", recipe)))
+
+    for task, recipe in recipes:
+        output_dir = tmp_path / f"{task}_plan"
+        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+        assert result.returncode == 1
+        assert "No command renderer is implemented" in result.stdout
+        assert (output_dir / "plan.blocked.md").exists()
+        assert not (output_dir / "run.sh").exists()
+
+
+def test_context_unsupported_task_writes_blocked_script_instead_of_empty_commands(tmp_path: Path):
+    output_dir = tmp_path / "context"
+
+    result = _run("context", "--task", "pretrain", "--variant", "sleep2vec", "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert (output_dir / "commands.blocked.sh").exists()
+    assert not (output_dir / "commands.sh").exists()
 
 
 def test_missing_variant_blocks_command_generation(tmp_path: Path):

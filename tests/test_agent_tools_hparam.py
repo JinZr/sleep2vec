@@ -97,6 +97,33 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(tmp_pat
     assert not (plan_dir / "pids").exists()
 
 
+def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "relative_plan"
+
+    plan = subprocess.run(
+        [sys.executable, "-m", "agent_tools", "plan", "--recipe", str(recipe), "--output-dir", "relative_plan"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(Path.cwd())},
+    )
+    launch = subprocess.run(
+        [sys.executable, "-m", "agent_tools", "hparam-launch", "--plan-dir", "relative_plan"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(Path.cwd())},
+    )
+
+    assert plan.returncode == 0, plan.stderr
+    assert launch.returncode == 0, launch.stderr
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert rows[0]["script"] == str(plan_dir / "trial_000.sh")
+    assert rows[0]["log_path"] == str(plan_dir / "logs" / "trial_000.log")
+    assert "relative_plan/relative_plan" not in rows[0]["command"]
+
+
 def test_hparam_doctor_rejects_invalid_execution_target(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, execution={"target": "cluster"})
 
@@ -334,6 +361,35 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
     rows = _read_table(plan_dir / "candidate_ranking.csv")
     assert rows[0]["checkpoint_path"].endswith("epoch=11.ckpt")
     assert "best-epoch" not in rows[0]["checkpoint_path"]
+
+
+def test_hparam_select_preserves_zero_padded_epoch_checkpoint(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run_dir = plan_dir / "log-finetune" / "unit_hparam-trial_000"
+    ckpt_dir = run_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True)
+    fixed = ckpt_dir / "epoch=09-step=90.ckpt"
+    fixed.write_text("fixed")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "unit_hparam-trial_000",
+                "monitor": "val_ahi_pearson",
+                "best_model_score": 0.72,
+                "best_model_path": str(ckpt_dir / "best-epoch=09-step=90.ckpt"),
+                "epoch": 9,
+                "metrics": {"val_ahi_pearson": 0.72},
+            }
+        )
+    )
+
+    result = _run("hparam-select", "--run-dir", str(plan_dir), "--metric", "val_ahi_pearson", "--mode", "max")
+
+    assert result.returncode == 0, result.stderr
+    rows = _read_table(plan_dir / "candidate_ranking.csv")
+    assert rows[0]["checkpoint_path"] == str(fixed)
 
 
 def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_path: Path):
@@ -715,3 +771,16 @@ def test_hparam_threshold_and_ensemble_read_repo_prediction_csv_lists(tmp_path: 
     assert ensemble.returncode == 0, ensemble.stderr
     ensemble_rows = _read_table(tmp_path / "ensemble_summary.csv")
     assert float(ensemble_rows[0]["exploratory_test_auroc"]) == 1.0
+
+
+def test_hparam_export_logits_copy_accepts_probability_prediction_csv(tmp_path: Path):
+    prediction = tmp_path / "predictions.csv"
+    output = tmp_path / "copied.csv"
+    pd.DataFrame({"path": ["a.npz", "b.npz"], "groundtruth": [0, 1], "prob": [0.2, 0.8]}).to_csv(
+        prediction, index=False
+    )
+
+    hparam._copy_logits_csv(prediction, output)
+
+    copied = pd.read_csv(output)
+    assert list(copied.columns) == ["path", "groundtruth", "prob"]

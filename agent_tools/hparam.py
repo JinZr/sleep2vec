@@ -25,7 +25,9 @@ SSH_TIMEOUT_SECONDS = 10
 
 
 def launch_hparam_trials(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
-    run_dir = Path(plan_dir)
+    run_dir = Path(plan_dir).expanduser()
+    if not run_dir.is_absolute():
+        run_dir = run_dir.resolve()
     plan = _read_plan(run_dir)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
@@ -524,9 +526,14 @@ def _history_epoch(record: dict[str, Any]) -> int | None:
 
 
 def _checkpoint_for_epoch(manifest_path: Path, epoch: int) -> Path | None:
-    ckpt_dir = manifest_path.parent / "checkpoints"
+    return _checkpoint_for_epoch_in_dir(manifest_path.parent / "checkpoints", epoch)
+
+
+def _checkpoint_for_epoch_in_dir(ckpt_dir: Path, epoch: int | None) -> Path | None:
+    if epoch is None:
+        return None
     for path in sorted(ckpt_dir.glob("epoch=*.ckpt")):
-        if not path.name.startswith("best-") and _epoch_from_checkpoint_name(path.name) == str(epoch):
+        if not path.name.startswith("best-") and _epoch_number_from_checkpoint_name(path.name) == epoch:
             return path
     return None
 
@@ -535,6 +542,19 @@ def _epoch_from_checkpoint_name(name: str) -> str:
     if not name.startswith("epoch="):
         return ""
     return name.split("=", 1)[1].split("-", 1)[0].split(".", 1)[0]
+
+
+def _epoch_number(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(str(value)))
+    except ValueError:
+        return None
+
+
+def _epoch_number_from_checkpoint_name(name: str) -> int | None:
+    return _epoch_number(_epoch_from_checkpoint_name(name))
 
 
 def _local_dir(run_dir: Path, raw: Any, default_name: str) -> Path:
@@ -956,16 +976,18 @@ def _fixed_checkpoint_path(manifest: dict[str, Any], manifest_path: Path | None)
     raw = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
     if raw:
         path = Path(str(raw))
-        if path.name.startswith("epoch="):
-            return str(path)
-        epoch = manifest.get("epoch")
-        if epoch is not None:
-            fixed = path.with_name(f"epoch={epoch}.ckpt")
-            if fixed.exists() or str(path):
-                return str(fixed)
         if path.name.startswith("best-epoch="):
             fixed = path.with_name(path.name.removeprefix("best-"))
-            return str(fixed)
+            if fixed.exists():
+                return str(fixed)
+            matched = _checkpoint_for_epoch_in_dir(path.parent, _epoch_number_from_checkpoint_name(fixed.name))
+            if matched:
+                return str(matched)
+        if path.name.startswith("epoch="):
+            return str(path)
+        matched = _checkpoint_for_epoch_in_dir(path.parent, _epoch_number(manifest.get("epoch")))
+        if matched:
+            return str(matched)
         return str(path)
     if manifest_path:
         checkpoints = sorted((manifest_path.parent / "checkpoints").glob("epoch=*.ckpt"))
@@ -1195,8 +1217,9 @@ def _copy_logits_csv(prediction_path: Path, output_path: Path) -> None:
     if not prediction_path.exists():
         raise FileNotFoundError(f"Inference prediction CSV was not written: {prediction_path}")
     df = pd.read_csv(prediction_path)
-    if not any(str(column).startswith("logit") for column in df.columns):
-        raise ValueError(f"Inference prediction CSV has no logit columns: {prediction_path}")
+    score_columns = ["score", "prob_1", "prob", "pred_prob", "positive_prob", "logit"]
+    if _first_column(df, score_columns) is None:
+        raise ValueError(f"Inference prediction CSV has no supported score column: {prediction_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(prediction_path, output_path)
 

@@ -94,6 +94,9 @@ def build_context(
         defaults,
     )
     out = Path(output_dir)
+    commands = _commands_for_recipe(recipe, cfg, report.decisions) if report.exit_code == 0 else []
+    if report.exit_code == 0 and not commands:
+        report = _unsupported_command_report(report, task)
     report = _guard_existing_outputs(
         report,
         _planned_context_paths(out, report),
@@ -118,7 +121,7 @@ def build_context(
         "index_summary": _context_index_summary(recipe, cfg),
         "preset_summary": _context_preset_summary(recipe, cfg),
         "expected_artifacts": _expected_context_artifacts(recipe, out, report),
-        "recommended_commands": _commands_for_recipe(recipe, cfg, report.decisions) if report.exit_code == 0 else [],
+        "recommended_commands": commands if report.exit_code == 0 else [],
         "validation_commands": _validation_commands(recipe),
         "warnings": [issue.message for issue in report.issues if issue.status == DecisionStatus.WARN],
         "blocking_issues": [issue.message for issue in report.blocking_issues()],
@@ -156,6 +159,11 @@ def build_plan(
         report = _apply_hparam_yaml_override_gate(report, recipe)
     if report.exit_code == 0 and recipe.get("task") == "hparam_tune":
         report = _apply_final_test_checkpoint_gate(report, recipe, unlock_final_test=unlock_final_test)
+    commands: list[str] | None = None
+    if report.exit_code == 0 and recipe.get("task") != "hparam_tune":
+        commands = _commands_for_recipe(recipe, cfg, report.decisions)
+        if not commands:
+            report = _unsupported_command_report(report, str(recipe.get("task")))
     report = _guard_existing_outputs(
         report,
         _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test),
@@ -181,7 +189,7 @@ def build_plan(
     if task == "hparam_tune":
         _write_hparam_plan(recipe, cfg, out, unlock_final_test=unlock_final_test, report=report)
     else:
-        commands = _commands_for_recipe(recipe, cfg, report.decisions)
+        commands = commands if commands is not None else _commands_for_recipe(recipe, cfg, report.decisions)
         write_json(out / "plan.json", {"status": report.status.value, "commands": commands, "recipe": recipe})
         write_text(out / "plan.md", _plan_markdown(report, commands))
         write_text(out / "run.sh", "\n".join(_script_lines(commands)) + "\n", executable=True)
@@ -626,6 +634,21 @@ def _append_issues(report: DecisionReport, issues: list[DecisionIssue]) -> Decis
     return DecisionReport(status=merge_status(all_issues), issues=all_issues, decisions=report.decisions)
 
 
+def _unsupported_command_report(report: DecisionReport, task: str | None) -> DecisionReport:
+    return _append_issues(
+        report,
+        [
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "task",
+                f"No command renderer is implemented for task: {task}.",
+                None,
+                {"task": task},
+            )
+        ],
+    )
+
+
 def _has_output_artifact_issue(report: DecisionReport) -> bool:
     return any(issue.field == "output_artifacts" for issue in report.issues)
 
@@ -869,6 +892,9 @@ def _write_hparam_plan(
     unlock_final_test: bool,
     report: DecisionReport,
 ) -> None:
+    out = out.expanduser()
+    if not out.is_absolute():
+        out = out.resolve()
     base_recipe = recipe.get("_base_recipe") or {}
     base_cfg_path = (base_recipe.get("inputs") or {}).get("config") or (recipe.get("inputs") or {}).get("config")
     base_config = load_yaml(base_cfg_path) if base_cfg_path else {}
@@ -904,7 +930,7 @@ def _write_hparam_plan(
                 "--version-name",
                 version,
                 "--results-csv-path",
-                base_artifacts.get("results_csv_path", "results/agent_hparam_results.csv"),
+                _plan_output_path(out, base_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
                 *_runtime_cli_args(runtime),
                 *_finetune_input_cli_args(base_inputs, report.decisions, ckpt_from_decisions=False),
                 "--no-test-after-fit",
@@ -993,6 +1019,9 @@ def _hparam_script_lines(commands: list[str]) -> list[str]:
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         "",
+        f"cd {shlex.quote(str(REPO_ROOT))}",
+        f"export PYTHONPATH={shlex.quote(str(REPO_ROOT))}${{PYTHONPATH:+:$PYTHONPATH}}",
+        "",
         "# Agent policy status: PASS",
         "# This script was generated only after consultation gates passed.",
         "# High-impact decisions were resolved by explicit recipe/config/user inputs.",
@@ -1003,3 +1032,8 @@ def _hparam_script_lines(commands: list[str]) -> list[str]:
         "",
         *commands,
     ]
+
+
+def _plan_output_path(out: Path, raw: Any, default: str) -> Path:
+    path = Path(str(raw or default)).expanduser()
+    return path if path.is_absolute() else out / path

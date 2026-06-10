@@ -12,6 +12,7 @@ from typing import Any
 from .hparam import (
     SSH_TIMEOUT_SECONDS,
     _epoch_from_checkpoint_name,
+    _epoch_number,
     _fixed_checkpoint_path,
     _float_or_none,
     _now,
@@ -400,13 +401,13 @@ def _best_checkpoint_paths(root: Path) -> set[Path]:
 
 
 def _best_metric_for_checkpoint(row: dict[str, Any], metrics: list[dict[str, str]]) -> dict[str, Any]:
-    epoch = str(row.get("epoch") or "")
+    epoch = _epoch_number(row.get("epoch"))
     version = row.get("version")
     matches = [
         item
         for item in metrics
         if item.get("version") == version
-        and str(item.get("epoch") or "") == epoch
+        and _epoch_number(item.get("epoch")) == epoch
         and item.get("metric_scope") == "validation"
     ]
     if not matches:
@@ -416,11 +417,11 @@ def _best_metric_for_checkpoint(row: dict[str, Any], metrics: list[dict[str, str
 
 
 def _checkpoint_for_metric_row(row: dict[str, Any], checkpoints: list[dict[str, str]]) -> str:
-    epoch = str(row.get("epoch") or "")
+    epoch = _epoch_number(row.get("epoch"))
     version = row.get("version")
     same_version = [item for item in checkpoints if item.get("version") == version]
     for item in same_version:
-        if str(item.get("epoch") or "") == epoch:
+        if _epoch_number(item.get("epoch")) == epoch:
             return item.get("checkpoint_path", "")
     best = [item for item in same_version if item.get("is_best_by_val") == "true"]
     if best:
