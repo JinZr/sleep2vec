@@ -325,6 +325,26 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_
     assert external["model"] == original["model"]
     assert (plan_dir / "external_eval.sh").read_text().count("python -m sleep2vec.infer") == 1
 
+    kaldi_eval = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--unlock-final-test",
+        "--kaldi-data-root",
+        "/kaldi/root",
+        "--kaldi-manifest",
+        "test.jsonl",
+    )
+    assert kaldi_eval.returncode == 0, kaldi_eval.stderr
+    kaldi_external = yaml.safe_load((plan_dir / "external_eval_configs" / "trial_000_001_external.yaml").read_text())
+    assert kaldi_external["data"]["backend"] == "kaldi"
+    assert kaldi_external["data"]["kaldi_data_root"] == "/kaldi/root"
+    assert kaldi_external["data"]["kaldi_manifest"] == "test.jsonl"
+    assert kaldi_external["data"]["finetune_data_index"] is None
+    assert kaldi_external["data"]["finetune_preset_path"] is None
+
     top_two = _run(
         "hparam-external-eval",
         "--run-dir",
@@ -396,6 +416,37 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
     assert "hparam-export-logits" in script
     assert "--execute" in script
     assert "--unlock-final-test" in script
+
+    kaldi_logits = _run(
+        "hparam-export-logits",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--unlock-final-test",
+        "--val-kaldi-data-root",
+        "/kaldi/val",
+        "--val-kaldi-manifest",
+        "val.jsonl",
+        "--test-kaldi-data-root",
+        "/kaldi/test",
+        "--test-kaldi-manifest",
+        "test.jsonl",
+    )
+    assert kaldi_logits.returncode == 0, kaldi_logits.stderr
+    rows = _read_table(plan_dir / "logits_export_manifest.tsv")
+    val_config = yaml.safe_load(Path(rows[0]["val_config"]).read_text())
+    test_config = yaml.safe_load(Path(rows[0]["test_config"]).read_text())
+    assert val_config["data"]["backend"] == "kaldi"
+    assert val_config["data"]["kaldi_data_root"] == "/kaldi/val"
+    assert val_config["data"]["kaldi_manifest"] == "val.jsonl"
+    assert val_config["data"]["finetune_data_index"] is None
+    assert val_config["data"]["finetune_preset_path"] is None
+    assert test_config["data"]["backend"] == "kaldi"
+    assert test_config["data"]["kaldi_data_root"] == "/kaldi/test"
+    assert test_config["data"]["kaldi_manifest"] == "test.jsonl"
+    assert test_config["data"]["finetune_data_index"] is None
+    assert test_config["data"]["finetune_preset_path"] is None
 
 
 def test_hparam_export_logits_execute_uses_manifest_paths(tmp_path: Path, monkeypatch):

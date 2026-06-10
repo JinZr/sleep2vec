@@ -932,11 +932,16 @@ def _copy_config_with_data_paths(
 ) -> None:
     config = yaml.safe_load(source.read_text())
     data = config.setdefault("data", {})
+    uses_kaldi_override = kaldi_data_root is not None or kaldi_manifest is not None
+    if uses_kaldi_override:
+        data["backend"] = "kaldi"
+        data["finetune_data_index"] = None
+        data["finetune_preset_path"] = None
     if kaldi_data_root is not None:
         data["kaldi_data_root"] = kaldi_data_root
     if kaldi_manifest is not None:
         data["kaldi_manifest"] = kaldi_manifest
-    if finetune_data_index is not None:
+    if finetune_data_index is not None and not uses_kaldi_override:
         data["finetune_data_index"] = finetune_data_index
         data["finetune_preset_path"] = None
     target.write_text(yaml.safe_dump(config, sort_keys=False))
