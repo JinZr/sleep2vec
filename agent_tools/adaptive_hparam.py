@@ -114,7 +114,7 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
     suggested = copy.deepcopy(recipe)
     suggested["name"] = f"{recipe_name(recipe)}_adaptive_round_{next_round:03d}"
     suggested.setdefault("search", {})["parameters"] = _suggest_parameters(recipe, ranked)
-    suggested["search"]["max_trials"] = int(_adaptive(recipe).get("round_size") or len(_hparam_values(suggested)))
+    suggested["search"]["max_trials"] = int(_adaptive(recipe).get("round_size") or _hparam_count(suggested))
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
     suggested.setdefault("artifacts", {}).pop("generated_config_dir", None)
@@ -394,12 +394,12 @@ def _numeric_neighbors(value: int | float) -> list[int | float]:
     return sorted(set([float(f"{value * 0.5:.6g}"), float(f"{value:.6g}"), float(f"{value * 1.5:.6g}")]))
 
 
-def _hparam_values(recipe: dict[str, Any]) -> list[Any]:
+def _hparam_count(recipe: dict[str, Any]) -> int:
     params = (recipe.get("search") or {}).get("parameters") or {}
-    values = 1
+    count = 1
     for choices in params.values():
-        values *= len(choices)
-    return [None] * values
+        count *= len(choices)
+    return count
 
 
 def _suggestion_rationale(

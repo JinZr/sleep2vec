@@ -206,6 +206,19 @@ def test_adaptive_step_execute_resolves_relative_base_recipe_for_next_round(tmp_
     assert launched == [(workflow_dir / "adaptive" / "rounds" / "round_001", False)]
 
 
+def test_hparam_count_does_not_materialize_search_values():
+    recipe = {
+        "search": {
+            "parameters": {
+                "runtime.lr": range(1000),
+                "runtime.batch_size": range(1000),
+            }
+        }
+    }
+
+    assert adaptive_hparam._hparam_count(recipe) == 1_000_000
+
+
 def test_adaptive_step_execute_stops_bad_running_trial_through_recorded_manifest(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=1)
     workflow_dir = tmp_path / "workflow"

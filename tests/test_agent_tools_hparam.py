@@ -218,6 +218,65 @@ def test_hparam_monitor_handles_running_finished_and_failed_rows(tmp_path: Path)
     assert status["failed"] == "failed"
 
 
+def test_hparam_monitor_launches_pending_trials_when_slots_free(tmp_path: Path, monkeypatch):
+    (tmp_path / "plan.json").write_text(json.dumps({"recipe": {"execution": {"max_concurrent": 1}}}))
+    dead_pid = tmp_path / "dead.pid"
+    dead_pid.write_text("999999999")
+    with (tmp_path / "launch_manifest.tsv").open("w", newline="") as file_obj:
+        writer = csv.DictWriter(
+            file_obj,
+            delimiter="\t",
+            fieldnames=[
+                "trial_id",
+                "version",
+                "target",
+                "pid_path",
+                "command",
+                "status",
+                "launched_at",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "trial_id": "trial_000",
+                "version": "v0",
+                "target": "local",
+                "pid_path": dead_pid,
+                "command": "run first",
+                "status": "launched",
+                "launched_at": "2026-01-01T00:00:00Z",
+            }
+        )
+        writer.writerow(
+            {
+                "trial_id": "trial_001",
+                "version": "v1",
+                "target": "local",
+                "command": "run pending",
+                "status": "pending",
+                "launched_at": "",
+            }
+        )
+    started = []
+
+    def fake_start(_execution, command):
+        started.append(command)
+        return "launched"
+
+    monkeypatch.setattr(hparam, "_start_process", fake_start)
+
+    monitor_hparam_trials(tmp_path)
+
+    status = {row["trial_id"]: row for row in _read_table(tmp_path / "trial_status.tsv")}
+    manifest = {row["trial_id"]: row for row in _read_table(tmp_path / "launch_manifest.tsv")}
+    assert started == ["run pending"]
+    assert status["trial_000"]["status"] == "finished"
+    assert status["trial_001"]["status"] == "launched"
+    assert manifest["trial_001"]["status"] == "launched"
+    assert manifest["trial_001"]["launched_at"]
+
+
 def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     pid_path.write_text("123")
@@ -417,6 +476,16 @@ def test_hparam_remote_command_timeout_returns_unknown_remote(monkeypatch):
     result = hparam._run_row_command({"target": "ssh", "host": "baichuan3"}, "ps")
 
     assert result.returncode == 124
+
+
+def test_hparam_start_process_timeout_returns_launch_failed(monkeypatch):
+    def fake_run(*_args, **kwargs):
+        assert kwargs["timeout"] == hparam.LAUNCH_TIMEOUT_SECONDS
+        raise subprocess.TimeoutExpired(["bash", "-lc", "cmd"], kwargs["timeout"])
+
+    monkeypatch.setattr(hparam.subprocess, "run", fake_run)
+
+    assert hparam._start_process({}, "cmd") == "launch_failed"
 
 
 def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path):

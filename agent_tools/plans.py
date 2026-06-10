@@ -309,7 +309,7 @@ def _append_bool_option(args: list[Any], value: Any, true_flag: str, false_flag:
 def _runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
     args: list[Any] = [
         "--devices",
-        *[str(item) for item in runtime.get("devices", [0])],
+        *[str(item) for item in _list_value(runtime.get("devices", [0])) or [0]],
         "--precision",
         runtime.get("precision", "bf16-mixed"),
         "--epochs",
@@ -336,10 +336,24 @@ def _runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
     return args
 
 
+def _runtime_env_vars(runtime: dict[str, Any]) -> dict[str, Any]:
+    env: dict[str, Any] = {}
+    if runtime.get("wandb_mode") not in (None, "", "ASK_USER"):
+        env["WANDB_MODE"] = runtime["wandb_mode"]
+    return env
+
+
+def _with_env(command: str, env: dict[str, Any]) -> str:
+    if not env:
+        return command
+    prefix = " ".join(f"{key}={shlex.quote(str(value))}" for key, value in sorted(env.items()))
+    return f"{prefix} {command}"
+
+
 def _infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
     args: list[Any] = [
         "--devices",
-        *[str(item) for item in runtime.get("devices", [0])],
+        *[str(item) for item in _list_value(runtime.get("devices", [0])) or [0]],
         "--precision",
         runtime.get("precision", "bf16-mixed"),
         "--batch-size",
@@ -466,7 +480,7 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
         ]
         if test_after_fit is False:
             pieces.append("--no-test-after-fit")
-        return [_render_command(pieces)]
+        return [_with_env(_render_command(pieces), _runtime_env_vars(runtime))]
     if task in {"infer", "evaluate"}:
         return [
             _render_command(
@@ -921,23 +935,26 @@ def _write_hparam_plan(
             yaml.safe_dump(trial_config, file_obj)
         version = f"{recipe_name(recipe)}-{trial_id}"
         runtime = {**base_runtime, **runtime_overrides}
-        command = _render_command(
-            [
-                "python",
-                "-m",
-                _variant_module(recipe, "finetune"),
-                "--config",
-                cfg_copy,
-                "--label-name",
-                _decision_value(report.decisions, "label_name", base_inputs.get("label_name")),
-                "--version-name",
-                version,
-                "--results-csv-path",
-                _plan_output_path(out, base_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
-                *_runtime_cli_args(runtime),
-                *_finetune_input_cli_args(base_inputs, report.decisions, ckpt_from_decisions=False),
-                "--no-test-after-fit",
-            ]
+        command = _with_env(
+            _render_command(
+                [
+                    "python",
+                    "-m",
+                    _variant_module(recipe, "finetune"),
+                    "--config",
+                    cfg_copy,
+                    "--label-name",
+                    _decision_value(report.decisions, "label_name", base_inputs.get("label_name")),
+                    "--version-name",
+                    version,
+                    "--results-csv-path",
+                    _plan_output_path(out, base_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
+                    *_runtime_cli_args(runtime),
+                    *_finetune_input_cli_args(base_inputs, report.decisions, ckpt_from_decisions=False),
+                    "--no-test-after-fit",
+                ]
+            ),
+            _runtime_env_vars(runtime),
         )
         script_name = f"{trial_id}.sh"
         write_text(out / script_name, "\n".join(_hparam_script_lines([command])) + "\n", executable=True)

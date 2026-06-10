@@ -22,6 +22,7 @@ from .models import module_for_variant
 from .progress import read_progress
 
 SSH_TIMEOUT_SECONDS = 10
+LAUNCH_TIMEOUT_SECONDS = 60
 
 
 def launch_hparam_trials(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
@@ -80,11 +81,54 @@ def monitor_hparam_trials(run_dir: str | Path, *, once: bool = True, health: boo
     manifest = _read_rows(root / "launch_manifest.tsv")
     previous_rows = {row.get("trial_id"): row for row in _read_rows(root / "trial_status.tsv")}
     rows = [_status_row(root, row, previous_rows.get(row.get("trial_id"), {}), health=health) for row in manifest]
+    rows, manifest = _launch_pending_trials(root, manifest, rows)
     out = root / "trial_status.tsv"
+    _write_rows(root / "launch_manifest.tsv", manifest)
     _write_rows(out, rows)
     if not once:
         print(f"wrote {out}")
     return out
+
+
+def _launch_pending_trials(
+    run_dir: Path,
+    manifest: list[dict[str, str]],
+    status_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    plan_path = run_dir / "plan.json"
+    if not plan_path.exists():
+        return status_rows, manifest
+    plan = json.loads(plan_path.read_text())
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    max_concurrent = int(execution.get("max_concurrent") or len(manifest) or 1)
+    active_statuses = {"launched", "running", "unknown_remote"}
+    active = sum(row.get("status") in active_statuses for row in status_rows)
+    slots = max(max_concurrent - active, 0)
+    if slots <= 0:
+        return status_rows, manifest
+
+    status_by_trial = {row.get("trial_id"): row for row in status_rows}
+    for row in manifest:
+        if slots <= 0:
+            break
+        trial_id = row.get("trial_id")
+        current = status_by_trial.get(trial_id, row)
+        if current.get("status") != "pending" and row.get("status") != "pending":
+            continue
+        command = row.get("command")
+        if not command:
+            row["status"] = "launch_failed"
+            current["status"] = "launch_failed"
+            continue
+        status = _start_process(execution, command)
+        launched_at = _now() if status == "launched" else ""
+        row["status"] = status
+        row["launched_at"] = launched_at
+        current["status"] = status
+        current["launched_at"] = launched_at
+        slots -= 1
+    return status_rows, manifest
 
 
 def stop_hparam_trial(run_dir: str | Path, trial_id: str) -> Path:
@@ -665,12 +709,15 @@ def _parent_path(path: str | Path) -> str:
 
 
 def _start_process(execution: dict[str, Any], command: str) -> str:
-    result = subprocess.run(
-        ["bash", "-lc", command],
-        text=True,
-        capture_output=True,
-        timeout=SSH_TIMEOUT_SECONDS,
-    )
+    try:
+        result = subprocess.run(
+            ["bash", "-lc", command],
+            text=True,
+            capture_output=True,
+            timeout=LAUNCH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return "launch_failed"
     return "launched" if result.returncode == 0 else "launch_failed"
 
 

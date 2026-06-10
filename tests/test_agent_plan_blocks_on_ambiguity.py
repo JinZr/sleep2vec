@@ -184,6 +184,50 @@ def test_plan_uses_user_decision_test_after_fit_in_command(tmp_path: Path):
     assert "--no-test-after-fit" in (output_dir / "run.sh").read_text()
 
 
+def test_plan_normalizes_scalar_runtime_devices(tmp_path: Path):
+    for value, expected in [(0, "--devices 0"), ("10", "--devices 10")]:
+        recipe = write_finetune_recipe(tmp_path / str(value))
+        payload = yaml.safe_load(recipe.read_text())
+        payload["runtime"]["devices"] = value
+        write_yaml(recipe, payload)
+        output_dir = tmp_path / f"plan_{value}"
+
+        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+        assert result.returncode == 0, result.stderr
+        script = (output_dir / "run.sh").read_text()
+        assert expected in script
+        assert "--devices 1 0" not in script
+
+
+def test_finetune_plan_honors_runtime_wandb_mode_env(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["runtime"]["wandb_mode"] = "offline"
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    assert "WANDB_MODE=offline python -m sleep2vec.finetune" in (output_dir / "run.sh").read_text()
+
+
+def test_hparam_trial_script_honors_base_runtime_wandb_mode_env(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["runtime"]["wandb_mode"] = "offline"
+    write_yaml(base_recipe, base_payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    assert "WANDB_MODE=offline python -m sleep2vec.finetune" in (output_dir / "trial_000.sh").read_text()
+
+
 def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("checkpoint")
