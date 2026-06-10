@@ -14,6 +14,7 @@ from .hparam import (
     generate_external_eval,
     launch_hparam_trials,
     monitor_hparam_trials,
+    scan_hparam_checkpoints,
     select_hparam_candidates,
     stop_hparam_trial,
     threshold_hparam_outputs,
@@ -128,6 +129,8 @@ def _build_parser() -> argparse.ArgumentParser:
     external.add_argument("--kaldi-manifest")
     external.add_argument("--finetune-data-index")
     external.add_argument("--eval-split", default="test")
+    external.add_argument("--top-k", type=int, default=1)
+    external.add_argument("--all-candidates", action="store_true")
     external.set_defaults(func=_cmd_hparam_external_eval)
 
     threshold = sub.add_parser("hparam-threshold")
@@ -138,7 +141,19 @@ def _build_parser() -> argparse.ArgumentParser:
     ensemble = sub.add_parser("hparam-ensemble")
     ensemble.add_argument("--run-dir", required=True)
     ensemble.add_argument("--candidates", required=True)
+    ensemble.add_argument("--search-combinations", action="store_true")
+    ensemble.add_argument("--max-size", type=int)
+    ensemble.add_argument("--metric", default="exploratory_test_auroc")
+    ensemble.add_argument("--mode", choices=["max", "min"], default="max")
+    ensemble.add_argument("--top-k", type=int)
     ensemble.set_defaults(func=_cmd_hparam_ensemble)
+
+    checkpoint_scan = sub.add_parser("hparam-checkpoint-scan")
+    checkpoint_scan.add_argument("--run-dir", required=True)
+    checkpoint_scan.add_argument("--metric", required=True)
+    checkpoint_scan.add_argument("--mode", choices=["max", "min"], required=True)
+    checkpoint_scan.add_argument("--top-k", type=int)
+    checkpoint_scan.set_defaults(func=_cmd_hparam_checkpoint_scan)
 
     digest = sub.add_parser("hparam-digest")
     digest.add_argument("--run-dir", required=True)
@@ -286,6 +301,8 @@ def _cmd_hparam_external_eval(args: argparse.Namespace) -> int:
         kaldi_manifest=args.kaldi_manifest,
         finetune_data_index=args.finetune_data_index,
         eval_split=args.eval_split,
+        top_k=args.top_k,
+        all_candidates=args.all_candidates,
     )
     print(f"Wrote {script}")
     return 0
@@ -298,8 +315,22 @@ def _cmd_hparam_threshold(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_ensemble(args: argparse.Namespace) -> int:
-    summary = ensemble_hparam_outputs(args.run_dir, args.candidates)
+    summary = ensemble_hparam_outputs(
+        args.run_dir,
+        args.candidates,
+        search_combinations=args.search_combinations,
+        max_size=args.max_size,
+        metric=args.metric,
+        mode=args.mode,
+        top_k=args.top_k,
+    )
     print(f"Wrote {summary}")
+    return 0
+
+
+def _cmd_hparam_checkpoint_scan(args: argparse.Namespace) -> int:
+    ranking = scan_hparam_checkpoints(args.run_dir, args.metric, args.mode, top_k=args.top_k)
+    print(f"Wrote {ranking}")
     return 0
 
 

@@ -179,6 +179,8 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_
     selected.write_text(
         "trial_id,rank,config,checkpoint_path\n"
         f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"
+        f"trial_001,2,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=2.ckpt'}\n"
+        f"trial_002,3,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=3.ckpt'}\n"
     )
 
     locked = _run("hparam-external-eval", "--run-dir", str(plan_dir), "--selected", str(selected))
@@ -196,20 +198,93 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_
 
     assert unlocked.returncode == 0, unlocked.stderr
     original = yaml.safe_load((plan_dir / "configs" / "trial_000.yaml").read_text())
-    external = yaml.safe_load((plan_dir / "external_eval_configs" / "trial_000_external.yaml").read_text())
+    external = yaml.safe_load((plan_dir / "external_eval_configs" / "trial_000_001_external.yaml").read_text())
     assert external["data"]["finetune_data_index"] == "external_index.csv"
     assert external["model"] == original["model"]
-    assert "python -m sleep2vec.infer" in (plan_dir / "external_eval.sh").read_text()
+    assert (plan_dir / "external_eval.sh").read_text().count("python -m sleep2vec.infer") == 1
+
+    top_two = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--unlock-final-test",
+        "--top-k",
+        "2",
+    )
+    assert top_two.returncode == 0, top_two.stderr
+    assert len(_read_table(plan_dir / "external_eval_manifest.tsv")) == 2
+
+    all_candidates = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--unlock-final-test",
+        "--all-candidates",
+    )
+    assert all_candidates.returncode == 0, all_candidates.stderr
+    assert len(_read_table(plan_dir / "external_eval_manifest.tsv")) == 3
+
+
+def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run_dir = plan_dir / "log-finetune" / "unit_hparam-trial_000"
+    ckpt_dir = run_dir / "checkpoints"
+    history_dir = run_dir / "wandb" / "run-1" / "files"
+    ckpt_dir.mkdir(parents=True)
+    history_dir.mkdir(parents=True)
+    (ckpt_dir / "epoch=13.ckpt").write_text("fixed13")
+    (ckpt_dir / "epoch=20.ckpt").write_text("fixed20")
+    (ckpt_dir / "best-epoch=20.ckpt").write_text("alias")
+    (history_dir / "wandb-history.jsonl").write_text(
+        json.dumps({"epoch": 13, "val_auroc": 0.72}) + "\n" + json.dumps({"epoch": 20, "val_auroc": 0.81}) + "\n"
+    )
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "unit_hparam-trial_000",
+                "best_model_path": str(ckpt_dir / "best-epoch=20.ckpt"),
+                "epoch": 20,
+                "metrics": {"val_auroc": 0.5},
+            }
+        )
+    )
+
+    result = _run("hparam-checkpoint-scan", "--run-dir", str(plan_dir), "--metric", "val_auroc", "--mode", "max")
+
+    assert result.returncode == 0, result.stderr
+    rows = _read_table(plan_dir / "checkpoint_ranking.csv")
+    assert rows[0]["epoch"] == "20"
+    assert rows[0]["score"] == "0.81"
+    assert rows[0]["checkpoint_path"].endswith("epoch=20.ckpt")
+    assert "best-epoch" not in rows[0]["checkpoint_path"]
+    assert rows[0]["source"] == "history"
 
 
 def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
-    val = tmp_path / "val.csv"
-    test = tmp_path / "test.csv"
-    pd.DataFrame({"label": [0, 0, 1, 1], "prob": [0.1, 0.4, 0.6, 0.9]}).to_csv(val, index=False)
-    pd.DataFrame({"label": [0, 1, 1, 0], "prob": [0.2, 0.8, 0.7, 0.3]}).to_csv(test, index=False)
+    val_a = tmp_path / "val_a.csv"
+    test_a = tmp_path / "test_a.csv"
+    val_b = tmp_path / "val_b.csv"
+    test_b = tmp_path / "test_b.csv"
+    val_c = tmp_path / "val_c.csv"
+    test_c = tmp_path / "test_c.csv"
+    pd.DataFrame({"label": [0, 0, 1, 1], "prob": [0.1, 0.2, 0.8, 0.9]}).to_csv(val_a, index=False)
+    pd.DataFrame({"label": [0, 0, 1, 1], "prob": [0.1, 0.2, 0.8, 0.9]}).to_csv(test_a, index=False)
+    pd.DataFrame({"label": [0, 0, 1, 1], "prob": [0.2, 0.8, 0.7, 0.6]}).to_csv(val_b, index=False)
+    pd.DataFrame({"label": [0, 0, 1, 1], "prob": [0.2, 0.8, 0.7, 0.6]}).to_csv(test_b, index=False)
+    pd.DataFrame({"label": [0, 0, 1, 1], "prob": [0.8, 0.7, 0.2, 0.1]}).to_csv(val_c, index=False)
+    pd.DataFrame({"label": [0, 0, 1, 1], "prob": [0.8, 0.7, 0.2, 0.1]}).to_csv(test_c, index=False)
     selected = tmp_path / "selected.csv"
     selected.write_text(
-        "trial_id,val_predictions_path,test_predictions_path\n" f"trial_000,{val},{test}\n" f"trial_001,{val},{test}\n"
+        "trial_id,val_predictions_path,test_predictions_path\n"
+        f"trial_000,{val_a},{test_a}\n"
+        f"trial_001,{val_b},{test_b}\n"
+        f"trial_002,{val_c},{test_c}\n"
     )
 
     threshold = _run("hparam-threshold", "--run-dir", str(tmp_path), "--selected", str(selected))
@@ -221,4 +296,25 @@ def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
     assert float(threshold_rows[0]["test_auroc"]) == 1.0
     assert "test_f1" in threshold_rows[0]
     ensemble_rows = _read_table(tmp_path / "ensemble_summary.csv")
-    assert ensemble_rows[0]["n_models"] == "2"
+    assert ensemble_rows[0]["n_models"] == "3"
+
+    ensemble_search = _run(
+        "hparam-ensemble",
+        "--run-dir",
+        str(tmp_path),
+        "--candidates",
+        str(selected),
+        "--search-combinations",
+        "--max-size",
+        "2",
+        "--metric",
+        "exploratory_test_auroc",
+        "--top-k",
+        "6",
+    )
+
+    assert ensemble_search.returncode == 0, ensemble_search.stderr
+    search_rows = _read_table(tmp_path / "ensemble_summary.csv")
+    assert len(search_rows) == 6
+    assert search_rows[0]["rank"] == "1"
+    assert any(row["n_models"] == "2" for row in search_rows)

@@ -11,6 +11,7 @@ Requires base recipe, search method, search parameters, budget, selection metric
 - `python -m agent_tools plan --recipe <recipe> --output-dir <dir>`
 - `python -m agent_tools hparam-launch --plan-dir <dir>`
 - `python -m agent_tools hparam-monitor --run-dir <dir> --once`
+- `python -m agent_tools hparam-checkpoint-scan --run-dir <dir> --metric <metric> --mode max|min`
 - `python -m agent_tools hparam-adaptive-init --recipe <recipe> --output-dir <dir>`
 - `python -m agent_tools hparam-adaptive-step --workflow-dir <dir>`
 
@@ -37,7 +38,7 @@ Stop and consult the user if:
 - Adaptive output would overwrite an older round instead of appending a new round/event.
 
 ## Canonical commands
-Generate shell scripts that call the recipe variant's `finetune` module for trials. For active orchestration, run `hparam-launch` after `agent_tools plan`; dry-run is the default, and `--execute` is required to start jobs. Monitor with `hparam-monitor`, stop only with `hparam-stop --trial-id <id>`, rank validation candidates with `hparam-select`, tune binary thresholds with `hparam-threshold`, and average saved probabilities with `hparam-ensemble`. Use the same variant's `infer` module only through `hparam-external-eval --unlock-final-test` or an explicitly unlocked final evaluation script.
+Generate shell scripts that call the recipe variant's `finetune` module for trials. For active orchestration, run `hparam-launch` after `agent_tools plan`; dry-run is the default, and `--execute` is required to start jobs. Monitor with `hparam-monitor`, stop only with `hparam-stop --trial-id <id>`, rank validation candidates with `hparam-select`, scan fixed epoch checkpoints with `hparam-checkpoint-scan`, tune binary thresholds with `hparam-threshold`, and average saved probabilities with `hparam-ensemble`. Use `hparam-ensemble --search-combinations` for probability-average combination ranking. Use the same variant's `infer` module only through `hparam-external-eval --unlock-final-test` or an explicitly unlocked final evaluation script; pass `--top-k` or `--all-candidates` when evaluating more than rank 1.
 
 For adaptive tuning, initialize with `hparam-adaptive-init`, then use `hparam-adaptive-step` or `hparam-adaptive-loop`. Adaptive commands append `events.jsonl`, `trial_registry.tsv`, digests, suggestions, and per-round plans; they must not rewrite previous round plans, scripts, configs, logs, or checkpoints.
 

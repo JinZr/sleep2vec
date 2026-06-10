@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from itertools import combinations
 import json
 import math
 import os
@@ -140,6 +141,8 @@ def generate_external_eval(
     kaldi_manifest: str | None = None,
     finetune_data_index: str | None = None,
     eval_split: str = "test",
+    top_k: int = 1,
+    all_candidates: bool = False,
 ) -> Path:
     if not unlock_final_test:
         raise ValueError("hparam-external-eval requires --unlock-final-test.")
@@ -148,16 +151,14 @@ def generate_external_eval(
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
     base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
-    rows = _read_rows(selected_csv)
+    rows = _selected_candidate_rows(_read_rows(selected_csv), top_k=top_k, all_candidates=all_candidates)
     config_dir = root / "external_eval_configs"
     config_dir.mkdir(parents=True, exist_ok=True)
     commands = []
     manifest_rows = []
-    for row in rows:
-        if str(row.get("rank", "1")) not in {"", "1"}:
-            continue
+    for index, row in enumerate(rows, start=1):
         source_config = Path(str(row["config"]))
-        target_config = config_dir / f"{row['trial_id']}_external.yaml"
+        target_config = config_dir / f"{_candidate_id(row)}_{index:03d}_external.yaml"
         _copy_config_with_data_paths(
             source_config,
             target_config,
@@ -165,6 +166,9 @@ def generate_external_eval(
             kaldi_manifest=kaldi_manifest,
             finetune_data_index=finetune_data_index,
         )
+        checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
+        if not checkpoint_path:
+            raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
         command = _render_command(
             [
                 "python",
@@ -173,7 +177,7 @@ def generate_external_eval(
                 "--config",
                 str(target_config),
                 "--ckpt-path",
-                row["checkpoint_path"],
+                checkpoint_path,
                 "--label-name",
                 base_inputs.get("label_name") or (recipe.get("inputs") or {}).get("label_name"),
                 "--eval-split",
@@ -185,6 +189,27 @@ def generate_external_eval(
     _write_rows(root / "external_eval_manifest.tsv", manifest_rows)
     write_text(root / "external_eval.sh", "\n".join(_script_lines(commands)) + "\n", executable=True)
     return root / "external_eval.sh"
+
+
+def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_k: int | None = None) -> Path:
+    root = Path(run_dir)
+    plan = _read_plan(root)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    rows = []
+    for trial in plan.get("trials", []):
+        version = trial.get("version") or f"{recipe.get('name')}-{trial.get('trial_id')}"
+        manifest_path = _find_run_manifest(root, str(version), recipe)
+        manifest = _read_json(manifest_path) if manifest_path else {}
+        rows.extend(_checkpoint_scan_rows(trial, str(version), metric, manifest_path, manifest))
+    reverse = mode == "max"
+    ranked = sorted(rows, key=lambda row: _sortable_score(row.get("score"), reverse), reverse=reverse)
+    if top_k is not None:
+        ranked = ranked[:top_k]
+    for rank, row in enumerate(ranked, start=1):
+        row["rank"] = rank
+    out = root / "checkpoint_ranking.csv"
+    _write_rows(out, ranked)
+    return out
 
 
 def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> Path:
@@ -212,38 +237,33 @@ def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> P
     return out
 
 
-def ensemble_hparam_outputs(run_dir: str | Path, candidates_csv: str | Path) -> Path:
+def ensemble_hparam_outputs(
+    run_dir: str | Path,
+    candidates_csv: str | Path,
+    *,
+    search_combinations: bool = False,
+    max_size: int | None = None,
+    metric: str = "exploratory_test_auroc",
+    mode: str = "max",
+    top_k: int | None = None,
+) -> Path:
     rows = _read_rows(candidates_csv)
-    val_sets = []
-    test_sets = []
-    trial_ids = []
-    for row in rows:
-        val_path = _first_value(row, ["val_predictions_path", "val_logits_path"])
-        test_path = _first_value(row, ["test_predictions_path", "test_logits_path"])
-        if not val_path:
-            continue
-        val_sets.append(_read_binary_predictions(val_path))
-        if test_path:
-            test_sets.append(_read_binary_predictions(test_path))
-        trial_ids.append(str(row.get("trial_id")))
+    usable = [row for row in rows if _first_value(row, ["val_predictions_path", "val_logits_path"])]
     summary = []
-    if val_sets:
-        y_val = val_sets[0]["y"]
-        p_val = [sum(items) / len(items) for items in zip(*(item["p"] for item in val_sets))]
-        threshold = _best_f1_threshold(y_val, p_val)
-        val_metrics = _binary_metrics(y_val, p_val, threshold)
-        row = {
-            "ensemble_id": "+".join(trial_ids),
-            "n_models": len(val_sets),
-            "threshold": threshold,
-            **{f"val_{key}": value for key, value in val_metrics.items()},
-        }
-        if test_sets:
-            y_test = test_sets[0]["y"]
-            p_test = [sum(items) / len(items) for items in zip(*(item["p"] for item in test_sets))]
-            test_metrics = _binary_metrics(y_test, p_test, threshold)
-            row.update({f"exploratory_test_{key}": value for key, value in test_metrics.items()})
-        summary.append(row)
+    if usable and search_combinations:
+        largest = min(max_size or len(usable), len(usable))
+        for size in range(1, largest + 1):
+            for combo in combinations(usable, size):
+                summary.append(_ensemble_summary_row(list(combo)))
+        reverse = mode == "max"
+        summary = sorted(summary, key=lambda row: _sortable_score(row.get(metric), reverse), reverse=reverse)
+        if top_k is not None:
+            summary = summary[:top_k]
+        for rank, row in enumerate(summary, start=1):
+            row["rank"] = rank
+            row["rank_metric"] = metric
+    elif usable:
+        summary.append(_ensemble_summary_row(usable))
     out = Path(run_dir) / "ensemble_summary.csv"
     _write_rows(out, summary)
     return out
@@ -254,6 +274,122 @@ def _read_plan(run_dir: Path) -> dict[str, Any]:
     if not plan_path.exists():
         raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
     return json.loads(plan_path.read_text())
+
+
+def _selected_candidate_rows(
+    rows: list[dict[str, str]], *, top_k: int = 1, all_candidates: bool = False
+) -> list[dict[str, str]]:
+    if all_candidates:
+        return rows
+    selected = []
+    for row in rows:
+        rank = row.get("rank")
+        if rank in (None, ""):
+            selected.append(row)
+            continue
+        try:
+            if int(float(rank)) <= top_k:
+                selected.append(row)
+        except ValueError:
+            continue
+    return selected
+
+
+def _checkpoint_scan_rows(
+    trial: dict[str, Any],
+    version: str,
+    metric: str,
+    manifest_path: Path | None,
+    manifest: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows = []
+    if manifest_path:
+        for epoch, score in _history_metric_rows(manifest_path.parent, metric):
+            checkpoint = _checkpoint_for_epoch(manifest_path, epoch)
+            if checkpoint:
+                rows.append(
+                    {
+                        "trial_id": trial.get("trial_id"),
+                        "version": version,
+                        "config": trial.get("config"),
+                        "metric": metric,
+                        "score": score,
+                        "epoch": epoch,
+                        "checkpoint_path": str(checkpoint),
+                        "run_manifest": str(manifest_path),
+                        "source": "history",
+                    }
+                )
+    if rows:
+        return rows
+    score = _metric_value(manifest, metric)
+    checkpoint = _fixed_checkpoint_path(manifest, manifest_path)
+    if score not in ("", None) and checkpoint:
+        rows.append(
+            {
+                "trial_id": trial.get("trial_id"),
+                "version": version,
+                "config": trial.get("config"),
+                "metric": metric,
+                "score": score,
+                "epoch": manifest.get("epoch") or _epoch_from_checkpoint_name(Path(checkpoint).name),
+                "checkpoint_path": checkpoint,
+                "run_manifest": str(manifest_path or ""),
+                "source": "manifest",
+            }
+        )
+    return rows
+
+
+def _history_metric_rows(run_dir: Path, metric: str) -> list[tuple[int, float]]:
+    by_epoch: dict[int, float] = {}
+    for record in _history_records(run_dir):
+        if metric not in record:
+            continue
+        epoch = _history_epoch(record)
+        score = _float_or_none(record.get(metric))
+        if epoch is not None and score is not None:
+            by_epoch[epoch] = score
+    return sorted(by_epoch.items())
+
+
+def _history_records(run_dir: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for path in sorted(run_dir.glob("wandb/**/wandb-history*.jsonl")):
+        for line in path.read_text(errors="replace").splitlines():
+            if line.strip():
+                records.append(json.loads(line))
+    for path in sorted(run_dir.glob("wandb/**/wandb-history*.csv")):
+        with path.open(newline="") as file_obj:
+            records.extend(csv.DictReader(file_obj))
+    history = (
+        _read_json(run_dir / "run_manifest.json").get("history") if (run_dir / "run_manifest.json").exists() else None
+    )
+    if isinstance(history, list):
+        records.extend(row for row in history if isinstance(row, dict))
+    return records
+
+
+def _history_epoch(record: dict[str, Any]) -> int | None:
+    for key in ("epoch", "trainer/epoch", "current_epoch", "global_epoch"):
+        value = _float_or_none(record.get(key))
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _checkpoint_for_epoch(manifest_path: Path, epoch: int) -> Path | None:
+    ckpt_dir = manifest_path.parent / "checkpoints"
+    for path in sorted(ckpt_dir.glob(f"epoch={epoch}*.ckpt")):
+        if not path.name.startswith("best-"):
+            return path
+    return None
+
+
+def _epoch_from_checkpoint_name(name: str) -> str:
+    if not name.startswith("epoch="):
+        return ""
+    return name.split("=", 1)[1].split("-", 1)[0].split(".", 1)[0]
 
 
 def _local_dir(run_dir: Path, raw: Any, default_name: str) -> Path:
@@ -472,6 +608,38 @@ def _read_binary_predictions(path: str | Path) -> dict[str, list[float]]:
     return {"y": y, "p": raw}
 
 
+def _ensemble_summary_row(rows: list[dict[str, str]]) -> dict[str, Any]:
+    ids = [_candidate_id(row) for row in rows]
+    val_sets = [
+        _read_binary_predictions(_first_value(row, ["val_predictions_path", "val_logits_path"])) for row in rows
+    ]
+    y_val, p_val = _average_binary_predictions(val_sets)
+    threshold = _best_f1_threshold(y_val, p_val)
+    val_metrics = _binary_metrics(y_val, p_val, threshold)
+    summary = {
+        "ensemble_id": "+".join(ids),
+        "n_models": len(rows),
+        "member_checkpoint_paths": ";".join(_first_value(row, ["checkpoint_path", "ckpt_path"]) for row in rows),
+        "threshold": threshold,
+        **{f"val_{key}": value for key, value in val_metrics.items()},
+    }
+    test_paths = [_first_value(row, ["test_predictions_path", "test_logits_path"]) for row in rows]
+    if all(test_paths):
+        y_test, p_test = _average_binary_predictions([_read_binary_predictions(path) for path in test_paths])
+        test_metrics = _binary_metrics(y_test, p_test, threshold)
+        summary.update({f"exploratory_test_{key}": value for key, value in test_metrics.items()})
+    return summary
+
+
+def _average_binary_predictions(items: list[dict[str, list[float]]]) -> tuple[list[int], list[float]]:
+    y = items[0]["y"]
+    for item in items[1:]:
+        if item["y"] != y:
+            raise ValueError("Prediction files must have aligned labels for ensembling.")
+    p = [sum(values) / len(values) for values in zip(*(item["p"] for item in items))]
+    return y, p
+
+
 def _first_column(df: pd.DataFrame, names: list[str]) -> str | None:
     for name in names:
         if name in df.columns:
@@ -485,6 +653,20 @@ def _first_value(row: dict[str, Any], names: list[str]) -> str:
         if value not in (None, ""):
             return str(value)
     return ""
+
+
+def _candidate_id(row: dict[str, Any]) -> str:
+    return str(
+        row.get("trial_id") or row.get("version") or Path(_first_value(row, ["checkpoint_path"])).stem or "candidate"
+    )
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return score if math.isfinite(score) else None
 
 
 def _best_f1_threshold(y_true: list[int], prob: list[float]) -> float:
