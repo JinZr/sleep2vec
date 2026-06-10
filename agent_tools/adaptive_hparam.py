@@ -441,7 +441,7 @@ def _stop_bad_running_trials(root: Path, round_dir: Path, recipe: dict[str, Any]
     for row in _read_rows(round_dir / "trial_status.tsv"):
         if row.get("status") != "running":
             continue
-        should_stop = _log_has_failure(row.get("log_path"))
+        should_stop = _log_has_failure(row.get("log_path"), row)
         manifest = _find_run_manifest(round_dir, row.get("version", ""), recipe)
         data = _read_json(manifest) if manifest else {}
         score = _metric_value(data, objective["metric"])

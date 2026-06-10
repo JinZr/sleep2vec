@@ -249,6 +249,37 @@ def test_adaptive_step_execute_stops_bad_running_trial_through_recorded_manifest
     assert "stop_bad_running_trial" in (workflow_dir / "adaptive" / "events.jsonl").read_text()
 
 
+def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=1)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    (round_dir / "trial_status.tsv").write_text(
+        "trial_id\tversion\tstatus\ttarget\thost\tlog_path\n"
+        "trial_000\tunit_adaptive-round-000-trial_000\trunning\tssh\tbaichuan3\t/remote/trial.log\n"
+    )
+    seen_rows = []
+    stopped = []
+
+    def fake_log_has_failure(path, row=None):
+        seen_rows.append((path, row))
+        return True
+
+    def fake_stop(run_dir, trial_id):
+        stopped.append((Path(run_dir), trial_id))
+        return Path(run_dir) / "trial_status.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "_log_has_failure", fake_log_has_failure)
+    monkeypatch.setattr(adaptive_hparam, "stop_hparam_trial", fake_stop)
+
+    adaptive_hparam._stop_bad_running_trials(workflow_dir, round_dir, adaptive_hparam.load_recipe_with_base(recipe))
+
+    assert seen_rows[0][0] == "/remote/trial.log"
+    assert seen_rows[0][1]["target"] == "ssh"
+    assert seen_rows[0][1]["host"] == "baichuan3"
+    assert stopped == [(round_dir, "trial_000")]
+
+
 def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=1)
     workflow_dir = tmp_path / "workflow"
