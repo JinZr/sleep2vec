@@ -53,8 +53,7 @@ def parse_args() -> argparse.Namespace:
         "--output-template",
         default="data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle",
         help=(
-            "Output path template. Available fields: {dataset}, {split}, {tokens}, {n_tokens}, "
-            "{meta}, {meta_suffix}."
+            "Output path template. Available fields: {dataset}, {split}, {tokens}, {n_tokens}, {meta}, {meta_suffix}."
         ),
     )
     parser.add_argument(
@@ -101,7 +100,12 @@ def parse_args() -> argparse.Namespace:
             "Built-in validation channels 'stage5' and 'ahi' are also allowed."
         ),
     )
-    parser.add_argument("--batch-size", type=int, default=16, help="Dataloader batch size in preset filtering.")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="Dataloader batch size in preset filtering.",
+    )
     parser.add_argument(
         "--shuffle",
         action=argparse.BooleanOptionalAction,
@@ -219,7 +223,9 @@ def _load_config_mapping(config_path: Path) -> dict[str, t.Any]:
     return data
 
 
-def _load_model_channels(config_data: dict[str, t.Any]) -> tuple[list[str], dict[str, int]]:
+def _load_model_channels(
+    config_data: dict[str, t.Any],
+) -> tuple[list[str], dict[str, int]]:
     model_block = config_data.get("model")
     if not isinstance(model_block, dict):
         raise ValueError("Config YAML must contain a top-level model.channels list.")
@@ -243,7 +249,9 @@ def _load_model_channels(config_data: dict[str, t.Any]) -> tuple[list[str], dict
     return all_channels, all_channel_input_dims
 
 
-def _load_preset_build_block(config_data: dict[str, t.Any]) -> tuple[list[str] | None, int | None]:
+def _load_preset_build_block(
+    config_data: dict[str, t.Any],
+) -> tuple[list[str] | None, int | None]:
     raw = config_data.get("preset_build")
     if raw is None:
         return None, None
@@ -296,8 +304,8 @@ def _resolve_validation_channels(
     unknown = [name for name in resolved if name not in channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
     if unknown:
         raise ValueError(
-            "Channels must be declared in YAML model.channels or preset_build.required_channels must use "
-            "built-ins only. "
+            "Channels must be declared in YAML model.channels or "
+            "preset_build.required_channels must use built-ins only. "
             f"Unknown: {unknown}; model channels: {model_channels}"
         )
 

@@ -735,7 +735,10 @@ def write_edf_manual(path: str, signals: Sequence[SignalSpec], metadata: StudyMe
     n_signals = len(signals)
     start_dt = metadata.export_start or metadata.recording_start or datetime.utcnow().replace(microsecond=0)
     patient_id = f"WatchPAT {metadata.patient_code}".strip()
-    rec_note = f"{metadata.device_model or 'WatchPAT'} SN={metadata.device_serial or '?'} src={os.path.basename(metadata.source_path)}"
+    rec_note = (
+        f"{metadata.device_model or 'WatchPAT'} SN={metadata.device_serial or '?'} "
+        f"src={os.path.basename(metadata.source_path)}"
+    )
 
     header_bytes = 256 + 256 * n_signals
     with open(path, "wb") as f:
