@@ -209,6 +209,17 @@
 - Reuse guidance: reuse for any tabular experiment summary output.
 - Duplication risk notes: current column ordering and schema-expansion policy is encoded here; do not create parallel result-writer variants casually.
 
+## `sleep2vec.results.save_training_run_manifest`
+
+- File: `sleep2vec/results.py`
+- Signature: `save_training_run_manifest(args, *, manifest_path, status, monitor=None, monitor_mode=None, best_model_path=None, best_model_score=None, last_checkpoint_path=None, results_csv_path=None, metrics=None) -> None`
+- Purpose and contract: write a lightweight finetune training `run_manifest.json` with status, config/CLI paths, label, monitor, checkpoint identity, test-after-fit policy, result path, metrics, and git metadata.
+- Important inputs/outputs: normalized finetune args plus manifest fields in; JSON manifest out.
+- Side effects: rank-zero-gated atomic JSON write.
+- Key callers/callees: caller is `sleep2vec.finetune.supervised`; callees include `_write_json_atomic`, `_json_safe`, and `_git_manifest`.
+- Reuse guidance: use this writer for future finetune run-manifest updates instead of scattering JSON writes in entrypoints.
+- Duplication risk notes: keep aggregate metrics CSV and run manifest separate.
+
 ## `sleep2vec.results.prepare_inference_result_paths`
 
 - File: `sleep2vec/results.py`

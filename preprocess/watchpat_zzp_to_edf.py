@@ -11,11 +11,18 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 import warnings
 import zipfile
 
 import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agent_tools.progress import write_progress
 
 try:
     import pyedflib  # type: ignore
@@ -968,6 +975,18 @@ def _run_batch_conversion(args: argparse.Namespace, input_root: Path, files: Seq
     converted = 0
     skipped = 0
     failures: List[Dict[str, str]] = []
+    processed = 0
+    started_at = time.time()
+    write_progress(
+        output_root,
+        status="running",
+        task="watchpat_zzp_to_edf",
+        processed=0,
+        total=len(files),
+        success=0,
+        failed=0,
+        start_time=started_at,
+    )
     iterator = files
     if tqdm is not None:
         iterator = tqdm(files, desc="Converting .zzp files", unit="file")
@@ -982,6 +1001,19 @@ def _run_batch_conversion(args: argparse.Namespace, input_root: Path, files: Seq
 
         if args.skip_existing and output_path.exists():
             skipped += 1
+            processed += 1
+            write_progress(
+                output_root,
+                status="running",
+                task="watchpat_zzp_to_edf",
+                processed=processed,
+                total=len(files),
+                success=converted,
+                failed=len(failures),
+                start_time=started_at,
+                current_item=str(input_file),
+                message=f"skipped={skipped}",
+            )
             continue
 
         _ensure_parent_dir(output_path)
@@ -1006,6 +1038,19 @@ def _run_batch_conversion(args: argparse.Namespace, input_root: Path, files: Seq
                     "error": str(exc),
                 }
             )
+        processed += 1
+        write_progress(
+            output_root,
+            status="running",
+            task="watchpat_zzp_to_edf",
+            processed=processed,
+            total=len(files),
+            success=converted,
+            failed=len(failures),
+            start_time=started_at,
+            current_item=str(input_file),
+            message=f"converted={converted} skipped={skipped}",
+        )
 
     print(
         json.dumps(
@@ -1023,6 +1068,17 @@ def _run_batch_conversion(args: argparse.Namespace, input_root: Path, files: Seq
             indent=2,
             sort_keys=True,
         )
+    )
+    write_progress(
+        output_root,
+        status="completed" if not failures else "failed",
+        task="watchpat_zzp_to_edf",
+        processed=len(files),
+        total=len(files),
+        success=converted,
+        failed=len(failures),
+        start_time=started_at,
+        message=f"converted={converted} skipped={skipped} failed={len(failures)}",
     )
     return 1 if failures else 0
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 import pickle
 import sys
@@ -17,6 +18,7 @@ from preprocess.save_dataset_presets import (
     _load_index_df,
     _load_model_channels,
     _load_preset_build_block,
+    _preset_manifest_payload,
     _resolve_channels_and_dims,
     _resolve_effective_min_channels,
     _resolve_validation_channels,
@@ -317,6 +319,52 @@ def test_main_prunes_overlap_eval_splits_in_preset_planning(
     module.main()
 
     assert [job["split"] for job in submitted_jobs] == ["train"]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "preprocess.save_dataset_presets",
+        "sleep2expert.preprocess.save_dataset_presets",
+        "sleep2vec2.preprocess.save_dataset_presets",
+    ],
+)
+def test_main_writes_progress_status_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str):
+    module = importlib.import_module(module_name)
+
+    def fake_build_preset_job(**kwargs):
+        return kwargs["output_path"], 1
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    output_template = tmp_path / "presets" / "{dataset}_{split}.pkl"
+    pd.DataFrame([{"path": "train.npz", "split": "train", "duration": 60}]).to_csv(index_path, index=False)
+
+    monkeypatch.setattr(module, "_build_preset_job", fake_build_preset_job)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(output_template),
+            "--split",
+            "train",
+            "--min-channels",
+            "1",
+        ],
+    )
+
+    module.main()
+
+    progress = json.loads((tmp_path / "presets" / "status" / "progress.json").read_text())
+    assert progress["task"] == "save_dataset_presets"
+    assert progress["status"] == "completed"
+    assert progress["processed"] == 1
 
 
 @pytest.mark.parametrize(
@@ -974,3 +1022,39 @@ def test_load_index_df_rejects_multiple_index_paths(tmp_path: Path):
 
     with pytest.raises(ValueError, match="accepts exactly one index CSV"):
         _load_index_df([str(first), str(second)])
+
+
+def test_preset_manifest_payload_summarizes_available_channels_and_source(tmp_path: Path):
+    output_path = tmp_path / "preset.pkl"
+    samples = [
+        types.SimpleNamespace(
+            payload={"available_channels": ["ppg", "stage5"]},
+            metadata={"source": "mesa"},
+        ),
+        types.SimpleNamespace(
+            payload={"available_channels": ["ppg", "ahi", "stage5"]},
+            metadata={"source": "mesa"},
+        ),
+    ]
+    with output_path.open("wb") as file_obj:
+        pickle.dump(samples, file_obj)
+
+    manifest = _preset_manifest_payload(
+        output_path=output_path,
+        config_path=tmp_path / "config.yaml",
+        index_paths=[tmp_path / "index.csv"],
+        dataset_name="mesa",
+        split="train",
+        n_tokens=1535,
+        stride_tokens=0,
+        channels=["ppg", "ahi", "stage5"],
+        allow_missing_channels=True,
+        min_channels=2,
+        meta_data_name=None,
+        sample_count=2,
+    )
+
+    assert manifest["kind"] == "sleep2vec_preset"
+    assert manifest["sample_count"] == 2
+    assert manifest["available_channels_counts"] == {"ppg": 2, "stage5": 2, "ahi": 1}
+    assert manifest["source_counts"] == {"mesa": 2}

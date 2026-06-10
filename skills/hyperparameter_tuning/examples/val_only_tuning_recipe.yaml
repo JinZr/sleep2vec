@@ -1,0 +1,5 @@
+schema_version: 1
+name: val_only_tuning_example
+task: hparam_tune
+variant: sleep2vec
+base_recipe: recipes/templates/finetune_ppg_ahi_val_only.yaml

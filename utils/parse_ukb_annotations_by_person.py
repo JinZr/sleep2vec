@@ -12,9 +12,16 @@ import html
 import json
 from pathlib import Path
 import re
+import sys
 import time
 
 from tqdm import tqdm
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agent_tools.progress import write_progress
 
 MISSING_VALUES = {"", "NA"}
 PARTICIPANT_WRITE_RETRIES = 5
@@ -522,6 +529,19 @@ def parse_participants(
 
     written_count = 0
     skipped_withdrawn_count = 0
+    processed_count = 0
+    started_at = time.time()
+    write_progress(
+        output_root,
+        status="running",
+        task="parse_ukb_annotations_by_person",
+        processed=0,
+        total=total_rows,
+        success=0,
+        failed=0,
+        start_time=started_at,
+        message=f"dataset_id={dataset_id}",
+    )
     with tab_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.reader(handle, delimiter="\t")
         next(reader)
@@ -530,9 +550,22 @@ def parse_participants(
             if limit_rows is not None and row_index >= limit_rows:
                 break
 
+            processed_count += 1
             eid = row[eid_index]
             if exclude_withdrawn and eid in withdrawn_eids:
                 skipped_withdrawn_count += 1
+                write_progress(
+                    output_root,
+                    status="running",
+                    task="parse_ukb_annotations_by_person",
+                    processed=processed_count,
+                    total=total_rows,
+                    success=written_count,
+                    failed=0,
+                    start_time=started_at,
+                    current_item=eid,
+                    message=f"dataset_id={dataset_id} skipped_withdrawn={skipped_withdrawn_count}",
+                )
                 continue
 
             values = {}
@@ -544,7 +577,30 @@ def parse_participants(
             path = participant_path(output_root, eid, dataset_id)
             write_participant_json(path, eid, dataset_id, tab_path.name, values)
             written_count += 1
+            write_progress(
+                output_root,
+                status="running",
+                task="parse_ukb_annotations_by_person",
+                processed=processed_count,
+                total=total_rows,
+                success=written_count,
+                failed=0,
+                start_time=started_at,
+                current_item=eid,
+                message=f"dataset_id={dataset_id} skipped_withdrawn={skipped_withdrawn_count}",
+            )
         progress.close()
+    write_progress(
+        output_root,
+        status="completed",
+        task="parse_ukb_annotations_by_person",
+        processed=processed_count,
+        total=total_rows,
+        success=written_count,
+        failed=0,
+        start_time=started_at,
+        message=f"dataset_id={dataset_id} written={written_count} skipped_withdrawn={skipped_withdrawn_count}",
+    )
 
     return {
         "participant_json_count": written_count,

@@ -1,0 +1,5 @@
+schema_version: 1
+name: sleep2expert_val_only_tuning_example
+task: hparam_tune
+variant: sleep2expert
+base_recipe: recipes/templates/finetune_sleep2expert_ahi_val_only.yaml

@@ -8,7 +8,7 @@ The repository is a config-driven multimodal sleep modeling system with five ope
 2. Construction and extension: `sleep2vec/registry.py`, `sleep2vec/builders.py`, `sleep2vec/backbones/`, `sleep2vec/modules/`, `sleep2vec/cls/`, `sleep2vec/downstreams/`
 3. Model and trainer runtime: `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/sleep2vec_adaptation.py`
 4. Data and preprocessing: `data/`, `preprocess/`, `sleep2vec/utils.py`, including both NPZ and Kaldi manifest backends
-5. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/sleep2vec_inference.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`, and standalone utilities under `utils/`
+5. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/sleep2vec_inference.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`, `agent_tools/`, and standalone utilities under `utils/`
 
 `sleep2vec2/` and `sleep2expert/` are tracked standalone namespaces on this branch. They mirror the root runtime surface with package-local `data/` and `preprocess/` modules instead of importing root `data` or `preprocess`. `sleep2expert/` also owns the MoE RoFormer, MoE regularization, finetune tuning policy, and routing-analysis export path.
 
@@ -22,6 +22,9 @@ Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task,
 - `python -m sleep2vec.infer`
 - `python -m sleep2expert.routing_analysis`
 - `python utils/check_configs.py`
+- `python -m agent_tools doctor --recipe ...`
+- `python -m agent_tools context --task ...`
+- `python -m agent_tools plan --recipe ...`
 - Preprocessing CLIs under `preprocess/`
 
 The package-local variant mirrors expose equivalent pretrain/adapt/finetune/infer and preprocessing module entrypoints under `sleep2vec2.*` and `sleep2expert.*`.
@@ -202,6 +205,11 @@ The canonical Kaldi path is:
   - split CSVs
   - mask statistics CSVs
   - EDF files and optional JSON summaries
+- Agent outputs:
+  - context bundles under `artifacts/agent_context/`
+  - command plans under `artifacts/agent_plans/`
+  - generated trial configs under `runs/generated/`
+  - blocked question files when consultation gates require user input
 
 ## Variant State On This Branch
 

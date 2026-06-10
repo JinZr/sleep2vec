@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-10
+
+- Added agent tooling workflow coverage for `agent_tools/`, `skills/`, `recipes/`, `agent_policies/`, and `doc/agent_contracts/`.
+- Documented stop-and-consult gates, `NEEDS_USER_INPUT` exit code `2`, blocked context/plan artifacts, and external-test unlock policy.
+- Tightened agent-tooling guidance for variant-aware `sleep2vec` / `sleep2vec2` / `sleep2expert` command generation, explicit final-test checkpoint selection, overwrite guards, and namespaced hparam search keys.
+- Updated reuse guidance to route agent-facing workflow support through `agent_tools.context`, `agent_tools.recipes`, `agent_tools.plans`, and `agent_tools.decisions`.
+- Corrected PPG AHI config-validation wording to require `[ppg, ahi, stage5]` with `min_channels=3`.
+
 ## 2026-05-31
 
 - Added token embedding extraction guidance for `sleep2vec.extract_embeddings` and package-local `sleep2vec2` / `sleep2expert` mirrors, including selected-layer hidden-state export and NPZ/Kaldi manifest outputs.

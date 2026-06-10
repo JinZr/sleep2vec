@@ -115,6 +115,22 @@ def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_conv_config():
     check_config_file(path)
 
 
+def test_repo_template_finetune_configs_do_not_bind_dataset_inputs():
+    offenders = []
+    for path in sorted((REPO_ROOT / "configs").rglob("*.yaml")):
+        if "examples" in path.parts:
+            continue
+        payload = yaml.safe_load(path.read_text()) or {}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        has_finetune_input_fields = "finetune_data_index" in data or "finetune_preset_path" in data
+        if has_finetune_input_fields and (
+            data.get("finetune_data_index") is not None or data.get("finetune_preset_path") is not None
+        ):
+            offenders.append(str(path.relative_to(REPO_ROOT)))
+
+    assert offenders == []
+
+
 @pytest.mark.parametrize(
     "path",
     [REPO_ROOT / "configs" / "examples" / "PRETRAIN_EXAMPLE.yaml"] + [path for _, path in EXAMPLE_FINETUNE_CONFIGS],

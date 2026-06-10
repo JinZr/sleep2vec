@@ -53,14 +53,17 @@ def _extract_multilabel_prediction_records(paths, starts, labels, logits) -> lis
 def _extract_classification_prediction_records(paths, starts, labels, logits) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     if logits.dim() == 3:
-        probs = torch.softmax(logits, dim=-1).to(torch.float32)
+        raw_logits = logits.to(torch.float32)
+        probs = torch.softmax(raw_logits, dim=-1)
         for idx, path in enumerate(paths):
             sample_labels = labels[idx].reshape(-1)
             sample_probs = probs[idx].reshape(-1, probs.size(-1))
+            sample_logits = raw_logits[idx].reshape(-1, raw_logits.size(-1))
             mask = sample_labels != -1
             if not mask.any():
                 continue
             valid_probs = sample_probs[mask].numpy()
+            valid_logits = sample_logits[mask].numpy()
             valid_labels = sample_labels[mask].to(torch.int64).numpy()
             records.append(
                 {
@@ -69,18 +72,21 @@ def _extract_classification_prediction_records(paths, starts, labels, logits) ->
                     "kind": "classification",
                     "groundtruth": valid_labels.tolist(),
                     "probabilities": valid_probs.tolist(),
+                    "logits": valid_logits.tolist(),
                     "prediction": valid_probs.argmax(axis=-1).astype(np.int64).tolist(),
                     "is_sequence": True,
                 }
             )
         return records
 
-    probs = torch.softmax(logits, dim=-1).to(torch.float32)
+    raw_logits = logits.to(torch.float32)
+    probs = torch.softmax(raw_logits, dim=-1)
     flat_labels = labels.reshape(-1)
     for idx, path in enumerate(paths):
         if idx >= probs.size(0) or flat_labels[idx].item() == -1:
             continue
         prob = probs[idx].numpy()
+        logit = raw_logits[idx].numpy()
         records.append(
             {
                 "path": str(path),
@@ -88,6 +94,7 @@ def _extract_classification_prediction_records(paths, starts, labels, logits) ->
                 "kind": "classification",
                 "groundtruth": int(flat_labels[idx].item()),
                 "probabilities": prob.tolist(),
+                "logits": logit.tolist(),
                 "prediction": int(prob.argmax()),
                 "is_sequence": False,
             }
@@ -179,6 +186,7 @@ def _build_classification_prediction_row(path: str, items: list[dict[str, object
     token_starts = _token_starts_for_prediction_items(items)
     if any(bool(item.get("is_sequence")) for item in items):
         probs = np.concatenate([np.asarray(item["probabilities"], dtype=np.float32) for item in items], axis=0)
+        logits = np.concatenate([np.asarray(item["logits"], dtype=np.float32) for item in items], axis=0)
         groundtruth = np.concatenate([np.asarray(item["groundtruth"], dtype=np.int64).reshape(-1) for item in items])
         prediction = probs.argmax(axis=-1).astype(np.int64)
         row: dict[str, object] = {
@@ -191,9 +199,13 @@ def _build_classification_prediction_row(path: str, items: list[dict[str, object
         }
         for class_idx in range(probs.shape[1]):
             row[f"prob_{class_idx}"] = probs[:, class_idx].tolist()
+            row[f"logit_{class_idx}"] = logits[:, class_idx].tolist()
+        if logits.shape[1] == 2:
+            row["logit"] = (logits[:, 1] - logits[:, 0]).tolist()
         return row
 
     probs = np.asarray([item["probabilities"] for item in items], dtype=np.float32).mean(axis=0)
+    logits = np.asarray([item["logits"] for item in items], dtype=np.float32).mean(axis=0)
     row = {
         "path": path,
         "groundtruth": int(items[0]["groundtruth"]),
@@ -204,6 +216,10 @@ def _build_classification_prediction_row(path: str, items: list[dict[str, object
     }
     for class_idx, value in enumerate(probs.tolist()):
         row[f"prob_{class_idx}"] = float(value)
+    for class_idx, value in enumerate(logits.tolist()):
+        row[f"logit_{class_idx}"] = float(value)
+    if logits.shape[0] == 2:
+        row["logit"] = float(logits[1] - logits[0])
     return row
 
 

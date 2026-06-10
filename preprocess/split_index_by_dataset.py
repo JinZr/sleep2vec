@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 import argparse
+from pathlib import Path
+import sys
+import time
 from typing import Dict
 
 import numpy as np
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agent_tools.progress import write_progress
 
 TRUTHY_MASK_VALUES = frozenset({"1", "1.0", "true", "t", "yes"})
 EXTERNAL_DATASET_PATTERN = r"(?:mros|mesa|shhs|hspS0001)"
@@ -165,6 +174,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    output_path = Path(args.output).expanduser()
+    started_at = time.time()
+    write_progress(
+        output_path.parent,
+        status="running",
+        task="split_index_by_dataset",
+        processed=0,
+        total=None,
+        success=0,
+        failed=0,
+        start_time=started_at,
+    )
 
     df = pd.read_csv(args.input, low_memory=False)
     if "dataset" not in df.columns:
@@ -212,6 +233,17 @@ def main() -> None:
     print("Per-group counts:")
     for dataset, counts in stats.items():
         print(f"  {dataset}: {counts}")
+    write_progress(
+        output_path.parent,
+        status="completed",
+        task="split_index_by_dataset",
+        processed=len(df),
+        total=len(df),
+        success=len(df),
+        failed=0,
+        start_time=started_at,
+        message=f"Wrote {args.output}",
+    )
 
 
 if __name__ == "__main__":

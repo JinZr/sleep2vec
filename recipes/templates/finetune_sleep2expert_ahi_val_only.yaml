@@ -1,0 +1,52 @@
+schema_version: 1
+name: sleep2expert_ahi_finetune_example
+task: finetune
+variant: sleep2expert
+
+inputs:
+  config: configs/sleep2expert/heartbeat_breath_ahi_finetune_large.yaml
+  label_name: ahi
+  pretrained_backbone_path: null
+
+runtime:
+  devices: [0]
+  precision: bf16-mixed
+  epochs: 30
+  batch_size: 12
+  num_workers: 8
+  lr: 1.0e-6
+  weight_decay: 1.0e-5
+
+artifacts:
+  version_name: sleep2expert-ahi-agent-example
+  results_csv_path: results/sleep2expert_ahi_agent_example.csv
+
+evaluation_policy:
+  selection_metric: val_ahi_pearson
+  selection_mode: max
+  selection_split: val
+  final_eval_split: test
+  external_test_locked: true
+  test_after_fit: false
+  require_manual_unlock_for_final_test: true
+
+decisions:
+  task:
+    value: finetune
+    source: explicit_recipe
+  label_name:
+    value: ahi
+    source: explicit_recipe
+  pretrained_backbone_path:
+    value: null
+    source: explicit_recipe
+    meaning: "train downstream model without loading a pretrained backbone"
+  train_val_test_policy:
+    value: "select on val; keep test locked"
+    source: explicit_recipe
+  external_test_locked:
+    value: true
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe

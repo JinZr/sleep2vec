@@ -47,6 +47,7 @@ This page answers the practical question: when you need to add or change behavio
 | Kaldi conversion | `preprocess/convert_npz_to_kaldi.py` plus package-local mirrors | Canonical NPZ-to-Kaldi root writer with split manifests, sorted scps, sharding, and semantic compression policy | One-off ark/scp writers |
 | Split generation | `preprocess/split_index_by_dataset.py` | Canonical dataset-group split policy, mask normalization, and optional global pair-coverage checks | Manual split assignment notebooks |
 | Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness | One-off shell loops or YAML linters without repo semantics |
+| Agent workflow support | `agent_tools.context`, `agent_tools.recipes`, `agent_tools.plans`, and `agent_tools.decisions` | Centralizes context bundles, recipe loading, plan generation, and stop-and-consult gates | A second training entrypoint or natural-language-only policy |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
 | UKB asleep night cutting | `utils/cut_ukb_sleep_with_asleep.py` | Standalone utility that mirrors UKB `.cwa` input trees and saves longest sleep block per asleep noon-to-noon interval | New sleep2vec-dependent cutting scripts |
 | UKB annotation parsing | `utils/parse_ukb_annotations_by_person.py` | Converts UKB export bundles into derived dataset metadata, codings, withdrawals, manifest, and per-participant JSON files | One-off parsers that lose UDI/feature-name provenance |
@@ -108,6 +109,15 @@ This page answers the practical question: when you need to add or change behavio
 - Use `utils/collect_ukb_demographics.py` to derive `eid`, age, and sex tables from those JSON trees.
 - Use `utils/fix_kaldi_index.py` when duplicate Kaldi sample keys come from repeated source/session path prefixes.
 - Use `utils/match_case_controls.py` for reproducible case-control cohort matching and balance diagnostics.
+
+### If you are adding agent-facing workflow support
+
+- Reuse `agent_tools.context`, `agent_tools.recipes`, `agent_tools.plans`, and `agent_tools.decisions`.
+- Do not create a second training entrypoint.
+- Do not parse W&B logs when run manifests are available.
+- Keep context gathering lightweight and free of Torch/Lightning imports.
+- Enforce `NEEDS_USER_INPUT` for high-impact ambiguous decisions before writing runnable scripts.
+- Preserve recipe `variant` routing so generated commands call `sleep2vec`, `sleep2vec2`, or `sleep2expert` package-local entrypoints as requested.
 
 ### If you are changing standalone variants
 

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 import typing as t
 
 import numpy as np
@@ -21,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from agent_tools.progress import write_progress
 from data.psg_pretrain_dataset import _build_channel_registry
 from data.utils import load_builtin_ahi_metadata, load_npz, window
 from preprocess.save_dataset_presets import (
@@ -658,28 +660,77 @@ def convert(args: argparse.Namespace) -> Path:
 
             converted_records = converted_records_iter()
 
-        for samples in tqdm(converted_records, total=len(df), desc="Converting records", unit="record"):
-            for sample in samples:
-                sample_key = sample["sample_key"]
-                if sample_key in seen_sample_keys:
-                    raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
+        started_at = time.time()
+        processed = 0
+        write_progress(
+            output_dir,
+            status="running",
+            task="convert_npz_to_kaldi",
+            processed=0,
+            total=len(df),
+            success=0,
+            failed=0,
+            start_time=started_at,
+        )
+        try:
+            for samples in tqdm(converted_records, total=len(df), desc="Converting records", unit="record"):
+                processed += 1
+                for sample in samples:
+                    sample_key = sample["sample_key"]
+                    if sample_key in seen_sample_keys:
+                        raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
 
-                seen_sample_keys.add(sample_key)
-                split_key = ensure_split_writers(sample["split"])
-                split_sample_count = split_sample_counts.get(split_key, 0)
-                shard_index = split_sample_count % args.ark_shards
-                split_sample_counts[split_key] = split_sample_count + 1
-                for channel, matrix in sample["matrices"].items():
-                    writer = writers[(split_key, channel, shard_index)]
-                    storage = split_channel_storage[(split_key, channel)]
-                    if storage == "compressed_matrix":
-                        writer.write(sample_key, matrix, method=compression_method)
-                    else:
-                        writer.write(sample_key, matrix)
-                manifest_writers[split_key].writerow(manifest_csv_row(sample["manifest_row"]))
+                    seen_sample_keys.add(sample_key)
+                    split_key = ensure_split_writers(sample["split"])
+                    split_sample_count = split_sample_counts.get(split_key, 0)
+                    shard_index = split_sample_count % args.ark_shards
+                    split_sample_counts[split_key] = split_sample_count + 1
+                    for channel, matrix in sample["matrices"].items():
+                        writer = writers[(split_key, channel, shard_index)]
+                        storage = split_channel_storage[(split_key, channel)]
+                        if storage == "compressed_matrix":
+                            writer.write(sample_key, matrix, method=compression_method)
+                        else:
+                            writer.write(sample_key, matrix)
+                    manifest_writers[split_key].writerow(manifest_csv_row(sample["manifest_row"]))
+                write_progress(
+                    output_dir,
+                    status="running",
+                    task="convert_npz_to_kaldi",
+                    processed=processed,
+                    total=len(df),
+                    success=processed,
+                    failed=0,
+                    start_time=started_at,
+                )
+        except Exception as exc:
+            write_progress(
+                output_dir,
+                status="failed",
+                task="convert_npz_to_kaldi",
+                processed=processed,
+                total=len(df),
+                success=processed,
+                failed=1,
+                start_time=started_at,
+                message=str(exc),
+            )
+            raise
 
     if not split_sample_counts:
-        raise ValueError("No samples satisfied the requested channel availability rules.")
+        message = "No samples satisfied the requested channel availability rules."
+        write_progress(
+            output_dir,
+            status="failed",
+            task="convert_npz_to_kaldi",
+            processed=len(df),
+            total=len(df),
+            success=0,
+            failed=1,
+            start_time=started_at,
+            message=message,
+        )
+        raise ValueError(message)
 
     splits: dict[str, dict[str, t.Any]] = {}
     for split_key in split_sample_counts:
@@ -722,6 +773,17 @@ def convert(args: argparse.Namespace) -> Path:
         "splits": splits,
     }
     manifest_json_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    write_progress(
+        output_dir,
+        status="completed",
+        task="convert_npz_to_kaldi",
+        processed=len(df),
+        total=len(df),
+        success=len(df),
+        failed=0,
+        start_time=started_at,
+        message=f"Wrote {manifest_json_path}",
+    )
     return manifest_json_path
 
 

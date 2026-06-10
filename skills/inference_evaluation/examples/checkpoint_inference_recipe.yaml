@@ -1,0 +1,8 @@
+schema_version: 1
+name: checkpoint_inference_example
+task: infer
+variant: sleep2vec
+inputs:
+  config: configs/examples/ahi/FINETUNE_EXAMPLE.yaml
+  label_name: ahi
+  ckpt_path: ASK_USER

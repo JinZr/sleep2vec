@@ -44,10 +44,14 @@ Tracked files indexed from this branch:
 - `configs/`: 108 tracked files
 - `tests/`: 50 tracked files
 - `utils/`: 7 tracked files
+- `agent_tools/`: 14 tracked files
+- `skills/`: 27 tracked files
+- `recipes/`: 6 tracked files
+- `agent_policies/` and `doc/agent_contracts/`: 9 tracked files
 
 ## Coverage Boundaries
 
-- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
+- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, agent tooling and consultation gates, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
 - Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb`, package-local variant preprocessing notebooks, and tracked visualization font binaries under `*/visualization/assets/fonts/`.
 - Outside this index scope: tracked example data scaffolding under `egs/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
@@ -85,6 +89,7 @@ Current workflow coverage:
 - [WORKFLOWS/PREPROCESSING.md](./WORKFLOWS/PREPROCESSING.md)
 - [WORKFLOWS/CONFIG_VALIDATION.md](./WORKFLOWS/CONFIG_VALIDATION.md)
 - [WORKFLOWS/VARIANTS_AND_ROUTING.md](./WORKFLOWS/VARIANTS_AND_ROUTING.md)
+- [WORKFLOWS/AGENT_TOOLING.md](./WORKFLOWS/AGENT_TOOLING.md)
 
 ## Reliability Notes
 
