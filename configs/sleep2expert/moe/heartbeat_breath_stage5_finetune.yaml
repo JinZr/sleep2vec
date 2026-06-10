@@ -76,7 +76,7 @@ data:
   max_tokens: 1535
   data_channel_names: [heartbeat, breath]
   finetune_data_index: null
-  finetune_preset_path: index_iclr2/presets_heartbeat_breath_stage5/heartbeat_breath_stage5_wholenight_merged_preset_1535.pickle
+  finetune_preset_path: null
   train_dataset_names: []
   test_dataset_names: []
   n_few_shot: 0
