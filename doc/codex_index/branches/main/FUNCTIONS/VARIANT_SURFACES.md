@@ -2,10 +2,10 @@
 
 ## Branch State
 
-On commit `0a6d07de56bcc0bbae45fd9fdde6e747cafab238`, tracked variant coverage is:
+On commit `dbe6a5e4cf40811138a35870b011a2a6d1bf8b83`, tracked variant coverage is:
 
-- `sleep2vec2/`: active standalone dense mirror with 103 tracked files
-- `sleep2expert/`: active standalone MoE-capable mirror with 107 tracked files
+- `sleep2vec2/`: active standalone dense mirror with 105 tracked files
+- `sleep2expert/`: active standalone MoE-capable mirror with 109 tracked files
 
 ## `sleep2vec2` Standalone Mirror
 

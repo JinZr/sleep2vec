@@ -1,23 +1,23 @@
 {
   "branch": "main",
-  "commit": "dbbbe24c24252593f28fdf354cbf3b17bc59e17a",
-  "generated_at": "2026-06-10T00:00:00Z",
-  "mode": "refresh",
+  "commit": "dbe6a5e4cf40811138a35870b011a2a6d1bf8b83",
+  "generated_at": "2026-06-10T18:45:58Z",
+  "mode": "repair",
   "coverage": {
     "tracked_file_counts": {
-      "sleep2vec": 81,
+      "sleep2vec": 83,
       "data": 8,
       "preprocess": 7,
-      "sleep2vec2": 103,
-      "sleep2expert": 107,
+      "sleep2vec2": 105,
+      "sleep2expert": 109,
       "sleep2vec_moe": 0,
       "sleep2vec_hires": 0,
       "configs": 108,
-      "tests": 62,
-      "utils": 7,
-      "agent_tools": 14,
+      "tests": 68,
+      "utils": 8,
+      "agent_tools": 18,
       "skills": 33,
-      "recipes": 12,
+      "recipes": 16,
       "agent_policy_and_contract_docs": 9
     },
     "function_catalog_scope": [
@@ -33,7 +33,7 @@
       "preset generation, split assignment, mask normalization, and WatchPAT conversion CLIs",
       "standalone UKB/asleep night cutting, UKB annotation parsing, UKB demographic collection, Kaldi index repair, and case-control matching utilities",
       "downstream evaluation metrics including specificity, downstream evaluation plots, pair-accuracy heatmaps, and diagnostics hooks",
-      "agent tools, recipe schemas, skill manifests, consultation gates, context bundles, generated command plans, and external-test locking policy"
+      "agent_tools CLI, recipe schemas, skill manifests, consultation gates, context bundles, generated command plans, hparam launch/monitor/select/export, experiment monitoring, adaptive hparam loops, progress files, and external-test locking policy"
     ],
     "workflow_scope": [
       "pretrain",
