@@ -18,6 +18,7 @@ import yaml
 
 from .manifests import write_text
 from .models import module_for_variant
+from .progress import read_progress
 
 
 def launch_hparam_trials(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
@@ -67,10 +68,11 @@ def launch_hparam_trials(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     return manifest
 
 
-def monitor_hparam_trials(run_dir: str | Path, *, once: bool = True) -> Path:
+def monitor_hparam_trials(run_dir: str | Path, *, once: bool = True, health: bool = False) -> Path:
     root = Path(run_dir)
     manifest = _read_rows(root / "launch_manifest.tsv")
-    rows = [_status_row(root, row) for row in manifest]
+    previous_rows = {row.get("trial_id"): row for row in _read_rows(root / "trial_status.tsv")}
+    rows = [_status_row(root, row, previous_rows.get(row.get("trial_id"), {}), health=health) for row in manifest]
     out = root / "trial_status.tsv"
     _write_rows(out, rows)
     if not once:
@@ -85,7 +87,7 @@ def stop_hparam_trial(run_dir: str | Path, trial_id: str) -> Path:
     if not matched:
         raise ValueError(f"Unknown trial_id: {trial_id}")
     row = matched[0]
-    pid = _read_pid(row.get("pid_path"))
+    pid = _read_pid(row.get("pid_path"), row)
     if pid is None:
         raise ValueError(f"No recorded PID for trial_id: {trial_id}")
     if row.get("target") == "ssh":
@@ -577,46 +579,70 @@ def _start_process(execution: dict[str, Any], command: str) -> str:
     return "launched" if result.returncode == 0 else "launch_failed"
 
 
-def _status_row(run_dir: Path, row: dict[str, Any]) -> dict[str, Any]:
-    pid = _read_pid(row.get("pid_path"))
-    running = _process_running(row, pid) if pid is not None else False
+def _status_row(
+    run_dir: Path,
+    row: dict[str, Any],
+    previous: dict[str, Any] | None = None,
+    *,
+    health: bool = False,
+) -> dict[str, Any]:
+    previous = previous or {}
+    pid = _read_pid(row.get("pid_path"), row)
+    running_state = _process_running(row, pid) if pid is not None else False
+    running = bool(running_state)
     status = row.get("status") or "unknown"
-    if pid is None and status == "launched":
+    if pid is None and status == "launched" and _is_remote_row(row):
+        status = "unknown_remote"
+    elif pid is None and status == "launched":
         status = "missing_pid"
+    elif running_state is None:
+        status = "unknown_remote"
     elif running:
         status = "running"
     elif status in {"launched", "running"}:
-        status = "failed" if _log_has_failure(row.get("log_path")) else "finished"
+        status = "failed" if _log_has_failure(row.get("log_path"), row) else "finished"
     manifest = _find_run_manifest(run_dir, row.get("version", ""), {"execution": {}})
     checkpoints = _checkpoint_names(manifest)
-    return {
+    output = {
         **row,
         "status": status,
         "pid": pid or "",
-        "log_tail": _log_tail(row.get("log_path")),
+        "log_tail": _log_tail(row.get("log_path"), row),
         "run_manifest": str(manifest or ""),
         "checkpoints": ";".join(checkpoints),
         "monitored_at": _now(),
     }
+    if health:
+        output.update(_health_fields(run_dir, row, previous, pid, running_state, status, checkpoints))
+    return output
 
 
-def _read_pid(path: Any) -> int | None:
+def _read_pid(path: Any, row: dict[str, Any] | None = None) -> int | None:
     if not path:
         return None
-    pid_path = Path(str(path))
-    if not pid_path.exists():
-        return None
+    if _is_remote_row(row):
+        result = _run_row_command(row or {}, f"cat {_sh(path)}")
+        if result.returncode != 0:
+            return None
+        text = result.stdout.strip()
+    else:
+        pid_path = Path(str(path))
+        if not pid_path.exists():
+            return None
+        text = pid_path.read_text().strip()
     try:
-        return int(pid_path.read_text().strip())
+        return int(text)
     except ValueError:
         return None
 
 
-def _process_running(row: dict[str, Any], pid: int | None) -> bool:
+def _process_running(row: dict[str, Any], pid: int | None) -> bool | None:
     if pid is None:
         return False
     if row.get("target") == "ssh" and row.get("host"):
         result = subprocess.run(["ssh", row["host"], f"ps -p {pid} -o pid="], text=True, capture_output=True)
+        if result.returncode == 255:
+            return None
         return result.returncode == 0 and str(pid) in result.stdout
     try:
         os.kill(pid, 0)
@@ -625,23 +651,205 @@ def _process_running(row: dict[str, Any], pid: int | None) -> bool:
     return True
 
 
-def _log_has_failure(path: Any) -> bool:
+def _log_has_failure(path: Any, row: dict[str, Any] | None = None) -> bool:
     if not path:
         return False
-    log_path = Path(str(path))
-    if not log_path.exists():
-        return False
-    tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
+    if _is_remote_row(row):
+        result = _run_row_command(row or {}, f"tail -n 100 {_sh(path)}")
+        if result.returncode != 0:
+            return False
+        tail = result.stdout
+    else:
+        log_path = Path(str(path))
+        if not log_path.exists():
+            return False
+        tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
     return any(marker in tail for marker in ["Traceback", "RuntimeError", "CUDA out of memory", "Error executing job"])
 
 
-def _log_tail(path: Any, lines: int = 8) -> str:
+def _log_tail(path: Any, row: dict[str, Any] | None = None, lines: int = 8) -> str:
     if not path:
         return ""
+    if _is_remote_row(row):
+        result = _run_row_command(row or {}, f"tail -n {int(lines)} {_sh(path)}")
+        return result.stdout.strip() if result.returncode == 0 else ""
     log_path = Path(str(path))
     if not log_path.exists():
         return ""
     return "\n".join(log_path.read_text(errors="replace").splitlines()[-lines:])
+
+
+def _health_fields(
+    run_dir: Path,
+    row: dict[str, Any],
+    previous: dict[str, Any],
+    pid: int | None,
+    running_state: bool | None,
+    status: str,
+    checkpoints: list[str],
+) -> dict[str, Any]:
+    progress = _read_trial_progress(run_dir, row)
+    io_counts = _proc_io(row, pid)
+    read_bytes = io_counts.get("read_bytes")
+    write_bytes = io_counts.get("write_bytes")
+    read_delta = _delta(read_bytes, previous.get("io_read_bytes"))
+    write_delta = _delta(write_bytes, previous.get("io_write_bytes"))
+    log_age = _log_age_seconds(row.get("log_path"), row)
+    gpu_summary = _gpu_summary(row, pid)
+    checkpoint_count = len(checkpoints)
+    health_status = _classify_health(
+        status=status,
+        running_state=running_state,
+        gpu_summary=gpu_summary,
+        io_read_delta=read_delta,
+        io_write_delta=write_delta,
+        progress=progress,
+        log_age_seconds=log_age,
+        checkpoint_count=checkpoint_count,
+        previous_checkpoint_count=_to_int(previous.get("checkpoint_count")),
+    )
+    return {
+        "health_status": health_status,
+        "gpu_summary": gpu_summary,
+        "io_read_bytes": "" if read_bytes is None else read_bytes,
+        "io_write_bytes": "" if write_bytes is None else write_bytes,
+        "io_read_delta_bytes": "" if read_delta is None else read_delta,
+        "io_write_delta_bytes": "" if write_delta is None else write_delta,
+        "progress_status": progress.get("status", ""),
+        "progress_processed": progress.get("processed", ""),
+        "progress_total": progress.get("total", ""),
+        "progress_updated_at": progress.get("updated_at", ""),
+        "log_age_seconds": "" if log_age is None else log_age,
+        "checkpoint_count": checkpoint_count,
+    }
+
+
+def _read_trial_progress(run_dir: Path, row: dict[str, Any]) -> dict[str, Any]:
+    progress_dir = row.get("progress_dir") or row.get("workdir") or run_dir
+    try:
+        return read_progress(progress_dir, remote=row.get("host") if _is_remote_row(row) else None)
+    except Exception as exc:
+        return {"status": "unknown", "message": str(exc)}
+
+
+def _proc_io(row: dict[str, Any], pid: int | None) -> dict[str, int]:
+    if pid is None:
+        return {}
+    result = _run_row_command(row, f"cat /proc/{int(pid)}/io")
+    if result.returncode != 0:
+        return {}
+    counts: dict[str, int] = {}
+    for line in result.stdout.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        try:
+            counts[key.strip()] = int(value.strip())
+        except ValueError:
+            pass
+    return counts
+
+
+def _gpu_summary(row: dict[str, Any], pid: int | None) -> str:
+    if pid is None:
+        return ""
+    apps = _run_row_command(
+        row,
+        "nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader,nounits",
+    )
+    if apps.returncode != 0:
+        return ""
+    matched = []
+    for line in apps.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if parts and parts[0] == str(pid):
+            matched.append(line.strip())
+    if not matched:
+        return ""
+    gpu_state = _run_row_command(
+        row,
+        "nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits",
+    )
+    summary = "; ".join(matched)
+    if gpu_state.returncode == 0 and gpu_state.stdout.strip():
+        summary = f"{summary} | gpu={gpu_state.stdout.strip().replace(chr(10), '; ')}"
+    return summary
+
+
+def _log_age_seconds(path: Any, row: dict[str, Any]) -> int | None:
+    if not path:
+        return None
+    if _is_remote_row(row):
+        result = _run_row_command(
+            row,
+            f"now=$(date +%s); m=$(stat -c %Y {_sh(path)} 2>/dev/null) || exit 1; echo $((now-m))",
+        )
+        if result.returncode != 0:
+            return None
+        return _to_int(result.stdout.strip())
+    log_path = Path(str(path))
+    if not log_path.exists():
+        return None
+    return int(time.time() - log_path.stat().st_mtime)
+
+
+def _classify_health(
+    *,
+    status: str,
+    running_state: bool | None,
+    gpu_summary: str,
+    io_read_delta: int | None,
+    io_write_delta: int | None,
+    progress: dict[str, Any],
+    log_age_seconds: int | None,
+    checkpoint_count: int,
+    previous_checkpoint_count: int | None,
+) -> str:
+    if status == "unknown_remote" or running_state is None:
+        return "unknown_remote"
+    if status == "failed":
+        return "failed"
+    if status == "finished":
+        return "finished"
+    if not running_state:
+        return status
+    if gpu_summary:
+        return "compute_active"
+    if (io_read_delta or 0) > 0 or (io_write_delta or 0) > 0:
+        return "data_loading"
+    if progress.get("status") == "running":
+        return "healthy_running"
+    if log_age_seconds is not None and log_age_seconds < 300:
+        return "healthy_running"
+    if previous_checkpoint_count is not None and checkpoint_count > previous_checkpoint_count:
+        return "healthy_running"
+    return "possibly_stalled"
+
+
+def _delta(current: int | None, previous: Any) -> int | None:
+    old = _to_int(previous)
+    if current is None or old is None:
+        return None
+    return max(int(current) - old, 0)
+
+
+def _to_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_row_command(row: dict[str, Any], command: str) -> subprocess.CompletedProcess:
+    if _is_remote_row(row):
+        return subprocess.run(["ssh", str(row["host"]), command], text=True, capture_output=True)
+    return subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
+
+
+def _is_remote_row(row: dict[str, Any] | None) -> bool:
+    return bool(row and row.get("target") == "ssh" and row.get("host"))
 
 
 def _find_run_manifest(run_dir: Path, version: str, recipe: dict[str, Any]) -> Path | None:
@@ -730,6 +938,7 @@ def _copy_config_with_data_paths(
         data["kaldi_manifest"] = kaldi_manifest
     if finetune_data_index is not None:
         data["finetune_data_index"] = finetune_data_index
+        data["finetune_preset_path"] = None
     target.write_text(yaml.safe_dump(config, sort_keys=False))
 
 

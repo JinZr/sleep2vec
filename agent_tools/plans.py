@@ -10,7 +10,14 @@ from typing import Any
 import yaml
 
 from .configs import config_summary, load_yaml
-from .decisions import DecisionIssue, DecisionReport, DecisionStatus, evaluate_consultation_gates, merge_status
+from .decisions import (
+    DecisionIssue,
+    DecisionReport,
+    DecisionStatus,
+    _validate_input_path,
+    evaluate_consultation_gates,
+    merge_status,
+)
 from .index_csv import index_summary
 from .manifests import write_json, write_text
 from .markdown import questions_markdown, questions_payload
@@ -720,20 +727,11 @@ def _apply_final_test_checkpoint_gate(
                 )
             ],
         )
-    resolved = resolve_repo_path(ckpt_path)
-    if resolved is None or not resolved.exists():
-        return _append_issues(
-            report,
-            [
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "ckpt_path",
-                    f"Final external-test checkpoint path does not exist: {ckpt_path}",
-                    None,
-                    {"ckpt_path": ckpt_path},
-                )
-            ],
-        )
+    ckpt_issue = _validate_input_path(recipe, "ckpt_path", ckpt_path, configured=False)
+    if ckpt_issue is not None:
+        report = _append_issues(report, [ckpt_issue])
+        if ckpt_issue.status == DecisionStatus.FAIL:
+            return report
     if _has_yaml_search_overrides(recipe):
         final_config = _resolved_final_eval_config_path(recipe, report, None)
         if final_config in (None, "", "ASK_USER") or str(final_config).startswith("<"):
@@ -749,20 +747,11 @@ def _apply_final_test_checkpoint_gate(
                     )
                 ],
             )
-        resolved_config = resolve_repo_path(final_config)
-        if resolved_config is None or not resolved_config.exists():
-            return _append_issues(
-                report,
-                [
-                    DecisionIssue(
-                        DecisionStatus.FAIL,
-                        "final_eval_config_path",
-                        f"Final external-test config path does not exist: {final_config}",
-                        None,
-                        {"final_eval_config_path": final_config},
-                    )
-                ],
-            )
+        config_issue = _validate_input_path(recipe, "final_eval_config_path", final_config, configured=False)
+        if config_issue is not None:
+            report = _append_issues(report, [config_issue])
+            if config_issue.status == DecisionStatus.FAIL:
+                return report
     return report
 
 

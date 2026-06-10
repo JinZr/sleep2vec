@@ -6,7 +6,7 @@ Task recipes live under `recipes/` and use schema version `1`. They describe tas
 
 Hyper-parameter search keys must be explicit: use `runtime.<name>` for supported CLI/runtime knobs or `yaml:/json/pointer/path` for generated config overrides.
 
-Hparam recipes may add an optional `execution:` block for active orchestration after `agent_tools plan` has generated trial scripts. `execution.target` is `local` or `ssh`; `execution.host` is required for SSH. `execution.gpu_pool`, `max_concurrent`, `conda_env`, `wandb_project`, `wandb_group`, `log_dir`, `pid_dir`, and `env` are wrapper settings only and must not replace trainer config semantics.
+Hparam recipes may add an optional `execution:` block for active orchestration after `agent_tools plan` has generated trial scripts. `execution.target` is `local` or `ssh`; `execution.host` is required for SSH. `execution.path_context=remote` and `execution.path_validation=defer|ssh` prevent local false-negative checks for remote paths; config-copy generation still requires readable local YAML. `execution.gpu_pool`, `max_concurrent`, `conda_env`, `wandb_project`, `wandb_group`, `log_dir`, `pid_dir`, and `env` are wrapper settings only and must not replace trainer config semantics.
 
 Hparam recipes may add an optional `adaptive:` block for append-only external-optimized tuning. When `adaptive.objective_metric` starts with `test_` or `external_`, `adaptive.test_feedback_for_selection` must be `true`. Adaptive commands write under `adaptive/` and must not rewrite earlier round plans, trial configs, logs, or checkpoints.
 

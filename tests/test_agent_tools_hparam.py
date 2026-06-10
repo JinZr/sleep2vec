@@ -142,6 +142,122 @@ def test_hparam_monitor_handles_running_finished_and_failed_rows(tmp_path: Path)
     assert status["failed"] == "failed"
 
 
+def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "running.pid"
+    pid_path.write_text("123")
+    with (tmp_path / "launch_manifest.tsv").open("w", newline="") as file_obj:
+        writer = csv.DictWriter(
+            file_obj,
+            delimiter="\t",
+            fieldnames=["trial_id", "version", "target", "pid_path", "status"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+        )
+    monkeypatch.setattr(hparam, "_process_running", lambda row, pid: True)
+
+    monitor_hparam_trials(tmp_path)
+
+    row = _read_table(tmp_path / "trial_status.tsv")[0]
+    assert "health_status" not in row
+
+
+def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "running.pid"
+    pid_path.write_text("123")
+    with (tmp_path / "launch_manifest.tsv").open("w", newline="") as file_obj:
+        writer = csv.DictWriter(
+            file_obj,
+            delimiter="\t",
+            fieldnames=["trial_id", "version", "target", "pid_path", "log_path", "status"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+        )
+    monkeypatch.setattr(hparam, "_process_running", lambda row, pid: True)
+    monkeypatch.setattr(hparam, "_gpu_summary", lambda row, pid: "123, GPU-1, 1024")
+    monkeypatch.setattr(hparam, "_proc_io", lambda row, pid: {})
+    monkeypatch.setattr(hparam, "_log_age_seconds", lambda path, row: None)
+    monkeypatch.setattr(hparam, "_read_trial_progress", lambda run_dir, row: {"status": "missing"})
+
+    monitor_hparam_trials(tmp_path, health=True)
+
+    row = _read_table(tmp_path / "trial_status.tsv")[0]
+    assert row["health_status"] == "compute_active"
+    assert row["gpu_summary"] == "123, GPU-1, 1024"
+
+
+def test_hparam_monitor_health_classifies_data_loading_from_io_delta(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "running.pid"
+    pid_path.write_text("123")
+    with (tmp_path / "launch_manifest.tsv").open("w", newline="") as file_obj:
+        writer = csv.DictWriter(
+            file_obj,
+            delimiter="\t",
+            fieldnames=["trial_id", "version", "target", "pid_path", "status"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {"trial_id": "running", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+        )
+    (tmp_path / "trial_status.tsv").write_text(
+        "trial_id\tstatus\tio_read_bytes\tio_write_bytes\tcheckpoint_count\nrunning\trunning\t100\t50\t0\n"
+    )
+    monkeypatch.setattr(hparam, "_process_running", lambda row, pid: True)
+    monkeypatch.setattr(hparam, "_gpu_summary", lambda row, pid: "")
+    monkeypatch.setattr(hparam, "_proc_io", lambda row, pid: {"read_bytes": 250, "write_bytes": 50})
+    monkeypatch.setattr(hparam, "_log_age_seconds", lambda path, row: None)
+    monkeypatch.setattr(hparam, "_read_trial_progress", lambda run_dir, row: {"status": "missing"})
+
+    monitor_hparam_trials(tmp_path, health=True)
+
+    row = _read_table(tmp_path / "trial_status.tsv")[0]
+    assert row["health_status"] == "data_loading"
+    assert row["io_read_delta_bytes"] == "150"
+
+
+def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "running.pid"
+    pid_path.write_text("123")
+    with (tmp_path / "launch_manifest.tsv").open("w", newline="") as file_obj:
+        writer = csv.DictWriter(
+            file_obj,
+            delimiter="\t",
+            fieldnames=["trial_id", "version", "target", "host", "pid_path", "status"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {"trial_id": "stalled", "version": "v1", "target": "local", "pid_path": pid_path, "status": "launched"}
+        )
+        writer.writerow(
+            {
+                "trial_id": "remote",
+                "version": "v2",
+                "target": "ssh",
+                "host": "baichuan3",
+                "pid_path": pid_path,
+                "status": "launched",
+            }
+        )
+
+    def fake_running(row, pid):
+        return None if row["trial_id"] == "remote" else True
+
+    monkeypatch.setattr(hparam, "_process_running", fake_running)
+    monkeypatch.setattr(hparam, "_gpu_summary", lambda row, pid: "")
+    monkeypatch.setattr(hparam, "_proc_io", lambda row, pid: {"read_bytes": 100, "write_bytes": 50})
+    monkeypatch.setattr(hparam, "_log_age_seconds", lambda path, row: 500)
+    monkeypatch.setattr(hparam, "_read_trial_progress", lambda run_dir, row: {"status": "missing"})
+
+    monitor_hparam_trials(tmp_path, health=True)
+
+    status = {row["trial_id"]: row["health_status"] for row in _read_table(tmp_path / "trial_status.tsv")}
+    assert status["stalled"] == "possibly_stalled"
+    assert status["remote"] == "unknown_remote"
+
+
 def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -176,6 +292,10 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    trial_config = plan_dir / "configs" / "trial_000.yaml"
+    payload = yaml.safe_load(trial_config.read_text())
+    payload["data"]["finetune_preset_path"] = "stale_preset.pkl"
+    trial_config.write_text(yaml.safe_dump(payload))
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "trial_id,rank,config,checkpoint_path\n"
@@ -201,6 +321,7 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_
     original = yaml.safe_load((plan_dir / "configs" / "trial_000.yaml").read_text())
     external = yaml.safe_load((plan_dir / "external_eval_configs" / "trial_000_001_external.yaml").read_text())
     assert external["data"]["finetune_data_index"] == "external_index.csv"
+    assert external["data"]["finetune_preset_path"] is None
     assert external["model"] == original["model"]
     assert (plan_dir / "external_eval.sh").read_text().count("python -m sleep2vec.infer") == 1
 
@@ -234,6 +355,10 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    trial_config = plan_dir / "configs" / "trial_000.yaml"
+    payload = yaml.safe_load(trial_config.read_text())
+    payload["data"]["finetune_preset_path"] = "stale_preset.pkl"
+    trial_config.write_text(yaml.safe_dump(payload))
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "trial_id,rank,config,checkpoint_path\n"
@@ -266,6 +391,7 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
     assert "--eval-split test" in rows[0]["test_infer_command"]
     test_config = yaml.safe_load(Path(rows[0]["test_config"]).read_text())
     assert test_config["data"]["finetune_data_index"] == "external_test.csv"
+    assert test_config["data"]["finetune_preset_path"] is None
     script = (plan_dir / "logits_export.sh").read_text()
     assert "hparam-export-logits" in script
     assert "--execute" in script

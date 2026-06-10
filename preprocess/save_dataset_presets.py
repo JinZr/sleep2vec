@@ -9,6 +9,7 @@ from pathlib import Path
 import pickle
 import sys
 import tempfile
+import time
 import typing as t
 
 import pandas as pd
@@ -17,6 +18,8 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from agent_tools.progress import write_progress
 
 DEFAULT_SPLITS = ["test", "val", "train"]
 BUILTIN_CHANNEL_SPECS = {
@@ -578,6 +581,7 @@ def main() -> None:
     skipped = 0
     jobs: list[dict[str, object]] = []
     manifests: list[dict[str, t.Any]] = []
+    planned_output_paths: list[Path] = []
 
     for meta_data_name in meta_data_variants:
         for split in splits:
@@ -589,6 +593,7 @@ def main() -> None:
                 meta_data_name=meta_data_name,
             )
             planned += 1
+            planned_output_paths.append(output_path)
 
             if output_path.exists() and not args.overwrite:
                 print(f"[skip] exists: {output_path} (pass --overwrite to regenerate)")
@@ -622,53 +627,38 @@ def main() -> None:
             )
 
     if not args.dry_run:
-        if len(jobs) <= 1:
-            for job in jobs:
-                build_job = dict(job)
-                dataset_name_for_manifest = t.cast(str, build_job.pop("dataset_name"))
-                config_path_for_manifest = t.cast(Path, build_job.pop("config_path"))
-                output_path, sample_count = _build_preset_job(
-                    **build_job,
-                    filter_max_workers=args.num_workers,
-                )
-                manifest = _preset_manifest_payload(
-                    output_path=output_path,
-                    config_path=config_path_for_manifest,
-                    index_paths=index_paths,
-                    dataset_name=dataset_name_for_manifest,
-                    split=t.cast(str, job["split"]),
-                    n_tokens=t.cast(int, job["n_tokens"]),
-                    stride_tokens=t.cast(int, job["stride_tokens"]),
-                    channels=t.cast(list[str], job["channel_names"]),
-                    allow_missing_channels=t.cast(bool, job["allow_missing_channels"]),
-                    min_channels=t.cast(int, job["min_channels"]),
-                    meta_data_name=t.cast(str | None, job["meta_data_name"]),
-                    sample_count=sample_count,
-                )
-                manifests.append(manifest)
-                if args.write_sidecar_manifest:
-                    _write_json(output_path.with_name(f"{output_path.name}.manifest.json"), manifest)
-                print(f"  done: {output_path} ({sample_count} samples)")
-                created += 1
-        else:
-            process_workers = len(jobs) if args.num_workers is None else min(args.num_workers, len(jobs))
-            with ProcessPoolExecutor(max_workers=process_workers) as executor:
-                future_to_job = {
-                    executor.submit(
-                        _build_preset_job,
-                        **{key: value for key, value in job.items() if key not in {"dataset_name", "config_path"}},
+        progress_dir = (
+            args.manifest_output.expanduser().parent
+            if args.manifest_output is not None
+            else (planned_output_paths[0].parent if planned_output_paths else Path.cwd())
+        )
+        started_at = time.time()
+        write_progress(
+            progress_dir,
+            status="running",
+            task="save_dataset_presets",
+            processed=0,
+            total=len(jobs),
+            success=0,
+            failed=0,
+            start_time=started_at,
+            message=f"planned={planned} skipped={skipped}",
+        )
+        try:
+            if len(jobs) <= 1:
+                for job in jobs:
+                    build_job = dict(job)
+                    dataset_name_for_manifest = t.cast(str, build_job.pop("dataset_name"))
+                    config_path_for_manifest = t.cast(Path, build_job.pop("config_path"))
+                    output_path, sample_count = _build_preset_job(
+                        **build_job,
                         filter_max_workers=args.num_workers,
-                    ): job
-                    for job in jobs
-                }
-                for future in as_completed(future_to_job):
-                    job = future_to_job[future]
-                    output_path, sample_count = future.result()
+                    )
                     manifest = _preset_manifest_payload(
                         output_path=output_path,
-                        config_path=t.cast(Path, job["config_path"]),
+                        config_path=config_path_for_manifest,
                         index_paths=index_paths,
-                        dataset_name=t.cast(str, job["dataset_name"]),
+                        dataset_name=dataset_name_for_manifest,
                         split=t.cast(str, job["split"]),
                         n_tokens=t.cast(int, job["n_tokens"]),
                         stride_tokens=t.cast(int, job["stride_tokens"]),
@@ -683,8 +673,87 @@ def main() -> None:
                         _write_json(output_path.with_name(f"{output_path.name}.manifest.json"), manifest)
                     print(f"  done: {output_path} ({sample_count} samples)")
                     created += 1
-        if args.manifest_output is not None:
-            _write_json(args.manifest_output.expanduser(), {"schema_version": 1, "presets": manifests})
+                    write_progress(
+                        progress_dir,
+                        status="running",
+                        task="save_dataset_presets",
+                        processed=created,
+                        total=len(jobs),
+                        success=created,
+                        failed=0,
+                        start_time=started_at,
+                        current_item=str(output_path),
+                    )
+            else:
+                process_workers = len(jobs) if args.num_workers is None else min(args.num_workers, len(jobs))
+                with ProcessPoolExecutor(max_workers=process_workers) as executor:
+                    future_to_job = {
+                        executor.submit(
+                            _build_preset_job,
+                            **{key: value for key, value in job.items() if key not in {"dataset_name", "config_path"}},
+                            filter_max_workers=args.num_workers,
+                        ): job
+                        for job in jobs
+                    }
+                    for future in as_completed(future_to_job):
+                        job = future_to_job[future]
+                        output_path, sample_count = future.result()
+                        manifest = _preset_manifest_payload(
+                            output_path=output_path,
+                            config_path=t.cast(Path, job["config_path"]),
+                            index_paths=index_paths,
+                            dataset_name=t.cast(str, job["dataset_name"]),
+                            split=t.cast(str, job["split"]),
+                            n_tokens=t.cast(int, job["n_tokens"]),
+                            stride_tokens=t.cast(int, job["stride_tokens"]),
+                            channels=t.cast(list[str], job["channel_names"]),
+                            allow_missing_channels=t.cast(bool, job["allow_missing_channels"]),
+                            min_channels=t.cast(int, job["min_channels"]),
+                            meta_data_name=t.cast(str | None, job["meta_data_name"]),
+                            sample_count=sample_count,
+                        )
+                        manifests.append(manifest)
+                        if args.write_sidecar_manifest:
+                            _write_json(output_path.with_name(f"{output_path.name}.manifest.json"), manifest)
+                        print(f"  done: {output_path} ({sample_count} samples)")
+                        created += 1
+                        write_progress(
+                            progress_dir,
+                            status="running",
+                            task="save_dataset_presets",
+                            processed=created,
+                            total=len(jobs),
+                            success=created,
+                            failed=0,
+                            start_time=started_at,
+                            current_item=str(output_path),
+                        )
+            if args.manifest_output is not None:
+                _write_json(args.manifest_output.expanduser(), {"schema_version": 1, "presets": manifests})
+        except Exception as exc:
+            write_progress(
+                progress_dir,
+                status="failed",
+                task="save_dataset_presets",
+                processed=created,
+                total=len(jobs),
+                success=created,
+                failed=1,
+                start_time=started_at,
+                message=str(exc),
+            )
+            raise
+        write_progress(
+            progress_dir,
+            status="completed",
+            task="save_dataset_presets",
+            processed=len(jobs),
+            total=len(jobs),
+            success=created,
+            failed=0,
+            start_time=started_at,
+            message=f"Completed. Created {created}, skipped {skipped}.",
+        )
 
     if args.dry_run:
         print(f"Dry run complete. Planned {planned} preset(s); no files were written.")

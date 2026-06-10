@@ -119,6 +119,8 @@ Common top-level fields:
 - `search.parameters`: keys must be `runtime.lr`, `runtime.weight_decay`, `runtime.batch_size`, `runtime.epochs`, `runtime.num_workers`, `runtime.precision`, `runtime.gradient_clip_val`, `runtime.accumulate_grad_batches`, `runtime.warmup_steps`, `runtime.patience`, `runtime.check_val_every_n_epoch`, `runtime.ckpt_every_n_epochs`, or `yaml:/json/pointer/path`.
 - `yaml:/...`: JSON Pointer-like config overrides used for generated config copies.
 - `execution.target`: `local` or `ssh`; `execution.host` is required for `ssh`.
+- `execution.path_context`: optional `local` or `remote`; remote absolute paths are not checked with local `Path.exists`.
+- `execution.path_validation`: optional `local`, `defer`, or `ssh`; remote defaults to `defer`, and `ssh` uses short `test -e` checks.
 - `execution.gpu_pool`: GPU ids used by `agent_tools hparam-launch` for `CUDA_VISIBLE_DEVICES`.
 - `execution.max_concurrent`: maximum trials launched immediately by `hparam-launch --execute`.
 - `execution.conda_env`, `execution.wandb_project`, `execution.wandb_group`, `execution.log_dir`, `execution.pid_dir`, and `execution.env`: runtime wrapper settings only; they do not change generated trainer configs.

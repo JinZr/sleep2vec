@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+import subprocess
 from typing import Any
 
 from .models import REPO_ROOT, SUPPORTED_VARIANTS
@@ -426,6 +427,21 @@ def _task_specific_issues(
                         {"config_path": config_summary.get("config_path")},
                     )
                 )
+        if config_summary is None:
+            base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
+            base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
+            recipe_inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+            base_config = base_inputs.get("config") or recipe_inputs.get("config")
+            if base_config:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "config",
+                        "Hparam plan generation needs local config YAML content; remote path validation may be deferred, but YAML overrides cannot be generated from an unreadable config.",
+                        None,
+                        {"config": base_config},
+                    )
+                )
         local_field_map = {
             "selection_metric": ("evaluation_policy.selection_metric", "selection_metric"),
             "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),
@@ -597,6 +613,26 @@ def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
                 "execution.host is required when execution.target=ssh.",
                 None,
                 {},
+            )
+        )
+    if execution.get("path_context") not in (None, "local", "remote"):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.path_context",
+                "execution.path_context must be local or remote.",
+                None,
+                {"path_context": execution.get("path_context")},
+            )
+        )
+    if execution.get("path_validation") not in (None, "local", "remote", "defer", "ssh"):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.path_validation",
+                "execution.path_validation must be local, remote, defer, or ssh.",
+                None,
+                {"path_validation": execution.get("path_validation")},
             )
         )
     if "max_concurrent" in execution:
@@ -867,39 +903,114 @@ def _path_issues(
             required_paths.append(("ckpt_path", ckpt_path))
 
     for field, raw_path in required_paths:
-        path = REPO_ROOT / str(raw_path) if not str(raw_path).startswith("/") else Path(str(raw_path)).expanduser()
-        if not path.is_absolute():
-            path = REPO_ROOT / path
-        if not path.exists():
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    field,
-                    f"Required input path does not exist: {raw_path}",
-                    None,
-                    {"path": str(raw_path)},
-                )
-            )
+        issue = _validate_input_path(recipe, field, raw_path, configured=False)
+        if issue is not None:
+            issues.append(issue)
 
     if task in {"finetune", "hparam_tune"} and config_summary and config_summary.get("data_backend") == "npz":
         data = config_summary.get("data", {})
         for field in ("finetune_preset_path", "finetune_data_index"):
             value = data.get(field)
             if value:
-                path = REPO_ROOT / str(value) if not str(value).startswith("/") else Path(str(value)).expanduser()
-                if not path.is_absolute():
-                    path = REPO_ROOT / path
-                if not path.exists():
-                    issues.append(
-                        DecisionIssue(
-                            DecisionStatus.FAIL,
-                            field,
-                            f"Configured input path does not exist: {value}",
-                            None,
-                            {"path": str(value)},
-                        )
-                    )
+                issue = _validate_input_path(recipe, field, value, configured=True)
+                if issue is not None:
+                    issues.append(issue)
     return issues
+
+
+def _validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: bool) -> DecisionIssue | None:
+    context = _path_context(recipe, raw_path)
+    validation = _path_validation(recipe, context)
+    if context not in {"local", "remote"}:
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            "execution.path_context",
+            "execution.path_context must be local or remote.",
+            None,
+            {"path_context": context},
+        )
+    if validation not in {"local", "remote", "defer", "ssh"}:
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            "execution.path_validation",
+            "execution.path_validation must be local, remote, defer, or ssh.",
+            None,
+            {"path_validation": validation},
+        )
+    if validation == "remote":
+        validation = "ssh"
+    if context == "remote" and validation == "defer":
+        return DecisionIssue(
+            DecisionStatus.WARN,
+            field,
+            f"{_path_label(configured)} path validation deferred for remote path: {raw_path}",
+            None,
+            {"path": str(raw_path), "path_context": "remote", "path_validation": "defer"},
+        )
+    if context == "remote" and validation == "ssh":
+        host = _execution(recipe).get("host")
+        if not host:
+            return DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.host",
+                "execution.host is required for remote path validation.",
+                None,
+                {"path": str(raw_path)},
+            )
+        result = subprocess.run(["ssh", str(host), f"test -e {_sh(raw_path)}"], text=True, capture_output=True)
+        if result.returncode != 0:
+            return DecisionIssue(
+                DecisionStatus.FAIL,
+                field,
+                f"{_path_label(configured)} remote path does not exist: {raw_path}",
+                None,
+                {"path": str(raw_path), "host": str(host), "stderr": result.stderr.strip()},
+            )
+        return None
+
+    path = REPO_ROOT / str(raw_path) if not str(raw_path).startswith("/") else Path(str(raw_path)).expanduser()
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    if path.exists():
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        field,
+        f"{_path_label(configured)} path does not exist: {raw_path}",
+        None,
+        {"path": str(raw_path), "path_context": "local", "path_validation": validation},
+    )
+
+
+def _path_label(configured: bool) -> str:
+    return "Configured input" if configured else "Required input"
+
+
+def _path_context(recipe: dict, raw_path: Any) -> str:
+    execution = _execution(recipe)
+    explicit = execution.get("path_context")
+    if explicit:
+        return str(explicit)
+    if execution.get("target") == "ssh" and Path(str(raw_path)).expanduser().is_absolute():
+        return "remote"
+    return "local"
+
+
+def _path_validation(recipe: dict, context: str) -> str:
+    explicit = _execution(recipe).get("path_validation")
+    if explicit:
+        return str(explicit)
+    return "defer" if context == "remote" else "local"
+
+
+def _execution(recipe: dict) -> dict[str, Any]:
+    return recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+
+
+def _sh(value: Any) -> str:
+    import shlex
+
+    return shlex.quote(str(value))
 
 
 def _output_paths_missing(recipe: dict) -> bool:

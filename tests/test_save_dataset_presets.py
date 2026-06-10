@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 import pickle
 import sys
@@ -318,6 +319,52 @@ def test_main_prunes_overlap_eval_splits_in_preset_planning(
     module.main()
 
     assert [job["split"] for job in submitted_jobs] == ["train"]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "preprocess.save_dataset_presets",
+        "sleep2expert.preprocess.save_dataset_presets",
+        "sleep2vec2.preprocess.save_dataset_presets",
+    ],
+)
+def test_main_writes_progress_status_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str):
+    module = importlib.import_module(module_name)
+
+    def fake_build_preset_job(**kwargs):
+        return kwargs["output_path"], 1
+
+    config_path = _write_yaml(tmp_path, _channels_only_payload())
+    index_path = tmp_path / "index.csv"
+    output_template = tmp_path / "presets" / "{dataset}_{split}.pkl"
+    pd.DataFrame([{"path": "train.npz", "split": "train", "duration": 60}]).to_csv(index_path, index=False)
+
+    monkeypatch.setattr(module, "_build_preset_job", fake_build_preset_job)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(output_template),
+            "--split",
+            "train",
+            "--min-channels",
+            "1",
+        ],
+    )
+
+    module.main()
+
+    progress = json.loads((tmp_path / "presets" / "status" / "progress.json").read_text())
+    assert progress["task"] == "save_dataset_presets"
+    assert progress["status"] == "completed"
+    assert progress["processed"] == 1
 
 
 @pytest.mark.parametrize(

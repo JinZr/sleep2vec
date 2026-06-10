@@ -6,6 +6,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import sys
 import tempfile
+import time
 import typing as t
 
 import pandas as pd
@@ -15,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from agent_tools.progress import write_progress
 from sleep2expert.preprocess.split_index_by_dataset import normalize_mask_frame
 
 DEFAULT_SPLITS = ["test", "val", "train"]
@@ -493,6 +495,7 @@ def main() -> None:
     created = 0
     skipped = 0
     jobs: list[dict[str, object]] = []
+    planned_output_paths: list[Path] = []
 
     for meta_data_name in meta_data_variants:
         for split in splits:
@@ -504,6 +507,7 @@ def main() -> None:
                 meta_data_name=meta_data_name,
             )
             planned += 1
+            planned_output_paths.append(output_path)
 
             if output_path.exists() and not args.overwrite:
                 print(f"[skip] exists: {output_path} (pass --overwrite to regenerate)")
@@ -535,29 +539,89 @@ def main() -> None:
             )
 
     if not args.dry_run:
-        if len(jobs) <= 1:
-            for job in jobs:
-                output_path, sample_count = _build_preset_job(
-                    **job,
-                    filter_max_workers=args.num_workers,
-                )
-                print(f"  done: {output_path} ({sample_count} samples)")
-                created += 1
-        else:
-            process_workers = len(jobs) if args.num_workers is None else min(args.num_workers, len(jobs))
-            with ProcessPoolExecutor(max_workers=process_workers) as executor:
-                future_to_job = {
-                    executor.submit(
-                        _build_preset_job,
+        progress_dir = planned_output_paths[0].parent if planned_output_paths else Path.cwd()
+        started_at = time.time()
+        write_progress(
+            progress_dir,
+            status="running",
+            task="save_dataset_presets",
+            processed=0,
+            total=len(jobs),
+            success=0,
+            failed=0,
+            start_time=started_at,
+            message=f"planned={planned} skipped={skipped}",
+        )
+        try:
+            if len(jobs) <= 1:
+                for job in jobs:
+                    output_path, sample_count = _build_preset_job(
                         **job,
                         filter_max_workers=args.num_workers,
-                    ): job
-                    for job in jobs
-                }
-                for future in as_completed(future_to_job):
-                    output_path, sample_count = future.result()
+                    )
                     print(f"  done: {output_path} ({sample_count} samples)")
                     created += 1
+                    write_progress(
+                        progress_dir,
+                        status="running",
+                        task="save_dataset_presets",
+                        processed=created,
+                        total=len(jobs),
+                        success=created,
+                        failed=0,
+                        start_time=started_at,
+                        current_item=str(output_path),
+                    )
+            else:
+                process_workers = len(jobs) if args.num_workers is None else min(args.num_workers, len(jobs))
+                with ProcessPoolExecutor(max_workers=process_workers) as executor:
+                    future_to_job = {
+                        executor.submit(
+                            _build_preset_job,
+                            **job,
+                            filter_max_workers=args.num_workers,
+                        ): job
+                        for job in jobs
+                    }
+                    for future in as_completed(future_to_job):
+                        output_path, sample_count = future.result()
+                        print(f"  done: {output_path} ({sample_count} samples)")
+                        created += 1
+                        write_progress(
+                            progress_dir,
+                            status="running",
+                            task="save_dataset_presets",
+                            processed=created,
+                            total=len(jobs),
+                            success=created,
+                            failed=0,
+                            start_time=started_at,
+                            current_item=str(output_path),
+                        )
+        except Exception as exc:
+            write_progress(
+                progress_dir,
+                status="failed",
+                task="save_dataset_presets",
+                processed=created,
+                total=len(jobs),
+                success=created,
+                failed=1,
+                start_time=started_at,
+                message=str(exc),
+            )
+            raise
+        write_progress(
+            progress_dir,
+            status="completed",
+            task="save_dataset_presets",
+            processed=len(jobs),
+            total=len(jobs),
+            success=created,
+            failed=0,
+            start_time=started_at,
+            message=f"Completed. Created {created}, skipped {skipped}.",
+        )
 
     if args.dry_run:
         print(f"Dry run complete. Planned {planned} preset(s); no files were written.")

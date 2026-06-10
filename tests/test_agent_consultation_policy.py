@@ -33,10 +33,55 @@ def test_doctor_without_output_dir_is_read_only(tmp_path: Path):
     implicit_output = Path.cwd() / "artifacts" / "agent_context" / payload["name"]
     assert not implicit_output.exists()
 
-    result = _run("doctor", "--recipe", str(recipe), cwd=Path.cwd())
 
-    assert result.returncode == 2
-    assert not implicit_output.exists()
+def test_remote_deferred_config_path_warns_without_local_dummy_config(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["config"] = "/wujidata/example/config.yaml"
+    payload["inputs"]["data_backend"] = "npz"
+    payload["decisions"]["required_channels"] = {"value": ["ppg", "ahi", "stage5"], "source": "explicit_recipe"}
+    payload["execution"] = {"target": "ssh", "host": "baichuan3", "path_context": "remote", "path_validation": "defer"}
+    write_yaml(recipe, payload)
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
+
+    assert result.returncode == 0
+    assert "Status: WARN" in result.stdout
+    assert "path validation deferred for remote path" in result.stdout
+
+
+def test_local_missing_config_path_still_fails(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["config"] = str(tmp_path / "missing.yaml")
+    write_yaml(recipe, payload)
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
+
+    assert result.returncode == 1
+    assert "Required input path does not exist" in result.stdout
+
+
+def test_remote_ssh_path_validation_uses_short_test_command(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["config"] = "/wujidata/example/config.yaml"
+    payload["inputs"]["data_backend"] = "npz"
+    payload["decisions"]["required_channels"] = {"value": ["ppg", "ahi", "stage5"], "source": "explicit_recipe"}
+    payload["execution"] = {"target": "ssh", "host": "baichuan3", "path_context": "remote", "path_validation": "ssh"}
+    policy, defaults = load_policy_files()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fake_run)
+
+    report = evaluate_consultation_gates("finetune", payload, None, {}, policy, defaults)
+
+    assert report.exit_code == 0
+    assert calls == [["ssh", "baichuan3", "test -e /wujidata/example/config.yaml"]]
 
 
 def test_high_impact_decision_with_unresolved_source_blocks(tmp_path: Path):

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pandas as pd
@@ -90,6 +93,110 @@ def test_converter_rejects_num_workers_less_than_one(tmp_path: Path):
 
     with pytest.raises(ValueError, match="--num-workers must be >= 1"):
         convert(args)
+
+
+def test_converter_writes_progress_status_file(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "eeg_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+    output_dir = tmp_path / "kaldi"
+
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+                "--min-channels",
+                "1",
+                "--no-compress-ark",
+            ]
+        )
+    )
+
+    progress = json.loads((output_dir / "status" / "progress.json").read_text())
+    assert progress["task"] == "convert_npz_to_kaldi"
+    assert progress["status"] == "completed"
+    assert progress["processed"] == 1
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2expert.preprocess.convert_npz_to_kaldi",
+        "sleep2vec2.preprocess.convert_npz_to_kaldi",
+    ],
+)
+def test_variant_converters_write_progress_status_file(tmp_path: Path, module_name: str):
+    config_path = _write_config(tmp_path, {"eeg": 4})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, eeg=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "eeg_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+    output_dir = tmp_path / module_name.split(".")[0]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib, sys; "
+                "module = importlib.import_module(sys.argv[1]); "
+                "module.convert(module.parse_args(sys.argv[2:]))"
+            ),
+            module_name,
+            "--index",
+            str(index_path),
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(output_dir),
+            "--max-tokens",
+            "2",
+            "--channels-from-config",
+            "--min-channels",
+            "1",
+            "--no-compress-ark",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    progress = json.loads((output_dir / "status" / "progress.json").read_text())
+    assert progress["task"] == "convert_npz_to_kaldi"
+    assert progress["status"] == "completed"
+    assert progress["processed"] == 1
 
 
 def test_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):
@@ -214,7 +321,6 @@ def test_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):
     assert manifest_json["splits"]["train"]["channels"]["stage5"]["ark_storage"] == "float_matrix"
     assert manifest_json["splits"]["train"]["channels"]["ahi"]["ark_storage"] == "float_matrix"
     assert manifest_json["source_index"] == [str(index_path)]
-
 
 def test_converter_no_compress_ark_keeps_float_storage_and_exact_roundtrip(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4})

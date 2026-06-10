@@ -27,6 +27,7 @@ from .markdown import report_text
 from .models import json_ready
 from .plans import build_context, build_plan, collect_runs, evaluate_recipe, prepare_doctor_report, write_doctor_outputs
 from .presets import preset_summary
+from .progress import format_progress, read_progress
 from .repo import repo_summary
 from .skills import list_skills, validate_skills
 
@@ -111,7 +112,14 @@ def _build_parser() -> argparse.ArgumentParser:
     monitor = sub.add_parser("hparam-monitor")
     monitor.add_argument("--run-dir", required=True)
     monitor.add_argument("--once", action="store_true")
+    monitor.add_argument("--health", action="store_true")
     monitor.set_defaults(func=_cmd_hparam_monitor)
+
+    progress = sub.add_parser("progress")
+    progress.add_argument("--run-dir", required=True)
+    progress.add_argument("--remote")
+    progress.add_argument("--json", action="store_true")
+    progress.set_defaults(func=_cmd_progress)
 
     stop = sub.add_parser("hparam-stop")
     stop.add_argument("--run-dir", required=True)
@@ -305,8 +313,17 @@ def _cmd_hparam_launch(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
-    status = monitor_hparam_trials(args.run_dir, once=args.once)
+    status = monitor_hparam_trials(args.run_dir, once=args.once, health=args.health)
     print(f"Wrote {status}")
+    return 0
+
+
+def _cmd_progress(args: argparse.Namespace) -> int:
+    data = read_progress(args.run_dir, remote=args.remote)
+    if args.json:
+        _emit(data, as_json=True)
+    else:
+        print(format_progress(data), end="")
     return 0
 
 

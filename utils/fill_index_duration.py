@@ -5,11 +5,19 @@ import argparse
 import math
 from pathlib import Path
 import shutil
+import sys
+import time
 import typing as t
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agent_tools.progress import write_progress
 
 TRUTHY_MASK_VALUES = frozenset({"1", "1.0", "true", "t", "yes"})
 
@@ -134,6 +142,7 @@ def fill_duration(
     *,
     duration_column: str,
     prefix_maps: t.Sequence[tuple[str, str]],
+    progress_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, int]:
     required = {"path"}
     missing = sorted(required - set(df.columns))
@@ -145,10 +154,51 @@ def fill_duration(
         fixed[duration_column] = pd.NA
 
     missing_indexes = [row_index for row_index, row in fixed.iterrows() if _needs_duration_fill(row[duration_column])]
-    for row_index in tqdm(missing_indexes, desc="Filling duration", unit="row"):
-        row = fixed.loc[row_index]
-        npz_path = _resolve_npz_path(row["path"], prefix_maps)
-        fixed.at[row_index, duration_column] = infer_duration(npz_path, row)
+    started_at = time.time()
+    if progress_dir is not None:
+        write_progress(
+            progress_dir,
+            status="running",
+            task="fill_index_duration",
+            processed=0,
+            total=len(missing_indexes),
+            success=0,
+            failed=0,
+            start_time=started_at,
+        )
+    processed_count = 0
+    try:
+        for processed, row_index in enumerate(tqdm(missing_indexes, desc="Filling duration", unit="row"), start=1):
+            processed_count = processed
+            row = fixed.loc[row_index]
+            npz_path = _resolve_npz_path(row["path"], prefix_maps)
+            fixed.at[row_index, duration_column] = infer_duration(npz_path, row)
+            if progress_dir is not None:
+                write_progress(
+                    progress_dir,
+                    status="running",
+                    task="fill_index_duration",
+                    processed=processed,
+                    total=len(missing_indexes),
+                    success=processed,
+                    failed=0,
+                    start_time=started_at,
+                    current_item=str(npz_path),
+                )
+    except Exception as exc:
+        if progress_dir is not None:
+            write_progress(
+                progress_dir,
+                status="failed",
+                task="fill_index_duration",
+                processed=processed_count,
+                total=len(missing_indexes),
+                success=processed_count,
+                failed=1,
+                start_time=started_at,
+                message=str(exc),
+            )
+        raise
     return fixed, len(missing_indexes)
 
 
@@ -163,6 +213,7 @@ def main(argv: t.Sequence[str] | None = None) -> int:
         df,
         duration_column=args.duration_column,
         prefix_maps=_parse_prefix_maps(args.path_prefix_map),
+        progress_dir=output_path.parent,
     )
 
     if write_back:
@@ -172,6 +223,16 @@ def main(argv: t.Sequence[str] | None = None) -> int:
     else:
         output_path.parent.mkdir(parents=True, exist_ok=True)
     fixed.to_csv(output_path, index=False)
+    write_progress(
+        output_path.parent,
+        status="completed",
+        task="fill_index_duration",
+        processed=changed,
+        total=changed,
+        success=changed,
+        failed=0,
+        message=f"Wrote {output_path}",
+    )
     print(f"Wrote {output_path} with {len(fixed)} rows; filled {changed} duration value(s).")
     return 0
 
