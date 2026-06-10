@@ -82,7 +82,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 ## `agent_tools.index_csv.index_summary`
 
 - File: `agent_tools/index_csv.py`
-- Signature: `index_summary(index_paths: list[str | Path], *, config_path: str | Path | None = None, label_name: str | None = None, sample_path_check: int = 0, sample_npz_check: int = 0) -> dict[str, Any]`
+- Signature: `index_summary(index_paths: list[str | Path], *, config: str | Path | None = None, label_name: str | None = None, sample_path_check: int = 0, sample_npz_check: int = 0) -> dict[str, Any]`
 - Purpose and contract: summarize index CSV row counts, columns, labels, source/split fields, numeric shifts, and optional sample path/NPZ checks.
 - Important inputs/outputs: one or more CSV paths plus optional config/label/check counts in; JSON-ready summary out.
 - Side effects: reads CSV files and optionally probes sample paths/NPZ files.
@@ -104,9 +104,9 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 ## `agent_tools.progress.write_progress`
 
 - File: `agent_tools/progress.py`
-- Signature: `write_progress(run_dir: str | Path, *, stage: str, processed: int, total: int | None = None, message: str | None = None, extra: dict[str, Any] | None = None) -> Path`
+- Signature: `write_progress(run_dir: str | Path, *, status: str, task: str, processed: int = 0, total: int | None = None, success: int = 0, failed: int = 0, start_time: float | None = None, current_item: str | None = None, message: str | None = None) -> Path`
 - Purpose and contract: write machine-readable progress for long-running preprocessing and utility jobs.
-- Important inputs/outputs: run directory, stage, processed count, optional total/message/extra in; `status/progress.json` path out.
+- Important inputs/outputs: run directory, status, task, counters, optional timing/current item/message in; `status/progress.json` path out.
 - Side effects: writes progress JSON under the run directory.
 - Key callers/callees: used by preprocessing/utility progress emitters; read by `agent_tools.progress.read_progress`.
 - Reuse guidance: use this for agent-visible progress instead of bespoke status files.
