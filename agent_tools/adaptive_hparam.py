@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
@@ -107,12 +108,15 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
     objective = _objective(root, recipe)
     ranked = _rank_rows(rows, objective)
     if not ranked:
-        raise ValueError("No digest rows are available for suggestion.")
+        _append_event(root, "suggest_blocked", {"round": next_round, "reason": "no_scored_trials"})
+        raise ValueError(f"No digest rows with finite {objective['metric']} are available for suggestion.")
     best = ranked[0]
     suggested = copy.deepcopy(recipe)
     suggested["name"] = f"{recipe_name(recipe)}_adaptive_round_{next_round:03d}"
     suggested.setdefault("search", {})["parameters"] = _suggest_parameters(recipe, ranked)
     suggested["search"]["max_trials"] = int(_adaptive(recipe).get("round_size") or len(_hparam_values(suggested)))
+    if suggested.get("base_recipe"):
+        suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
     suggested.setdefault("artifacts", {}).pop("generated_config_dir", None)
     out_dir = root / "adaptive" / "suggestions"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -336,13 +340,15 @@ def _write_incumbent(root: Path, rows: list[dict[str, Any]], objective: dict[str
 def _rank_rows(rows: list[dict[str, Any]], objective: dict[str, str]) -> list[dict[str, Any]]:
     reverse = objective["mode"] == "max"
 
-    def score(row: dict[str, Any]) -> float:
+    def score(row: dict[str, Any]) -> float | None:
         try:
-            return float(row.get(objective["metric"], ""))
+            value = float(row.get(objective["metric"], ""))
         except (TypeError, ValueError):
-            return -math.inf if reverse else math.inf
+            return None
+        return value if math.isfinite(value) else None
 
-    return sorted(rows, key=score, reverse=reverse)
+    scored = [(value, row) for row in rows if (value := score(row)) is not None]
+    return [row for value, row in sorted(scored, key=lambda item: item[0], reverse=reverse)]
 
 
 def _latest_digest(root: Path) -> Path:
