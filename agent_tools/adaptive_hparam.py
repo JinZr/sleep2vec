@@ -445,7 +445,12 @@ def _stop_bad_running_trials(root: Path, round_dir: Path, recipe: dict[str, Any]
         manifest = _find_run_manifest(round_dir, row.get("version", ""), recipe)
         data = _read_json(manifest) if manifest else {}
         score = _metric_value(data, objective["metric"])
-        if not should_stop and incumbent is not None and score not in ("", None):
+        if (
+            not should_stop
+            and incumbent is not None
+            and score not in ("", None)
+            and _grace_satisfied(row, data, replacement)
+        ):
             try:
                 value = float(score)
                 should_stop = value < incumbent - margin if objective["mode"] == "max" else value > incumbent + margin
@@ -454,6 +459,30 @@ def _stop_bad_running_trials(root: Path, round_dir: Path, recipe: dict[str, Any]
         if should_stop:
             stop_hparam_trial(round_dir, str(row["trial_id"]))
             _append_event(root, "stop_bad_running_trial", {"round_dir": str(round_dir), "trial_id": row["trial_id"]})
+
+
+def _grace_satisfied(row: dict[str, Any], manifest: dict[str, Any], replacement: dict[str, Any]) -> bool:
+    grace_epochs = replacement.get("grace_epochs")
+    if grace_epochs is not None:
+        try:
+            if float(manifest.get("epoch", "")) < float(grace_epochs):
+                return False
+        except (TypeError, ValueError):
+            return False
+    grace_minutes = replacement.get("grace_minutes")
+    if grace_minutes is not None:
+        minutes = _minutes_since(row.get("launched_at", ""))
+        if minutes is None or minutes < float(grace_minutes):
+            return False
+    return True
+
+
+def _minutes_since(timestamp: str) -> float | None:
+    try:
+        start = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return (datetime.now(timezone.utc) - start).total_seconds() / 60
 
 
 def _latest_incumbent_score(root: Path) -> float | None:

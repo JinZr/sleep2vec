@@ -371,9 +371,7 @@ def _git_manifest() -> dict[str, Any]:
             ["git", "rev-parse", "HEAD"], check=False, capture_output=True, text=True
         ).stdout.strip()
         dirty = bool(
-            subprocess.run(
-                ["git", "status", "--short"], check=False, capture_output=True, text=True
-            ).stdout.strip()
+            subprocess.run(["git", "status", "--short"], check=False, capture_output=True, text=True).stdout.strip()
         )
     except OSError:
         return {"available": False}

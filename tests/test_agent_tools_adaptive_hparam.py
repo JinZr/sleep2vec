@@ -23,7 +23,9 @@ def _read_table(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(file_obj, delimiter=delimiter))
 
 
-def _adaptive_recipe(tmp_path: Path, *, test_feedback: bool = True, max_rounds: int = 2) -> Path:
+def _adaptive_recipe(
+    tmp_path: Path, *, test_feedback: bool = True, max_rounds: int = 2, relative_base: bool = False
+) -> Path:
     base = write_finetune_recipe(tmp_path)
     return write_yaml(
         tmp_path / "adaptive_tune.yaml",
@@ -32,7 +34,7 @@ def _adaptive_recipe(tmp_path: Path, *, test_feedback: bool = True, max_rounds: 
             "name": "unit_adaptive",
             "task": "hparam_tune",
             "variant": "sleep2vec",
-            "base_recipe": str(base),
+            "base_recipe": base.name if relative_base else str(base),
             "search": {
                 "method": "grid",
                 "max_trials": 1,
@@ -170,6 +172,40 @@ def test_adaptive_step_dry_run_writes_suggestion_and_supersede_event_without_rou
     assert "adaptive_step_dry_run" in events
 
 
+def test_adaptive_step_blocks_suggestion_without_scored_objective(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+
+    result = _run("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
+
+    assert result.returncode != 0
+    assert "No digest rows with finite test_auroc" in result.stderr
+    assert "suggest_blocked" in (workflow_dir / "adaptive" / "events.jsonl").read_text()
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
+
+
+def test_adaptive_step_execute_resolves_relative_base_recipe_for_next_round(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3, relative_base=True)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    _write_fake_manifest(workflow_dir, score=0.73)
+    launched = []
+
+    def fake_launch(run_dir, *, dry_run=True):
+        launched.append((Path(run_dir), dry_run))
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_trials", fake_launch)
+
+    adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    suggestion = yaml.safe_load((workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").read_text())
+    assert Path(suggestion["base_recipe"]).is_absolute()
+    assert (workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").exists()
+    assert launched == [(workflow_dir / "adaptive" / "rounds" / "round_001", False)]
+
+
 def test_adaptive_step_execute_stops_bad_running_trial_through_recorded_manifest(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=1)
     workflow_dir = tmp_path / "workflow"
@@ -198,3 +234,44 @@ def test_adaptive_step_execute_stops_bad_running_trial_through_recorded_manifest
 
     assert stopped == [(round_dir, "trial_000")]
     assert "stop_bad_running_trial" in (workflow_dir / "adaptive" / "events.jsonl").read_text()
+
+
+def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=1)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    version = "unit_adaptive-round-000-trial_000"
+    run_dir = round_dir / "log-finetune" / version
+    run_dir.mkdir(parents=True)
+    log_path = round_dir / "logs" / "trial_000.log"
+    log_path.parent.mkdir()
+    log_path.write_text("still training\n")
+    (workflow_dir / "adaptive" / "incumbents.tsv").write_text("objective_score\n0.73\n")
+    stopped = []
+
+    def fake_stop(run_dir, trial_id):
+        stopped.append((Path(run_dir), trial_id))
+        return Path(run_dir) / "trial_status.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "stop_hparam_trial", fake_stop)
+
+    (run_dir / "run_manifest.json").write_text(json.dumps({"epoch": 0, "metrics": {"test_auroc": 0.6}}))
+    (round_dir / "trial_status.tsv").write_text(
+        "trial_id\tversion\tstatus\tlog_path\tlaunched_at\n"
+        f"trial_000\t{version}\trunning\t{log_path}\t{adaptive_hparam._now()}\n"
+    )
+    recipe_data = adaptive_hparam.load_recipe_with_base(recipe)
+
+    adaptive_hparam._stop_bad_running_trials(workflow_dir, round_dir, recipe_data)
+
+    assert stopped == []
+    (run_dir / "run_manifest.json").write_text(json.dumps({"epoch": 2, "metrics": {"test_auroc": 0.6}}))
+    (round_dir / "trial_status.tsv").write_text(
+        "trial_id\tversion\tstatus\tlog_path\tlaunched_at\n"
+        f"trial_000\t{version}\trunning\t{log_path}\t2000-01-01T00:00:00Z\n"
+    )
+
+    adaptive_hparam._stop_bad_running_trials(workflow_dir, round_dir, recipe_data)
+
+    assert stopped == [(round_dir, "trial_000")]

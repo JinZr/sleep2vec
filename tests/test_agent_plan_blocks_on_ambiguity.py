@@ -549,9 +549,7 @@ def test_hparam_trial_includes_base_input_and_runtime_args(tmp_path: Path):
     pretrained = tmp_path / "base pretrained.ckpt"
     pretrained.write_text("checkpoint")
     base_payload["inputs"]["pretrained_backbone_path"] = str(pretrained)
-    base_payload["runtime"].update(
-        {"warmup_steps": 7, "gradient_clip_val": 0.75, "accumulate_grad_batches": 3}
-    )
+    base_payload["runtime"].update({"warmup_steps": 7, "gradient_clip_val": 0.75, "accumulate_grad_batches": 3})
     base_payload["decisions"]["pretrained_backbone_path"] = {
         "value": str(pretrained),
         "source": "explicit_recipe",
