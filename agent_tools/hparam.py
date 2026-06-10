@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import importlib
 from itertools import combinations
 import json
 import math
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import time
@@ -189,6 +191,141 @@ def generate_external_eval(
     _write_rows(root / "external_eval_manifest.tsv", manifest_rows)
     write_text(root / "external_eval.sh", "\n".join(_script_lines(commands)) + "\n", executable=True)
     return root / "external_eval.sh"
+
+
+def export_hparam_logits(
+    run_dir: str | Path,
+    selected_csv: str | Path,
+    *,
+    unlock_final_test: bool,
+    val_split: str = "val",
+    test_split: str = "test",
+    skip_test: bool = False,
+    label_name: str | None = None,
+    val_kaldi_data_root: str | None = None,
+    val_kaldi_manifest: str | None = None,
+    val_finetune_data_index: str | None = None,
+    test_kaldi_data_root: str | None = None,
+    test_kaldi_manifest: str | None = None,
+    test_finetune_data_index: str | None = None,
+    batch_size: int = 12,
+    num_workers: int = 8,
+    devices: list[int] | None = None,
+    accelerator: str = "gpu",
+    device: str = "cuda",
+    precision: str = "bf16-mixed",
+    seed: int = 4523,
+    top_k: int = 1,
+    all_candidates: bool = False,
+    execute: bool = False,
+) -> Path:
+    if not skip_test and not unlock_final_test:
+        raise ValueError("hparam-export-logits requires --unlock-final-test unless --skip-test is used.")
+
+    root = Path(run_dir)
+    plan = _read_plan(root)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
+    base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
+    resolved_label = label_name or base_inputs.get("label_name") or (recipe.get("inputs") or {}).get("label_name")
+    if not resolved_label:
+        raise ValueError("hparam-export-logits requires --label-name when the hparam plan has no base label_name.")
+
+    rows = _selected_candidate_rows(_read_rows(selected_csv), top_k=top_k, all_candidates=all_candidates)
+    config_dir = root / "logits_export_configs"
+    output_dir = root / "logits_exports"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_rows = []
+    for index, row in enumerate(rows, start=1):
+        checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
+        if not checkpoint_path:
+            raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
+
+        candidate = _candidate_id(row)
+        source_config = Path(str(row["config"]))
+        val_config = config_dir / f"{candidate}_{index:03d}_{val_split}.yaml"
+        _copy_config_with_data_paths(
+            source_config,
+            val_config,
+            kaldi_data_root=val_kaldi_data_root,
+            kaldi_manifest=val_kaldi_manifest,
+            finetune_data_index=val_finetune_data_index,
+        )
+        val_logits_path = output_dir / f"{candidate}_{index:03d}_{val_split}_logits.csv"
+        manifest_row = {
+            **row,
+            "checkpoint_path": checkpoint_path,
+            "label_name": resolved_label,
+            "val_split": val_split,
+            "val_config": str(val_config),
+            "val_logits_path": str(val_logits_path),
+            "val_infer_command": _infer_command(
+                recipe,
+                val_config,
+                checkpoint_path,
+                resolved_label,
+                val_split,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                devices=devices,
+                accelerator=accelerator,
+                device=device,
+                precision=precision,
+                seed=seed,
+            ),
+        }
+
+        if not skip_test:
+            test_config = config_dir / f"{candidate}_{index:03d}_{test_split}.yaml"
+            _copy_config_with_data_paths(
+                source_config,
+                test_config,
+                kaldi_data_root=test_kaldi_data_root,
+                kaldi_manifest=test_kaldi_manifest,
+                finetune_data_index=test_finetune_data_index,
+            )
+            test_logits_path = output_dir / f"{candidate}_{index:03d}_{test_split}_logits.csv"
+            manifest_row.update(
+                {
+                    "test_split": test_split,
+                    "test_config": str(test_config),
+                    "test_logits_path": str(test_logits_path),
+                    "test_infer_command": _infer_command(
+                        recipe,
+                        test_config,
+                        checkpoint_path,
+                        resolved_label,
+                        test_split,
+                        batch_size=batch_size,
+                        num_workers=num_workers,
+                        devices=devices,
+                        accelerator=accelerator,
+                        device=device,
+                        precision=precision,
+                        seed=seed,
+                    ),
+                }
+            )
+        manifest_rows.append(manifest_row)
+
+    manifest = root / "logits_export_manifest.tsv"
+    _write_rows(manifest, manifest_rows)
+    if execute:
+        _execute_logit_exports(
+            recipe,
+            manifest_rows,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            devices=devices,
+            accelerator=accelerator,
+            device=device,
+            precision=precision,
+            seed=seed,
+            skip_test=skip_test,
+        )
+    return manifest
 
 
 def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_k: int | None = None) -> Path:
@@ -593,6 +730,191 @@ def _copy_config_with_data_paths(
     if finetune_data_index is not None:
         data["finetune_data_index"] = finetune_data_index
     target.write_text(yaml.safe_dump(config, sort_keys=False))
+
+
+def _infer_command(
+    recipe: dict[str, Any],
+    config: Path,
+    checkpoint_path: str,
+    label_name: str,
+    eval_split: str,
+    *,
+    batch_size: int,
+    num_workers: int,
+    devices: list[int] | None,
+    accelerator: str,
+    device: str,
+    precision: str,
+    seed: int,
+) -> str:
+    command = [
+        "python",
+        "-m",
+        module_for_variant(str(recipe.get("variant")), "infer"),
+        "--config",
+        str(config),
+        "--ckpt-path",
+        checkpoint_path,
+        "--label-name",
+        label_name,
+        "--eval-split",
+        eval_split,
+        "--batch-size",
+        batch_size,
+        "--num-workers",
+        num_workers,
+        "--accelerator",
+        accelerator,
+        "--device",
+        device,
+        "--precision",
+        precision,
+        "--seed",
+        seed,
+    ]
+    if devices:
+        command.extend(["--devices", *devices])
+    return _render_command(command)
+
+
+def _execute_logit_exports(
+    recipe: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    batch_size: int,
+    num_workers: int,
+    devices: list[int] | None,
+    accelerator: str,
+    device: str,
+    precision: str,
+    seed: int,
+    skip_test: bool,
+) -> None:
+    for row in rows:
+        _run_logit_export(
+            recipe,
+            config=Path(str(row["val_config"])),
+            checkpoint_path=str(row["checkpoint_path"]),
+            label_name=str(row["label_name"]),
+            eval_split=str(row["val_split"]),
+            output_path=Path(str(row["val_logits_path"])),
+            batch_size=batch_size,
+            num_workers=num_workers,
+            devices=devices,
+            accelerator=accelerator,
+            device=device,
+            precision=precision,
+            seed=seed,
+        )
+        if not skip_test:
+            _run_logit_export(
+                recipe,
+                config=Path(str(row["test_config"])),
+                checkpoint_path=str(row["checkpoint_path"]),
+                label_name=str(row["label_name"]),
+                eval_split=str(row["test_split"]),
+                output_path=Path(str(row["test_logits_path"])),
+                batch_size=batch_size,
+                num_workers=num_workers,
+                devices=devices,
+                accelerator=accelerator,
+                device=device,
+                precision=precision,
+                seed=seed,
+            )
+
+
+def _run_logit_export(
+    recipe: dict[str, Any],
+    *,
+    config: Path,
+    checkpoint_path: str,
+    label_name: str,
+    eval_split: str,
+    output_path: Path,
+    batch_size: int,
+    num_workers: int,
+    devices: list[int] | None,
+    accelerator: str,
+    device: str,
+    precision: str,
+    seed: int,
+) -> None:
+    module_name = module_for_variant(str(recipe.get("variant")), "infer")
+    infer_mod = importlib.import_module(module_name)
+    args = _infer_args(
+        config=config,
+        checkpoint_path=checkpoint_path,
+        label_name=label_name,
+        eval_split=eval_split,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        devices=devices or [0],
+        accelerator=accelerator,
+        device=device,
+        precision=precision,
+        seed=seed,
+    )
+    infer_mod.run_inference(args)
+    prediction_path = Path(str(args.inference_prediction_csv_path))
+    _copy_logits_csv(prediction_path, output_path)
+
+
+def _infer_args(
+    *,
+    config: Path,
+    checkpoint_path: str,
+    label_name: str,
+    eval_split: str,
+    batch_size: int,
+    num_workers: int,
+    devices: list[int],
+    accelerator: str,
+    device: str,
+    precision: str,
+    seed: int,
+) -> Any:
+    return type(
+        "InferenceArgs",
+        (),
+        {
+            "config": config,
+            "ckpt_path": checkpoint_path,
+            "label_name": label_name,
+            "eval_split": eval_split,
+            "batch_size": int(batch_size),
+            "num_workers": int(num_workers),
+            "devices": [int(item) for item in devices],
+            "accelerator": accelerator,
+            "device": device,
+            "lr": 1e-6,
+            "weight_decay": 1e-5,
+            "override_dataset_names": None,
+            "inference_preset_path": None,
+            "precision": precision,
+            "avg_ckpts": 1,
+            "avg_ckpt_dir": None,
+            "seed": int(seed),
+            "pretrained_backbone_path": None,
+            "wandb": False,
+            "wandb_project": None,
+            "wandb_name": None,
+            "wandb_entity": None,
+            "wandb_group": None,
+            "wandb_id": None,
+            "wandb_mode": None,
+        },
+    )()
+
+
+def _copy_logits_csv(prediction_path: Path, output_path: Path) -> None:
+    if not prediction_path.exists():
+        raise FileNotFoundError(f"Inference prediction CSV was not written: {prediction_path}")
+    df = pd.read_csv(prediction_path)
+    if not any(str(column).startswith("logit") for column in df.columns):
+        raise ValueError(f"Inference prediction CSV has no logit columns: {prediction_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(prediction_path, output_path)
 
 
 def _read_binary_predictions(path: str | Path) -> dict[str, list[float]]:

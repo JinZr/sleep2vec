@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import shlex
 import sys
 from typing import Any
 
@@ -11,6 +12,7 @@ from .configs import config_summary
 from .decisions import DecisionStatus
 from .hparam import (
     ensemble_hparam_outputs,
+    export_hparam_logits,
     generate_external_eval,
     launch_hparam_trials,
     monitor_hparam_trials,
@@ -20,7 +22,7 @@ from .hparam import (
     threshold_hparam_outputs,
 )
 from .index_csv import index_summary
-from .manifests import write_json
+from .manifests import write_json, write_text
 from .markdown import report_text
 from .models import json_ready
 from .plans import build_context, build_plan, collect_runs, evaluate_recipe, prepare_doctor_report, write_doctor_outputs
@@ -132,6 +134,32 @@ def _build_parser() -> argparse.ArgumentParser:
     external.add_argument("--top-k", type=int, default=1)
     external.add_argument("--all-candidates", action="store_true")
     external.set_defaults(func=_cmd_hparam_external_eval)
+
+    export_logits = sub.add_parser("hparam-export-logits")
+    export_logits.add_argument("--run-dir", required=True)
+    export_logits.add_argument("--selected", required=True)
+    export_logits.add_argument("--unlock-final-test", action="store_true")
+    export_logits.add_argument("--skip-test", action="store_true")
+    export_logits.add_argument("--label-name")
+    export_logits.add_argument("--val-split", default="val")
+    export_logits.add_argument("--test-split", default="test")
+    export_logits.add_argument("--val-kaldi-data-root")
+    export_logits.add_argument("--val-kaldi-manifest")
+    export_logits.add_argument("--val-finetune-data-index")
+    export_logits.add_argument("--test-kaldi-data-root")
+    export_logits.add_argument("--test-kaldi-manifest")
+    export_logits.add_argument("--test-finetune-data-index")
+    export_logits.add_argument("--batch-size", type=int, default=12)
+    export_logits.add_argument("--num-workers", type=int, default=8)
+    export_logits.add_argument("--devices", type=int, nargs="+")
+    export_logits.add_argument("--accelerator", default="gpu", choices=["cpu", "gpu", "auto"])
+    export_logits.add_argument("--device", default="cuda")
+    export_logits.add_argument("--precision", default="bf16-mixed")
+    export_logits.add_argument("--seed", type=int, default=4523)
+    export_logits.add_argument("--top-k", type=int, default=1)
+    export_logits.add_argument("--all-candidates", action="store_true")
+    export_logits.add_argument("--execute", action="store_true")
+    export_logits.set_defaults(func=_cmd_hparam_export_logits)
 
     threshold = sub.add_parser("hparam-threshold")
     threshold.add_argument("--run-dir", required=True)
@@ -308,6 +336,40 @@ def _cmd_hparam_external_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_hparam_export_logits(args: argparse.Namespace) -> int:
+    manifest = export_hparam_logits(
+        args.run_dir,
+        args.selected,
+        unlock_final_test=args.unlock_final_test,
+        val_split=args.val_split,
+        test_split=args.test_split,
+        skip_test=args.skip_test,
+        label_name=args.label_name,
+        val_kaldi_data_root=args.val_kaldi_data_root,
+        val_kaldi_manifest=args.val_kaldi_manifest,
+        val_finetune_data_index=args.val_finetune_data_index,
+        test_kaldi_data_root=args.test_kaldi_data_root,
+        test_kaldi_manifest=args.test_kaldi_manifest,
+        test_finetune_data_index=args.test_finetune_data_index,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        devices=args.devices,
+        accelerator=args.accelerator,
+        device=args.device,
+        precision=args.precision,
+        seed=args.seed,
+        top_k=args.top_k,
+        all_candidates=args.all_candidates,
+        execute=args.execute,
+    )
+    print(f"Wrote {manifest}")
+    if not args.execute:
+        script = Path(args.run_dir) / "logits_export.sh"
+        write_text(script, "\n".join(_logits_export_script_lines(args)) + "\n", executable=True)
+        print(f"Wrote {script}")
+    return 0
+
+
 def _cmd_hparam_threshold(args: argparse.Namespace) -> int:
     summary = threshold_hparam_outputs(args.run_dir, args.selected)
     print(f"Wrote {summary}")
@@ -362,6 +424,65 @@ def _cmd_hparam_adaptive_loop(args: argparse.Namespace) -> int:
     result = adaptive_loop(args.workflow_dir, execute=args.execute)
     print(f"Wrote {result}")
     return 0
+
+
+def _logits_export_script_lines(args: argparse.Namespace) -> list[str]:
+    command = [
+        "python",
+        "-m",
+        "agent_tools",
+        "hparam-export-logits",
+        "--run-dir",
+        args.run_dir,
+        "--selected",
+        args.selected,
+        "--val-split",
+        args.val_split,
+        "--test-split",
+        args.test_split,
+        "--batch-size",
+        args.batch_size,
+        "--num-workers",
+        args.num_workers,
+        "--accelerator",
+        args.accelerator,
+        "--device",
+        args.device,
+        "--precision",
+        args.precision,
+        "--seed",
+        args.seed,
+        "--top-k",
+        args.top_k,
+        "--execute",
+    ]
+    if args.unlock_final_test:
+        command.append("--unlock-final-test")
+    if args.skip_test:
+        command.append("--skip-test")
+    if args.label_name:
+        command.extend(["--label-name", args.label_name])
+    for flag, value in (
+        ("--val-kaldi-data-root", args.val_kaldi_data_root),
+        ("--val-kaldi-manifest", args.val_kaldi_manifest),
+        ("--val-finetune-data-index", args.val_finetune_data_index),
+        ("--test-kaldi-data-root", args.test_kaldi_data_root),
+        ("--test-kaldi-manifest", args.test_kaldi_manifest),
+        ("--test-finetune-data-index", args.test_finetune_data_index),
+    ):
+        if value:
+            command.extend([flag, value])
+    if args.devices:
+        command.append("--devices")
+        command.extend(args.devices)
+    if args.all_candidates:
+        command.append("--all-candidates")
+    return [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+        " ".join(shlex.quote(str(part)) for part in command),
+    ]
 
 
 if __name__ == "__main__":

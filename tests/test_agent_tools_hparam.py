@@ -11,6 +11,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pandas as pd
 import yaml
 
+from agent_tools import hparam
 from agent_tools.hparam import monitor_hparam_trials
 
 
@@ -227,6 +228,84 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(tmp_
     )
     assert all_candidates.returncode == 0, all_candidates.stderr
     assert len(_read_table(plan_dir / "external_eval_manifest.tsv")) == 3
+
+
+def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "trial_id,rank,config,checkpoint_path\n"
+        f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"
+        f"trial_001,2,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=2.ckpt'}\n"
+    )
+
+    locked = _run("hparam-export-logits", "--run-dir", str(plan_dir), "--selected", str(selected))
+    assert locked.returncode != 0
+    unlocked = _run(
+        "hparam-export-logits",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--unlock-final-test",
+        "--top-k",
+        "2",
+        "--test-finetune-data-index",
+        "external_test.csv",
+    )
+
+    assert unlocked.returncode == 0, unlocked.stderr
+    rows = _read_table(plan_dir / "logits_export_manifest.tsv")
+    assert len(rows) == 2
+    assert rows[0]["val_logits_path"].endswith("logits_exports/trial_000_001_val_logits.csv")
+    assert rows[0]["test_logits_path"].endswith("logits_exports/trial_000_001_test_logits.csv")
+    assert "python -m sleep2vec.infer" in rows[0]["val_infer_command"]
+    assert "--eval-split val" in rows[0]["val_infer_command"]
+    assert "--eval-split test" in rows[0]["test_infer_command"]
+    test_config = yaml.safe_load(Path(rows[0]["test_config"]).read_text())
+    assert test_config["data"]["finetune_data_index"] == "external_test.csv"
+    script = (plan_dir / "logits_export.sh").read_text()
+    assert "hparam-export-logits" in script
+    assert "--execute" in script
+    assert "--unlock-final-test" in script
+
+
+def test_hparam_export_logits_execute_uses_manifest_paths(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "trial_id,rank,config,checkpoint_path\n"
+        f"trial_000,1,{plan_dir / 'configs' / 'trial_000.yaml'},{tmp_path / 'epoch=1.ckpt'}\n"
+    )
+    calls = []
+
+    def _fake_run_logit_export(recipe, **kwargs):
+        calls.append(kwargs)
+        Path(kwargs["output_path"]).write_text("label,logit\n0,-1.0\n1,1.0\n")
+
+    monkeypatch.setattr(hparam, "_run_logit_export", _fake_run_logit_export)
+
+    manifest = hparam.export_hparam_logits(
+        plan_dir,
+        selected,
+        unlock_final_test=True,
+        execute=True,
+        batch_size=4,
+        devices=[0],
+    )
+
+    rows = _read_table(manifest)
+    assert len(calls) == 2
+    assert calls[0]["eval_split"] == "val"
+    assert calls[0]["batch_size"] == 4
+    assert calls[0]["devices"] == [0]
+    assert calls[1]["eval_split"] == "test"
+    assert Path(rows[0]["val_logits_path"]).exists()
+    assert Path(rows[0]["test_logits_path"]).exists()
 
 
 def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: Path):
