@@ -162,7 +162,8 @@ def _resolve_adapt_run_artifacts(
         if existing_ckpts:
             raise ValueError(
                 "Fresh stage2 transition refuses to reuse a non-empty checkpoints.stage2 directory. "
-                "Use --ckpt-path to resume the existing stage2 run, or clear/move the old checkpoints.stage2 directory first."
+                "Use --ckpt-path to resume the existing stage2 run, or clear/move the old "
+                "checkpoints.stage2 directory first."
             )
         run_name = save_path.parent.name
         return AdaptRunArtifacts(

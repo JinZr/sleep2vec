@@ -195,7 +195,8 @@ def _build_finetune_loader(
         meta_data_regression_names = [] if args.is_classification else list(meta_data_names)
     if meta_data_names and args.is_classification and args.output_dim > 2 and not is_seq_task:
         raise ValueError(
-            "Metadata classification currently supports only binary labels (output_dim=2) for non-built-in sequence tasks. "
+            "Metadata classification currently supports only binary labels (output_dim=2) "
+            "for non-built-in sequence tasks. "
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
             "Extend metadata label encoding before using multiclass metadata targets."
         )
