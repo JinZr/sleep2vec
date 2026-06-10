@@ -22,9 +22,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from agent_tools.progress import write_progress
 from sleep2expert.data.psg_pretrain_dataset import _build_channel_registry
 from sleep2expert.data.utils import load_builtin_ahi_metadata, load_npz, window
-from agent_tools.progress import write_progress
 from sleep2expert.preprocess.save_dataset_presets import (
     _load_config_mapping,
     _load_model_channels,

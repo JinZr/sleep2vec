@@ -322,6 +322,7 @@ def test_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):
     assert manifest_json["splits"]["train"]["channels"]["ahi"]["ark_storage"] == "float_matrix"
     assert manifest_json["source_index"] == [str(index_path)]
 
+
 def test_converter_no_compress_ark_keeps_float_storage_and_exact_roundtrip(tmp_path: Path):
     config_path = _write_config(tmp_path, {"eeg": 4})
     npz_path = tmp_path / "sample.npz"
