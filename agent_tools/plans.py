@@ -759,20 +759,20 @@ def _apply_final_test_checkpoint_gate(
         final_config = _resolved_final_eval_config_path(recipe, report, None)
         if final_config in (None, "", "ASK_USER") or str(final_config).startswith("<"):
             return _append_issues(
-                    report,
-                    [
-                        DecisionIssue(
-                            DecisionStatus.NEEDS_USER_INPUT,
-                            "final_eval_config_path",
-                            (
-                                "Final external-test evaluation for YAML-overridden hparam trials "
-                                "requires an explicit config path."
-                            ),
-                            "Which selected trial config should be used for final external-test evaluation?",
-                            {"final_eval_config_path": final_config},
-                        )
-                    ],
-                )
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.NEEDS_USER_INPUT,
+                        "final_eval_config_path",
+                        (
+                            "Final external-test evaluation for YAML-overridden hparam trials "
+                            "requires an explicit config path."
+                        ),
+                        "Which selected trial config should be used for final external-test evaluation?",
+                        {"final_eval_config_path": final_config},
+                    )
+                ],
+            )
         config_issue = _validate_input_path(recipe, "final_eval_config_path", final_config, configured=False)
         if config_issue is not None:
             report = _append_issues(report, [config_issue])
