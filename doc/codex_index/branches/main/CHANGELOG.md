@@ -2,6 +2,9 @@
 
 ## 2026-06-10
 
+- Repaired `FUNCTIONS/AGENT_TOOLING.md` signature entries for `agent_tools.index_csv.index_summary` and `agent_tools.progress.write_progress` so reusable-function guidance matches the implementation.
+- Updated README/MANIFEST metadata for commit `28dd58fe944803592b7e9857b3a0f9fbdfffada3`.
+
 - Repaired the `main` branch index for commit `dbe6a5e4cf40811138a35870b011a2a6d1bf8b83`.
 - Updated README/MANIFEST metadata and tracked-file coverage counts for `sleep2vec/`, `sleep2vec2/`, `sleep2expert/`, `tests/`, `utils/`, `agent_tools/`, `skills/`, and `recipes/`.
 - Added `FUNCTIONS/AGENT_TOOLING.md` for the new agent CLI, consultation, plan, hparam, experiment, adaptive-hparam, and progress surfaces.
