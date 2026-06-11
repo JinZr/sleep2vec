@@ -8,6 +8,7 @@ from scipy.stats import pearsonr
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    cohen_kappa_score,
     confusion_matrix,
     f1_score,
     precision_score,
@@ -722,19 +723,18 @@ def compute_downstream_metrics(
         return compute_binary_label_metrics(gts, preds)
 
     if is_classification:
-        from pyhealth.metrics import multiclass_metrics_fn
-
-        result = multiclass_metrics_fn(
-            gts,
-            preds,
-            metrics=["accuracy", "cohen_kappa", "f1_weighted", "f1_macro"],
-        )
         probs = preds.astype(np.float32)
         y_true = gts.astype(np.int64)
         if y_true.ndim == 2:
             y_true = y_true.argmax(axis=1)
         y_true = y_true.reshape(-1)
         y_pred = probs.argmax(axis=1)
+        result = {
+            "accuracy": float(accuracy_score(y_true, y_pred)),
+            "cohen_kappa": float(cohen_kappa_score(y_true, y_pred)),
+            "f1_weighted": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
+            "f1_macro": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        }
 
         if output_dim == 2:
             result["roc_auc"] = roc_auc_from_two_logits(gts, preds)
