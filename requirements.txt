@@ -7,7 +7,7 @@ numpy==1.26.4
 pandas==2.3.3
 tzdata==2026.2
 scipy==1.15.3
-scikit-learn==1.7.2
+scikit-learn==1.5.0
 statsmodels==0.14.6
 patsy==1.0.1
 matplotlib==3.10.9
