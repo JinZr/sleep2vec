@@ -118,9 +118,8 @@ def main() -> None:
         # Normalize dataset labels
         ds = chunk[args.dataset_col].astype("string").fillna("<NA>")
 
-        present = (
-            chunk[mask_cols].astype("string").apply(lambda col: col.str.strip().str.lower().isin(TRUTHY_MASK_VALUES))
-        )
+        mask_strings = chunk[mask_cols].astype("string").apply(lambda col: col.str.strip().str.lower())
+        present = mask_strings.isin(TRUTHY_MASK_VALUES) | chunk[mask_cols].apply(pd.to_numeric, errors="coerce").eq(1)
         missing = ~present
 
         n = len(chunk)
