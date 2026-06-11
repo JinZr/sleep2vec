@@ -12,7 +12,7 @@ statsmodels==0.14.6
 patsy==1.0.1
 matplotlib==3.10.9
 seaborn==0.13.2
-tqdm==4.67.3
+tqdm==4.68.2
 transformers==5.0.0rc3
 peft==0.19.1
 pyyaml==6.0.3
