@@ -1,6 +1,3 @@
-import typing as t
-
-import torch
 import torch.nn as nn
 
 from sleep2expert.downstreams.channel_aggregation import build_channel_aggregator

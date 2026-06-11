@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_tool_test_helpers import config_payload, write_yaml
-import yaml
 
 from agent_tools.configs import config_summary
 

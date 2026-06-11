@@ -63,6 +63,7 @@ high_impact_fields:
   - id: eval_split
     description: "Inference and evaluation split selection must be explicit."
     required_for_tasks: ["infer", "evaluate"]
+    allowed_values: ["train", "val", "test"]
     question: "Which split should be evaluated: train, val, or test?"
 
   - id: preset_regeneration

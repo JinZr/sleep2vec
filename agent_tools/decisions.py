@@ -118,19 +118,21 @@ def evaluate_consultation_gates(
             )
         )
 
-    for field, rule in high_impact.items():
+    for decision_field, rule in high_impact.items():
         if task_value not in rule.get("required_for_tasks", []):
             continue
-        if field == "task":
+        if decision_field == "task":
             continue
-        decision = _resolve_decision(field, recipe, config_summary, cli_args, user_decisions, approved_defaults)
-        decisions[field] = decision
+        decision = _resolve_decision(
+            decision_field, recipe, config_summary, cli_args, user_decisions, approved_defaults
+        )
+        decisions[decision_field] = decision
         if decision.value == "ASK_USER":
             issues.append(
                 DecisionIssue(
                     DecisionStatus.NEEDS_USER_INPUT,
-                    field,
-                    f"{field} is marked ASK_USER.",
+                    decision_field,
+                    f"{decision_field} is marked ASK_USER.",
                     decision.evidence.get("question") or rule.get("question"),
                     decision.evidence,
                 )
@@ -140,8 +142,8 @@ def evaluate_consultation_gates(
             issues.append(
                 DecisionIssue(
                     DecisionStatus.NEEDS_USER_INPUT,
-                    field,
-                    f"{field} is not explicitly resolved.",
+                    decision_field,
+                    f"{decision_field} is not explicitly resolved.",
                     rule.get("question"),
                     decision.evidence,
                 )
@@ -152,8 +154,8 @@ def evaluate_consultation_gates(
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
-                    field,
-                    f"{field} must be one of {allowed_values}.",
+                    decision_field,
+                    f"{decision_field} must be one of {allowed_values}.",
                     rule.get("question"),
                     {"value": decision.value},
                 )
@@ -354,7 +356,7 @@ def _task_specific_issues(
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
 
     if task == "preset_prepare":
-        for field, value in {
+        for input_field, value in {
             "index": inputs.get("index"),
             "dataset_name": inputs.get("dataset_name"),
             "split": preset.get("split"),
@@ -363,7 +365,12 @@ def _task_specific_issues(
         }.items():
             if value in (None, "", []):
                 issues.append(
-                    _needs(field, f"{field} is required for preset preparation.", high_impact, {"recipe": value})
+                    _needs(
+                        input_field,
+                        f"{input_field} is required for preset preparation.",
+                        high_impact,
+                        {"recipe": value},
+                    )
                 )
         if preset.get("allow_missing_channels") is True and preset.get("min_channels") is None:
             issues.append(
@@ -458,8 +465,8 @@ def _task_specific_issues(
                 "final_eval_unlock",
             ),
         }
-        for field, (path, decision_field) in local_field_map.items():
-            if field not in local_evaluation and not _has_explicit_user_or_local_decision(
+        for eval_field, (path, decision_field) in local_field_map.items():
+            if eval_field not in local_evaluation and not _has_explicit_user_or_local_decision(
                 decisions, local_decisions, decision_field
             ):
                 issues.append(
@@ -707,20 +714,20 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
                 {"objective_mode": adaptive.get("objective_mode")},
             )
         )
-    for field in ("max_rounds", "max_trials_total", "round_size", "poll_seconds"):
-        if field not in adaptive:
+    for adaptive_field in ("max_rounds", "max_trials_total", "round_size", "poll_seconds"):
+        if adaptive_field not in adaptive:
             continue
         try:
-            if int(adaptive[field]) <= 0:
+            if int(adaptive[adaptive_field]) <= 0:
                 raise ValueError
         except (TypeError, ValueError):
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
-                    f"adaptive.{field}",
-                    f"adaptive.{field} must be a positive integer.",
+                    f"adaptive.{adaptive_field}",
+                    f"adaptive.{adaptive_field} must be a positive integer.",
                     None,
-                    {field: adaptive.get(field)},
+                    {adaptive_field: adaptive.get(adaptive_field)},
                 )
             )
     replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
@@ -761,7 +768,7 @@ def _base_finetune_issues(
         local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
     )
     base_evaluation = dict(base_gate.get("evaluation_policy") or {})
-    for field in (
+    for evaluation_field in (
         "selection_metric",
         "selection_mode",
         "selection_split",
@@ -770,15 +777,15 @@ def _base_finetune_issues(
         "final_eval_split",
         "require_manual_unlock_for_final_test",
     ):
-        if field not in base_evaluation and field in local_evaluation:
-            base_evaluation[field] = local_evaluation[field]
+        if evaluation_field not in base_evaluation and evaluation_field in local_evaluation:
+            base_evaluation[evaluation_field] = local_evaluation[evaluation_field]
     base_gate["evaluation_policy"] = base_evaluation
 
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     base_decisions = dict(base_gate.get("decisions") or {})
-    for field, value in local_decisions.items():
-        if field != "task" and field not in base_decisions:
-            base_decisions[field] = value
+    for decision_field, value in local_decisions.items():
+        if decision_field != "task" and decision_field not in base_decisions:
+            base_decisions[decision_field] = value
     base_gate["decisions"] = base_decisions
 
     base_cli_args = dict(cli_args)
@@ -908,17 +915,17 @@ def _path_issues(
         if ckpt_path not in (None, "", "ASK_USER"):
             required_paths.append(("ckpt_path", ckpt_path))
 
-    for field, raw_path in required_paths:
-        issue = _validate_input_path(recipe, field, raw_path, configured=False)
+    for path_field, raw_path in required_paths:
+        issue = _validate_input_path(recipe, path_field, raw_path, configured=False)
         if issue is not None:
             issues.append(issue)
 
     if task in {"finetune", "hparam_tune"} and config_summary and config_summary.get("data_backend") == "npz":
         data = config_summary.get("data", {})
-        for field in ("finetune_preset_path", "finetune_data_index"):
-            value = data.get(field)
+        for data_field in ("finetune_preset_path", "finetune_data_index"):
+            value = data.get(data_field)
             if value:
-                issue = _validate_input_path(recipe, field, value, configured=True)
+                issue = _validate_input_path(recipe, data_field, value, configured=True)
                 if issue is not None:
                     issues.append(issue)
     return issues

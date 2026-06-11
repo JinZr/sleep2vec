@@ -104,7 +104,7 @@ class DefaultDataset(BaseDataset):
             self.data = self._filter_valid_sample_indices(data, filter_max_workers=filter_max_workers)
             if "ahi" in channel_names and not self.data:
                 raise ValueError(
-                    "No valid samples remain for the built-in AHI contract. "
+                    "No valid samples remain for the Built-in AHI contract. "
                     "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
                 )
             if save_preset_path:
@@ -117,7 +117,7 @@ class DefaultDataset(BaseDataset):
         self.filter_with_metadata()
         if "ahi" in getattr(self, "channel_names", []) and not self.data:
             raise ValueError(
-                "No valid samples remain for the built-in AHI contract. "
+                "No valid samples remain for the Built-in AHI contract. "
                 "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
             )
 

@@ -160,7 +160,7 @@
 
 - File: `preprocess/mask_missing_stats.py`
 - Signature: `main() -> None`
-- Purpose and contract: stream large CSVs, compute missing-channel statistics under the rule `present iff numeric value == 1`, and write four report CSVs.
+- Purpose and contract: stream large CSVs, compute missing-channel statistics with split-compatible truthy mask values (`1`, `1.0`, `true`, `t`, `yes`), and write four report CSVs.
 - Important inputs/outputs: input CSV path and output prefix in; four output CSVs out.
 - Side effects: writes CSV reports and prints a human-readable summary.
 - Key callers/callees: caller is `__main__`; helper `_prefix_path` normalizes the output prefix.

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import json
 import math

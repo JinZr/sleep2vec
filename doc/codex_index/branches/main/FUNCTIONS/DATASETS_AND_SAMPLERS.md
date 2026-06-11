@@ -59,9 +59,9 @@
 
 - File: `data/utils.py`
 - Signature: `filter_valid_sample_indices(data, extractors, tokenizers, *, allow_missing_channels, channel_names=None, min_channels=2, tolerance=1, max_workers=None) -> list`
-- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, validating built-in AHI metadata when needed, and recording `payload["available_channels"]` in missing-channel mode.
+- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, validating built-in AHI metadata when needed, and recording `payload["available_channels"]` for every retained sample.
 - Important inputs/outputs: raw `SampleIndex` list in; filtered `SampleIndex` list out.
-- Side effects: mutates `sample_index.payload["available_channels"]` for retained samples in missing-channel mode; may backfill `sample_index.metadata["ahi"]` and `["tst"]`.
+- Side effects: mutates `sample_index.payload["available_channels"]` for retained samples; may backfill `sample_index.metadata["ahi"]` and `["tst"]`.
 - Key callers/callees: caller is `DefaultDataset.__init__`; callees are `load_npz`, `load_builtin_ahi_metadata`, extractors, and tokenizers.
 - Reuse guidance: this is the canonical preset-validation step.
 - Duplication risk notes: pair-first samplers rely on its `available_channels` side effect.

@@ -16,6 +16,12 @@ model:
         out_dim: 8
   head:
     name: classification
+    channel_agg:
+      name: mean
+      kwargs: {}
+    temporal_agg:
+      name: mean
+      kwargs: {}
 
 data:
   backend: npz

@@ -24,6 +24,8 @@ import time
 import numpy as np
 import pandas as pd
 
+TRUTHY_MASK_VALUES = frozenset({"1", "1.0", "true", "t", "yes"})
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -116,9 +118,8 @@ def main() -> None:
         # Normalize dataset labels
         ds = chunk[args.dataset_col].astype("string").fillna("<NA>")
 
-        # Convert mask columns to numeric; present iff == 1
-        masks_num = chunk[mask_cols].apply(pd.to_numeric, errors="coerce")
-        present = masks_num.eq(1)
+        mask_strings = chunk[mask_cols].astype("string").apply(lambda col: col.str.strip().str.lower())
+        present = mask_strings.isin(TRUTHY_MASK_VALUES) | chunk[mask_cols].apply(pd.to_numeric, errors="coerce").eq(1)
         missing = ~present
 
         n = len(chunk)

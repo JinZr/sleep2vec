@@ -166,6 +166,8 @@ class PSGPretrainDataset(DefaultDataset):
 
                 # 需要划分为 n 个 token
                 n = int(row["duration"] // self.token_sec)
+                if n <= 0:
+                    continue
 
                 # stride_tokens = 0 代表只取前面的1535个token
                 # 否则按滑窗 ceil((n - 1535) / stride_tokens) 取多个滑窗

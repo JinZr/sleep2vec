@@ -183,9 +183,9 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - File: `agent_tools/hparam.py`
 - Signature: `generate_external_eval(run_dir: str | Path, selected_csv: str | Path, *, unlock_final_test: bool, kaldi_data_root: str | None = None, kaldi_manifest: str | None = None, finetune_data_index: str | None = None, eval_split: str = "test", top_k: int = 1, all_candidates: bool = False) -> Path`
 - Purpose and contract: create locked final/external inference configs and commands for selected candidates.
-- Important inputs/outputs: hparam run directory, selected candidates, explicit unlock, optional replacement data paths, split, and candidate selection controls in; `external_eval.sh` path out.
+- Important inputs/outputs: hparam run directory, selected candidates, explicit unlock, optional replacement data paths, split, base runtime settings, selected-row `runtime.*` overrides, and candidate selection controls in; `external_eval.sh` path out.
 - Side effects: writes copied configs, `external_eval_manifest.tsv`, and executable shell script.
-- Key callers/callees: called by `agent_tools hparam-external-eval`; uses `_copy_config_with_data_paths` and `module_for_variant`.
+- Key callers/callees: called by `agent_tools hparam-external-eval`; uses `_copy_config_with_data_paths`, `module_for_variant`, and the infer runtime CLI renderer.
 - Reuse guidance: use for final-test or external-test command generation after an explicit unlock.
 - Duplication-risk notes: final-test evaluation must stay locked by this explicit flag.
 
