@@ -217,11 +217,18 @@ def generate_external_eval(
     base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
     base_runtime = base_recipe.get("runtime") if isinstance(base_recipe.get("runtime"), dict) else {}
     rows = _selected_candidate_rows(_read_rows(selected_csv), top_k=top_k, all_candidates=all_candidates)
+    trials_by_id = {
+        str(trial["trial_id"]): trial
+        for trial in plan.get("trials", [])
+        if isinstance(trial, dict) and trial.get("trial_id") not in (None, "")
+    }
     config_dir = root / "external_eval_configs"
     config_dir.mkdir(parents=True, exist_ok=True)
     commands = []
     manifest_rows = []
     for index, row in enumerate(rows, start=1):
+        trial_row = trials_by_id.get(str(row.get("trial_id")), {})
+        runtime_row = {**trial_row, **row}
         source_config = Path(str(row["config"]))
         target_config = config_dir / f"{_candidate_id(row)}_{index:03d}_external.yaml"
         _copy_config_with_data_paths(
@@ -235,7 +242,7 @@ def generate_external_eval(
         if not checkpoint_path:
             raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
         runtime = dict(base_runtime)
-        for key, value in row.items():
+        for key, value in runtime_row.items():
             if key.startswith("runtime.") and value not in (None, ""):
                 runtime[key.removeprefix("runtime.")] = value
         command = _render_command(

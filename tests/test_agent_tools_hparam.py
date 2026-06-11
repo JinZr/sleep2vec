@@ -581,6 +581,61 @@ def test_hparam_select_preserves_zero_padded_epoch_checkpoint(tmp_path: Path):
     assert rows[0]["checkpoint_path"] == str(fixed)
 
 
+def test_hparam_external_eval_uses_trial_runtime_from_candidate_ranking(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["parameters"] = {"runtime.batch_size": [48]}
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["runtime"]["batch_size"] = 32
+    write_yaml(base_recipe, base_payload)
+    write_yaml(recipe, payload)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run_dir = plan_dir / "log-finetune" / "unit_hparam-trial_000"
+    ckpt_dir = run_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True)
+    fixed = ckpt_dir / "epoch=11.ckpt"
+    fixed.write_text("fixed")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "unit_hparam-trial_000",
+                "monitor": "val_ahi_pearson",
+                "best_model_score": 0.71,
+                "best_model_path": str(ckpt_dir / "best-epoch=11.ckpt"),
+                "epoch": 11,
+                "metrics": {"val_ahi_pearson": 0.71},
+            }
+        )
+    )
+
+    selected = _run(
+        "hparam-select",
+        "--run-dir",
+        str(plan_dir),
+        "--metric",
+        "val_ahi_pearson",
+        "--mode",
+        "max",
+    )
+    assert selected.returncode == 0, selected.stderr
+    rows = _read_table(plan_dir / "candidate_ranking.csv")
+    assert "runtime.batch_size" not in rows[0]
+    unlocked = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(plan_dir / "candidate_ranking.csv"),
+        "--unlock-final-test",
+    )
+
+    assert unlocked.returncode == 0, unlocked.stderr
+    external_script = (plan_dir / "external_eval.sh").read_text()
+    assert "--batch-size 48" in external_script
+
+
 def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     tmp_path: Path,
 ):
