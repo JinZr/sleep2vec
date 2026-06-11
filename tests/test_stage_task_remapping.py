@@ -669,6 +669,10 @@ def test_compute_downstream_metrics_reports_multiclass_recall_and_specificity():
 
     assert metrics["recall"] == pytest.approx(2.0 / 3.0)
     assert metrics["specificity"] == pytest.approx((0.75 + 0.75 + 1.0) / 3.0)
+    assert metrics["accuracy"] == pytest.approx(2.0 / 3.0)
+    assert metrics["cohen_kappa"] == pytest.approx(0.5)
+    assert metrics["f1_weighted"] == pytest.approx(59.0 / 90.0)
+    assert metrics["f1_macro"] == pytest.approx(59.0 / 90.0)
 
 
 def test_compute_downstream_metrics_reports_binary_recall_and_specificity():
