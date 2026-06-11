@@ -90,8 +90,8 @@ def test_mask_missing_stats_writes_progress(tmp_path: Path, monkeypatch, module_
     out_prefix = tmp_path / "stats" / "missing"
     pd.DataFrame(
         [
-            {"dataset": "a", "eeg_mask": 1, "ppg_mask": 0},
-            {"dataset": "b", "eeg_mask": 1, "ppg_mask": 1},
+            {"dataset": "a", "eeg_mask": "true", "ppg_mask": "yes"},
+            {"dataset": "b", "eeg_mask": "1.0", "ppg_mask": "0"},
         ]
     ).to_csv(input_csv, index=False)
     monkeypatch.setattr(
@@ -114,3 +114,6 @@ def test_mask_missing_stats_writes_progress(tmp_path: Path, monkeypatch, module_
     assert progress["task"] == "mask_missing_stats"
     assert progress["status"] == "completed"
     assert progress["processed"] == 2
+    overall = pd.read_csv(f"{out_prefix}_overall.csv").set_index("mask_col")
+    assert int(overall.loc["eeg_mask", "missing_rows"]) == 0
+    assert int(overall.loc["ppg_mask", "missing_rows"]) == 1

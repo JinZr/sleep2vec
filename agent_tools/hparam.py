@@ -19,6 +19,7 @@ import yaml
 
 from .manifests import write_text
 from .models import REPO_ROOT, module_for_variant
+from .plans import _infer_runtime_cli_args
 from .progress import read_progress
 
 SSH_TIMEOUT_SECONDS = 10
@@ -214,6 +215,7 @@ def generate_external_eval(
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
     base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
+    base_runtime = base_recipe.get("runtime") if isinstance(base_recipe.get("runtime"), dict) else {}
     rows = _selected_candidate_rows(_read_rows(selected_csv), top_k=top_k, all_candidates=all_candidates)
     config_dir = root / "external_eval_configs"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -232,6 +234,10 @@ def generate_external_eval(
         checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
         if not checkpoint_path:
             raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
+        runtime = dict(base_runtime)
+        for key, value in row.items():
+            if key.startswith("runtime.") and value not in (None, ""):
+                runtime[key.removeprefix("runtime.")] = value
         command = _render_command(
             [
                 "python",
@@ -245,6 +251,7 @@ def generate_external_eval(
                 base_inputs.get("label_name") or (recipe.get("inputs") or {}).get("label_name"),
                 "--eval-split",
                 eval_split,
+                *_infer_runtime_cli_args(runtime),
             ]
         )
         commands.append(command)

@@ -263,6 +263,41 @@ def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
     assert not (output_dir / "run.sh").exists()
 
 
+def test_infer_invalid_eval_split_blocks_command_generation(tmp_path: Path):
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("checkpoint")
+    config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]
+    recipe = write_yaml(
+        tmp_path / "infer.yaml",
+        {
+            "schema_version": 1,
+            "name": "unit_infer",
+            "task": "infer",
+            "variant": "sleep2vec",
+            "inputs": {
+                "config": config,
+                "label_name": "ahi",
+                "ckpt_path": str(ckpt),
+                "eval_split": "validation",
+            },
+            "evaluation_policy": {"external_test_locked": False, "final_test_unlocked": False},
+            "decisions": {
+                "task": {"value": "infer", "source": "explicit_recipe"},
+                "label_name": {"value": "ahi", "source": "explicit_recipe"},
+                "ckpt_path": {"value": str(ckpt), "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "eval_split must be one of" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
 def test_unlock_final_test_with_yaml_search_requires_explicit_final_config(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")

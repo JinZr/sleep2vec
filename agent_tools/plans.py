@@ -21,7 +21,7 @@ from .decisions import (
 from .index_csv import index_summary
 from .manifests import write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, json_ready, module_for_variant, resolve_repo_path
+from .models import REPO_ROOT, module_for_variant, resolve_repo_path
 from .presets import preset_summary
 from .recipes import load_policy_files, load_recipe_with_base, load_user_decisions, recipe_name
 from .repo import repo_summary

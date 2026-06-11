@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .decisions import DecisionIssue, DecisionReport, DecisionStatus
+from .decisions import DecisionReport, DecisionStatus
 
 
 def questions_payload(report: DecisionReport) -> list[dict]:

@@ -28,7 +28,7 @@ from .hparam import (
 from .manifests import write_json, write_text
 from .models import resolve_repo_path
 from .plans import build_plan
-from .recipes import load_recipe_with_base, load_yaml_file, recipe_name
+from .recipes import load_recipe_with_base, recipe_name
 
 
 def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path:
@@ -300,7 +300,7 @@ def _digest_markdown(rows: list[dict[str, Any]], objective: dict[str, str]) -> s
     lines = [
         "# Adaptive Hparam Digest",
         "",
-        f"external_optimized: true",
+        "external_optimized: true",
         f"objective: {objective['metric']} ({objective['mode']})",
         "",
         "## Top trials",

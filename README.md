@@ -279,7 +279,7 @@ python -m sleep2vec.infer \
   --ckpt-path log-finetune/exp001-stage5/checkpoints/epoch=49.ckpt \
   --label-name stage5 --batch-size 12 --devices 0 \
   --inference-preset-path /path/to/test_preset_1535.pickle \
-  --eval-split test --results-csv-path outputs.csv
+  --eval-split test
 ```
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
 Use `--inference-preset-path` to evaluate the same config/checkpoint against a different preset pickle without editing YAML; result CSV rows record the effective preset in `preset_path`.

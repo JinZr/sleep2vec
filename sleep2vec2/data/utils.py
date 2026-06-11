@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import typing as t
@@ -147,9 +147,9 @@ def filter_valid_sample_indices(
 ) -> list[t.Any]:
     """
     Filter out samples with tokenized channel-length mismatches.
-    - allow_missing_channels=True: keep samples with >= min_channels available channels
-      and record available channels in SampleIndex.payload.
+    - allow_missing_channels=True: keep samples with >= min_channels available channels.
     - allow_missing_channels=False: require all configured channels to exist.
+    Accepted samples record available channels in SampleIndex.payload.
     """
 
     worker_count = max_workers or _default_worker_count()
@@ -221,10 +221,9 @@ def filter_valid_sample_indices(
                         max_len, min_len = max(lengths), min(lengths)
 
                         if max_len - min_len <= tolerance:
-                            if allow_missing_channels:
-                                payload_dict = getattr(sample_index, "payload", None)
-                                if isinstance(payload_dict, dict):
-                                    payload_dict["available_channels"] = list(tokens.keys())
+                            payload_dict = getattr(sample_index, "payload", None)
+                            if isinstance(payload_dict, dict):
+                                payload_dict["available_channels"] = list(tokens.keys())
                             filtered_samples.append(sample_index)
                             continue
                         logging.info(
@@ -243,8 +242,7 @@ def filter_valid_sample_indices(
     filtered_data: list[t.Any] = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [executor.submit(process_path, path, samples) for path, samples in samples_by_path.items()]
-        iterator = as_completed(futures)
-        iterator = tqdm(iterator, total=len(futures), desc="Validating samples", leave=False)
+        iterator = tqdm(futures, total=len(futures), desc="Validating samples", leave=False)
         for f in iterator:
             filtered_data.extend(f.result())
 
