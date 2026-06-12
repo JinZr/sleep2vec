@@ -1,9 +1,10 @@
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from sleep2stat.cli import _csv_row_count
-from sleep2stat.config import DataConfig, OutputsConfig, RunConfig, SignalsConfig, Sleep2statConfig
+from sleep2stat.config import AnalyzerConfig, DataConfig, OutputsConfig, RunConfig, SignalsConfig, Sleep2statConfig
 from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
 from sleep2stat.io.records import SleepRecord
 from sleep2stat.io.writers import AnalysisBundleWriter
@@ -17,7 +18,17 @@ def _config(tmp_path: Path) -> Sleep2statConfig:
         run=RunConfig(name="unit", output_dir=tmp_path / "run"),
         data=DataConfig(backend="npz", index=tmp_path / "index.csv", split=["test"]),
         signals=SignalsConfig(channels={}),
-        analyzers=[],
+        analyzers=[
+            AnalyzerConfig(
+                name="stage5_model",
+                type="sleep2vec_downstream",
+                namespace="sleep2vec2",
+                label_name="stage5",
+                config=Path("config.yaml"),
+                ckpt_path=Path("model.ckpt"),
+                input_channels=["ppg"],
+            )
+        ],
         reducers=[],
         outputs=OutputsConfig(write_global_tables=True, write_per_record=True, compression="gzip"),
     )
@@ -52,7 +63,21 @@ def test_writer_creates_global_and_per_record_tables(tmp_path: Path):
         }
     )
     results = [
-        AnalyzerResult("stage5_model", "rec1", epoch=epoch, night={"stage5_model_TST_min": 0.5}),
+        AnalyzerResult(
+            "stage5_model",
+            "rec1",
+            epoch=epoch,
+            events=pd.DataFrame(
+                {
+                    "record_id": ["rec1"],
+                    "event_id": ["rec1__event0"],
+                    "onset_sec": [5.0],
+                    "offset_sec": [15.0],
+                }
+            ),
+            night={"stage5_model_TST_min": 0.5},
+            arrays={"probabilities": np.ones((2, 5), dtype=np.float32)},
+        ),
     ]
 
     writer.write_record_manifest(records)
@@ -63,8 +88,16 @@ def test_writer_creates_global_and_per_record_tables(tmp_path: Path):
     assert (config.run.output_dir / "record_manifest.csv").exists()
     assert (config.run.output_dir / "tables" / "epoch_alignment.csv.gz").exists()
     assert (config.run.output_dir / "tables" / "night_stats.csv").exists()
+    assert (config.run.output_dir / "tables" / "model_summary.csv").exists()
+    assert (config.run.output_dir / "tables" / "analyzer_summary.csv").exists()
     assert (config.run.output_dir / "per_record" / "rec1" / "epoch_alignment.csv.gz").exists()
+    assert (config.run.output_dir / "per_record" / "rec1" / "events.csv.gz").exists()
+    assert (config.run.output_dir / "per_record" / "rec1" / "night_stats.json").exists()
+    assert (config.run.output_dir / "per_record" / "rec1" / "arrays.npz").exists()
     assert len(pd.read_csv(config.run.output_dir / "tables" / "epoch_alignment.csv.gz")) == 2
+    assert pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")["result_count"].tolist() == [1]
+    arrays = np.load(config.run.output_dir / "per_record" / "rec1" / "arrays.npz")
+    assert "stage5_model__probabilities" in arrays
 
 
 def test_csv_row_count_treats_empty_tables_as_zero(tmp_path: Path):

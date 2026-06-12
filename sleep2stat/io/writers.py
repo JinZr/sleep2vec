@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -17,6 +18,7 @@ from sleep2stat.io.records import SleepRecord, records_to_frame
 
 COMPLETION_MARKER = "_SUCCESS.json"
 TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment", "night_stats")
+SUMMARY_TABLE_NAMES = ("model_summary", "analyzer_summary")
 
 
 class AnalysisBundleWriter:
@@ -87,10 +89,16 @@ class AnalysisBundleWriter:
         }
         _write_json(manifest, self.run_dir / "run_manifest.json")
 
-    def write_results(self, records: list[SleepRecord], results: list[AnalyzerResult]) -> None:
+    def write_results(
+        self,
+        records: list[SleepRecord],
+        results: list[AnalyzerResult],
+        failures: Iterable[FailureRecord] | None = None,
+    ) -> None:
         tables = collect_tables(records, results)
+        summary_tables = collect_summary_tables(self.config, results, list(failures or []))
         if self.config.outputs.write_global_tables:
-            for name, frame in tables.items():
+            for name, frame in {**tables, **summary_tables}.items():
                 path = self._table_path(name)
                 frame = self._merge_existing_global_table(name, path, frame)
                 frame.to_csv(path, index=False, compression=self._compression_for(path))
@@ -106,6 +114,7 @@ class AnalysisBundleWriter:
                         frame = frame[frame["record_id"] == record.record_id]
                     path = record_dir / self._per_record_filename(name)
                     frame.to_csv(path, index=False, compression=self._compression_for(path))
+                self._write_per_record_sidecars(record, tables, results, record_dir)
 
     def write_completion_markers(self, record_ids: Iterable[str]) -> None:
         if not self.config.outputs.write_per_record:
@@ -117,12 +126,43 @@ class AnalysisBundleWriter:
             _write_json({"status": "completed", "updated_at_utc": _utc_now()}, record_dir / COMPLETION_MARKER)
 
     def _table_path(self, name: str) -> Path:
-        suffix = ".csv.gz" if self.config.outputs.compression == "gzip" and name != "night_stats" else ".csv"
+        uncompressed = {"night_stats", *SUMMARY_TABLE_NAMES}
+        suffix = ".csv.gz" if self.config.outputs.compression == "gzip" and name not in uncompressed else ".csv"
         return self.tables_dir / f"{name}{suffix}"
 
     def _per_record_filename(self, name: str) -> str:
         suffix = ".csv.gz" if self.config.outputs.compression == "gzip" and name != "night_stats" else ".csv"
         return f"{name}{suffix}"
+
+    def _write_per_record_sidecars(
+        self,
+        record: SleepRecord,
+        tables: dict[str, pd.DataFrame],
+        results: list[AnalyzerResult],
+        record_dir: Path,
+    ) -> None:
+        events = tables["event_alignment"]
+        if not events.empty and "record_id" in events.columns:
+            events = events[events["record_id"] == record.record_id]
+        events_path = record_dir / ("events.csv.gz" if self.config.outputs.compression == "gzip" else "events.csv")
+        events.to_csv(events_path, index=False, compression=self._compression_for(events_path))
+
+        night = tables["night_stats"]
+        if not night.empty and "record_id" in night.columns:
+            night = night[night["record_id"] == record.record_id]
+        night_payload = {}
+        if not night.empty:
+            night_payload = _json_safe(night.iloc[0].to_dict())
+        _write_json(night_payload, record_dir / "night_stats.json")
+
+        arrays = {}
+        for result in results:
+            if result.record_id != record.record_id:
+                continue
+            for key, value in result.arrays.items():
+                arrays[f"{result.name}__{key}"] = np.asarray(value)
+        if arrays:
+            np.savez_compressed(record_dir / "arrays.npz", **arrays)
 
     @staticmethod
     def _compression_for(path: Path) -> str | None:
@@ -183,6 +223,86 @@ def collect_tables(records: list[SleepRecord], results: list[AnalyzerResult]) ->
     }
 
 
+def collect_summary_tables(
+    config: Sleep2statConfig,
+    results: list[AnalyzerResult],
+    failures: list[FailureRecord],
+) -> dict[str, pd.DataFrame]:
+    failure_counts: dict[str, int] = {}
+    for failure in failures:
+        failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
+
+    analyzer_rows = []
+    for kind, configs in (("analyzer", config.analyzers), ("reducer", config.reducers)):
+        for item in configs:
+            item_results = [result for result in results if result.name == item.name]
+            analyzer_rows.append(
+                {
+                    "kind": kind,
+                    "name": item.name,
+                    "type": item.type,
+                    "enabled": bool(item.enabled),
+                    "record_count": len({result.record_id for result in item_results}),
+                    "result_count": len(item_results),
+                    "failure_count": failure_counts.get(item.name, 0),
+                    "epoch_rows": _result_row_count(item_results, "epoch"),
+                    "second_rows": _result_row_count(item_results, "second"),
+                    "event_rows": _result_row_count(item_results, "events"),
+                    "night_rows": sum(1 for result in item_results if result.night is not None),
+                }
+            )
+
+    model_rows = []
+    for analyzer in config.analyzers:
+        if analyzer.type != "sleep2vec_downstream":
+            continue
+        model_rows.append(
+            {
+                "name": analyzer.name,
+                "type": analyzer.type,
+                "namespace": analyzer.namespace,
+                "label_name": analyzer.label_name,
+                "config": None if analyzer.config is None else str(analyzer.config),
+                "ckpt_path": None if analyzer.ckpt_path is None else str(analyzer.ckpt_path),
+                "input_channels": ",".join(analyzer.input_channels),
+                "batch_size": analyzer.batch_size,
+                "threshold": analyzer.threshold,
+            }
+        )
+    return {
+        "model_summary": pd.DataFrame(
+            model_rows,
+            columns=[
+                "name",
+                "type",
+                "namespace",
+                "label_name",
+                "config",
+                "ckpt_path",
+                "input_channels",
+                "batch_size",
+                "threshold",
+            ],
+        ),
+        "analyzer_summary": pd.DataFrame(
+            analyzer_rows,
+            columns=[
+                "kind",
+                "name",
+                "type",
+                "enabled",
+                "record_count",
+                "result_count",
+                "failure_count",
+                "epoch_rows",
+                "second_rows",
+                "event_rows",
+                "night_rows",
+            ],
+        ),
+    }
+
+
 def _merge_alignment_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
@@ -222,8 +342,19 @@ def _dedupe_columns_for_table(name: str, frame: pd.DataFrame) -> list[str]:
         "second_alignment": ["record_id", "second_idx"],
         "event_alignment": ["record_id", "event_id"],
         "night_stats": ["record_id"],
+        "model_summary": ["name"],
+        "analyzer_summary": ["kind", "name"],
     }.get(name, ["record_id"])
     return [column for column in candidates if column in frame.columns]
+
+
+def _result_row_count(results: list[AnalyzerResult], attr: str) -> int:
+    count = 0
+    for result in results:
+        value = getattr(result, attr)
+        if value is not None:
+            count += len(value)
+    return count
 
 
 def _to_yamlable(obj: Any) -> Any:
@@ -235,10 +366,26 @@ def _to_yamlable(obj: Any) -> Any:
         return _to_yamlable(vars(obj))
     if isinstance(obj, Path):
         return str(obj)
+    if isinstance(obj, np.generic):
+        return obj.item()
     if isinstance(obj, dict):
         return {str(key): _to_yamlable(value) for key, value in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_to_yamlable(value) for value in obj]
+    return obj
+
+
+def _json_safe(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {str(key): _json_safe(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(value) for value in obj]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, float) and pd.isna(obj):
+        return None
+    if _is_missing(obj):
+        return None
     return obj
 
 

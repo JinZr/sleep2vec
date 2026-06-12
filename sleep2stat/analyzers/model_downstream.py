@@ -11,6 +11,7 @@ import pandas as pd
 import torch
 
 from data.default_dataset import DefaultDataset, SampleIndex
+from data.kaldi_psg_dataset import KaldiPSGDataset
 from data.utils import default_extractor, default_mlm_mask_generator, default_tokenizer
 from sleep2stat.analyzers.base import BaseAnalyzer
 from sleep2stat.config import AnalyzerConfig, ChannelSpec
@@ -43,7 +44,7 @@ class _Sleep2statDataset(DefaultDataset):
         self.is_train_set = False
 
         data = []
-        for idx, record in enumerate(records):
+        for record in records:
             n_tokens = max(0, int(record.duration_sec // record.token_sec))
             if n_tokens <= 0:
                 continue
@@ -59,7 +60,7 @@ class _Sleep2statDataset(DefaultDataset):
             )
             data.append(
                 SampleIndex(
-                    id=idx,
+                    id=record.record_id,
                     path=str(record.path),
                     start=0,
                     end=min(n_tokens, record.max_tokens),
@@ -96,6 +97,80 @@ class _Sleep2statDataset(DefaultDataset):
         )
 
 
+def _build_datasets(
+    *,
+    records: list[SleepRecord],
+    channel_specs: dict[str, ChannelSpec],
+    batch_size: int,
+    num_workers: int,
+    context: Sleep2statContext,
+) -> list[DefaultDataset]:
+    data_cfg = getattr(context.config, "data", None)
+    if getattr(data_cfg, "backend", "npz") == "kaldi":
+        return _build_kaldi_datasets(
+            records=records,
+            channel_specs=channel_specs,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            context=context,
+        )
+    return [
+        _Sleep2statDataset(
+            records=records,
+            channel_specs=channel_specs,
+            batch_size=batch_size,
+            num_workers=num_workers,
+        )
+    ]
+
+
+def _build_kaldi_datasets(
+    *,
+    records: list[SleepRecord],
+    channel_specs: dict[str, ChannelSpec],
+    batch_size: int,
+    num_workers: int,
+    context: Sleep2statContext,
+) -> list[KaldiPSGDataset]:
+    data_cfg = context.config.data
+    if data_cfg.kaldi_data_root is None or data_cfg.kaldi_manifest is None:
+        raise ValueError("data.backend=kaldi requires data.kaldi_data_root and data.kaldi_manifest.")
+    manifest_path = data_cfg.kaldi_manifest
+    if not manifest_path.is_absolute():
+        manifest_path = data_cfg.kaldi_data_root / manifest_path
+    channel_names = list(channel_specs)
+    channel_input_dims = {name: spec.input_dim for name, spec in channel_specs.items()}
+    records_by_split: dict[str, list[SleepRecord]] = {}
+    for record in records:
+        records_by_split.setdefault(record.split, []).append(record)
+
+    datasets = []
+    for split, split_records in records_by_split.items():
+        wanted_keys = {str(record.metadata.get("sample_key", record.record_id)) for record in split_records}
+        dataset = KaldiPSGDataset(
+            channel_names=channel_names,
+            channel_input_dims=channel_input_dims,
+            kaldi_data_root=data_cfg.kaldi_data_root,
+            manifest=manifest_path,
+            split=[split],
+            max_tokens=data_cfg.max_tokens,
+            mask_rate=0.0,
+            randomly_select_channels=False,
+            allow_missing_channels=False,
+            min_channels=len(channel_names),
+            bucket_by_available_channels=False,
+            generative=False,
+            is_train_set=False,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+        )
+        dataset.data = [sample for sample in dataset.data if str(sample.id) in wanted_keys]
+        if dataset.data:
+            datasets.append(dataset)
+    return datasets
+
+
 @register_analyzer("sleep2vec_downstream")
 class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
     def __init__(self, config: AnalyzerConfig):
@@ -113,15 +188,16 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         finetune_mod = importlib.import_module(f"{namespace}.sleep2vec_finetuning")
         utils_mod = importlib.import_module(f"{namespace}.utils")
 
+        data_cfg = getattr(context.config, "data", None)
         args = argparse.Namespace(
             config=Path(self.config.config),
             label_name=self.config.label_name,
             device=context.device,
             batch_size=self.config.batch_size or context.batch_size or 12,
             num_workers=context.num_workers,
-            data_backend=None,
-            kaldi_data_root=None,
-            kaldi_manifest=None,
+            data_backend=getattr(data_cfg, "backend", "npz"),
+            kaldi_data_root=getattr(data_cfg, "kaldi_data_root", None),
+            kaldi_manifest=getattr(data_cfg, "kaldi_manifest", None),
             pretrained_backbone_path=None,
             print_diagnostics=False,
             diagnostics_steps=5,
@@ -162,14 +238,26 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         results: list[AnalyzerResult] = []
         failures: list[FailureRecord] = []
         channel_specs = {name: context.config.signals.channels[name] for name in self.config.input_channels}
-        dataset = _Sleep2statDataset(
+        datasets = _build_datasets(
             records=records,
             channel_specs=channel_specs,
             batch_size=self.config.batch_size or context.batch_size or self.args.batch_size,
             num_workers=context.num_workers,
+            context=context,
         )
+        record_by_path = {str(record.path): record for record in records}
+        record_by_id = {}
+        for record in records:
+            record_by_id[record.record_id] = record
+            sample_key = record.metadata.get("sample_key")
+            if sample_key is not None:
+                record_by_id[str(sample_key)] = record
         retained_record_ids = {
-            str(sample.metadata.get("record_id")) for sample in getattr(dataset, "data", []) if sample.metadata
+            record.record_id
+            for dataset in datasets
+            for sample in getattr(dataset, "data", [])
+            for record in [_record_for_sample(sample, record_by_path, record_by_id)]
+            if record is not None
         }
         for record in records:
             if record.record_id not in retained_record_ids:
@@ -185,25 +273,28 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                 )
         if not retained_record_ids:
             return results, failures
-        loader = dataset.dataloader(device=self.args.device)
-        record_by_path = {str(record.path): record for record in records}
         with torch.no_grad():
-            for batch in loader:
-                try:
-                    batch = self.move_to_device(batch, self.args.device)
-                    logits = self.model(batch)
-                    results.extend(self._decode_batch(batch, logits, record_by_path))
-                except Exception as exc:
-                    for path in batch.get("metadata", {}).get("path", []):
-                        record = record_by_path.get(str(path))
-                        failures.append(
-                            FailureRecord(
-                                record_id=record.record_id if record else str(path),
-                                analyzer=self.config.name,
-                                error_type=type(exc).__name__,
-                                message=str(exc),
+            for dataset in datasets:
+                loader = dataset.dataloader(device=self.args.device)
+                for batch in loader:
+                    try:
+                        batch = self.move_to_device(batch, self.args.device)
+                        logits = self.model(batch)
+                        results.extend(self._decode_batch(batch, logits, record_by_path, record_by_id))
+                    except Exception as exc:
+                        batch_ids = [str(value) for value in batch.get("id", [])]
+                        paths = [str(value) for value in batch.get("metadata", {}).get("path", [])]
+                        keys = batch_ids or paths
+                        for key in keys:
+                            record = record_by_id.get(key) or record_by_path.get(key)
+                            failures.append(
+                                FailureRecord(
+                                    record_id=record.record_id if record else key,
+                                    analyzer=self.config.name,
+                                    error_type=type(exc).__name__,
+                                    message=str(exc),
+                                )
                             )
-                        )
         return results, failures
 
     def _decode_batch(
@@ -211,6 +302,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         batch: dict[str, Any],
         logits: torch.Tensor,
         record_by_path: dict[str, SleepRecord],
+        record_by_id: dict[str, SleepRecord] | None = None,
     ) -> list[AnalyzerResult]:
         label_name = self.config.label_name
         if label_name == "ahi":
@@ -223,6 +315,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                 logits,
                 batch,
                 record_by_path,
+                record_by_id=record_by_id,
                 threshold=self.threshold,
                 include_probabilities=self.include_probabilities,
             )
@@ -232,10 +325,11 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                 logits,
                 batch,
                 record_by_path,
+                record_by_id=record_by_id,
                 include_probabilities=self.include_probabilities,
                 include_logits=self.include_raw_logits,
             )
-        return decode_regression_logits(self.config.name, logits, batch, record_by_path)
+        return decode_regression_logits(self.config.name, logits, batch, record_by_path, record_by_id=record_by_id)
 
     def _resolve_threshold(self, checkpoint: Any) -> float | None:
         explicit = self.config.threshold
@@ -248,12 +342,61 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         return None
 
 
+def _record_for_sample(
+    sample: SampleIndex,
+    record_by_path: dict[str, SleepRecord],
+    record_by_id: dict[str, SleepRecord],
+) -> SleepRecord | None:
+    record = record_by_id.get(str(sample.id))
+    if record is not None:
+        return record
+    if sample.metadata:
+        record_id = sample.metadata.get("record_id")
+        if record_id is not None and str(record_id) in record_by_id:
+            return record_by_id[str(record_id)]
+        path = sample.metadata.get("path")
+        if path is not None:
+            return record_by_path.get(str(path))
+    return None
+
+
+def _record_for_batch_item(
+    batch: dict[str, Any],
+    idx: int,
+    path: Any,
+    record_by_path: dict[str, SleepRecord],
+    record_by_id: dict[str, SleepRecord] | None,
+) -> SleepRecord:
+    if record_by_id:
+        batch_id = _batch_value(batch.get("id"), idx)
+        if batch_id is not None and str(batch_id) in record_by_id:
+            return record_by_id[str(batch_id)]
+        record_id = _batch_value(batch.get("metadata", {}).get("record_id"), idx)
+        if record_id is not None and str(record_id) in record_by_id:
+            return record_by_id[str(record_id)]
+    return record_by_path[str(path)]
+
+
+def _batch_value(value: Any, idx: int) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.ndim == 0:
+            return value.item()
+        return value.detach().cpu().reshape(-1)[idx].item()
+    try:
+        return value[idx]
+    except (TypeError, IndexError, KeyError):
+        return None
+
+
 def decode_classification_logits(
     analyzer_name: str,
     logits: torch.Tensor,
     batch: dict[str, Any],
     record_by_path: dict[str, SleepRecord],
     *,
+    record_by_id: dict[str, SleepRecord] | None = None,
     include_probabilities: bool,
     include_logits: bool,
 ) -> list[AnalyzerResult]:
@@ -267,7 +410,7 @@ def decode_classification_logits(
         probs = torch.softmax(logits_cpu, dim=-1).numpy()
         preds = probs.argmax(axis=-1).astype(np.int64)
         for idx, path in enumerate(paths):
-            record = record_by_path[str(path)]
+            record = _record_for_batch_item(batch, idx, path, record_by_path, record_by_id)
             n_tokens = min(int(lengths[idx]), preds.shape[1])
             token_start = int(token_starts[idx])
             frame = _epoch_base_frame(record, token_start, n_tokens)
@@ -287,7 +430,7 @@ def decode_classification_logits(
     probs = torch.softmax(logits_cpu, dim=-1).numpy()
     preds = probs.argmax(axis=-1).astype(np.int64)
     for idx, path in enumerate(paths):
-        record = record_by_path[str(path)]
+        record = _record_for_batch_item(batch, idx, path, record_by_path, record_by_id)
         night = {
             f"{analyzer_name}_pred": int(preds[idx]),
             f"{analyzer_name}_confidence": float(probs[idx].max()),
@@ -309,11 +452,13 @@ def decode_regression_logits(
     logits: torch.Tensor,
     batch: dict[str, Any],
     record_by_path: dict[str, SleepRecord],
+    *,
+    record_by_id: dict[str, SleepRecord] | None = None,
 ) -> list[AnalyzerResult]:
     preds = logits.detach().to(torch.float32).cpu().reshape(logits.shape[0], -1).mean(dim=1).numpy()
     results = []
     for idx, path in enumerate(batch["metadata"]["path"]):
-        record = record_by_path[str(path)]
+        record = _record_for_batch_item(batch, idx, path, record_by_path, record_by_id)
         metadata_value = record.metadata.get("age")
         night = {f"{analyzer_name}_pred": float(preds[idx])}
         if metadata_value is not None:
@@ -334,6 +479,7 @@ def decode_ahi_logits(
     batch: dict[str, Any],
     record_by_path: dict[str, SleepRecord],
     *,
+    record_by_id: dict[str, SleepRecord] | None = None,
     threshold: float,
     include_probabilities: bool = True,
     min_event_duration_sec: int = 10,
@@ -345,7 +491,7 @@ def decode_ahi_logits(
     lengths = _tensor_list(batch.get("length"), default=1, count=len(paths))
     results = []
     for idx, path in enumerate(paths):
-        record = record_by_path[str(path)]
+        record = _record_for_batch_item(batch, idx, path, record_by_path, record_by_id)
         flat_prob = probs[idx].reshape(-1)
         valid_seconds = min(int(lengths[idx]) * record.token_sec, flat_prob.shape[0])
         flat_prob = flat_prob[:valid_seconds]

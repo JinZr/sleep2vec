@@ -6,9 +6,10 @@ from typing import Any
 
 import yaml
 
-SUPPORTED_ANALYZER_TYPES = {"sleep2vec_downstream", "npz_stage_reference"}
+SUPPORTED_ANALYZER_TYPES = {"sleep2vec_downstream", "npz_stage_reference", "yasa_stage", "yasa_bandpower"}
 SUPPORTED_REDUCER_TYPES = {
     "hypnogram_stats",
+    "yasa_hypnogram_stats",
     "transition_stats",
     "stage_agreement",
     "respiratory_stats",
@@ -25,11 +26,13 @@ DATA_KEYS = {
     "split_column",
     "source_column",
     "record_id_columns",
+    "kaldi_data_root",
+    "kaldi_manifest",
     "token_sec",
     "max_tokens",
 }
 SIGNALS_KEYS = {"channels"}
-CHANNEL_KEYS = {"source", "sfreq", "kind", "input_dim", "unit", "scale"}
+CHANNEL_KEYS = {"source", "sfreq", "kind", "input_dim", "unit", "scale", "mne_name"}
 ANALYZER_KEYS = {
     "name",
     "type",
@@ -79,13 +82,15 @@ class RunConfig:
 @dataclass(frozen=True)
 class DataConfig:
     backend: str
-    index: Path
+    index: Path | None
     split: list[str]
     path_column: str = "path"
     duration_column: str = "duration"
     split_column: str = "split"
     source_column: str | None = "source"
     record_id_columns: list[str] = field(default_factory=list)
+    kaldi_data_root: Path | None = None
+    kaldi_manifest: Path | None = None
     token_sec: int = 30
     max_tokens: int = 1535
 
@@ -98,6 +103,7 @@ class ChannelSpec:
     input_dim: int
     unit: str | None = None
     scale: float = 1.0
+    mne_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +181,7 @@ def load_config(path: str | Path) -> Sleep2statConfig:
     data_cfg = _build_data_config(raw["data"])
     signals_cfg = _build_signals_config(raw["signals"])
     analyzers = _build_analyzers(raw["analyzers"], signals_cfg)
+    _validate_backend_analyzer_support(data_cfg, analyzers)
     reducers = _build_reducers(raw["reducers"])
     _validate_reducer_references(analyzers, reducers)
     outputs = _build_outputs(raw["outputs"])
@@ -229,12 +236,14 @@ def _build_data_config(raw: Any) -> DataConfig:
     data = _require_mapping(raw, "data")
     _reject_unknown_keys(data, DATA_KEYS, "data")
     backend = str(data.get("backend", "npz"))
+    if backend not in {"npz", "kaldi"}:
+        raise ValueError(f"Unsupported sleep2stat data.backend: {backend!r}. Expected 'npz' or 'kaldi'.")
+    if backend == "npz" and not data.get("index"):
+        raise ValueError("data.index is required for data.backend=npz.")
     if backend == "kaldi":
-        raise ValueError("sleep2stat v0.1 supports only data.backend=npz; Kaldi support is planned after v0.1.")
-    if backend != "npz":
-        raise ValueError(f"Unsupported sleep2stat data.backend: {backend!r}. Expected 'npz'.")
-    if not data.get("index"):
-        raise ValueError("data.index is required.")
+        missing = [key for key in ("kaldi_data_root", "kaldi_manifest") if not data.get(key)]
+        if missing:
+            raise ValueError(f"data.backend=kaldi requires field(s): {missing}")
     token_sec = int(data.get("token_sec", 30))
     max_tokens = int(data.get("max_tokens", 1535))
     if token_sec <= 0:
@@ -246,13 +255,15 @@ def _build_data_config(raw: Any) -> DataConfig:
         raise ValueError("data.split is required and must not be empty for sleep2stat v0.1.")
     return DataConfig(
         backend=backend,
-        index=Path(data["index"]),
+        index=None if data.get("index") is None else Path(data["index"]),
         split=split,
         path_column=str(data.get("path_column", "path")),
         duration_column=str(data.get("duration_column", "duration")),
         split_column=str(data.get("split_column", "split")),
         source_column=None if data.get("source_column") is None else str(data.get("source_column", "source")),
         record_id_columns=_string_list(data.get("record_id_columns", []), "data.record_id_columns"),
+        kaldi_data_root=None if data.get("kaldi_data_root") is None else Path(data["kaldi_data_root"]),
+        kaldi_manifest=None if data.get("kaldi_manifest") is None else Path(data["kaldi_manifest"]),
         token_sec=token_sec,
         max_tokens=max_tokens,
     )
@@ -278,6 +289,7 @@ def _build_signals_config(raw: Any) -> SignalsConfig:
             input_dim=int(spec["input_dim"]),
             unit=None if spec.get("unit") is None else str(spec["unit"]),
             scale=float(spec.get("scale", 1.0)),
+            mne_name=None if spec.get("mne_name") is None else str(spec["mne_name"]),
         )
         if channels[str(name)].input_dim <= 0:
             raise ValueError(f"signals.channels.{name}.input_dim must be positive.")
@@ -304,6 +316,12 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
             missing = [key for key in required if not item.get(key)]
             if missing:
                 raise ValueError(f"Analyzer {name!r} missing required field(s): {missing}")
+        if analyzer_type in {"yasa_stage", "yasa_bandpower"} and not input_channels:
+            raise ValueError(f"Analyzer {name!r} requires input_channels.")
+        if analyzer_type == "yasa_stage":
+            eeg_channels = [channel for channel in input_channels if signals.channels[channel].kind.lower() == "eeg"]
+            if not eeg_channels:
+                raise ValueError(f"Analyzer {name!r} requires at least one EEG input channel.")
         analyzers.append(
             AnalyzerConfig(
                 name=name,
@@ -337,7 +355,12 @@ def _build_reducers(raw: Any) -> list[ReducerConfig]:
             raise ValueError(f"reducers[{idx}].name is required.")
         if reducer_type not in SUPPORTED_REDUCER_TYPES:
             raise ValueError(f"Unknown sleep2stat reducer type: {reducer_type!r}.")
-        if reducer_type in {"hypnogram_stats", "transition_stats", "respiratory_stats"} and not item.get("source"):
+        if reducer_type in {
+            "hypnogram_stats",
+            "yasa_hypnogram_stats",
+            "transition_stats",
+            "respiratory_stats",
+        } and not item.get("source"):
             raise ValueError(f"Reducer {name!r} requires source.")
         if reducer_type == "stage_agreement" and (not item.get("left") or not item.get("right")):
             raise ValueError(f"Reducer {name!r} requires left and right.")
@@ -378,6 +401,17 @@ def _validate_reducer_references(analyzers: list[AnalyzerConfig], reducers: list
                 raise ValueError(
                     f"Reducer {reducer.name!r} references unknown analyzer in {field_name}: {reference!r}."
                 )
+
+
+def _validate_backend_analyzer_support(data_cfg: DataConfig, analyzers: list[AnalyzerConfig]) -> None:
+    if data_cfg.backend != "kaldi":
+        return
+    yasa_analyzers = [analyzer.name for analyzer in analyzers if analyzer.type.startswith("yasa_")]
+    if yasa_analyzers:
+        raise ValueError(
+            "YASA analyzers require data.backend=npz in sleep2stat v0.1 because Kaldi inputs are token matrices, "
+            f"not raw continuous PSG signals: {yasa_analyzers}"
+        )
 
 
 def _build_outputs(raw: Any) -> OutputsConfig:

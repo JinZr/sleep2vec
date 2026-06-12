@@ -110,11 +110,72 @@ def test_load_config_requires_data_split(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
-def test_load_config_rejects_kaldi_for_v01(tmp_path: Path):
+def test_load_config_accepts_kaldi_backend(tmp_path: Path):
     payload = _minimal_payload()
     payload["data"]["backend"] = "kaldi"
+    payload["data"].pop("index")
+    payload["data"]["kaldi_data_root"] = "index/kaldi_shhs"
+    payload["data"]["kaldi_manifest"] = "manifest.json"
 
-    with pytest.raises(ValueError, match="v0.1 supports only data.backend=npz"):
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.data.backend == "kaldi"
+    assert config.data.kaldi_data_root == Path("index/kaldi_shhs")
+    assert config.data.kaldi_manifest == Path("manifest.json")
+
+
+def test_load_config_requires_kaldi_paths(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["data"]["backend"] = "kaldi"
+    payload["data"].pop("index")
+
+    with pytest.raises(ValueError, match="data.backend=kaldi requires"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_accepts_yasa_analyzers_and_reducer_alias(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"] = {
+        "eeg": {
+            "source": "eeg",
+            "sfreq": 100,
+            "kind": "eeg",
+            "input_dim": 3000,
+            "mne_name": "EEG",
+        }
+    }
+    payload["analyzers"] = [
+        {
+            "name": "yasa_stage",
+            "type": "yasa_stage",
+            "input_channels": ["eeg"],
+        },
+        {
+            "name": "yasa_bandpower",
+            "type": "yasa_bandpower",
+            "input_channels": ["eeg"],
+        },
+    ]
+    payload["reducers"] = [{"name": "yasa_stats", "type": "yasa_hypnogram_stats", "source": "yasa_stage"}]
+
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.signals.channels["eeg"].mne_name == "EEG"
+    assert [analyzer.type for analyzer in config.analyzers] == ["yasa_stage", "yasa_bandpower"]
+    assert config.reducers[0].type == "yasa_hypnogram_stats"
+
+
+def test_load_config_rejects_yasa_with_kaldi_backend(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["data"]["backend"] = "kaldi"
+    payload["data"].pop("index")
+    payload["data"]["kaldi_data_root"] = "index/kaldi_shhs"
+    payload["data"]["kaldi_manifest"] = "manifest.json"
+    payload["signals"]["channels"] = {"eeg": {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}}
+    payload["analyzers"] = [{"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]}]
+    payload["reducers"] = [{"name": "yasa_stats", "type": "yasa_hypnogram_stats", "source": "yasa_stage"}]
+
+    with pytest.raises(ValueError, match="YASA analyzers require data.backend=npz"):
         load_config(_write_yaml(tmp_path, payload))
 
 

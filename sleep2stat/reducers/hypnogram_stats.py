@@ -9,6 +9,7 @@ from sleep2stat.reducers.base import BaseReducer
 from sleep2stat.registry import register_reducer
 
 
+@register_reducer("yasa_hypnogram_stats")
 @register_reducer("hypnogram_stats")
 class HypnogramStatsReducer(BaseReducer):
     def reduce(

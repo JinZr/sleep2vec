@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,16 @@ class SleepRecord:
 def load_records(
     data_cfg: DataConfig, *, split_override: list[str] | None = None, limit: int | None = None
 ) -> list[SleepRecord]:
+    if data_cfg.backend == "kaldi":
+        return _load_kaldi_records(data_cfg, split_override=split_override, limit=limit)
+    return _load_npz_records(data_cfg, split_override=split_override, limit=limit)
+
+
+def _load_npz_records(
+    data_cfg: DataConfig, *, split_override: list[str] | None = None, limit: int | None = None
+) -> list[SleepRecord]:
+    if data_cfg.index is None:
+        raise ValueError("data.index is required for data.backend=npz.")
     df = pd.read_csv(data_cfg.index, low_memory=False)
     required = [data_cfg.path_column, data_cfg.duration_column]
     missing = [column for column in required if column not in df.columns]
@@ -65,6 +76,71 @@ def load_records(
         )
         if limit is not None and len(records) >= limit:
             break
+    return records
+
+
+def _load_kaldi_records(
+    data_cfg: DataConfig, *, split_override: list[str] | None = None, limit: int | None = None
+) -> list[SleepRecord]:
+    if data_cfg.kaldi_data_root is None or data_cfg.kaldi_manifest is None:
+        raise ValueError("data.backend=kaldi requires data.kaldi_data_root and data.kaldi_manifest.")
+    root = data_cfg.kaldi_data_root.expanduser()
+    manifest_path = data_cfg.kaldi_manifest.expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = root / manifest_path
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("format_version") != 2:
+        raise ValueError("Kaldi manifest.json must use format_version 2.")
+    raw_splits = manifest.get("splits")
+    if not isinstance(raw_splits, dict):
+        raise ValueError("Kaldi manifest.json must contain a splits mapping.")
+
+    requested_split = list(split_override if split_override is not None else data_cfg.split)
+    records = []
+    for split_name in requested_split:
+        split_spec = raw_splits.get(str(split_name))
+        if not isinstance(split_spec, dict):
+            raise ValueError(f"Kaldi manifest.json is missing requested split {split_name!r}.")
+        split_manifest = root / str(split_spec["manifest"])
+        df = pd.read_csv(split_manifest, low_memory=False)
+        required = {"sample_key", data_cfg.path_column, "token_start", "token_end"}
+        missing = sorted(required - set(df.columns))
+        if missing:
+            raise ValueError(f"Kaldi split manifest CSV is missing required column(s): {missing}.")
+        if data_cfg.split_column in df.columns:
+            df = df[df[data_cfg.split_column].astype(str) == str(split_name)]
+        for row_idx, (_, row) in enumerate(df.iterrows()):
+            token_start = int(row["token_start"])
+            token_end = int(row["token_end"])
+            duration_sec = float(max(0, token_end - token_start) * data_cfg.token_sec)
+            source = None
+            if data_cfg.source_column and data_cfg.source_column in row.index:
+                value = row[data_cfg.source_column]
+                source = None if pd.isna(value) else str(value)
+            elif "dataset" in row.index and not pd.isna(row["dataset"]):
+                source = str(row["dataset"])
+            metadata = {
+                column: _json_safe_value(row[column])
+                for column in row.index
+                if column not in {data_cfg.path_column, data_cfg.duration_column}
+            }
+            record_id = str(row["sample_key"])
+            if data_cfg.record_id_columns:
+                record_id = _record_id(row, row_idx, Path(str(row[data_cfg.path_column])), data_cfg.record_id_columns)
+            records.append(
+                SleepRecord(
+                    record_id=record_id,
+                    path=Path(str(row[data_cfg.path_column])),
+                    split=str(split_name),
+                    source=source,
+                    duration_sec=duration_sec,
+                    token_sec=data_cfg.token_sec,
+                    max_tokens=data_cfg.max_tokens,
+                    metadata=metadata,
+                )
+            )
+            if limit is not None and len(records) >= limit:
+                return records
     return records
 
 

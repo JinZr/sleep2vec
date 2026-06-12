@@ -36,11 +36,44 @@ analyzers:
     outputs:
       epoch_prediction: true
       epoch_proba: true
+  - name: ahi_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: ahi
+    config: configs/sleep2vec2/ppg_ahi_finetune_large.yaml
+    ckpt_path: /path/to/ahi.ckpt
+    input_channels: [ppg]
+    batch_size: 16
+    threshold:
+      value: 0.5
+  - name: age_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: age
+    config: configs/sleep2vec2/ppg_age_finetune_large.yaml
+    ckpt_path: /path/to/age.ckpt
+    input_channels: [ppg]
+    batch_size: 16
+  - name: sex_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: sex
+    config: configs/sleep2vec2/ppg_sex_finetune_large.yaml
+    ckpt_path: /path/to/sex.ckpt
+    input_channels: [ppg]
+    batch_size: 16
 
 reducers:
   - name: stage5_stats
     type: hypnogram_stats
     source: stage5_model
+  - name: ahi_stats
+    type: respiratory_stats
+    source: ahi_model
+  - name: demographic_consistency
+    type: demographic_consistency
+    age_prediction: age_model
+    sex_prediction: sex_model
 
 outputs:
   write_global_tables: true

@@ -27,7 +27,7 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
     results: list[AnalyzerResult] = []
     if args.dry_run:
         writer.write_failures(failures)
-        writer.write_results(records, results)
+        writer.write_results(records, results, failures)
         writer.write_progress(total_records=len(records), completed_records=skipped_records, status="dry_run")
         writer.write_run_manifest(status="dry_run", records=records, failures=failures, dry_run=True)
         return writer.run_dir
@@ -72,7 +72,7 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
                 )
             )
 
-    writer.write_results(pending_records, results)
+    writer.write_results(pending_records, results, failures)
     has_global_failure = any(failure.record_id == "__all__" for failure in failures)
     failed_record_ids = {failure.record_id for failure in failures if failure.record_id != "__all__"}
     result_record_ids = {result.record_id for result in results}
