@@ -167,7 +167,9 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                         record_id=record.record_id,
                         analyzer=self.config.name,
                         error_type="RecordUnavailable",
-                        message="Record was dropped before model inference; check duration and required input channels.",
+                        message=(
+                            "Record was dropped before model inference; " "check duration and required input channels."
+                        ),
                     )
                 )
         if not retained_record_ids:

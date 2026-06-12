@@ -83,7 +83,6 @@ def test_decode_ahi_logits_to_second_events_and_model_ahi():
 
 def test_decode_ahi_uses_strict_threshold_boundary():
     record = _record()
-    prob = np.array([0.5] * 30, dtype=np.float32)
     logits = torch.zeros(1, 1, 30)
     results = decode_ahi_logits("ahi_model", logits, _batch(), {"rec1.npz": record}, threshold=0.5)
 
