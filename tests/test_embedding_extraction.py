@@ -183,10 +183,12 @@ def test_trim_hidden_cls_returns_one_row_per_sample():
             return hidden[:, 1:], hidden[:, 0], None
 
     model = SimpleNamespace(cls_embedding=_FakeCls())
-    hidden = torch.tensor([
-        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
-        [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
-    ])
+    hidden = torch.tensor(
+        [
+            [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+            [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
+        ]
+    )
     lengths = torch.tensor([3, 2])
 
     rows = extract_embeddings._trim_hidden_to_numpy(model, hidden, None, lengths, embedding_kind="cls")

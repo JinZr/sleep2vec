@@ -1,0 +1,50 @@
+run:
+  name: ppg_model_stats_v01
+  output_dir: results/sleep2stat/ppg_model_stats_v01
+  overwrite: false
+  skip_existing: true
+  seed: 4523
+
+data:
+  backend: npz
+  index: index/shhs.csv
+  split: [test]
+  path_column: path
+  duration_column: duration
+  source_column: source
+  record_id_columns: [source, patient_id, session_id]
+  token_sec: 30
+  max_tokens: 1535
+
+signals:
+  channels:
+    ppg:
+      source: ppg
+      sfreq: 100
+      kind: ppg
+      input_dim: 3000
+
+analyzers:
+  - name: stage5_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: stage5
+    config: configs/sleep2vec2/ppg_stage5_finetune_large.yaml
+    ckpt_path: /path/to/stage5.ckpt
+    input_channels: [ppg]
+    batch_size: 16
+    outputs:
+      epoch_prediction: true
+      epoch_proba: true
+
+reducers:
+  - name: stage5_stats
+    type: hypnogram_stats
+    source: stage5_model
+
+outputs:
+  write_global_tables: true
+  write_per_record: true
+  include_probabilities: true
+  include_raw_logits: false
+  compression: gzip

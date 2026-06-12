@@ -1,0 +1,146 @@
+from pathlib import Path
+
+import pytest
+import yaml
+
+from sleep2stat.config import load_config
+
+
+def _minimal_payload() -> dict:
+    return {
+        "run": {
+            "name": "unit",
+            "output_dir": "results/sleep2stat/unit",
+        },
+        "data": {
+            "backend": "npz",
+            "index": "index.csv",
+            "split": ["test"],
+            "record_id_columns": ["source", "patient_id"],
+        },
+        "signals": {
+            "channels": {
+                "ppg": {
+                    "source": "ppg",
+                    "sfreq": 100,
+                    "kind": "ppg",
+                    "input_dim": 3000,
+                }
+            }
+        },
+        "analyzers": [
+            {
+                "name": "stage5_model",
+                "type": "sleep2vec_downstream",
+                "namespace": "sleep2vec2",
+                "label_name": "stage5",
+                "config": "configs/sleep2vec2/ppg_stage5_finetune_large.yaml",
+                "ckpt_path": "/path/to/stage5.ckpt",
+                "input_channels": ["ppg"],
+            }
+        ],
+        "reducers": [
+            {
+                "name": "stage5_stats",
+                "type": "hypnogram_stats",
+                "source": "stage5_model",
+            }
+        ],
+        "outputs": {
+            "write_global_tables": True,
+            "write_per_record": True,
+            "compression": "gzip",
+        },
+    }
+
+
+def _write_yaml(tmp_path: Path, payload: dict) -> Path:
+    path = tmp_path / "sleep2stat.yaml"
+    path.write_text(yaml.safe_dump(payload))
+    return path
+
+
+def test_load_config_accepts_minimal_model_first_yaml(tmp_path: Path):
+    config = load_config(_write_yaml(tmp_path, _minimal_payload()))
+
+    assert config.run.name == "unit"
+    assert config.data.backend == "npz"
+    assert config.signals.channels["ppg"].input_dim == 3000
+    assert config.analyzers[0].name == "stage5_model"
+
+
+def test_load_config_accepts_stage_reference_stage_key(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["analyzers"] = [
+        {
+            "name": "reference_stage5",
+            "type": "npz_stage_reference",
+            "label_name": "stage5",
+            "stage_key": "stage5",
+        }
+    ]
+    payload["reducers"][0]["source"] = "reference_stage5"
+
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.analyzers[0].stage_key == "stage5"
+
+
+def test_load_config_rejects_schema_version(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["schema_version"] = 1
+
+    with pytest.raises(ValueError, match="Unknown sleep2stat top-level"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_requires_top_level_blocks(tmp_path: Path):
+    payload = _minimal_payload()
+    del payload["outputs"]
+
+    with pytest.raises(ValueError, match="Missing required sleep2stat config block"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_requires_data_split(tmp_path: Path):
+    payload = _minimal_payload()
+    del payload["data"]["split"]
+
+    with pytest.raises(ValueError, match="data.split is required"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_kaldi_for_v01(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["data"]["backend"] = "kaldi"
+
+    with pytest.raises(ValueError, match="v0.1 supports only data.backend=npz"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_unknown_nested_fields(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["analyzers"][0]["batch_siz"] = 4
+
+    with pytest.raises(ValueError, match="Unknown sleep2stat config field"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_unknown_reducer_reference(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["reducers"][0]["source"] = "missing_model"
+
+    with pytest.raises(ValueError, match="references unknown analyzer"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_unknown_analyzer_and_reducer(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["analyzers"][0]["type"] = "yasa_sleep_staging"
+    with pytest.raises(ValueError, match="Unknown sleep2stat analyzer type"):
+        load_config(_write_yaml(tmp_path, payload))
+
+    payload = _minimal_payload()
+    payload["reducers"][0]["type"] = "new_stats"
+    with pytest.raises(ValueError, match="Unknown sleep2stat reducer type"):
+        load_config(_write_yaml(tmp_path, payload))

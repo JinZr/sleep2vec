@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+from sleep2stat.config import AnalyzerConfig
+from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
+from sleep2stat.core.context import Sleep2statContext
+from sleep2stat.io.records import SleepRecord
+
+
+class BaseAnalyzer:
+    def __init__(self, config: AnalyzerConfig):
+        self.config = config
+
+    def prepare(self, context: Sleep2statContext) -> None:
+        return None
+
+    def run(
+        self,
+        records: list[SleepRecord],
+        context: Sleep2statContext,
+    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        return None

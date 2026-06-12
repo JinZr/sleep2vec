@@ -114,6 +114,11 @@ def test_check_config_file_accepts_repo_ppg_ahi_large_temporal_conv_config():
     check_config_file(path)
 
 
+def test_check_config_file_routes_sleep2stat_yaml():
+    path = REPO_ROOT / "configs" / "sleep2stat" / "model_first.yaml"
+    check_config_file(path)
+
+
 def test_repo_template_finetune_configs_do_not_bind_dataset_inputs():
     offenders = []
     for path in sorted((REPO_ROOT / "configs").rglob("*.yaml")):
