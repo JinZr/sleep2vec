@@ -71,7 +71,16 @@ class _Sleep2statDataset(DefaultDataset):
         tokenizers = {}
         mask_generators = {}
         for name, spec in channel_specs.items():
-            extractors[name] = default_extractor(name, spec.input_dim, source_name=spec.source)
+            extractor = default_extractor(name, spec.input_dim, source_name=spec.source)
+            if spec.scale != 1.0:
+                base_extractor = extractor
+                scale = float(spec.scale)
+
+                def scaled_extractor(npz, start, end, base_extractor=base_extractor, scale=scale):
+                    return base_extractor(npz, start, end) * scale
+
+                extractor = scaled_extractor
+            extractors[name] = extractor
             tokenizers[name] = default_tokenizer(spec.input_dim)
             mask_generators[name] = default_mlm_mask_generator(0.0)
 
@@ -136,7 +145,9 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         self.model = module._get_eval_model()
         self.move_to_device = utils_mod.move_to_device
         self.threshold = self._resolve_threshold(checkpoint)
-        self.include_probabilities = bool(context.config.outputs.include_probabilities)
+        self.include_probabilities = bool(context.config.outputs.include_probabilities) and bool(
+            self.config.outputs.get("epoch_proba", True)
+        )
         self.include_raw_logits = bool(context.config.outputs.include_raw_logits)
 
     def run(

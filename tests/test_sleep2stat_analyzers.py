@@ -121,9 +121,11 @@ def test_downstream_analyzer_prepare_and_run_with_mock_checkpoint(monkeypatch, t
     ckpt_path = tmp_path / "model.ckpt"
     torch.save({"state_dict": {}}, ckpt_path)
     calls = {"on_load_checkpoint": 0, "load_state_dict": 0, "eval_model": 0}
+    captured_tokens = {}
 
     class FakeEvalModel:
         def __call__(self, batch):
+            captured_tokens["ppg"] = batch["tokens"]["ppg"].detach().cpu()
             return torch.tensor([[0.0, 3.0]])
 
     class FakeModule:
@@ -176,7 +178,9 @@ def test_downstream_analyzer_prepare_and_run_with_mock_checkpoint(monkeypatch, t
     )
     context = Sleep2statContext(
         config=SimpleNamespace(
-            signals=SignalsConfig(channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2)}),
+            signals=SignalsConfig(
+                channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2, scale=2.0)}
+            ),
             outputs=SimpleNamespace(include_probabilities=True, include_raw_logits=False),
         ),
         device="cpu",
@@ -202,7 +206,101 @@ def test_downstream_analyzer_prepare_and_run_with_mock_checkpoint(monkeypatch, t
 
     assert calls == {"on_load_checkpoint": 1, "load_state_dict": 1, "eval_model": 1}
     assert failures == []
+    torch.testing.assert_close(captured_tokens["ppg"], torch.tensor([[[0.0, 2.0], [4.0, 6.0]]]))
     assert results[0].night["sex_model_pred"] == 1
+
+
+def test_downstream_analyzer_respects_epoch_probability_flag(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, ppg=np.arange(4, dtype=np.float32))
+    ckpt_path = tmp_path / "model.ckpt"
+    torch.save({"state_dict": {}}, ckpt_path)
+
+    class FakeEvalModel:
+        def __call__(self, batch):
+            logits = torch.zeros(1, 2, 5)
+            logits[0, :, 2] = 4.0
+            return logits
+
+    class FakeModule:
+        def __init__(self, *args, **kwargs):
+            self.model = FakeEvalModel()
+
+        def on_load_checkpoint(self, checkpoint):
+            return None
+
+        def load_state_dict(self, state_dict, strict=True):
+            return None
+
+        def eval(self):
+            return self
+
+        def to(self, device):
+            return self
+
+        def _get_eval_model(self):
+            return self.model
+
+    def fake_apply_config(args):
+        args.is_classification = True
+        args.is_seq = True
+        args.output_dim = 5
+        return SimpleNamespace(finetune=None, averaging=None), SimpleNamespace()
+
+    def fake_import(name):
+        if name.endswith(".common"):
+            return SimpleNamespace(apply_finetune_config=fake_apply_config)
+        if name.endswith(".sleep2vec_finetuning"):
+            return SimpleNamespace(Sleep2vecFinetuning=FakeModule)
+        if name.endswith(".utils"):
+            return SimpleNamespace(move_to_device=lambda data, device: data)
+        raise AssertionError(name)
+
+    monkeypatch.setattr("sleep2stat.analyzers.model_downstream.importlib.import_module", fake_import)
+    analyzer = Sleep2vecDownstreamAnalyzer(
+        AnalyzerConfig(
+            name="stage5_model",
+            type="sleep2vec_downstream",
+            namespace="sleep2vec",
+            label_name="stage5",
+            config=tmp_path / "config.yaml",
+            ckpt_path=ckpt_path,
+            input_channels=["ppg"],
+            batch_size=1,
+            outputs={"epoch_proba": False},
+        )
+    )
+    context = Sleep2statContext(
+        config=SimpleNamespace(
+            signals=SignalsConfig(channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2)}),
+            outputs=SimpleNamespace(include_probabilities=True, include_raw_logits=False),
+        ),
+        device="cpu",
+        num_workers=0,
+    )
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run(
+        [
+            SleepRecord(
+                record_id="rec1",
+                path=npz_path,
+                split="test",
+                source="unit",
+                duration_sec=60,
+                token_sec=30,
+                max_tokens=2,
+                metadata={},
+            )
+        ],
+        context,
+    )
+
+    frame = results[0].epoch
+    assert failures == []
+    assert "stage5_model_pred" in frame.columns
+    assert "stage5_model_confidence" in frame.columns
+    assert not any(column.startswith("stage5_model_prob_") for column in frame.columns)
 
 
 def test_downstream_analyzer_reports_prefiltered_records(monkeypatch, tmp_path: Path):
