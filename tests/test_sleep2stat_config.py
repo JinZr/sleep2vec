@@ -464,7 +464,9 @@ def test_load_config_rejects_later_ahi_denominator_stage_source(tmp_path: Path):
         stage_analyzer,
     ]
 
-    with pytest.raises(ValueError, match="postprocess.denominator_stage_source must reference an enabled earlier analyzer"):
+    with pytest.raises(
+        ValueError, match="postprocess.denominator_stage_source must reference an enabled earlier analyzer"
+    ):
         load_config(_write_yaml(tmp_path, payload))
 
 
