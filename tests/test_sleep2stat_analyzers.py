@@ -144,6 +144,23 @@ def test_decode_ahi_postprocess_controls_outputs_and_stage_denominators():
     assert results[0].night["ahi_model_pred_ahi"] == pytest.approx(60.0)
 
 
+def test_decode_ahi_fails_when_configured_stage_denominator_is_missing():
+    record = _record()
+    logits = torch.zeros(1, 3, 30)
+    resolver = StageSourceResolver([record], [])
+
+    with pytest.raises(ValueError, match="denominator stage source 'stage5_model' not found"):
+        decode_ahi_logits(
+            "ahi_model",
+            logits,
+            _batch(),
+            {"rec1.npz": record},
+            threshold=0.5,
+            denominator_stage_source="stage5_model",
+            stage_resolver=resolver,
+        )
+
+
 def test_decode_ahi_reports_max_token_truncation():
     record = SleepRecord(
         record_id="rec1",

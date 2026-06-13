@@ -701,9 +701,8 @@ def decode_ahi_logits(
                 else None
             )
             if denominators is None:
-                warnings.append(
-                    f"denominator stage source {denominator_stage_source!r} not found; "
-                    "only recording denominator was emitted"
+                raise ValueError(
+                    f"denominator stage source {denominator_stage_source!r} not found for {record.record_id!r}."
                 )
             else:
                 stage_at_onset = (

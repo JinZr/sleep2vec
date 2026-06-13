@@ -447,6 +447,27 @@ def test_load_config_rejects_later_yasa_bandpower_stage_source(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
+def test_load_config_rejects_later_ahi_denominator_stage_source(tmp_path: Path):
+    payload = _minimal_payload()
+    stage_analyzer = dict(payload["analyzers"][0])
+    payload["analyzers"] = [
+        {
+            "name": "ahi_model",
+            "type": "sleep2vec_downstream",
+            "namespace": "sleep2vec2",
+            "label_name": "ahi",
+            "config": "configs/sleep2vec2/ppg_ahi_finetune_large.yaml",
+            "ckpt_path": "/path/to/ahi.ckpt",
+            "input_channels": ["ppg"],
+            "postprocess": {"denominator_stage_source": "stage5_model"},
+        },
+        stage_analyzer,
+    ]
+
+    with pytest.raises(ValueError, match="postprocess.denominator_stage_source must reference an enabled earlier analyzer"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_rejects_enabled_reducer_targeting_disabled_analyzer(tmp_path: Path):
     payload = _minimal_payload()
     payload["analyzers"][0]["enabled"] = False

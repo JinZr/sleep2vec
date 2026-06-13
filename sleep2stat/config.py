@@ -445,6 +445,10 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
             output_stage_source = analyzer.outputs.get("stage_source")
             if output_stage_source is not None:
                 stage_sources.append(("outputs.stage_source", str(output_stage_source)))
+        if analyzer.type == "sleep2vec_downstream" and (analyzer.label_name or "").lower() == "ahi":
+            denominator_stage_source = analyzer.postprocess.get("denominator_stage_source")
+            if denominator_stage_source not in (None, ""):
+                stage_sources.append(("postprocess.denominator_stage_source", str(denominator_stage_source)))
         for field_name, stage_source in stage_sources:
             if stage_source not in produced_analyzer_names:
                 raise ValueError(
