@@ -148,7 +148,8 @@ class YasaBandpowerAnalyzer(_YasaBaseAnalyzer):
                     stage = stage_results.get(record.record_id)
                     if stage is None:
                         raise ValueError(
-                            f"yasa_bandpower stage_source {stage_source!r} has no epoch result for {record.record_id!r}."
+                            f"yasa_bandpower stage_source {stage_source!r} has no "
+                            f"epoch result for {record.record_id!r}."
                         )
                     night.update(_stage_bandpower_means(self.config.name, epoch, stage, str(stage_source)))
                 results.append(
