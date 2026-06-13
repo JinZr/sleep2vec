@@ -255,10 +255,12 @@ class YasaHrvStageAnalyzer(_YasaBaseAnalyzer):
         for record in records:
             try:
                 raw, _ = self._build_raw(record, context)
-                stage = resolver.get_epoch_stage(record.record_id, self.config.stage_source)
-                if stage is None:
+                data, sfreq, _ = _raw_data(raw)
+                seconds = np.arange(data.shape[1], dtype=np.float64) / sfreq
+                hypno = resolver.stage_at_seconds(record.record_id, self.config.stage_source, seconds)
+                if hypno is None:
                     raise ValueError(f"stage_source {self.config.stage_source!r} not found for {record.record_id!r}.")
-                frame = _call_yasa_hrv_stage(self._yasa, raw, stage[f"{self.config.stage_source}_pred"].to_numpy())
+                frame = _call_yasa_hrv_stage(self._yasa, raw, hypno)
                 results.append(
                     AnalyzerResult(self.config.name, record.record_id, night=_flatten_hrv(self.config.name, frame))
                 )
@@ -620,11 +622,11 @@ def _event_night_summary(record: SleepRecord, analyzer_name: str, events: pd.Dat
 
 def _call_yasa_hrv_stage(yasa_module: Any, raw: Any, hypno: np.ndarray) -> pd.DataFrame:
     hrv_stage = getattr(yasa_module, "hrv_stage")
-    try:
-        return pd.DataFrame(hrv_stage(raw, hypno=hypno))
-    except TypeError:
-        data, sfreq, ch_names = _raw_data(raw)
-        return pd.DataFrame(hrv_stage(data, sf=sfreq, ch_names=ch_names, hypno=hypno))
+    data, sfreq, _ = _raw_data(raw)
+    result = hrv_stage(data[0], sfreq, hypno=hypno)
+    if isinstance(result, tuple):
+        result = result[0]
+    return pd.DataFrame(result)
 
 
 def _flatten_hrv(analyzer_name: str, frame: pd.DataFrame) -> dict[str, float]:

@@ -15,7 +15,12 @@ from sleep2stat.analyzers.model_downstream import (
     decode_regression_logits,
 )
 from sleep2stat.analyzers.spo2 import EventRelatedHypoxicBurdenAnalyzer, Spo2DesaturationAnalyzer, Spo2SummaryAnalyzer
-from sleep2stat.analyzers.yasa import YasaBandpowerAnalyzer, YasaSpindlesAnalyzer, YasaStageAnalyzer
+from sleep2stat.analyzers.yasa import (
+    YasaBandpowerAnalyzer,
+    YasaHrvStageAnalyzer,
+    YasaSpindlesAnalyzer,
+    YasaStageAnalyzer,
+)
 from sleep2stat.config import AnalyzerConfig, ChannelSpec, DataConfig, SignalsConfig
 from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.core.context import Sleep2statContext
@@ -854,6 +859,49 @@ def test_yasa_spindles_stage_filter_uses_sample_level_hypno(monkeypatch, tmp_pat
     assert np.all(captured["hypno"][3000:] == 0)
 
 
+def test_yasa_hrv_stage_uses_single_channel_sample_level_hypno(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, ecg=np.ones(6000, dtype=np.float32))
+    captured = {}
+
+    def fake_hrv_stage(data, sf, *, hypno=None):
+        captured["data"] = np.asarray(data)
+        captured["sf"] = sf
+        captured["hypno"] = np.asarray(hypno)
+        return pd.DataFrame({"Stage": ["N2"], "RMSSD": [42.0]}), pd.DataFrame()
+
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(hrv_stage=fake_hrv_stage),
+    )
+    analyzer = YasaHrvStageAnalyzer(
+        AnalyzerConfig(
+            name="yasa_hrv_stage",
+            type="yasa_hrv_stage",
+            input_channels=["ecg"],
+            stage_source="stage5_model",
+        )
+    )
+    context = _yasa_context(tmp_path)
+    context.config.signals.channels["ecg"] = ChannelSpec(source="ecg", sfreq=100, kind="ecg", input_dim=3000)
+    stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 4]})
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run(
+        [_yasa_record(npz_path)],
+        context,
+        prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
+    )
+
+    assert failures == []
+    assert captured["data"].shape == (6000,)
+    assert captured["sf"] == 100
+    assert captured["hypno"].shape == (6000,)
+    assert np.all(captured["hypno"][:3000] == 2)
+    assert np.all(captured["hypno"][3000:] == 4)
+    assert results[0].night["yasa_hrv_stage_N2_RMSSD"] == 42.0
+
+
 def test_spo2_summary_handles_artifact_and_threshold_time(tmp_path: Path):
     npz_path = tmp_path / "rec1.npz"
     np.savez(npz_path, spo2=np.array([95, 89, 87, 101], dtype=np.float32))
@@ -922,6 +970,39 @@ def test_event_related_hypoxic_burden_uses_pred_event_fields(tmp_path: Path):
     assert "pred_event_hypoxic_burden_pctmin" in results[0].events.columns
     assert results[0].night["pred_event_count"] == 1
     assert not any(column.startswith("clinical") for column in results[0].night)
+
+
+def test_event_related_hypoxic_burden_deduplicates_multi_threshold_events(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    signal = np.array([96] * 20 + [90] * 20 + [95] * 20, dtype=np.float32)
+    np.savez(npz_path, spo2=signal)
+    source_events = pd.DataFrame(
+        {
+            "record_id": ["rec1", "rec1"],
+            "onset_sec": [20.0, 20.0],
+            "offset_sec": [40.0, 40.0],
+            "drop_threshold_pct": [3.0, 4.0],
+        }
+    )
+    analyzer = EventRelatedHypoxicBurdenAnalyzer(
+        AnalyzerConfig(
+            name="pred_hypoxic_burden",
+            type="event_related_hypoxic_burden",
+            input_channels=["spo2"],
+            event_source="spo2_desaturation",
+        )
+    )
+
+    results, failures = analyzer.run(
+        [_spo2_record(npz_path)],
+        _spo2_context(tmp_path),
+        prior_results=[AnalyzerResult("spo2_desaturation", "rec1", events=source_events)],
+    )
+
+    assert failures == []
+    assert len(results[0].events) == 1
+    assert results[0].night["pred_event_count"] == 1
+    assert results[0].night["pred_event_hypoxic_burden_pctmin"] == pytest.approx(140 / 60)
 
 
 def test_event_related_hypoxic_burden_fails_when_source_result_is_missing(tmp_path: Path):

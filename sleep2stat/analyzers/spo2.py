@@ -331,7 +331,8 @@ def _event_related_burden(
     rows = []
     burdens = []
     drops = []
-    for event_idx, row in source_events.reset_index(drop=True).iterrows():
+    unique_events = source_events.drop_duplicates(subset=["onset_sec", "offset_sec"]).reset_index(drop=True)
+    for event_idx, row in unique_events.iterrows():
         onset = float(row.get("onset_sec", 0.0))
         offset = float(row.get("offset_sec", onset))
         pre_left = max(0, int((onset - 120.0) * sfreq))
