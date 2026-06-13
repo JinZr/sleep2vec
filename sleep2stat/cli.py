@@ -12,7 +12,7 @@ from sleep2stat.core.artifacts import FailureRecord
 from sleep2stat.core.pipeline import run_pipeline
 from sleep2stat.io.records import SleepRecord
 from sleep2stat.io.writers import AnalysisBundleWriter
-from sleep2stat.plot import plot_record
+from sleep2stat.plot import plot_cohort, plot_record
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
     plot = subparsers.add_parser("plot-record", help="Plot one sleep2stat per-record output directory.")
     plot.add_argument("--run-dir", type=Path, required=True)
     plot.add_argument("--record-id", required=True)
+
+    cohort = subparsers.add_parser("plot-cohort", help="Plot sleep2stat cohort-level sleep architecture.")
+    cohort.add_argument("--run-dir", type=Path, required=True)
+    cohort.add_argument("--group-column", default="source")
+    cohort.add_argument("--stage-source", default="auto")
+    cohort.add_argument("--adjust-covariates", nargs="*", default=None)
     return parser
 
 
@@ -52,6 +58,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "plot-record":
         for path in plot_record(args.run_dir, args.record_id):
+            print(path)
+        return 0
+    if args.command == "plot-cohort":
+        for path in plot_cohort(
+            args.run_dir,
+            group_column=args.group_column,
+            stage_source=args.stage_source,
+            adjust_covariates=args.adjust_covariates,
+        ):
             print(path)
         return 0
     config = load_config(args.config)
