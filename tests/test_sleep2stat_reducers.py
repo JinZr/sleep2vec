@@ -5,8 +5,10 @@ from sleep2stat.config import ReducerConfig
 from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.io.records import SleepRecord
 from sleep2stat.reducers.demographic_consistency import DemographicConsistencyReducer, _encode_sex
+from sleep2stat.reducers.event_density import EventDensityReducer
 from sleep2stat.reducers.hypnogram_stats import HypnogramStatsReducer
 from sleep2stat.reducers.stage_agreement import StageAgreementReducer
+from sleep2stat.reducers.stage_specific_summary import StageSpecificSummaryReducer
 from sleep2stat.reducers.transition_stats import TransitionStatsReducer
 
 
@@ -42,6 +44,8 @@ def test_hypnogram_stats_from_epoch_predictions():
     assert stats["stage5_model_SOL_min"] == 0.5
     assert stats["stage5_model_REM_latency_min"] == 2.0
     assert stats["stage5_model_pct_N2"] == pytest.approx(0.25)
+    assert stats["stage5_model_N2_ratio_TST"] == pytest.approx(0.25)
+    assert stats["stage5_model_sleep_bout_count"] == 2
     assert stats["stage5_model_stage_shift_index"] == pytest.approx(4 / (2.0 / 60.0))
     assert stats["stage5_model_sleep_to_wake_transition_index"] == pytest.approx(1 / (2.0 / 60.0))
     assert stats["stage5_model_SFI_yasa_like"] == pytest.approx(1 / (2.0 / 60.0))
@@ -144,6 +148,54 @@ def test_transition_stats_entropy_uses_transition_counts_only():
 
     assert output[0].night["stage5_model_stage_shift_index"] == 1.0
     assert output[0].night["stage5_model_transition_entropy"] == pytest.approx(1.0986122886681096)
+
+
+def test_event_density_reducer_counts_events_per_recording_hour():
+    events = pd.DataFrame(
+        {
+            "record_id": ["rec1", "rec1"],
+            "event_id": ["e1", "e2"],
+            "onset_sec": [1.0, 30.0],
+            "offset_sec": [12.0, 45.0],
+        }
+    )
+    reducer = EventDensityReducer(ReducerConfig(name="ahi_density", type="event_density", source="ahi_model"))
+
+    output = reducer.reduce([_record()], [AnalyzerResult("ahi_model", "rec1", events=events)], None)
+
+    assert output[0].night["ahi_model_event_count"] == 2
+    assert output[0].night["ahi_model_event_density_per_hour"] == pytest.approx(2 / (210 / 3600))
+
+
+def test_stage_specific_summary_reducer_groups_epoch_numeric_columns():
+    bandpower = pd.DataFrame(
+        {
+            "record_id": ["rec1", "rec1"],
+            "token_idx": [0, 1],
+            "yasa_bandpower_sigma_rel": [0.2, 0.4],
+        }
+    )
+    stage = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 3]})
+    reducer = StageSpecificSummaryReducer(
+        ReducerConfig(
+            name="stage_bandpower",
+            type="stage_specific_summary",
+            source="yasa_bandpower",
+            options={"stage_source": "stage5_model"},
+        )
+    )
+
+    output = reducer.reduce(
+        [_record()],
+        [
+            AnalyzerResult("yasa_bandpower", "rec1", epoch=bandpower),
+            AnalyzerResult("stage5_model", "rec1", epoch=stage),
+        ],
+        None,
+    )
+
+    assert output[0].night["yasa_bandpower_N2_sigma_rel_mean"] == 0.2
+    assert output[0].night["yasa_bandpower_N3_sigma_rel_mean"] == 0.4
 
 
 def test_demographic_consistency_outputs_only_demographic_fields():

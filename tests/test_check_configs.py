@@ -119,6 +119,18 @@ def test_check_config_file_routes_sleep2stat_yaml():
     check_config_file(path)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        REPO_ROOT / "configs" / "sleep2stat" / "model_only_v02.yaml",
+        REPO_ROOT / "configs" / "sleep2stat" / "psg_yasa_microstructure_v02.yaml",
+        REPO_ROOT / "configs" / "sleep2stat" / "spo2_respiratory_v02.yaml",
+    ],
+)
+def test_check_config_file_accepts_sleep2stat_v02_configs(path: Path):
+    check_config_file(path)
+
+
 def test_repo_template_finetune_configs_do_not_bind_dataset_inputs():
     offenders = []
     for path in sorted((REPO_ROOT / "configs").rglob("*.yaml")):

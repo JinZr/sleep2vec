@@ -17,6 +17,7 @@ from sleep2stat.analyzers.base import BaseAnalyzer
 from sleep2stat.config import AnalyzerConfig, ChannelSpec
 from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
 from sleep2stat.core.context import Sleep2statContext
+from sleep2stat.core.stage_sources import StageSourceResolver
 from sleep2stat.io.records import SleepRecord
 from sleep2stat.registry import register_analyzer
 
@@ -178,6 +179,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         self.args: argparse.Namespace | None = None
         self.model = None
         self.threshold: float | None = None
+        self.threshold_source: str | None = None
         self.move_to_device = None
         self.include_probabilities = True
         self.include_raw_logits = False
@@ -220,7 +222,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         self.args = args
         self.model = module._get_eval_model()
         self.move_to_device = utils_mod.move_to_device
-        self.threshold = self._resolve_threshold(checkpoint)
+        self.threshold, self.threshold_source = self._resolve_threshold(checkpoint)
         self.include_probabilities = bool(context.config.outputs.include_probabilities) and bool(
             self.config.outputs.get("epoch_proba", True)
         )
@@ -246,6 +248,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
             num_workers=context.num_workers,
             context=context,
         )
+        stage_resolver = StageSourceResolver(records, prior_results or [])
         record_by_path = {str(record.path): record for record in records}
         record_by_id = {}
         for record in records:
@@ -279,7 +282,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                 loader = dataset.dataloader(device=self.args.device)
                 for batch in loader:
                     try:
-                        results.extend(self._run_batch(batch, record_by_path, record_by_id))
+                        results.extend(self._run_batch(batch, record_by_path, record_by_id, stage_resolver))
                     except Exception as exc:
                         batch_records = _records_for_batch(batch, record_by_path, record_by_id)
                         if len(batch_records) > 1:
@@ -291,6 +294,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                                         channel_specs,
                                         record_by_path,
                                         record_by_id,
+                                        stage_resolver,
                                     )
                                     if retry_results:
                                         results.extend(retry_results)
@@ -332,10 +336,11 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         batch: dict[str, Any],
         record_by_path: dict[str, SleepRecord],
         record_by_id: dict[str, SleepRecord],
+        stage_resolver: StageSourceResolver | None,
     ) -> list[AnalyzerResult]:
         batch = self.move_to_device(batch, self.args.device)
         logits = self.model(batch)
-        return self._decode_batch(batch, logits, record_by_path, record_by_id)
+        return self._decode_batch(batch, logits, record_by_path, record_by_id, stage_resolver)
 
     def _run_single_record(
         self,
@@ -344,6 +349,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         channel_specs: dict[str, ChannelSpec],
         record_by_path: dict[str, SleepRecord],
         record_by_id: dict[str, SleepRecord],
+        stage_resolver: StageSourceResolver | None,
     ) -> list[AnalyzerResult]:
         datasets = _build_datasets(
             records=[record],
@@ -355,7 +361,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         output = []
         for dataset in datasets:
             for batch in dataset.dataloader(device=self.args.device):
-                output.extend(self._run_batch(batch, record_by_path, record_by_id))
+                output.extend(self._run_batch(batch, record_by_path, record_by_id, stage_resolver))
         return output
 
     def _decode_batch(
@@ -364,6 +370,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         logits: torch.Tensor,
         record_by_path: dict[str, SleepRecord],
         record_by_id: dict[str, SleepRecord] | None = None,
+        stage_resolver: StageSourceResolver | None = None,
     ) -> list[AnalyzerResult]:
         label_name = self.config.label_name
         if label_name == "ahi":
@@ -371,6 +378,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                 raise ValueError(
                     f"Analyzer {self.config.name!r} requires ahi_eval_threshold in checkpoint or explicit threshold."
                 )
+            postprocess = self._ahi_postprocess()
             return decode_ahi_logits(
                 self.config.name,
                 logits,
@@ -378,7 +386,14 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                 record_by_path,
                 record_by_id=record_by_id,
                 threshold=self.threshold,
+                threshold_source=self.threshold_source or "unknown",
                 include_probabilities=self.include_probabilities,
+                min_event_duration_sec=postprocess["min_event_duration_sec"],
+                merge_tolerance_sec=postprocess["merge_tolerance_sec"],
+                denominator_stage_source=postprocess["denominator_stage_source"],
+                output_second_alignment=postprocess["output_second_alignment"],
+                output_event_alignment=postprocess["output_event_alignment"],
+                stage_resolver=stage_resolver,
             )
         if self.args and getattr(self.args, "is_classification", False):
             return decode_classification_logits(
@@ -392,15 +407,36 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
             )
         return decode_regression_logits(self.config.name, logits, batch, record_by_path, record_by_id=record_by_id)
 
-    def _resolve_threshold(self, checkpoint: Any) -> float | None:
+    def _resolve_threshold(self, checkpoint: Any) -> tuple[float | None, str | None]:
+        post_threshold = self.config.postprocess.get("threshold")
+        if isinstance(post_threshold, dict):
+            explicit = post_threshold.get("value")
+            source = str(post_threshold.get("source", "postprocess"))
+        else:
+            explicit = post_threshold
+            source = "postprocess"
+        if explicit not in (None, ""):
+            return float(explicit), source
         explicit = self.config.threshold
+        source = "config"
         if isinstance(explicit, dict):
+            source = str(explicit.get("source", source))
             explicit = explicit.get("value")
         if explicit not in (None, ""):
-            return float(explicit)
+            return float(explicit), source
         if isinstance(checkpoint, dict) and checkpoint.get("ahi_eval_threshold") is not None:
-            return float(checkpoint["ahi_eval_threshold"])
-        return None
+            return float(checkpoint["ahi_eval_threshold"]), "checkpoint"
+        return None, None
+
+    def _ahi_postprocess(self) -> dict[str, Any]:
+        postprocess = dict(self.config.postprocess or {})
+        return {
+            "min_event_duration_sec": int(postprocess.get("min_event_duration_sec", 10)),
+            "merge_tolerance_sec": int(postprocess.get("merge_tolerance_sec", 3)),
+            "denominator_stage_source": postprocess.get("denominator_stage_source"),
+            "output_second_alignment": bool(postprocess.get("output_second_alignment", True)),
+            "output_event_alignment": bool(postprocess.get("output_event_alignment", True)),
+        }
 
 
 def _record_for_sample(
@@ -565,9 +601,14 @@ def decode_ahi_logits(
     *,
     record_by_id: dict[str, SleepRecord] | None = None,
     threshold: float,
+    threshold_source: str = "config",
     include_probabilities: bool = True,
     min_event_duration_sec: int = 10,
     merge_tolerance_sec: int = 3,
+    denominator_stage_source: str | None = None,
+    output_second_alignment: bool = True,
+    output_event_alignment: bool = True,
+    stage_resolver: StageSourceResolver | None = None,
 ) -> list[AnalyzerResult]:
     probs = torch.sigmoid(logits.detach().to(torch.float32).cpu()).numpy()
     paths = list(batch["metadata"]["path"])
@@ -602,13 +643,59 @@ def decode_ahi_logits(
         )
         denominator_hours = valid_seconds / 3600.0 if valid_seconds > 0 else 0.0
         pred_ahi = float(len(events) / denominator_hours) if denominator_hours > 0 else np.nan
+        warnings = []
         night = {
             f"{analyzer_name}_pred_ahi": pred_ahi,
+            f"{analyzer_name}_pred_ahi_recording_denominator": pred_ahi,
             f"{analyzer_name}_pred_event_count": int(len(events)),
             f"{analyzer_name}_recording_denominator_hours": float(denominator_hours),
             f"{analyzer_name}_threshold": float(threshold),
+            f"{analyzer_name}_threshold_source": threshold_source,
+            f"{analyzer_name}_min_event_duration_sec": int(min_event_duration_sec),
+            f"{analyzer_name}_merge_tolerance_sec": int(merge_tolerance_sec),
+            f"{analyzer_name}_denominator_stage_source": denominator_stage_source,
         }
-        results.append(AnalyzerResult(analyzer_name, record.record_id, second=second, events=events, night=night))
+        if denominator_stage_source:
+            denominators = (
+                stage_resolver.get_denominator_hours(record.record_id, denominator_stage_source)
+                if stage_resolver
+                else None
+            )
+            if denominators is None:
+                warnings.append(
+                    f"denominator stage source {denominator_stage_source!r} not found; "
+                    "only recording denominator was emitted"
+                )
+            else:
+                stage_at_onset = (
+                    stage_resolver.stage_at_seconds(
+                        record.record_id,
+                        denominator_stage_source,
+                        events["onset_sec"].to_numpy() if not events.empty else np.asarray([], dtype=float),
+                    )
+                    if stage_resolver
+                    else None
+                )
+                stage_at_onset = np.asarray([], dtype=np.int64) if stage_at_onset is None else stage_at_onset
+                sleep_count = int(np.sum(stage_at_onset > 0))
+                rem_count = int(np.sum(stage_at_onset == 4))
+                nrem_count = int(np.sum((stage_at_onset > 0) & (stage_at_onset != 4)))
+                night[f"{analyzer_name}_sleep_denominator_hours"] = denominators["sleep"]
+                night[f"{analyzer_name}_rem_denominator_hours"] = denominators["rem"]
+                night[f"{analyzer_name}_nrem_denominator_hours"] = denominators["nrem"]
+                night[f"{analyzer_name}_pred_ahi_sleep_denominator"] = _event_rate(sleep_count, denominators["sleep"])
+                night[f"{analyzer_name}_pred_ahi_rem_denominator"] = _event_rate(rem_count, denominators["rem"])
+                night[f"{analyzer_name}_pred_ahi_nrem_denominator"] = _event_rate(nrem_count, denominators["nrem"])
+        results.append(
+            AnalyzerResult(
+                analyzer_name,
+                record.record_id,
+                second=second if output_second_alignment else None,
+                events=events if output_event_alignment else None,
+                night=night,
+                warnings=warnings,
+            )
+        )
     return results
 
 
@@ -658,6 +745,10 @@ def _events_from_prob(
             }
         )
     return pd.DataFrame(rows)
+
+
+def _event_rate(event_count: int, denominator_hours: float) -> float:
+    return float(event_count / denominator_hours) if denominator_hours > 0 else np.nan
 
 
 def _epoch_base_frame(record: SleepRecord, token_start: int, n_tokens: int) -> pd.DataFrame:

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from sleep2stat.cli import _csv_row_count
 from sleep2stat.config import AnalyzerConfig, DataConfig, OutputsConfig, RunConfig, SignalsConfig, Sleep2statConfig
@@ -30,7 +31,17 @@ def _config(tmp_path: Path) -> Sleep2statConfig:
             )
         ],
         reducers=[],
-        outputs=OutputsConfig(write_global_tables=True, write_per_record=True, compression="gzip"),
+        outputs=OutputsConfig(
+            write_global_tables=True,
+            write_per_record=True,
+            compression="gzip",
+            global_tables={
+                "epoch_alignment": True,
+                "second_alignment": True,
+                "event_alignment": True,
+                "night_stats": True,
+            },
+        ),
     )
 
 
@@ -209,6 +220,23 @@ def test_writer_rebuilds_cumulative_summary_across_resume(tmp_path: Path):
     assert summary.loc[summary["name"] == "stage5_model", "result_count"].item() == 2
 
 
+def test_writer_drops_resolved_failures_after_successful_resume(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+    record = _record()
+
+    writer.write_failures([FailureRecord("rec1", "stage5_model", "ValueError", "old failure")])
+    writer.write_results([record], [AnalyzerResult("stage5_model", "rec1", night={"stage5_model_TST_min": 1.0})])
+    writer.write_failures([])
+    writer.rebuild_global_tables([record], [])
+
+    failures = pd.read_csv(config.run.output_dir / "status" / "failures.csv")
+    summary = pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")
+    assert failures.empty
+    assert summary.loc[summary["name"] == "stage5_model", "failure_count"].item() == 0
+
+
 def test_writer_keeps_failed_record_out_of_global_alignment(tmp_path: Path):
     config = _config(tmp_path)
     writer = AnalysisBundleWriter(config)
@@ -239,3 +267,48 @@ def test_writer_keeps_failed_record_out_of_global_alignment(tmp_path: Path):
     summary = pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")
     assert summary.loc[summary["name"] == "stage5_model", "result_count"].item() == 0
     assert summary.loc[summary["name"] == "stage5_model", "failure_count"].item() == 1
+
+
+def test_writer_default_global_tables_skip_epoch_and_second(tmp_path: Path):
+    config = _config(tmp_path)
+    config = Sleep2statConfig(
+        path=config.path,
+        run=config.run,
+        data=config.data,
+        signals=config.signals,
+        analyzers=config.analyzers,
+        reducers=config.reducers,
+        outputs=OutputsConfig(write_global_tables=True, write_per_record=True, compression="gzip"),
+    )
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+    record = _record()
+    epoch = pd.DataFrame(
+        {
+            "record_id": ["rec1"],
+            "path": ["rec1.npz"],
+            "token_idx": [0],
+            "start_sec": [0.0],
+            "end_sec": [30.0],
+            "stage5_model_pred": [1],
+        }
+    )
+
+    writer.write_results([record], [AnalyzerResult("stage5_model", "rec1", epoch=epoch)])
+
+    assert (config.run.output_dir / "per_record" / "rec1" / "epoch_alignment.csv.gz").exists()
+    assert not (config.run.output_dir / "tables" / "epoch_alignment.csv.gz").exists()
+    assert not (config.run.output_dir / "tables" / "second_alignment.csv.gz").exists()
+    assert (config.run.output_dir / "tables" / "night_stats.csv").exists()
+
+
+def test_writer_resume_rejects_config_fingerprint_mismatch(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+    config.path.write_text("run:\n  name: changed\n")
+
+    writer = AnalysisBundleWriter(config)
+
+    with pytest.raises(ValueError, match="different config fingerprint"):
+        writer.prepare(args=type("Args", (), {"dry_run": False})())

@@ -20,6 +20,9 @@ class SleepRecord:
     token_sec: int
     max_tokens: int
     metadata: dict[str, Any] = field(default_factory=dict)
+    raw_path: str | None = None
+    resolved_path: Path | None = None
+    path_exists: bool = False
 
 
 def load_records(
@@ -52,7 +55,8 @@ def _load_npz_records(
 
     records = []
     for row_idx, (_, row) in enumerate(df.iterrows()):
-        path = Path(str(row[data_cfg.path_column]))
+        raw_path = str(row[data_cfg.path_column])
+        path = _resolve_npz_path(raw_path, data_cfg)
         split = str(row[data_cfg.split_column]) if data_cfg.split_column in row.index else ""
         source = None
         if data_cfg.source_column and data_cfg.source_column in row.index:
@@ -64,7 +68,7 @@ def _load_npz_records(
             for column in row.index
             if column not in {data_cfg.path_column, data_cfg.duration_column}
         }
-        record_id = _record_id(row, row_idx, path, data_cfg.record_id_columns)
+        record_id = _record_id(row, row_idx, Path(raw_path), data_cfg.record_id_columns)
         records.append(
             SleepRecord(
                 record_id=record_id,
@@ -75,6 +79,9 @@ def _load_npz_records(
                 token_sec=data_cfg.token_sec,
                 max_tokens=data_cfg.max_tokens,
                 metadata=metadata,
+                raw_path=raw_path,
+                resolved_path=path,
+                path_exists=path.exists(),
             )
         )
         if limit is not None and len(records) >= limit:
@@ -122,6 +129,7 @@ def _load_kaldi_records(
                 source = None if pd.isna(value) else str(value)
             elif "dataset" in row.index and not pd.isna(row["dataset"]):
                 source = str(row["dataset"])
+            raw_path = str(row[data_cfg.path_column])
             metadata = {
                 column: _json_safe_value(row[column])
                 for column in row.index
@@ -129,17 +137,20 @@ def _load_kaldi_records(
             }
             record_id = str(row["sample_key"])
             if data_cfg.record_id_columns:
-                record_id = _record_id(row, row_idx, Path(str(row[data_cfg.path_column])), data_cfg.record_id_columns)
+                record_id = _record_id(row, row_idx, Path(raw_path), data_cfg.record_id_columns)
             records.append(
                 SleepRecord(
                     record_id=record_id,
-                    path=Path(str(row[data_cfg.path_column])),
+                    path=Path(raw_path),
                     split=str(split_name),
                     source=source,
                     duration_sec=duration_sec,
                     token_sec=data_cfg.token_sec,
                     max_tokens=data_cfg.max_tokens,
                     metadata=metadata,
+                    raw_path=raw_path,
+                    resolved_path=Path(raw_path),
+                    path_exists=Path(raw_path).exists(),
                 )
             )
             if limit is not None and len(records) >= limit:
@@ -147,20 +158,29 @@ def _load_kaldi_records(
     return records
 
 
-def records_to_frame(records: list[SleepRecord]) -> pd.DataFrame:
+def records_to_frame(records: list[SleepRecord], metadata_columns: list[str] | None = None) -> pd.DataFrame:
     rows = []
     for record in records:
-        rows.append(
-            {
-                "record_id": record.record_id,
-                "path": str(record.path),
-                "split": record.split,
-                "source": record.source,
-                "duration_sec": record.duration_sec,
-                "token_sec": record.token_sec,
-                "max_tokens": record.max_tokens,
-            }
-        )
+        raw_path = record.raw_path if record.raw_path is not None else str(record.path)
+        resolved_path = record.resolved_path if record.resolved_path is not None else record.path
+        row = {
+            "record_id": record.record_id,
+            "path": str(record.path),
+            "raw_path": raw_path,
+            "resolved_path": str(resolved_path),
+            "path_exists": bool(record.path_exists),
+            "split": record.split,
+            "source": record.source,
+            "duration_sec": record.duration_sec,
+            "token_sec": record.token_sec,
+            "max_tokens": record.max_tokens,
+        }
+        keys = sorted(record.metadata) if metadata_columns is None else list(metadata_columns)
+        for key in keys:
+            value = record.metadata.get(key)
+            if key not in row and _is_manifest_scalar(value):
+                row[key] = value
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -190,6 +210,34 @@ def _json_safe_value(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def _resolve_npz_path(raw_path: str, data_cfg: DataConfig) -> Path:
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return path
+    if data_cfg.path_base == "absolute_only":
+        raise ValueError(f"data.path_base=absolute_only requires absolute NPZ path: {raw_path!r}")
+    if data_cfg.path_base == "index_dir":
+        if data_cfg.index is None:
+            raise ValueError("data.path_base=index_dir requires data.index.")
+        base = data_cfg.index.expanduser()
+        base = base.parent if base.is_absolute() else (Path.cwd() / base).parent
+    elif data_cfg.path_base == "repo_root":
+        base = Path(__file__).resolve().parents[2]
+    elif data_cfg.path_base == "custom":
+        if data_cfg.custom_path_base is None:
+            raise ValueError("data.custom_path_base is required when data.path_base=custom.")
+        base = data_cfg.custom_path_base.expanduser()
+        if not base.is_absolute():
+            base = Path.cwd() / base
+    else:
+        base = Path.cwd()
+    return (base / path).resolve()
+
+
+def _is_manifest_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
 
 
 def _validate_unique_record_ids(records: list[SleepRecord]) -> None:

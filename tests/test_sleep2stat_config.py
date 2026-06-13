@@ -65,6 +65,10 @@ def test_load_config_accepts_minimal_model_first_yaml(tmp_path: Path):
 
     assert config.run.name == "unit"
     assert config.data.backend == "npz"
+    assert config.outputs.global_tables["epoch_alignment"] is False
+    assert config.outputs.global_tables["second_alignment"] is False
+    assert config.outputs.global_tables["event_alignment"] is True
+    assert config.outputs.global_tables["night_stats"] is True
     assert config.signals.channels["ppg"].input_dim == 3000
     assert config.analyzers[0].name == "stage5_model"
 
@@ -180,6 +184,64 @@ def test_load_config_accepts_yasa_analyzers_and_reducer_alias(tmp_path: Path):
     assert config.signals.channels["eeg"].mne_name == "EEG"
     assert [analyzer.type for analyzer in config.analyzers] == ["yasa_stage", "yasa_bandpower"]
     assert config.reducers[0].type == "yasa_hypnogram_stats"
+
+
+def test_load_config_accepts_v02_path_metadata_and_global_table_controls(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["data"]["path_base"] = "index_dir"
+    payload["data"]["metadata_columns"] = ["age", "sex"]
+    payload["outputs"]["global_tables"] = {
+        "epoch_alignment": True,
+        "second_alignment": False,
+        "event_alignment": True,
+        "night_stats": True,
+    }
+
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.data.path_base == "index_dir"
+    assert config.data.metadata_columns == ["age", "sex"]
+    assert config.outputs.global_tables["epoch_alignment"] is True
+    assert config.outputs.global_tables["second_alignment"] is False
+
+
+def test_load_config_rejects_unknown_global_table_name(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["outputs"]["global_tables"] = {"epoch_predictions": True}
+
+    with pytest.raises(ValueError, match="outputs.global_tables"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_accepts_v02_analyzer_and_reducer_types(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"] = {
+        "spo2": {"source": "spo2", "sfreq": 1, "kind": "spo2", "input_dim": 30},
+        "eeg": {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000},
+    }
+    payload["analyzers"] = [
+        {
+            "name": "spo2_desaturation",
+            "type": "spo2_desaturation",
+            "input_channels": ["spo2"],
+            "drop_thresholds": [3, 4],
+            "min_duration_sec": 10,
+        },
+        {
+            "name": "yasa_spindles",
+            "type": "yasa_spindles",
+            "input_channels": ["eeg"],
+            "stage_source": "yasa_stage",
+            "stages": ["N2"],
+        },
+    ]
+    payload["reducers"] = [{"name": "spo2_density", "type": "event_density", "source": "spo2_desaturation"}]
+
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert [analyzer.type for analyzer in config.analyzers] == ["spo2_desaturation", "yasa_spindles"]
+    assert config.analyzers[0].drop_thresholds == [3.0, 4.0]
+    assert config.reducers[0].type == "event_density"
 
 
 def test_load_config_rejects_yasa_with_kaldi_backend(tmp_path: Path):

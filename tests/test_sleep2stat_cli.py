@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 from sleep2stat.cli import main
@@ -60,6 +61,12 @@ def _write_dry_run_config(tmp_path: Path) -> Path:
             "include_probabilities": True,
             "include_raw_logits": False,
             "compression": "gzip",
+            "global_tables": {
+                "epoch_alignment": True,
+                "second_alignment": False,
+                "event_alignment": True,
+                "night_stats": True,
+            },
         },
     }
     config_path.write_text(yaml.safe_dump(payload))
@@ -135,6 +142,12 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path):
             "include_probabilities": True,
             "include_raw_logits": False,
             "compression": "gzip",
+            "global_tables": {
+                "epoch_alignment": True,
+                "second_alignment": False,
+                "event_alignment": True,
+                "night_stats": True,
+            },
         },
     }
     config_path.write_text(yaml.safe_dump(payload))
@@ -151,3 +164,31 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path):
     assert len(pd.read_csv(rec1_path)) == 2
     global_epoch = pd.read_csv(tmp_path / "run" / "tables" / "epoch_alignment.csv.gz")
     assert sorted(global_epoch["record_id"].unique().tolist()) == ["unit__p001__s001", "unit__p002__s001"]
+
+
+def test_cli_plot_record_creates_pngs_from_per_record_outputs(tmp_path: Path):
+    pytest.importorskip("matplotlib")
+    record_dir = tmp_path / "run" / "per_record" / "rec1"
+    record_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "record_id": ["rec1", "rec1"],
+            "start_sec": [0.0, 30.0],
+            "stage5_model_pred": [0, 2],
+        }
+    ).to_csv(record_dir / "epoch_alignment.csv.gz", index=False, compression="gzip")
+    pd.DataFrame(
+        {
+            "record_id": ["rec1", "rec1"],
+            "start_sec": [0.0, 1.0],
+            "ahi_model_prob": [0.1, 0.8],
+        }
+    ).to_csv(record_dir / "second_alignment.csv.gz", index=False, compression="gzip")
+    pd.DataFrame({"record_id": ["rec1"], "onset_sec": [1.0], "offset_sec": [12.0]}).to_csv(
+        record_dir / "events.csv.gz", index=False, compression="gzip"
+    )
+
+    assert main(["plot-record", "--run-dir", str(tmp_path / "run"), "--record-id", "rec1"]) == 0
+
+    assert (record_dir / "plots" / "hypnogram_overlay.png").exists()
+    assert (record_dir / "plots" / "ahi_spo2_trace.png").exists()

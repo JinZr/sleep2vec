@@ -6,7 +6,19 @@ from typing import Any
 
 import yaml
 
-SUPPORTED_ANALYZER_TYPES = {"sleep2vec_downstream", "npz_stage_reference", "yasa_stage", "yasa_bandpower"}
+SUPPORTED_ANALYZER_TYPES = {
+    "sleep2vec_downstream",
+    "npz_stage_reference",
+    "yasa_stage",
+    "yasa_bandpower",
+    "yasa_spindles",
+    "yasa_slowwaves",
+    "yasa_rem",
+    "yasa_hrv_stage",
+    "spo2_summary",
+    "spo2_desaturation",
+    "event_related_hypoxic_burden",
+}
 SUPPORTED_REDUCER_TYPES = {
     "hypnogram_stats",
     "yasa_hypnogram_stats",
@@ -14,6 +26,8 @@ SUPPORTED_REDUCER_TYPES = {
     "stage_agreement",
     "respiratory_stats",
     "demographic_consistency",
+    "event_density",
+    "stage_specific_summary",
 }
 TOP_LEVEL_KEYS = {"run", "data", "signals", "analyzers", "reducers", "outputs"}
 RUN_KEYS = {"name", "output_dir", "overwrite", "skip_existing", "seed"}
@@ -26,6 +40,9 @@ DATA_KEYS = {
     "split_column",
     "source_column",
     "record_id_columns",
+    "path_base",
+    "custom_path_base",
+    "metadata_columns",
     "kaldi_data_root",
     "kaldi_manifest",
     "token_sec",
@@ -46,6 +63,16 @@ ANALYZER_KEYS = {
     "npz_key",
     "stage_key",
     "threshold",
+    "postprocess",
+    "stage_source",
+    "stages",
+    "artifact",
+    "thresholds",
+    "drop_thresholds",
+    "min_duration_sec",
+    "max_duration_sec",
+    "event_source",
+    "spo2_source",
     "outputs",
 }
 REDUCER_KEYS = {
@@ -67,7 +94,9 @@ OUTPUTS_KEYS = {
     "include_probabilities",
     "include_raw_logits",
     "compression",
+    "global_tables",
 }
+GLOBAL_TABLE_KEYS = {"epoch_alignment", "second_alignment", "event_alignment", "night_stats"}
 
 
 @dataclass(frozen=True)
@@ -89,6 +118,9 @@ class DataConfig:
     split_column: str = "split"
     source_column: str | None = "source"
     record_id_columns: list[str] = field(default_factory=list)
+    path_base: str = "cwd"
+    custom_path_base: Path | None = None
+    metadata_columns: list[str] = field(default_factory=list)
     kaldi_data_root: Path | None = None
     kaldi_manifest: Path | None = None
     token_sec: int = 30
@@ -125,6 +157,16 @@ class AnalyzerConfig:
     npz_key: str | None = None
     stage_key: str | None = None
     threshold: Any = None
+    postprocess: dict[str, Any] = field(default_factory=dict)
+    stage_source: str | None = None
+    stages: list[str] = field(default_factory=list)
+    artifact: dict[str, Any] = field(default_factory=dict)
+    thresholds: Any = None
+    drop_thresholds: list[float] = field(default_factory=list)
+    min_duration_sec: float | None = None
+    max_duration_sec: float | None = None
+    event_source: str | None = None
+    spo2_source: str | None = None
     outputs: dict[str, Any] = field(default_factory=dict)
 
 
@@ -150,6 +192,14 @@ class OutputsConfig:
     include_probabilities: bool = True
     include_raw_logits: bool = False
     compression: str = "gzip"
+    global_tables: dict[str, bool] = field(
+        default_factory=lambda: {
+            "epoch_alignment": False,
+            "second_alignment": False,
+            "event_alignment": True,
+            "night_stats": True,
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -252,7 +302,12 @@ def _build_data_config(raw: Any) -> DataConfig:
         raise ValueError("data.max_tokens must be positive.")
     split = _string_list(data.get("split", []), "data.split")
     if not split:
-        raise ValueError("data.split is required and must not be empty for sleep2stat v0.1.")
+        raise ValueError("data.split is required and must not be empty for sleep2stat.")
+    path_base = str(data.get("path_base", "cwd"))
+    if path_base not in {"cwd", "index_dir", "repo_root", "absolute_only", "custom"}:
+        raise ValueError("data.path_base must be one of: cwd, index_dir, repo_root, absolute_only, custom.")
+    if path_base == "custom" and not data.get("custom_path_base"):
+        raise ValueError("data.custom_path_base is required when data.path_base=custom.")
     return DataConfig(
         backend=backend,
         index=None if data.get("index") is None else Path(data["index"]),
@@ -262,6 +317,9 @@ def _build_data_config(raw: Any) -> DataConfig:
         split_column=str(data.get("split_column", "split")),
         source_column=None if data.get("source_column") is None else str(data.get("source_column", "source")),
         record_id_columns=_string_list(data.get("record_id_columns", []), "data.record_id_columns"),
+        path_base=path_base,
+        custom_path_base=None if data.get("custom_path_base") is None else Path(data["custom_path_base"]),
+        metadata_columns=_string_list(data.get("metadata_columns", []), "data.metadata_columns"),
         kaldi_data_root=None if data.get("kaldi_data_root") is None else Path(data["kaldi_data_root"]),
         kaldi_manifest=None if data.get("kaldi_manifest") is None else Path(data["kaldi_manifest"]),
         token_sec=token_sec,
@@ -316,12 +374,18 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
             missing = [key for key in required if not item.get(key)]
             if missing:
                 raise ValueError(f"Analyzer {name!r} missing required field(s): {missing}")
-        if analyzer_type in {"yasa_stage", "yasa_bandpower"} and not input_channels:
+        if analyzer_type.startswith("yasa_") and not input_channels:
             raise ValueError(f"Analyzer {name!r} requires input_channels.")
         if analyzer_type == "yasa_stage":
             eeg_channels = [channel for channel in input_channels if signals.channels[channel].kind.lower() == "eeg"]
             if not eeg_channels:
                 raise ValueError(f"Analyzer {name!r} requires at least one EEG input channel.")
+        spo2_source = None if item.get("spo2_source") is None else str(item["spo2_source"])
+        if analyzer_type.startswith("spo2_") or analyzer_type == "event_related_hypoxic_burden":
+            if not input_channels and not spo2_source:
+                raise ValueError(f"Analyzer {name!r} requires input_channels or spo2_source.")
+        if spo2_source and spo2_source not in signals.channels:
+            raise ValueError(f"Analyzer {name!r} references unknown spo2_source channel: {spo2_source!r}.")
         analyzers.append(
             AnalyzerConfig(
                 name=name,
@@ -336,6 +400,19 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
                 npz_key=None if item.get("npz_key") is None else str(item["npz_key"]),
                 stage_key=None if item.get("stage_key") is None else str(item["stage_key"]),
                 threshold=item.get("threshold"),
+                postprocess=dict(item.get("postprocess") or {}),
+                stage_source=None if item.get("stage_source") is None else str(item["stage_source"]),
+                stages=_string_list(item.get("stages", []), f"analyzers[{idx}].stages"),
+                artifact=dict(item.get("artifact") or {}),
+                thresholds=item.get("thresholds"),
+                drop_thresholds=[
+                    float(value)
+                    for value in _string_list(item.get("drop_thresholds", []), f"analyzers[{idx}].drop_thresholds")
+                ],
+                min_duration_sec=(None if item.get("min_duration_sec") is None else float(item["min_duration_sec"])),
+                max_duration_sec=(None if item.get("max_duration_sec") is None else float(item["max_duration_sec"])),
+                event_source=None if item.get("event_source") is None else str(item["event_source"]),
+                spo2_source=spo2_source,
                 outputs=dict(item.get("outputs") or {}),
             )
         )
@@ -360,6 +437,8 @@ def _build_reducers(raw: Any) -> list[ReducerConfig]:
             "yasa_hypnogram_stats",
             "transition_stats",
             "respiratory_stats",
+            "event_density",
+            "stage_specific_summary",
         } and not item.get("source"):
             raise ValueError(f"Reducer {name!r} requires source.")
         if reducer_type == "stage_agreement" and (not item.get("left") or not item.get("right")):
@@ -420,6 +499,7 @@ def _build_outputs(raw: Any) -> OutputsConfig:
     compression = str(data.get("compression", "gzip"))
     if compression not in {"gzip", "none"}:
         raise ValueError("outputs.compression must be either 'gzip' or 'none'.")
+    global_tables = _build_global_tables(data.get("global_tables"))
     write_global_tables = bool(data.get("write_global_tables", True))
     write_per_record = bool(data.get("write_per_record", True))
     if write_global_tables and not write_per_record:
@@ -433,4 +513,21 @@ def _build_outputs(raw: Any) -> OutputsConfig:
         include_probabilities=bool(data.get("include_probabilities", True)),
         include_raw_logits=bool(data.get("include_raw_logits", False)),
         compression=compression,
+        global_tables=global_tables,
     )
+
+
+def _build_global_tables(raw: Any) -> dict[str, bool]:
+    output = {
+        "epoch_alignment": False,
+        "second_alignment": False,
+        "event_alignment": True,
+        "night_stats": True,
+    }
+    if raw is None:
+        return output
+    data = _require_mapping(raw, "outputs.global_tables")
+    _reject_unknown_keys(data, GLOBAL_TABLE_KEYS, "outputs.global_tables")
+    for key, value in data.items():
+        output[str(key)] = bool(value)
+    return output

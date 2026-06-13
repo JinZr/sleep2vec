@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -39,6 +40,7 @@ class AnalysisBundleWriter:
             raise FileExistsError(f"sleep2stat output_dir already exists: {self.run_dir}")
         if self.run_dir.exists() and self.config.run.skip_existing and not self.config.outputs.write_per_record:
             raise ValueError("run.skip_existing requires outputs.write_per_record=true in sleep2stat v0.1.")
+        self._validate_resume_config()
         self.status_dir.mkdir(parents=True, exist_ok=True)
         self.tables_dir.mkdir(parents=True, exist_ok=True)
         if self.config.outputs.write_per_record:
@@ -48,22 +50,32 @@ class AnalysisBundleWriter:
             yaml.safe_dump(_to_yamlable(args), f, sort_keys=True)
 
     def write_record_manifest(self, records: list[SleepRecord]) -> None:
-        records_to_frame(records).to_csv(self.run_dir / "record_manifest.csv", index=False)
+        records_to_frame(records, metadata_columns=self.config.data.metadata_columns).to_csv(
+            self.run_dir / "record_manifest.csv", index=False
+        )
 
     def write_progress(self, *, total_records: int, completed_records: int, status: str) -> None:
         payload = {
             "status": status,
             "total_records": int(total_records),
             "completed_records": int(completed_records),
+            "config_fingerprint": _config_fingerprint_from_path(self.config.path),
             "updated_at_utc": _utc_now(),
         }
         _write_json(payload, self.status_dir / "progress.json")
 
     def write_failures(self, failures: Iterable[FailureRecord]) -> None:
         rows = [asdict(failure) for failure in failures]
-        pd.DataFrame(rows, columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
-            self.status_dir / "failures.csv", index=False
-        )
+        frame = pd.DataFrame(rows, columns=["record_id", "analyzer", "error_type", "message"])
+        existing_path = self.status_dir / "failures.csv"
+        if existing_path.exists():
+            try:
+                existing = pd.read_csv(existing_path)
+                frame = pd.concat([existing, frame], ignore_index=True, sort=False).drop_duplicates()
+            except pd.errors.EmptyDataError:
+                pass
+        frame = self._drop_completed_record_failures(frame)
+        frame.to_csv(self.status_dir / "failures.csv", index=False)
 
     def write_run_manifest(
         self,
@@ -80,6 +92,7 @@ class AnalysisBundleWriter:
             "run_name": self.config.run.name,
             "created_at_utc": _utc_now(),
             "config_path": str(self.config.path),
+            "config_fingerprint": _config_fingerprint_from_path(self.config.path),
             "record_count": len(records),
             "failure_count": len(failures),
             "paths": {
@@ -123,6 +136,8 @@ class AnalysisBundleWriter:
         if self.config.outputs.write_global_tables:
             completed = {str(record_id) for record_id in completed_record_ids}
             for name in ALIGNMENT_TABLE_NAMES:
+                if not self._global_table_enabled(name):
+                    continue
                 frame = tables[name]
                 if not frame.empty and "record_id" in frame.columns:
                     frame = frame[frame["record_id"].astype(str).isin(completed)]
@@ -151,7 +166,8 @@ class AnalysisBundleWriter:
             return
         failures = list(failures or [])
         self._rebuild_alignment_tables_from_shards()
-        self._collect_night_stats(records).to_csv(self._table_path("night_stats"), index=False)
+        if self._global_table_enabled("night_stats"):
+            self._collect_night_stats(records).to_csv(self._table_path("night_stats"), index=False)
         summary_tables = self._collect_cumulative_summary_tables(failures)
         for name, frame in summary_tables.items():
             frame.to_csv(self._table_path(name), index=False)
@@ -220,6 +236,8 @@ class AnalysisBundleWriter:
         return (self.per_record_dir / record.record_id / COMPLETION_MARKER).exists()
 
     def _write_global_table_shard(self, name: str, frame: pd.DataFrame) -> None:
+        if not self._global_table_enabled(name):
+            return
         if frame.empty:
             return
         path = self._next_shard_path(name)
@@ -241,6 +259,8 @@ class AnalysisBundleWriter:
 
     def _rebuild_alignment_tables_from_shards(self) -> None:
         for name in ALIGNMENT_TABLE_NAMES:
+            if not self._global_table_enabled(name):
+                continue
             shards = self._alignment_shard_paths(name)
             if not shards:
                 continue
@@ -270,6 +290,37 @@ class AnalysisBundleWriter:
                 except pd.errors.EmptyDataError:
                     continue
 
+    def _global_table_enabled(self, name: str) -> bool:
+        return bool(self.config.outputs.global_tables.get(name, True))
+
+    def _validate_resume_config(self) -> None:
+        existing_config = self.run_dir / "config.yaml"
+        if self.config.run.overwrite or not existing_config.exists():
+            return
+        existing = _config_fingerprint_from_path(existing_config)
+        current = _config_fingerprint_from_path(self.config.path)
+        if existing != current:
+            raise ValueError(
+                "sleep2stat output_dir already contains a run with a different config fingerprint; "
+                f"existing={existing}, current={current}."
+            )
+
+    def _drop_completed_record_failures(self, frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty or "record_id" not in frame.columns:
+            return frame
+        completed = (
+            frame["record_id"]
+            .astype(str)
+            .map(
+                lambda record_id: record_id != "__all__"
+                and (self.per_record_dir / record_id / COMPLETION_MARKER).exists()
+            )
+        )
+        return frame[~completed].reset_index(drop=True)
+
+    def _failure_record_is_completed(self, failure: FailureRecord) -> bool:
+        return failure.record_id != "__all__" and (self.per_record_dir / failure.record_id / COMPLETION_MARKER).exists()
+
     def _collect_night_stats(self, records: list[SleepRecord]) -> pd.DataFrame:
         rows = []
         for record in records:
@@ -296,7 +347,9 @@ class AnalysisBundleWriter:
                     continue
         manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
         failure_counts: dict[str, int] = {}
-        for failure in failures:
+        for failure in _merge_failures(_read_failures(self.status_dir / "failures.csv"), failures):
+            if self._failure_record_is_completed(failure):
+                continue
             failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
 
         rows = []
@@ -562,6 +615,38 @@ def _result_row_count(results: list[AnalyzerResult], attr: str) -> int:
     return count
 
 
+def _read_failures(path: Path) -> list[FailureRecord]:
+    if not path.exists():
+        return []
+    try:
+        frame = pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return []
+    failures = []
+    for _, row in frame.iterrows():
+        failures.append(
+            FailureRecord(
+                record_id=str(row.get("record_id", "")),
+                analyzer=str(row.get("analyzer", "")),
+                error_type=str(row.get("error_type", "")),
+                message=str(row.get("message", "")),
+            )
+        )
+    return failures
+
+
+def _merge_failures(left: list[FailureRecord], right: list[FailureRecord]) -> list[FailureRecord]:
+    output = []
+    seen = set()
+    for failure in [*left, *right]:
+        key = (failure.record_id, failure.analyzer, failure.error_type, failure.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(failure)
+    return output
+
+
 def _to_yamlable(obj: Any) -> Any:
     if is_dataclass(obj):
         return _to_yamlable(asdict(obj))
@@ -578,6 +663,18 @@ def _to_yamlable(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return [_to_yamlable(value) for value in obj]
     return obj
+
+
+def _config_fingerprint_from_path(path: Path) -> str:
+    if path.exists():
+        try:
+            payload = yaml.safe_load(path.read_text())
+            normalized = yaml.safe_dump(payload, sort_keys=True)
+        except Exception:
+            normalized = path.read_text()
+    else:
+        normalized = str(path)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def _json_safe(obj: Any) -> Any:

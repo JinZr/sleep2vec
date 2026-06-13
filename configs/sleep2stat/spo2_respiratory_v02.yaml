@@ -1,0 +1,63 @@
+run:
+  name: spo2_respiratory_v02
+  output_dir: results/sleep2stat/spo2_respiratory_v02
+  overwrite: false
+  skip_existing: true
+  seed: 4523
+
+data:
+  backend: npz
+  index: index/shhs.csv
+  split: [test]
+  path_column: path
+  duration_column: duration
+  source_column: source
+  record_id_columns: [source, patient_id, session_id]
+  path_base: cwd
+  metadata_columns: [age, sex, bmi]
+  token_sec: 30
+  max_tokens: 1535
+
+signals:
+  channels:
+    spo2:
+      source: spo2
+      sfreq: 1
+      kind: spo2
+      input_dim: 30
+      unit: pct
+
+analyzers:
+  - name: spo2_summary
+    type: spo2_summary
+    input_channels: [spo2]
+    artifact:
+      valid_min: 50
+      valid_max: 100
+  - name: spo2_desaturation
+    type: spo2_desaturation
+    input_channels: [spo2]
+    drop_thresholds: [3, 4]
+    min_duration_sec: 10
+    max_duration_sec: 120
+  - name: pred_event_hypoxic_burden
+    type: event_related_hypoxic_burden
+    input_channels: [spo2]
+    event_source: spo2_desaturation
+
+reducers:
+  - name: spo2_desaturation_density
+    type: event_density
+    source: spo2_desaturation
+
+outputs:
+  write_global_tables: true
+  write_per_record: true
+  include_probabilities: true
+  include_raw_logits: false
+  compression: gzip
+  global_tables:
+    epoch_alignment: false
+    second_alignment: false
+    event_alignment: true
+    night_stats: true

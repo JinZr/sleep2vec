@@ -12,6 +12,7 @@ from sleep2stat.analyzers.base import BaseAnalyzer
 from sleep2stat.config import ChannelSpec
 from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
 from sleep2stat.core.context import Sleep2statContext
+from sleep2stat.core.stage_sources import StageSourceResolver
 from sleep2stat.io.records import SleepRecord
 from sleep2stat.registry import register_analyzer
 
@@ -159,6 +160,107 @@ class YasaBandpowerAnalyzer(_YasaBaseAnalyzer):
                         epoch=epoch if by_epoch else None,
                         night=night or None,
                     )
+                )
+            except Exception as exc:
+                failures.append(
+                    FailureRecord(
+                        record_id=record.record_id,
+                        analyzer=self.config.name,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+        return results, failures
+
+
+class _YasaEventAnalyzer(_YasaBaseAnalyzer):
+    detector_name = ""
+    event_type = ""
+
+    def run(
+        self,
+        records: list[SleepRecord],
+        context: Sleep2statContext,
+        prior_results: list[AnalyzerResult] | None = None,
+    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+        results: list[AnalyzerResult] = []
+        failures: list[FailureRecord] = []
+        resolver = StageSourceResolver(records, prior_results or [])
+        for record in records:
+            try:
+                raw, _ = self._build_raw(record, context)
+                frame = _call_yasa_event_detector(
+                    self._yasa,
+                    self.detector_name,
+                    raw,
+                    stage_source=self.config.stage_source,
+                    stages=self.config.stages,
+                    resolver=resolver,
+                    record=record,
+                )
+                events = _yasa_event_frame(record, self.config.name, self.event_type, frame)
+                night = _event_night_summary(record, self.config.name, events)
+                results.append(AnalyzerResult(self.config.name, record.record_id, events=events, night=night))
+            except Exception as exc:
+                failures.append(
+                    FailureRecord(
+                        record_id=record.record_id,
+                        analyzer=self.config.name,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+        return results, failures
+
+
+@register_analyzer("yasa_spindles")
+class YasaSpindlesAnalyzer(_YasaEventAnalyzer):
+    detector_name = "spindles_detect"
+    event_type = "yasa_spindle"
+
+
+@register_analyzer("yasa_slowwaves")
+class YasaSlowWavesAnalyzer(_YasaEventAnalyzer):
+    detector_name = "sw_detect"
+    event_type = "yasa_slowwave"
+
+
+@register_analyzer("yasa_rem")
+class YasaRemAnalyzer(_YasaEventAnalyzer):
+    detector_name = "rem_detect"
+    event_type = "yasa_rem"
+
+
+@register_analyzer("yasa_hrv_stage")
+class YasaHrvStageAnalyzer(_YasaBaseAnalyzer):
+    def run(
+        self,
+        records: list[SleepRecord],
+        context: Sleep2statContext,
+        prior_results: list[AnalyzerResult] | None = None,
+    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+        results: list[AnalyzerResult] = []
+        failures: list[FailureRecord] = []
+        resolver = StageSourceResolver(records, prior_results or [])
+        if not self.config.stage_source:
+            return [], [
+                FailureRecord(
+                    record_id=record.record_id,
+                    analyzer=self.config.name,
+                    error_type="ValueError",
+                    message="yasa_hrv_stage requires stage_source.",
+                )
+                for record in records
+            ]
+        for record in records:
+            try:
+                raw, _ = self._build_raw(record, context)
+                stage = resolver.get_epoch_stage(record.record_id, self.config.stage_source)
+                if stage is None:
+                    raise ValueError(f"stage_source {self.config.stage_source!r} not found for {record.record_id!r}.")
+                frame = _call_yasa_hrv_stage(self._yasa, raw, stage[f"{self.config.stage_source}_pred"].to_numpy())
+                results.append(
+                    AnalyzerResult(self.config.name, record.record_id, night=_flatten_hrv(self.config.name, frame))
                 )
             except Exception as exc:
                 failures.append(
@@ -423,6 +525,133 @@ def _stage_results_by_record(results: list[AnalyzerResult], stage_source: str) -
         if result.name == stage_source and result.epoch is not None and not result.epoch.empty:
             output[result.record_id] = result.epoch
     return output
+
+
+def _call_yasa_event_detector(
+    yasa_module: Any,
+    detector_name: str,
+    raw: Any,
+    *,
+    stage_source: str | None,
+    stages: list[str],
+    resolver: StageSourceResolver,
+    record: SleepRecord,
+) -> pd.DataFrame:
+    detector = getattr(yasa_module, detector_name)
+    hypno = None
+    if stages:
+        if not stage_source:
+            raise ValueError(f"{detector_name} stage filtering requires stage_source.")
+        stage = resolver.get_epoch_stage(record.record_id, stage_source)
+        if stage is None:
+            raise ValueError(f"stage_source {stage_source!r} not found for {record.record_id!r}.")
+        allowed = {_stage_id(stage) for stage in stages}
+        hypno = stage[f"{stage_source}_pred"].to_numpy(dtype=np.int64)
+        hypno = np.asarray([value if value in allowed else 0 for value in hypno], dtype=np.int64)
+    try:
+        result = detector(raw, hypno=hypno) if hypno is not None else detector(raw)
+    except TypeError:
+        data, sfreq, ch_names = _raw_data(raw)
+        kwargs = {"sf": sfreq, "ch_names": ch_names}
+        if hypno is not None:
+            kwargs["hypno"] = hypno
+        result = detector(data, **kwargs)
+    summary = getattr(result, "summary", None)
+    if callable(summary):
+        result = summary()
+    return pd.DataFrame(result)
+
+
+def _yasa_event_frame(record: SleepRecord, analyzer_name: str, event_type: str, frame: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if frame.empty:
+        return pd.DataFrame()
+    for event_idx, row in frame.reset_index(drop=True).iterrows():
+        onset = _first_numeric(row, "Start", "start", "Onset", "onset", "onset_sec")
+        duration = _first_numeric(row, "Duration", "duration", "duration_sec")
+        end = _first_numeric(row, "End", "end", "offset_sec")
+        if onset is None:
+            continue
+        if duration is None and end is not None:
+            duration = float(end) - float(onset)
+        if duration is None:
+            duration = 0.0
+        event = {
+            "record_id": record.record_id,
+            "path": str(record.path),
+            "event_id": f"{record.record_id}__{analyzer_name}__{event_idx}",
+            "analyzer": analyzer_name,
+            "event_type": event_type,
+            "onset_sec": float(onset),
+            "offset_sec": float(onset) + float(duration),
+            "duration_sec": float(duration),
+        }
+        for source, target in (
+            ("Confidence", "confidence"),
+            ("Prob", "confidence"),
+            ("Amplitude", "amplitude"),
+            ("Frequency", "frequency"),
+            ("RelPower", "relative_power"),
+            ("RMS", "rms"),
+            ("Slope", "slope"),
+            ("Stage", "stage"),
+        ):
+            if source in row and not _is_missing(row[source]):
+                event[f"{analyzer_name}_{target}"] = row[source]
+        rows.append(event)
+    return pd.DataFrame(rows)
+
+
+def _event_night_summary(record: SleepRecord, analyzer_name: str, events: pd.DataFrame) -> dict[str, float]:
+    hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
+    count = int(len(events))
+    output = {
+        f"{analyzer_name}_event_count": count,
+        f"{analyzer_name}_event_density_per_hour": float(count / hours) if hours > 0 else np.nan,
+    }
+    if not events.empty and "duration_sec" in events.columns:
+        output[f"{analyzer_name}_duration_mean_sec"] = float(
+            pd.to_numeric(events["duration_sec"], errors="coerce").mean()
+        )
+    return output
+
+
+def _call_yasa_hrv_stage(yasa_module: Any, raw: Any, hypno: np.ndarray) -> pd.DataFrame:
+    hrv_stage = getattr(yasa_module, "hrv_stage")
+    try:
+        return pd.DataFrame(hrv_stage(raw, hypno=hypno))
+    except TypeError:
+        data, sfreq, ch_names = _raw_data(raw)
+        return pd.DataFrame(hrv_stage(data, sf=sfreq, ch_names=ch_names, hypno=hypno))
+
+
+def _flatten_hrv(analyzer_name: str, frame: pd.DataFrame) -> dict[str, float]:
+    output = {}
+    for row_idx, row in frame.reset_index(drop=True).iterrows():
+        stage = _slug(row.get("Stage", row.get("stage", row_idx)))
+        for column, value in row.items():
+            if str(column).lower() == "stage":
+                continue
+            numeric = _finite_float(value)
+            if numeric is not None:
+                output[f"{analyzer_name}_{stage}_{_slug(column)}"] = numeric
+    return output
+
+
+def _first_numeric(row: pd.Series, *names: str) -> float | None:
+    for name in names:
+        if name in row:
+            value = _finite_float(row[name])
+            if value is not None:
+                return value
+    return None
+
+
+def _is_missing(value: Any) -> bool:
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _slug(value: Any) -> str:

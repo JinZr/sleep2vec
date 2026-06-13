@@ -12,6 +12,7 @@ from sleep2stat.core.artifacts import FailureRecord
 from sleep2stat.core.pipeline import run_pipeline
 from sleep2stat.io.records import SleepRecord
 from sleep2stat.io.writers import AnalysisBundleWriter
+from sleep2stat.plot import plot_record
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     summarize = subparsers.add_parser("summarize", help="Summarize a completed sleep2stat run directory.")
     summarize.add_argument("--run-dir", type=Path, required=True)
+
+    plot = subparsers.add_parser("plot-record", help="Plot one sleep2stat per-record output directory.")
+    plot.add_argument("--run-dir", type=Path, required=True)
+    plot.add_argument("--record-id", required=True)
     return parser
 
 
@@ -44,6 +49,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "summarize":
         _summarize(args.run_dir)
+        return 0
+    if args.command == "plot-record":
+        for path in plot_record(args.run_dir, args.record_id):
+            print(path)
         return 0
     config = load_config(args.config)
     run_dir = run_pipeline(config, args)

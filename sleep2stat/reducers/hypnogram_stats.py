@@ -76,11 +76,14 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
         f"{prefix}_stage_shift_index": _stage_shift_index(sleep_period, tst_min),
         f"{prefix}_sleep_to_wake_transition_index": _sleep_to_wake_transition_index(sleep_period, tst_min),
         f"{prefix}_SFI_yasa_like": _sleep_to_wake_transition_index(sleep_period, tst_min),
+        f"{prefix}_sleep_bout_count": _sleep_bout_count(values),
+        f"{prefix}_mean_sleep_bout_min": _mean_sleep_bout_min(values, epoch_min),
     }
     for stage_id, label in ((1, "N1"), (2, "N2"), (3, "N3"), (4, "REM")):
         minutes = float((values == stage_id).sum() * epoch_min)
         stats[f"{prefix}_{label}_min"] = minutes
         stats[f"{prefix}_pct_{label}"] = float(minutes / tst_min) if tst_min > 0 else np.nan
+        stats[f"{prefix}_{label}_ratio_TST"] = float(minutes / tst_min) if tst_min > 0 else np.nan
     return stats
 
 
@@ -96,6 +99,25 @@ def _sleep_to_wake_transition_index(sleep_period: np.ndarray, tst_min: float) ->
         return np.nan
     transitions = int(np.sum((sleep_period[:-1] != 0) & (sleep_period[1:] == 0)))
     return float(transitions / (tst_min / 60.0))
+
+
+def _sleep_bout_count(values: np.ndarray) -> int:
+    sleep = values != 0
+    starts = sleep & np.concatenate(([True], ~sleep[:-1]))
+    return int(starts.sum())
+
+
+def _mean_sleep_bout_min(values: np.ndarray, epoch_min: float) -> float:
+    sleep = values != 0
+    lengths = []
+    start = None
+    for idx, is_sleep in enumerate(sleep.tolist() + [False]):
+        if is_sleep and start is None:
+            start = idx
+        elif not is_sleep and start is not None:
+            lengths.append(idx - start)
+            start = None
+    return float(np.mean(lengths) * epoch_min) if lengths else np.nan
 
 
 def _token_sec_for(records: list[SleepRecord], record_id: str) -> int:

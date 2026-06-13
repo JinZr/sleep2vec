@@ -14,11 +14,13 @@ from sleep2stat.analyzers.model_downstream import (
     decode_classification_logits,
     decode_regression_logits,
 )
-from sleep2stat.analyzers.yasa import YasaBandpowerAnalyzer, YasaStageAnalyzer
+from sleep2stat.analyzers.spo2 import EventRelatedHypoxicBurdenAnalyzer, Spo2DesaturationAnalyzer, Spo2SummaryAnalyzer
+from sleep2stat.analyzers.yasa import YasaBandpowerAnalyzer, YasaSpindlesAnalyzer, YasaStageAnalyzer
 from sleep2stat.config import AnalyzerConfig, ChannelSpec, DataConfig, SignalsConfig
 from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.core.context import Sleep2statContext
-from sleep2stat.io.records import SleepRecord, load_records
+from sleep2stat.core.stage_sources import StageSourceResolver
+from sleep2stat.io.records import SleepRecord, load_records, records_to_frame
 
 
 def _record() -> SleepRecord:
@@ -85,6 +87,7 @@ def test_decode_ahi_logits_to_second_events_and_model_ahi():
     assert len(results[0].events) == 1
     assert results[0].night["ahi_model_pred_event_count"] == 1
     assert results[0].night["ahi_model_pred_ahi"] == 40.0
+    assert results[0].night["ahi_model_pred_ahi_recording_denominator"] == 40.0
 
 
 def test_decode_ahi_uses_strict_threshold_boundary():
@@ -94,6 +97,36 @@ def test_decode_ahi_uses_strict_threshold_boundary():
 
     assert results[0].second["ahi_model_pred"].sum() == 0
     assert len(results[0].events) == 0
+
+
+def test_decode_ahi_postprocess_controls_outputs_and_stage_denominators():
+    record = _record()
+    prob = np.array([0.1] * 30 + [0.9] * 12 + [0.1] * 48, dtype=np.float32)
+    logits = torch.from_numpy(np.log(prob / (1.0 - prob))).reshape(1, 3, 30)
+    stage_epoch = pd.DataFrame({"record_id": ["rec1"] * 3, "token_idx": [0, 1, 2], "stage5_model_pred": [0, 2, 4]})
+    resolver = StageSourceResolver([record], [AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)])
+
+    results = decode_ahi_logits(
+        "ahi_model",
+        logits,
+        _batch(),
+        {"rec1.npz": record},
+        threshold=0.5,
+        threshold_source="postprocess",
+        min_event_duration_sec=10,
+        merge_tolerance_sec=3,
+        denominator_stage_source="stage5_model",
+        output_second_alignment=False,
+        output_event_alignment=True,
+        stage_resolver=resolver,
+    )
+
+    assert results[0].second is None
+    assert len(results[0].events) == 1
+    assert results[0].night["ahi_model_threshold_source"] == "postprocess"
+    assert results[0].night["ahi_model_pred_ahi_sleep_denominator"] == pytest.approx(60.0)
+    assert results[0].night["ahi_model_pred_ahi_rem_denominator"] == pytest.approx(0.0)
+    assert results[0].night["ahi_model_pred_ahi_nrem_denominator"] == pytest.approx(120.0)
 
 
 def test_decode_scalar_classification_respects_probability_and_logit_flags():
@@ -756,6 +789,131 @@ def test_yasa_bandpower_by_stage_requires_stage_source(monkeypatch, tmp_path: Pa
     assert "stage_source" in failures[0].message
 
 
+def test_yasa_spindles_analyzer_with_mock_detector(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, eeg=np.ones(6000, dtype=np.float32))
+
+    def fake_spindles(raw):
+        return pd.DataFrame({"Start": [10.0], "Duration": [1.5], "Confidence": [0.8], "Frequency": [13.0]})
+
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(spindles_detect=fake_spindles),
+    )
+    analyzer = YasaSpindlesAnalyzer(AnalyzerConfig(name="yasa_spindles", type="yasa_spindles", input_channels=["eeg"]))
+    context = _yasa_context(tmp_path)
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run([_yasa_record(npz_path)], context)
+
+    assert failures == []
+    assert results[0].events["event_type"].tolist() == ["yasa_spindle"]
+    assert results[0].events["yasa_spindles_confidence"].tolist() == [0.8]
+    assert results[0].night["yasa_spindles_event_count"] == 1
+
+
+def test_spo2_summary_handles_artifact_and_threshold_time(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, spo2=np.array([95, 89, 87, 101], dtype=np.float32))
+    analyzer = Spo2SummaryAnalyzer(
+        AnalyzerConfig(
+            name="spo2_summary",
+            type="spo2_summary",
+            input_channels=["spo2"],
+            artifact={"valid_min": 50, "valid_max": 100},
+        )
+    )
+
+    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
+
+    assert failures == []
+    night = results[0].night
+    assert night["spo2_nadir"] == 87.0
+    assert night["spo2_t90_min"] == pytest.approx(2 / 60)
+    assert night["spo2_t88_min"] == pytest.approx(1 / 60)
+    assert night["spo2_artifact_pct"] == pytest.approx(0.25)
+
+
+def test_spo2_desaturation_detects_events_and_odi(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    signal = np.array([96] * 5 + [92] * 12 + [96] * 43, dtype=np.float32)
+    np.savez(npz_path, spo2=signal)
+    analyzer = Spo2DesaturationAnalyzer(
+        AnalyzerConfig(
+            name="spo2_desaturation",
+            type="spo2_desaturation",
+            input_channels=["spo2"],
+            drop_thresholds=[3, 4],
+            min_duration_sec=10,
+        )
+    )
+
+    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
+
+    assert failures == []
+    assert sorted(results[0].events["drop_threshold_pct"].tolist()) == [3.0, 4.0]
+    assert results[0].night["ODI3_recording"] == pytest.approx(60.0)
+    assert results[0].night["ODI4_recording"] == pytest.approx(60.0)
+
+
+def test_event_related_hypoxic_burden_uses_pred_event_fields(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    signal = np.array([96] * 20 + [90] * 20 + [95] * 20, dtype=np.float32)
+    np.savez(npz_path, spo2=signal)
+    source_events = pd.DataFrame({"record_id": ["rec1"], "onset_sec": [20.0], "offset_sec": [40.0]})
+    analyzer = EventRelatedHypoxicBurdenAnalyzer(
+        AnalyzerConfig(
+            name="pred_hypoxic_burden",
+            type="event_related_hypoxic_burden",
+            input_channels=["spo2"],
+            event_source="ahi_model",
+        )
+    )
+
+    results, failures = analyzer.run(
+        [_spo2_record(npz_path)],
+        _spo2_context(tmp_path),
+        prior_results=[AnalyzerResult("ahi_model", "rec1", events=source_events)],
+    )
+
+    assert failures == []
+    assert "pred_event_hypoxic_burden_pctmin" in results[0].events.columns
+    assert results[0].night["pred_event_count"] == 1
+    assert not any(column.startswith("clinical") for column in results[0].night)
+
+
+def test_load_records_resolves_index_dir_paths_and_manifest_metadata(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    np.savez(data_dir / "rec1.npz", ppg=np.ones(2, dtype=np.float32))
+    index = tmp_path / "index.csv"
+    index.write_text(
+        "path,duration,split,source,patient_id,age,note\n" "data/rec1.npz,60,test,unit,p001,55,do-not-export\n"
+    )
+
+    records = load_records(
+        DataConfig(
+            backend="npz",
+            index=index,
+            split=["test"],
+            record_id_columns=["source", "patient_id"],
+            path_base="index_dir",
+            metadata_columns=["age"],
+        )
+    )
+    manifest = records_to_frame(records, metadata_columns=["age"])
+
+    assert records[0].raw_path == "data/rec1.npz"
+    assert records[0].path == data_dir / "rec1.npz"
+    assert records[0].path_exists is True
+    assert manifest.loc[0, "raw_path"] == "data/rec1.npz"
+    assert manifest.loc[0, "resolved_path"] == str(data_dir / "rec1.npz")
+    assert bool(manifest.loc[0, "path_exists"]) is True
+    assert manifest.loc[0, "age"] == 55
+    assert "patient_id" not in manifest.columns
+    assert "note" not in manifest.columns
+
+
 def test_load_records_reads_kaldi_manifest(tmp_path: Path):
     root = _write_tiny_kaldi_manifest(tmp_path)
 
@@ -878,6 +1036,35 @@ def _yasa_record(path: Path) -> SleepRecord:
         token_sec=30,
         max_tokens=2,
         metadata={"age": 60, "sex": 1},
+    )
+
+
+def _spo2_context(tmp_path: Path) -> Sleep2statContext:
+    return Sleep2statContext(
+        config=SimpleNamespace(
+            data=DataConfig(backend="npz", index=tmp_path / "index.csv", split=["test"]),
+            signals=SignalsConfig(
+                channels={
+                    "spo2": ChannelSpec(source="spo2", sfreq=1, kind="spo2", input_dim=30),
+                }
+            ),
+            outputs=SimpleNamespace(include_probabilities=True),
+        ),
+        device="cpu",
+        num_workers=0,
+    )
+
+
+def _spo2_record(path: Path) -> SleepRecord:
+    return SleepRecord(
+        record_id="rec1",
+        path=path,
+        split="test",
+        source="unit",
+        duration_sec=60,
+        token_sec=30,
+        max_tokens=2,
+        metadata={},
     )
 
 
