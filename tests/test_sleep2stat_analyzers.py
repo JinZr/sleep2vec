@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from sleep2stat.analyzers.model_downstream import (
@@ -15,6 +16,7 @@ from sleep2stat.analyzers.model_downstream import (
 )
 from sleep2stat.analyzers.yasa import YasaBandpowerAnalyzer, YasaStageAnalyzer
 from sleep2stat.config import AnalyzerConfig, ChannelSpec, DataConfig, SignalsConfig
+from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.core.context import Sleep2statContext
 from sleep2stat.io.records import SleepRecord, load_records
 
@@ -316,6 +318,90 @@ def test_downstream_analyzer_preserves_duplicate_npz_path_records(monkeypatch, t
     assert [result.record_id for result in results] == ["rec_a", "rec_b"]
 
 
+def test_downstream_analyzer_retries_failed_batch_by_record(monkeypatch, tmp_path: Path):
+    for name in ("good", "bad"):
+        np.savez(tmp_path / f"{name}.npz", ppg=np.arange(4, dtype=np.float32))
+    ckpt_path = tmp_path / "model.ckpt"
+    torch.save({"state_dict": {}}, ckpt_path)
+
+    class FakeEvalModel:
+        def __call__(self, batch):
+            ids = list(batch["id"])
+            if len(ids) > 1:
+                raise RuntimeError("batch failed")
+            if ids[0] == "bad":
+                raise ValueError("bad record")
+            return torch.tensor([[0.0, 3.0]])
+
+    class FakeModule:
+        def __init__(self, *args, **kwargs):
+            self.model = FakeEvalModel()
+
+        def on_load_checkpoint(self, checkpoint):
+            return None
+
+        def load_state_dict(self, state_dict, strict=True):
+            return None
+
+        def eval(self):
+            return self
+
+        def to(self, device):
+            return self
+
+        def _get_eval_model(self):
+            return self.model
+
+    def fake_apply_config(args):
+        args.is_classification = True
+        args.is_seq = False
+        args.output_dim = 2
+        return SimpleNamespace(finetune=None, averaging=None), SimpleNamespace()
+
+    def fake_import(name):
+        if name.endswith(".common"):
+            return SimpleNamespace(apply_finetune_config=fake_apply_config)
+        if name.endswith(".sleep2vec_finetuning"):
+            return SimpleNamespace(Sleep2vecFinetuning=FakeModule)
+        if name.endswith(".utils"):
+            return SimpleNamespace(move_to_device=lambda data, device: data)
+        raise AssertionError(name)
+
+    monkeypatch.setattr("sleep2stat.analyzers.model_downstream.importlib.import_module", fake_import)
+    analyzer = Sleep2vecDownstreamAnalyzer(
+        AnalyzerConfig(
+            name="sex_model",
+            type="sleep2vec_downstream",
+            namespace="sleep2vec",
+            label_name="sex",
+            config=tmp_path / "config.yaml",
+            ckpt_path=ckpt_path,
+            input_channels=["ppg"],
+            batch_size=2,
+        )
+    )
+    context = Sleep2statContext(
+        config=SimpleNamespace(
+            signals=SignalsConfig(channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2)}),
+            outputs=SimpleNamespace(include_probabilities=True, include_raw_logits=False),
+        ),
+        device="cpu",
+        num_workers=0,
+    )
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run(
+        [
+            SleepRecord("good", tmp_path / "good.npz", "test", "unit", 60, 30, 2, {}),
+            SleepRecord("bad", tmp_path / "bad.npz", "test", "unit", 60, 30, 2, {}),
+        ],
+        context,
+    )
+
+    assert [result.record_id for result in results] == ["good"]
+    assert [(failure.record_id, failure.error_type) for failure in failures] == [("bad", "ValueError")]
+
+
 def test_downstream_analyzer_respects_epoch_probability_flag(monkeypatch, tmp_path: Path):
     npz_path = tmp_path / "sample.npz"
     np.savez(npz_path, ppg=np.arange(4, dtype=np.float32))
@@ -597,7 +683,12 @@ def test_yasa_bandpower_analyzer_with_mock_bandpower(monkeypatch, tmp_path: Path
         ),
     )
     analyzer = YasaBandpowerAnalyzer(
-        AnalyzerConfig(name="yasa_bandpower", type="yasa_bandpower", input_channels=["eeg"])
+        AnalyzerConfig(
+            name="yasa_bandpower",
+            type="yasa_bandpower",
+            input_channels=["eeg"],
+            outputs={"by_stage": False, "bands": ["delta", "alpha"]},
+        )
     )
     context = _yasa_context(tmp_path)
 
@@ -605,8 +696,64 @@ def test_yasa_bandpower_analyzer_with_mock_bandpower(monkeypatch, tmp_path: Path
     results, failures = analyzer.run([_yasa_record(npz_path)], context)
 
     assert failures == []
-    assert results[0].night["yasa_bandpower_EEG_Delta"] == 0.4
-    assert results[0].night["yasa_bandpower_EEG_Alpha"] == 0.2
+    assert results[0].epoch["yasa_bandpower_delta_rel"].tolist() == [0.4, 0.4]
+    assert results[0].night["yasa_bandpower_delta_rel_mean"] == 0.4
+    assert results[0].night["yasa_bandpower_alpha_rel_mean"] == 0.2
+
+
+def test_yasa_bandpower_by_stage_uses_prior_stage_source(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, eeg=np.ones(6000, dtype=np.float32))
+
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: (
+            _fake_mne_module()
+            if name == "mne"
+            else SimpleNamespace(bandpower=lambda raw: pd.DataFrame({"Chan": ["EEG"], "Sigma": [0.3]}))
+        ),
+    )
+    analyzer = YasaBandpowerAnalyzer(
+        AnalyzerConfig(
+            name="yasa_bandpower",
+            type="yasa_bandpower",
+            input_channels=["eeg"],
+            outputs={"stage_source": "yasa_stage", "bands": ["sigma"]},
+        )
+    )
+    context = _yasa_context(tmp_path)
+    stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "yasa_stage_pred": [2, 3]})
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run(
+        [_yasa_record(npz_path)],
+        context,
+        prior_results=[AnalyzerResult("yasa_stage", "rec1", epoch=stage_epoch)],
+    )
+
+    assert failures == []
+    assert results[0].night["yasa_bandpower_N2_sigma_mean"] == 0.3
+    assert results[0].night["yasa_bandpower_N3_sigma_mean"] == 0.3
+
+
+def test_yasa_bandpower_by_stage_requires_stage_source(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, eeg=np.ones(6000, dtype=np.float32))
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(bandpower=lambda raw: pd.DataFrame()),
+    )
+    analyzer = YasaBandpowerAnalyzer(
+        AnalyzerConfig(name="yasa_bandpower", type="yasa_bandpower", input_channels=["eeg"])
+    )
+    context = _yasa_context(tmp_path)
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run([_yasa_record(npz_path)], context)
+
+    assert results == []
+    assert failures[0].record_id == "rec1"
+    assert "stage_source" in failures[0].message
 
 
 def test_load_records_reads_kaldi_manifest(tmp_path: Path):
@@ -627,6 +774,23 @@ def test_load_records_reads_kaldi_manifest(tmp_path: Path):
     assert [record.record_id for record in records] == ["sample_a", "sample_b"]
     assert records[0].duration_sec == 60
     assert records[0].metadata["sample_key"] == "sample_a"
+
+
+def test_load_records_rejects_duplicate_record_ids_by_default(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text(
+        "path,duration,split,source,patient_id\n" "/tmp/a.npz,60,test,unit,p001\n" "/tmp/b.npz,60,test,unit,p001\n"
+    )
+
+    with pytest.raises(ValueError, match="duplicate record_id"):
+        load_records(
+            DataConfig(
+                backend="npz",
+                index=index,
+                split=["test"],
+                record_id_columns=["source", "patient_id"],
+            )
+        )
 
 
 def test_kaldi_dataset_routing_filters_to_pending_sample_keys(tmp_path: Path):

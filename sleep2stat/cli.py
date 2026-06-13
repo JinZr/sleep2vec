@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
 from pandas.errors import EmptyDataError
 
 from sleep2stat.config import load_config
+from sleep2stat.core.artifacts import FailureRecord
 from sleep2stat.core.pipeline import run_pipeline
+from sleep2stat.io.records import SleepRecord
+from sleep2stat.io.writers import AnalysisBundleWriter
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +52,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _summarize(run_dir: Path) -> None:
+    config_path = run_dir / "config.yaml"
+    if config_path.exists():
+        config = load_config(config_path)
+        config = replace(config, run=replace(config.run, output_dir=run_dir))
+        writer = AnalysisBundleWriter(config)
+        records = _read_record_manifest(run_dir / "record_manifest.csv", config.data.token_sec, config.data.max_tokens)
+        writer.rebuild_global_tables(records, _read_failures(run_dir / "status" / "failures.csv"))
     manifest = run_dir / "run_manifest.json"
     record_manifest = run_dir / "record_manifest.csv"
     night_stats = run_dir / "tables" / "night_stats.csv"
@@ -65,3 +76,47 @@ def _csv_row_count(path: Path) -> int:
         return len(pd.read_csv(path))
     except EmptyDataError:
         return 0
+
+
+def _read_failures(path: Path) -> list[FailureRecord]:
+    if not path.exists():
+        return []
+    try:
+        frame = pd.read_csv(path)
+    except EmptyDataError:
+        return []
+    failures = []
+    for _, row in frame.iterrows():
+        failures.append(
+            FailureRecord(
+                record_id=str(row.get("record_id", "")),
+                analyzer=str(row.get("analyzer", "")),
+                error_type=str(row.get("error_type", "")),
+                message=str(row.get("message", "")),
+            )
+        )
+    return failures
+
+
+def _read_record_manifest(path: Path, token_sec: int, max_tokens: int) -> list[SleepRecord]:
+    if not path.exists():
+        return []
+    try:
+        frame = pd.read_csv(path)
+    except EmptyDataError:
+        return []
+    records = []
+    for _, row in frame.iterrows():
+        records.append(
+            SleepRecord(
+                record_id=str(row["record_id"]),
+                path=Path(str(row["path"])),
+                split=str(row.get("split", "")),
+                source=None if pd.isna(row.get("source")) else str(row.get("source")),
+                duration_sec=float(row.get("duration_sec", 0.0)),
+                token_sec=int(row.get("token_sec", token_sec)),
+                max_tokens=int(row.get("max_tokens", max_tokens)),
+                metadata={},
+            )
+        )
+    return records

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 
 from sleep2stat.core.artifacts import AnalyzerResult
@@ -21,6 +22,7 @@ class DemographicConsistencyReducer(BaseReducer):
         output = []
         for record in records:
             merged = dict(by_record.get(record.record_id, {}))
+            night = {}
             warnings = []
             age_pred_name = self.config.age_prediction
             if age_pred_name:
@@ -30,9 +32,9 @@ class DemographicConsistencyReducer(BaseReducer):
                     try:
                         age_meta_float = float(age_meta)
                         if math.isfinite(age_meta_float):
-                            merged["age_metadata"] = age_meta_float
-                            merged["age_abs_error"] = abs(float(age_pred) - age_meta_float)
-                            if merged["age_abs_error"] >= 20:
+                            night["age_metadata"] = age_meta_float
+                            night["age_abs_error"] = abs(float(age_pred) - age_meta_float)
+                            if night["age_abs_error"] >= 20:
                                 warnings.append("age_prediction_metadata_gap_ge_20")
                     except (TypeError, ValueError):
                         pass
@@ -41,15 +43,16 @@ class DemographicConsistencyReducer(BaseReducer):
                 sex_pred = merged.get(f"{sex_pred_name}_pred")
                 sex_meta = _encode_sex(record.metadata.get(self.config.metadata_sex_column))
                 if sex_pred is not None and sex_meta is not None:
-                    merged["sex_metadata"] = sex_meta
-                    merged["sex_model_metadata_match"] = int(sex_pred) == int(sex_meta)
+                    night["sex_metadata"] = sex_meta
+                    night["sex_model_metadata_match"] = int(sex_pred) == int(sex_meta)
                     prob_male = merged.get(f"{sex_pred_name}_prob_male")
-                    if merged["sex_model_metadata_match"] is False and prob_male is not None:
+                    if night["sex_model_metadata_match"] is False and prob_male is not None:
                         confidence = max(float(prob_male), 1.0 - float(prob_male))
                         if confidence >= 0.9:
                             warnings.append("high_confidence_sex_metadata_conflict")
-            merged["demographic_warning_count"] = len(warnings)
-            output.append(AnalyzerResult(self.config.name, record.record_id, night=merged, warnings=warnings))
+            night["demographic_warning_count"] = len(warnings)
+            night["warnings_json"] = json.dumps(warnings)
+            output.append(AnalyzerResult(self.config.name, record.record_id, night=night, warnings=warnings))
         return output
 
 
@@ -67,7 +70,9 @@ def _encode_sex(value) -> int | None:
         return None
     if isinstance(value, str):
         text = value.strip().lower()
-        if text in {"male", "m", "1", "1.0", "x"}:
+        if text in {"unknown", "u", "na", "nan"}:
+            return None
+        if text in {"male", "m", "1", "1.0"}:
             return 1
         if text in {"female", "f", "0", "0.0"}:
             return 0

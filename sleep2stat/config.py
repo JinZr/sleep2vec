@@ -420,9 +420,16 @@ def _build_outputs(raw: Any) -> OutputsConfig:
     compression = str(data.get("compression", "gzip"))
     if compression not in {"gzip", "none"}:
         raise ValueError("outputs.compression must be either 'gzip' or 'none'.")
+    write_global_tables = bool(data.get("write_global_tables", True))
+    write_per_record = bool(data.get("write_per_record", True))
+    if write_global_tables and not write_per_record:
+        raise ValueError(
+            "outputs.write_global_tables=true requires outputs.write_per_record=true because cumulative sleep2stat "
+            "summary tables are rebuilt from per-record sidecars."
+        )
     return OutputsConfig(
-        write_global_tables=bool(data.get("write_global_tables", True)),
-        write_per_record=bool(data.get("write_per_record", True)),
+        write_global_tables=write_global_tables,
+        write_per_record=write_per_record,
         include_probabilities=bool(data.get("include_probabilities", True)),
         include_raw_logits=bool(data.get("include_raw_logits", False)),
         compression=compression,

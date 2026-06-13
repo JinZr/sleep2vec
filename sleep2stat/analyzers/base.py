@@ -17,6 +17,7 @@ class BaseAnalyzer:
         self,
         records: list[SleepRecord],
         context: Sleep2statContext,
+        prior_results: list[AnalyzerResult] | None = None,
     ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
         raise NotImplementedError
 

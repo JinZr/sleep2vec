@@ -77,6 +77,23 @@ def test_cli_run_dry_run_and_summarize(tmp_path: Path, capsys):
     assert "records: 1" in captured.out
 
 
+def test_cli_summarize_uses_supplied_run_dir_over_config_output_dir(tmp_path: Path):
+    config_path = _write_dry_run_config(tmp_path)
+    run_dir = tmp_path / "run"
+    wrong_dir = tmp_path / "wrong_run_dir"
+
+    assert main(["run", "--config", str(config_path), "--split", "test", "--limit-records", "1", "--dry-run"]) == 0
+    copied_config = yaml.safe_load((run_dir / "config.yaml").read_text())
+    copied_config["run"]["output_dir"] = str(wrong_dir)
+    (run_dir / "config.yaml").write_text(yaml.safe_dump(copied_config))
+    (run_dir / "tables" / "night_stats.csv").unlink()
+
+    assert main(["summarize", "--run-dir", str(run_dir)]) == 0
+
+    assert (run_dir / "tables" / "night_stats.csv").exists()
+    assert not wrong_dir.exists()
+
+
 def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path):
     np.savez(tmp_path / "rec1.npz", stage5=np.array([0, 1], dtype=np.int64))
     np.savez(tmp_path / "rec2.npz", stage5=np.array([2, 4], dtype=np.int64))

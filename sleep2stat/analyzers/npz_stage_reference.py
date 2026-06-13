@@ -17,6 +17,7 @@ class NpzStageReferenceAnalyzer(BaseAnalyzer):
         self,
         records: list[SleepRecord],
         context: Sleep2statContext,
+        prior_results: list[AnalyzerResult] | None = None,
     ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
         key = self.config.stage_key or self.config.npz_key or self.config.label_name or "stage5"
         results: list[AnalyzerResult] = []

@@ -230,6 +230,7 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         self,
         records: list[SleepRecord],
         context: Sleep2statContext,
+        prior_results: list[AnalyzerResult] | None = None,
     ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
         if self.args is None or self.model is None or self.move_to_device is None:
             raise RuntimeError("Analyzer was not prepared.")
@@ -278,24 +279,84 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
                 loader = dataset.dataloader(device=self.args.device)
                 for batch in loader:
                     try:
-                        batch = self.move_to_device(batch, self.args.device)
-                        logits = self.model(batch)
-                        results.extend(self._decode_batch(batch, logits, record_by_path, record_by_id))
+                        results.extend(self._run_batch(batch, record_by_path, record_by_id))
                     except Exception as exc:
-                        batch_ids = [str(value) for value in batch.get("id", [])]
-                        paths = [str(value) for value in batch.get("metadata", {}).get("path", [])]
-                        keys = batch_ids or paths
-                        for key in keys:
-                            record = record_by_id.get(key) or record_by_path.get(key)
-                            failures.append(
-                                FailureRecord(
-                                    record_id=record.record_id if record else key,
-                                    analyzer=self.config.name,
-                                    error_type=type(exc).__name__,
-                                    message=str(exc),
+                        batch_records = _records_for_batch(batch, record_by_path, record_by_id)
+                        if len(batch_records) > 1:
+                            for record in batch_records:
+                                try:
+                                    retry_results = self._run_single_record(
+                                        record,
+                                        context,
+                                        channel_specs,
+                                        record_by_path,
+                                        record_by_id,
+                                    )
+                                    if retry_results:
+                                        results.extend(retry_results)
+                                    else:
+                                        failures.append(
+                                            FailureRecord(
+                                                record_id=record.record_id,
+                                                analyzer=self.config.name,
+                                                error_type="RecordUnavailable",
+                                                message=(
+                                                    "Record was dropped during single-record retry; "
+                                                    "check duration and required input channels."
+                                                ),
+                                            )
+                                        )
+                                except Exception as retry_exc:
+                                    failures.append(
+                                        FailureRecord(
+                                            record_id=record.record_id,
+                                            analyzer=self.config.name,
+                                            error_type=type(retry_exc).__name__,
+                                            message=str(retry_exc),
+                                        )
+                                    )
+                        else:
+                            for record in batch_records:
+                                failures.append(
+                                    FailureRecord(
+                                        record_id=record.record_id,
+                                        analyzer=self.config.name,
+                                        error_type=type(exc).__name__,
+                                        message=str(exc),
+                                    )
                                 )
-                            )
         return results, failures
+
+    def _run_batch(
+        self,
+        batch: dict[str, Any],
+        record_by_path: dict[str, SleepRecord],
+        record_by_id: dict[str, SleepRecord],
+    ) -> list[AnalyzerResult]:
+        batch = self.move_to_device(batch, self.args.device)
+        logits = self.model(batch)
+        return self._decode_batch(batch, logits, record_by_path, record_by_id)
+
+    def _run_single_record(
+        self,
+        record: SleepRecord,
+        context: Sleep2statContext,
+        channel_specs: dict[str, ChannelSpec],
+        record_by_path: dict[str, SleepRecord],
+        record_by_id: dict[str, SleepRecord],
+    ) -> list[AnalyzerResult]:
+        datasets = _build_datasets(
+            records=[record],
+            channel_specs=channel_specs,
+            batch_size=1,
+            num_workers=context.num_workers,
+            context=context,
+        )
+        output = []
+        for dataset in datasets:
+            for batch in dataset.dataloader(device=self.args.device):
+                output.extend(self._run_batch(batch, record_by_path, record_by_id))
+        return output
 
     def _decode_batch(
         self,
@@ -375,6 +436,29 @@ def _record_for_batch_item(
         if record_id is not None and str(record_id) in record_by_id:
             return record_by_id[str(record_id)]
     return record_by_path[str(path)]
+
+
+def _records_for_batch(
+    batch: dict[str, Any],
+    record_by_path: dict[str, SleepRecord],
+    record_by_id: dict[str, SleepRecord],
+) -> list[SleepRecord]:
+    paths = list(batch.get("metadata", {}).get("path", []))
+    ids = batch.get("id", [])
+    count = max(len(paths), len(ids))
+    records = []
+    for idx in range(count):
+        path = paths[idx] if idx < len(paths) else None
+        record = None
+        if path is not None:
+            record = _record_for_batch_item(batch, idx, path, record_by_path, record_by_id)
+        else:
+            batch_id = _batch_value(batch.get("id"), idx)
+            if batch_id is not None:
+                record = record_by_id.get(str(batch_id))
+        if record is not None and record.record_id not in {item.record_id for item in records}:
+            records.append(record)
+    return records
 
 
 def _batch_value(value: Any, idx: int) -> Any:

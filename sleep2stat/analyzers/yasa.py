@@ -17,6 +17,13 @@ from sleep2stat.registry import register_analyzer
 
 STAGE_LABEL_TO_ID = {"W": 0, "N1": 1, "N2": 2, "N3": 3, "R": 4, "REM": 4}
 STAGE_ID_TO_LABEL = {0: "W", 1: "N1", 2: "N2", 3: "N3", 4: "REM"}
+DEFAULT_BANDS = {
+    "delta": (0.5, 4, "Delta"),
+    "theta": (4, 8, "Theta"),
+    "alpha": (8, 12, "Alpha"),
+    "sigma": (12, 16, "Sigma"),
+    "beta": (16, 30, "Beta"),
+}
 
 
 class _YasaBaseAnalyzer(BaseAnalyzer):
@@ -54,6 +61,7 @@ class YasaStageAnalyzer(_YasaBaseAnalyzer):
         self,
         records: list[SleepRecord],
         context: Sleep2statContext,
+        prior_results: list[AnalyzerResult] | None = None,
     ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
         results: list[AnalyzerResult] = []
         failures: list[FailureRecord] = []
@@ -108,15 +116,49 @@ class YasaBandpowerAnalyzer(_YasaBaseAnalyzer):
         self,
         records: list[SleepRecord],
         context: Sleep2statContext,
+        prior_results: list[AnalyzerResult] | None = None,
     ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
         results: list[AnalyzerResult] = []
         failures: list[FailureRecord] = []
+        options = self.config.outputs
+        by_epoch = bool(options.get("by_epoch", True))
+        by_stage = bool(options.get("by_stage", True))
+        by_night = bool(options.get("by_night", True))
+        relative = bool(options.get("relative", True))
+        stage_source = options.get("stage_source")
+        bands = _band_specs(options.get("bands"))
+        stage_results = _stage_results_by_record(prior_results or [], str(stage_source)) if stage_source else {}
         for record in records:
             try:
                 raw, _ = self._build_raw(record, context)
-                bandpower = pd.DataFrame(self._yasa.bandpower(raw))
-                night = _flatten_bandpower(self.config.name, bandpower)
-                results.append(AnalyzerResult(self.config.name, record.record_id, night=night))
+                epoch = _epoch_bandpower(
+                    self._yasa,
+                    raw,
+                    record,
+                    self.config.name,
+                    bands=bands,
+                    relative=relative,
+                )
+                night = {}
+                if by_night:
+                    night.update(_night_bandpower_means(self.config.name, epoch))
+                if by_stage:
+                    if not stage_source:
+                        raise ValueError("yasa_bandpower.outputs.stage_source is required when by_stage=true.")
+                    stage = stage_results.get(record.record_id)
+                    if stage is None:
+                        raise ValueError(
+                            f"yasa_bandpower stage_source {stage_source!r} has no epoch result for {record.record_id!r}."
+                        )
+                    night.update(_stage_bandpower_means(self.config.name, epoch, stage, str(stage_source)))
+                results.append(
+                    AnalyzerResult(
+                        self.config.name,
+                        record.record_id,
+                        epoch=epoch if by_epoch else None,
+                        night=night or None,
+                    )
+                )
             except Exception as exc:
                 failures.append(
                     FailureRecord(
@@ -244,6 +286,141 @@ def _flatten_bandpower(analyzer_name: str, frame: pd.DataFrame) -> dict[str, flo
             if numeric is None:
                 continue
             output[f"{analyzer_name}_{channel_slug}_{_slug(column)}"] = numeric
+    return output
+
+
+def _band_specs(raw: Any) -> list[tuple[float, float, str]]:
+    if raw is None:
+        raw = ["delta", "theta", "alpha", "sigma", "beta"]
+    specs = []
+    for item in raw:
+        if isinstance(item, str):
+            key = item.strip().lower()
+            if key not in DEFAULT_BANDS:
+                raise ValueError(f"Unsupported YASA bandpower band: {item!r}.")
+            specs.append(DEFAULT_BANDS[key])
+        elif isinstance(item, (list, tuple)) and len(item) == 3:
+            specs.append((float(item[0]), float(item[1]), str(item[2])))
+        else:
+            raise ValueError(f"Invalid YASA bandpower band spec: {item!r}.")
+    return specs
+
+
+def _epoch_bandpower(
+    yasa_module: Any,
+    raw: Any,
+    record: SleepRecord,
+    analyzer_name: str,
+    *,
+    bands: list[tuple[float, float, str]],
+    relative: bool,
+) -> pd.DataFrame:
+    data, sfreq, ch_names = _raw_data(raw)
+    samples_per_epoch = int(round(float(sfreq) * record.token_sec))
+    n_tokens = min(int(record.duration_sec // record.token_sec), record.max_tokens)
+    n_tokens = min(n_tokens, data.shape[1] // samples_per_epoch if samples_per_epoch > 0 else 0)
+    frame = _epoch_base_frame(record, n_tokens)
+    suffix = "rel" if relative else "abs"
+    band_names = [_slug(label).lower() for _, _, label in bands]
+    for band_name in band_names:
+        frame[f"{analyzer_name}_{band_name}_{suffix}"] = np.nan
+    for token_idx in range(n_tokens):
+        left = token_idx * samples_per_epoch
+        right = left + samples_per_epoch
+        segment = data[:, left:right]
+        bandpower = _call_bandpower(yasa_module, segment, sfreq, ch_names, bands, relative)
+        means = _band_means(bandpower, band_names)
+        for band_name, value in means.items():
+            frame.loc[token_idx, f"{analyzer_name}_{band_name}_{suffix}"] = value
+    return frame
+
+
+def _raw_data(raw: Any) -> tuple[np.ndarray, float, list[str]]:
+    data = raw.get_data() if hasattr(raw, "get_data") else raw.data
+    info = raw.info
+    sfreq = float(info["sfreq"] if isinstance(info, dict) else info["sfreq"])
+    ch_names = None
+    if isinstance(info, dict):
+        ch_names = info.get("ch_names")
+    if ch_names is None:
+        ch_names = getattr(raw, "ch_names", [f"ch{idx}" for idx in range(np.asarray(data).shape[0])])
+    return np.asarray(data, dtype=np.float64), sfreq, list(ch_names)
+
+
+def _call_bandpower(
+    yasa_module: Any,
+    data: np.ndarray,
+    sfreq: float,
+    ch_names: list[str],
+    bands: list[tuple[float, float, str]],
+    relative: bool,
+) -> pd.DataFrame:
+    try:
+        return pd.DataFrame(yasa_module.bandpower(data, sf=sfreq, ch_names=ch_names, bands=bands, relative=relative))
+    except TypeError:
+        return pd.DataFrame(yasa_module.bandpower(data))
+
+
+def _band_means(frame: pd.DataFrame, band_names: list[str]) -> dict[str, float]:
+    output = {}
+    if frame.empty:
+        return output
+    columns = {_slug(column).lower(): column for column in frame.columns}
+    for band_name in band_names:
+        column = columns.get(band_name)
+        if column is None:
+            continue
+        values = pd.to_numeric(frame[column], errors="coerce")
+        if values.notna().any():
+            output[band_name] = float(values.mean())
+    return output
+
+
+def _night_bandpower_means(analyzer_name: str, epoch: pd.DataFrame) -> dict[str, float]:
+    output = {}
+    prefix = f"{analyzer_name}_"
+    for column in epoch.columns:
+        if not column.startswith(prefix) or not column.endswith(("_rel", "_abs")):
+            continue
+        values = pd.to_numeric(epoch[column], errors="coerce")
+        if values.notna().any():
+            output[f"{column}_mean"] = float(values.mean())
+    return output
+
+
+def _stage_bandpower_means(
+    analyzer_name: str,
+    epoch: pd.DataFrame,
+    stage: pd.DataFrame,
+    stage_source: str,
+) -> dict[str, float]:
+    pred_col = f"{stage_source}_pred"
+    if pred_col not in stage.columns:
+        raise ValueError(f"stage_source {stage_source!r} epoch output does not contain {pred_col!r}.")
+    merged = epoch.merge(stage[["token_idx", pred_col]], on="token_idx", how="left")
+    output = {}
+    band_columns = [
+        column
+        for column in epoch.columns
+        if column.startswith(f"{analyzer_name}_") and column.endswith(("_rel", "_abs"))
+    ]
+    for stage_id, stage_label in STAGE_ID_TO_LABEL.items():
+        group = merged[merged[pred_col] == stage_id]
+        if group.empty:
+            continue
+        for column in band_columns:
+            values = pd.to_numeric(group[column], errors="coerce")
+            if values.notna().any():
+                band = column.removeprefix(f"{analyzer_name}_").removesuffix("_rel").removesuffix("_abs")
+                output[f"{analyzer_name}_{stage_label}_{band}_mean"] = float(values.mean())
+    return output
+
+
+def _stage_results_by_record(results: list[AnalyzerResult], stage_source: str) -> dict[str, pd.DataFrame]:
+    output = {}
+    for result in results:
+        if result.name == stage_source and result.epoch is not None and not result.epoch.empty:
+            output[result.record_id] = result.epoch
     return output
 
 

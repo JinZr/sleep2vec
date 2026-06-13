@@ -4,7 +4,7 @@ import argparse
 
 from sleep2stat import analyzers, reducers  # noqa: F401
 from sleep2stat.config import Sleep2statConfig
-from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
+from sleep2stat.core.artifacts import FailureRecord
 from sleep2stat.core.context import Sleep2statContext
 from sleep2stat.io.records import load_records
 from sleep2stat.io.writers import AnalysisBundleWriter
@@ -24,8 +24,8 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
     )
 
     failures: list[FailureRecord] = []
-    results: list[AnalyzerResult] = []
     if args.dry_run:
+        results = []
         writer.write_failures(failures)
         writer.write_results(records, results, failures)
         writer.write_progress(total_records=len(records), completed_records=skipped_records, status="dry_run")
@@ -35,15 +35,13 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
     context = Sleep2statContext(
         config=config, device=args.device, num_workers=args.num_workers, batch_size=args.batch_size
     )
+    prepared_analyzers = []
     for analyzer_cfg in config.analyzers:
         if not analyzer_cfg.enabled:
             continue
         analyzer = create_analyzer(analyzer_cfg)
         try:
             analyzer.prepare(context)
-            analyzer_results, analyzer_failures = analyzer.run(pending_records, context)
-            results.extend(analyzer_results)
-            failures.extend(analyzer_failures)
         except Exception as exc:
             failures.append(
                 FailureRecord(
@@ -53,40 +51,84 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
                     message=str(exc),
                 )
             )
-        finally:
             analyzer.close()
+        else:
+            prepared_analyzers.append(analyzer)
 
-    for reducer_cfg in config.reducers:
-        if not reducer_cfg.enabled:
-            continue
-        try:
-            reducer = create_reducer(reducer_cfg)
-            results.extend(reducer.reduce(pending_records, results, context))
-        except Exception as exc:
-            failures.append(
-                FailureRecord(
-                    record_id="__all__",
-                    analyzer=reducer_cfg.name,
-                    error_type=type(exc).__name__,
-                    message=str(exc),
-                )
+    completed_record_ids: set[str] = set()
+    if not any(failure.record_id == "__all__" for failure in failures):
+        for chunk in _record_chunks(pending_records, _chunk_size(config, args)):
+            chunk_results = []
+            chunk_failures: list[FailureRecord] = []
+            for analyzer in prepared_analyzers:
+                try:
+                    analyzer_results, analyzer_failures = analyzer.run(
+                        chunk, context, prior_results=list(chunk_results)
+                    )
+                    chunk_results.extend(analyzer_results)
+                    chunk_failures.extend(analyzer_failures)
+                except Exception as exc:
+                    chunk_failures.extend(
+                        FailureRecord(
+                            record_id=record.record_id,
+                            analyzer=analyzer.config.name,
+                            error_type=type(exc).__name__,
+                            message=str(exc),
+                        )
+                        for record in chunk
+                    )
+            for reducer_cfg in config.reducers:
+                if not reducer_cfg.enabled:
+                    continue
+                try:
+                    reducer = create_reducer(reducer_cfg)
+                    chunk_results.extend(reducer.reduce(chunk, chunk_results, context))
+                except Exception as exc:
+                    chunk_failures.extend(
+                        FailureRecord(
+                            record_id=record.record_id,
+                            analyzer=reducer_cfg.name,
+                            error_type=type(exc).__name__,
+                            message=str(exc),
+                        )
+                        for record in chunk
+                    )
+            failed_record_ids = {failure.record_id for failure in chunk_failures if failure.record_id != "__all__"}
+            result_record_ids = {result.record_id for result in chunk_results}
+            chunk_completed = {
+                record.record_id
+                for record in chunk
+                if record.record_id in result_record_ids and record.record_id not in failed_record_ids
+            }
+            writer.write_chunk(chunk, chunk_results, chunk_failures, completed_record_ids=chunk_completed)
+            writer.write_completion_markers(chunk_completed)
+            completed_record_ids.update(chunk_completed)
+            failures.extend(chunk_failures)
+            writer.write_progress(
+                total_records=len(records),
+                completed_records=skipped_records + len(completed_record_ids),
+                status="running",
             )
 
-    writer.write_results(pending_records, results, failures)
-    has_global_failure = any(failure.record_id == "__all__" for failure in failures)
-    failed_record_ids = {failure.record_id for failure in failures if failure.record_id != "__all__"}
-    result_record_ids = {result.record_id for result in results}
-    completed_record_ids = set()
-    if not has_global_failure:
-        completed_record_ids = {
-            record.record_id
-            for record in pending_records
-            if record.record_id in result_record_ids and record.record_id not in failed_record_ids
-        }
-    writer.write_completion_markers(completed_record_ids)
-    completed = skipped_records + len(completed_record_ids)
+    for analyzer in prepared_analyzers:
+        analyzer.close()
+
     writer.write_failures(failures)
+    writer.rebuild_global_tables(records, failures)
+    completed = skipped_records + len(completed_record_ids)
     status = "completed_with_failures" if failures else "completed"
     writer.write_progress(total_records=len(records), completed_records=completed, status=status)
     writer.write_run_manifest(status=status, records=records, failures=failures, dry_run=False)
     return writer.run_dir
+
+
+def _chunk_size(config: Sleep2statConfig, args: argparse.Namespace) -> int:
+    configured = [analyzer.batch_size for analyzer in config.analyzers if analyzer.enabled and analyzer.batch_size]
+    if getattr(args, "batch_size", None):
+        configured.append(int(args.batch_size))
+    return min(max(configured or [1]), 32)
+
+
+def _record_chunks(records, chunk_size: int):
+    for start in range(0, len(records), chunk_size):
+        yield records[start : start + chunk_size]

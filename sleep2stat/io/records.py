@@ -26,8 +26,11 @@ def load_records(
     data_cfg: DataConfig, *, split_override: list[str] | None = None, limit: int | None = None
 ) -> list[SleepRecord]:
     if data_cfg.backend == "kaldi":
-        return _load_kaldi_records(data_cfg, split_override=split_override, limit=limit)
-    return _load_npz_records(data_cfg, split_override=split_override, limit=limit)
+        records = _load_kaldi_records(data_cfg, split_override=split_override, limit=limit)
+    else:
+        records = _load_npz_records(data_cfg, split_override=split_override, limit=limit)
+    _validate_unique_record_ids(records)
+    return records
 
 
 def _load_npz_records(
@@ -187,3 +190,16 @@ def _json_safe_value(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def _validate_unique_record_ids(records: list[SleepRecord]) -> None:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for record in records:
+        if record.record_id in seen and record.record_id not in duplicates:
+            duplicates.append(record.record_id)
+        seen.add(record.record_id)
+    if duplicates:
+        preview = ", ".join(duplicates[:5])
+        suffix = "" if len(duplicates) <= 5 else f", ... ({len(duplicates)} total)"
+        raise ValueError("sleep2stat record_id values must be unique; duplicate record_id(s): " f"{preview}{suffix}.")

@@ -73,7 +73,9 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
         f"{prefix}_SE": float(tst_min / tib_min) if tib_min > 0 else np.nan,
         f"{prefix}_SOL_min": sol_min,
         f"{prefix}_REM_latency_min": rem_latency_min,
-        f"{prefix}_SFI": _stage_fragmentation_index(sleep_period, tst_min),
+        f"{prefix}_stage_shift_index": _stage_shift_index(sleep_period, tst_min),
+        f"{prefix}_sleep_to_wake_transition_index": _sleep_to_wake_transition_index(sleep_period, tst_min),
+        f"{prefix}_SFI_yasa_like": _sleep_to_wake_transition_index(sleep_period, tst_min),
     }
     for stage_id, label in ((1, "N1"), (2, "N2"), (3, "N3"), (4, "REM")):
         minutes = float((values == stage_id).sum() * epoch_min)
@@ -82,10 +84,17 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
     return stats
 
 
-def _stage_fragmentation_index(sleep_period: np.ndarray, tst_min: float) -> float:
+def _stage_shift_index(sleep_period: np.ndarray, tst_min: float) -> float:
     if sleep_period.size < 2 or tst_min <= 0:
         return np.nan
     transitions = int(np.sum(sleep_period[1:] != sleep_period[:-1]))
+    return float(transitions / (tst_min / 60.0))
+
+
+def _sleep_to_wake_transition_index(sleep_period: np.ndarray, tst_min: float) -> float:
+    if sleep_period.size < 2 or tst_min <= 0:
+        return np.nan
+    transitions = int(np.sum((sleep_period[:-1] != 0) & (sleep_period[1:] == 0)))
     return float(transitions / (tst_min / 60.0))
 
 

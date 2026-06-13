@@ -17,7 +17,9 @@ from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
 from sleep2stat.io.records import SleepRecord, records_to_frame
 
 COMPLETION_MARKER = "_SUCCESS.json"
+RESULT_MANIFEST = "result_manifest.csv"
 TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment", "night_stats")
+ALIGNMENT_TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment")
 SUMMARY_TABLE_NAMES = ("model_summary", "analyzer_summary")
 
 
@@ -28,6 +30,7 @@ class AnalysisBundleWriter:
         self.status_dir = self.run_dir / "status"
         self.tables_dir = self.run_dir / "tables"
         self.per_record_dir = self.run_dir / "per_record"
+        self.shards_dir = self.tables_dir / "_shards"
 
     def prepare(self, *, args: argparse.Namespace) -> None:
         if self.run_dir.exists() and self.config.run.overwrite:
@@ -95,17 +98,40 @@ class AnalysisBundleWriter:
         results: list[AnalyzerResult],
         failures: Iterable[FailureRecord] | None = None,
     ) -> None:
+        failures = list(failures or [])
+        failed_record_ids = {failure.record_id for failure in failures if failure.record_id != "__all__"}
+        result_record_ids = {result.record_id for result in results}
+        completed_record_ids = {
+            record.record_id
+            for record in records
+            if record.record_id in result_record_ids and record.record_id not in failed_record_ids
+        }
+        self.write_chunk(records, results, failures, completed_record_ids=completed_record_ids)
+        self.write_completion_markers(completed_record_ids)
+        self.rebuild_global_tables(records, failures)
+
+    def write_chunk(
+        self,
+        records: list[SleepRecord],
+        results: list[AnalyzerResult],
+        failures: Iterable[FailureRecord] | None = None,
+        *,
+        completed_record_ids: Iterable[str],
+    ) -> None:
+        failures = list(failures or [])
         tables = collect_tables(records, results)
-        summary_tables = collect_summary_tables(self.config, results, list(failures or []))
         if self.config.outputs.write_global_tables:
-            for name, frame in {**tables, **summary_tables}.items():
-                path = self._table_path(name)
-                frame = self._merge_existing_global_table(name, path, frame)
-                frame.to_csv(path, index=False, compression=self._compression_for(path))
+            completed = {str(record_id) for record_id in completed_record_ids}
+            for name in ALIGNMENT_TABLE_NAMES:
+                frame = tables[name]
+                if not frame.empty and "record_id" in frame.columns:
+                    frame = frame[frame["record_id"].astype(str).isin(completed)]
+                self._write_global_table_shard(name, frame)
         if self.config.outputs.write_per_record:
-            result_record_ids = {result.record_id for result in results}
+            output_record_ids = {result.record_id for result in results}
+            output_record_ids.update(failure.record_id for failure in failures if failure.record_id != "__all__")
             for record in records:
-                if record.record_id not in result_record_ids:
+                if record.record_id not in output_record_ids:
                     continue
                 record_dir = self.per_record_dir / record.record_id
                 record_dir.mkdir(parents=True, exist_ok=True)
@@ -114,7 +140,21 @@ class AnalysisBundleWriter:
                         frame = frame[frame["record_id"] == record.record_id]
                     path = record_dir / self._per_record_filename(name)
                     frame.to_csv(path, index=False, compression=self._compression_for(path))
-                self._write_per_record_sidecars(record, tables, results, record_dir)
+                self._write_per_record_sidecars(record, tables, results, failures, record_dir)
+
+    def rebuild_global_tables(
+        self,
+        records: list[SleepRecord],
+        failures: Iterable[FailureRecord] | None = None,
+    ) -> None:
+        if not self.config.outputs.write_global_tables:
+            return
+        failures = list(failures or [])
+        self._rebuild_alignment_tables_from_shards()
+        self._collect_night_stats(records).to_csv(self._table_path("night_stats"), index=False)
+        summary_tables = self._collect_cumulative_summary_tables(failures)
+        for name, frame in summary_tables.items():
+            frame.to_csv(self._table_path(name), index=False)
 
     def write_completion_markers(self, record_ids: Iterable[str]) -> None:
         if not self.config.outputs.write_per_record:
@@ -139,6 +179,7 @@ class AnalysisBundleWriter:
         record: SleepRecord,
         tables: dict[str, pd.DataFrame],
         results: list[AnalyzerResult],
+        failures: list[FailureRecord],
         record_dir: Path,
     ) -> None:
         events = tables["event_alignment"]
@@ -164,6 +205,8 @@ class AnalysisBundleWriter:
         if arrays:
             np.savez_compressed(record_dir / "arrays.npz", **arrays)
 
+        self._result_manifest(record, results, failures).to_csv(record_dir / RESULT_MANIFEST, index=False)
+
     @staticmethod
     def _compression_for(path: Path) -> str | None:
         return "gzip" if path.suffix == ".gz" else None
@@ -176,20 +219,175 @@ class AnalysisBundleWriter:
     def _record_has_outputs(self, record: SleepRecord) -> bool:
         return (self.per_record_dir / record.record_id / COMPLETION_MARKER).exists()
 
-    def _merge_existing_global_table(self, name: str, path: Path, frame: pd.DataFrame) -> pd.DataFrame:
-        if not self.config.run.skip_existing or not path.exists() or path.stat().st_size == 0:
-            return frame
-        try:
-            existing = pd.read_csv(path)
-        except pd.errors.EmptyDataError:
-            return frame
-        if existing.empty:
-            return frame
-        merged = pd.concat([existing, frame], ignore_index=True, sort=False)
-        subset = _dedupe_columns_for_table(name, merged)
-        if subset:
-            merged = merged.drop_duplicates(subset=subset, keep="last")
-        return merged
+    def _write_global_table_shard(self, name: str, frame: pd.DataFrame) -> None:
+        if frame.empty:
+            return
+        path = self._next_shard_path(name)
+        frame.to_csv(path, index=False, compression=self._compression_for(path))
+
+    def _next_shard_path(self, name: str) -> Path:
+        shard_dir = self.shards_dir / name
+        shard_dir.mkdir(parents=True, exist_ok=True)
+        suffix = ".csv.gz" if self.config.outputs.compression == "gzip" else ".csv"
+        idx = len(list(shard_dir.glob(f"part-*{suffix}")))
+        path = shard_dir / f"part-{idx:06d}{suffix}"
+        while path.exists():
+            idx += 1
+            path = shard_dir / f"part-{idx:06d}{suffix}"
+        return path
+
+    def _alignment_shard_paths(self, name: str) -> list[Path]:
+        return sorted((self.shards_dir / name).glob("part-*.csv*"))
+
+    def _rebuild_alignment_tables_from_shards(self) -> None:
+        for name in ALIGNMENT_TABLE_NAMES:
+            shards = self._alignment_shard_paths(name)
+            if not shards:
+                continue
+            columns = _union_csv_columns(shards)
+            if not columns:
+                continue
+            path = self._table_path(name)
+            if path.exists():
+                path.unlink()
+            wrote = False
+            for shard in shards:
+                try:
+                    chunk_iter = pd.read_csv(shard, chunksize=100_000)
+                    for frame in chunk_iter:
+                        for column in columns:
+                            if column not in frame.columns:
+                                frame[column] = pd.NA
+                        frame = frame.reindex(columns=columns)
+                        frame.to_csv(
+                            path,
+                            mode="a" if wrote else "w",
+                            header=not wrote,
+                            index=False,
+                            compression=self._compression_for(path),
+                        )
+                        wrote = True
+                except pd.errors.EmptyDataError:
+                    continue
+
+    def _collect_night_stats(self, records: list[SleepRecord]) -> pd.DataFrame:
+        rows = []
+        for record in records:
+            record_dir = self.per_record_dir / record.record_id
+            if not (record_dir / COMPLETION_MARKER).exists():
+                continue
+            path = record_dir / "night_stats.json"
+            if not path.exists():
+                continue
+            payload = json.loads(path.read_text())
+            if payload:
+                rows.append(payload)
+        return _merge_night_rows(rows)
+
+    def _collect_cumulative_summary_tables(self, failures: list[FailureRecord]) -> dict[str, pd.DataFrame]:
+        manifests = []
+        if self.per_record_dir.exists():
+            for path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}")):
+                if not (path.parent / COMPLETION_MARKER).exists():
+                    continue
+                try:
+                    manifests.append(pd.read_csv(path))
+                except pd.errors.EmptyDataError:
+                    continue
+        manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
+        failure_counts: dict[str, int] = {}
+        for failure in failures:
+            failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
+
+        rows = []
+        for kind, configs in (("analyzer", self.config.analyzers), ("reducer", self.config.reducers)):
+            for item in configs:
+                item_rows = manifest[
+                    (manifest.get("kind", pd.Series(dtype=object)) == kind)
+                    & (manifest.get("name", pd.Series(dtype=object)) == item.name)
+                ]
+                rows.append(
+                    {
+                        "kind": kind,
+                        "name": item.name,
+                        "type": item.type,
+                        "enabled": bool(item.enabled),
+                        "record_count": (
+                            len(set(item_rows.loc[item_rows.get("result_count", 0) > 0, "record_id"]))
+                            if not item_rows.empty
+                            else 0
+                        ),
+                        "result_count": int(item_rows.get("result_count", pd.Series(dtype=int)).sum()),
+                        "failure_count": failure_counts.get(item.name, 0),
+                        "epoch_rows": int(item_rows.get("epoch_rows", pd.Series(dtype=int)).sum()),
+                        "second_rows": int(item_rows.get("second_rows", pd.Series(dtype=int)).sum()),
+                        "event_rows": int(item_rows.get("event_rows", pd.Series(dtype=int)).sum()),
+                        "night_rows": int(item_rows.get("night_rows", pd.Series(dtype=int)).sum()),
+                    }
+                )
+        return {
+            "model_summary": _model_summary_frame(self.config),
+            "analyzer_summary": pd.DataFrame(
+                rows,
+                columns=[
+                    "kind",
+                    "name",
+                    "type",
+                    "enabled",
+                    "record_count",
+                    "result_count",
+                    "failure_count",
+                    "epoch_rows",
+                    "second_rows",
+                    "event_rows",
+                    "night_rows",
+                ],
+            ),
+        }
+
+    def _result_manifest(
+        self,
+        record: SleepRecord,
+        results: list[AnalyzerResult],
+        failures: list[FailureRecord],
+    ) -> pd.DataFrame:
+        rows = []
+        record_results = [result for result in results if result.record_id == record.record_id]
+        record_failures = [failure for failure in failures if failure.record_id == record.record_id]
+        for kind, configs in (("analyzer", self.config.analyzers), ("reducer", self.config.reducers)):
+            for item in configs:
+                item_results = [result for result in record_results if result.name == item.name]
+                rows.append(
+                    {
+                        "record_id": record.record_id,
+                        "kind": kind,
+                        "name": item.name,
+                        "type": item.type,
+                        "enabled": bool(item.enabled),
+                        "result_count": len(item_results),
+                        "failure_count": sum(1 for failure in record_failures if failure.analyzer == item.name),
+                        "epoch_rows": _result_row_count(item_results, "epoch"),
+                        "second_rows": _result_row_count(item_results, "second"),
+                        "event_rows": _result_row_count(item_results, "events"),
+                        "night_rows": sum(1 for result in item_results if result.night is not None),
+                    }
+                )
+        return pd.DataFrame(
+            rows,
+            columns=[
+                "record_id",
+                "kind",
+                "name",
+                "type",
+                "enabled",
+                "result_count",
+                "failure_count",
+                "epoch_rows",
+                "second_rows",
+                "event_rows",
+                "night_rows",
+            ],
+        )
 
 
 def collect_tables(records: list[SleepRecord], results: list[AnalyzerResult]) -> dict[str, pd.DataFrame]:
@@ -252,38 +450,8 @@ def collect_summary_tables(
                 }
             )
 
-    model_rows = []
-    for analyzer in config.analyzers:
-        if analyzer.type != "sleep2vec_downstream":
-            continue
-        model_rows.append(
-            {
-                "name": analyzer.name,
-                "type": analyzer.type,
-                "namespace": analyzer.namespace,
-                "label_name": analyzer.label_name,
-                "config": None if analyzer.config is None else str(analyzer.config),
-                "ckpt_path": None if analyzer.ckpt_path is None else str(analyzer.ckpt_path),
-                "input_channels": ",".join(analyzer.input_channels),
-                "batch_size": analyzer.batch_size,
-                "threshold": analyzer.threshold,
-            }
-        )
     return {
-        "model_summary": pd.DataFrame(
-            model_rows,
-            columns=[
-                "name",
-                "type",
-                "namespace",
-                "label_name",
-                "config",
-                "ckpt_path",
-                "input_channels",
-                "batch_size",
-                "threshold",
-            ],
-        ),
+        "model_summary": _model_summary_frame(config),
         "analyzer_summary": pd.DataFrame(
             analyzer_rows,
             columns=[
@@ -301,6 +469,40 @@ def collect_summary_tables(
             ],
         ),
     }
+
+
+def _model_summary_frame(config: Sleep2statConfig) -> pd.DataFrame:
+    rows = []
+    for analyzer in config.analyzers:
+        if analyzer.type != "sleep2vec_downstream":
+            continue
+        rows.append(
+            {
+                "name": analyzer.name,
+                "type": analyzer.type,
+                "namespace": analyzer.namespace,
+                "label_name": analyzer.label_name,
+                "config": None if analyzer.config is None else str(analyzer.config),
+                "ckpt_path": None if analyzer.ckpt_path is None else str(analyzer.ckpt_path),
+                "input_channels": ",".join(analyzer.input_channels),
+                "batch_size": analyzer.batch_size,
+                "threshold": analyzer.threshold,
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "name",
+            "type",
+            "namespace",
+            "label_name",
+            "config",
+            "ckpt_path",
+            "input_channels",
+            "batch_size",
+            "threshold",
+        ],
+    )
 
 
 def _merge_alignment_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
@@ -336,16 +538,19 @@ def _merge_night_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(merged_rows)
 
 
-def _dedupe_columns_for_table(name: str, frame: pd.DataFrame) -> list[str]:
-    candidates = {
-        "epoch_alignment": ["record_id", "token_idx"],
-        "second_alignment": ["record_id", "second_idx"],
-        "event_alignment": ["record_id", "event_id"],
-        "night_stats": ["record_id"],
-        "model_summary": ["name"],
-        "analyzer_summary": ["kind", "name"],
-    }.get(name, ["record_id"])
-    return [column for column in candidates if column in frame.columns]
+def _union_csv_columns(paths: list[Path]) -> list[str]:
+    columns: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            frame = pd.read_csv(path, nrows=0)
+        except pd.errors.EmptyDataError:
+            continue
+        for column in frame.columns:
+            if column not in seen:
+                columns.append(column)
+                seen.add(column)
+    return columns
 
 
 def _result_row_count(results: list[AnalyzerResult], attr: str) -> int:

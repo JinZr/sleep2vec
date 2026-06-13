@@ -69,6 +69,23 @@ def test_load_config_accepts_minimal_model_first_yaml(tmp_path: Path):
     assert config.analyzers[0].name == "stage5_model"
 
 
+def test_load_config_rejects_duplicate_record_id_override(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["data"]["allow_duplicate_record_ids"] = True
+
+    with pytest.raises(ValueError, match="Unknown sleep2stat config field"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_global_tables_without_per_record_sidecars(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["outputs"]["write_global_tables"] = True
+    payload["outputs"]["write_per_record"] = False
+
+    with pytest.raises(ValueError, match="requires outputs.write_per_record=true"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_accepts_stage_reference_stage_key(tmp_path: Path):
     payload = _minimal_payload()
     payload["analyzers"] = [

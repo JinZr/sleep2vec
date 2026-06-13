@@ -50,6 +50,13 @@ analyzers:
   - name: yasa_bandpower
     type: yasa_bandpower
     input_channels: [eeg]
+    outputs:
+      stage_source: yasa_stage
+      by_epoch: true
+      by_stage: true
+      by_night: true
+      bands: [delta, theta, alpha, sigma, beta]
+      relative: true
 
 reducers:
   - name: yasa_stage_stats
