@@ -88,6 +88,7 @@ def test_decode_ahi_logits_to_second_events_and_model_ahi():
     assert results[0].night["ahi_model_pred_event_count"] == 1
     assert results[0].night["ahi_model_pred_ahi"] == 40.0
     assert results[0].night["ahi_model_pred_ahi_recording_denominator"] == 40.0
+    assert results[0].night["ahi_model_recording_denominator_hours"] == pytest.approx(0.025)
 
 
 def test_decode_ahi_uses_strict_threshold_boundary():
