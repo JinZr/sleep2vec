@@ -36,8 +36,15 @@ class StageSpecificSummaryReducer(BaseReducer):
         stage_col = f"{stage_source}_pred"
         for record_id, frame in source_results.items():
             stage = stage_results.get(record_id)
-            if stage is None or stage_col not in stage.columns:
-                continue
+            if stage is None:
+                raise ValueError(
+                    f"stage_specific_summary stage_source {stage_source!r} has no epoch result for {record_id!r}."
+                )
+            if stage_col not in stage.columns:
+                raise ValueError(
+                    f"stage_specific_summary stage_source {stage_source!r} is missing column {stage_col!r} "
+                    f"for {record_id!r}."
+                )
             merged = frame.merge(stage[["token_idx", stage_col]], on="token_idx", how="inner")
             night = _stage_numeric_means(str(self.config.source), merged, stage_col)
             if night:

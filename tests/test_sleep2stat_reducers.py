@@ -198,6 +198,56 @@ def test_stage_specific_summary_reducer_groups_epoch_numeric_columns():
     assert output[0].night["yasa_bandpower_N3_sigma_rel_mean"] == 0.4
 
 
+def test_stage_specific_summary_reducer_fails_when_stage_source_missing():
+    bandpower = pd.DataFrame(
+        {
+            "record_id": ["rec1"],
+            "token_idx": [0],
+            "yasa_bandpower_sigma_rel": [0.2],
+        }
+    )
+    reducer = StageSpecificSummaryReducer(
+        ReducerConfig(
+            name="stage_bandpower",
+            type="stage_specific_summary",
+            source="yasa_bandpower",
+            options={"stage_source": "stage5_model"},
+        )
+    )
+
+    with pytest.raises(ValueError, match="has no epoch result"):
+        reducer.reduce([_record()], [AnalyzerResult("yasa_bandpower", "rec1", epoch=bandpower)], None)
+
+
+def test_stage_specific_summary_reducer_fails_when_stage_pred_column_missing():
+    bandpower = pd.DataFrame(
+        {
+            "record_id": ["rec1"],
+            "token_idx": [0],
+            "yasa_bandpower_sigma_rel": [0.2],
+        }
+    )
+    stage = pd.DataFrame({"record_id": ["rec1"], "token_idx": [0], "other_stage_pred": [2]})
+    reducer = StageSpecificSummaryReducer(
+        ReducerConfig(
+            name="stage_bandpower",
+            type="stage_specific_summary",
+            source="yasa_bandpower",
+            options={"stage_source": "stage5_model"},
+        )
+    )
+
+    with pytest.raises(ValueError, match="missing column"):
+        reducer.reduce(
+            [_record()],
+            [
+                AnalyzerResult("yasa_bandpower", "rec1", epoch=bandpower),
+                AnalyzerResult("stage5_model", "rec1", epoch=stage),
+            ],
+            None,
+        )
+
+
 def test_demographic_consistency_outputs_only_demographic_fields():
     record = _record()
     record.metadata.update({"age": 60, "sex": "female"})

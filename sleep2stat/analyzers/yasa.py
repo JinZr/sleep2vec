@@ -542,12 +542,14 @@ def _call_yasa_event_detector(
     if stages:
         if not stage_source:
             raise ValueError(f"{detector_name} stage filtering requires stage_source.")
-        stage = resolver.get_epoch_stage(record.record_id, stage_source)
+        data, sfreq, _ = _raw_data(raw)
+        seconds = np.arange(data.shape[1], dtype=np.float64) / sfreq
+        stage = resolver.stage_at_seconds(record.record_id, stage_source, seconds)
         if stage is None:
             raise ValueError(f"stage_source {stage_source!r} not found for {record.record_id!r}.")
         allowed = {_stage_id(stage) for stage in stages}
-        hypno = stage[f"{stage_source}_pred"].to_numpy(dtype=np.int64)
-        hypno = np.asarray([value if value in allowed else 0 for value in hypno], dtype=np.int64)
+        keep = (stage >= 0) & np.isin(stage, list(allowed))
+        hypno = np.where(keep, stage, 0).astype(np.int64)
     try:
         result = detector(raw, hypno=hypno) if hypno is not None else detector(raw)
     except TypeError:

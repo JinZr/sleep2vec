@@ -813,6 +813,47 @@ def test_yasa_spindles_analyzer_with_mock_detector(monkeypatch, tmp_path: Path):
     assert results[0].night["yasa_spindles_event_count"] == 1
 
 
+def test_yasa_spindles_stage_filter_uses_sample_level_hypno(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, eeg=np.ones(6000, dtype=np.float32))
+    captured = {}
+
+    def fake_spindles(raw, hypno=None):
+        captured["raw_samples"] = raw.data.shape[1]
+        captured["hypno"] = np.asarray(hypno)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(spindles_detect=fake_spindles),
+    )
+    analyzer = YasaSpindlesAnalyzer(
+        AnalyzerConfig(
+            name="yasa_spindles",
+            type="yasa_spindles",
+            input_channels=["eeg"],
+            stage_source="stage5_model",
+            stages=["N2"],
+        )
+    )
+    context = _yasa_context(tmp_path)
+    stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 4]})
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run(
+        [_yasa_record(npz_path)],
+        context,
+        prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
+    )
+
+    assert failures == []
+    assert len(results) == 1
+    assert captured["hypno"].shape == (captured["raw_samples"],)
+    assert captured["raw_samples"] == 6000
+    assert np.all(captured["hypno"][:3000] == 2)
+    assert np.all(captured["hypno"][3000:] == 0)
+
+
 def test_spo2_summary_handles_artifact_and_threshold_time(tmp_path: Path):
     npz_path = tmp_path / "rec1.npz"
     np.savez(npz_path, spo2=np.array([95, 89, 87, 101], dtype=np.float32))

@@ -386,6 +386,15 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
                 raise ValueError(f"Analyzer {name!r} requires input_channels or spo2_source.")
         if spo2_source and spo2_source not in signals.channels:
             raise ValueError(f"Analyzer {name!r} references unknown spo2_source channel: {spo2_source!r}.")
+        outputs = dict(item.get("outputs") or {})
+        if (
+            analyzer_type == "yasa_bandpower"
+            and bool(outputs.get("by_stage", True))
+            and not outputs.get("stage_source")
+        ):
+            raise ValueError(
+                f"Analyzer {name!r} requires outputs.stage_source when outputs.by_stage=true."
+            )
         analyzers.append(
             AnalyzerConfig(
                 name=name,
@@ -413,7 +422,7 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
                 max_duration_sec=(None if item.get("max_duration_sec") is None else float(item["max_duration_sec"])),
                 event_source=None if item.get("event_source") is None else str(item["event_source"]),
                 spo2_source=spo2_source,
-                outputs=dict(item.get("outputs") or {}),
+                outputs=outputs,
             )
         )
     if not analyzers:

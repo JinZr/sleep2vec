@@ -175,6 +175,7 @@ def test_load_config_accepts_yasa_analyzers_and_reducer_alias(tmp_path: Path):
             "name": "yasa_bandpower",
             "type": "yasa_bandpower",
             "input_channels": ["eeg"],
+            "outputs": {"stage_source": "yasa_stage"},
         },
     ]
     payload["reducers"] = [{"name": "yasa_stats", "type": "yasa_hypnogram_stats", "source": "yasa_stage"}]
@@ -184,6 +185,38 @@ def test_load_config_accepts_yasa_analyzers_and_reducer_alias(tmp_path: Path):
     assert config.signals.channels["eeg"].mne_name == "EEG"
     assert [analyzer.type for analyzer in config.analyzers] == ["yasa_stage", "yasa_bandpower"]
     assert config.reducers[0].type == "yasa_hypnogram_stats"
+
+
+def test_load_config_rejects_yasa_bandpower_by_stage_without_stage_source(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    payload["analyzers"].append(
+        {
+            "name": "yasa_bandpower",
+            "type": "yasa_bandpower",
+            "input_channels": ["eeg"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="outputs.stage_source"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_accepts_yasa_bandpower_without_stage_source_when_by_stage_false(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    payload["analyzers"].append(
+        {
+            "name": "yasa_bandpower",
+            "type": "yasa_bandpower",
+            "input_channels": ["eeg"],
+            "outputs": {"by_stage": False},
+        }
+    )
+
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.analyzers[-1].outputs["by_stage"] is False
 
 
 def test_load_config_accepts_v02_path_metadata_and_global_table_controls(tmp_path: Path):
