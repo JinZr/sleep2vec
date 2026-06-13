@@ -40,16 +40,73 @@ def test_hypnogram_stats_from_epoch_predictions():
 
     stats = output[0].night
     assert stats["stage5_model_TIB_min"] == 3.5
+    assert stats["stage5_model_recording_duration_min"] == 3.5
+    assert stats["stage5_model_scored_TIB_min"] == 3.5
     assert stats["stage5_model_TST_min"] == 2.0
+    assert stats["stage5_model_SE_ratio"] == pytest.approx(2.0 / 3.5)
+    assert stats["stage5_model_SE_pct"] == pytest.approx(100 * 2.0 / 3.5)
+    assert stats["stage5_model_SE"] == pytest.approx(2.0 / 3.5)
     assert stats["stage5_model_SOL_min"] == 0.5
     assert stats["stage5_model_REM_latency_min"] == 2.0
+    assert stats["stage5_model_WASO_SPT_min"] == 0.5
+    assert stats["stage5_model_WASO_min"] == 0.5
+    assert stats["stage5_model_terminal_wake_after_last_sleep_min"] == 0.5
+    assert stats["stage5_model_WASO_after_sleep_onset_to_recording_end_min"] == 1.0
     assert stats["stage5_model_pct_N2"] == pytest.approx(0.25)
     assert stats["stage5_model_N2_ratio_TST"] == pytest.approx(0.25)
+    assert stats["stage5_model_N2_pct_TST"] == pytest.approx(25.0)
     assert stats["stage5_model_sleep_bout_count"] == 2
+    assert stats["stage5_model_stage_shift_rate_per_sleep_hour"] == pytest.approx(4 / (2.0 / 60.0))
     assert stats["stage5_model_stage_shift_index"] == pytest.approx(4 / (2.0 / 60.0))
     assert stats["stage5_model_sleep_to_wake_transition_index"] == pytest.approx(1 / (2.0 / 60.0))
     assert stats["stage5_model_SFI_yasa_like"] == pytest.approx(1 / (2.0 / 60.0))
     assert "stage5_model_SFI" not in stats
+
+
+def test_hypnogram_stats_keeps_recording_duration_when_epochs_are_unscored():
+    frame = pd.DataFrame(
+        {
+            "record_id": ["rec1"] * 8,
+            "path": ["rec1.npz"] * 8,
+            "token_idx": list(range(8)),
+            "stage5_model_pred": [0, 1, -1, 2, 5, 0, 4, 0],
+        }
+    )
+    reducer = HypnogramStatsReducer(ReducerConfig(name="stage5_stats", type="hypnogram_stats", source="stage5_model"))
+
+    output = reducer.reduce([_record()], [AnalyzerResult("stage5_model", "rec1", epoch=frame)], None)
+
+    stats = output[0].night
+    assert stats["stage5_model_recording_duration_min"] == 4.0
+    assert stats["stage5_model_TIB_min"] == 4.0
+    assert stats["stage5_model_scored_TIB_min"] == 3.0
+    assert stats["stage5_model_unscored_epoch_count"] == 2
+    assert stats["stage5_model_valid_stage_epoch_ratio"] == pytest.approx(0.75)
+    assert stats["stage5_model_TST_min"] == 1.5
+    assert stats["stage5_model_SE_ratio"] == pytest.approx(1.5 / 4.0)
+    assert stats["stage5_model_SE_pct"] == pytest.approx(37.5)
+
+
+def test_hypnogram_stats_keeps_tib_when_all_epochs_are_unscored():
+    frame = pd.DataFrame(
+        {
+            "record_id": ["rec1"] * 4,
+            "path": ["rec1.npz"] * 4,
+            "token_idx": list(range(4)),
+            "stage5_model_pred": [-1, 5, -2, 9],
+        }
+    )
+    reducer = HypnogramStatsReducer(ReducerConfig(name="stage5_stats", type="hypnogram_stats", source="stage5_model"))
+
+    output = reducer.reduce([_record()], [AnalyzerResult("stage5_model", "rec1", epoch=frame)], None)
+
+    stats = output[0].night
+    assert stats["stage5_model_recording_duration_min"] == 2.0
+    assert stats["stage5_model_TIB_min"] == 2.0
+    assert stats["stage5_model_scored_TIB_min"] == 0.0
+    assert stats["stage5_model_unscored_epoch_count"] == 4
+    assert pd.isna(stats["stage5_model_SE_ratio"])
+    assert pd.isna(stats["stage5_model_SE_pct"])
 
 
 def test_stage_agreement_reducer_outputs_accuracy_and_kappa():
@@ -146,8 +203,10 @@ def test_transition_stats_entropy_uses_transition_counts_only():
 
     output = reducer.reduce([_record()], [AnalyzerResult("stage5_model", "rec1", epoch=frame)], None)
 
-    assert output[0].night["stage5_model_stage_shift_index"] == 1.0
+    assert output[0].night["stage5_model_stage_transition_change_fraction"] == 1.0
     assert output[0].night["stage5_model_transition_entropy"] == pytest.approx(1.0986122886681096)
+    assert output[0].night["stage5_model_transition_entropy_with_self"] == pytest.approx(1.0986122886681096)
+    assert "stage5_model_stage_shift_index" not in output[0].night
 
 
 def test_event_density_reducer_counts_events_per_recording_hour():

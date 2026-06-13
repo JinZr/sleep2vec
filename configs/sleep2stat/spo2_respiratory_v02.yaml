@@ -34,9 +34,16 @@ analyzers:
     artifact:
       valid_min: 50
       valid_max: 100
+      # Prevent single-sample oximetry jumps from driving nadir/T90; no interpolation is applied.
+      max_abs_change_per_sec: 8
   - name: spo2_desaturation
     type: spo2_desaturation
     input_channels: [spo2]
+    artifact:
+      valid_min: 50
+      valid_max: 100
+      # Prevent single-sample oximetry jumps from driving nadir/T90; no interpolation is applied.
+      max_abs_change_per_sec: 8
     drop_thresholds: [3, 4]
     min_duration_sec: 10
     max_duration_sec: 120
@@ -44,6 +51,11 @@ analyzers:
     type: event_related_hypoxic_burden
     input_channels: [spo2]
     event_source: spo2_desaturation
+    artifact:
+      valid_min: 50
+      valid_max: 100
+      # Prevent single-sample oximetry jumps from driving nadir/T90; no interpolation is applied.
+      max_abs_change_per_sec: 8
 
 reducers:
   - name: spo2_desaturation_density

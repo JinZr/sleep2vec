@@ -43,10 +43,12 @@ def _transition_stats(stages, *, prefix: str) -> dict[str, float]:
     stats: dict[str, float] = {}
     if values.size < 2:
         stats[f"{prefix}_transition_entropy"] = np.nan
-        stats[f"{prefix}_stage_shift_index"] = 0.0
+        stats[f"{prefix}_transition_entropy_with_self"] = np.nan
+        stats[f"{prefix}_stage_transition_change_fraction"] = 0.0
         return stats
     transitions = values[1:] != values[:-1]
-    stats[f"{prefix}_stage_shift_index"] = float(transitions.sum() / max(1, values.size - 1))
+    # Adjacent-epoch change fraction is distinct from hypnogram stage-shifts per TST hour.
+    stats[f"{prefix}_stage_transition_change_fraction"] = float(transitions.sum() / max(1, values.size - 1))
     transition_counts: dict[str, float] = {}
     for left, right in zip(values[:-1], values[1:]):
         if left in STAGE_LABELS and right in STAGE_LABELS:
@@ -56,5 +58,7 @@ def _transition_stats(stages, *, prefix: str) -> dict[str, float]:
     raw_counts = np.asarray(list(transition_counts.values()), dtype=np.float64)
     raw_counts = raw_counts[raw_counts > 0]
     prob = raw_counts / raw_counts.sum() if raw_counts.size else raw_counts
-    stats[f"{prefix}_transition_entropy"] = float(-(prob * np.log(prob)).sum()) if prob.size else np.nan
+    entropy = float(-(prob * np.log(prob)).sum()) if prob.size else np.nan
+    stats[f"{prefix}_transition_entropy"] = entropy
+    stats[f"{prefix}_transition_entropy_with_self"] = entropy
     return stats

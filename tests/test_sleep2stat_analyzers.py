@@ -92,9 +92,14 @@ def test_decode_ahi_logits_to_second_events_and_model_ahi():
     assert results[0].second["ahi_model_pred"].sum() == 12
     assert len(results[0].events) == 1
     assert results[0].night["ahi_model_pred_event_count"] == 1
-    assert results[0].night["ahi_model_pred_ahi"] == 40.0
-    assert results[0].night["ahi_model_pred_ahi_recording_denominator"] == 40.0
-    assert results[0].night["ahi_model_recording_denominator_hours"] == pytest.approx(0.025)
+    assert results[0].night["ahi_model_pred_event_rate_per_model_hour"] == 40.0
+    assert results[0].night["ahi_model_pred_event_rate_per_recording_hour"] == pytest.approx(6.0)
+    assert results[0].night["ahi_model_model_denominator_hours"] == pytest.approx(0.025)
+    assert results[0].night["ahi_model_recording_denominator_hours"] == pytest.approx(600 / 3600)
+    assert results[0].night["ahi_model_covered_duration_sec"] == 90
+    assert results[0].night["ahi_model_coverage_ratio_recording"] == pytest.approx(0.15)
+    assert results[0].night["ahi_model_truncated_by_max_tokens"] is False
+    assert "ahi_model_pred_ahi" not in results[0].night
 
 
 def test_decode_ahi_uses_strict_threshold_boundary():
@@ -131,9 +136,32 @@ def test_decode_ahi_postprocess_controls_outputs_and_stage_denominators():
     assert results[0].second is None
     assert len(results[0].events) == 1
     assert results[0].night["ahi_model_threshold_source"] == "postprocess"
-    assert results[0].night["ahi_model_pred_ahi_sleep_denominator"] == pytest.approx(60.0)
-    assert results[0].night["ahi_model_pred_ahi_rem_denominator"] == pytest.approx(0.0)
-    assert results[0].night["ahi_model_pred_ahi_nrem_denominator"] == pytest.approx(120.0)
+    assert results[0].night["ahi_model_stage_assignment"] == "onset"
+    assert results[0].events["ahi_model_stage_at_onset"].tolist() == [2]
+    assert results[0].night["ahi_model_pred_AHI_sleep_denominator"] == pytest.approx(60.0)
+    assert results[0].night["ahi_model_pred_REM_AHI_onset_stage"] == pytest.approx(0.0)
+    assert results[0].night["ahi_model_pred_NREM_AHI_onset_stage"] == pytest.approx(120.0)
+    assert results[0].night["ahi_model_pred_ahi"] == pytest.approx(60.0)
+
+
+def test_decode_ahi_reports_max_token_truncation():
+    record = SleepRecord(
+        record_id="rec1",
+        path="rec1.npz",
+        split="test",
+        source="unit",
+        duration_sec=600,
+        token_sec=30,
+        max_tokens=3,
+        metadata={},
+    )
+    logits = torch.zeros(1, 3, 30)
+
+    results = decode_ahi_logits("ahi_model", logits, _batch(), {"rec1.npz": record}, threshold=0.5)
+
+    assert results[0].night["ahi_model_covered_duration_sec"] == 90
+    assert results[0].night["ahi_model_coverage_ratio_recording"] == pytest.approx(0.15)
+    assert results[0].night["ahi_model_truncated_by_max_tokens"] is True
 
 
 def test_decode_scalar_classification_respects_probability_and_logit_flags():
@@ -892,6 +920,47 @@ def test_yasa_spindles_stage_filter_uses_sample_level_hypno(monkeypatch, tmp_pat
     assert np.all(captured["hypno"][3000:] == 0)
 
 
+def test_yasa_spindles_outputs_stage_denominator_density(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, eeg=np.ones(6000, dtype=np.float32))
+
+    def fake_spindles(raw, hypno=None):
+        return pd.DataFrame(
+            {
+                "Start": [10.0, 40.0],
+                "Duration": [1.0, 1.0],
+                "Stage": [2, 3],
+            }
+        )
+
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(spindles_detect=fake_spindles),
+    )
+    analyzer = YasaSpindlesAnalyzer(
+        AnalyzerConfig(
+            name="yasa_spindles",
+            type="yasa_spindles",
+            input_channels=["eeg"],
+            stage_source="stage5_model",
+            stages=["N2", "N3"],
+        )
+    )
+    context = _yasa_context(tmp_path)
+    stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 3]})
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run(
+        [_yasa_record(npz_path)],
+        context,
+        prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
+    )
+
+    assert failures == []
+    assert results[0].night["yasa_spindles_spindle_density_per_min_N2"] == pytest.approx(2.0)
+    assert results[0].night["yasa_spindles_spindle_density_per_min_N2N3"] == pytest.approx(2.0)
+
+
 def test_yasa_rem_calls_two_eog_array_api_with_sample_level_hypno(monkeypatch, tmp_path: Path):
     npz_path = tmp_path / "rec1.npz"
     np.savez(
@@ -1035,8 +1104,29 @@ def test_spo2_summary_handles_artifact_and_threshold_time(tmp_path: Path):
     night = results[0].night
     assert night["spo2_nadir"] == 87.0
     assert night["spo2_t90_min"] == pytest.approx(2 / 60)
+    assert night["spo2_t90_ratio_recording"] == pytest.approx(0.5)
+    assert night["spo2_t90_pct_recording"] == pytest.approx(50.0)
     assert night["spo2_t88_min"] == pytest.approx(1 / 60)
     assert night["spo2_artifact_pct"] == pytest.approx(0.25)
+
+
+def test_spo2_summary_excludes_large_jump_artifact(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, spo2=np.array([95, 70, 95], dtype=np.float32))
+    analyzer = Spo2SummaryAnalyzer(
+        AnalyzerConfig(
+            name="spo2_summary",
+            type="spo2_summary",
+            input_channels=["spo2"],
+            artifact={"valid_min": 50, "valid_max": 100, "max_abs_change_per_sec": 8},
+        )
+    )
+
+    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
+
+    assert failures == []
+    assert results[0].night["spo2_nadir"] == 95.0
+    assert results[0].night["spo2_t90_min"] == 0.0
 
 
 def test_spo2_desaturation_detects_events_and_odi(tmp_path: Path):
@@ -1057,8 +1147,42 @@ def test_spo2_desaturation_detects_events_and_odi(tmp_path: Path):
 
     assert failures == []
     assert sorted(results[0].events["drop_threshold_pct"].tolist()) == [3.0, 4.0]
+    assert results[0].events["spo2_desat_area_pctsec"].tolist() == [48.0, 48.0]
+    assert results[0].events["spo2_desat_area_pctmin"].tolist() == [0.8, 0.8]
+    assert results[0].events["spo2_time_to_nadir_sec"].tolist() == [0.0, 0.0]
+    assert results[0].events["spo2_recovery_duration_sec"].tolist() == [12.0, 12.0]
+    assert results[0].night["ODI3_per_recording_hour"] == pytest.approx(60.0)
+    assert results[0].night["ODI4_per_recording_hour"] == pytest.approx(60.0)
+    assert results[0].night["ODI3_per_valid_spo2_hour"] == pytest.approx(60.0)
+    assert results[0].night["ODI4_per_valid_spo2_hour"] == pytest.approx(60.0)
     assert results[0].night["ODI3_recording"] == pytest.approx(60.0)
     assert results[0].night["ODI4_recording"] == pytest.approx(60.0)
+
+
+def test_spo2_desaturation_outputs_sleep_denominator_odi_when_stage_source_is_available(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    signal = np.array([96] * 5 + [92] * 12 + [96] * 43, dtype=np.float32)
+    np.savez(npz_path, spo2=signal)
+    analyzer = Spo2DesaturationAnalyzer(
+        AnalyzerConfig(
+            name="spo2_desaturation",
+            type="spo2_desaturation",
+            input_channels=["spo2"],
+            drop_thresholds=[3],
+            min_duration_sec=10,
+            stage_source="stage5_model",
+        )
+    )
+    stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [0, 2]})
+
+    results, failures = analyzer.run(
+        [_spo2_record(npz_path)],
+        _spo2_context(tmp_path),
+        prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
+    )
+
+    assert failures == []
+    assert results[0].night["ODI3_per_sleep_hour"] == pytest.approx(120.0)
 
 
 def test_event_related_hypoxic_burden_uses_pred_event_fields(tmp_path: Path):
@@ -1082,8 +1206,9 @@ def test_event_related_hypoxic_burden_uses_pred_event_fields(tmp_path: Path):
     )
 
     assert failures == []
-    assert "pred_event_hypoxic_burden_pctmin" in results[0].events.columns
-    assert results[0].night["pred_event_count"] == 1
+    assert "resp_event_hypoxic_burden_pctmin" in results[0].events.columns
+    assert results[0].night["resp_event_hypoxic_burden_event_count"] == 1
+    assert results[0].night["resp_event_hypoxic_burden_pctmin"] == pytest.approx(140 / 60)
     assert not any(column.startswith("clinical") for column in results[0].night)
 
 
@@ -1116,8 +1241,9 @@ def test_event_related_hypoxic_burden_deduplicates_multi_threshold_events(tmp_pa
 
     assert failures == []
     assert len(results[0].events) == 1
-    assert results[0].night["pred_event_count"] == 1
-    assert results[0].night["pred_event_hypoxic_burden_pctmin"] == pytest.approx(140 / 60)
+    assert "desaturation_area_burden_pctmin" in results[0].events.columns
+    assert results[0].night["desaturation_area_burden_event_count"] == 1
+    assert results[0].night["desaturation_area_burden_pctmin"] == pytest.approx(140 / 60)
 
 
 def test_event_related_hypoxic_burden_fails_when_source_result_is_missing(tmp_path: Path):
@@ -1158,9 +1284,9 @@ def test_event_related_hypoxic_burden_allows_real_empty_source_events(tmp_path: 
     )
 
     assert failures == []
-    assert results[0].night["pred_event_count"] == 0
-    assert results[0].night["pred_event_hypoxic_burden_pctmin"] == 0.0
-    assert results[0].night["pred_event_hypoxic_burden_pctmin_per_hour"] == 0.0
+    assert results[0].night["resp_event_hypoxic_burden_event_count"] == 0
+    assert results[0].night["resp_event_hypoxic_burden_pctmin"] == 0.0
+    assert results[0].night["resp_event_hypoxic_burden_pctmin_per_recording_hour"] == 0.0
 
 
 def test_load_records_resolves_index_dir_paths_and_manifest_metadata(tmp_path: Path):

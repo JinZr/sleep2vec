@@ -32,7 +32,7 @@ class StageSourceResolver:
         if stages is None:
             return None
         token_sec = self.records.get(record_id).token_sec if record_id in self.records else 30
-        sleep_epochs = int(np.sum(stages > 0))
+        sleep_epochs = int(np.sum(np.isin(stages, [1, 2, 3, 4])))
         return float(sleep_epochs * token_sec / 3600.0)
 
     def get_denominator_hours(self, record_id: str, source_name: str) -> dict[str, float] | None:
@@ -42,9 +42,25 @@ class StageSourceResolver:
         token_sec = self.records.get(record_id).token_sec if record_id in self.records else 30
         hours_per_epoch = token_sec / 3600.0
         return {
-            "sleep": float(np.sum(stages > 0) * hours_per_epoch),
+            "sleep": float(np.sum(np.isin(stages, [1, 2, 3, 4])) * hours_per_epoch),
             "rem": float(np.sum(stages == 4) * hours_per_epoch),
-            "nrem": float(np.sum((stages > 0) & (stages != 4)) * hours_per_epoch),
+            "nrem": float(np.sum(np.isin(stages, [1, 2, 3])) * hours_per_epoch),
+        }
+
+    def get_stage_minutes(self, record_id: str, source_name: str) -> dict[str, float] | None:
+        stages = self._stage_values(record_id, source_name)
+        if stages is None:
+            return None
+        token_sec = self.records.get(record_id).token_sec if record_id in self.records else 30
+        minutes_per_epoch = token_sec / 60.0
+        return {
+            "N1": float(np.sum(stages == 1) * minutes_per_epoch),
+            "N2": float(np.sum(stages == 2) * minutes_per_epoch),
+            "N3": float(np.sum(stages == 3) * minutes_per_epoch),
+            "REM": float(np.sum(stages == 4) * minutes_per_epoch),
+            "NREM": float(np.sum(np.isin(stages, [1, 2, 3])) * minutes_per_epoch),
+            "N2N3": float(np.sum(np.isin(stages, [2, 3])) * minutes_per_epoch),
+            "sleep": float(np.sum(np.isin(stages, [1, 2, 3, 4])) * minutes_per_epoch),
         }
 
     def stage_at_seconds(self, record_id: str, source_name: str, seconds: np.ndarray) -> np.ndarray | None:

@@ -9,6 +9,7 @@ from data.utils import load_npz
 from sleep2stat.analyzers.base import BaseAnalyzer
 from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
 from sleep2stat.core.context import Sleep2statContext
+from sleep2stat.core.stage_sources import StageSourceResolver
 from sleep2stat.io.records import SleepRecord
 from sleep2stat.registry import register_analyzer
 
@@ -47,6 +48,7 @@ class Spo2DesaturationAnalyzer(BaseAnalyzer):
         drops = self.config.drop_thresholds or [3.0, 4.0]
         min_duration = float(self.config.min_duration_sec if self.config.min_duration_sec is not None else 10.0)
         max_duration = self.config.max_duration_sec
+        resolver = StageSourceResolver(records, prior_results or [])
         for record in records:
             try:
                 signal, sfreq, valid = _spo2_signal(record, context, self.config)
@@ -65,7 +67,7 @@ class Spo2DesaturationAnalyzer(BaseAnalyzer):
                         self.config.name,
                         record.record_id,
                         events=events,
-                        night=_odi_stats(record, events, drops),
+                        night=_odi_stats(record, events, drops, valid, sfreq, resolver, self.config.stage_source),
                     )
                 )
             except Exception as exc:
@@ -112,10 +114,20 @@ class EventRelatedHypoxicBurdenAnalyzer(BaseAnalyzer):
                     )
                     continue
                 if source_events.empty:
-                    results.append(AnalyzerResult(self.config.name, record.record_id, night=_empty_burden(record)))
+                    results.append(
+                        AnalyzerResult(self.config.name, record.record_id, night=_empty_burden(record, event_source))
+                    )
                     continue
                 signal, sfreq, valid = _spo2_signal(record, context, self.config)
-                events, night = _event_related_burden(record, self.config.name, source_events, signal, sfreq, valid)
+                events, night = _event_related_burden(
+                    record,
+                    self.config.name,
+                    event_source,
+                    source_events,
+                    signal,
+                    sfreq,
+                    valid,
+                )
                 results.append(AnalyzerResult(self.config.name, record.record_id, events=events, night=night))
             except Exception as exc:
                 failures.append(_failure(record, self.config.name, exc))
@@ -139,6 +151,13 @@ def _spo2_signal(record: SleepRecord, context: Sleep2statContext, config) -> tup
         valid &= signal >= float(min_value)
     if max_value is not None:
         valid &= signal <= float(max_value)
+    max_change = artifact.get("max_abs_change_per_sec", artifact.get("max_drop_per_sec"))
+    if max_change is not None and signal.size > 1 and spec.sfreq > 0:
+        # Drop single-sample oximetry jumps from nadir/T90/event logic; interpolation is intentionally not applied.
+        jump = np.abs(np.diff(signal)) * float(spec.sfreq) > float(max_change)
+        jump_artifact = np.zeros(signal.size, dtype=bool)
+        jump_artifact[1:] |= jump
+        valid &= ~jump_artifact
     return signal, float(spec.sfreq), valid
 
 
@@ -151,6 +170,7 @@ def _spo2_summary(signal: np.ndarray, sfreq: float, valid: np.ndarray) -> dict[s
             "spo2_median": np.nan,
             "spo2_nadir": np.nan,
             "spo2_t90_min": 0.0,
+            "spo2_t90_ratio_recording": 0.0,
             "spo2_t90_pct_recording": 0.0,
             "spo2_t88_min": 0.0,
             "spo2_artifact_pct": artifact_pct,
@@ -163,7 +183,9 @@ def _spo2_summary(signal: np.ndarray, sfreq: float, valid: np.ndarray) -> dict[s
         "spo2_median": float(np.median(cleaned)),
         "spo2_nadir": float(np.min(cleaned)),
         "spo2_t90_min": t90_min,
-        "spo2_t90_pct_recording": float(t90_min / recording_min) if recording_min > 0 else np.nan,
+        # Ratio stays 0-1; pct is 0-100 for clinical table/report readability.
+        "spo2_t90_ratio_recording": float(t90_min / recording_min) if recording_min > 0 else np.nan,
+        "spo2_t90_pct_recording": float(t90_min / recording_min * 100.0) if recording_min > 0 else np.nan,
         "spo2_t88_min": t88_min,
         "spo2_artifact_pct": artifact_pct,
     }
@@ -228,6 +250,7 @@ def _desaturation_rows(
                         sfreq,
                         event_baseline,
                         nadir,
+                        signal,
                         min_duration_sec,
                     )
                 )
@@ -255,6 +278,7 @@ def _desaturation_rows(
                         sfreq,
                         event_baseline,
                         nadir,
+                        signal,
                         min_duration_sec,
                     )
                 )
@@ -271,6 +295,7 @@ def _desaturation_rows(
                 sfreq,
                 event_baseline,
                 nadir,
+                signal,
                 min_duration_sec,
             )
         )
@@ -288,11 +313,21 @@ def _close_desat(
     sfreq,
     baseline,
     nadir,
+    signal,
     min_duration_sec,
 ) -> list[dict[str, Any]]:
     duration = (end - start) / sfreq
     if duration < min_duration_sec:
         return []
+    segment = np.asarray(signal[start:end], dtype=float)
+    if segment.size:
+        drop_curve = np.maximum(float(baseline) - segment, 0.0)
+        area_pctsec = float(drop_curve.sum() / sfreq)
+        nadir_idx = int(np.nanargmin(segment))
+        time_to_nadir = float(nadir_idx / sfreq)
+    else:
+        area_pctsec = 0.0
+        time_to_nadir = np.nan
     return [
         {
             "record_id": record.record_id,
@@ -306,16 +341,34 @@ def _close_desat(
             "spo2_baseline": float(baseline),
             "spo2_nadir": float(nadir),
             "spo2_drop_pct": float(baseline - nadir),
+            "spo2_desat_area_pctsec": area_pctsec,
+            "spo2_desat_area_pctmin": float(area_pctsec / 60.0),
+            "spo2_time_to_nadir_sec": time_to_nadir,
+            "spo2_recovery_duration_sec": float(duration - time_to_nadir) if not np.isnan(time_to_nadir) else np.nan,
         }
     ]
 
 
-def _odi_stats(record: SleepRecord, events: pd.DataFrame, drops: list[float]) -> dict[str, float]:
-    hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
+def _odi_stats(
+    record: SleepRecord,
+    events: pd.DataFrame,
+    drops: list[float],
+    valid: np.ndarray,
+    sfreq: float,
+    resolver: StageSourceResolver,
+    stage_source: str | None,
+) -> dict[str, float]:
+    recording_hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
+    valid_spo2_hours = float(valid.sum() / sfreq / 3600.0) if sfreq > 0 else 0.0
+    stage_denominators = resolver.get_denominator_hours(record.record_id, stage_source) if stage_source else None
     output: dict[str, float] = {}
     for drop in drops:
         count = int(np.sum(events.get("drop_threshold_pct", pd.Series(dtype=float)) == float(drop)))
-        output[f"ODI{int(drop)}_recording"] = float(count / hours) if hours > 0 else np.nan
+        output[f"ODI{int(drop)}_per_recording_hour"] = _rate(count, recording_hours)
+        output[f"ODI{int(drop)}_recording"] = output[f"ODI{int(drop)}_per_recording_hour"]
+        output[f"ODI{int(drop)}_per_valid_spo2_hour"] = _rate(count, valid_spo2_hours)
+        if stage_denominators is not None:
+            output[f"ODI{int(drop)}_per_sleep_hour"] = _rate(count, stage_denominators["sleep"])
         output[f"spo2_desaturation_{int(drop)}pct_event_count"] = count
     return output
 
@@ -323,11 +376,13 @@ def _odi_stats(record: SleepRecord, events: pd.DataFrame, drops: list[float]) ->
 def _event_related_burden(
     record: SleepRecord,
     analyzer_name: str,
+    event_source: str,
     source_events: pd.DataFrame,
     signal: np.ndarray,
     sfreq: float,
     valid: np.ndarray,
 ) -> tuple[pd.DataFrame, dict[str, float]]:
+    burden_prefix = _burden_prefix(event_source)
     rows = []
     burdens = []
     drops = []
@@ -359,32 +414,44 @@ def _event_related_burden(
                 "onset_sec": onset,
                 "offset_sec": offset,
                 "duration_sec": max(0.0, offset - onset),
-                "pred_event_spo2_baseline": baseline,
-                "pred_event_spo2_drop": drop,
-                "pred_event_hypoxic_burden_pctmin": burden,
+                f"{burden_prefix}_spo2_baseline": baseline,
+                f"{burden_prefix}_spo2_drop": drop,
+                f"{burden_prefix}_pctmin": burden,
             }
         )
     hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
     total_burden = float(np.sum(burdens)) if burdens else 0.0
     night = {
-        "pred_event_count": int(len(rows)),
-        "pred_event_spo2_drop_mean": float(np.mean(drops)) if drops else np.nan,
-        "pred_event_spo2_drop_p95": float(np.percentile(drops, 95)) if drops else np.nan,
-        "pred_event_hypoxic_burden_pctmin": total_burden,
-        "pred_event_hypoxic_burden_pctmin_per_hour": float(total_burden / hours) if hours > 0 else np.nan,
+        f"{burden_prefix}_event_count": int(len(rows)),
+        f"{burden_prefix}_spo2_drop_mean": float(np.mean(drops)) if drops else np.nan,
+        f"{burden_prefix}_spo2_drop_p95": float(np.percentile(drops, 95)) if drops else np.nan,
+        f"{burden_prefix}_pctmin": total_burden,
+        f"{burden_prefix}_pctmin_per_recording_hour": _rate(total_burden, hours),
     }
     return pd.DataFrame(rows), night
 
 
-def _empty_burden(record: SleepRecord) -> dict[str, float]:
+def _empty_burden(record: SleepRecord, event_source: str = "") -> dict[str, float]:
     hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
+    burden_prefix = _burden_prefix(event_source)
     return {
-        "pred_event_count": 0,
-        "pred_event_spo2_drop_mean": np.nan,
-        "pred_event_spo2_drop_p95": np.nan,
-        "pred_event_hypoxic_burden_pctmin": 0.0,
-        "pred_event_hypoxic_burden_pctmin_per_hour": 0.0 if hours > 0 else np.nan,
+        f"{burden_prefix}_event_count": 0,
+        f"{burden_prefix}_spo2_drop_mean": np.nan,
+        f"{burden_prefix}_spo2_drop_p95": np.nan,
+        f"{burden_prefix}_pctmin": 0.0,
+        f"{burden_prefix}_pctmin_per_recording_hour": 0.0 if hours > 0 else np.nan,
     }
+
+
+def _burden_prefix(event_source: str) -> str:
+    if event_source == "spo2_desaturation":
+        # Desaturation-source area is not respiratory-event hypoxic burden, even though both use pct-min units.
+        return "desaturation_area_burden"
+    return "resp_event_hypoxic_burden"
+
+
+def _rate(numerator: float, denominator_hours: float) -> float:
+    return float(numerator / denominator_hours) if denominator_hours > 0 else np.nan
 
 
 def _events_by_record(results: list[AnalyzerResult], source: str) -> dict[str, pd.DataFrame]:

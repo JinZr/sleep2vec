@@ -201,7 +201,14 @@ class _YasaEventAnalyzer(_YasaBaseAnalyzer):
                     record=record,
                 )
                 events = _yasa_event_frame(record, self.config.name, self.event_type, frame)
-                night = _event_night_summary(record, self.config.name, events)
+                night = _event_night_summary(
+                    record,
+                    self.config.name,
+                    self.event_type,
+                    events,
+                    resolver,
+                    self.config.stage_source,
+                )
                 results.append(AnalyzerResult(self.config.name, record.record_id, events=events, night=night))
             except Exception as exc:
                 failures.append(
@@ -612,7 +619,14 @@ def _yasa_event_frame(record: SleepRecord, analyzer_name: str, event_type: str, 
     return pd.DataFrame(rows)
 
 
-def _event_night_summary(record: SleepRecord, analyzer_name: str, events: pd.DataFrame) -> dict[str, float]:
+def _event_night_summary(
+    record: SleepRecord,
+    analyzer_name: str,
+    event_type: str,
+    events: pd.DataFrame,
+    resolver: StageSourceResolver | None = None,
+    stage_source: str | None = None,
+) -> dict[str, float]:
     hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
     count = int(len(events))
     output = {
@@ -623,7 +637,76 @@ def _event_night_summary(record: SleepRecord, analyzer_name: str, events: pd.Dat
         output[f"{analyzer_name}_duration_mean_sec"] = float(
             pd.to_numeric(events["duration_sec"], errors="coerce").mean()
         )
+    if resolver is not None and stage_source:
+        stage_minutes = resolver.get_stage_minutes(record.record_id, stage_source)
+        if stage_minutes is not None:
+            # Mirrors YASA DetectionResults.summary(grp_stage=True): event count divided by minutes in that stage.
+            output.update(_stage_event_densities(analyzer_name, event_type, events, stage_minutes))
     return output
+
+
+def _stage_event_densities(
+    analyzer_name: str,
+    event_type: str,
+    events: pd.DataFrame,
+    stage_minutes: dict[str, float],
+) -> dict[str, float]:
+    output: dict[str, float] = {}
+    if event_type == "yasa_spindle":
+        output[f"{analyzer_name}_spindle_density_per_min_N2"] = _stage_density(
+            events,
+            analyzer_name,
+            "N2",
+            stage_minutes,
+        )
+        n2n3_count = _stage_event_count(events, analyzer_name, {"N2", "N3"})
+        output[f"{analyzer_name}_spindle_density_per_min_N2N3"] = _count_per_min(
+            n2n3_count,
+            stage_minutes.get("N2N3", 0.0),
+        )
+    elif event_type == "yasa_slowwave":
+        output[f"{analyzer_name}_slowwave_density_per_min_N3"] = _stage_density(
+            events,
+            analyzer_name,
+            "N3",
+            stage_minutes,
+        )
+        nrem_count = _stage_event_count(events, analyzer_name, {"N1", "N2", "N3"})
+        output[f"{analyzer_name}_slowwave_density_per_min_NREM"] = _count_per_min(
+            nrem_count,
+            stage_minutes.get("NREM", 0.0),
+        )
+    elif event_type == "yasa_rem":
+        output[f"{analyzer_name}_rapid_eye_movement_density_per_min_REM"] = _stage_density(
+            events,
+            analyzer_name,
+            "REM",
+            stage_minutes,
+        )
+    return output
+
+
+def _stage_density(
+    events: pd.DataFrame,
+    analyzer_name: str,
+    stage: str,
+    stage_minutes: dict[str, float],
+) -> float:
+    return _count_per_min(_stage_event_count(events, analyzer_name, {stage}), stage_minutes.get(stage, 0.0))
+
+
+def _stage_event_count(events: pd.DataFrame, analyzer_name: str, stages: set[str]) -> int:
+    stage_col = f"{analyzer_name}_stage"
+    if events.empty:
+        return 0
+    if stage_col not in events.columns:
+        return int(len(events))
+    labels = events[stage_col].map(lambda value: STAGE_ID_TO_LABEL.get(_stage_id(value), _slug(value)))
+    return int(labels.isin(stages).sum())
+
+
+def _count_per_min(count: int, minutes: float) -> float:
+    return float(count / minutes) if minutes > 0 else np.nan
 
 
 def _call_yasa_hrv_stage(yasa_module: Any, raw: Any, hypno: np.ndarray) -> pd.DataFrame:

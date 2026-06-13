@@ -667,14 +667,27 @@ def decode_ahi_logits(
             min_duration=min_event_duration_sec,
             merge_tolerance=merge_tolerance_sec,
         )
-        denominator_hours = valid_seconds / 3600.0 if valid_seconds > 0 else 0.0
-        pred_ahi = float(len(events) / denominator_hours) if denominator_hours > 0 else np.nan
+        model_hours = valid_seconds / 3600.0 if valid_seconds > 0 else 0.0
+        recording_hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
+        event_rate_model = _event_rate(len(events), model_hours)
+        event_rate_recording = _event_rate(len(events), recording_hours)
+        coverage_ratio = float(valid_seconds / record.duration_sec) if record.duration_sec > 0 else np.nan
+        truncated_by_max_tokens = bool(
+            record.max_tokens > 0
+            and int(lengths[idx]) >= int(record.max_tokens)
+            and valid_seconds < record.duration_sec
+        )
         warnings = []
+        # Model/recording-hour rates are QC outputs, not clinical AHI unless a sleep-stage denominator is available.
         night = {
-            f"{analyzer_name}_pred_ahi": pred_ahi,
-            f"{analyzer_name}_pred_ahi_recording_denominator": pred_ahi,
+            f"{analyzer_name}_pred_event_rate_per_model_hour": event_rate_model,
+            f"{analyzer_name}_pred_event_rate_per_recording_hour": event_rate_recording,
             f"{analyzer_name}_pred_event_count": int(len(events)),
-            f"{analyzer_name}_recording_denominator_hours": float(denominator_hours),
+            f"{analyzer_name}_model_denominator_hours": float(model_hours),
+            f"{analyzer_name}_recording_denominator_hours": float(recording_hours),
+            f"{analyzer_name}_covered_duration_sec": int(valid_seconds),
+            f"{analyzer_name}_coverage_ratio_recording": coverage_ratio,
+            f"{analyzer_name}_truncated_by_max_tokens": truncated_by_max_tokens,
             f"{analyzer_name}_threshold": float(threshold),
             f"{analyzer_name}_threshold_source": threshold_source,
             f"{analyzer_name}_min_event_duration_sec": int(min_event_duration_sec),
@@ -703,15 +716,22 @@ def decode_ahi_logits(
                     else None
                 )
                 stage_at_onset = np.asarray([], dtype=np.int64) if stage_at_onset is None else stage_at_onset
-                sleep_count = int(np.sum(stage_at_onset > 0))
+                sleep_count = int(np.sum(np.isin(stage_at_onset, [1, 2, 3, 4])))
                 rem_count = int(np.sum(stage_at_onset == 4))
-                nrem_count = int(np.sum((stage_at_onset > 0) & (stage_at_onset != 4)))
+                nrem_count = int(np.sum(np.isin(stage_at_onset, [1, 2, 3])))
+                if not events.empty:
+                    events = events.copy()
+                    events[f"{analyzer_name}_stage_at_onset"] = stage_at_onset
+                sleep_ahi = _event_rate(sleep_count, denominators["sleep"])
+                # REM/NREM denominators count events by onset stage; overlap-based assignment is out of scope here.
                 night[f"{analyzer_name}_sleep_denominator_hours"] = denominators["sleep"]
                 night[f"{analyzer_name}_rem_denominator_hours"] = denominators["rem"]
                 night[f"{analyzer_name}_nrem_denominator_hours"] = denominators["nrem"]
-                night[f"{analyzer_name}_pred_ahi_sleep_denominator"] = _event_rate(sleep_count, denominators["sleep"])
-                night[f"{analyzer_name}_pred_ahi_rem_denominator"] = _event_rate(rem_count, denominators["rem"])
-                night[f"{analyzer_name}_pred_ahi_nrem_denominator"] = _event_rate(nrem_count, denominators["nrem"])
+                night[f"{analyzer_name}_stage_assignment"] = "onset"
+                night[f"{analyzer_name}_pred_AHI_sleep_denominator"] = sleep_ahi
+                night[f"{analyzer_name}_pred_REM_AHI_onset_stage"] = _event_rate(rem_count, denominators["rem"])
+                night[f"{analyzer_name}_pred_NREM_AHI_onset_stage"] = _event_rate(nrem_count, denominators["nrem"])
+                night[f"{analyzer_name}_pred_ahi"] = sleep_ahi
         results.append(
             AnalyzerResult(
                 analyzer_name,

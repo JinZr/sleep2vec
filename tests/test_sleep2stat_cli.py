@@ -222,30 +222,30 @@ def test_cli_plot_cohort_creates_core_harmonization_and_auto_panels(tmp_path: Pa
             "record_id": records,
             "stage5_model_TST_min": [390, 410, 430, 360, 380, 400],
             "stage5_model_TIB_min": [480, 480, 480, 480, 480, 480],
-            "stage5_model_SE": [0.81, 0.85, 0.89, 0.75, 0.79, 0.83],
-            "stage5_model_WASO_min": [40, 34, 28, 65, 58, 49],
+            "stage5_model_SE_pct": [81, 85, 89, 75, 79, 83],
+            "stage5_model_WASO_SPT_min": [40, 34, 28, 65, 58, 49],
             "stage5_model_SOL_min": [18, 16, 12, 30, 26, 22],
             "stage5_model_REM_latency_min": [96, 88, 82, 130, 118, 110],
             "stage5_model_sleep_to_wake_transition_index": [4.2, 3.9, 3.4, 6.5, 5.8, 5.0],
             "stage5_model_SFI_yasa_like": [4.2, 3.9, 3.4, 6.5, 5.8, 5.0],
-            "stage5_model_stage_shift_index": [12.0, 11.1, 10.4, 15.2, 14.6, 13.2],
+            "stage5_model_stage_shift_rate_per_sleep_hour": [12.0, 11.1, 10.4, 15.2, 14.6, 13.2],
             "stage5_model_N1_ratio_TST": [0.08, 0.07, 0.06, 0.12, 0.11, 0.10],
             "stage5_model_N2_ratio_TST": [0.48, 0.50, 0.51, 0.46, 0.47, 0.48],
             "stage5_model_N3_ratio_TST": [0.20, 0.22, 0.23, 0.14, 0.15, 0.16],
             "stage5_model_REM_ratio_TST": [0.24, 0.21, 0.20, 0.28, 0.27, 0.26],
             "ahi_model_pred_ahi": [5.0, 9.0, 12.0, 22.0, 28.0, 34.0],
-            "ahi_model_pred_ahi_rem_denominator": [8.0, 12.0, 16.0, 35.0, 42.0, 50.0],
-            "ahi_model_pred_ahi_nrem_denominator": [4.0, 7.0, 10.0, 18.0, 24.0, 29.0],
-            "ODI3_recording": [6.0, 10.0, 11.0, 24.0, 31.0, 38.0],
-            "ODI4_recording": [3.0, 5.0, 7.0, 18.0, 22.0, 27.0],
-            "spo2_t90_pct_recording": [0.01, 0.02, 0.03, 0.10, 0.13, 0.16],
+            "ahi_model_pred_REM_AHI_onset_stage": [8.0, 12.0, 16.0, 35.0, 42.0, 50.0],
+            "ahi_model_pred_NREM_AHI_onset_stage": [4.0, 7.0, 10.0, 18.0, 24.0, 29.0],
+            "ODI3_per_recording_hour": [6.0, 10.0, 11.0, 24.0, 31.0, 38.0],
+            "ODI4_per_recording_hour": [3.0, 5.0, 7.0, 18.0, 22.0, 27.0],
+            "spo2_t90_pct_recording": [1, 2, 3, 10, 13, 16],
             "spo2_nadir": [90, 88, 87, 82, 80, 78],
-            "pred_event_hypoxic_burden_pctmin_per_hour": [0.2, 0.4, 0.6, 2.2, 3.0, 3.8],
+            "desaturation_area_burden_pctmin_per_recording_hour": [0.2, 0.4, 0.6, 2.2, 3.0, 3.8],
             "yasa_bandpower_N3_delta_mean": [0.38, 0.42, 0.44, 0.31, 0.33, 0.35],
             "yasa_bandpower_REM_alpha_mean": [0.09, 0.08, 0.08, 0.12, 0.13, 0.14],
             "yasa_bandpower_sigma_rel_mean": [0.17, 0.18, 0.19, 0.13, 0.14, 0.15],
-            "yasa_spindles_event_density_per_hour": [2.1, 2.4, 2.6, 1.4, 1.6, 1.8],
-            "yasa_slowwaves_event_density_per_hour": [5.0, 5.4, 5.8, 3.2, 3.5, 3.8],
+            "yasa_spindles_spindle_density_per_min_N2N3": [2.1, 2.4, 2.6, 1.4, 1.6, 1.8],
+            "yasa_slowwaves_slowwave_density_per_min_NREM": [5.0, 5.4, 5.8, 3.2, 3.5, 3.8],
             "yasa_hrv_stage_REM_RMSSD": [38, 41, 44, 31, 33, 35],
         }
     ).to_csv(run_dir / "tables" / "night_stats.csv", index=False)
@@ -309,21 +309,25 @@ def test_plot_cohort_stage_composition_adds_wake_when_tib_is_available(tmp_path:
     assert captured[1][1][0] == pytest.approx(0.075)
 
 
-def test_plot_cohort_resp_metric_selects_total_ahi_before_denominators():
+def test_plot_cohort_resp_metric_prefers_clinical_ahi_and_new_denominators():
     frame = pd.DataFrame(
         {
-            "ahi_model_pred_ahi_rem_denominator": [30.0],
-            "ahi_model_pred_ahi_nrem_denominator": [20.0],
+            "ahi_model_pred_event_rate_per_recording_hour": [40.0],
+            "ahi_model_pred_REM_AHI_onset_stage": [30.0],
+            "ahi_model_pred_NREM_AHI_onset_stage": [20.0],
             "ahi_model_pred_ahi": [12.0],
+            "ODI3_per_recording_hour": [10.0],
+            "ODI3_recording": [99.0],
         }
     )
 
     specs = _respiratory_metric_specs(frame)
 
-    assert specs[:3] == [
+    assert specs[:4] == [
         ("Pred AHI", "ahi_model_pred_ahi", 1.0),
-        ("Pred AHI REM", "ahi_model_pred_ahi_rem_denominator", 1.0),
-        ("Pred AHI NREM", "ahi_model_pred_ahi_nrem_denominator", 1.0),
+        ("Pred REM AHI", "ahi_model_pred_REM_AHI_onset_stage", 1.0),
+        ("Pred NREM AHI", "ahi_model_pred_NREM_AHI_onset_stage", 1.0),
+        ("ODI3", "ODI3_per_recording_hour", 1.0),
     ]
 
 
@@ -342,7 +346,7 @@ def test_cli_plot_cohort_skips_harmonization_for_single_center(tmp_path: Path):
             "stage5_model_N3_ratio_TST": [0.2, 0.22],
             "stage5_model_REM_ratio_TST": [0.2, 0.18],
             "stage5_model_TST_min": [400, 410],
-            "stage5_model_SE": [0.86, 0.88],
+            "stage5_model_SE_pct": [86, 88],
         }
     ).to_csv(run_dir / "tables" / "night_stats.csv", index=False)
 

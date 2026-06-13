@@ -171,32 +171,46 @@ def _stage_ratio_column(frame: pd.DataFrame, prefix: str, stage: str) -> str | N
 
 def _sleep_metric_specs(frame: pd.DataFrame, prefix: str) -> list[tuple[str, str, float]]:
     candidates = [
-        ("TST hours", f"{prefix}_TST_min", 1.0 / 60.0),
-        ("Sleep efficiency", f"{prefix}_SE", 1.0),
-        ("WASO min", f"{prefix}_WASO_min", 1.0),
-        ("SOL min", f"{prefix}_SOL_min", 1.0),
-        ("REM latency min", f"{prefix}_REM_latency_min", 1.0),
-        ("Sleep-to-wake index", f"{prefix}_sleep_to_wake_transition_index", 1.0),
-        ("SFI yasa-like", f"{prefix}_SFI_yasa_like", 1.0),
-        ("Stage shift index", f"{prefix}_stage_shift_index", 1.0),
+        ("TST hours", [f"{prefix}_TST_min"], 1.0 / 60.0),
+        ("Sleep efficiency %", [f"{prefix}_SE_pct", f"{prefix}_SE"], 1.0),
+        ("WASO SPT min", [f"{prefix}_WASO_SPT_min", f"{prefix}_WASO_min"], 1.0),
+        ("SOL min", [f"{prefix}_SOL_min"], 1.0),
+        ("REM latency min", [f"{prefix}_REM_latency_min"], 1.0),
+        ("Sleep-to-wake index", [f"{prefix}_sleep_to_wake_transition_index"], 1.0),
+        ("SFI yasa-like", [f"{prefix}_SFI_yasa_like"], 1.0),
+        ("Stage shift / sleep hr", [f"{prefix}_stage_shift_rate_per_sleep_hour", f"{prefix}_stage_shift_index"], 1.0),
     ]
-    return [(label, column, scale) for label, column, scale in candidates if column in frame.columns]
+    selected = []
+    for label, columns, scale in candidates:
+        column = next((item for item in columns if item in frame.columns), None)
+        if column is not None:
+            selected.append((label, column, scale))
+    return selected
 
 
 def _respiratory_metric_specs(frame: pd.DataFrame) -> list[tuple[str, str, float]]:
     suffixes = [
         ("Pred AHI", "_pred_ahi", 1.0),
+        ("Pred REM AHI", "_pred_REM_AHI_onset_stage", 1.0),
+        ("Pred NREM AHI", "_pred_NREM_AHI_onset_stage", 1.0),
+        ("ODI3", "ODI3_per_recording_hour", 1.0),
+        ("ODI4", "ODI4_per_recording_hour", 1.0),
+        ("T90 % recording", "spo2_t90_pct_recording", 1.0),
+        ("SpO2 nadir", "spo2_nadir", 1.0),
+        ("Desaturation area/hr", "desaturation_area_burden_pctmin_per_recording_hour", 1.0),
+        ("Hypoxic burden/hr", "resp_event_hypoxic_burden_pctmin_per_recording_hour", 1.0),
         ("Pred AHI REM", "_pred_ahi_rem_denominator", 1.0),
         ("Pred AHI NREM", "_pred_ahi_nrem_denominator", 1.0),
         ("ODI3", "ODI3_recording", 1.0),
         ("ODI4", "ODI4_recording", 1.0),
-        ("T90 ratio", "spo2_t90_pct_recording", 1.0),
-        ("SpO2 nadir", "spo2_nadir", 1.0),
         ("Hypoxic burden/hr", "pred_event_hypoxic_burden_pctmin_per_hour", 1.0),
     ]
     selected = []
     used: set[str] = set()
+    used_labels: set[str] = set()
     for label, suffix, scale in suffixes:
+        if label in used_labels:
+            continue
         matches = [
             column
             for column in frame.columns
@@ -206,6 +220,7 @@ def _respiratory_metric_specs(frame: pd.DataFrame) -> list[tuple[str, str, float
             column = matches[0]
             selected.append((label, column, scale))
             used.add(column)
+            used_labels.add(label)
     return selected
 
 
@@ -215,6 +230,9 @@ def _microstructure_metric_specs(frame: pd.DataFrame) -> list[tuple[str, str, fl
         ("REM alpha", "_REM_alpha_mean", 1.0),
         ("Sigma", "_sigma_rel_mean", 1.0),
         ("Delta", "_delta_rel_mean", 1.0),
+        ("Spindle density", "spindle_density_per_min_N2N3", 1.0),
+        ("Slow-wave density", "slowwave_density_per_min_NREM", 1.0),
+        ("REM density", "rapid_eye_movement_density_per_min_REM", 1.0),
         ("Spindle density", "spindles_event_density_per_hour", 1.0),
         ("Slow-wave density", "slowwaves_event_density_per_hour", 1.0),
         ("HRV", "hrv", 1.0),

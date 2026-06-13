@@ -39,26 +39,45 @@ class HypnogramStatsReducer(BaseReducer):
 
 
 def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]:
-    values = np.asarray(stages)
-    valid = values >= 0
-    values = values[valid].astype(np.int64)
+    raw_values = np.asarray(stages)
+    # Clinically, TIB follows the full hypnogram/recording span; scored_TIB keeps the valid-stage denominator explicit.
+    scored = np.isin(raw_values, [0, 1, 2, 3, 4])
+    values = raw_values[scored].astype(np.int64)
     epoch_min = token_sec / 60.0
+    recording_min = float(raw_values.size * epoch_min)
+    unscored_count = int(raw_values.size - values.size)
+    valid_stage_ratio = float(values.size / raw_values.size) if raw_values.size else np.nan
     if values.size == 0:
-        return {f"{prefix}_TIB_min": 0.0, f"{prefix}_TST_min": 0.0, f"{prefix}_SE": np.nan}
+        return {
+            f"{prefix}_recording_duration_min": recording_min,
+            f"{prefix}_scored_TIB_min": 0.0,
+            f"{prefix}_TIB_min": recording_min,
+            f"{prefix}_TST_min": 0.0,
+            f"{prefix}_unscored_epoch_count": unscored_count,
+            f"{prefix}_valid_stage_epoch_ratio": valid_stage_ratio,
+            f"{prefix}_SE_ratio": np.nan,
+            f"{prefix}_SE_pct": np.nan,
+            f"{prefix}_SE": np.nan,
+        }
 
-    sleep = values != 0
-    tib_min = float(values.size * epoch_min)
+    sleep = np.isin(values, [1, 2, 3, 4])
+    scored_tib_min = float(values.size * epoch_min)
     tst_min = float(sleep.sum() * epoch_min)
     if sleep.any():
         first_sleep = int(np.argmax(sleep))
         last_sleep = int(len(sleep) - 1 - np.argmax(sleep[::-1]))
         sleep_period = values[first_sleep : last_sleep + 1]
-        waso_min = float((sleep_period == 0).sum() * epoch_min)
+        # YASA/AASM-style WASO is wake within SPT; terminal wake and onset-to-end wake are separate outputs.
+        waso_spt_min = float((sleep_period == 0).sum() * epoch_min)
+        terminal_wake_min = float((values[last_sleep + 1 :] == 0).sum() * epoch_min)
+        waso_to_end_min = float((values[first_sleep:] == 0).sum() * epoch_min)
         sol_min = float(first_sleep * epoch_min)
     else:
         first_sleep = None
         sleep_period = np.asarray([], dtype=np.int64)
-        waso_min = 0.0
+        waso_spt_min = 0.0
+        terminal_wake_min = 0.0
+        waso_to_end_min = 0.0
         sol_min = np.nan
 
     rem_positions = np.where(values == 4)[0]
@@ -66,13 +85,25 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
     if first_sleep is not None and rem_positions.size:
         rem_latency_min = float(max(0, int(rem_positions[0]) - first_sleep) * epoch_min)
 
+    # Keep SE_ratio as 0-1 for modeling tables; SE_pct is the report-facing clinical percentage.
+    se_ratio = float(tst_min / recording_min) if recording_min > 0 else np.nan
     stats = {
-        f"{prefix}_TIB_min": tib_min,
+        f"{prefix}_recording_duration_min": recording_min,
+        f"{prefix}_scored_TIB_min": scored_tib_min,
+        f"{prefix}_TIB_min": recording_min,
         f"{prefix}_TST_min": tst_min,
-        f"{prefix}_WASO_min": waso_min,
-        f"{prefix}_SE": float(tst_min / tib_min) if tib_min > 0 else np.nan,
+        f"{prefix}_unscored_epoch_count": unscored_count,
+        f"{prefix}_valid_stage_epoch_ratio": valid_stage_ratio,
+        f"{prefix}_WASO_SPT_min": waso_spt_min,
+        f"{prefix}_WASO_min": waso_spt_min,
+        f"{prefix}_terminal_wake_after_last_sleep_min": terminal_wake_min,
+        f"{prefix}_WASO_after_sleep_onset_to_recording_end_min": waso_to_end_min,
+        f"{prefix}_SE_ratio": se_ratio,
+        f"{prefix}_SE_pct": se_ratio * 100.0 if not np.isnan(se_ratio) else np.nan,
+        f"{prefix}_SE": se_ratio,
         f"{prefix}_SOL_min": sol_min,
         f"{prefix}_REM_latency_min": rem_latency_min,
+        f"{prefix}_stage_shift_rate_per_sleep_hour": _stage_shift_index(sleep_period, tst_min),
         f"{prefix}_stage_shift_index": _stage_shift_index(sleep_period, tst_min),
         f"{prefix}_sleep_to_wake_transition_index": _sleep_to_wake_transition_index(sleep_period, tst_min),
         f"{prefix}_SFI_yasa_like": _sleep_to_wake_transition_index(sleep_period, tst_min),
@@ -84,6 +115,7 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
         stats[f"{prefix}_{label}_min"] = minutes
         stats[f"{prefix}_pct_{label}"] = float(minutes / tst_min) if tst_min > 0 else np.nan
         stats[f"{prefix}_{label}_ratio_TST"] = float(minutes / tst_min) if tst_min > 0 else np.nan
+        stats[f"{prefix}_{label}_pct_TST"] = float(minutes / tst_min * 100.0) if tst_min > 0 else np.nan
     return stats
 
 
@@ -102,13 +134,13 @@ def _sleep_to_wake_transition_index(sleep_period: np.ndarray, tst_min: float) ->
 
 
 def _sleep_bout_count(values: np.ndarray) -> int:
-    sleep = values != 0
+    sleep = np.isin(values, [1, 2, 3, 4])
     starts = sleep & np.concatenate(([True], ~sleep[:-1]))
     return int(starts.sum())
 
 
 def _mean_sleep_bout_min(values: np.ndarray, epoch_min: float) -> float:
-    sleep = values != 0
+    sleep = np.isin(values, [1, 2, 3, 4])
     lengths = []
     start = None
     for idx, is_sleep in enumerate(sleep.tolist() + [False]):

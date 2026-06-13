@@ -1,0 +1,38 @@
+{
+  "branch": "dev/fine-grained-analysis",
+  "baseline_commit": "835cf7fcdf6de6646997cb8ea271f6edd55531ea",
+  "last_refresh_at": "2026-06-13T16:22:35Z",
+  "mode": "initialize-branch",
+  "baseline_index": "doc/codex_index/branches/main",
+  "coverage": {
+    "detailed": [
+      "sleep2stat/",
+      "configs/sleep2stat/",
+      "tests/test_sleep2stat_analyzers.py",
+      "tests/test_sleep2stat_reducers.py",
+      "tests/test_sleep2stat_cli.py"
+    ],
+    "baseline_from_main": [
+      "sleep2vec/",
+      "sleep2vec2/",
+      "sleep2expert/",
+      "data/",
+      "preprocess/",
+      "configs/",
+      "tests/",
+      "utils/",
+      "agent_tools/"
+    ]
+  },
+  "files": [
+    "README.md",
+    "MANIFEST.json",
+    "SYSTEM_OVERVIEW.md",
+    "MODULE_MAP.md",
+    "REUSE_GUIDE.md",
+    "CHANGELOG.md",
+    "DELTA_FROM_MAIN.md",
+    "FUNCTIONS/SLEEP2STAT.md",
+    "WORKFLOWS/SLEEP2STAT.md"
+  ]
+}
