@@ -52,9 +52,18 @@ class AnalysisBundleWriter:
             yaml.safe_dump(_to_yamlable(args), f, sort_keys=True)
 
     def write_record_manifest(self, records: list[SleepRecord]) -> None:
-        records_to_frame(records, metadata_columns=self.config.data.metadata_columns).to_csv(
-            self.run_dir / "record_manifest.csv", index=False
-        )
+        path = self.run_dir / "record_manifest.csv"
+        frame = records_to_frame(records, metadata_columns=self.config.data.metadata_columns)
+        if path.exists():
+            try:
+                existing = pd.read_csv(path)
+                incoming_ids = set(frame.get("record_id", pd.Series(dtype=object)).astype(str))
+                if incoming_ids and "record_id" in existing.columns:
+                    existing = existing[~existing["record_id"].astype(str).isin(incoming_ids)]
+                frame = pd.concat([existing, frame], ignore_index=True, sort=False)
+            except pd.errors.EmptyDataError:
+                pass
+        frame.to_csv(path, index=False)
 
     def write_progress(self, *, total_records: int, completed_records: int, status: str) -> None:
         payload = {
@@ -69,6 +78,7 @@ class AnalysisBundleWriter:
     def write_failures(self, failures: Iterable[FailureRecord]) -> None:
         rows = [asdict(failure) for failure in failures]
         frame = pd.DataFrame(rows, columns=["record_id", "analyzer", "error_type", "message"])
+        has_current_global_failure = frame["record_id"].astype(str).eq("__all__").any()
         existing_path = self.status_dir / "failures.csv"
         if existing_path.exists():
             try:
@@ -76,7 +86,7 @@ class AnalysisBundleWriter:
                 frame = pd.concat([existing, frame], ignore_index=True, sort=False).drop_duplicates()
             except pd.errors.EmptyDataError:
                 pass
-        frame = self._drop_completed_record_failures(frame)
+        frame = self._drop_completed_record_failures(frame, keep_global_failures=has_current_global_failure)
         frame.to_csv(self.status_dir / "failures.csv", index=False)
 
     def write_run_manifest(
@@ -307,21 +317,32 @@ class AnalysisBundleWriter:
                 f"existing={existing}, current={current}."
             )
 
-    def _drop_completed_record_failures(self, frame: pd.DataFrame) -> pd.DataFrame:
+    def _drop_completed_record_failures(
+        self, frame: pd.DataFrame, *, keep_global_failures: bool = False
+    ) -> pd.DataFrame:
         if frame.empty or "record_id" not in frame.columns:
             return frame
         completed = (
             frame["record_id"]
             .astype(str)
             .map(
-                lambda record_id: record_id != "__all__"
-                and (self.per_record_dir / record_id / COMPLETION_MARKER).exists()
+                lambda record_id: self._failure_record_id_is_completed(
+                    record_id, keep_global_failures=keep_global_failures
+                )
             )
         )
         return frame[~completed].reset_index(drop=True)
 
-    def _failure_record_is_completed(self, failure: FailureRecord) -> bool:
-        return failure.record_id != "__all__" and (self.per_record_dir / failure.record_id / COMPLETION_MARKER).exists()
+    def _failure_record_is_completed(self, failure: FailureRecord, *, keep_global_failures: bool = False) -> bool:
+        return self._failure_record_id_is_completed(failure.record_id, keep_global_failures=keep_global_failures)
+
+    def _failure_record_id_is_completed(self, record_id: str, *, keep_global_failures: bool = False) -> bool:
+        record_id = str(record_id)
+        if record_id == "__all__":
+            if keep_global_failures:
+                return False
+            return self.per_record_dir.exists() and any(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}"))
+        return (self.per_record_dir / record_id / COMPLETION_MARKER).exists()
 
     def _collect_night_stats(self, records: list[SleepRecord]) -> pd.DataFrame:
         rows = []
@@ -349,8 +370,9 @@ class AnalysisBundleWriter:
                     continue
         manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
         failure_counts: dict[str, int] = {}
+        keep_global_failures = any(str(failure.record_id) == "__all__" for failure in failures)
         for failure in _merge_failures(_read_failures(self.status_dir / "failures.csv"), failures):
-            if self._failure_record_is_completed(failure):
+            if self._failure_record_is_completed(failure, keep_global_failures=keep_global_failures):
                 continue
             failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
 

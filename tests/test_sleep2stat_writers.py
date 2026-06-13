@@ -45,16 +45,16 @@ def _config(tmp_path: Path) -> Sleep2statConfig:
     )
 
 
-def _record() -> SleepRecord:
+def _record(record_id: str = "rec1", *, source: str = "unit", metadata: dict | None = None) -> SleepRecord:
     return SleepRecord(
-        record_id="rec1",
-        path=Path("rec1.npz"),
+        record_id=record_id,
+        path=Path(f"{record_id}.npz"),
         split="test",
-        source="unit",
+        source=source,
         duration_sec=60,
         token_sec=30,
         max_tokens=2,
-        metadata={},
+        metadata=metadata or {},
     )
 
 
@@ -261,6 +261,52 @@ def test_writer_drops_resolved_failures_after_successful_resume(tmp_path: Path):
     summary = pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")
     assert failures.empty
     assert summary.loc[summary["name"] == "stage5_model", "failure_count"].item() == 0
+
+
+def test_writer_preserves_record_manifest_rows_across_subset_resume(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+
+    writer.write_record_manifest([_record("rec1", source="site_a"), _record("rec2", source="site_b")])
+    writer.write_record_manifest([_record("rec2", source="site_c")])
+
+    manifest = pd.read_csv(config.run.output_dir / "record_manifest.csv")
+    by_record = manifest.set_index("record_id")
+    assert set(by_record.index) == {"rec1", "rec2"}
+    assert by_record.loc["rec1", "source"] == "site_a"
+    assert by_record.loc["rec2", "source"] == "site_c"
+
+
+def test_writer_drops_resolved_global_failure_after_successful_resume(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+    record = _record()
+
+    writer.write_failures([FailureRecord("__all__", "stage5_model", "FileNotFoundError", "missing")])
+    writer.write_results([record], [AnalyzerResult("stage5_model", "rec1", night={"stage5_model_TST_min": 1.0})])
+    writer.write_failures([])
+    writer.rebuild_global_tables([record], [])
+
+    failures = pd.read_csv(config.run.output_dir / "status" / "failures.csv")
+    summary = pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")
+    assert failures.empty
+    assert summary.loc[summary["name"] == "stage5_model", "failure_count"].item() == 0
+
+
+def test_writer_keeps_unresolved_global_failure(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+
+    writer.write_failures([FailureRecord("__all__", "stage5_model", "FileNotFoundError", "missing")])
+    writer.rebuild_global_tables([], [])
+
+    failures = pd.read_csv(config.run.output_dir / "status" / "failures.csv")
+    summary = pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")
+    assert failures["record_id"].tolist() == ["__all__"]
+    assert summary.loc[summary["name"] == "stage5_model", "failure_count"].item() == 1
 
 
 def test_writer_keeps_failed_record_out_of_global_alignment(tmp_path: Path):

@@ -392,9 +392,7 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
             and bool(outputs.get("by_stage", True))
             and not outputs.get("stage_source")
         ):
-            raise ValueError(
-                f"Analyzer {name!r} requires outputs.stage_source when outputs.by_stage=true."
-            )
+            raise ValueError(f"Analyzer {name!r} requires outputs.stage_source when outputs.by_stage=true.")
         analyzers.append(
             AnalyzerConfig(
                 name=name,
