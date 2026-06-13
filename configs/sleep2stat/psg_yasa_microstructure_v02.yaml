@@ -28,14 +28,22 @@ signals:
       unit: uV
       scale: 0.000001
       mne_name: EEG
-    eog:
-      source: eog
+    eog_loc:
+      source: eog_loc
       sfreq: 100
       kind: eog
       input_dim: 3000
       unit: uV
       scale: 0.000001
-      mne_name: EOG
+      mne_name: LOC
+    eog_roc:
+      source: eog_roc
+      sfreq: 100
+      kind: eog
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: ROC
     emg:
       source: emg
       sfreq: 100
@@ -56,7 +64,7 @@ signals:
 analyzers:
   - name: yasa_stage
     type: yasa_stage
-    input_channels: [eeg, eog, emg]
+    input_channels: [eeg, eog_loc, emg]
   - name: yasa_bandpower
     type: yasa_bandpower
     input_channels: [eeg]
@@ -79,7 +87,7 @@ analyzers:
     stages: [N3]
   - name: yasa_rem
     type: yasa_rem
-    input_channels: [eog, emg]
+    input_channels: [eog_loc, eog_roc]
     stage_source: yasa_stage
     stages: [REM]
   - name: yasa_hrv_stage

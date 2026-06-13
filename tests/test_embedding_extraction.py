@@ -353,7 +353,10 @@ def test_kaldi_export_writes_scp_and_matrix(tmp_path: Path):
     )
 
     manifest = json.loads(manifest_path.read_text())
+    assert "format_version" not in manifest
     assert manifest["output_format"] == "kaldi"
+    assert manifest["splits"]["test"]["channels"]["ppg"]["input_dim"] == 2
+    assert "hidden_size" not in manifest["splits"]["test"]["channels"]["ppg"]
 
     scp_path = tmp_path / "kaldi" / "channels" / "test" / "ppg.scp"
     assert scp_path.exists()

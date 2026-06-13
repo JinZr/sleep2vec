@@ -380,6 +380,11 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
             eeg_channels = [channel for channel in input_channels if signals.channels[channel].kind.lower() == "eeg"]
             if not eeg_channels:
                 raise ValueError(f"Analyzer {name!r} requires at least one EEG input channel.")
+        if analyzer_type == "yasa_rem":
+            # YASA REM detection requires LOC/ROC EOG; do not accept single-EOG or EMG substitutes.
+            kinds = [signals.channels[channel].kind.lower() for channel in input_channels]
+            if len(input_channels) != 2 or any(kind != "eog" for kind in kinds):
+                raise ValueError(f"Analyzer {name!r} requires exactly two EOG input channels.")
         spo2_source = None if item.get("spo2_source") is None else str(item["spo2_source"])
         if analyzer_type.startswith("spo2_") or analyzer_type == "event_related_hypoxic_burden":
             if not input_channels and not spo2_source:

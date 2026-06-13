@@ -117,8 +117,6 @@ class KaldiPSGDataset(DefaultDataset):
         if not self.manifest.exists():
             raise FileNotFoundError(f"Kaldi manifest.json not found: {self.manifest}")
         manifest_data = json.loads(self.manifest.read_text())
-        if manifest_data.get("format_version") != 2:
-            raise ValueError("Kaldi manifest.json must use format_version 2.")
         return manifest_data
 
     def _load_channel_specs(
@@ -141,7 +139,12 @@ class KaldiPSGDataset(DefaultDataset):
             raw_spec = raw_channels[channel]
             if not isinstance(raw_spec, dict):
                 raise ValueError(f"Kaldi manifest channel spec for {channel!r} must be a mapping.")
-            input_dim = int(raw_spec["input_dim"])
+            if "input_dim" in raw_spec:
+                input_dim = int(raw_spec["input_dim"])
+            elif "hidden_size" in raw_spec:
+                input_dim = int(raw_spec["hidden_size"])
+            else:
+                raise ValueError(f"Kaldi manifest channel spec for {channel!r} must contain input_dim or hidden_size.")
             if channel in provided_dims and provided_dims[channel] != input_dim:
                 raise ValueError(
                     f"channel_input_dims[{channel!r}]={provided_dims[channel]} does not match "

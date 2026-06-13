@@ -77,8 +77,10 @@ class YasaStageAnalyzer(_YasaBaseAnalyzer):
                     emg_name=_first_kind_channel(self.config.input_channels, context, mne_names, "emg"),
                     metadata=_yasa_metadata(record),
                 )
-                labels = np.asarray(stager.predict()).reshape(-1)
-                probabilities = _predict_proba(stager)
+                # YASA v0.7 returns a Hypnogram object; stages and probabilities live on that object.
+                hypnogram = stager.predict()
+                labels = hypnogram.as_int().to_numpy()
+                probabilities = None if hypnogram.proba is None else pd.DataFrame(hypnogram.proba)
                 n_tokens = min(labels.shape[0], int(record.duration_sec // record.token_sec), record.max_tokens)
                 frame = _epoch_base_frame(record, n_tokens)
                 stage_ids = np.asarray([_stage_id(label) for label in labels[:n_tokens]], dtype=np.int64)
@@ -334,16 +336,6 @@ def _finite_float(value: Any) -> float | None:
     return numeric if math.isfinite(numeric) else None
 
 
-def _predict_proba(stager: Any) -> pd.DataFrame | None:
-    predict_proba = getattr(stager, "predict_proba", None)
-    if predict_proba is None:
-        return None
-    proba = predict_proba()
-    if proba is None:
-        return None
-    return pd.DataFrame(proba)
-
-
 def _stage_id(label: Any) -> int:
     if isinstance(label, str):
         return STAGE_LABEL_TO_ID.get(label.strip().upper(), -1)
@@ -420,7 +412,7 @@ def _epoch_bandpower(
     bands: list[tuple[float, float, str]],
     relative: bool,
 ) -> pd.DataFrame:
-    data, sfreq, ch_names = _raw_data(raw)
+    data, sfreq, ch_names = _raw_data(raw, units="uV")
     samples_per_epoch = int(round(float(sfreq) * record.token_sec))
     n_tokens = min(int(record.duration_sec // record.token_sec), record.max_tokens)
     n_tokens = min(n_tokens, data.shape[1] // samples_per_epoch if samples_per_epoch > 0 else 0)
@@ -440,8 +432,15 @@ def _epoch_bandpower(
     return frame
 
 
-def _raw_data(raw: Any) -> tuple[np.ndarray, float, list[str]]:
-    data = raw.get_data() if hasattr(raw, "get_data") else raw.data
+def _raw_data(raw: Any, *, units: str | None = None) -> tuple[np.ndarray, float, list[str]]:
+    if hasattr(raw, "get_data"):
+        if units == "uV":
+            # MNE Raw stores Volts internally, while YASA array APIs expect microvolts.
+            data = raw.get_data(units={"eeg": "uV", "eog": "uV", "emg": "uV", "ecg": "uV"})
+        else:
+            data = raw.get_data()
+    else:
+        data = raw.data
     info = raw.info
     sfreq = float(info["sfreq"] if isinstance(info, dict) else info["sfreq"])
     ch_names = None
@@ -552,14 +551,21 @@ def _call_yasa_event_detector(
         allowed = {_stage_id(stage) for stage in stages}
         keep = (stage >= 0) & np.isin(stage, list(allowed))
         hypno = np.where(keep, stage, 0).astype(np.int64)
-    try:
-        result = detector(raw, hypno=hypno) if hypno is not None else detector(raw)
-    except TypeError:
-        data, sfreq, ch_names = _raw_data(raw)
-        kwargs = {"sf": sfreq, "ch_names": ch_names}
-        if hypno is not None:
-            kwargs["hypno"] = hypno
-        result = detector(data, **kwargs)
+    if detector_name == "rem_detect":
+        # YASA rem_detect is defined on paired LOC/ROC EOG arrays, not on Raw plus channel names.
+        data, sfreq, _ = _raw_data(raw, units="uV")
+        if data.shape[0] != 2:
+            raise ValueError("yasa_rem requires exactly two EOG input channels.")
+        result = detector(data[0], data[1], sfreq, hypno=hypno)
+    else:
+        try:
+            result = detector(raw, hypno=hypno) if hypno is not None else detector(raw)
+        except TypeError:
+            data, sfreq, ch_names = _raw_data(raw, units="uV")
+            kwargs = {"sf": sfreq, "ch_names": ch_names}
+            if hypno is not None:
+                kwargs["hypno"] = hypno
+            result = detector(data, **kwargs)
     summary = getattr(result, "summary", None)
     if callable(summary):
         result = summary()
@@ -631,14 +637,26 @@ def _call_yasa_hrv_stage(yasa_module: Any, raw: Any, hypno: np.ndarray) -> pd.Da
 
 def _flatten_hrv(analyzer_name: str, frame: pd.DataFrame) -> dict[str, float]:
     output = {}
-    for row_idx, row in frame.reset_index(drop=True).iterrows():
-        stage = _slug(row.get("Stage", row.get("stage", row_idx)))
-        for column, value in row.items():
-            if str(column).lower() == "stage":
-                continue
-            numeric = _finite_float(value)
-            if numeric is not None:
-                output[f"{analyzer_name}_{stage}_{_slug(column)}"] = numeric
+    if frame.empty:
+        return output
+    data = frame.reset_index()
+    stage_col = None
+    for candidate in ("Stage", "stage", "values"):
+        if candidate in data.columns:
+            stage_col = candidate
+            break
+    if stage_col is None:
+        return output
+    # YASA hrv_stage returns per-epoch rows, often indexed by integer stage values.
+    ignored = {"stage", "values", "epoch", "start", "duration", "index"}
+    metric_columns = [column for column in data.columns if str(column).lower() not in ignored]
+    for stage_value, group in data.groupby(stage_col):
+        stage_id = _stage_id(stage_value)
+        stage = STAGE_ID_TO_LABEL.get(stage_id, _slug(stage_value))
+        for column in metric_columns:
+            values = pd.to_numeric(group[column], errors="coerce")
+            if values.notna().any():
+                output[f"{analyzer_name}_{stage}_{_slug(column)}"] = float(values.mean())
     return output
 
 

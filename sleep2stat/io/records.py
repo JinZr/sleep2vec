@@ -100,8 +100,6 @@ def _load_kaldi_records(
     if not manifest_path.is_absolute():
         manifest_path = root / manifest_path
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("format_version") != 2:
-        raise ValueError("Kaldi manifest.json must use format_version 2.")
     raw_splits = manifest.get("splits")
     if not isinstance(raw_splits, dict):
         raise ValueError("Kaldi manifest.json must contain a splits mapping.")

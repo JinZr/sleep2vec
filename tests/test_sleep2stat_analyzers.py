@@ -18,6 +18,7 @@ from sleep2stat.analyzers.spo2 import EventRelatedHypoxicBurdenAnalyzer, Spo2Des
 from sleep2stat.analyzers.yasa import (
     YasaBandpowerAnalyzer,
     YasaHrvStageAnalyzer,
+    YasaRemAnalyzer,
     YasaSpindlesAnalyzer,
     YasaStageAnalyzer,
 )
@@ -626,10 +627,7 @@ def test_yasa_stage_analyzer_with_mock_sleep_staging(monkeypatch, tmp_path: Path
             assert metadata == {"age": 60.0, "male": True}
 
         def predict(self):
-            return np.array(["W", "N2"])
-
-        def predict_proba(self):
-            return pd.DataFrame({"W": [0.9, 0.1], "N2": [0.1, 0.9]})
+            return _FakeHypnogram(["W", "N2"], {"W": [0.9, 0.1], "N2": [0.1, 0.9]})
 
     monkeypatch.setattr(
         "sleep2stat.analyzers.yasa.importlib.import_module",
@@ -658,10 +656,7 @@ def test_yasa_stage_probability_arrays_follow_output_flag(monkeypatch, tmp_path:
             return None
 
         def predict(self):
-            return np.array(["W", "N2"])
-
-        def predict_proba(self):
-            return pd.DataFrame({"W": [0.9, 0.1], "N2": [0.1, 0.9]})
+            return _FakeHypnogram(["W", "N2"], {"W": [0.9, 0.1], "N2": [0.1, 0.9]})
 
     monkeypatch.setattr(
         "sleep2stat.analyzers.yasa.importlib.import_module",
@@ -688,10 +683,7 @@ def test_yasa_stage_drops_non_binary_numeric_sex_metadata(monkeypatch, tmp_path:
             captured["metadata"] = metadata
 
         def predict(self):
-            return np.array(["W", "N2"])
-
-        def predict_proba(self):
-            return None
+            return _FakeHypnogram(["W", "N2"])
 
     monkeypatch.setattr(
         "sleep2stat.analyzers.yasa.importlib.import_module",
@@ -738,6 +730,47 @@ def test_yasa_bandpower_analyzer_with_mock_bandpower(monkeypatch, tmp_path: Path
     assert results[0].epoch["yasa_bandpower_delta_rel"].tolist() == [0.4, 0.4]
     assert results[0].night["yasa_bandpower_delta_rel_mean"] == 0.4
     assert results[0].night["yasa_bandpower_alpha_rel_mean"] == 0.2
+
+
+def test_yasa_bandpower_array_api_receives_uv(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, eeg=np.ones(6000, dtype=np.float32))
+    captured = {}
+
+    def fake_bandpower(data, sf=None, ch_names=None, bands=None, relative=True):
+        captured["mean"] = float(np.mean(data))
+        captured["relative"] = relative
+        return pd.DataFrame({"Chan": ["EEG"], "Delta": [captured["mean"]]})
+
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(bandpower=fake_bandpower),
+    )
+    analyzer = YasaBandpowerAnalyzer(
+        AnalyzerConfig(
+            name="yasa_bandpower",
+            type="yasa_bandpower",
+            input_channels=["eeg"],
+            outputs={"by_stage": False, "bands": ["delta"], "relative": False},
+        )
+    )
+    context = _yasa_context(tmp_path)
+    context.config.signals.channels["eeg"] = ChannelSpec(
+        source="eeg",
+        sfreq=100,
+        kind="eeg",
+        input_dim=3000,
+        scale=0.000001,
+        mne_name="EEG",
+    )
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run([_yasa_record(npz_path)], context)
+
+    assert failures == []
+    assert captured["mean"] == pytest.approx(1.0)
+    assert captured["relative"] is False
+    assert results[0].epoch["yasa_bandpower_delta_abs"].tolist() == [1.0, 1.0]
 
 
 def test_yasa_bandpower_by_stage_uses_prior_stage_source(monkeypatch, tmp_path: Path):
@@ -859,6 +892,73 @@ def test_yasa_spindles_stage_filter_uses_sample_level_hypno(monkeypatch, tmp_pat
     assert np.all(captured["hypno"][3000:] == 0)
 
 
+def test_yasa_rem_calls_two_eog_array_api_with_sample_level_hypno(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(
+        npz_path,
+        eog_loc=np.ones(6000, dtype=np.float32),
+        eog_roc=np.ones(6000, dtype=np.float32) * 2,
+    )
+    captured = {}
+
+    def fake_rem_detect(loc, roc, sf, *, hypno=None):
+        captured["loc"] = np.asarray(loc)
+        captured["roc"] = np.asarray(roc)
+        captured["sf"] = sf
+        captured["hypno"] = np.asarray(hypno)
+        return pd.DataFrame({"Start": [10.0], "Duration": [1.0]})
+
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(rem_detect=fake_rem_detect),
+    )
+    analyzer = YasaRemAnalyzer(
+        AnalyzerConfig(
+            name="yasa_rem",
+            type="yasa_rem",
+            input_channels=["eog_loc", "eog_roc"],
+            stage_source="stage5_model",
+            stages=["REM"],
+        )
+    )
+    context = _yasa_context(tmp_path)
+    context.config.signals.channels["eog_loc"] = ChannelSpec(
+        source="eog_loc",
+        sfreq=100,
+        kind="eog",
+        input_dim=3000,
+        scale=0.000001,
+        mne_name="LOC",
+    )
+    context.config.signals.channels["eog_roc"] = ChannelSpec(
+        source="eog_roc",
+        sfreq=100,
+        kind="eog",
+        input_dim=3000,
+        scale=0.000001,
+        mne_name="ROC",
+    )
+    stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [4, 2]})
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run(
+        [_yasa_record(npz_path)],
+        context,
+        prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
+    )
+
+    assert failures == []
+    assert captured["loc"].shape == (6000,)
+    assert captured["roc"].shape == (6000,)
+    assert captured["loc"].mean() == pytest.approx(1.0)
+    assert captured["roc"].mean() == pytest.approx(2.0)
+    assert captured["sf"] == 100
+    assert captured["hypno"].shape == (6000,)
+    assert np.all(captured["hypno"][:3000] == 4)
+    assert np.all(captured["hypno"][3000:] == 0)
+    assert results[0].events["event_type"].tolist() == ["yasa_rem"]
+
+
 def test_yasa_hrv_stage_uses_single_channel_sample_level_hypno(monkeypatch, tmp_path: Path):
     npz_path = tmp_path / "rec1.npz"
     np.savez(npz_path, ecg=np.ones(6000, dtype=np.float32))
@@ -868,7 +968,17 @@ def test_yasa_hrv_stage_uses_single_channel_sample_level_hypno(monkeypatch, tmp_
         captured["data"] = np.asarray(data)
         captured["sf"] = sf
         captured["hypno"] = np.asarray(hypno)
-        return pd.DataFrame({"Stage": ["N2"], "RMSSD": [42.0]}), pd.DataFrame()
+        epochs = pd.DataFrame(
+            {
+                "start": [0.0, 120.0, 240.0],
+                "duration": [120.0, 120.0, 120.0],
+                "hr_mean": [60.0, 70.0, 80.0],
+                "hr_std": [2.0, 4.0, 5.0],
+                "hrv_rmssd": [40.0, 60.0, 90.0],
+            },
+            index=pd.MultiIndex.from_tuples([(2, 0), (2, 1), (4, 0)], names=["values", "epoch"]),
+        )
+        return epochs, pd.DataFrame()
 
     monkeypatch.setattr(
         "sleep2stat.analyzers.yasa.importlib.import_module",
@@ -899,7 +1009,12 @@ def test_yasa_hrv_stage_uses_single_channel_sample_level_hypno(monkeypatch, tmp_
     assert captured["hypno"].shape == (6000,)
     assert np.all(captured["hypno"][:3000] == 2)
     assert np.all(captured["hypno"][3000:] == 4)
-    assert results[0].night["yasa_hrv_stage_N2_RMSSD"] == 42.0
+    night = results[0].night
+    assert night["yasa_hrv_stage_N2_hr_mean"] == pytest.approx(65.0)
+    assert night["yasa_hrv_stage_N2_hr_std"] == pytest.approx(3.0)
+    assert night["yasa_hrv_stage_N2_hrv_rmssd"] == pytest.approx(50.0)
+    assert night["yasa_hrv_stage_REM_hr_mean"] == pytest.approx(80.0)
+    assert not any(key.endswith(("_start", "_duration", "_epoch")) for key in night)
 
 
 def test_spo2_summary_handles_artifact_and_threshold_time(tmp_path: Path):
@@ -1045,6 +1160,7 @@ def test_event_related_hypoxic_burden_allows_real_empty_source_events(tmp_path: 
     assert failures == []
     assert results[0].night["pred_event_count"] == 0
     assert results[0].night["pred_event_hypoxic_burden_pctmin"] == 0.0
+    assert results[0].night["pred_event_hypoxic_burden_pctmin_per_hour"] == 0.0
 
 
 def test_load_records_resolves_index_dir_paths_and_manifest_metadata(tmp_path: Path):
@@ -1174,11 +1290,26 @@ def test_kaldi_dataset_routing_filters_to_pending_sample_keys(tmp_path: Path):
     assert "sample_bad" in pd.read_csv(split_manifest)["sample_key"].tolist()
 
 
+class _FakeHypnogram:
+    def __init__(self, labels, proba=None):
+        self._labels = pd.Series(labels)
+        self.proba = None if proba is None else pd.DataFrame(proba)
+
+    def as_int(self):
+        mapping = {"W": 0, "N1": 1, "N2": 2, "N3": 3, "R": 4, "REM": 4}
+        return self._labels.map(lambda label: mapping.get(str(label).strip().upper(), -1)).astype(np.int16)
+
+
 def _fake_mne_module():
     class FakeRawArray:
         def __init__(self, data, info, verbose=False):
             self.data = data
             self.info = info
+
+        def get_data(self, units=None):
+            if units is None:
+                return self.data
+            return self.data * 1_000_000
 
     return SimpleNamespace(
         create_info=lambda ch_names, sfreq, ch_types: {"ch_names": ch_names, "sfreq": sfreq, "ch_types": ch_types},
@@ -1269,7 +1400,6 @@ def _write_tiny_kaldi_manifest(tmp_path: Path) -> Path:
     (root / "manifest.json").write_text(
         json.dumps(
             {
-                "format_version": 2,
                 "splits": {
                     "test": {
                         "manifest": "manifests/test.csv",

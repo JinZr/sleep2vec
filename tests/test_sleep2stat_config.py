@@ -187,6 +187,34 @@ def test_load_config_accepts_yasa_analyzers_and_reducer_alias(tmp_path: Path):
     assert config.reducers[0].type == "yasa_hypnogram_stats"
 
 
+@pytest.mark.parametrize("input_channels", [["eog_loc"], ["eog_loc", "eog_roc", "eog_extra"]])
+def test_load_config_rejects_yasa_rem_without_exactly_two_channels(tmp_path: Path, input_channels: list[str]):
+    payload = _minimal_payload()
+    payload["signals"]["channels"] = {
+        "eog_loc": {"source": "eog_loc", "sfreq": 100, "kind": "eog", "input_dim": 3000},
+        "eog_roc": {"source": "eog_roc", "sfreq": 100, "kind": "eog", "input_dim": 3000},
+        "eog_extra": {"source": "eog_extra", "sfreq": 100, "kind": "eog", "input_dim": 3000},
+    }
+    payload["analyzers"] = [{"name": "yasa_rem", "type": "yasa_rem", "input_channels": input_channels}]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match="requires exactly two EOG"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_yasa_rem_with_non_eog_channel(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"] = {
+        "eog_loc": {"source": "eog_loc", "sfreq": 100, "kind": "eog", "input_dim": 3000},
+        "emg": {"source": "emg", "sfreq": 100, "kind": "emg", "input_dim": 3000},
+    }
+    payload["analyzers"] = [{"name": "yasa_rem", "type": "yasa_rem", "input_channels": ["eog_loc", "emg"]}]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match="requires exactly two EOG"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_rejects_yasa_bandpower_by_stage_without_stage_source(tmp_path: Path):
     payload = _minimal_payload()
     payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}

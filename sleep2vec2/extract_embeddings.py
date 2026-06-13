@@ -33,7 +33,6 @@ from sleep2vec2.pretrain_model import Sleep2vecPretrainModel
 from sleep2vec2.utils import move_to_device
 
 PACKAGE_NAMESPACE = "sleep2vec2"
-MANIFEST_FORMAT_VERSION = 1
 
 MANIFEST_COLUMNS = (
     "sample_key",
@@ -587,7 +586,7 @@ def _open_kaldi_writers(output_dir: Path, split: str, channel_names: t.Sequence[
 def _channel_manifest_entry(output_format: str, split: str, channel: str, hidden_size: int) -> dict[str, t.Any]:
     if output_format == "kaldi":
         return {
-            "hidden_size": int(hidden_size),
+            "input_dim": int(hidden_size),
             "scp": (Path("channels") / split / f"{channel}.scp").as_posix(),
             "ark_storage": "float_matrix",
         }
@@ -712,7 +711,6 @@ def _extract_and_write_embeddings(
         raise ValueError("No samples were exported.")
 
     manifest = {
-        "format_version": MANIFEST_FORMAT_VERSION,
         "namespace": namespace,
         "config_path": str(args.config),
         "ckpt_path": str(args.ckpt_path),

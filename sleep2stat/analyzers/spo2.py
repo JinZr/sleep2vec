@@ -112,7 +112,7 @@ class EventRelatedHypoxicBurdenAnalyzer(BaseAnalyzer):
                     )
                     continue
                 if source_events.empty:
-                    results.append(AnalyzerResult(self.config.name, record.record_id, night=_empty_burden()))
+                    results.append(AnalyzerResult(self.config.name, record.record_id, night=_empty_burden(record)))
                     continue
                 signal, sfreq, valid = _spo2_signal(record, context, self.config)
                 events, night = _event_related_burden(record, self.config.name, source_events, signal, sfreq, valid)
@@ -376,13 +376,14 @@ def _event_related_burden(
     return pd.DataFrame(rows), night
 
 
-def _empty_burden() -> dict[str, float]:
+def _empty_burden(record: SleepRecord) -> dict[str, float]:
+    hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
     return {
         "pred_event_count": 0,
         "pred_event_spo2_drop_mean": np.nan,
         "pred_event_spo2_drop_p95": np.nan,
         "pred_event_hypoxic_burden_pctmin": 0.0,
-        "pred_event_hypoxic_burden_pctmin_per_hour": np.nan,
+        "pred_event_hypoxic_burden_pctmin_per_hour": 0.0 if hours > 0 else np.nan,
     }
 
 

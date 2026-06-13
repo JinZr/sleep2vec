@@ -28,7 +28,6 @@ def _write_kaldi_root(
     (root / "manifest.json").write_text(
         json.dumps(
             {
-                "format_version": 2,
                 "backend": "kaldi_native_io",
                 "splits": {
                     split: {
@@ -187,6 +186,39 @@ def test_kaldi_dataset_batch_contract_without_npz_reads(tmp_path: Path, monkeypa
     assert batch["h"].shape == (2, 2)
 
 
+def test_kaldi_dataset_accepts_hidden_size_channel_specs(tmp_path: Path) -> None:
+    key = "mesa_s1_000000_000002"
+    _write_kaldi_root(
+        tmp_path,
+        {"ppg": 2},
+        {"ppg": {key: np.ones((2, 2), dtype=np.float32)}},
+    )
+    _write_manifest(tmp_path, [_row(key, ["ppg"])])
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    channel_spec = manifest["splits"]["train"]["channels"]["ppg"]
+    channel_spec["hidden_size"] = channel_spec.pop("input_dim")
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    dataset = KaldiPSGDataset(
+        channel_names=["ppg"],
+        channel_input_dims={"ppg": 2},
+        kaldi_data_root=tmp_path,
+        manifest=manifest_path,
+        split=["train"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        allow_missing_channels=False,
+        is_train_set=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    assert [str(sample.id) for sample in dataset.data] == [key]
+
+
 def test_kaldi_dataset_uses_requested_split_manifest_and_scps(tmp_path: Path) -> None:
     train_key = "mesa_train_000000_000002"
     val_key = "mesa_val_000000_000002"
@@ -212,7 +244,6 @@ def test_kaldi_dataset_uses_requested_split_manifest_and_scps(tmp_path: Path) ->
     (tmp_path / "manifest.json").write_text(
         json.dumps(
             {
-                "format_version": 2,
                 "backend": "kaldi_native_io",
                 "splits": {
                     "train": {"manifest": "manifests/train.csv", "channels": train_channels},

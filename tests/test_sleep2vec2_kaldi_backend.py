@@ -406,7 +406,6 @@ def _write_kaldi_root(
     (root / "manifest.json").write_text(
         json.dumps(
             {
-                "format_version": 2,
                 "backend": "kaldi_native_io",
                 "splits": {
                     split: {
@@ -533,6 +532,41 @@ def test_sleep2vec2_kaldi_dataset_batch_contract_without_npz_reads(tmp_path: Pat
     assert batch["metadata"]["path"] == [f"/original/{key}.npz" for key in keys]
 
 
+def test_sleep2vec2_kaldi_dataset_accepts_hidden_size_channel_specs(tmp_path: Path) -> None:
+    from sleep2vec2.data.kaldi_psg_dataset import KaldiPSGDataset
+
+    key = "mesa_s1_000000_000002"
+    _write_kaldi_root(
+        tmp_path,
+        {"ppg": 2},
+        {"ppg": {key: np.ones((2, 2), dtype=np.float32)}},
+    )
+    _write_manifest(tmp_path, [_row(key, ["ppg"])])
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    channel_spec = manifest["splits"]["train"]["channels"]["ppg"]
+    channel_spec["hidden_size"] = channel_spec.pop("input_dim")
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    dataset = KaldiPSGDataset(
+        channel_names=["ppg"],
+        channel_input_dims={"ppg": 2},
+        kaldi_data_root=tmp_path,
+        manifest=manifest_path,
+        split=["train"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        allow_missing_channels=False,
+        is_train_set=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    assert [str(sample.id) for sample in dataset.data] == [key]
+
+
 def test_sleep2vec2_kaldi_dataset_uses_requested_split_manifest_and_scps(tmp_path: Path) -> None:
     from sleep2vec2.data.kaldi_psg_dataset import KaldiPSGDataset
 
@@ -560,7 +594,6 @@ def test_sleep2vec2_kaldi_dataset_uses_requested_split_manifest_and_scps(tmp_pat
     (tmp_path / "manifest.json").write_text(
         json.dumps(
             {
-                "format_version": 2,
                 "backend": "kaldi_native_io",
                 "splits": {
                     "train": {"manifest": "manifests/train.csv", "channels": train_channels},
@@ -889,7 +922,7 @@ def test_sleep2vec2_converter_roundtrip_writes_manifest_and_matching_scp(tmp_pat
     np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "ahi.scp", key), expected_ahi)
 
     manifest_json = json.loads((output_dir / "manifest.json").read_text())
-    assert manifest_json["format_version"] == 2
+    assert "format_version" not in manifest_json
     assert manifest_json["backend"] == "kaldi_native_io"
     assert manifest_json["splits"]["train"]["manifest"] == "manifests/train.csv"
     assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
@@ -977,7 +1010,7 @@ def test_sleep2vec2_converter_writes_split_specific_manifests_and_sorted_scps(tm
     assert _scp_keys(val_scp_path) == sorted(val_manifest["sample_key"].tolist())
 
     manifest_json = json.loads((output_dir / "manifest.json").read_text())
-    assert manifest_json["format_version"] == 2
+    assert "format_version" not in manifest_json
     assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
         "input_dim": 4,
         "scp": "channels/train/eeg.scp",
