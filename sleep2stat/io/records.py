@@ -54,7 +54,8 @@ def _load_npz_records(
         df = df[df[data_cfg.split_column].astype(str).isin([str(value) for value in requested_split])]
 
     records = []
-    for row_idx, (_, row) in enumerate(df.iterrows()):
+    for _, row in df.iterrows():
+        row_idx = int(row.name)
         raw_path = str(row[data_cfg.path_column])
         path = _resolve_npz_path(raw_path, data_cfg)
         split = str(row[data_cfg.split_column]) if data_cfg.split_column in row.index else ""

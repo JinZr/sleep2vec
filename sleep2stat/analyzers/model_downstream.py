@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import math
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import numpy as np
@@ -148,11 +150,17 @@ def _build_kaldi_datasets(
     datasets = []
     for split, split_records in records_by_split.items():
         wanted_keys = {str(record.metadata.get("sample_key", record.record_id)) for record in split_records}
+        filtered_manifest = _write_filtered_kaldi_manifest(
+            data_cfg.kaldi_data_root,
+            manifest_path,
+            split,
+            wanted_keys,
+        )
         dataset = KaldiPSGDataset(
             channel_names=channel_names,
             channel_input_dims=channel_input_dims,
             kaldi_data_root=data_cfg.kaldi_data_root,
-            manifest=manifest_path,
+            manifest=filtered_manifest,
             split=[split],
             max_tokens=data_cfg.max_tokens,
             mask_rate=0.0,
@@ -166,10 +174,28 @@ def _build_kaldi_datasets(
             shuffle=False,
             num_workers=num_workers,
         )
-        dataset.data = [sample for sample in dataset.data if str(sample.id) in wanted_keys]
         if dataset.data:
             datasets.append(dataset)
     return datasets
+
+
+def _write_filtered_kaldi_manifest(root: Path, manifest_path: Path, split: str, wanted_keys: set[str]) -> Path:
+    manifest = json.loads(manifest_path.read_text())
+    split_spec = dict(manifest["splits"][str(split)])
+    split_manifest = Path(split_spec["manifest"])
+    if not split_manifest.is_absolute():
+        split_manifest = root / split_manifest
+    frame = pd.read_csv(split_manifest, low_memory=False)
+    frame = frame[frame["sample_key"].astype(str).isin(wanted_keys)].reset_index(drop=True)
+
+    output_dir = Path(tempfile.mkdtemp(prefix="sleep2stat_kaldi_"))
+    filtered_csv = output_dir / f"{split}.csv"
+    frame.to_csv(filtered_csv, index=False)
+    split_spec["manifest"] = str(filtered_csv)
+    manifest["splits"] = {str(split): split_spec}
+    filtered_manifest = output_dir / "manifest.json"
+    filtered_manifest.write_text(json.dumps(manifest))
+    return filtered_manifest
 
 
 @register_analyzer("sleep2vec_downstream")

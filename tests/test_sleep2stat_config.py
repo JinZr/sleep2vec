@@ -274,6 +274,33 @@ def test_load_config_rejects_unknown_reducer_reference(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
+def test_load_config_rejects_duplicate_analyzer_names(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["analyzers"].append(dict(payload["analyzers"][0]))
+
+    with pytest.raises(ValueError, match="duplicate analyzer name"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_enabled_reducer_targeting_disabled_analyzer(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["analyzers"][0]["enabled"] = False
+
+    with pytest.raises(ValueError, match="references disabled analyzer"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_allows_disabled_reducer_targeting_disabled_analyzer(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["analyzers"][0]["enabled"] = False
+    payload["reducers"][0]["enabled"] = False
+
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.analyzers[0].enabled is False
+    assert config.reducers[0].enabled is False
+
+
 def test_load_config_rejects_unknown_analyzer_and_reducer(tmp_path: Path):
     payload = _minimal_payload()
     payload["analyzers"][0]["type"] = "yasa_sleep_staging"

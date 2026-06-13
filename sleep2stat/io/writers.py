@@ -45,7 +45,9 @@ class AnalysisBundleWriter:
         self.tables_dir.mkdir(parents=True, exist_ok=True)
         if self.config.outputs.write_per_record:
             self.per_record_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(self.config.path, self.run_dir / "config.yaml")
+        config_copy = self.run_dir / "config.yaml"
+        if self.config.path.resolve() != config_copy.resolve():
+            shutil.copyfile(self.config.path, config_copy)
         with (self.run_dir / "cli_args.yaml").open("w") as f:
             yaml.safe_dump(_to_yamlable(args), f, sort_keys=True)
 
@@ -323,10 +325,10 @@ class AnalysisBundleWriter:
 
     def _collect_night_stats(self, records: list[SleepRecord]) -> pd.DataFrame:
         rows = []
-        for record in records:
-            record_dir = self.per_record_dir / record.record_id
-            if not (record_dir / COMPLETION_MARKER).exists():
-                continue
+        if not self.per_record_dir.exists():
+            return _merge_night_rows(rows)
+        for marker in sorted(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}")):
+            record_dir = marker.parent
             path = record_dir / "night_stats.json"
             if not path.exists():
                 continue

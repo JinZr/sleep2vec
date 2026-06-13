@@ -994,8 +994,25 @@ def test_load_records_rejects_duplicate_record_ids_by_default(tmp_path: Path):
         )
 
 
+def test_load_records_fallback_ids_use_original_index_rows(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,duration,split,source\n" "/tmp/train.npz,60,train,unit\n" "/tmp/test.npz,60,test,unit\n")
+
+    all_records = load_records(DataConfig(backend="npz", index=index, split=["train", "test"]))
+    test_records = load_records(DataConfig(backend="npz", index=index, split=["test"]))
+
+    assert [record.record_id for record in all_records] == ["train__row0", "test__row1"]
+    assert [record.record_id for record in test_records] == ["test__row1"]
+
+
 def test_kaldi_dataset_routing_filters_to_pending_sample_keys(tmp_path: Path):
     root = _write_tiny_kaldi_manifest(tmp_path)
+    split_manifest = root / "manifests" / "test.csv"
+    rows = pd.read_csv(split_manifest)
+    bad_row = _kaldi_row("sample_bad")
+    bad_row["token_end"] = 5
+    bad_row["num_tokens"] = 5
+    pd.concat([rows, pd.DataFrame([bad_row])], ignore_index=True).to_csv(split_manifest, index=False)
     context = Sleep2statContext(
         config=SimpleNamespace(
             data=DataConfig(
@@ -1032,6 +1049,7 @@ def test_kaldi_dataset_routing_filters_to_pending_sample_keys(tmp_path: Path):
     )
 
     assert [str(sample.id) for sample in datasets[0].data] == ["sample_b"]
+    assert "sample_bad" in pd.read_csv(split_manifest)["sample_key"].tolist()
 
 
 def _fake_mne_module():

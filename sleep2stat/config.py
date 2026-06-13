@@ -418,6 +418,10 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
         )
     if not analyzers:
         raise ValueError("analyzers must not be empty.")
+    analyzer_names = [analyzer.name for analyzer in analyzers]
+    duplicates = sorted({name for name in analyzer_names if analyzer_names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"sleep2stat analyzer names must be unique; duplicate analyzer name(s): {duplicates}")
     return analyzers
 
 
@@ -462,8 +466,11 @@ def _build_reducers(raw: Any) -> list[ReducerConfig]:
 
 
 def _validate_reducer_references(analyzers: list[AnalyzerConfig], reducers: list[ReducerConfig]) -> None:
-    analyzer_names = {analyzer.name for analyzer in analyzers}
+    analyzer_by_name = {analyzer.name: analyzer for analyzer in analyzers}
+    enabled_analyzer_names = {analyzer.name for analyzer in analyzers if analyzer.enabled}
     for reducer in reducers:
+        if not reducer.enabled:
+            continue
         references = []
         if reducer.source is not None:
             references.append(("source", reducer.source))
@@ -476,9 +483,13 @@ def _validate_reducer_references(analyzers: list[AnalyzerConfig], reducers: list
         if reducer.sex_prediction is not None:
             references.append(("sex_prediction", reducer.sex_prediction))
         for field_name, reference in references:
-            if reference not in analyzer_names:
+            if reference not in analyzer_by_name:
                 raise ValueError(
                     f"Reducer {reducer.name!r} references unknown analyzer in {field_name}: {reference!r}."
+                )
+            if reference not in enabled_analyzer_names:
+                raise ValueError(
+                    f"Reducer {reducer.name!r} references disabled analyzer in {field_name}: {reference!r}."
                 )
 
 

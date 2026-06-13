@@ -216,8 +216,34 @@ def test_writer_rebuilds_cumulative_summary_across_resume(tmp_path: Path):
     writer.write_results([rec2], [AnalyzerResult("stage5_model", "rec2", night={"stage5_model_TST_min": 1.0})])
 
     summary = pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")
+    night_stats = pd.read_csv(config.run.output_dir / "tables" / "night_stats.csv")
     assert summary.loc[summary["name"] == "stage5_model", "record_count"].item() == 2
     assert summary.loc[summary["name"] == "stage5_model", "result_count"].item() == 2
+    assert sorted(night_stats["record_id"].tolist()) == ["rec1", "rec2"]
+
+    writer.rebuild_global_tables([rec2], [])
+    night_stats = pd.read_csv(config.run.output_dir / "tables" / "night_stats.csv")
+    assert sorted(night_stats["record_id"].tolist()) == ["rec1", "rec2"]
+
+
+def test_writer_resume_from_archived_config_skips_same_file_copy(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+    archived_config = Sleep2statConfig(
+        path=config.run.output_dir / "config.yaml",
+        run=config.run,
+        data=config.data,
+        signals=config.signals,
+        analyzers=config.analyzers,
+        reducers=config.reducers,
+        outputs=config.outputs,
+    )
+
+    writer = AnalysisBundleWriter(archived_config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+
+    assert (config.run.output_dir / "config.yaml").exists()
 
 
 def test_writer_drops_resolved_failures_after_successful_resume(tmp_path: Path):
