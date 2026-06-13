@@ -289,6 +289,11 @@ def test_load_config_accepts_v02_analyzer_and_reducer_types(tmp_path: Path):
             "min_duration_sec": 10,
         },
         {
+            "name": "yasa_stage",
+            "type": "yasa_stage",
+            "input_channels": ["eeg"],
+        },
+        {
             "name": "yasa_spindles",
             "type": "yasa_spindles",
             "input_channels": ["eeg"],
@@ -300,7 +305,7 @@ def test_load_config_accepts_v02_analyzer_and_reducer_types(tmp_path: Path):
 
     config = load_config(_write_yaml(tmp_path, payload))
 
-    assert [analyzer.type for analyzer in config.analyzers] == ["spo2_desaturation", "yasa_spindles"]
+    assert [analyzer.type for analyzer in config.analyzers] == ["spo2_desaturation", "yasa_stage", "yasa_spindles"]
     assert config.analyzers[0].drop_thresholds == [3.0, 4.0]
     assert config.reducers[0].type == "event_density"
 
@@ -340,6 +345,105 @@ def test_load_config_rejects_duplicate_analyzer_names(tmp_path: Path):
     payload["analyzers"].append(dict(payload["analyzers"][0]))
 
     with pytest.raises(ValueError, match="duplicate analyzer name"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_duplicate_reducer_names(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["reducers"].append(dict(payload["reducers"][0]))
+
+    with pytest.raises(ValueError, match="duplicate reducer name"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_unknown_analyzer_stage_source(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    payload["analyzers"].append(
+        {
+            "name": "yasa_spindles",
+            "type": "yasa_spindles",
+            "input_channels": ["eeg"],
+            "stage_source": "missing_stage",
+            "stages": ["N2"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="enabled earlier analyzer"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_disabled_analyzer_stage_source(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    payload["analyzers"] = [
+        {"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"], "enabled": False},
+        {
+            "name": "yasa_spindles",
+            "type": "yasa_spindles",
+            "input_channels": ["eeg"],
+            "stage_source": "yasa_stage",
+            "stages": ["N2"],
+        },
+    ]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match="enabled earlier analyzer"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_later_analyzer_stage_source(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    payload["analyzers"] = [
+        {
+            "name": "yasa_spindles",
+            "type": "yasa_spindles",
+            "input_channels": ["eeg"],
+            "stage_source": "yasa_stage",
+            "stages": ["N2"],
+        },
+        {"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]},
+    ]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match="enabled earlier analyzer"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_self_referencing_analyzer_stage_source(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    payload["analyzers"] = [
+        {
+            "name": "yasa_spindles",
+            "type": "yasa_spindles",
+            "input_channels": ["eeg"],
+            "stage_source": "yasa_spindles",
+            "stages": ["N2"],
+        }
+    ]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match="enabled earlier analyzer"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_later_yasa_bandpower_stage_source(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    payload["analyzers"] = [
+        {
+            "name": "yasa_bandpower",
+            "type": "yasa_bandpower",
+            "input_channels": ["eeg"],
+            "outputs": {"stage_source": "yasa_stage"},
+        },
+        {"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]},
+    ]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match="enabled earlier analyzer"):
         load_config(_write_yaml(tmp_path, payload))
 
 

@@ -434,6 +434,24 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
     duplicates = sorted({name for name in analyzer_names if analyzer_names.count(name) > 1})
     if duplicates:
         raise ValueError(f"sleep2stat analyzer names must be unique; duplicate analyzer name(s): {duplicates}")
+    produced_analyzer_names: set[str] = set()
+    for analyzer in analyzers:
+        if not analyzer.enabled:
+            continue
+        stage_sources = []
+        if analyzer.stage_source is not None:
+            stage_sources.append(("stage_source", analyzer.stage_source))
+        if analyzer.type == "yasa_bandpower" and bool(analyzer.outputs.get("by_stage", True)):
+            output_stage_source = analyzer.outputs.get("stage_source")
+            if output_stage_source is not None:
+                stage_sources.append(("outputs.stage_source", str(output_stage_source)))
+        for field_name, stage_source in stage_sources:
+            if stage_source not in produced_analyzer_names:
+                raise ValueError(
+                    f"Analyzer {analyzer.name!r} {field_name} must reference an enabled earlier analyzer: "
+                    f"{stage_source!r}."
+                )
+        produced_analyzer_names.add(analyzer.name)
     return analyzers
 
 
@@ -474,6 +492,10 @@ def _build_reducers(raw: Any) -> list[ReducerConfig]:
                 options=dict(item.get("options") or {}),
             )
         )
+    reducer_names = [reducer.name for reducer in reducers]
+    duplicates = sorted({name for name in reducer_names if reducer_names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"sleep2stat reducer names must be unique; duplicate reducer name(s): {duplicates}")
     return reducers
 
 
