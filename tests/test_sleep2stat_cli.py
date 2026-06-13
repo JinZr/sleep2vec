@@ -101,7 +101,7 @@ def test_cli_summarize_uses_supplied_run_dir_over_config_output_dir(tmp_path: Pa
     assert not wrong_dir.exists()
 
 
-def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path):
+def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, monkeypatch):
     np.savez(tmp_path / "rec1.npz", stage5=np.array([0, 1], dtype=np.int64))
     np.savez(tmp_path / "rec2.npz", stage5=np.array([2, 4], dtype=np.int64))
     index_path = tmp_path / "index.csv"
@@ -164,6 +164,12 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path):
     assert len(pd.read_csv(rec1_path)) == 2
     global_epoch = pd.read_csv(tmp_path / "run" / "tables" / "epoch_alignment.csv.gz")
     assert sorted(global_epoch["record_id"].unique().tolist()) == ["unit__p001__s001", "unit__p002__s001"]
+
+    monkeypatch.setattr(
+        "sleep2stat.core.pipeline.create_analyzer",
+        lambda config: (_ for _ in ()).throw(AssertionError("no-op resume should not prepare analyzers")),
+    )
+    run_pipeline(config, args)
 
 
 def test_cli_plot_record_creates_pngs_from_per_record_outputs(tmp_path: Path):

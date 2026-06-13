@@ -32,6 +32,13 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
         writer.write_run_manifest(status="dry_run", records=records, failures=failures, dry_run=True)
         return writer.run_dir
 
+    if not pending_records:
+        writer.write_failures(failures)
+        writer.rebuild_global_tables(records, failures)
+        writer.write_progress(total_records=len(records), completed_records=skipped_records, status="completed")
+        writer.write_run_manifest(status="completed", records=records, failures=failures, dry_run=False)
+        return writer.run_dir
+
     context = Sleep2statContext(
         config=config, device=args.device, num_workers=args.num_workers, batch_size=args.batch_size
     )

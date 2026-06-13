@@ -98,7 +98,20 @@ class EventRelatedHypoxicBurdenAnalyzer(BaseAnalyzer):
         for record in records:
             try:
                 source_events = events_by_record.get(record.record_id)
-                if source_events is None or source_events.empty:
+                if source_events is None:
+                    failures.append(
+                        FailureRecord(
+                            record_id=record.record_id,
+                            analyzer=self.config.name,
+                            error_type="MissingEventSource",
+                            message=(
+                                f"event_source {event_source!r} produced no event result for "
+                                f"record {record.record_id!r}."
+                            ),
+                        )
+                    )
+                    continue
+                if source_events.empty:
                     results.append(AnalyzerResult(self.config.name, record.record_id, night=_empty_burden()))
                     continue
                 signal, sfreq, valid = _spo2_signal(record, context, self.config)
@@ -375,7 +388,7 @@ def _empty_burden() -> dict[str, float]:
 def _events_by_record(results: list[AnalyzerResult], source: str) -> dict[str, pd.DataFrame]:
     output = {}
     for result in results:
-        if result.name == source and result.events is not None and not result.events.empty:
+        if result.name == source and result.events is not None:
             output[result.record_id] = result.events
     return output
 

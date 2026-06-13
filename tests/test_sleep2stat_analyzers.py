@@ -883,6 +883,48 @@ def test_event_related_hypoxic_burden_uses_pred_event_fields(tmp_path: Path):
     assert not any(column.startswith("clinical") for column in results[0].night)
 
 
+def test_event_related_hypoxic_burden_fails_when_source_result_is_missing(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, spo2=np.ones(60, dtype=np.float32) * 96)
+    analyzer = EventRelatedHypoxicBurdenAnalyzer(
+        AnalyzerConfig(
+            name="pred_hypoxic_burden",
+            type="event_related_hypoxic_burden",
+            input_channels=["spo2"],
+            event_source="ahi_model",
+        )
+    )
+
+    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path), prior_results=[])
+
+    assert results == []
+    assert failures[0].error_type == "MissingEventSource"
+
+
+def test_event_related_hypoxic_burden_allows_real_empty_source_events(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, spo2=np.ones(60, dtype=np.float32) * 96)
+    analyzer = EventRelatedHypoxicBurdenAnalyzer(
+        AnalyzerConfig(
+            name="pred_hypoxic_burden",
+            type="event_related_hypoxic_burden",
+            input_channels=["spo2"],
+            event_source="ahi_model",
+        )
+    )
+    source_events = pd.DataFrame(columns=["record_id", "onset_sec", "offset_sec"])
+
+    results, failures = analyzer.run(
+        [_spo2_record(npz_path)],
+        _spo2_context(tmp_path),
+        prior_results=[AnalyzerResult("ahi_model", "rec1", events=source_events)],
+    )
+
+    assert failures == []
+    assert results[0].night["pred_event_count"] == 0
+    assert results[0].night["pred_event_hypoxic_burden_pctmin"] == 0.0
+
+
 def test_load_records_resolves_index_dir_paths_and_manifest_metadata(tmp_path: Path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
