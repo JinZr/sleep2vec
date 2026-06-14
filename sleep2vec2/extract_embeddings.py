@@ -43,6 +43,7 @@ MANIFEST_COLUMNS = (
     "token_start",
     "token_end",
     "num_tokens",
+    "matrix_rows",
     "available_channels",
 )
 
@@ -705,6 +706,7 @@ def _extract_and_write_embeddings(
                             "token_start": token_start,
                             "token_end": token_end,
                             "num_tokens": num_tokens,
+                            "matrix_rows": matrix_rows,
                             "available_channels": json.dumps(channel_names),
                         }
                     )

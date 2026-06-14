@@ -311,6 +311,7 @@ def test_npz_export_writes_manifest_and_embedding_matrix(tmp_path: Path):
     rows = pd.read_csv(tmp_path / "npz" / "manifests" / "test.csv")
     assert rows.loc[0, "sample_key"] == "mesa_tmp_s1_000003_000005"
     assert rows.loc[0, "num_tokens"] == 2
+    assert rows.loc[0, "matrix_rows"] == 2
     assert json.loads(rows.loc[0, "available_channels"]) == ["ppg"]
 
     matrix_path = tmp_path / "npz" / "channels" / "test" / "ppg" / "mesa_tmp_s1_000003_000005.npz"
@@ -336,6 +337,7 @@ def test_npz_export_writes_cls_embedding_matrix(tmp_path: Path):
     rows = pd.read_csv(tmp_path / "npz" / "manifests" / "test.csv")
     assert rows.loc[0, "sample_key"] == "mesa_tmp_s1_000003_000005"
     assert rows.loc[0, "num_tokens"] == 2
+    assert rows.loc[0, "matrix_rows"] == 1
 
     matrix_path = tmp_path / "npz" / "channels" / "test" / "ppg" / "mesa_tmp_s1_000003_000005.npz"
     with np.load(matrix_path) as npz:
@@ -367,3 +369,51 @@ def test_kaldi_export_writes_scp_and_matrix(tmp_path: Path):
         matrix,
         np.array([[11.0, 12.0], [13.0, 14.0]], dtype=np.float32),
     )
+
+
+def test_kaldi_cls_export_manifest_separates_span_from_matrix_rows(tmp_path: Path):
+    kaldi_native_io = pytest.importorskip("kaldi_native_io")
+    manifest_path = extract_embeddings._extract_and_write_embeddings(
+        _dummy_args(tmp_path, "kaldi", embedding_kind="cls"),
+        _DummyClsBackbone(),
+        [_dummy_batch()],
+        _dummy_model_cfg(),
+        extract_embeddings.CheckpointLoadPlan("finetune", "model.backbone."),
+    )
+
+    rows = pd.read_csv(tmp_path / "kaldi" / "manifests" / "test.csv")
+    assert rows.loc[0, "sample_key"] == "mesa_tmp_s1_000003_000005"
+    assert rows.loc[0, "token_start"] == 3
+    assert rows.loc[0, "token_end"] == 5
+    assert rows.loc[0, "num_tokens"] == 2
+    assert rows.loc[0, "matrix_rows"] == 1
+
+    scp_path = tmp_path / "kaldi" / "channels" / "test" / "ppg.scp"
+    with kaldi_native_io.RandomAccessFloatMatrixReader(f"scp:{scp_path}") as reader:
+        matrix = reader["mesa_tmp_s1_000003_000005"]
+    np.testing.assert_allclose(matrix, np.array([[11.0, 12.0]], dtype=np.float32))
+
+    from data.kaldi_psg_dataset import KaldiPSGDataset
+
+    dataset = KaldiPSGDataset(
+        channel_names=["ppg"],
+        channel_input_dims={"ppg": 2},
+        kaldi_data_root=tmp_path / "kaldi",
+        manifest=manifest_path,
+        split=["test"],
+        max_tokens=2,
+        min_channels=1,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        allow_missing_channels=False,
+        is_train_set=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    assert dataset.data[0].start == 3
+    assert dataset.data[0].end == 5
+    assert dataset.data[0].payload["matrix_rows"] == 1
+    _, tokens, _, _ = dataset._load_tokens_for_src(dataset.data[0], ["ppg"])
+    assert tokens["ppg"].shape == (1, 2)

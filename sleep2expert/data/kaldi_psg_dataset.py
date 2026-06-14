@@ -197,6 +197,15 @@ class KaldiPSGDataset(DefaultDataset):
                     f"Kaldi sample {row['sample_key']!r} has num_tokens={row['num_tokens']} "
                     f"but token span length is {num_tokens}."
                 )
+            matrix_rows = num_tokens
+            has_matrix_rows = "matrix_rows" in row.index and not _is_missing(row["matrix_rows"])
+            if has_matrix_rows:
+                matrix_rows = int(row["matrix_rows"])
+                if matrix_rows < 1 or matrix_rows > max_tokens:
+                    raise ValueError(
+                        f"Kaldi sample {row['sample_key']!r} has invalid matrix_rows={matrix_rows}, "
+                        f"max_tokens={max_tokens}."
+                    )
 
             metadata = row.to_dict()
             source = _first_present(row, ("source", "dataset", "sample_source"), "nan")
@@ -223,7 +232,7 @@ class KaldiPSGDataset(DefaultDataset):
                     path=str(row["path"]),
                     start=start,
                     end=end,
-                    payload={"available_channels": selected},
+                    payload={"available_channels": selected, "matrix_rows": matrix_rows},
                     metadata=metadata,
                 )
             )
@@ -262,13 +271,14 @@ class KaldiPSGDataset(DefaultDataset):
         chosen_channels: list[str],
     ) -> tuple[dict, dict, dict, dict]:
         tokens = {}
-        expected_len = int(src.end) - int(src.start)
+        expected_len = int(src.payload.get("matrix_rows", int(src.end) - int(src.start)))
         for channel in chosen_channels:
             arr = self.reader_pool.read_matrix(channel, str(src.id))
             if arr.shape[0] != expected_len:
                 raise ValueError(
                     f"Kaldi matrix for channel {channel!r}, key {src.id!r} has {arr.shape[0]} rows, "
-                    f"expected {expected_len} from manifest token_start={src.start}, token_end={src.end}."
+                    f"expected {expected_len} from manifest matrix_rows/token span "
+                    f"(token_start={src.start}, token_end={src.end})."
                 )
             tokens[channel] = torch.from_numpy(arr).to(torch.float32)
         masks = {channel: self.mask_generators[channel](tokens[channel]) for channel in chosen_channels}
