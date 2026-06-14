@@ -3,7 +3,6 @@
 User-decision files resolve high-impact ambiguity with explicit user intent.
 
 ```yaml
-schema_version: 1
 decisions:
   label_name:
     value: ahi

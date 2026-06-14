@@ -1,4 +1,3 @@
-schema_version: 1
 name: sleep2vec2_val_only_tuning_example
 task: hparam_tune
 variant: sleep2vec2

@@ -1,4 +1,3 @@
-schema_version: 1
 name: stage1_stage2_adapt_example
 task: adapt
 variant: sleep2vec

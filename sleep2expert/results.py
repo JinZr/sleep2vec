@@ -339,7 +339,6 @@ def save_training_run_manifest(
     path = Path(manifest_path)
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     manifest = {
-        "schema_version": 1,
         "kind": "sleep2vec_finetune_run",
         "status": status,
         "created_at_utc": created_at,

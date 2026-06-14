@@ -1,4 +1,3 @@
-schema_version: 1
 
 approved_defaults:
   wandb_mode:

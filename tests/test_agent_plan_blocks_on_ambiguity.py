@@ -33,7 +33,6 @@ def _hparam_recipe(
     return write_yaml(
         tmp_path / f"tune_{variant}.yaml",
         {
-            "schema_version": 1,
             "name": f"unit_tune_{variant}",
             "task": "hparam_tune",
             "variant": variant,
@@ -155,7 +154,7 @@ def test_plan_uses_user_decision_label_name_in_command(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
-        {"schema_version": 1, "decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
+        {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
     )
     output_dir = tmp_path / "plan"
 
@@ -174,7 +173,7 @@ def test_plan_uses_user_decision_test_after_fit_in_command(tmp_path: Path):
     write_yaml(recipe, payload)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
-        {"schema_version": 1, "decisions": {"test_after_fit": {"value": False, "source": "explicit_user"}}},
+        {"decisions": {"test_after_fit": {"value": False, "source": "explicit_user"}}},
     )
     output_dir = tmp_path / "plan"
 
@@ -235,7 +234,6 @@ def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
     recipe = write_yaml(
         tmp_path / "infer.yaml",
         {
-            "schema_version": 1,
             "name": "unit_infer",
             "task": "infer",
             "variant": "sleep2vec",
@@ -270,7 +268,6 @@ def test_infer_invalid_eval_split_blocks_command_generation(tmp_path: Path):
     recipe = write_yaml(
         tmp_path / "infer.yaml",
         {
-            "schema_version": 1,
             "name": "unit_infer",
             "task": "infer",
             "variant": "sleep2vec",
@@ -337,7 +334,6 @@ def test_infer_user_decision_ckpt_path_must_exist(tmp_path: Path):
     recipe = write_yaml(
         tmp_path / "infer.yaml",
         {
-            "schema_version": 1,
             "name": "unit_infer",
             "task": "infer",
             "variant": "sleep2vec",
@@ -359,7 +355,6 @@ def test_infer_user_decision_ckpt_path_must_exist(tmp_path: Path):
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
         {
-            "schema_version": 1,
             "decisions": {"ckpt_path": {"value": str(tmp_path / "missing.ckpt"), "source": "explicit_user"}},
         },
     )
@@ -413,7 +408,6 @@ def test_pretrain_and_adapt_tasks_fail_instead_of_generating_empty_scripts(tmp_p
     recipes = []
     for task in ("pretrain", "adapt"):
         recipe = {
-            "schema_version": 1,
             "name": f"unit_{task}",
             "task": task,
             "variant": "sleep2vec",
@@ -514,7 +508,6 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     recipe = write_yaml(
         tmp_path / "preset.yaml",
         {
-            "schema_version": 1,
             "name": "unit_preset",
             "task": "preset_prepare",
             "variant": "sleep2vec",

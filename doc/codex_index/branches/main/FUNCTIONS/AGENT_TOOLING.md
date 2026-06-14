@@ -17,12 +17,12 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/decisions.py`
 - Signature: `evaluate_consultation_gates(task: str | None, recipe: dict | None, config_summary: dict | None, cli_args: dict | None, policy: dict, approved_defaults: dict) -> DecisionReport`
-- Purpose and contract: enforce stop-and-consult policy for high-impact recipe and runtime decisions.
+- Purpose and contract: enforce stop-and-consult policy for high-impact recipe and runtime decisions, including variantless `sleep2stat` gates.
 - Important inputs/outputs: task, recipe, config summary, CLI/user decisions, policy, and defaults in; `DecisionReport` with resolved decisions, issues, status, and exit-code semantics out.
 - Side effects: none.
 - Key callers/callees: called by `agent_tools.plans.evaluate_recipe` and `build_context`; uses task-specific validation helpers and path checks.
-- Reuse guidance: use this before generating runnable preset, finetune, inference, evaluation, or hparam commands.
-- Duplication-risk notes: do not reimplement high-impact decision checks in recipe templates or shell generation.
+- Reuse guidance: use this before generating runnable preset, finetune, inference, evaluation, hparam, or sleep2stat commands.
+- Duplication-risk notes: do not reimplement high-impact decision checks in recipe templates or shell generation; sleep2stat structural validation remains in `sleep2stat.config.load_config()`, with agent tooling only adding agent risk gates such as variant misuse, run-dir mismatch, locked-test policy, and placeholder model analyzer paths.
 
 ## `agent_tools.plans.build_context`
 
@@ -33,7 +33,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Side effects: writes `context.json`, `context.md`, and either runnable `commands.sh` / `validation.sh` or blocked questions/scripts.
 - Key callers/callees: called by `agent_tools context`; uses `repo_summary`, `config_summary`, `index_summary`, `preset_summary`, `list_skills`, and `_commands_for_recipe`.
 - Reuse guidance: use for pre-command context bundles rather than assembling context ad hoc.
-- Duplication-risk notes: keep generated command routing inside `_commands_for_recipe` so variant rules stay centralized.
+- Duplication-risk notes: keep generated command routing inside `_commands_for_recipe` so variant and sleep2stat variantless rules stay centralized.
 
 ## `agent_tools.plans.build_plan`
 
@@ -44,7 +44,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Side effects: writes `plan.json`, `plan.md`, `run.sh`, hparam trial scripts/configs, or blocked plan/questions.
 - Key callers/callees: called by `agent_tools plan` and adaptive init/step; uses consultation gates, output overwrite guards, final-test gates, and hparam plan writers.
 - Reuse guidance: use for all recipe-backed command generation.
-- Duplication-risk notes: do not emit executable training scripts outside this path unless a recipe has already passed the same gates.
+- Duplication-risk notes: do not emit executable training or sleep2stat scripts outside this path unless a recipe has already passed the same gates.
 
 ## `agent_tools.plans.collect_runs`
 
@@ -72,11 +72,11 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/configs.py`
 - Signature: `config_summary(config_path: str | Path) -> dict[str, Any]`
-- Purpose and contract: summarize YAML task, channels, backend, preset/index inputs, and variant guess without importing Torch/Lightning.
+- Purpose and contract: summarize YAML task, channels, backend, preset/index inputs, variant guess, or sleep2stat run/data/analyzer/output fields without importing Torch/Lightning.
 - Important inputs/outputs: config path in; JSON-ready summary out.
 - Side effects: reads the YAML file.
 - Key callers/callees: called by `plans`, `doctor`, and CLI summary commands.
-- Reuse guidance: use for agent policy checks that need config facts without loading models.
+- Reuse guidance: use for agent policy checks that need config facts without loading models. For sleep2stat-shaped YAML, this calls `sleep2stat.config.load_config()` and returns blocking issues instead of raising through plan generation.
 - Duplication-risk notes: do not infer task semantics from path names when this summary can read YAML fields.
 
 ## `agent_tools.index_csv.index_summary`

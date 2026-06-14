@@ -30,7 +30,6 @@ def _adaptive_recipe(
     return write_yaml(
         tmp_path / "adaptive_tune.yaml",
         {
-            "schema_version": 1,
             "name": "unit_adaptive",
             "task": "hparam_tune",
             "variant": "sleep2vec",

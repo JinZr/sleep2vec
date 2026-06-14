@@ -48,7 +48,6 @@ def write_finetune_recipe(tmp_path: Path, *, include_label: bool = True, variant
     if include_label:
         inputs["label_name"] = "ahi"
     recipe = {
-        "schema_version": 1,
         "name": "unit_finetune",
         "task": "finetune",
         "variant": variant,

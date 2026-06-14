@@ -39,11 +39,109 @@ def _channel_summary(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _looks_like_sleep2stat_config_data(data: dict[str, Any]) -> bool:
+    return {"run", "data", "signals", "analyzers", "reducers", "outputs"}.issubset(set(data))
+
+
+def _looks_like_placeholder_path(value: str | Path | None) -> bool:
+    if value in (None, ""):
+        return True
+    text = str(value).strip()
+    lowered = text.lower()
+    return (
+        lowered in {"ask_user", "none", "null", "todo", "tbd", "placeholder"}
+        or text.startswith("/path/to")
+        or text.startswith("<")
+        or "ASK_USER" in text
+    )
+
+
+def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
+    from sleep2stat.config import load_config
+
+    resolved = resolve_repo_path(config_path)
+    if resolved is None:
+        raise FileNotFoundError("Config path is required.")
+    try:
+        cfg = load_config(resolved)
+    except Exception as exc:
+        return {
+            "config_path": repo_relative(resolved),
+            "is_sleep2stat": True,
+            "data_backend": None,
+            "sleep2stat": {},
+            "warnings": [],
+            "blocking_issues": [str(exc)],
+            "agent_risk_issues": [],
+        }
+
+    analyzers = []
+    agent_risk_issues = []
+    for item in cfg.analyzers:
+        analyzer = {
+            "name": item.name,
+            "type": item.type,
+            "enabled": item.enabled,
+            "namespace": item.namespace,
+            "label_name": item.label_name,
+            "config": str(item.config) if item.config else None,
+            "ckpt_path": str(item.ckpt_path) if item.ckpt_path else None,
+            "input_channels": list(item.input_channels),
+            "stage_source": item.stage_source,
+            "event_source": item.event_source,
+        }
+        analyzers.append(analyzer)
+        if item.enabled and item.type == "sleep2vec_downstream":
+            if _looks_like_placeholder_path(item.config):
+                agent_risk_issues.append(
+                    f"Analyzer {item.name} downstream config is missing or placeholder: {item.config}"
+                )
+            if _looks_like_placeholder_path(item.ckpt_path):
+                agent_risk_issues.append(f"Analyzer {item.name} ckpt_path is missing or placeholder: {item.ckpt_path}")
+
+    return {
+        "config_path": repo_relative(resolved),
+        "is_sleep2stat": True,
+        "data_backend": cfg.data.backend,
+        "sleep2stat": {
+            "run": {
+                "name": cfg.run.name,
+                "output_dir": str(cfg.run.output_dir),
+                "overwrite": cfg.run.overwrite,
+                "skip_existing": cfg.run.skip_existing,
+            },
+            "data": {
+                "backend": cfg.data.backend,
+                "index": str(cfg.data.index) if cfg.data.index else None,
+                "kaldi_data_root": str(cfg.data.kaldi_data_root) if cfg.data.kaldi_data_root else None,
+                "kaldi_manifest": str(cfg.data.kaldi_manifest) if cfg.data.kaldi_manifest else None,
+                "split": list(cfg.data.split),
+                "path_base": cfg.data.path_base,
+                "metadata_columns": list(cfg.data.metadata_columns),
+                "token_sec": cfg.data.token_sec,
+                "max_tokens": cfg.data.max_tokens,
+            },
+            "analyzers": analyzers,
+            "outputs": {
+                "write_global_tables": cfg.outputs.write_global_tables,
+                "write_per_record": cfg.outputs.write_per_record,
+                "compression": cfg.outputs.compression,
+                "global_tables": dict(cfg.outputs.global_tables),
+            },
+        },
+        "warnings": [],
+        "blocking_issues": [],
+        "agent_risk_issues": agent_risk_issues,
+    }
+
+
 def config_summary(config_path: str | Path) -> dict[str, Any]:
     resolved = resolve_repo_path(config_path)
     if resolved is None:
         raise FileNotFoundError("Config path is required.")
     data = load_yaml(resolved)
+    if _looks_like_sleep2stat_config_data(data):
+        return sleep2stat_config_summary(resolved)
     model = data.get("model") if isinstance(data.get("model"), dict) else {}
     data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
     finetune = data.get("finetune") if isinstance(data.get("finetune"), dict) else {}

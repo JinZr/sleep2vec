@@ -74,7 +74,6 @@ def build_context(
     user_decisions_path: str | Path | None = None,
 ) -> DecisionReport:
     recipe = {
-        "schema_version": 1,
         "name": Path(str(output_dir)).name,
         "task": task,
         "variant": variant,
@@ -106,7 +105,6 @@ def build_context(
         return report
     skill, relevant_docs = _skill_context(task)
     payload = {
-        "schema_version": 1,
         "task": task,
         "status": report.status.value,
         "can_generate_commands": report.exit_code == 0,
@@ -120,7 +118,7 @@ def build_context(
         "config_summary": cfg,
         "index_summary": _context_index_summary(recipe, cfg),
         "preset_summary": _context_preset_summary(recipe, cfg),
-        "expected_artifacts": _expected_context_artifacts(recipe, out, report),
+        "expected_artifacts": _expected_context_artifacts(recipe, cfg, out, report),
         "recommended_commands": commands if report.exit_code == 0 else [],
         "validation_commands": _validation_commands(recipe),
         "warnings": [issue.message for issue in report.issues if issue.status == DecisionStatus.WARN],
@@ -448,6 +446,26 @@ def _preset_cli_args(preset: dict[str, Any]) -> list[Any]:
     return args
 
 
+def _sleep2stat_config_run_dir(cfg: dict | None) -> str | None:
+    if not cfg or not cfg.get("is_sleep2stat"):
+        return None
+    value = ((cfg.get("sleep2stat") or {}).get("run") or {}).get("output_dir")
+    return str(value) if value not in (None, "") else None
+
+
+def _sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    args: list[Any] = []
+    _append_list_option(args, "--split", inputs.get("split"))
+    _append_option(args, "--device", runtime.get("device"))
+    _append_option(args, "--num-workers", runtime.get("num_workers"))
+    _append_option(args, "--batch-size", runtime.get("batch_size"))
+    _append_option(args, "--limit-records", runtime.get("limit_records"))
+    _append_bool_option(args, runtime.get("dry_run"), "--dry-run")
+    return args
+
+
 def _decision_value(decisions: dict | None, field: str, fallback: Any = None) -> Any:
     decision = decisions.get(field) if decisions else None
     if decision is not None and decision.value not in (None, ""):
@@ -461,6 +479,35 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    if task == "sleep2stat":
+        config = inputs.get("config")
+        run_dir = _sleep2stat_config_run_dir(cfg)
+        if not run_dir:
+            return []
+        commands = [
+            _render_command(["python", "-m", "sleep2stat", "validate-config", "--config", config]),
+            _render_command(
+                ["python", "-m", "sleep2stat", "run", "--config", config, *_sleep2stat_runtime_args(recipe)]
+            ),
+        ]
+        if runtime.get("summarize_after_run", True):
+            commands.append(_render_command(["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]))
+        if runtime.get("plot_cohort_after_run") is True:
+            plot_cmd = [
+                "python",
+                "-m",
+                "sleep2stat",
+                "plot-cohort",
+                "--run-dir",
+                run_dir,
+                "--group-column",
+                runtime.get("plot_group_column", "source"),
+                "--stage-source",
+                runtime.get("plot_stage_source", "auto"),
+            ]
+            _append_list_option(plot_cmd, "--adjust-covariates", runtime.get("plot_adjust_covariates"))
+            commands.append(_render_command(plot_cmd))
+        return commands
     if task == "finetune":
         test_after_fit = _decision_value(decisions, "test_after_fit", evaluation.get("test_after_fit"))
         pieces = [
@@ -528,6 +575,14 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
 def _validation_commands(recipe: dict) -> list[str]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     commands = []
+    if recipe.get("task") == "sleep2stat":
+        if inputs.get("config"):
+            commands.append(
+                _render_command(["python", "-m", "sleep2stat", "validate-config", "--config", inputs["config"]])
+            )
+            commands.append(_render_command(["python", "utils/check_configs.py", inputs["config"]]))
+        commands.append(_render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
+        return commands
     if inputs.get("config"):
         commands.append(_render_command(["python", "utils/check_configs.py", inputs["config"]]))
     commands.append(_render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
@@ -548,6 +603,10 @@ def _context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     paths = _list_value(inputs.get("index"))
     config = inputs.get("config")
+    if cfg and cfg.get("is_sleep2stat"):
+        data = (cfg.get("sleep2stat") or {}).get("data") or {}
+        paths = _list_value(data.get("index"))
+        config = None
     if not paths and cfg:
         data = cfg.get("data") or {}
         paths = _list_value(data.get("finetune_data_index"))
@@ -572,14 +631,53 @@ def _context_preset_summary(recipe: dict, cfg: dict | None) -> dict | None:
         return {"blocking_issues": [f"Failed to summarize preset: {exc}"]}
 
 
-def _expected_context_artifacts(recipe: dict, out: Path, report: DecisionReport) -> list[dict[str, str]]:
+def _expected_context_artifacts(
+    recipe: dict, cfg: dict | None, out: Path, report: DecisionReport
+) -> list[dict[str, str]]:
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     expected = [
         {"name": name, "path": str(path)}
         for name, path in artifacts.items()
         if path not in (None, "") and isinstance(path, (str, Path))
     ]
+    if recipe.get("task") == "sleep2stat":
+        expected.extend(_sleep2stat_expected_artifacts(cfg))
     expected.extend({"name": path.name, "path": str(path)} for path in _planned_context_paths(out, report))
+    return expected
+
+
+def _sleep2stat_expected_artifacts(cfg: dict | None) -> list[dict[str, str]]:
+    run_dir = _sleep2stat_config_run_dir(cfg)
+    if not run_dir:
+        return []
+    sleep2stat = cfg.get("sleep2stat") if cfg else {}
+    outputs = (sleep2stat or {}).get("outputs") or {}
+    compression = outputs.get("compression", "gzip")
+    global_tables = outputs.get("global_tables") or {}
+    event_suffix = ".csv.gz" if compression == "gzip" else ".csv"
+    expected = [
+        {"name": "sleep2stat config snapshot", "path": f"{run_dir}/config.yaml"},
+        {"name": "sleep2stat CLI args", "path": f"{run_dir}/cli_args.yaml"},
+        {"name": "sleep2stat run manifest", "path": f"{run_dir}/run_manifest.json"},
+        {"name": "sleep2stat record manifest", "path": f"{run_dir}/record_manifest.csv"},
+        {"name": "sleep2stat progress", "path": f"{run_dir}/status/progress.json"},
+        {"name": "sleep2stat failures", "path": f"{run_dir}/status/failures.csv"},
+        {"name": "sleep2stat model summary", "path": f"{run_dir}/tables/model_summary.csv"},
+        {"name": "sleep2stat analyzer summary", "path": f"{run_dir}/tables/analyzer_summary.csv"},
+        {"name": "sleep2stat per-record success marker", "path": f"{run_dir}/per_record/<record_id>/_SUCCESS.json"},
+        {"name": "sleep2stat per-record events", "path": f"{run_dir}/per_record/<record_id>/events{event_suffix}"},
+        {"name": "sleep2stat per-record night stats", "path": f"{run_dir}/per_record/<record_id>/night_stats.json"},
+        {
+            "name": "sleep2stat per-record result manifest",
+            "path": f"{run_dir}/per_record/<record_id>/result_manifest.csv",
+        },
+        {"name": "sleep2stat optional per-record arrays", "path": f"{run_dir}/per_record/<record_id>/arrays.npz"},
+    ]
+    if global_tables.get("night_stats", True):
+        expected.append({"name": "sleep2stat night stats", "path": f"{run_dir}/tables/night_stats.csv"})
+    for table in ("epoch_alignment", "second_alignment", "event_alignment"):
+        if global_tables.get(table, False):
+            expected.append({"name": f"sleep2stat {table}", "path": f"{run_dir}/tables/{table}{event_suffix}"})
     return expected
 
 

@@ -1,4 +1,3 @@
-schema_version: 1
 name: ppg_ahi_preset_example
 task: preset_prepare
 variant: sleep2vec

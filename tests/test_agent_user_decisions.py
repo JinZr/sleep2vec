@@ -16,7 +16,7 @@ def test_user_decision_yaml_resolves_missing_label_name(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
-        {"schema_version": 1, "decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
+        {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
     )
 
     result = _run(
@@ -38,7 +38,6 @@ def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
     recipe = write_yaml(
         tmp_path / "tune.yaml",
         {
-            "schema_version": 1,
             "name": "unit_tune",
             "task": "hparam_tune",
             "variant": "sleep2vec",
@@ -64,7 +63,7 @@ def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
     )
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
-        {"schema_version": 1, "decisions": {"external_test_locked": {"value": True, "source": "explicit_user"}}},
+        {"decisions": {"external_test_locked": {"value": True, "source": "explicit_user"}}},
     )
 
     result = _run(

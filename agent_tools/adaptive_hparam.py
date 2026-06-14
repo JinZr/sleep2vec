@@ -43,7 +43,6 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
     if report.exit_code != 0:
         raise RuntimeError(f"Round 000 plan failed with exit code {report.exit_code}.")
     workflow = {
-        "schema_version": 1,
         "recipe_path": str(recipe_path),
         "root": str(root),
         "external_optimized": True,

@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from .models import REPO_ROOT, SUPPORTED_VARIANTS
+from .models import REPO_ROOT, SUPPORTED_VARIANTS, task_requires_variant
 
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
 
@@ -107,14 +107,25 @@ def evaluate_consultation_gates(
         )
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
     variant = recipe.get("variant")
-    if variant not in SUPPORTED_VARIANTS:
+    if task_requires_variant(str(task_value)):
+        if variant not in SUPPORTED_VARIANTS:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "variant",
+                    "Recipe variant is missing or unsupported.",
+                    "Which variant should this task use: sleep2vec, sleep2vec2, or sleep2expert?",
+                    {"variant": variant, "allowed_values": list(SUPPORTED_VARIANTS)},
+                )
+            )
+    elif variant not in (None, ""):
         issues.append(
             DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
+                DecisionStatus.FAIL,
                 "variant",
-                "Recipe variant is missing or unsupported.",
-                "Which variant should this task use: sleep2vec, sleep2vec2, or sleep2expert?",
-                {"variant": variant, "allowed_values": list(SUPPORTED_VARIANTS)},
+                "task=sleep2stat must omit variant or set it to null; sleep2stat is not a model variant.",
+                None,
+                {"variant": variant},
             )
         )
 
@@ -161,7 +172,14 @@ def evaluate_consultation_gates(
                 )
             )
 
-    for optional_field in ("test_after_fit", "ckpt_path", "config", "final_eval_config_path", "eval_split"):
+    for optional_field in (
+        "test_after_fit",
+        "ckpt_path",
+        "config",
+        "final_eval_config_path",
+        "eval_split",
+        "external_test_locked",
+    ):
         decisions[optional_field] = _resolve_decision(
             optional_field, recipe, config_summary, cli_args, user_decisions, approved_defaults
         )
@@ -354,6 +372,99 @@ def _task_specific_issues(
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+
+    if task == "sleep2stat":
+        if not inputs.get("config"):
+            issues.append(_needs("config", "sleep2stat requires inputs.config.", high_impact))
+            return issues
+        if not config_summary or not config_summary.get("is_sleep2stat"):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "config",
+                    "task=sleep2stat requires a sleep2stat config.",
+                    None,
+                    {"config_summary": config_summary},
+                )
+            )
+            return issues
+        for message in config_summary.get("blocking_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "sleep2stat_config",
+                    message,
+                    "Please fix the sleep2stat config before the agent generates commands.",
+                    {"config_path": config_summary.get("config_path")},
+                )
+            )
+        sleep2stat = config_summary.get("sleep2stat") or {}
+        cfg_run = sleep2stat.get("run") or {}
+        cfg_data = sleep2stat.get("data") or {}
+        recipe_run_dir = (recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}).get("run_dir")
+        config_run_dir = cfg_run.get("output_dir")
+        if recipe_run_dir and config_run_dir and str(recipe_run_dir) != str(config_run_dir):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "artifacts.run_dir",
+                    (
+                        "Recipe artifacts.run_dir differs from sleep2stat config run.output_dir. "
+                        "The sleep2stat CLI uses config run.output_dir, so commands would target the wrong directory."
+                    ),
+                    (
+                        "Should artifacts.run_dir be changed to match config run.output_dir, or should the "
+                        "sleep2stat config run.output_dir be changed?"
+                    ),
+                    {"recipe": recipe_run_dir, "config": config_run_dir},
+                )
+            )
+        overwrite_decision = decisions.get("overwrite_policy")
+        if cfg_run.get("overwrite") is True and overwrite_decision is not None and overwrite_decision.value is False:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "overwrite_policy",
+                    "sleep2stat config run.overwrite=true conflicts with overwrite_policy=false.",
+                    "Should config run.overwrite be false, or should overwrite_policy be changed to true?",
+                    {"config_run_overwrite": cfg_run.get("overwrite"), "overwrite_policy": overwrite_decision.value},
+                )
+            )
+        effective_split = _as_list(inputs.get("split") or cfg_data.get("split"))
+        if not effective_split:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "sleep2stat_split_policy",
+                    "sleep2stat split is not explicit in recipe or config.",
+                    "Which split(s) should sleep2stat process?",
+                    {"recipe_split": inputs.get("split"), "config_split": cfg_data.get("split")},
+                )
+            )
+        external_test_locked = evaluation.get("external_test_locked")
+        external_test_decision = decisions.get("external_test_locked")
+        if external_test_decision is not None and external_test_decision.value not in (None, ""):
+            external_test_locked = external_test_decision.value
+        if "test" in {str(value) for value in effective_split} and external_test_locked is not True:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "external_test_locked",
+                    "sleep2stat is configured for test split, but external_test_locked is not explicitly true.",
+                    "Is this test split external/locked, and should outputs be descriptive-only?",
+                    {"effective_split": effective_split, "external_test_locked": external_test_locked},
+                )
+            )
+        for message in config_summary.get("agent_risk_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "sleep2stat_config",
+                    message,
+                    "Please provide a concrete path, adjust path context, or disable the analyzer.",
+                    {"config_path": config_summary.get("config_path")},
+                )
+            )
 
     if task == "preset_prepare":
         for input_field, value in {
@@ -928,6 +1039,36 @@ def _path_issues(
                 issue = _validate_input_path(recipe, data_field, value, configured=True)
                 if issue is not None:
                     issues.append(issue)
+    if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
+        sleep2stat = config_summary.get("sleep2stat") or {}
+        data = sleep2stat.get("data") or {}
+        for data_field in ("index", "kaldi_data_root", "kaldi_manifest"):
+            value = data.get(data_field)
+            if value:
+                check_value = value
+                if data_field == "kaldi_manifest":
+                    root = data.get("kaldi_data_root")
+                    manifest_path = Path(str(value)).expanduser()
+                    if root and not manifest_path.is_absolute():
+                        check_value = Path(str(root)).expanduser() / manifest_path
+                issue = _validate_input_path(recipe, f"sleep2stat.data.{data_field}", check_value, configured=True)
+                if issue is not None:
+                    issues.append(issue)
+        for analyzer in sleep2stat.get("analyzers", []):
+            if analyzer.get("enabled") is False:
+                continue
+            for analyzer_field in ("config", "ckpt_path"):
+                value = analyzer.get(analyzer_field)
+                if not value or _looks_like_placeholder_path(value):
+                    continue
+                issue = _validate_input_path(
+                    recipe,
+                    f"sleep2stat.analyzer.{analyzer.get('name')}.{analyzer_field}",
+                    value,
+                    configured=True,
+                )
+                if issue is not None:
+                    issues.append(issue)
     return issues
 
 
@@ -1024,6 +1165,25 @@ def _sh(value: Any) -> str:
     import shlex
 
     return shlex.quote(str(value))
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value in (None, "", []):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _looks_like_placeholder_path(value: Any) -> bool:
+    text = str(value).strip()
+    lowered = text.lower()
+    return (
+        lowered in {"", "ask_user", "none", "null", "todo", "tbd", "placeholder"}
+        or text.startswith("/path/to")
+        or text.startswith("<")
+        or "ASK_USER" in text
+    )
 
 
 def _output_paths_missing(recipe: dict) -> bool:

@@ -8,4 +8,4 @@
 - `commands.blocked.sh`: non-runnable blocker stub when user input is required.
 - `questions.json` and `questions.md`: structured questions when consultation is required.
 
-`context.json` includes `schema_version`, `status`, `can_generate_commands`, `consultation_required`, `questions`, `config_summary`, `repo`, `skill`, `owners`, `relevant_docs`, `index_summary`, `preset_summary`, `expected_artifacts`, and recommended commands.
+`context.json` includes `status`, `can_generate_commands`, `consultation_required`, `questions`, `config_summary`, `repo`, `skill`, `owners`, `relevant_docs`, `index_summary`, `preset_summary`, `expected_artifacts`, and recommended commands.

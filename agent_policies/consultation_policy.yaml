@@ -1,4 +1,3 @@
-schema_version: 1
 
 status_codes:
   pass: 0
@@ -16,8 +15,8 @@ global_rules:
 high_impact_fields:
   - id: task
     description: "The task type must be explicit."
-    required_for_tasks: ["preset_prepare", "pretrain", "adapt", "finetune", "infer", "evaluate", "hparam_tune"]
-    question: "Which task should be performed: preset_prepare, pretrain, adapt, finetune, infer, evaluate, or hparam_tune?"
+    required_for_tasks: ["preset_prepare", "pretrain", "adapt", "finetune", "infer", "evaluate", "hparam_tune", "sleep2stat"]
+    question: "Which task should be performed: preset_prepare, pretrain, adapt, finetune, infer, evaluate, hparam_tune, or sleep2stat?"
 
   - id: label_name
     description: "The downstream label must be explicit for finetuning, inference, evaluation, and tuning."
@@ -73,8 +72,18 @@ high_impact_fields:
 
   - id: overwrite_policy
     description: "Agents must not overwrite generated presets, configs, plans, results, or checkpoints unless explicitly allowed."
-    required_for_tasks: ["preset_prepare", "finetune", "hparam_tune", "infer", "evaluate"]
+    required_for_tasks: ["preset_prepare", "finetune", "hparam_tune", "infer", "evaluate", "sleep2stat"]
     question: "Is overwriting existing output files allowed for this task?"
+
+  - id: sleep2stat_split_policy
+    description: "The agent must know which split(s) sleep2stat will process and how outputs may be used."
+    required_for_tasks: ["sleep2stat"]
+    question: "Which split(s) should sleep2stat process, and are outputs restricted to descriptive alignment/statistics rather than threshold or cleaning-rule selection?"
+
+  - id: sleep2stat_metric_use_policy
+    description: "The agent must distinguish clinical annotation-derived metrics from model-derived or signal-derived proxy metrics."
+    required_for_tasks: ["sleep2stat"]
+    question: "Should model-derived metrics such as predicted AHI, ODI, or hypoxic-burden-like summaries be treated as proxy metrics unless clinical annotations are configured?"
 
   - id: required_channels
     description: "The required input/label channels must be explicit for preset generation."

@@ -116,7 +116,6 @@ def test_high_impact_decision_with_unresolved_source_blocks(tmp_path: Path):
 
 def test_hparam_tune_missing_external_test_locked_needs_user_input(tmp_path: Path):
     recipe = {
-        "schema_version": 1,
         "name": "unit_tune",
         "task": "hparam_tune",
         "variant": "sleep2vec",
@@ -143,7 +142,6 @@ def test_hparam_tune_missing_external_test_locked_needs_user_input(tmp_path: Pat
 
 def test_hparam_tune_selection_split_test_needs_user_input(tmp_path: Path):
     recipe = {
-        "schema_version": 1,
         "name": "unit_tune",
         "task": "hparam_tune",
         "variant": "sleep2vec",
@@ -191,7 +189,6 @@ def test_hparam_tune_blocks_on_base_config_blocking_issues(tmp_path: Path):
     config_payload["data"]["finetune_preset_path"] = None
     write_yaml(config, config_payload)
     recipe = {
-        "schema_version": 1,
         "name": "unit_tune",
         "task": "hparam_tune",
         "variant": "sleep2vec",
@@ -232,7 +229,6 @@ def test_hparam_tune_blocks_on_base_config_blocking_issues(tmp_path: Path):
 
 def test_hparam_tune_requires_local_selection_policy_even_when_base_has_it(tmp_path: Path):
     recipe = {
-        "schema_version": 1,
         "name": "unit_tune",
         "task": "hparam_tune",
         "variant": "sleep2vec",
@@ -269,7 +265,6 @@ def test_hparam_tune_requires_local_selection_policy_even_when_base_has_it(tmp_p
 
 def test_hparam_tune_blocks_when_selection_metric_conflicts_with_config(tmp_path: Path):
     recipe = {
-        "schema_version": 1,
         "name": "unit_tune",
         "task": "hparam_tune",
         "variant": "sleep2vec",

@@ -14,6 +14,7 @@ Generate agent context bundles, validate task recipes, enforce stop-and-consult 
 - `python -m agent_tools preset-summary --preset <pickle> --json`
 - `python -m agent_tools doctor --recipe <recipe.yaml> [--user-decisions <yaml>]`
 - `python -m agent_tools context --task <task> --variant <variant> --config <yaml> --output-dir <dir>`
+- `python -m agent_tools context --task sleep2stat --config <yaml> --output-dir <dir>`
 - `python -m agent_tools plan --recipe <recipe.yaml> --output-dir <dir>`
 - `python -m agent_tools hparam-launch --plan-dir <dir> [--execute]`
 - `python -m agent_tools hparam-monitor --run-dir <dir> [--once] [--health]`
@@ -39,7 +40,7 @@ Generate agent context bundles, validate task recipes, enforce stop-and-consult 
 ## Layers
 
 - `skills/`: human-readable task playbooks and examples.
-- `recipes/`: declarative task cards for finetune, preset, inference, and tuning plans.
+- `recipes/`: declarative task cards for finetune, preset, inference, tuning, and sleep2stat plans.
 - `agent_policies/`: consultation policy and approved defaults.
 - `agent_tools/`: lightweight Python package for summaries, decision gates, context bundles, plans, and run collection.
 - `doc/agent_contracts/`: context bundle, recipe, run manifest, user decision, and external-test-locking contracts.
@@ -61,17 +62,19 @@ High-impact decisions must come from explicit user decisions, explicit CLI argum
 
 `agent_tools context` writes `context.json` and `context.md` for every run. If any blocking issue exists, it writes `questions.json`, `questions.md`, and `commands.blocked.sh` instead of runnable `commands.sh`; `consultation_required` is true when any issue needs user input, even if another issue makes the overall status `FAIL`.
 
-Context bundles include skill metadata, owners, relevant index docs, expected agent artifacts, and best-effort index or preset summaries when the config points to `data.finetune_data_index` or `data.finetune_preset_path`.
+Context bundles include skill metadata, owners, relevant index docs, expected agent artifacts, and best-effort index or preset summaries when the config points to `data.finetune_data_index` or `data.finetune_preset_path`. For `task=sleep2stat`, NPZ index summaries use `sleep2stat.data.index`.
 
 ## Plan Generation
 
 `agent_tools plan` runs consultation gates before writing scripts. Blocked plans write `plan.blocked.md` and questions only. Hyper-parameter trial scripts use validation-only selection and `--no-test-after-fit`; final external-test scripts require explicit final-test unlock and an explicit existing checkpoint path.
 
-Recipe `variant` controls the generated module namespace. Supported values are `sleep2vec`, `sleep2vec2`, and `sleep2expert`; missing or unsupported variants block command generation.
+Recipe `variant` controls the generated module namespace for model tasks. Supported values are `sleep2vec`, `sleep2vec2`, and `sleep2expert`; missing or unsupported variants block model command generation. `task=sleep2stat` is variantless, so any non-null variant, including `sleep2stat`, blocks command generation.
+
+Sleep2stat plans call only existing `sleep2stat` CLI commands: `python -m sleep2stat validate-config`, `python -m sleep2stat run`, optional `python -m sleep2stat summarize`, and optional `python -m sleep2stat plot-cohort`. Summarize and cohort plotting always use config `run.output_dir`; a recipe `artifacts.run_dir` that differs from config `run.output_dir` blocks before scripts are written. Agent checks rely on `sleep2stat.config.load_config()` for structural/runtime semantics and only add agent-facing risk gates such as placeholder model analyzer configs or checkpoints.
 
 Recipe `base_recipe` paths are resolved relative to the local recipe file first, then by the repository root fallback used by checked-in examples.
 
-Generated finetune, hparam trial, infer, and final-test commands should propagate explicit supported runtime/input fields from the recipe or user decisions. Do not drop explicit checkpoint, pretrained-backbone, eval split, test-after-fit, device, batch-size, precision, or scheduler/checkpoint cadence fields when rendering scripts.
+Generated finetune, hparam trial, infer, final-test, and sleep2stat commands should propagate explicit supported runtime/input fields from the recipe or user decisions. Do not drop explicit checkpoint, pretrained-backbone, eval split, test-after-fit, device, batch-size, precision, split, dry-run, limit-records, or scheduler/checkpoint cadence fields when rendering scripts.
 
 Hyper-parameter search uses `runtime.<name>` keys for supported CLI knobs and `yaml:/json/pointer/path` keys for generated config overrides. Bare search keys are invalid, and `search.max_trials` must be a positive integer. Hparam recipes also inherit base finetune consultation gates; a base config with no usable preset/index or missing high-impact finetune decision blocks tuning. Generated `run_all.sh` scripts are written so they can find sibling `trial_*.sh` files when invoked from outside the plan directory.
 
@@ -85,7 +88,7 @@ Preset generation commands should render explicit supported `preset:` fields suc
 
 ## Reuse Guidance
 
-Do not create a second trainer or preprocessing runtime. Generated commands must call the existing variant package entrypoints, `preprocess/save_dataset_presets.py`, `preprocess/convert_npz_to_kaldi.py`, `sleep2vec2/preprocess/*`, `sleep2expert/preprocess/*`, and `utils/check_configs.py`. Long-running preprocessing should keep tqdm for humans and write `status/progress.json` for agents; `agent_tools progress` reads that file locally or through a single short SSH `cat`. Current progress writers cover root and variant Kaldi conversion, preset generation, preset merging, index splitting, missing-mask statistics, WatchPAT EDF conversion, `utils/fill_index_duration.py`, `utils/cut_ukb_sleep_with_asleep.py`, `utils/collect_ukb_demographics.py`, and `utils/parse_ukb_annotations_by_person.py`.
+Do not create a second trainer, preprocessing runtime, or sleep2stat execution manager. Generated commands must call the existing variant package entrypoints, `preprocess/save_dataset_presets.py`, `preprocess/convert_npz_to_kaldi.py`, `sleep2vec2/preprocess/*`, `sleep2expert/preprocess/*`, `python -m sleep2stat`, and `utils/check_configs.py`. Long-running preprocessing should keep tqdm for humans and write `status/progress.json` for agents; `agent_tools progress` reads that file locally or through a single short SSH `cat`. Current progress writers cover root and variant Kaldi conversion, preset generation, preset merging, index splitting, missing-mask statistics, WatchPAT EDF conversion, `utils/fill_index_duration.py`, `utils/cut_ukb_sleep_with_asleep.py`, `utils/collect_ukb_demographics.py`, and `utils/parse_ukb_annotations_by_person.py`.
 
 ## Edit Hotspots
 

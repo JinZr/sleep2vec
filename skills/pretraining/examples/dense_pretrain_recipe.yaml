@@ -1,4 +1,3 @@
-schema_version: 1
 name: dense_pretrain_example
 task: pretrain
 variant: sleep2vec

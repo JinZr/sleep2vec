@@ -1,4 +1,3 @@
-schema_version: 1
 name: sleep2vec2_ppg_ahi_finetune_example
 task: finetune
 variant: sleep2vec2

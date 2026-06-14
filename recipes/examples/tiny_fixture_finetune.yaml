@@ -1,4 +1,3 @@
-schema_version: 1
 name: tiny_fixture_finetune
 task: finetune
 variant: sleep2vec
