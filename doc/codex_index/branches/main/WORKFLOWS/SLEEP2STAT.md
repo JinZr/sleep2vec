@@ -76,6 +76,15 @@ Common chain:
 
 Use `StageSourceResolver` for sleep-hour, REM/NREM-hour, stage-minute, and onset-stage lookup. Do not recalculate stage masks inside analyzers.
 
+## Editing Output Metrics
+
+1. Identify whether the field is analyzer-produced or reducer-produced.
+2. Reuse `StageSourceResolver` for stage denominators instead of creating local masks.
+3. Encode units and denominators in public night-stat field names.
+4. Keep deprecated aliases only for high-risk existing fields and only when their semantics remain clear.
+5. Put plot-only compatibility fallback in `sleep2stat.plot`, not in generated result tables.
+6. Add or update focused tests in `tests/test_sleep2stat_analyzers.py`, `tests/test_sleep2stat_reducers.py`, `tests/test_sleep2stat_writers.py`, or `tests/test_sleep2stat_cli.py`.
+
 ## Model Analyzer
 
 `sleep2vec_downstream` loads a namespace-local finetune model:

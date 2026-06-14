@@ -50,6 +50,7 @@ This page answers the practical question: when you need to add or change behavio
 | sleep2stat YAML parsing | `sleep2stat.config.load_config` | Enforces strict run/data/signals/analyzers/reducers/outputs schema, analyzer/reducer references, backend support, and stage-source ordering | Ad hoc YAML parsing in `sleep2stat.cli`, agent tooling, or recipes |
 | sleep2stat record loading | `sleep2stat.io.records.load_records` | Single NPZ/Kaldi `SleepRecord` loader with split filtering, path resolution, path-safe record ids, and duplicate-id rejection | Direct pandas reads in analyzers or writers |
 | sleep2stat execution loop | `sleep2stat.core.pipeline.run_pipeline` | Owns dry-run, skip-existing, chunking, analyzer preparation, reducer fallback, failure accounting, progress, and manifest writes | A parallel execution manager in `agent_tools` or scripts |
+| sleep2stat result object | `sleep2stat.core.artifacts.AnalyzerResult` | Single carrier for analyzer/reducer `epoch`, `second`, `events`, `night`, `arrays`, and warnings | Parallel result DTOs or writer-specific row objects |
 | sleep2stat analyzer/reducer construction | `sleep2stat.registry.create_analyzer` and `create_reducer` | Keeps analyzer/reducer type dispatch centralized through registration side effects | Type-name `if`/`elif` trees outside the registry |
 | sleep2stat stage denominators | `sleep2stat.core.stage_sources.StageSourceResolver` | Single source for stage epoch lookup, sleep/REM/NREM hour denominators, stage-minute denominators, and onset-time stage assignment | Recomputing sleep masks independently in model, YASA, or SpO2 analyzers |
 | sleep2stat model analyzer data path | `Sleep2vecDownstreamAnalyzer` plus `_build_datasets` / `_build_kaldi_datasets` | Reuses namespace-local finetune config/model code and root `DefaultDataset` / `KaldiPSGDataset` batch contracts | Passing raw arrays directly into finetune models or accepting embedding-export Kaldi manifests |
@@ -135,6 +136,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Reuse `sleep2stat.config.load_config` for all structural config checks, including agent-facing summaries and `utils/check_configs.py`.
 - Reuse `load_records` for NPZ/Kaldi record discovery; do not let analyzers read index CSVs directly.
+- Reuse `AnalyzerResult` for analyzer and reducer outputs; add fields to existing tables instead of inventing parallel result objects.
 - Reuse `StageSourceResolver` whenever a metric needs TST, sleep-hour, REM/NREM-hour, or stage-minute denominators.
 - Reuse `AnalysisBundleWriter` for output files, skip-existing behavior, failure merging, and global table rebuilds.
 - Keep model-derived respiratory event semantics in `decode_ahi_logits`; reducers should consume analyzer outputs rather than reinterpret logits.

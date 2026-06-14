@@ -57,6 +57,17 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - Reuse guidance: this is the canonical execution loop for sleep2stat analysis bundles.
 - Duplication-risk notes: dry-run, skip-existing, chunk-level failure handling, reducer fallback, and completion markers must not be reimplemented in agent scripts.
 
+## `sleep2stat.core.artifacts.AnalyzerResult`
+
+- File: `sleep2stat/core/artifacts.py`
+- Signature: `AnalyzerResult(name: str, record_id: str, epoch: pd.DataFrame | None = None, second: pd.DataFrame | None = None, events: pd.DataFrame | None = None, night: dict[str, Any] | None = None, arrays: dict[str, np.ndarray] = field(default_factory=dict), warnings: list[str] = field(default_factory=list))`
+- Purpose and contract: carry one analyzer or reducer output for one record across the pipeline and into bundle writers.
+- Important inputs/outputs: analyzer name, record id, optional epoch/second/events/night tables, optional arrays, and warnings in; structured pipeline result out.
+- Side effects: none.
+- Key callers/callees: produced by analyzers and reducers; consumed by `run_pipeline`, `StageSourceResolver`, and `AnalysisBundleWriter.collect_tables`.
+- Reuse guidance: add fields to the existing `epoch`, `second`, `events`, `night`, or `arrays` slots instead of creating a parallel result object.
+- Duplication-risk notes: new output surfaces should remain compatible with writer table collection and per-record sidecars.
+
 ## `sleep2stat.registry.register_analyzer` and `create_analyzer`
 
 - File: `sleep2stat/registry.py`
