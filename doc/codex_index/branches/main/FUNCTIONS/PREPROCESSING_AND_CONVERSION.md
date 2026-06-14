@@ -1,5 +1,16 @@
 # Preprocessing And Conversion
 
+## `utils.check_configs.check_config_file`
+
+- File: `utils/check_configs.py`
+- Signature: `check_config_file(path: Path) -> None`
+- Purpose and contract: validate one repository YAML file through the correct config parser. Model configs route to the root or variant config/preset helpers; sleep2stat-shaped YAML and files under `configs/sleep2stat/` route to `sleep2stat.config.load_config`.
+- Important inputs/outputs: config path in; raises on invalid config and returns `None` on success.
+- Side effects: imports the selected parser modules.
+- Key callers/callees: caller is `utils.check_configs.main`; callees include `sleep2vec.config.load_*`, package-local variant config helpers, preset-build helpers, and `sleep2stat.config.load_config`.
+- Reuse guidance: use this checker for repo config validation instead of writing shell loops over config directories.
+- Duplication risk notes: do not duplicate sleep2stat schema checks here; the branch is only a router to `sleep2stat.config.load_config`.
+
 ## `preprocess.save_dataset_presets.main`
 
 - File: `preprocess/save_dataset_presets.py`

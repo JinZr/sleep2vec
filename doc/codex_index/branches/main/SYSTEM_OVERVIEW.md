@@ -2,15 +2,18 @@
 
 ## Repository Shape
 
-The repository is a config-driven multimodal sleep modeling system with five operational layers:
+The repository is a config-driven multimodal sleep modeling system with six operational layers:
 
 1. Schema and task semantics: `sleep2vec/config.py`, `sleep2vec/common.py`
 2. Construction and extension: `sleep2vec/registry.py`, `sleep2vec/builders.py`, `sleep2vec/backbones/`, `sleep2vec/modules/`, `sleep2vec/cls/`, `sleep2vec/downstreams/`
 3. Model and trainer runtime: `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_modelling.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/sleep2vec_adaptation.py`
 4. Data and preprocessing: `data/`, `preprocess/`, `sleep2vec/utils.py`, including both NPZ and Kaldi manifest backends
-5. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/sleep2vec_inference.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`, `agent_tools/`, and standalone utilities under `utils/`
+5. Analysis bundles and derived statistics: `sleep2stat/`
+6. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/sleep2vec_inference.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`, `agent_tools/`, and standalone utilities under `utils/`
 
 `sleep2vec2/` and `sleep2expert/` are tracked standalone namespaces on this branch. They mirror the root runtime surface with package-local `data/` and `preprocess/` modules instead of importing root `data` or `preprocess`. `sleep2expert/` also owns the MoE RoFormer, MoE regularization, finetune tuning policy, and routing-analysis export path.
+
+`sleep2stat/` is a tracked analysis-bundle package. It reads NPZ or Kaldi record manifests, runs configured analyzers and reducers, and writes per-record sidecars plus optional global tables. Its model analyzer reuses the existing finetune model/data paths; raw YASA and SpO2 analyzers operate directly on NPZ signals.
 
 Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task, head, evaluation-visualization, and adapt references; entrypoints still inject runtime-only values such as learning rate, devices, checkpoint paths, diagnostics mode, and experiment naming.
 
@@ -21,6 +24,11 @@ Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task,
 - `python -m sleep2vec.finetune`
 - `python -m sleep2vec.infer`
 - `python -m sleep2expert.routing_analysis`
+- `python -m sleep2stat validate-config`
+- `python -m sleep2stat run`
+- `python -m sleep2stat summarize`
+- `python -m sleep2stat plot-record`
+- `python -m sleep2stat plot-cohort`
 - `python utils/check_configs.py`
 - `python -m agent_tools doctor --recipe ...`
 - `python -m agent_tools context --task ...`
@@ -28,6 +36,19 @@ Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task,
 - Preprocessing CLIs under `preprocess/`
 
 The package-local variant mirrors expose equivalent pretrain/adapt/finetune/infer and preprocessing module entrypoints under `sleep2vec2.*` and `sleep2expert.*`.
+
+### sleep2stat
+
+`sleep2stat` is a derived-analysis runtime rather than a trainer:
+
+1. `sleep2stat.config.load_config` validates the strict YAML blocks: `run`, `data`, `signals`, `analyzers`, `reducers`, and `outputs`.
+2. `sleep2stat.io.records.load_records` builds `SleepRecord` objects from NPZ index rows or Kaldi `manifest.json` split manifests.
+3. `sleep2stat.core.pipeline.run_pipeline` prepares an `AnalysisBundleWriter`, filters already-completed records when `run.skip_existing=true`, prepares enabled analyzers, executes analyzers chunk by chunk, applies reducers, and writes progress, failures, manifests, and result bundles.
+4. Analyzer/reducer construction goes through `sleep2stat.registry.create_analyzer` and `create_reducer`; registration side effects live under `sleep2stat/analyzers/` and `sleep2stat/reducers/`.
+5. `sleep2stat.io.writers.AnalysisBundleWriter` owns per-record `_SUCCESS.json`, `events.csv.gz`, `night_stats.json`, `arrays.npz`, `result_manifest.csv`, global table shards, rebuilt cohort tables, failure merging, and run manifests.
+6. `sleep2stat.plot` renders per-record traces and cohort-level sleep, respiratory, microstructure, and harmonization panels from completed bundles.
+
+Agent-generated `sleep2stat` commands must go through `agent_tools` consultation gates first. `task=sleep2stat` is variantless; adding a `variant` value blocks command generation.
 
 ## Runtime Stack
 
@@ -183,6 +204,7 @@ The canonical Kaldi path is:
 - YAML `preset_build` strictness
 - repo-specific `ppg_*finetune*.yaml` contracts
 - tracked example recipes under `configs/examples/**`
+- `configs/sleep2stat/*.yaml` through `sleep2stat.config.load_config`
 
 ## Outputs And Side Effects
 
@@ -210,6 +232,12 @@ The canonical Kaldi path is:
   - command plans under `artifacts/agent_plans/`
   - generated trial configs under `runs/generated/`
   - blocked question files when consultation gates require user input
+- sleep2stat outputs:
+  - `config.yaml`, `cli_args.yaml`, `run_manifest.json`, and `record_manifest.csv`
+  - `status/progress.json` and `status/failures.csv`
+  - per-record `_SUCCESS.json`, `events.csv.gz`, `night_stats.json`, optional `arrays.npz`, and `result_manifest.csv`
+  - global `tables/night_stats.csv`, summary tables, and optionally epoch/second/event alignment tables
+  - `plots/` outputs for per-record and cohort visualization commands
 
 ## Variant State On This Branch
 

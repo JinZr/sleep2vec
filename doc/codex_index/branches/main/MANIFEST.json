@@ -1,7 +1,7 @@
 {
   "branch": "main",
-  "commit": "28dd58fe944803592b7e9857b3a0f9fbdfffada3",
-  "generated_at": "2026-06-10T18:58:04Z",
+  "commit": "65a86e37a1d1da2ed7cb02ec21d9457504dcfa0a",
+  "generated_at": "2026-06-14T11:06:05Z",
   "mode": "repair",
   "coverage": {
     "tracked_file_counts": {
@@ -10,14 +10,15 @@
       "preprocess": 7,
       "sleep2vec2": 105,
       "sleep2expert": 109,
+      "sleep2stat": 29,
       "sleep2vec_moe": 0,
       "sleep2vec_hires": 0,
-      "configs": 108,
-      "tests": 68,
+      "configs": 114,
+      "tests": 74,
       "utils": 8,
       "agent_tools": 18,
-      "skills": 33,
-      "recipes": 16,
+      "skills": 37,
+      "recipes": 22,
       "agent_policy_and_contract_docs": 9
     },
     "function_catalog_scope": [
@@ -33,6 +34,7 @@
       "preset generation, split assignment, mask normalization, and WatchPAT conversion CLIs",
       "standalone UKB/asleep night cutting, UKB annotation parsing, UKB demographic collection, Kaldi index repair, and case-control matching utilities",
       "downstream evaluation metrics including specificity, downstream evaluation plots, pair-accuracy heatmaps, and diagnostics hooks",
+      "sleep2stat config parsing, NPZ/Kaldi record loading, analyzer/reducer registries, model/YASA/SpO2 analyzers, output bundle writers, plotting, and resume semantics",
       "agent_tools CLI, recipe schemas, skill manifests, consultation gates, context bundles, generated command plans, hparam launch/monitor/select/export, experiment monitoring, adaptive hparam loops, progress files, and external-test locking policy"
     ],
     "workflow_scope": [
@@ -43,7 +45,8 @@
       "preprocessing, preset generation, and standalone data utilities",
       "config validation and example recipe coverage",
       "variant namespaces and sleep2expert routing analysis",
-      "agent tooling, stop-and-consult gates, and safe command plan generation"
+      "agent tooling, stop-and-consult gates, and safe command plan generation",
+      "sleep2stat validation, execution, summarization, plotting, and agent-recipe command generation"
     ]
   },
   "exclusions": [

@@ -47,6 +47,17 @@ This page answers the practical question: when you need to add or change behavio
 | Kaldi conversion | `preprocess/convert_npz_to_kaldi.py` plus package-local mirrors | Canonical NPZ-to-Kaldi root writer with split manifests, sorted scps, sharding, and semantic compression policy | One-off ark/scp writers |
 | Split generation | `preprocess/split_index_by_dataset.py` | Canonical dataset-group split policy, mask normalization, and optional global pair-coverage checks | Manual split assignment notebooks |
 | Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness | One-off shell loops or YAML linters without repo semantics |
+| sleep2stat YAML parsing | `sleep2stat.config.load_config` | Enforces strict run/data/signals/analyzers/reducers/outputs schema, analyzer/reducer references, backend support, and stage-source ordering | Ad hoc YAML parsing in `sleep2stat.cli`, agent tooling, or recipes |
+| sleep2stat record loading | `sleep2stat.io.records.load_records` | Single NPZ/Kaldi `SleepRecord` loader with split filtering, path resolution, path-safe record ids, and duplicate-id rejection | Direct pandas reads in analyzers or writers |
+| sleep2stat execution loop | `sleep2stat.core.pipeline.run_pipeline` | Owns dry-run, skip-existing, chunking, analyzer preparation, reducer fallback, failure accounting, progress, and manifest writes | A parallel execution manager in `agent_tools` or scripts |
+| sleep2stat analyzer/reducer construction | `sleep2stat.registry.create_analyzer` and `create_reducer` | Keeps analyzer/reducer type dispatch centralized through registration side effects | Type-name `if`/`elif` trees outside the registry |
+| sleep2stat stage denominators | `sleep2stat.core.stage_sources.StageSourceResolver` | Single source for stage epoch lookup, sleep/REM/NREM hour denominators, stage-minute denominators, and onset-time stage assignment | Recomputing sleep masks independently in model, YASA, or SpO2 analyzers |
+| sleep2stat model analyzer data path | `Sleep2vecDownstreamAnalyzer` plus `_build_datasets` / `_build_kaldi_datasets` | Reuses namespace-local finetune config/model code and root `DefaultDataset` / `KaldiPSGDataset` batch contracts | Passing raw arrays directly into finetune models or accepting embedding-export Kaldi manifests |
+| sleep2stat AHI decoding | `sleep2stat.analyzers.model_downstream.decode_ahi_logits` | Centralizes threshold resolution, second alignment, event extraction, model/recording/sleep denominators, and clinical `pred_ahi` naming | Respiratory-event postprocessing in reducers or plot code |
+| sleep2stat YASA event summaries | `sleep2stat.analyzers.yasa._event_night_summary` | Mirrors YASA event-count and stage-density semantics while using configured stage sources | Stage-density calculations copied into reducers |
+| sleep2stat SpO2 loading and ODI | `sleep2stat.analyzers.spo2._spo2_signal` and `_odi_stats` | Centralizes SpO2 scaling, artifact masking, valid-SpO2 denominators, recording denominators, and optional sleep denominators | Independent oximetry artifact filters per analyzer |
+| sleep2stat bundle writing | `sleep2stat.io.writers.AnalysisBundleWriter` | Owns resumable per-record sidecars, global shards, cumulative summaries, failures, progress, and manifest schema | Writing bundle files directly from analyzers or CLI code |
+| sleep2stat plotting | `sleep2stat.plot.plot_record` and `plot_cohort` | Reads completed bundle contracts and handles field fallback for record/cohort visualizations | Plot scripts that inspect analyzer internals directly |
 | Agent workflow support | `agent_tools.plans`, `agent_tools.recipes`, `agent_tools.decisions`, `agent_tools.hparam`, `agent_tools.experiments`, `agent_tools.adaptive_hparam`, and `agent_tools.progress` | Centralizes context bundles, recipe loading, plan generation, stop-and-consult gates, hparam orchestration, experiment monitoring, and machine-readable progress | A second training entrypoint or natural-language-only policy |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
 | UKB asleep night cutting | `utils/cut_ukb_sleep_with_asleep.py` | Standalone utility that mirrors UKB `.cwa` input trees and saves longest sleep block per asleep noon-to-noon interval | New sleep2vec-dependent cutting scripts |
@@ -120,6 +131,15 @@ This page answers the practical question: when you need to add or change behavio
 - Enforce `NEEDS_USER_INPUT` for high-impact ambiguous decisions before writing runnable scripts.
 - Preserve recipe `variant` routing so generated commands call `sleep2vec`, `sleep2vec2`, or `sleep2expert` package-local entrypoints as requested.
 
+### If you are changing sleep2stat
+
+- Reuse `sleep2stat.config.load_config` for all structural config checks, including agent-facing summaries and `utils/check_configs.py`.
+- Reuse `load_records` for NPZ/Kaldi record discovery; do not let analyzers read index CSVs directly.
+- Reuse `StageSourceResolver` whenever a metric needs TST, sleep-hour, REM/NREM-hour, or stage-minute denominators.
+- Reuse `AnalysisBundleWriter` for output files, skip-existing behavior, failure merging, and global table rebuilds.
+- Keep model-derived respiratory event semantics in `decode_ahi_logits`; reducers should consume analyzer outputs rather than reinterpret logits.
+- Keep `task=sleep2stat` variantless in `agent_tools`; generated commands should call the existing `sleep2stat` CLI only.
+
 ### If you are changing standalone variants
 
 - Keep `sleep2vec2` and `sleep2expert` imports package-local.
@@ -144,6 +164,8 @@ This page answers the practical question: when you need to add or change behavio
 11. MoE routing aux is transient in `last_moe_aux`; persistent analysis should go through `sleep2expert.routing_analysis`.
 12. Inference metrics, overview rows, predictions, manifests, and W&B artifacts share one `prediction_run_id`; update `sleep2vec.results`, `sleep2vec.sleep2vec_inference`, and inference W&B logging together instead of adding a parallel export path.
 13. Binary `specificity` and stage alias `spec` intentionally have different averaging semantics for two-class stage collapses; use `compute_downstream_metrics` instead of recalculating them outside `metrics.py`.
+14. sleep2stat model-hour, recording-hour, and sleep-hour respiratory denominators have distinct meanings; keep field names explicit and do not collapse them into one AHI column.
+15. sleep2stat YASA and SpO2 analyzers are NPZ/raw-signal analyzers; only `sleep2vec_downstream` currently supports Kaldi-backed records.
 
 ## Known Non-Reuse Zones
 

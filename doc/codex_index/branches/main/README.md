@@ -5,8 +5,8 @@ This directory is the branch-scoped engineering manual for `main`. Use it before
 ## Branch Scope
 
 - Branch: `main`
-- Last refresh commit: `28dd58fe944803592b7e9857b3a0f9fbdfffada3`
-- Last refresh at: `2026-06-10T18:58:04Z`
+- Last refresh commit: `65a86e37a1d1da2ed7cb02ec21d9457504dcfa0a`
+- Last refresh at: `2026-06-14T11:06:05Z`
 - Mode: `repair`
 
 ## Purpose
@@ -39,19 +39,20 @@ Tracked files indexed from this branch:
 - `preprocess/`: 7 tracked files
 - `sleep2vec2/`: 105 tracked files
 - `sleep2expert/`: 109 tracked files
+- `sleep2stat/`: 29 tracked files
 - `sleep2vec_moe/`: 0 tracked files
 - `sleep2vec_hires/`: 0 tracked files
-- `configs/`: 108 tracked files
-- `tests/`: 68 tracked files
+- `configs/`: 114 tracked files
+- `tests/`: 74 tracked files
 - `utils/`: 8 tracked files
 - `agent_tools/`: 18 tracked files
-- `skills/`: 33 tracked files
-- `recipes/`: 16 tracked files
+- `skills/`: 37 tracked files
+- `recipes/`: 22 tracked files
 - `agent_policies/` and `doc/agent_contracts/`: 9 tracked files
 
 ## Coverage Boundaries
 
-- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, agent tooling and consultation gates, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
+- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, `sleep2stat` analysis bundles, agent tooling and consultation gates, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
 - Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb`, package-local variant preprocessing notebooks, and tracked visualization font binaries under `*/visualization/assets/fonts/`.
 - Outside this index scope: tracked example data scaffolding under `egs/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
@@ -68,6 +69,7 @@ Tracked files indexed from this branch:
 - If you are changing dataset loading, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
 - If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, WatchPAT conversion, Kaldi index repair, UKB annotation parsing, UKB demographic extraction, or case-control matching utilities, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
 - If you are changing evaluation plots, pair-accuracy logging, or diagnostics, start with [FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md](./FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md).
+- If you are changing `sleep2stat` config parsing, records, analyzers, reducers, writers, plotting, or agent recipe routing, start with [FUNCTIONS/SLEEP2STAT.md](./FUNCTIONS/SLEEP2STAT.md) and [WORKFLOWS/SLEEP2STAT.md](./WORKFLOWS/SLEEP2STAT.md).
 - If you are changing agent-facing recipes, consultation gates, command plans, hparam orchestration, experiment monitoring, or progress files, start with [FUNCTIONS/AGENT_TOOLING.md](./FUNCTIONS/AGENT_TOOLING.md) and [WORKFLOWS/AGENT_TOOLING.md](./WORKFLOWS/AGENT_TOOLING.md).
 - If you think you need `sleep2vec2/` or `sleep2expert/`, read [FUNCTIONS/VARIANT_SURFACES.md](./FUNCTIONS/VARIANT_SURFACES.md) first. Both are active tracked standalone namespaces on this branch.
 
@@ -91,6 +93,7 @@ Current workflow coverage:
 - [WORKFLOWS/CONFIG_VALIDATION.md](./WORKFLOWS/CONFIG_VALIDATION.md)
 - [WORKFLOWS/VARIANTS_AND_ROUTING.md](./WORKFLOWS/VARIANTS_AND_ROUTING.md)
 - [WORKFLOWS/AGENT_TOOLING.md](./WORKFLOWS/AGENT_TOOLING.md)
+- [WORKFLOWS/SLEEP2STAT.md](./WORKFLOWS/SLEEP2STAT.md)
 
 ## Reliability Notes
 
