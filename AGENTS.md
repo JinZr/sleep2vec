@@ -37,11 +37,11 @@ bash utils/style_check.sh
 ## Code Design Simplicity Policy
 - Start from the existing contract and canonical code path. Change the narrowest owner that already handles the behavior before adding new entrypoints, helpers, wrappers, or schema branches.
 - Keep one canonical spelling and location for each concept. Do not add alternate config fields, nested aliases, source/value dictionaries, plural variants, or duplicate output names for the same semantic value.
-- Remove obsolete fields and aliases outright when the contract changes. Do not add compatibility shims, migration parsers, warning modes, feature flags, schema-version layers, or read-side fallbacks unless the user explicitly asks for compatibility.
+- Remove obsolete semantic entrypoints and aliases from the canonical behavior. Reject legacy fields at user-input boundaries only when accepting them would create duplicate semantic sources, hidden fallbacks, silently ignored analysis intent, or incorrect outputs. Do not add bespoke validation for inert values or malformed values that the canonical code path will naturally reject.
 - Treat paths and external identifiers exactly as the contract states. If a value should be passed through as provided, do not expand, resolve, normalize, infer a base directory, or silently rewrite it.
 - Make semantic choices explicit and fail fast at boundaries. Defaults are acceptable for operational convenience, but model/data semantics, label sources, thresholds, stage sources, and output contracts should not be guessed.
 - Name outputs by their real unit and denominator. If both ratio and percent are emitted, both names must say so; do not also emit ambiguous historical aliases.
-- Let tests pin removals as well as additions. When deleting legacy behavior, add or update tests so old fields, aliases, and fallbacks fail validation or are absent from outputs.
+- Let tests pin removals as well as additions. When deleting legacy behavior, test that hidden fallbacks and ambiguous legacy entrypoints fail validation or disappear from outputs; do not add tests that require special rejection of ordinary bad values unless they would otherwise produce misleading results.
 
 ## Codex Index Usage Policy
 - Before editing code, determine the current Git branch and consult the matching index under `doc/codex_index/branches/<branch>/`.
