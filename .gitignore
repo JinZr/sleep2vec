@@ -249,7 +249,7 @@ npz_lists/
 __MACOSX/
 log-*/
 wandb_logs/
-recipes/
+recipes/generated/
 artifacts/
 artifacts/agent_context/
 artifacts/agent_plans/
