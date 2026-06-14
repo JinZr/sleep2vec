@@ -249,6 +249,8 @@ npz_lists/
 __MACOSX/
 log-*/
 wandb_logs/
+recipes/
+artifacts/
 artifacts/agent_context/
 artifacts/agent_plans/
 runs/generated/
