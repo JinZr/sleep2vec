@@ -9,7 +9,6 @@ from sleep2stat.reducers.base import BaseReducer
 from sleep2stat.registry import register_reducer
 
 
-@register_reducer("yasa_hypnogram_stats")
 @register_reducer("hypnogram_stats")
 class HypnogramStatsReducer(BaseReducer):
     def reduce(
@@ -57,7 +56,6 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
             f"{prefix}_valid_stage_epoch_ratio": valid_stage_ratio,
             f"{prefix}_SE_ratio": np.nan,
             f"{prefix}_SE_pct": np.nan,
-            f"{prefix}_SE": np.nan,
         }
 
     sleep = np.isin(values, [1, 2, 3, 4])
@@ -97,18 +95,14 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
         f"{prefix}_unscored_epoch_count": unscored_count,
         f"{prefix}_valid_stage_epoch_ratio": valid_stage_ratio,
         f"{prefix}_WASO_SPT_min": waso_spt_min,
-        f"{prefix}_WASO_min": waso_spt_min,
         f"{prefix}_terminal_wake_after_last_sleep_min": terminal_wake_min,
         f"{prefix}_WASO_after_sleep_onset_to_recording_end_min": waso_to_end_min,
         f"{prefix}_SE_ratio": se_ratio,
         f"{prefix}_SE_pct": se_ratio * 100.0 if not np.isnan(se_ratio) else np.nan,
-        f"{prefix}_SE": se_ratio,
         f"{prefix}_SOL_min": sol_min,
         f"{prefix}_REM_latency_min": rem_latency_min,
-        f"{prefix}_stage_shift_rate_per_sleep_hour": _stage_shift_index(sleep_period, tst_min),
-        f"{prefix}_stage_shift_index": _stage_shift_index(sleep_period, tst_min),
+        f"{prefix}_stage_shift_rate_per_sleep_hour": _stage_shift_rate_per_sleep_hour(sleep_period, tst_min),
         f"{prefix}_sleep_to_wake_transition_index": _sleep_to_wake_transition_index(sleep_period, tst_min),
-        f"{prefix}_SFI_yasa_like": _sleep_to_wake_transition_index(sleep_period, tst_min),
         f"{prefix}_sleep_bout_count": _sleep_bout_count(values),
         f"{prefix}_mean_sleep_bout_min": _mean_sleep_bout_min(values, epoch_min),
     }
@@ -117,13 +111,12 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
     for stage_id, label in ((1, "N1"), (2, "N2"), (3, "N3"), (4, "REM")):
         minutes = float((values == stage_id).sum() * epoch_min)
         stats[f"{prefix}_{label}_min"] = minutes
-        stats[f"{prefix}_pct_{label}"] = float(minutes / tst_min) if tst_min > 0 else np.nan
         stats[f"{prefix}_{label}_ratio_TST"] = float(minutes / tst_min) if tst_min > 0 else np.nan
         stats[f"{prefix}_{label}_pct_TST"] = float(minutes / tst_min * 100.0) if tst_min > 0 else np.nan
     return stats
 
 
-def _stage_shift_index(sleep_period: np.ndarray, tst_min: float) -> float:
+def _stage_shift_rate_per_sleep_hour(sleep_period: np.ndarray, tst_min: float) -> float:
     if sleep_period.size < 2 or tst_min <= 0:
         return np.nan
     transitions = int(np.sum(sleep_period[1:] != sleep_period[:-1]))

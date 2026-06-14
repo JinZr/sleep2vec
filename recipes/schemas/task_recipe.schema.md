@@ -136,7 +136,7 @@ Sleep2stat recipes use the existing `sleep2stat` CLI and do not use a model vari
 - `inputs.config`: required sleep2stat YAML.
 - `inputs.split`: optional CLI split override; when absent, `data.split` from the config is used.
 - `runtime.device`, `runtime.num_workers`, `runtime.batch_size`, `runtime.limit_records`, and `runtime.dry_run`: optional `sleep2stat run` CLI knobs.
-- `runtime.summarize_after_run`, `runtime.plot_cohort_after_run`, `runtime.plot_group_column`, and `runtime.plot_stage_source`: optional post-run command rendering controls.
+- `runtime.summarize_after_run`, `runtime.plot_cohort_after_run`, `runtime.plot_group_column`, and `runtime.plot_stage_source`: optional post-run command rendering controls; `plot_stage_source`, when present, must be a concrete analyzer name.
 - `artifacts.run_dir`: optional, but if present it must exactly match config `run.output_dir`.
 - `evaluation_policy.external_test_locked`: must be explicitly `true` when the effective split includes `test`.
 - `decisions.sleep2stat_split_policy`, `decisions.sleep2stat_metric_use_policy`, and `decisions.overwrite_policy`: explicit high-impact decisions.

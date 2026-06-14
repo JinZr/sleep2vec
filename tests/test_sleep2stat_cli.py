@@ -135,7 +135,7 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, mon
             }
         },
         "analyzers": [
-            {"name": "reference_stage5", "type": "npz_stage_reference", "label_name": "stage5", "stage_key": "stage5"}
+            {"name": "reference_stage5", "type": "npz_stage_reference", "stage_key": "stage5"}
         ],
         "reducers": [{"name": "stage5_stats", "type": "hypnogram_stats", "source": "reference_stage5"}],
         "outputs": {
@@ -199,7 +199,7 @@ def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, mo
             }
         },
         "analyzers": [
-            {"name": "source_model", "type": "npz_stage_reference", "label_name": "stage5", "stage_key": "stage5"}
+            {"name": "source_model", "type": "npz_stage_reference", "stage_key": "stage5"}
         ],
         "reducers": [{"name": "stage5_stats", "type": "hypnogram_stats", "source": "source_model"}],
         "outputs": {
@@ -289,7 +289,7 @@ def test_cli_plot_record_creates_pngs_from_per_record_outputs(tmp_path: Path):
     assert (record_dir / "plots" / "ahi_spo2_trace.png").exists()
 
 
-def test_cli_plot_cohort_creates_core_harmonization_and_auto_panels(tmp_path: Path):
+def test_cli_plot_cohort_creates_core_harmonization_and_stage_panels(tmp_path: Path):
     pytest.importorskip("matplotlib")
     run_dir = tmp_path / "run"
     (run_dir / "tables").mkdir(parents=True)
@@ -315,7 +315,6 @@ def test_cli_plot_cohort_creates_core_harmonization_and_auto_panels(tmp_path: Pa
             "stage5_model_SOL_min": [18, 16, 12, 30, 26, 22],
             "stage5_model_REM_latency_min": [96, 88, 82, 130, 118, 110],
             "stage5_model_sleep_to_wake_transition_index": [4.2, 3.9, 3.4, 6.5, 5.8, 5.0],
-            "stage5_model_SFI_yasa_like": [4.2, 3.9, 3.4, 6.5, 5.8, 5.0],
             "stage5_model_stage_shift_rate_per_sleep_hour": [12.0, 11.1, 10.4, 15.2, 14.6, 13.2],
             "stage5_model_N1_ratio_TST": [0.08, 0.07, 0.06, 0.12, 0.11, 0.10],
             "stage5_model_N2_ratio_TST": [0.48, 0.50, 0.51, 0.46, 0.47, 0.48],
@@ -346,6 +345,8 @@ def test_cli_plot_cohort_creates_core_harmonization_and_auto_panels(tmp_path: Pa
                 str(run_dir),
                 "--group-column",
                 "center",
+                "--stage-source",
+                "stage5_model",
                 "--adjust-covariates",
                 "age",
                 "sex",
@@ -405,7 +406,6 @@ def test_plot_cohort_resp_metric_prefers_clinical_ahi_and_new_denominators():
             "ahi_model_pred_NREM_AHI_onset_stage": [20.0],
             "ahi_model_pred_ahi": [12.0],
             "ODI3_per_recording_hour": [10.0],
-            "ODI3_recording": [99.0],
         }
     )
 
@@ -417,6 +417,20 @@ def test_plot_cohort_resp_metric_prefers_clinical_ahi_and_new_denominators():
         ("Pred NREM AHI", "ahi_model_pred_NREM_AHI_onset_stage", 1.0),
         ("ODI3", "ODI3_per_recording_hour", 1.0),
     ]
+
+
+def test_plot_cohort_resp_metric_rejects_legacy_resp_columns():
+    frame = pd.DataFrame(
+        {
+            "ahi_model_pred_ahi_rem_denominator": [30.0],
+            "ahi_model_pred_ahi_nrem_denominator": [20.0],
+            "ODI3_recording": [10.0],
+            "ODI4_recording": [5.0],
+            "pred_event_hypoxic_burden_pctmin_per_hour": [2.0],
+        }
+    )
+
+    assert _respiratory_metric_specs(frame) == []
 
 
 def test_cli_plot_cohort_allows_respiratory_only_bundle(tmp_path: Path):
@@ -463,7 +477,7 @@ def test_cli_plot_cohort_skips_harmonization_for_single_center(tmp_path: Path):
         }
     ).to_csv(run_dir / "tables" / "night_stats.csv", index=False)
 
-    assert main(["plot-cohort", "--run-dir", str(run_dir)]) == 0
+    assert main(["plot-cohort", "--run-dir", str(run_dir), "--stage-source", "stage5_model"]) == 0
 
     assert not (run_dir / "plots" / "cohort" / "cohort_harmonization_diagnostics.png").exists()
 
@@ -475,12 +489,46 @@ def test_cli_plot_cohort_requires_night_stats(tmp_path: Path):
         main(["plot-cohort", "--run-dir", str(tmp_path / "run")])
 
 
-def test_cli_plot_cohort_requires_stage_ratio_columns(tmp_path: Path):
+def test_cli_plot_cohort_rejects_missing_explicit_stage_ratio_columns(tmp_path: Path):
     run_dir = tmp_path / "run"
     (run_dir / "tables").mkdir(parents=True)
     pd.DataFrame({"record_id": ["rec1"], "stage5_model_TST_min": [400]}).to_csv(
         run_dir / "tables" / "night_stats.csv", index=False
     )
 
-    with pytest.raises(ValueError, match="No usable stage source"):
-        main(["plot-cohort", "--run-dir", str(run_dir)])
+    with pytest.raises(ValueError, match="complete N1/N2/N3/REM ratio columns"):
+        main(["plot-cohort", "--run-dir", str(run_dir), "--stage-source", "stage5_model"])
+
+
+def test_cli_plot_cohort_treats_stage_source_auto_as_plain_missing_source(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    (run_dir / "tables").mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "record_id": ["rec1"],
+            "stage5_model_N1_ratio_TST": [0.1],
+            "stage5_model_N2_ratio_TST": [0.5],
+            "stage5_model_N3_ratio_TST": [0.2],
+            "stage5_model_REM_ratio_TST": [0.2],
+        }
+    ).to_csv(run_dir / "tables" / "night_stats.csv", index=False)
+
+    with pytest.raises(ValueError, match="stage source 'auto' does not have complete"):
+        main(["plot-cohort", "--run-dir", str(run_dir), "--stage-source", "auto"])
+
+
+def test_cli_plot_cohort_rejects_legacy_stage_pct_columns(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    (run_dir / "tables").mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "record_id": ["rec1"],
+            "stage5_model_pct_N1": [0.1],
+            "stage5_model_pct_N2": [0.5],
+            "stage5_model_pct_N3": [0.2],
+            "stage5_model_pct_REM": [0.2],
+        }
+    ).to_csv(run_dir / "tables" / "night_stats.csv", index=False)
+
+    with pytest.raises(ValueError, match="complete N1/N2/N3/REM ratio columns"):
+        main(["plot-cohort", "--run-dir", str(run_dir), "--stage-source", "stage5_model"])

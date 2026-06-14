@@ -45,8 +45,8 @@ skills:
     relevant_index:
       - doc/codex_index/branches/main/WORKFLOWS/AGENT_TOOLING.md
       - doc/codex_index/branches/main/FUNCTIONS/AGENT_TOOLING.md
-      - doc/codex_index/branches/dev/fine-grained-analysis/WORKFLOWS/SLEEP2STAT.md
-      - doc/codex_index/branches/dev/fine-grained-analysis/FUNCTIONS/SLEEP2STAT.md
+      - doc/codex_index/branches/main/WORKFLOWS/SLEEP2STAT.md
+      - doc/codex_index/branches/main/FUNCTIONS/SLEEP2STAT.md
   hyperparameter_tuning:
     path: skills/hyperparameter_tuning/SKILL.md
     task_types: [hparam_tune]

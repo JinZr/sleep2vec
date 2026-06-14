@@ -74,7 +74,7 @@ Summarize and plot:
 ```bash
 python -m sleep2stat summarize --run-dir <run_dir>
 python -m sleep2stat plot-record --run-dir <run_dir> --record-id <record_id>
-python -m sleep2stat plot-cohort --run-dir <run_dir> --group-column source --stage-source auto
+python -m sleep2stat plot-cohort --run-dir <run_dir> --group-column source
 ```
 
 Generate an agent plan:
@@ -168,5 +168,5 @@ Relevant index:
 
 - `doc/codex_index/branches/main/WORKFLOWS/AGENT_TOOLING.md`
 - `doc/codex_index/branches/main/FUNCTIONS/AGENT_TOOLING.md`
-- `doc/codex_index/branches/dev/fine-grained-analysis/WORKFLOWS/SLEEP2STAT.md`
-- `doc/codex_index/branches/dev/fine-grained-analysis/FUNCTIONS/SLEEP2STAT.md`
+- `doc/codex_index/branches/main/WORKFLOWS/SLEEP2STAT.md`
+- `doc/codex_index/branches/main/FUNCTIONS/SLEEP2STAT.md`

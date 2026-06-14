@@ -13,7 +13,6 @@ data:
   duration_column: duration
   source_column: source
   record_id_columns: [source, patient_id, session_id]
-  path_base: cwd
   metadata_columns: [age, sex]
   token_sec: 30
   max_tokens: 1535
@@ -68,8 +67,8 @@ analyzers:
   - name: yasa_bandpower
     type: yasa_bandpower
     input_channels: [eeg]
+    stage_source: yasa_stage
     outputs:
-      stage_source: yasa_stage
       by_epoch: true
       by_stage: true
       by_night: true
@@ -97,7 +96,7 @@ analyzers:
 
 reducers:
   - name: yasa_stage_stats
-    type: yasa_hypnogram_stats
+    type: hypnogram_stats
     source: yasa_stage
   - name: spindle_density
     type: event_density

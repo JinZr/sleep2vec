@@ -116,7 +116,6 @@ def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
                 "kaldi_data_root": str(cfg.data.kaldi_data_root) if cfg.data.kaldi_data_root else None,
                 "kaldi_manifest": str(cfg.data.kaldi_manifest) if cfg.data.kaldi_manifest else None,
                 "split": list(cfg.data.split),
-                "path_base": cfg.data.path_base,
                 "metadata_columns": list(cfg.data.metadata_columns),
                 "token_sec": cfg.data.token_sec,
                 "max_tokens": cfg.data.max_tokens,

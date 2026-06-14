@@ -5,9 +5,9 @@ This directory is the branch-scoped engineering manual for `main`. Use it before
 ## Branch Scope
 
 - Branch: `main`
-- Last refresh commit: `65a86e37a1d1da2ed7cb02ec21d9457504dcfa0a`
-- Last refresh at: `2026-06-14T11:06:05Z`
-- Mode: `repair`
+- Last refresh commit: `eb548b9f8899f2b47f40ed9044e82fe7d94856ce`
+- Last refresh at: `2026-06-14T16:46:58Z`
+- Mode: `refresh`
 
 ## Purpose
 

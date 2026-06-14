@@ -502,9 +502,10 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
                 run_dir,
                 "--group-column",
                 runtime.get("plot_group_column", "source"),
-                "--stage-source",
-                runtime.get("plot_stage_source", "auto"),
             ]
+            plot_stage_source = runtime.get("plot_stage_source")
+            if plot_stage_source not in (None, ""):
+                plot_cmd.extend(["--stage-source", str(plot_stage_source)])
             _append_list_option(plot_cmd, "--adjust-covariates", runtime.get("plot_adjust_covariates"))
             commands.append(_render_command(plot_cmd))
         return commands

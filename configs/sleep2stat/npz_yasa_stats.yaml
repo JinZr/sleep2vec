@@ -50,8 +50,8 @@ analyzers:
   - name: yasa_bandpower
     type: yasa_bandpower
     input_channels: [eeg]
+    stage_source: yasa_stage
     outputs:
-      stage_source: yasa_stage
       by_epoch: true
       by_stage: true
       by_night: true
@@ -60,7 +60,7 @@ analyzers:
 
 reducers:
   - name: yasa_stage_stats
-    type: yasa_hypnogram_stats
+    type: hypnogram_stats
     source: yasa_stage
 
 outputs:

@@ -835,7 +835,8 @@ def test_yasa_bandpower_by_stage_uses_prior_stage_source(monkeypatch, tmp_path: 
             name="yasa_bandpower",
             type="yasa_bandpower",
             input_channels=["eeg"],
-            outputs={"stage_source": "yasa_stage", "bands": ["sigma"]},
+            stage_source="yasa_stage",
+            outputs={"bands": ["sigma"]},
         )
     )
     context = _yasa_context(tmp_path)
@@ -1207,8 +1208,8 @@ def test_spo2_desaturation_detects_events_and_odi(tmp_path: Path):
     assert results[0].night["ODI4_per_recording_hour"] == pytest.approx(60.0)
     assert results[0].night["ODI3_per_valid_spo2_hour"] == pytest.approx(60.0)
     assert results[0].night["ODI4_per_valid_spo2_hour"] == pytest.approx(60.0)
-    assert results[0].night["ODI3_recording"] == pytest.approx(60.0)
-    assert results[0].night["ODI4_recording"] == pytest.approx(60.0)
+    assert "ODI3_recording" not in results[0].night
+    assert "ODI4_recording" not in results[0].night
 
 
 def test_spo2_desaturation_outputs_sleep_denominator_odi_when_stage_source_is_available(tmp_path: Path):
@@ -1364,7 +1365,7 @@ def test_event_related_hypoxic_burden_allows_real_empty_source_events(tmp_path: 
     assert results[0].night["resp_event_hypoxic_burden_pctmin_per_recording_hour"] == 0.0
 
 
-def test_load_records_resolves_index_dir_paths_and_manifest_metadata(tmp_path: Path):
+def test_load_records_preserves_npz_paths_and_manifest_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     np.savez(data_dir / "rec1.npz", ppg=np.ones(2, dtype=np.float32))
@@ -1372,6 +1373,7 @@ def test_load_records_resolves_index_dir_paths_and_manifest_metadata(tmp_path: P
     index.write_text(
         "path,duration,split,source,patient_id,age,note\n" "data/rec1.npz,60,test,unit,p001,55,do-not-export\n"
     )
+    monkeypatch.chdir(tmp_path)
 
     records = load_records(
         DataConfig(
@@ -1379,17 +1381,16 @@ def test_load_records_resolves_index_dir_paths_and_manifest_metadata(tmp_path: P
             index=index,
             split=["test"],
             record_id_columns=["source", "patient_id"],
-            path_base="index_dir",
             metadata_columns=["age"],
         )
     )
     manifest = records_to_frame(records, metadata_columns=["age"])
 
     assert records[0].raw_path == "data/rec1.npz"
-    assert records[0].path == data_dir / "rec1.npz"
+    assert records[0].path == Path("data/rec1.npz")
     assert records[0].path_exists is True
     assert manifest.loc[0, "raw_path"] == "data/rec1.npz"
-    assert manifest.loc[0, "resolved_path"] == str(data_dir / "rec1.npz")
+    assert manifest.loc[0, "resolved_path"] == "data/rec1.npz"
     assert bool(manifest.loc[0, "path_exists"]) is True
     assert manifest.loc[0, "age"] == 55
     assert "patient_id" not in manifest.columns

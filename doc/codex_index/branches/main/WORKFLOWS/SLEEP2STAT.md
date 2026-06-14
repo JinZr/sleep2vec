@@ -10,7 +10,7 @@ Run derived sleep-statistics bundles from model outputs, NPZ reference signals, 
 - `python -m sleep2stat run --config configs/sleep2stat/<name>.yaml [--split val test] [--device cuda] [--num-workers N] [--batch-size N] [--limit-records N] [--dry-run]`
 - `python -m sleep2stat summarize --run-dir <run.output_dir>`
 - `python -m sleep2stat plot-record --run-dir <run.output_dir> --record-id <record_id>`
-- `python -m sleep2stat plot-cohort --run-dir <run.output_dir> [--group-column source] [--stage-source auto] [--adjust-covariates age sex]`
+- `python -m sleep2stat plot-cohort --run-dir <run.output_dir> [--group-column source] [--stage-source <analyzer_name>] [--adjust-covariates age sex]`
 - Agent path: `python -m agent_tools doctor|context|plan` with `task=sleep2stat`.
 
 ## Agent Consultation
@@ -52,7 +52,7 @@ Use `sleep2stat.io.records.load_records`.
 NPZ records:
 
 - require `data.index`
-- resolve `data.path_column` with `data.path_base`
+- preserve `data.path_column` as provided
 - use configured `record_id_columns` when present, otherwise `<path.stem>__row<row_idx>`
 - reject path-unsafe record ids and duplicate ids
 
@@ -74,6 +74,8 @@ Common chain:
 3. `yasa_bandpower`, YASA event analyzers, SpO2 desaturation, and event-related hypoxic burden consume prior stage or event sources when configured.
 4. reducers summarize or compare analyzer outputs.
 
+Canonical analyzer fields are intentionally narrow: `npz_stage_reference` uses `stage_key`, `yasa_bandpower` uses top-level `stage_source`, SpO2 analyzers use `input_channels[0]`, and AHI model threshold uses scalar top-level `threshold` or checkpoint metadata.
+
 Use `StageSourceResolver` for sleep-hour, REM/NREM-hour, stage-minute, and onset-stage lookup. Do not recalculate stage masks inside analyzers.
 
 ## Editing Output Metrics
@@ -81,9 +83,8 @@ Use `StageSourceResolver` for sleep-hour, REM/NREM-hour, stage-minute, and onset
 1. Identify whether the field is analyzer-produced or reducer-produced.
 2. Reuse `StageSourceResolver` for stage denominators instead of creating local masks.
 3. Encode units and denominators in public night-stat field names.
-4. Keep deprecated aliases only for high-risk existing fields and only when their semantics remain clear.
-5. Put plot-only compatibility fallback in `sleep2stat.plot`, not in generated result tables.
-6. Add or update focused tests in `tests/test_sleep2stat_analyzers.py`, `tests/test_sleep2stat_reducers.py`, `tests/test_sleep2stat_writers.py`, or `tests/test_sleep2stat_cli.py`.
+4. Do not add duplicate aliases for existing output metrics.
+5. Add or update focused tests in `tests/test_sleep2stat_analyzers.py`, `tests/test_sleep2stat_reducers.py`, `tests/test_sleep2stat_writers.py`, or `tests/test_sleep2stat_cli.py`.
 
 ## Model Analyzer
 
@@ -99,7 +100,7 @@ NPZ model inference builds `_Sleep2statDataset`, which reuses `DefaultDataset` c
 
 For AHI:
 
-- threshold comes from `postprocess.threshold`, analyzer `threshold`, or checkpoint `ahi_eval_threshold`
+- AHI threshold comes from scalar analyzer `threshold` or checkpoint `ahi_eval_threshold`
 - second alignment covers only model-covered seconds
 - event extraction merges short gaps before minimum-duration filtering
 - model-hour and recording-hour event rates are QC outputs
@@ -145,9 +146,7 @@ When `run.skip_existing=true`, completed records are identified by per-record `_
 Use bundle outputs as the source of truth:
 
 - `plot-record` reads one per-record directory and writes record-level hypnogram/AHI/SpO2 plots when the needed tables exist.
-- `plot-cohort` reads `tables/night_stats.csv`, selects a stage source, and writes sleep composition, sleep metrics, respiratory metrics, microstructure metrics, and optional harmonization diagnostics.
-
-Field fallback for older bundle outputs belongs in `sleep2stat.plot`, not in analyzers.
+- `plot-cohort` reads canonical columns from `tables/night_stats.csv`, selects a stage source, and writes sleep composition, sleep metrics, respiratory metrics, microstructure metrics, and optional harmonization diagnostics.
 
 ## Verification
 

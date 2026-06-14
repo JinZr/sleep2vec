@@ -445,22 +445,9 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         return decode_regression_logits(self.config.name, logits, batch, record_by_path, record_by_id=record_by_id)
 
     def _resolve_threshold(self, checkpoint: Any) -> tuple[float | None, str | None]:
-        post_threshold = self.config.postprocess.get("threshold")
-        if isinstance(post_threshold, dict):
-            explicit = post_threshold.get("value")
-            source = str(post_threshold.get("source", "postprocess"))
-        else:
-            explicit = post_threshold
-            source = "postprocess"
-        if explicit not in (None, ""):
-            return float(explicit), source
         explicit = self.config.threshold
-        source = "config"
-        if isinstance(explicit, dict):
-            source = str(explicit.get("source", source))
-            explicit = explicit.get("value")
         if explicit not in (None, ""):
-            return float(explicit), source
+            return float(explicit), "config"
         if isinstance(checkpoint, dict) and checkpoint.get("ahi_eval_threshold") is not None:
             return float(checkpoint["ahi_eval_threshold"]), "checkpoint"
         return None, None

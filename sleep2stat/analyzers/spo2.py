@@ -135,7 +135,7 @@ class EventRelatedHypoxicBurdenAnalyzer(BaseAnalyzer):
 
 
 def _spo2_signal(record: SleepRecord, context: Sleep2statContext, config) -> tuple[np.ndarray, float, np.ndarray]:
-    channel_name = config.spo2_source or (config.input_channels[0] if config.input_channels else None)
+    channel_name = config.input_channels[0] if config.input_channels else None
     if channel_name is None:
         raise ValueError(f"Analyzer {config.name!r} requires an SpO2 input channel.")
     spec = context.config.signals.channels[channel_name]
@@ -145,13 +145,13 @@ def _spo2_signal(record: SleepRecord, context: Sleep2statContext, config) -> tup
         signal = np.asarray(npz[spec.source], dtype=np.float64).reshape(-1) * float(spec.scale)
     valid = np.isfinite(signal)
     artifact = dict(config.artifact or {})
-    min_value = artifact.get("valid_min", artifact.get("min_value"))
-    max_value = artifact.get("valid_max", artifact.get("max_value"))
+    min_value = artifact.get("valid_min")
+    max_value = artifact.get("valid_max")
     if min_value is not None:
         valid &= signal >= float(min_value)
     if max_value is not None:
         valid &= signal <= float(max_value)
-    max_change = artifact.get("max_abs_change_per_sec", artifact.get("max_drop_per_sec"))
+    max_change = artifact.get("max_abs_change_per_sec")
     if max_change is not None and signal.size > 1 and spec.sfreq > 0:
         # Drop single-sample oximetry jumps from nadir/T90/event logic; interpolation is intentionally not applied.
         jump = np.abs(np.diff(signal)) * float(spec.sfreq) > float(max_change)
@@ -379,7 +379,6 @@ def _odi_stats(
     for drop in drops:
         count = int(np.sum(events.get("drop_threshold_pct", pd.Series(dtype=float)) == float(drop)))
         output[f"ODI{int(drop)}_per_recording_hour"] = _rate(count, recording_hours)
-        output[f"ODI{int(drop)}_recording"] = output[f"ODI{int(drop)}_per_recording_hour"]
         output[f"ODI{int(drop)}_per_valid_spo2_hour"] = _rate(count, valid_spo2_hours)
         if stage_denominators is not None:
             output[f"ODI{int(drop)}_per_sleep_hour"] = _rate(count, stage_denominators["sleep"])

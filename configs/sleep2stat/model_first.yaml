@@ -34,7 +34,6 @@ analyzers:
     input_channels: [ppg]
     batch_size: 16
     outputs:
-      epoch_prediction: true
       epoch_proba: true
   - name: ahi_model
     type: sleep2vec_downstream
@@ -44,8 +43,7 @@ analyzers:
     ckpt_path: /path/to/ahi.ckpt
     input_channels: [ppg]
     batch_size: 16
-    threshold:
-      value: 0.5
+    threshold: 0.5
   - name: age_model
     type: sleep2vec_downstream
     namespace: sleep2vec2
