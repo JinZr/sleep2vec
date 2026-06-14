@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-06-14
+
+- Repaired the `main` branch index for commit `65a86e37a1d1da2ed7cb02ec21d9457504dcfa0a`.
+- Updated README/MANIFEST metadata and tracked-file coverage counts for `configs/`, `tests/`, `skills/`, `recipes/`, and the new tracked `sleep2stat/` package.
+- Added `FUNCTIONS/SLEEP2STAT.md` for sleep2stat config parsing, NPZ/Kaldi record loading, analyzer/reducer registries, model/YASA/SpO2 analyzers, stage-denominator helpers, output-bundle writing, and plotting.
+- Added `WORKFLOWS/SLEEP2STAT.md` for validation, agent consultation, execution, resume, summarize, plotting, and verification paths.
+- Updated system/module/reuse guidance to route sleep2stat changes through `sleep2stat.config.load_config`, `load_records`, `StageSourceResolver`, `Sleep2vecDownstreamAnalyzer`, `AnalysisBundleWriter`, and agent-tooling sleep2stat gates.
+- Folded the non-stale guidance from the removed branch-local sleep2stat index into main: reuse `AnalyzerResult`, keep denominator/unit names explicit, keep deprecated aliases narrow, and put plot compatibility fallback in `sleep2stat.plot`.
+- Stale entries removed or corrected:
+  - old manifest/README commit and timestamp from `28dd58fe944803592b7e9857b3a0f9fbdfffada3`
+  - old coverage counts for configs, tests, skills, and recipes
+  - missing first-class index coverage for `sleep2stat/`
+
 ## 2026-06-10
 
 - Repaired `FUNCTIONS/AGENT_TOOLING.md` signature entries for `agent_tools.index_csv.index_summary` and `agent_tools.progress.write_progress` so reusable-function guidance matches the implementation.

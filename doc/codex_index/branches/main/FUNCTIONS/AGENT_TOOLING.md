@@ -46,6 +46,17 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Reuse guidance: use for all recipe-backed command generation.
 - Duplication-risk notes: do not emit executable training or sleep2stat scripts outside this path unless a recipe has already passed the same gates.
 
+## `agent_tools.plans._commands_for_recipe`
+
+- File: `agent_tools/plans.py`
+- Signature: `_commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict | None = None) -> list[str]`
+- Purpose and contract: render the approved command list for supported recipe tasks, including variant-aware model commands, preset commands, and variantless sleep2stat commands.
+- Important inputs/outputs: recipe, optional config summary, and resolved decisions in; shell command strings out.
+- Side effects: none.
+- Key callers/callees: called by `build_context` and `build_plan`; for sleep2stat it calls `_sleep2stat_config_run_dir` and `_sleep2stat_runtime_args`.
+- Reuse guidance: add new generated-command behavior here after consultation gates can prove the task is safe.
+- Duplication-risk notes: do not render runnable sleep2stat, finetune, infer, hparam, or preset scripts outside this function family.
+
 ## `agent_tools.plans.collect_runs`
 
 - File: `agent_tools/plans.py`
@@ -78,6 +89,17 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Key callers/callees: called by `plans`, `doctor`, and CLI summary commands.
 - Reuse guidance: use for agent policy checks that need config facts without loading models. For sleep2stat-shaped YAML, this calls `sleep2stat.config.load_config()` and returns blocking issues instead of raising through plan generation.
 - Duplication-risk notes: do not infer task semantics from path names when this summary can read YAML fields.
+
+## `agent_tools.configs.sleep2stat_config_summary`
+
+- File: `agent_tools/configs.py`
+- Signature: `sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]`
+- Purpose and contract: summarize sleep2stat run, data, analyzer, and output fields for agent planning while delegating structural validation to `sleep2stat.config.load_config`.
+- Important inputs/outputs: config path in; JSON-ready summary with `is_sleep2stat`, `data_backend`, `sleep2stat`, `blocking_issues`, and agent risk issues out.
+- Side effects: reads the YAML file and imports `sleep2stat.config`.
+- Key callers/callees: called by `config_summary`; downstream callers are `decisions`, `plans`, `doctor`, and context generation.
+- Reuse guidance: use this for sleep2stat policy checks instead of reading sleep2stat YAML directly in agent tooling.
+- Duplication-risk notes: placeholder analyzer checkpoint/config checks are agent risk checks only; canonical schema validation stays in `sleep2stat.config.load_config`.
 
 ## `agent_tools.index_csv.index_summary`
 
