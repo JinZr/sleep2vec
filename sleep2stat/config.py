@@ -108,16 +108,16 @@ class DataConfig:
     backend: str
     index: Path | None
     split: list[str]
-    path_column: str = "path"
-    duration_column: str = "duration"
-    split_column: str = "split"
+    path_column: str
+    duration_column: str
+    split_column: str
+    token_sec: int
+    max_tokens: int
     source_column: str | None = "source"
     record_id_columns: list[str] = field(default_factory=list)
     metadata_columns: list[str] = field(default_factory=list)
     kaldi_data_root: Path | None = None
     kaldi_manifest: Path | None = None
-    token_sec: int = 30
-    max_tokens: int = 1535
 
 
 @dataclass(frozen=True)
@@ -275,7 +275,11 @@ def _build_run_config(raw: Any) -> RunConfig:
 def _build_data_config(raw: Any) -> DataConfig:
     data = _require_mapping(raw, "data")
     _reject_unknown_keys(data, DATA_KEYS, "data")
-    backend = str(data.get("backend", "npz"))
+    required_fields = ("backend", "path_column", "duration_column", "split_column", "token_sec", "max_tokens")
+    missing_fields = [key for key in required_fields if key not in data or data[key] in (None, "")]
+    if missing_fields:
+        raise ValueError(f"data missing required field(s): {missing_fields}")
+    backend = str(data["backend"])
     if backend not in {"npz", "kaldi"}:
         raise ValueError(f"Unsupported sleep2stat data.backend: {backend!r}. Expected 'npz' or 'kaldi'.")
     if backend == "npz" and not data.get("index"):
@@ -284,8 +288,8 @@ def _build_data_config(raw: Any) -> DataConfig:
         missing = [key for key in ("kaldi_data_root", "kaldi_manifest") if not data.get(key)]
         if missing:
             raise ValueError(f"data.backend=kaldi requires field(s): {missing}")
-    token_sec = int(data.get("token_sec", 30))
-    max_tokens = int(data.get("max_tokens", 1535))
+    token_sec = int(data["token_sec"])
+    max_tokens = int(data["max_tokens"])
     if token_sec <= 0:
         raise ValueError("data.token_sec must be positive.")
     if max_tokens <= 0:
@@ -297,9 +301,9 @@ def _build_data_config(raw: Any) -> DataConfig:
         backend=backend,
         index=None if data.get("index") is None else Path(data["index"]),
         split=split,
-        path_column=str(data.get("path_column", "path")),
-        duration_column=str(data.get("duration_column", "duration")),
-        split_column=str(data.get("split_column", "split")),
+        path_column=str(data["path_column"]),
+        duration_column=str(data["duration_column"]),
+        split_column=str(data["split_column"]),
         source_column=None if data.get("source_column") is None else str(data.get("source_column", "source")),
         record_id_columns=_string_list(data.get("record_id_columns", []), "data.record_id_columns"),
         metadata_columns=_string_list(data.get("metadata_columns", []), "data.metadata_columns"),
@@ -362,6 +366,18 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
             missing = [key for key in required if not item.get(key)]
             if missing:
                 raise ValueError(f"Analyzer {name!r} missing required field(s): {missing}")
+            if str(item.get("label_name", "")).lower() == "ahi":
+                required_postprocess = (
+                    "min_event_duration_sec",
+                    "merge_tolerance_sec",
+                    "output_second_alignment",
+                    "output_event_alignment",
+                )
+                missing = [
+                    key for key in required_postprocess if key not in postprocess or postprocess[key] in (None, "")
+                ]
+                if missing:
+                    raise ValueError(f"Analyzer {name!r} AHI postprocess missing required field(s): {missing}")
         if analyzer_type == "npz_stage_reference":
             if item.get("label_name") is not None:
                 raise ValueError(f"Analyzer {name!r} uses legacy label_name; set stage_key instead.")
@@ -391,6 +407,12 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
         if analyzer_type.startswith("spo2_") or analyzer_type == "event_related_hypoxic_burden":
             if not input_channels:
                 raise ValueError(f"Analyzer {name!r} requires input_channels.")
+        if analyzer_type == "spo2_desaturation":
+            missing = [
+                key for key in ("drop_thresholds", "min_duration_sec") if key not in item or item[key] in (None, "")
+            ]
+            if missing:
+                raise ValueError(f"Analyzer {name!r} missing required field(s): {missing}")
         artifact = dict(item.get("artifact") or {})
         legacy_artifact_keys = sorted({"min_value", "max_value", "max_drop_per_sec"} & set(artifact))
         if legacy_artifact_keys:
@@ -398,8 +420,16 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
         outputs = dict(item.get("outputs") or {})
         if analyzer_type == "yasa_bandpower" and "stage_source" in outputs:
             raise ValueError(f"Analyzer {name!r} uses legacy outputs.stage_source; set stage_source instead.")
-        if analyzer_type == "yasa_bandpower" and bool(outputs.get("by_stage", True)) and not item.get("stage_source"):
-            raise ValueError(f"Analyzer {name!r} requires stage_source when outputs.by_stage=true.")
+        if analyzer_type == "yasa_bandpower":
+            required_outputs = ("by_epoch", "by_stage", "by_night", "relative")
+            missing = [key for key in required_outputs if key not in outputs or outputs[key] is None]
+            if missing:
+                raise ValueError(f"Analyzer {name!r} outputs missing required field(s): {missing}")
+            if bool(outputs["by_stage"]) and not item.get("stage_source"):
+                raise ValueError(f"Analyzer {name!r} requires stage_source when outputs.by_stage=true.")
+        raw_drop_thresholds = _string_list(item.get("drop_thresholds", []), f"analyzers[{idx}].drop_thresholds")
+        if analyzer_type == "spo2_desaturation" and not raw_drop_thresholds:
+            raise ValueError(f"Analyzer {name!r} requires drop_thresholds.")
         analyzers.append(
             AnalyzerConfig(
                 name=name,
@@ -417,10 +447,7 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
                 stage_source=None if item.get("stage_source") is None else str(item["stage_source"]),
                 stages=stages,
                 artifact=artifact,
-                drop_thresholds=[
-                    float(value)
-                    for value in _string_list(item.get("drop_thresholds", []), f"analyzers[{idx}].drop_thresholds")
-                ],
+                drop_thresholds=[float(value) for value in raw_drop_thresholds],
                 min_duration_sec=(None if item.get("min_duration_sec") is None else float(item["min_duration_sec"])),
                 max_duration_sec=(None if item.get("max_duration_sec") is None else float(item["max_duration_sec"])),
                 event_source=None if item.get("event_source") is None else str(item["event_source"]),

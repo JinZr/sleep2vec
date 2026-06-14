@@ -45,8 +45,8 @@ class Spo2DesaturationAnalyzer(BaseAnalyzer):
     ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
         results: list[AnalyzerResult] = []
         failures: list[FailureRecord] = []
-        drops = self.config.drop_thresholds or [3.0, 4.0]
-        min_duration = float(self.config.min_duration_sec if self.config.min_duration_sec is not None else 10.0)
+        drops = self.config.drop_thresholds
+        min_duration = float(self.config.min_duration_sec)
         max_duration = self.config.max_duration_sec
         resolver = StageSourceResolver(records, prior_results or [])
         for record in records:

@@ -39,8 +39,12 @@ python utils/check_configs.py configs/sleep2stat/model_first.yaml
 Validation is strict:
 
 - unknown top-level or nested fields fail
+- `data.backend`, `data.path_column`, `data.duration_column`, `data.split_column`, `data.token_sec`, and `data.max_tokens` must be explicit
 - `data.backend=kaldi` requires `kaldi_data_root` and `kaldi_manifest`
 - YASA analyzers are not supported with Kaldi backend
+- AHI `sleep2vec_downstream` analyzers require explicit postprocess duration and output-alignment controls
+- `spo2_desaturation` requires explicit `drop_thresholds` and `min_duration_sec`
+- `yasa_bandpower.outputs` requires explicit `by_epoch`, `by_stage`, `by_night`, and `relative`
 - analyzer and reducer names must be unique
 - reducer and stage-source references must point to enabled, earlier analyzer results
 - configured global tables must be known table names
@@ -74,7 +78,7 @@ Common chain:
 3. `yasa_bandpower`, YASA event analyzers, SpO2 desaturation, and event-related hypoxic burden consume prior stage or event sources when configured.
 4. reducers summarize or compare analyzer outputs.
 
-Canonical analyzer fields are intentionally narrow: `npz_stage_reference` uses `stage_key`, `yasa_bandpower` uses top-level `stage_source`, SpO2 analyzers use `input_channels[0]`, and AHI model threshold uses scalar top-level `threshold` or checkpoint metadata.
+Canonical analyzer fields are intentionally narrow: `npz_stage_reference` uses `stage_key`, `yasa_bandpower` uses top-level `stage_source`, SpO2 analyzers use `input_channels[0]`, `spo2_desaturation` uses explicit thresholds and duration, and AHI model threshold uses scalar top-level `threshold` or checkpoint metadata.
 
 Use `StageSourceResolver` for sleep-hour, REM/NREM-hour, stage-minute, and onset-stage lookup. Do not recalculate stage masks inside analyzers.
 
@@ -101,6 +105,7 @@ NPZ model inference builds `_Sleep2statDataset`, which reuses `DefaultDataset` c
 For AHI:
 
 - AHI threshold comes from scalar analyzer `threshold` or checkpoint `ahi_eval_threshold`
+- postprocess `min_event_duration_sec`, `merge_tolerance_sec`, `output_second_alignment`, and `output_event_alignment` must be explicit in analyzer config
 - second alignment covers only model-covered seconds
 - event extraction merges short gaps before minimum-duration filtering
 - model-hour and recording-hour event rates are QC outputs
@@ -113,7 +118,7 @@ YASA and SpO2 analyzers read raw NPZ arrays through `data.utils.load_npz`; they 
 YASA:
 
 - `yasa_stage` emits epoch stage ids and optional probability arrays
-- `yasa_bandpower` emits epoch, night, and optional stage-specific bandpower summaries
+- `yasa_bandpower` emits epoch, night, and optional stage-specific bandpower summaries using explicit output mode fields
 - `yasa_spindles`, `yasa_slowwaves`, and `yasa_rem` share event-summary logic
 - `yasa_hrv_stage` requires a stage source
 
@@ -121,6 +126,7 @@ SpO2:
 
 - `_spo2_signal` owns scaling and validity masks
 - summary metrics keep recording-denominator T90/T88 explicit
+- `spo2_desaturation` requires explicit drop thresholds and minimum duration; missing values are config errors
 - ODI metrics distinguish recording-hour, valid-SpO2-hour, and optional sleep-hour denominators
 - event-related hypoxic burden deduplicates source events by onset/offset before integration
 
@@ -145,7 +151,7 @@ When `run.skip_existing=true`, completed records are identified by per-record `_
 
 Use bundle outputs as the source of truth:
 
-- `plot-record` reads one per-record directory and writes record-level hypnogram/AHI/SpO2 plots when the needed tables exist.
+- `plot-record` reads one per-record directory and uses the stable per-record `events.csv(.gz)` sidecar for event overlays.
 - `plot-cohort` reads canonical columns from `tables/night_stats.csv`, selects a stage source, and writes sleep composition, sleep metrics, respiratory metrics, microstructure metrics, and optional harmonization diagnostics.
 
 ## Verification

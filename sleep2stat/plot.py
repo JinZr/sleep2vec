@@ -17,9 +17,7 @@ def plot_record(run_dir: Path, record_id: str) -> list[Path]:
     plots_dir.mkdir(parents=True, exist_ok=True)
     epoch = _read_table(record_dir, "epoch_alignment")
     second = _read_table(record_dir, "second_alignment")
-    events = _read_table(record_dir, "event_alignment")
-    if events.empty:
-        events = _read_table(record_dir, "events")
+    events = _read_table(record_dir, "events")
     outputs = [
         _plot_hypnogram_overlay(epoch, plots_dir / "hypnogram_overlay.png"),
         _plot_ahi_spo2_trace(second, events, plots_dir / "ahi_spo2_trace.png"),

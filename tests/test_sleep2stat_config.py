@@ -16,7 +16,12 @@ def _minimal_payload() -> dict:
             "backend": "npz",
             "index": "index.csv",
             "split": ["test"],
+            "path_column": "path",
+            "duration_column": "duration",
+            "split_column": "split",
             "record_id_columns": ["source", "patient_id"],
+            "token_sec": 30,
+            "max_tokens": 1535,
         },
         "signals": {
             "channels": {
@@ -176,6 +181,18 @@ def test_load_config_requires_data_split(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["backend", "path_column", "duration_column", "split_column", "token_sec", "max_tokens"],
+)
+def test_load_config_requires_explicit_data_semantics(tmp_path: Path, field: str):
+    payload = _minimal_payload()
+    del payload["data"][field]
+
+    with pytest.raises(ValueError, match=f"data missing required field\\(s\\).*{field}"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_accepts_kaldi_backend(tmp_path: Path):
     payload = _minimal_payload()
     payload["data"]["backend"] = "kaldi"
@@ -221,6 +238,7 @@ def test_load_config_accepts_yasa_analyzers_and_hypnogram_stats(tmp_path: Path):
             "type": "yasa_bandpower",
             "input_channels": ["eeg"],
             "stage_source": "yasa_stage",
+            "outputs": {"by_epoch": True, "by_stage": True, "by_night": True, "relative": True},
         },
     ]
     payload["reducers"] = [{"name": "yasa_stats", "type": "hypnogram_stats", "source": "yasa_stage"}]
@@ -277,6 +295,7 @@ def test_load_config_rejects_yasa_bandpower_by_stage_without_stage_source(tmp_pa
             "name": "yasa_bandpower",
             "type": "yasa_bandpower",
             "input_channels": ["eeg"],
+            "outputs": {"by_epoch": True, "by_stage": True, "by_night": True, "relative": True},
         }
     )
 
@@ -293,7 +312,13 @@ def test_load_config_rejects_yasa_bandpower_outputs_stage_source(tmp_path: Path)
             "name": "yasa_bandpower",
             "type": "yasa_bandpower",
             "input_channels": ["eeg"],
-            "outputs": {"stage_source": "yasa_stage"},
+            "outputs": {
+                "stage_source": "yasa_stage",
+                "by_epoch": True,
+                "by_stage": True,
+                "by_night": True,
+                "relative": True,
+            },
         },
     ]
     payload["reducers"] = []
@@ -310,13 +335,35 @@ def test_load_config_accepts_yasa_bandpower_without_stage_source_when_by_stage_f
             "name": "yasa_bandpower",
             "type": "yasa_bandpower",
             "input_channels": ["eeg"],
-            "outputs": {"by_stage": False},
+            "outputs": {"by_epoch": True, "by_stage": False, "by_night": True, "relative": True},
         }
     )
 
     config = load_config(_write_yaml(tmp_path, payload))
 
     assert config.analyzers[-1].outputs["by_stage"] is False
+
+
+@pytest.mark.parametrize("field", ["by_epoch", "by_stage", "by_night", "relative"])
+def test_load_config_rejects_yasa_bandpower_missing_output_mode(tmp_path: Path, field: str):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    outputs = {"by_epoch": True, "by_stage": True, "by_night": True, "relative": True}
+    del outputs[field]
+    payload["analyzers"] = [
+        {"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]},
+        {
+            "name": "yasa_bandpower",
+            "type": "yasa_bandpower",
+            "input_channels": ["eeg"],
+            "stage_source": "yasa_stage",
+            "outputs": outputs,
+        },
+    ]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match=f"outputs missing required field\\(s\\).*{field}"):
+        load_config(_write_yaml(tmp_path, payload))
 
 
 def test_load_config_accepts_v02_path_metadata_and_global_table_controls(tmp_path: Path):
@@ -387,6 +434,25 @@ def test_load_config_rejects_spo2_source_field(tmp_path: Path):
     payload["reducers"] = []
 
     with pytest.raises(ValueError, match="Unknown sleep2stat config field"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+@pytest.mark.parametrize("field", ["drop_thresholds", "min_duration_sec"])
+def test_load_config_rejects_spo2_desaturation_missing_required_field(tmp_path: Path, field: str):
+    payload = _minimal_payload()
+    payload["signals"]["channels"] = {"spo2": {"source": "spo2", "sfreq": 1, "kind": "spo2", "input_dim": 30}}
+    analyzer = {
+        "name": "spo2_desaturation",
+        "type": "spo2_desaturation",
+        "input_channels": ["spo2"],
+        "drop_thresholds": [3, 4],
+        "min_duration_sec": 10,
+    }
+    del analyzer[field]
+    payload["analyzers"] = [analyzer]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match=f"missing required field\\(s\\).*{field}"):
         load_config(_write_yaml(tmp_path, payload))
 
 
@@ -536,6 +602,7 @@ def test_load_config_rejects_later_yasa_bandpower_stage_source(tmp_path: Path):
             "type": "yasa_bandpower",
             "input_channels": ["eeg"],
             "stage_source": "yasa_stage",
+            "outputs": {"by_epoch": True, "by_stage": True, "by_night": True, "relative": True},
         },
         {"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]},
     ]
@@ -591,6 +658,26 @@ def test_load_config_rejects_downstream_thresholds_field(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["min_event_duration_sec", "merge_tolerance_sec", "output_second_alignment", "output_event_alignment"],
+)
+def test_load_config_rejects_ahi_missing_postprocess_field(tmp_path: Path, field: str):
+    payload = _minimal_payload()
+    payload["analyzers"][0]["label_name"] = "ahi"
+    postprocess = {
+        "min_event_duration_sec": 10,
+        "merge_tolerance_sec": 3,
+        "output_second_alignment": True,
+        "output_event_alignment": True,
+    }
+    del postprocess[field]
+    payload["analyzers"][0]["postprocess"] = postprocess
+
+    with pytest.raises(ValueError, match=f"AHI postprocess missing required field\\(s\\).*{field}"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_rejects_later_ahi_denominator_stage_source(tmp_path: Path):
     payload = _minimal_payload()
     stage_analyzer = dict(payload["analyzers"][0])
@@ -603,7 +690,13 @@ def test_load_config_rejects_later_ahi_denominator_stage_source(tmp_path: Path):
             "config": "configs/sleep2vec2/ppg_ahi_finetune_large.yaml",
             "ckpt_path": "/path/to/ahi.ckpt",
             "input_channels": ["ppg"],
-            "postprocess": {"denominator_stage_source": "stage5_model"},
+            "postprocess": {
+                "min_event_duration_sec": 10,
+                "merge_tolerance_sec": 3,
+                "denominator_stage_source": "stage5_model",
+                "output_second_alignment": True,
+                "output_event_alignment": True,
+            },
         },
         stage_analyzer,
     ]

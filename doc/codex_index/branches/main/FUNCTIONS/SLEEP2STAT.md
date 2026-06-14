@@ -6,12 +6,12 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/config.py`
 - Signature: `load_config(path: str | Path) -> Sleep2statConfig`
-- Purpose and contract: parse and validate sleep2stat YAML with strict top-level blocks: `run`, `data`, `signals`, `analyzers`, `reducers`, and `outputs`.
+- Purpose and contract: parse and validate sleep2stat YAML with strict top-level blocks: `run`, `data`, `signals`, `analyzers`, `reducers`, and `outputs`. Semantic data fields such as backend, path/duration/split columns, token length, and max tokens must be explicit in YAML.
 - Important inputs/outputs: config path in; frozen `Sleep2statConfig` dataclass out.
 - Side effects: reads YAML.
 - Key callers/callees: callers include `sleep2stat.cli.main`, `agent_tools.configs.sleep2stat_config_summary`, and `utils.check_configs.check_config_file`; callees include `_build_run_config`, `_build_data_config`, `_build_signals_config`, `_build_analyzers`, `_validate_backend_analyzer_support`, `_build_reducers`, `_validate_reducer_references`, and `_build_outputs`.
 - Reuse guidance: use this as the only schema validation path for sleep2stat configs.
-- Duplication-risk notes: do not duplicate stage-source ordering, YASA/Kaldi support checks, analyzer names, reducer names, or global-table validation in agent tooling.
+- Duplication-risk notes: do not duplicate stage-source ordering, YASA/Kaldi support checks, analyzer names, reducer names, required sleep2stat fields, or global-table validation in agent tooling.
 
 ## `sleep2stat.cli.main`
 
@@ -110,7 +110,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - File: `sleep2stat/analyzers/model_downstream.py`
 - Signature: `Sleep2vecDownstreamAnalyzer(config: AnalyzerConfig)`
 - Purpose and contract: run a trained `sleep2vec`, `sleep2vec2`, or `sleep2expert` downstream checkpoint over sleep2stat records and convert logits into epoch, second, event, or night outputs.
-- Important inputs/outputs: analyzer config with namespace, label name, finetune config, checkpoint path, input channels, optional scalar threshold, and AHI postprocess controls in; analyzer results and per-record failures out.
+- Important inputs/outputs: analyzer config with namespace, label name, finetune config, checkpoint path, input channels, optional scalar threshold, and explicit AHI postprocess controls in; analyzer results and per-record failures out.
 - Side effects: imports namespace-local model modules, loads a checkpoint, builds datasets/loaders, moves batches to the configured device, and may create temporary filtered Kaldi manifests.
 - Key callers/callees: instantiated through registry; uses `_build_datasets`, `_build_kaldi_datasets`, namespace-local `apply_finetune_config`, namespace-local `Sleep2vecFinetuning`, `_resolve_threshold`, `_decode_batch`, and logit decoders.
 - Reuse guidance: use this analyzer for model-derived stage, age, sex, or AHI outputs inside sleep2stat.
@@ -187,7 +187,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - File: `sleep2stat/analyzers/yasa.py`
 - Signature: `YasaBandpowerAnalyzer(config: AnalyzerConfig)`
 - Purpose and contract: compute YASA bandpower by epoch, by night, and optionally by stage source.
-- Important inputs/outputs: EEG-like raw channel data, configured bands, relative/absolute controls, and optional top-level `stage_source` in; epoch and night outputs out.
+- Important inputs/outputs: EEG-like raw channel data, explicit output mode controls, configured bands, relative/absolute controls, and optional top-level `stage_source` in; epoch and night outputs out.
 - Side effects: imports YASA/MNE and reads NPZ signals.
 - Key callers/callees: uses `_epoch_bandpower`, `_band_specs`, `_night_bandpower_means`, and `_stage_bandpower_means`.
 - Reuse guidance: use this for spectral microstructure outputs instead of adding bandpower reducers.
@@ -253,7 +253,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - File: `sleep2stat/analyzers/spo2.py`
 - Signature: `Spo2DesaturationAnalyzer(config: AnalyzerConfig)`
 - Purpose and contract: detect SpO2 desaturation events and compute ODI fields with explicit denominators.
-- Important inputs/outputs: drop thresholds, duration controls, optional stage source, records, context, and prior results in; event rows and night stats out.
+- Important inputs/outputs: explicit drop thresholds, explicit minimum duration, optional maximum duration, optional stage source, records, context, and prior results in; event rows and night stats out.
 - Side effects: reads NPZ signals.
 - Key callers/callees: uses `_spo2_signal`, `_desaturation_events`, `_desaturation_rows`, `_close_desat`, and `_odi_stats`.
 - Reuse guidance: use this for ODI and desaturation event outputs.
@@ -351,7 +351,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/plot.py`
 - Signature: `plot_record(run_dir: Path, record_id: str) -> list[Path]`
-- Purpose and contract: render plots for one completed per-record sleep2stat output directory.
+- Purpose and contract: render plots for one completed per-record sleep2stat output directory using the stable per-record `events.csv(.gz)` sidecar for events.
 - Important inputs/outputs: run directory and record id in; list of created plot paths out.
 - Side effects: reads per-record sidecars and writes PNG plots.
 - Key callers/callees: called by `sleep2stat.cli.main`; uses `_read_table`, `_plot_hypnogram_overlay`, and `_plot_ahi_spo2_trace`.

@@ -124,10 +124,10 @@ class YasaBandpowerAnalyzer(_YasaBaseAnalyzer):
         results: list[AnalyzerResult] = []
         failures: list[FailureRecord] = []
         options = self.config.outputs
-        by_epoch = bool(options.get("by_epoch", True))
-        by_stage = bool(options.get("by_stage", True))
-        by_night = bool(options.get("by_night", True))
-        relative = bool(options.get("relative", True))
+        by_epoch = bool(options["by_epoch"])
+        by_stage = bool(options["by_stage"])
+        by_night = bool(options["by_night"])
+        relative = bool(options["relative"])
         stage_source = self.config.stage_source
         bands = _band_specs(options.get("bands"))
         stage_results = _stage_results_by_record(prior_results or [], str(stage_source)) if stage_source else {}

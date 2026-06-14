@@ -11,6 +11,7 @@ data:
   split: [test]
   path_column: path
   duration_column: duration
+  split_column: split
   source_column: source
   record_id_columns: [source, patient_id, session_id]
   token_sec: 30

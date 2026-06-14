@@ -11,6 +11,7 @@ data:
   split: [test]
   path_column: path
   duration_column: duration
+  split_column: split
   source_column: source
   record_id_columns: [source, patient_id, session_id]
   token_sec: 30
@@ -44,6 +45,11 @@ analyzers:
     input_channels: [ppg]
     batch_size: 16
     threshold: 0.5
+    postprocess:
+      min_event_duration_sec: 10
+      merge_tolerance_sec: 3
+      output_second_alignment: true
+      output_event_alignment: true
   - name: age_model
     type: sleep2vec_downstream
     namespace: sleep2vec2

@@ -269,6 +269,16 @@ def test_downstream_analyzer_prepare_and_run_with_mock_checkpoint(monkeypatch, t
     )
     context = Sleep2statContext(
         config=SimpleNamespace(
+            data=DataConfig(
+                backend="npz",
+                index=tmp_path / "index.csv",
+                split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
+            ),
             signals=SignalsConfig(
                 channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2, scale=2.0)}
             ),
@@ -364,6 +374,16 @@ def test_downstream_analyzer_preserves_duplicate_npz_path_records(monkeypatch, t
     )
     context = Sleep2statContext(
         config=SimpleNamespace(
+            data=DataConfig(
+                backend="npz",
+                index=tmp_path / "index.csv",
+                split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
+            ),
             signals=SignalsConfig(channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2)}),
             outputs=SimpleNamespace(include_probabilities=True, include_raw_logits=False),
         ),
@@ -467,6 +487,16 @@ def test_downstream_analyzer_retries_failed_batch_by_record(monkeypatch, tmp_pat
     )
     context = Sleep2statContext(
         config=SimpleNamespace(
+            data=DataConfig(
+                backend="npz",
+                index=tmp_path / "index.csv",
+                split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
+            ),
             signals=SignalsConfig(channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2)}),
             outputs=SimpleNamespace(include_probabilities=True, include_raw_logits=False),
         ),
@@ -549,6 +579,16 @@ def test_downstream_analyzer_respects_epoch_probability_flag(monkeypatch, tmp_pa
     )
     context = Sleep2statContext(
         config=SimpleNamespace(
+            data=DataConfig(
+                backend="npz",
+                index=tmp_path / "index.csv",
+                split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
+            ),
             signals=SignalsConfig(channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2)}),
             outputs=SimpleNamespace(include_probabilities=True, include_raw_logits=False),
         ),
@@ -633,6 +673,16 @@ def test_downstream_analyzer_reports_prefiltered_records(monkeypatch, tmp_path: 
     )
     context = Sleep2statContext(
         config=SimpleNamespace(
+            data=DataConfig(
+                backend="npz",
+                index=tmp_path / "index.csv",
+                split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
+            ),
             signals=SignalsConfig(channels={"ppg": ChannelSpec(source="ppg", sfreq=1, kind="ppg", input_dim=2)}),
             outputs=SimpleNamespace(include_probabilities=True, include_raw_logits=False),
         ),
@@ -763,7 +813,13 @@ def test_yasa_bandpower_analyzer_with_mock_bandpower(monkeypatch, tmp_path: Path
             name="yasa_bandpower",
             type="yasa_bandpower",
             input_channels=["eeg"],
-            outputs={"by_stage": False, "bands": ["delta", "alpha"]},
+            outputs={
+                "by_epoch": True,
+                "by_stage": False,
+                "by_night": True,
+                "relative": True,
+                "bands": ["delta", "alpha"],
+            },
         )
     )
     context = _yasa_context(tmp_path)
@@ -796,7 +852,13 @@ def test_yasa_bandpower_array_api_receives_uv(monkeypatch, tmp_path: Path):
             name="yasa_bandpower",
             type="yasa_bandpower",
             input_channels=["eeg"],
-            outputs={"by_stage": False, "bands": ["delta"], "relative": False},
+            outputs={
+                "by_epoch": True,
+                "by_stage": False,
+                "by_night": True,
+                "relative": False,
+                "bands": ["delta"],
+            },
         )
     )
     context = _yasa_context(tmp_path)
@@ -836,7 +898,7 @@ def test_yasa_bandpower_by_stage_uses_prior_stage_source(monkeypatch, tmp_path: 
             type="yasa_bandpower",
             input_channels=["eeg"],
             stage_source="yasa_stage",
-            outputs={"bands": ["sigma"]},
+            outputs={"by_epoch": True, "by_stage": True, "by_night": True, "relative": True, "bands": ["sigma"]},
         )
     )
     context = _yasa_context(tmp_path)
@@ -862,7 +924,12 @@ def test_yasa_bandpower_by_stage_requires_stage_source(monkeypatch, tmp_path: Pa
         lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(bandpower=lambda raw: pd.DataFrame()),
     )
     analyzer = YasaBandpowerAnalyzer(
-        AnalyzerConfig(name="yasa_bandpower", type="yasa_bandpower", input_channels=["eeg"])
+        AnalyzerConfig(
+            name="yasa_bandpower",
+            type="yasa_bandpower",
+            input_channels=["eeg"],
+            outputs={"by_epoch": True, "by_stage": True, "by_night": True, "relative": True},
+        )
     )
     context = _yasa_context(tmp_path)
 
@@ -1380,6 +1447,11 @@ def test_load_records_preserves_npz_paths_and_manifest_metadata(tmp_path: Path, 
             backend="npz",
             index=index,
             split=["test"],
+            path_column="path",
+            duration_column="duration",
+            split_column="split",
+            token_sec=30,
+            max_tokens=1535,
             record_id_columns=["source", "patient_id"],
             metadata_columns=["age"],
         )
@@ -1405,10 +1477,13 @@ def test_load_records_reads_kaldi_manifest(tmp_path: Path):
             backend="kaldi",
             index=None,
             split=["test"],
-            kaldi_data_root=root,
-            kaldi_manifest=root / "manifest.json",
+            path_column="path",
+            duration_column="duration",
+            split_column="split",
             token_sec=30,
             max_tokens=2,
+            kaldi_data_root=root,
+            kaldi_manifest=root / "manifest.json",
         )
     )
 
@@ -1429,6 +1504,11 @@ def test_load_records_rejects_unsafe_kaldi_sample_key_record_ids(tmp_path: Path,
                 backend="kaldi",
                 index=None,
                 split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
                 kaldi_data_root=root,
                 kaldi_manifest=root / "manifest.json",
             )
@@ -1446,6 +1526,11 @@ def test_load_records_rejects_unsafe_npz_record_id_columns(tmp_path: Path, patie
                 backend="npz",
                 index=index,
                 split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=1535,
                 record_id_columns=["patient_id"],
             )
         )
@@ -1463,6 +1548,11 @@ def test_load_records_rejects_duplicate_record_ids_by_default(tmp_path: Path):
                 backend="npz",
                 index=index,
                 split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=1535,
                 record_id_columns=["source", "patient_id"],
             )
         )
@@ -1472,8 +1562,30 @@ def test_load_records_fallback_ids_use_original_index_rows(tmp_path: Path):
     index = tmp_path / "index.csv"
     index.write_text("path,duration,split,source\n" "/tmp/train.npz,60,train,unit\n" "/tmp/test.npz,60,test,unit\n")
 
-    all_records = load_records(DataConfig(backend="npz", index=index, split=["train", "test"]))
-    test_records = load_records(DataConfig(backend="npz", index=index, split=["test"]))
+    all_records = load_records(
+        DataConfig(
+            backend="npz",
+            index=index,
+            split=["train", "test"],
+            path_column="path",
+            duration_column="duration",
+            split_column="split",
+            token_sec=30,
+            max_tokens=1535,
+        )
+    )
+    test_records = load_records(
+        DataConfig(
+            backend="npz",
+            index=index,
+            split=["test"],
+            path_column="path",
+            duration_column="duration",
+            split_column="split",
+            token_sec=30,
+            max_tokens=1535,
+        )
+    )
 
     assert [record.record_id for record in all_records] == ["train__row0", "test__row1"]
     assert [record.record_id for record in test_records] == ["test__row1"]
@@ -1493,6 +1605,10 @@ def test_kaldi_dataset_routing_filters_to_pending_sample_keys(tmp_path: Path):
                 backend="kaldi",
                 index=None,
                 split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
                 kaldi_data_root=root,
                 kaldi_manifest=root / "manifest.json",
                 max_tokens=2,
@@ -1539,6 +1655,10 @@ def test_sleep2stat_kaldi_downstream_rejects_embedding_export_manifest(tmp_path:
                 backend="kaldi",
                 index=None,
                 split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
                 kaldi_data_root=root,
                 kaldi_manifest=manifest_path,
                 max_tokens=2,
@@ -1600,7 +1720,16 @@ def _fake_mne_module():
 def _yasa_context(tmp_path: Path, *, include_probabilities: bool = True) -> Sleep2statContext:
     return Sleep2statContext(
         config=SimpleNamespace(
-            data=DataConfig(backend="npz", index=tmp_path / "index.csv", split=["test"]),
+            data=DataConfig(
+                backend="npz",
+                index=tmp_path / "index.csv",
+                split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
+            ),
             signals=SignalsConfig(
                 channels={
                     "eeg": ChannelSpec(
@@ -1636,7 +1765,16 @@ def _yasa_record(path: Path) -> SleepRecord:
 def _spo2_context(tmp_path: Path) -> Sleep2statContext:
     return Sleep2statContext(
         config=SimpleNamespace(
-            data=DataConfig(backend="npz", index=tmp_path / "index.csv", split=["test"]),
+            data=DataConfig(
+                backend="npz",
+                index=tmp_path / "index.csv",
+                split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
+            ),
             signals=SignalsConfig(
                 channels={
                     "spo2": ChannelSpec(source="spo2", sfreq=1, kind="spo2", input_dim=30),
