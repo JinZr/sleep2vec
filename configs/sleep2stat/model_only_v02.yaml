@@ -1,0 +1,96 @@
+run:
+  name: model_only_v02
+  output_dir: results/sleep2stat/model_only_v02
+  overwrite: false
+  skip_existing: true
+  seed: 4523
+
+data:
+  backend: npz
+  index: index/shhs.csv
+  split: [test]
+  path_column: path
+  duration_column: duration
+  source_column: source
+  record_id_columns: [source, patient_id, session_id]
+  path_base: cwd
+  metadata_columns: [age, sex]
+  token_sec: 30
+  max_tokens: 1535
+
+signals:
+  channels:
+    ppg:
+      source: ppg
+      sfreq: 100
+      kind: ppg
+      input_dim: 3000
+
+analyzers:
+  - name: stage5_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: stage5
+    config: configs/sleep2vec2/ppg_stage5_finetune_large.yaml
+    ckpt_path: /path/to/stage5.ckpt
+    input_channels: [ppg]
+    batch_size: 16
+    outputs:
+      epoch_proba: true
+  - name: ahi_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: ahi
+    config: configs/sleep2vec2/ppg_ahi_finetune_large.yaml
+    ckpt_path: /path/to/ahi.ckpt
+    input_channels: [ppg]
+    batch_size: 16
+    postprocess:
+      threshold:
+        source: checkpoint
+        value: null
+      min_event_duration_sec: 10
+      merge_tolerance_sec: 3
+      denominator_stage_source: stage5_model
+      output_second_alignment: false
+      output_event_alignment: true
+  - name: age_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: age
+    config: configs/sleep2vec2/ppg_age_finetune_large.yaml
+    ckpt_path: /path/to/age.ckpt
+    input_channels: [ppg]
+    batch_size: 16
+  - name: sex_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: sex
+    config: configs/sleep2vec2/ppg_sex_finetune_large.yaml
+    ckpt_path: /path/to/sex.ckpt
+    input_channels: [ppg]
+    batch_size: 16
+
+reducers:
+  - name: stage5_stats
+    type: hypnogram_stats
+    source: stage5_model
+  - name: ahi_stats
+    type: respiratory_stats
+    source: ahi_model
+  - name: demographic_consistency
+    type: demographic_consistency
+    age_prediction: age_model
+    sex_prediction: sex_model
+
+outputs:
+  write_global_tables: true
+  write_per_record: true
+  include_probabilities: true
+  include_raw_logits: false
+  compression: gzip
+  global_tables:
+    epoch_alignment: false
+    second_alignment: false
+    event_alignment: true
+    night_stats: true

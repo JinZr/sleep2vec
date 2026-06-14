@@ -38,6 +38,7 @@ CONFIG_VARIANTS = {
     "sleep2expert": ConfigVariant("sleep2expert.config", "sleep2expert.preprocess.save_dataset_presets"),
     "sleep2vec2": ConfigVariant("sleep2vec2.config", "sleep2vec2.preprocess.save_dataset_presets"),
 }
+SLEEP2STAT_CONFIG_DIR = "sleep2stat"
 
 
 def parse_args() -> argparse.Namespace:
@@ -109,6 +110,16 @@ def _resolve_config_variant(path: Path, config_data: dict[str, t.Any] | None = N
     if has_moe_backbone or has_moe_tuning:
         return CONFIG_VARIANTS["sleep2expert"]
     return BASE_VARIANT
+
+
+def _is_sleep2stat_config(path: Path, config_data: dict[str, t.Any]) -> bool:
+    try:
+        rel_path = path.resolve().relative_to(CONFIG_ROOT.resolve())
+    except ValueError:
+        rel_path = None
+    if rel_path is not None and rel_path.parts and rel_path.parts[0] == SLEEP2STAT_CONFIG_DIR:
+        return True
+    return set(config_data) >= {"run", "data", "signals", "analyzers", "reducers", "outputs"}
 
 
 def _load_config_tools(path: Path, config_data: dict[str, t.Any]) -> ConfigTools:
@@ -210,6 +221,11 @@ def _validate_repo_policy(path: Path, config_data: dict[str, t.Any], tools: Conf
 
 def check_config_file(path: Path) -> None:
     config_data = _load_config_mapping(path)
+    if _is_sleep2stat_config(path, config_data):
+        from sleep2stat.config import load_config
+
+        load_config(path)
+        return
     tools = _load_config_tools(path, config_data)
     _validate_runtime_loader_contract(path, config_data, tools)
     _validate_repo_policy(path, config_data, tools)

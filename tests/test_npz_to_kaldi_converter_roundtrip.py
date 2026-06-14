@@ -305,7 +305,7 @@ def test_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):
     np.testing.assert_array_equal(_read_matrix(output_dir / "channels" / "train" / "ahi.scp", key), expected_ahi)
 
     manifest_json = json.loads((output_dir / "manifest.json").read_text())
-    assert manifest_json["format_version"] == 2
+    assert "format_version" not in manifest_json
     assert manifest_json["backend"] == "kaldi_native_io"
     assert manifest_json["token_sec"] == 30
     assert manifest_json["max_tokens"] == 2
@@ -451,7 +451,7 @@ def test_converter_writes_split_specific_manifests_and_sorted_scps(tmp_path: Pat
     assert _scp_keys(val_scp_path) == sorted(val_manifest["sample_key"].tolist())
 
     manifest_json = json.loads((output_dir / "manifest.json").read_text())
-    assert manifest_json["format_version"] == 2
+    assert "format_version" not in manifest_json
     assert manifest_json["splits"]["train"]["manifest"] == "manifests/train.csv"
     assert manifest_json["splits"]["train"]["channels"]["eeg"] == {
         "input_dim": 4,

@@ -764,7 +764,6 @@ def convert(args: argparse.Namespace) -> Path:
         }
 
     manifest = {
-        "format_version": 2,
         "backend": "kaldi_native_io",
         "token_sec": int(args.token_sec),
         "max_tokens": int(args.max_tokens),

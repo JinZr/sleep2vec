@@ -1,0 +1,124 @@
+run:
+  name: psg_yasa_microstructure_v02
+  output_dir: results/sleep2stat/psg_yasa_microstructure_v02
+  overwrite: false
+  skip_existing: true
+  seed: 4523
+
+data:
+  backend: npz
+  index: index/shhs.csv
+  split: [test]
+  path_column: path
+  duration_column: duration
+  source_column: source
+  record_id_columns: [source, patient_id, session_id]
+  path_base: cwd
+  metadata_columns: [age, sex]
+  token_sec: 30
+  max_tokens: 1535
+
+signals:
+  channels:
+    eeg:
+      source: eeg
+      sfreq: 100
+      kind: eeg
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: EEG
+    eog_loc:
+      source: eog_loc
+      sfreq: 100
+      kind: eog
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: LOC
+    eog_roc:
+      source: eog_roc
+      sfreq: 100
+      kind: eog
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: ROC
+    emg:
+      source: emg
+      sfreq: 100
+      kind: emg
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: EMG
+    ecg:
+      source: ecg
+      sfreq: 100
+      kind: ecg
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: ECG
+
+analyzers:
+  - name: yasa_stage
+    type: yasa_stage
+    input_channels: [eeg, eog_loc, emg]
+  - name: yasa_bandpower
+    type: yasa_bandpower
+    input_channels: [eeg]
+    outputs:
+      stage_source: yasa_stage
+      by_epoch: true
+      by_stage: true
+      by_night: true
+      bands: [delta, theta, alpha, sigma, beta]
+      relative: true
+  - name: yasa_spindles
+    type: yasa_spindles
+    input_channels: [eeg]
+    stage_source: yasa_stage
+    stages: [N2, N3]
+  - name: yasa_slowwaves
+    type: yasa_slowwaves
+    input_channels: [eeg]
+    stage_source: yasa_stage
+    stages: [N3]
+  - name: yasa_rem
+    type: yasa_rem
+    input_channels: [eog_loc, eog_roc]
+    stage_source: yasa_stage
+    stages: [REM]
+  - name: yasa_hrv_stage
+    type: yasa_hrv_stage
+    input_channels: [ecg]
+    stage_source: yasa_stage
+
+reducers:
+  - name: yasa_stage_stats
+    type: yasa_hypnogram_stats
+    source: yasa_stage
+  - name: spindle_density
+    type: event_density
+    source: yasa_spindles
+  - name: slowwave_density
+    type: event_density
+    source: yasa_slowwaves
+  - name: stage_bandpower_summary
+    type: stage_specific_summary
+    source: yasa_bandpower
+    options:
+      stage_source: yasa_stage
+
+outputs:
+  write_global_tables: true
+  write_per_record: true
+  include_probabilities: true
+  include_raw_logits: false
+  compression: gzip
+  global_tables:
+    epoch_alignment: false
+    second_alignment: false
+    event_alignment: true
+    night_stats: true

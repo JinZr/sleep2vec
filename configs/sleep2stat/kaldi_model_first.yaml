@@ -1,0 +1,45 @@
+run:
+  name: kaldi_model_stats_v01
+  output_dir: results/sleep2stat/kaldi_model_stats_v01
+  overwrite: false
+  skip_existing: true
+  seed: 4523
+
+data:
+  backend: kaldi
+  kaldi_data_root: index/kaldi_shhs
+  kaldi_manifest: manifest.json
+  split: [test]
+  source_column: source
+  token_sec: 30
+  max_tokens: 1535
+
+signals:
+  channels:
+    ppg:
+      source: ppg
+      sfreq: 100
+      kind: ppg
+      input_dim: 3000
+
+analyzers:
+  - name: stage5_model
+    type: sleep2vec_downstream
+    namespace: sleep2vec2
+    label_name: stage5
+    config: configs/sleep2vec2/ppg_stage5_finetune_large.yaml
+    ckpt_path: /path/to/stage5.ckpt
+    input_channels: [ppg]
+    batch_size: 16
+
+reducers:
+  - name: stage5_stats
+    type: hypnogram_stats
+    source: stage5_model
+
+outputs:
+  write_global_tables: true
+  write_per_record: true
+  include_probabilities: true
+  include_raw_logits: false
+  compression: gzip

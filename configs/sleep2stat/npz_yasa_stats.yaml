@@ -1,0 +1,71 @@
+run:
+  name: psg_yasa_stats_v01
+  output_dir: results/sleep2stat/psg_yasa_stats_v01
+  overwrite: false
+  skip_existing: true
+  seed: 4523
+
+data:
+  backend: npz
+  index: index/shhs.csv
+  split: [test]
+  path_column: path
+  duration_column: duration
+  source_column: source
+  record_id_columns: [source, patient_id, session_id]
+  token_sec: 30
+  max_tokens: 1535
+
+signals:
+  channels:
+    eeg:
+      source: eeg
+      sfreq: 100
+      kind: eeg
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: EEG
+    eog:
+      source: eog
+      sfreq: 100
+      kind: eog
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: EOG
+    emg:
+      source: emg
+      sfreq: 100
+      kind: emg
+      input_dim: 3000
+      unit: uV
+      scale: 0.000001
+      mne_name: EMG
+
+analyzers:
+  - name: yasa_stage
+    type: yasa_stage
+    input_channels: [eeg, eog, emg]
+  - name: yasa_bandpower
+    type: yasa_bandpower
+    input_channels: [eeg]
+    outputs:
+      stage_source: yasa_stage
+      by_epoch: true
+      by_stage: true
+      by_night: true
+      bands: [delta, theta, alpha, sigma, beta]
+      relative: true
+
+reducers:
+  - name: yasa_stage_stats
+    type: yasa_hypnogram_stats
+    source: yasa_stage
+
+outputs:
+  write_global_tables: true
+  write_per_record: true
+  include_probabilities: true
+  include_raw_logits: false
+  compression: gzip

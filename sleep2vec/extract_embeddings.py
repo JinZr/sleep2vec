@@ -34,7 +34,6 @@ from sleep2vec.pretrain_model import Sleep2vecPretrainModel
 from sleep2vec.utils import move_to_device
 
 PACKAGE_NAMESPACE = "sleep2vec"
-MANIFEST_FORMAT_VERSION = 1
 
 MANIFEST_COLUMNS = (
     "sample_key",
@@ -45,6 +44,7 @@ MANIFEST_COLUMNS = (
     "token_start",
     "token_end",
     "num_tokens",
+    "matrix_rows",
     "available_channels",
 )
 
@@ -289,6 +289,19 @@ def _has_adapter_keys(state_dict: t.Mapping[str, torch.Tensor]) -> bool:
     return any("lora_" in key for key in state_dict)
 
 
+def _cls_state_keys(keys: t.Iterable[str]) -> list[str]:
+    return [key for key in keys if key.startswith("cls_embedding.")]
+
+
+def _validate_embedding_kind_compatible(model: Sleep2vecPretrainModel, embedding_kind: str) -> None:
+    cls_embedding = getattr(model, "cls_embedding", None)
+    if embedding_kind == "cls" and (cls_embedding is None or not getattr(cls_embedding, "has_cls", False)):
+        raise ValueError(
+            "Requested --embedding-kind cls, but the loaded checkpoint/config is not CLS-enabled. "
+            "Use a checkpoint and config trained with model.cls.embedding_type=bert, or export token embeddings."
+        )
+
+
 def _load_backbone_checkpoint(
     model: Sleep2vecPretrainModel,
     ckpt_path: Path,
@@ -309,9 +322,21 @@ def _load_backbone_checkpoint(
             "Checkpoint contains adapter weights, but the YAML finetune.lora settings do not enable adapters."
         )
     load_info = model.load_state_dict(filtered, strict=False)
+    unexpected_cls_keys = _cls_state_keys(load_info.unexpected_keys)
+    if unexpected_cls_keys:
+        raise ValueError(
+            "Checkpoint contains CLS embedding weights, but the YAML config does not enable CLS embeddings: "
+            f"{unexpected_cls_keys}"
+        )
     if load_info.unexpected_keys:
         raise ValueError(
             "Checkpoint contains keys incompatible with the configured backbone: " f"{list(load_info.unexpected_keys)}"
+        )
+    missing_cls_keys = _cls_state_keys(load_info.missing_keys)
+    if missing_cls_keys:
+        raise ValueError(
+            "YAML config enables CLS embeddings, but the checkpoint is missing CLS embedding weights: "
+            f"{missing_cls_keys}"
         )
     if load_info.missing_keys:
         raise ValueError(
@@ -421,14 +446,25 @@ def _trim_hidden_to_numpy(
     hidden: torch.Tensor,
     attention_mask: torch.Tensor | None,
     lengths: torch.Tensor,
+    *,
+    embedding_kind: str,
 ) -> list[np.ndarray]:
     cls_embedding = getattr(model, "cls_embedding", None)
-    if cls_embedding is not None:
+    if embedding_kind == "cls":
+        _validate_embedding_kind_compatible(model, embedding_kind)
+        _, cls_hidden, _ = cls_embedding.split_hidden(hidden, attention_mask)
+    elif cls_embedding is not None:
         token_hidden, _, _ = cls_embedding.split_hidden(hidden, attention_mask)
     else:
         token_hidden = hidden
 
     rows: list[np.ndarray] = []
+    if embedding_kind == "cls":
+        for idx in range(cls_hidden.size(0)):
+            matrix = cls_hidden[idx : idx + 1].detach().to(torch.float32).cpu().numpy()
+            rows.append(np.ascontiguousarray(matrix, dtype=np.float32))
+        return rows
+
     for idx, raw_length in enumerate(lengths.detach().cpu().tolist()):
         num_tokens = min(int(raw_length), int(token_hidden.size(1)))
         matrix = token_hidden[idx, :num_tokens].detach().to(torch.float32).cpu().numpy()
@@ -443,6 +479,8 @@ def _encode_channel(
     token_embeddings: torch.Tensor,
     layer_index: int,
     num_hidden_layers: int,
+    *,
+    embedding_kind: str,
 ) -> tuple[list[np.ndarray], int]:
     kwargs: dict[str, t.Any] = {"return_hidden_states": True}
     params = inspect.signature(model._token_embeddings_to_hidden).parameters
@@ -457,7 +495,16 @@ def _encode_channel(
 
     _, attention_mask, hidden_states = model._token_embeddings_to_hidden(token_embeddings, batch, **kwargs)
     selected_state, resolved_layer_index = _select_layer_state(hidden_states, layer_index, num_hidden_layers)
-    return _trim_hidden_to_numpy(model, selected_state, attention_mask, batch["length"]), resolved_layer_index
+    return (
+        _trim_hidden_to_numpy(
+            model,
+            selected_state,
+            attention_mask,
+            batch["length"],
+            embedding_kind=embedding_kind,
+        ),
+        resolved_layer_index,
+    )
 
 
 def _sanitize_key_part(value: t.Any) -> str:
@@ -541,7 +588,7 @@ def _open_kaldi_writers(output_dir: Path, split: str, channel_names: t.Sequence[
 def _channel_manifest_entry(output_format: str, split: str, channel: str, hidden_size: int) -> dict[str, t.Any]:
     if output_format == "kaldi":
         return {
-            "hidden_size": int(hidden_size),
+            "input_dim": int(hidden_size),
             "scp": (Path("channels") / split / f"{channel}.scp").as_posix(),
             "ark_storage": "float_matrix",
         }
@@ -600,6 +647,7 @@ def _extract_and_write_embeddings(
                         token_embeddings_by_channel[channel],
                         int(args.layer_index),
                         int(model_cfg.backbone.num_hidden_layers),
+                        embedding_kind=args.embedding_kind,
                     )
                     channel_matrices[channel] = matrices
                     resolved_layer_index = current_layer_index
@@ -609,10 +657,13 @@ def _extract_and_write_embeddings(
                 path_values = _metadata_values(batch, "path", batch_size)
                 dataset_values = _metadata_values(batch, "dataset", batch_size, default=None)
                 token_starts = batch["token_start"].detach().cpu().tolist()
+                source_lengths = batch["length"].detach().cpu().tolist()
                 ids = list(batch["id"])
 
                 for sample_idx in range(batch_size):
-                    num_tokens = int(channel_matrices[channel_names[0]][sample_idx].shape[0])
+                    matrix_rows = int(channel_matrices[channel_names[0]][sample_idx].shape[0])
+                    source_num_tokens = int(source_lengths[sample_idx])
+                    num_tokens = source_num_tokens if args.embedding_kind == "cls" else matrix_rows
                     token_start = int(token_starts[sample_idx])
                     token_end = token_start + num_tokens
                     source_value = source_values[sample_idx]
@@ -638,7 +689,7 @@ def _extract_and_write_embeddings(
 
                     for channel in channel_names:
                         matrix = channel_matrices[channel][sample_idx]
-                        if matrix.shape[0] != num_tokens:
+                        if matrix.shape[0] != matrix_rows:
                             raise ValueError(f"Channel {channel!r} produced a mismatched token count for {sample_key}.")
                         if args.output_format == "kaldi":
                             kaldi_writers[channel].write(sample_key, matrix)
@@ -656,6 +707,7 @@ def _extract_and_write_embeddings(
                             "token_start": token_start,
                             "token_end": token_end,
                             "num_tokens": num_tokens,
+                            "matrix_rows": matrix_rows,
                             "available_channels": json.dumps(channel_names),
                         }
                     )
@@ -665,13 +717,13 @@ def _extract_and_write_embeddings(
         raise ValueError("No samples were exported.")
 
     manifest = {
-        "format_version": MANIFEST_FORMAT_VERSION,
         "namespace": namespace,
         "config_path": str(args.config),
         "ckpt_path": str(args.ckpt_path),
         "checkpoint_kind": load_plan.checkpoint_kind,
         "checkpoint_prefix": load_plan.checkpoint_prefix,
         "output_format": args.output_format,
+        "embedding_kind": args.embedding_kind,
         "layer_index": int(args.layer_index),
         "resolved_layer_index": int(resolved_layer_index if resolved_layer_index is not None else args.layer_index),
         "hidden_size": hidden_size,
@@ -714,11 +766,12 @@ def run_extraction(args: argparse.Namespace, *, namespace: str = PACKAGE_NAMESPA
         args.device,
         adapters_enabled=adapters_enabled,
     )
+    _validate_embedding_kind_compatible(model, args.embedding_kind)
     return _extract_and_write_embeddings(args, model, dataloader, model_cfg, load_plan, namespace=namespace)
 
 
 def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Extract token-level backbone embeddings from a trained checkpoint.")
+    parser = argparse.ArgumentParser(description="Extract backbone embeddings from a trained checkpoint.")
     parser.add_argument("--config", type=Path, required=True, help="Pretrain or finetune YAML config.")
     parser.add_argument("--ckpt-path", type=Path, required=True, help="Checkpoint (.ckpt) path.")
     parser.add_argument("--output-dir", type=Path, required=True, help="Embedding output directory.")
@@ -728,6 +781,13 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         default=-1,
         help="Layer to export: -1 final block, 0 projected input, or 1..N transformer block.",
+    )
+    parser.add_argument(
+        "--embedding-kind",
+        type=str,
+        default="token",
+        choices=("token", "cls"),
+        help="Whether to save token-level or CLS-level embeddings. cls requires a CLS-enabled checkpoint/config.",
     )
     parser.add_argument("--eval-split", choices=["train", "val", "test"], default="test", help="Split to export.")
     parser.add_argument("--batch-size", type=int, default=12, help="Extraction dataloader batch size.")
