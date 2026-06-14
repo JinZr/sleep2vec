@@ -142,7 +142,8 @@ def _build_kaldi_datasets(
     if not manifest_path.is_absolute():
         manifest_path = data_cfg.kaldi_data_root / manifest_path
     channel_names = list(channel_specs)
-    channel_input_dims = {name: spec.input_dim for name, spec in channel_specs.items()}
+    # Kaldi manifests describe exported embedding widths; sleep2stat channel specs describe raw signal widths.
+    channel_input_dims: dict[str, int] = {}
     records_by_split: dict[str, list[SleepRecord]] = {}
     for record in records:
         records_by_split.setdefault(record.split, []).append(record)

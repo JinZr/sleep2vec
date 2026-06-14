@@ -1441,12 +1441,13 @@ def test_kaldi_dataset_routing_filters_to_pending_sample_keys(tmp_path: Path):
                 metadata={"sample_key": "sample_b"},
             )
         ],
-        channel_specs={"ppg": ChannelSpec(source="ppg", sfreq=100, kind="ppg", input_dim=2)},
+        channel_specs={"ppg": ChannelSpec(source="ppg", sfreq=100, kind="ppg", input_dim=3000)},
         batch_size=1,
         num_workers=0,
         context=context,
     )
 
+    assert datasets[0].channel_input_dims["ppg"] == 2
     assert [str(sample.id) for sample in datasets[0].data] == ["sample_b"]
     assert "sample_bad" in pd.read_csv(split_manifest)["sample_key"].tolist()
 
