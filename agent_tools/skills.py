@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from .models import REPO_ROOT, SUPPORTED_VARIANTS
+from .models import REPO_ROOT, SUPPORTED_VARIANTS, task_requires_variant
 
 REQUIRED_HEADINGS = (
     "## When to use",
@@ -72,10 +72,17 @@ def validate_skills() -> dict[str, Any]:
         if not isinstance(data, dict):
             issues.append(f"{example}: example must be a mapping")
             continue
-        for key in ("schema_version", "name", "task"):
+        for key in ("name", "task"):
             if key not in data:
                 issues.append(f"{example}: missing {key}")
+        task = data.get("task")
         variant = data.get("variant")
-        if variant not in SUPPORTED_VARIANTS:
-            issues.append(f"{example}: unsupported variant {variant}; expected one of {SUPPORTED_VARIANTS}")
+        if task_requires_variant(task):
+            if variant not in SUPPORTED_VARIANTS:
+                issues.append(f"{example}: unsupported variant {variant}; expected one of {SUPPORTED_VARIANTS}")
+        elif variant not in (None, ""):
+            issues.append(
+                f"{example}: task={task} must omit variant or set it to null; "
+                "sleep2stat is a task, not a model variant."
+            )
     return {"ok": not issues, "issues": issues, "skills": list_skills()}

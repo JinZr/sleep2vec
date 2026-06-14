@@ -1,4 +1,3 @@
-schema_version: 1
 name: npz_to_kaldi_example
 task: kaldi_convert
 variant: sleep2vec

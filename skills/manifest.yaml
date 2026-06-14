@@ -1,4 +1,3 @@
-schema_version: 1
 skills:
   preset_preparation:
     path: skills/preset_preparation/SKILL.md
@@ -39,6 +38,15 @@ skills:
     owners: [runtime-orchestrator, agent-tooling-maintainer]
     relevant_index:
       - doc/codex_index/branches/main/WORKFLOWS/INFER_AND_CHECKPOINTS.md
+  sleep2stat:
+    path: skills/sleep2stat/SKILL.md
+    task_types: [sleep2stat]
+    owners: [agent-tooling-maintainer, runtime-orchestrator, regression-guard]
+    relevant_index:
+      - doc/codex_index/branches/main/WORKFLOWS/AGENT_TOOLING.md
+      - doc/codex_index/branches/main/FUNCTIONS/AGENT_TOOLING.md
+      - doc/codex_index/branches/dev/fine-grained-analysis/WORKFLOWS/SLEEP2STAT.md
+      - doc/codex_index/branches/dev/fine-grained-analysis/FUNCTIONS/SLEEP2STAT.md
   hyperparameter_tuning:
     path: skills/hyperparameter_tuning/SKILL.md
     task_types: [hparam_tune]

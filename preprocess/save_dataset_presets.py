@@ -496,7 +496,6 @@ def _preset_manifest_payload(
 ) -> dict[str, t.Any]:
     available_counts, source_counts = _summarize_preset_items(output_path)
     return {
-        "schema_version": 1,
         "kind": "sleep2vec_preset",
         "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "script": "preprocess/save_dataset_presets.py",
@@ -737,7 +736,7 @@ def main() -> None:
                             current_item=str(output_path),
                         )
             if args.manifest_output is not None:
-                _write_json(args.manifest_output.expanduser(), {"schema_version": 1, "presets": manifests})
+                _write_json(args.manifest_output.expanduser(), {"presets": manifests})
         except Exception as exc:
             write_progress(
                 progress_dir,

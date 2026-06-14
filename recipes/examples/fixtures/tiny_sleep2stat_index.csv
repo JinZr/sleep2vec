@@ -1,0 +1,2 @@
+path,split,duration,source,subject_id,session_id,age,sex
+missing_fixture.npz,test,120,tiny,S001,N1,60,M

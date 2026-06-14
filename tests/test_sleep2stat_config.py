@@ -107,9 +107,9 @@ def test_load_config_accepts_stage_reference_stage_key(tmp_path: Path):
     assert config.analyzers[0].stage_key == "stage5"
 
 
-def test_load_config_rejects_schema_version(tmp_path: Path):
+def test_load_config_rejects_unknown_top_level_field(tmp_path: Path):
     payload = _minimal_payload()
-    payload["schema_version"] = 1
+    payload["legacy_field"] = 1
 
     with pytest.raises(ValueError, match="Unknown sleep2stat top-level"):
         load_config(_write_yaml(tmp_path, payload))

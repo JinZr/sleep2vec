@@ -5,6 +5,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SUPPORTED_VARIANTS = ("sleep2vec", "sleep2vec2", "sleep2expert")
+VARIANTLESS_TASKS = {"sleep2stat"}
+
+
+def task_requires_variant(task: str | None) -> bool:
+    return task not in VARIANTLESS_TASKS
 
 
 def module_for_variant(variant: str, entrypoint: str) -> str:

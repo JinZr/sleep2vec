@@ -1,4 +1,3 @@
-schema_version: 1
 name: ppg_ahi_external_infer_example
 task: infer
 variant: sleep2vec

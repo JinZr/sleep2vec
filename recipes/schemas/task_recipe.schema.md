@@ -3,7 +3,6 @@
 Recipes are YAML mappings.
 
 ```yaml
-schema_version: 1
 name: ppg_ahi_finetune_example
 task: finetune
 variant: sleep2vec
@@ -103,10 +102,9 @@ High-impact fields must not be silently inferred from filenames, nearby configs,
 
 Common top-level fields:
 
-- `schema_version`: must be `1`.
 - `name`: stable recipe name.
-- `task`: one of `preset_prepare`, `pretrain`, `adapt`, `finetune`, `infer`, `evaluate`, `hparam_tune`.
-- `variant`: one of `sleep2vec`, `sleep2vec2`, or `sleep2expert`; generated commands use the matching package namespace.
+- `task`: one of `preset_prepare`, `pretrain`, `adapt`, `finetune`, `infer`, `evaluate`, `hparam_tune`, `sleep2stat`.
+- `variant`: one of `sleep2vec`, `sleep2vec2`, or `sleep2expert` for model tasks; omit it or set it to `null` for `task: sleep2stat`.
 - `inputs`: paths and task-specific inputs.
 - `inputs.eval_split`: explicit split for inference/evaluation; use `ASK_USER` only when the agent must stop.
 - `inputs.final_eval_config_path`: selected config for unlocked final external-test evaluation when hparam search uses `yaml:/...` config overrides.
@@ -130,3 +128,15 @@ Common top-level fields:
 - `adaptive.replacement.allow_running_stop`: allows stopping manifest-recorded running jobs only when failure/timeout/live-metric evidence says they are bad.
 - `adaptive.suggest.strategy`: v1 supports `best_neighborhood`.
 - `decisions`: explicit high-impact decision sources.
+
+Sleep2stat recipes use the existing `sleep2stat` CLI and do not use a model variant:
+
+- `task`: must be `sleep2stat`.
+- `variant`: must be omitted or `null`; `sleep2stat` is not a supported variant value.
+- `inputs.config`: required sleep2stat YAML.
+- `inputs.split`: optional CLI split override; when absent, `data.split` from the config is used.
+- `runtime.device`, `runtime.num_workers`, `runtime.batch_size`, `runtime.limit_records`, and `runtime.dry_run`: optional `sleep2stat run` CLI knobs.
+- `runtime.summarize_after_run`, `runtime.plot_cohort_after_run`, `runtime.plot_group_column`, and `runtime.plot_stage_source`: optional post-run command rendering controls.
+- `artifacts.run_dir`: optional, but if present it must exactly match config `run.output_dir`.
+- `evaluation_policy.external_test_locked`: must be explicitly `true` when the effective split includes `test`.
+- `decisions.sleep2stat_split_policy`, `decisions.sleep2stat_metric_use_policy`, and `decisions.overwrite_policy`: explicit high-impact decisions.

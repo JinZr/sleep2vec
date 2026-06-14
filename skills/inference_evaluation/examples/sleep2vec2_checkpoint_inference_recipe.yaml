@@ -1,4 +1,3 @@
-schema_version: 1
 name: sleep2vec2_checkpoint_inference_example
 task: infer
 variant: sleep2vec2

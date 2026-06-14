@@ -1,4 +1,3 @@
-schema_version: 1
 name: stage5_finetune_example
 task: finetune
 variant: sleep2vec

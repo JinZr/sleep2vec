@@ -1,0 +1,46 @@
+name: tiny_fixture_sleep2stat
+task: sleep2stat
+
+inputs:
+  config: recipes/examples/fixtures/tiny_sleep2stat_config.yaml
+  split: [test]
+
+runtime:
+  device: cpu
+  num_workers: 1
+  batch_size: null
+  limit_records: 1
+  dry_run: true
+  summarize_after_run: true
+  plot_cohort_after_run: true
+  plot_group_column: source
+  plot_stage_source: auto
+
+artifacts:
+  run_dir: results/sleep2stat/tiny_fixture
+  overwrite: false
+
+execution:
+  target: local
+  path_context: local
+  path_validation: local
+  env: {}
+
+evaluation_policy:
+  external_test_locked: true
+  split_usage: descriptive_qc_statistics_only
+  forbid_threshold_or_cleaning_rule_selection_on_test: true
+
+decisions:
+  task:
+    value: sleep2stat
+    source: explicit_recipe
+  sleep2stat_split_policy:
+    value: "Tiny fixture runs test split only for command generation and descriptive sleep2stat validation."
+    source: explicit_recipe
+  sleep2stat_metric_use_policy:
+    value: "Tiny fixture uses signal-derived SpO2 summary only; no clinical respiratory labels are inferred."
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe

@@ -25,7 +25,6 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
     return write_yaml(
         tmp_path / "tune.yaml",
         {
-            "schema_version": 1,
             "name": "unit_hparam",
             "task": "hparam_tune",
             "variant": "sleep2vec",

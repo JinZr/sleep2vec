@@ -1,4 +1,3 @@
-schema_version: 1
 name: ppg_ahi_val_tuning_example
 task: hparam_tune
 variant: sleep2vec

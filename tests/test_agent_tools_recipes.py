@@ -34,6 +34,7 @@ def test_tiny_fixture_examples_pass_consultation_gates():
     for path in [
         "recipes/examples/tiny_fixture_finetune.yaml",
         "recipes/examples/tiny_fixture_hparam.yaml",
+        "recipes/examples/tiny_fixture_sleep2stat.yaml",
     ]:
         _recipe, _cfg, report = evaluate_recipe(path)
         assert report.exit_code == 0, path
