@@ -174,6 +174,85 @@ def test_sleep2stat_config_overwrite_conflicts_with_overwrite_policy(tmp_path: P
     assert any(issue.field == "overwrite_policy" for issue in report.issues)
 
 
+def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: Path):
+    kaldi_root = tmp_path / "kaldi"
+    kaldi_root.mkdir()
+    (kaldi_root / "manifest.json").write_text('{"splits": {"test": {"manifest": "test.csv"}}}')
+    config = write_yaml(
+        tmp_path / "sleep2stat_kaldi.yaml",
+        {
+            "run": {
+                "name": "kaldi_relative_manifest",
+                "output_dir": str(tmp_path / "run"),
+                "overwrite": False,
+                "skip_existing": True,
+            },
+            "data": {
+                "backend": "kaldi",
+                "kaldi_data_root": str(kaldi_root),
+                "kaldi_manifest": "manifest.json",
+                "split": ["test"],
+                "token_sec": 30,
+                "max_tokens": 4,
+            },
+            "signals": {
+                "channels": {
+                    "ppg": {
+                        "source": "ppg",
+                        "sfreq": 1,
+                        "kind": "ppg",
+                        "input_dim": 30,
+                    }
+                }
+            },
+            "analyzers": [
+                {
+                    "name": "stage_model",
+                    "type": "sleep2vec_downstream",
+                    "enabled": False,
+                    "namespace": "sleep2vec2",
+                    "label_name": "stage5",
+                    "config": "configs/sleep2vec2/ppg_stage5_finetune_large.yaml",
+                    "ckpt_path": str(tmp_path / "stage.ckpt"),
+                    "input_channels": ["ppg"],
+                }
+            ],
+            "reducers": [],
+            "outputs": {
+                "write_global_tables": True,
+                "write_per_record": True,
+                "compression": "gzip",
+                "global_tables": {"event_alignment": True, "night_stats": True},
+            },
+        },
+    )
+    recipe = write_yaml(
+        tmp_path / "recipe.yaml",
+        {
+            "name": "kaldi_relative_manifest",
+            "task": "sleep2stat",
+            "inputs": {"config": str(config), "split": ["test"]},
+            "artifacts": {"run_dir": str(tmp_path / "run"), "overwrite": False},
+            "execution": {"target": "local", "path_context": "local", "path_validation": "local"},
+            "evaluation_policy": {"external_test_locked": True},
+            "decisions": {
+                "task": {"value": "sleep2stat", "source": "explicit_recipe"},
+                "sleep2stat_split_policy": {"value": "descriptive test split only", "source": "explicit_recipe"},
+                "sleep2stat_metric_use_policy": {
+                    "value": "model outputs are proxy metrics",
+                    "source": "explicit_recipe",
+                },
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 0
+    assert not any(issue.field == "sleep2stat.data.kaldi_manifest" for issue in report.issues)
+
+
 def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: Path):
     index = tmp_path / "index.csv"
     index.write_text("path,split,duration,source,subject_id,session_id\n" "missing.npz,test,120,tiny,S001,N1\n")
