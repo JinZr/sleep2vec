@@ -67,6 +67,8 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
         first_sleep = int(np.argmax(sleep))
         last_sleep = int(len(sleep) - 1 - np.argmax(sleep[::-1]))
         sleep_period = values[first_sleep : last_sleep + 1]
+        # Sleep onset and last sleep define SPT.  Wake outside that interval is
+        # reported separately instead of being folded into WASO.
         # YASA/AASM-style WASO is wake within SPT; terminal wake and onset-to-end wake are separate outputs.
         waso_spt_min = float((sleep_period == 0).sum() * epoch_min)
         terminal_wake_min = float((values[last_sleep + 1 :] == 0).sum() * epoch_min)
@@ -110,6 +112,8 @@ def _hypnogram_stats(stages, *, token_sec: int, prefix: str) -> dict[str, float]
         f"{prefix}_sleep_bout_count": _sleep_bout_count(values),
         f"{prefix}_mean_sleep_bout_min": _mean_sleep_bout_min(values, epoch_min),
     }
+    # Stage composition is reported against TST, not recording time; W is kept out
+    # of the denominator by construction.
     for stage_id, label in ((1, "N1"), (2, "N2"), (3, "N3"), (4, "REM")):
         minutes = float((values == stage_id).sum() * epoch_min)
         stats[f"{prefix}_{label}_min"] = minutes

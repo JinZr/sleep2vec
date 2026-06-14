@@ -141,6 +141,7 @@ def _build_kaldi_datasets(
     manifest_path = data_cfg.kaldi_manifest
     if not manifest_path.is_absolute():
         manifest_path = data_cfg.kaldi_data_root / manifest_path
+    _reject_embedding_export_manifest(manifest_path)
     channel_names = list(channel_specs)
     # Kaldi manifests describe exported embedding widths; sleep2stat channel specs describe raw signal widths.
     channel_input_dims: dict[str, int] = {}
@@ -178,6 +179,15 @@ def _build_kaldi_datasets(
         if dataset.data:
             datasets.append(dataset)
     return datasets
+
+
+def _reject_embedding_export_manifest(manifest_path: Path) -> None:
+    manifest = json.loads(manifest_path.read_text())
+    if "embedding_kind" in manifest:
+        raise ValueError(
+            "sleep2vec_downstream does not support Kaldi manifests produced by extract_embeddings; "
+            "they contain already-tokenized backbone embeddings that would be passed through raw tokenizers."
+        )
 
 
 def _write_filtered_kaldi_manifest(root: Path, manifest_path: Path, split: str, wanted_keys: set[str]) -> Path:
@@ -645,6 +655,8 @@ def decode_ahi_logits(
     for idx, path in enumerate(paths):
         record = _record_for_batch_item(batch, idx, path, record_by_path, record_by_id)
         flat_prob = probs[idx].reshape(-1)
+        # The AHI head is second-aligned only over the model-covered tokens; keep this
+        # duration explicit so truncated windows do not look like whole-night coverage.
         valid_seconds = min(int(lengths[idx]) * record.token_sec, flat_prob.shape[0])
         flat_prob = flat_prob[:valid_seconds]
         start_offset = int(token_starts[idx]) * record.token_sec
@@ -659,6 +671,9 @@ def decode_ahi_logits(
         if include_probabilities:
             second_data[f"{analyzer_name}_prob"] = flat_prob
         second = pd.DataFrame(second_data)
+        # Make respiratory events from runs of supra-threshold seconds.  Short gaps
+        # are merged before the minimum-duration test, since the event is the object
+        # being scored, not the individual positive seconds.
         events = _events_from_prob(
             record,
             analyzer_name,
@@ -668,6 +683,8 @@ def decode_ahi_logits(
             min_duration=min_event_duration_sec,
             merge_tolerance=merge_tolerance_sec,
         )
+        # Model-hour and recording-hour rates are useful QC denominators; neither is
+        # clinical AHI unless sleep-stage time is provided below.
         model_hours = valid_seconds / 3600.0 if valid_seconds > 0 else 0.0
         recording_hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
         event_rate_model = _event_rate(len(events), model_hours)
@@ -723,7 +740,8 @@ def decode_ahi_logits(
                     events = events.copy()
                     events[f"{analyzer_name}_stage_at_onset"] = stage_at_onset
                 sleep_ahi = _event_rate(sleep_count, denominators["sleep"])
-                # REM/NREM denominators count events by onset stage; overlap-based assignment is out of scope here.
+                # REM/NREM rates use onset-stage assignment.  This matches the table
+                # semantics here and avoids implying overlap-weighted event staging.
                 night[f"{analyzer_name}_sleep_denominator_hours"] = denominators["sleep"]
                 night[f"{analyzer_name}_rem_denominator_hours"] = denominators["rem"]
                 night[f"{analyzer_name}_nrem_denominator_hours"] = denominators["nrem"]

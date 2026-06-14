@@ -656,10 +656,13 @@ def _extract_and_write_embeddings(
                 path_values = _metadata_values(batch, "path", batch_size)
                 dataset_values = _metadata_values(batch, "dataset", batch_size, default=None)
                 token_starts = batch["token_start"].detach().cpu().tolist()
+                source_lengths = batch["length"].detach().cpu().tolist()
                 ids = list(batch["id"])
 
                 for sample_idx in range(batch_size):
-                    num_tokens = int(channel_matrices[channel_names[0]][sample_idx].shape[0])
+                    matrix_rows = int(channel_matrices[channel_names[0]][sample_idx].shape[0])
+                    source_num_tokens = int(source_lengths[sample_idx])
+                    num_tokens = source_num_tokens if args.embedding_kind == "cls" else matrix_rows
                     token_start = int(token_starts[sample_idx])
                     token_end = token_start + num_tokens
                     source_value = source_values[sample_idx]
@@ -685,7 +688,7 @@ def _extract_and_write_embeddings(
 
                     for channel in channel_names:
                         matrix = channel_matrices[channel][sample_idx]
-                        if matrix.shape[0] != num_tokens:
+                        if matrix.shape[0] != matrix_rows:
                             raise ValueError(f"Channel {channel!r} produced a mismatched token count for {sample_key}.")
                         if args.output_format == "kaldi":
                             kaldi_writers[channel].write(sample_key, matrix)

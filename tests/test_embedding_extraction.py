@@ -334,10 +334,10 @@ def test_npz_export_writes_cls_embedding_matrix(tmp_path: Path):
     assert manifest["embedding_kind"] == "cls"
 
     rows = pd.read_csv(tmp_path / "npz" / "manifests" / "test.csv")
-    assert rows.loc[0, "sample_key"] == "mesa_tmp_s1_000003_000004"
-    assert rows.loc[0, "num_tokens"] == 1
+    assert rows.loc[0, "sample_key"] == "mesa_tmp_s1_000003_000005"
+    assert rows.loc[0, "num_tokens"] == 2
 
-    matrix_path = tmp_path / "npz" / "channels" / "test" / "ppg" / "mesa_tmp_s1_000003_000004.npz"
+    matrix_path = tmp_path / "npz" / "channels" / "test" / "ppg" / "mesa_tmp_s1_000003_000005.npz"
     with np.load(matrix_path) as npz:
         np.testing.assert_array_equal(npz["embedding"], np.array([[11.0, 12.0]], dtype=np.float32))
 

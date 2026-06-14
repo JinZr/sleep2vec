@@ -24,6 +24,8 @@ class EventDensityReducer(BaseReducer):
             if result.name != source or result.events is None:
                 continue
             record = record_by_id.get(result.record_id)
+            # This is the generic whole-recording event density.  Analyzers with
+            # sleep-stage denominators should compute their own staged rates upstream.
             hours = record.duration_sec / 3600.0 if record and record.duration_sec > 0 else 0.0
             count = int(len(result.events))
             output.append(

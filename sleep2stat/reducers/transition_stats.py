@@ -55,6 +55,8 @@ def _transition_stats(stages, *, prefix: str) -> dict[str, float]:
             key = f"{prefix}_transition_{STAGE_LABELS[int(left)]}_to_{STAGE_LABELS[int(right)]}"
             transition_counts[key] = transition_counts.get(key, 0.0) + 1.0
     stats.update(transition_counts)
+    # Entropy is over observed adjacent transition labels, including self-transitions;
+    # the change fraction above is the separate statistic that excludes persistence.
     raw_counts = np.asarray(list(transition_counts.values()), dtype=np.float64)
     raw_counts = raw_counts[raw_counts > 0]
     prob = raw_counts / raw_counts.sum() if raw_counts.size else raw_counts

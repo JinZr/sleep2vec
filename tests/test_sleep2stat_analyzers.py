@@ -1526,6 +1526,49 @@ def test_kaldi_dataset_routing_filters_to_pending_sample_keys(tmp_path: Path):
     assert "sample_bad" in pd.read_csv(split_manifest)["sample_key"].tolist()
 
 
+def test_sleep2stat_kaldi_downstream_rejects_embedding_export_manifest(tmp_path: Path):
+    root = _write_tiny_kaldi_manifest(tmp_path)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["embedding_kind"] = "token"
+    manifest_path.write_text(json.dumps(manifest))
+    context = Sleep2statContext(
+        config=SimpleNamespace(
+            data=DataConfig(
+                backend="kaldi",
+                index=None,
+                split=["test"],
+                kaldi_data_root=root,
+                kaldi_manifest=manifest_path,
+                max_tokens=2,
+            ),
+            signals=SignalsConfig(channels={}),
+        ),
+        device="cpu",
+        num_workers=0,
+    )
+
+    with pytest.raises(ValueError, match="already-tokenized backbone embeddings"):
+        _build_kaldi_datasets(
+            records=[
+                SleepRecord(
+                    record_id="sample_a",
+                    path=Path("/original/sample_a.npz"),
+                    split="test",
+                    source="unit",
+                    duration_sec=60,
+                    token_sec=30,
+                    max_tokens=2,
+                    metadata={"sample_key": "sample_a"},
+                )
+            ],
+            channel_specs={"ppg": ChannelSpec(source="ppg", sfreq=100, kind="ppg", input_dim=3000)},
+            batch_size=1,
+            num_workers=0,
+            context=context,
+        )
+
+
 class _FakeHypnogram:
     def __init__(self, labels, proba=None):
         self._labels = pd.Series(labels)

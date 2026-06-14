@@ -41,6 +41,8 @@ class StageSourceResolver:
             return None
         token_sec = self.records.get(record_id).token_sec if record_id in self.records else 30
         hours_per_epoch = token_sec / 3600.0
+        # AHI-style denominators are in hours: all sleep for AHI, and REM/NREM for
+        # stage-specific respiratory-event rates.
         return {
             "sleep": float(np.sum(np.isin(stages, [1, 2, 3, 4])) * hours_per_epoch),
             "rem": float(np.sum(stages == 4) * hours_per_epoch),
@@ -53,6 +55,8 @@ class StageSourceResolver:
             return None
         token_sec = self.records.get(record_id).token_sec if record_id in self.records else 30
         minutes_per_epoch = token_sec / 60.0
+        # YASA event summaries report densities per stage minute, so keep minutes
+        # here instead of sharing the hour-denominator helper above.
         return {
             "N1": float(np.sum(stages == 1) * minutes_per_epoch),
             "N2": float(np.sum(stages == 2) * minutes_per_epoch),

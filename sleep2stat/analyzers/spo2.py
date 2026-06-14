@@ -176,6 +176,8 @@ def _spo2_summary(signal: np.ndarray, sfreq: float, valid: np.ndarray) -> dict[s
             "spo2_artifact_pct": artifact_pct,
         }
     recording_min = signal.size / sfreq / 60.0 if sfreq > 0 else 0.0
+    # T90/T88 ignore invalid samples in the numerator, while the denominator stays
+    # the full recording span.  The paired artifact_pct keeps that choice visible.
     t90_min = float(np.sum(valid & (signal < 90.0)) / sfreq / 60.0) if sfreq > 0 else 0.0
     t88_min = float(np.sum(valid & (signal < 88.0)) / sfreq / 60.0) if sfreq > 0 else 0.0
     return {
@@ -239,6 +241,8 @@ def _desaturation_rows(
     event_baseline = None
     for idx, value in enumerate(signal):
         if not valid[idx]:
+            # Bad oximetry samples terminate a candidate event; we do not bridge them
+            # because nadir and area should be tied to measured SpO2.
             if start is not None:
                 rows.extend(
                     _close_desat(
@@ -257,6 +261,8 @@ def _desaturation_rows(
             start = None
             baseline = None
             continue
+        # The local baseline is the running maximum since the last reset.  A
+        # desaturation starts when the current sample is drop points below it.
         baseline = float(value) if baseline is None else max(float(baseline), float(value))
         if start is None and baseline - float(value) >= drop:
             start = idx
@@ -322,6 +328,8 @@ def _close_desat(
     segment = np.asarray(signal[start:end], dtype=float)
     if segment.size:
         drop_curve = np.maximum(float(baseline) - segment, 0.0)
+        # Integrate percent drop over seconds; pct-min below is this same area
+        # divided by 60, not a separate event-count metric.
         area_pctsec = float(drop_curve.sum() / sfreq)
         nadir_idx = int(np.nanargmin(segment))
         time_to_nadir = float(nadir_idx / sfreq)
@@ -360,7 +368,8 @@ def _odi_stats(
 ) -> dict[str, float]:
     recording_hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
     valid_spo2_hours = float(valid.sum() / sfreq / 3600.0) if sfreq > 0 else 0.0
-    # ODI (oxygen desaturation index) is a desaturation event count per hour; denominator choice is part of the metric.
+    # ODI is a desaturation count per hour.  We emit each denominator explicitly,
+    # because recording time, valid-SpO2 time, and sleep time answer different questions.
     stage_denominators = resolver.get_denominator_hours(record.record_id, stage_source) if stage_source else None
     if stage_source and stage_denominators is None:
         raise ValueError(
@@ -391,10 +400,14 @@ def _event_related_burden(
     rows = []
     burdens = []
     drops = []
+    # Multiple upstream event views can describe the same interval.  Burden should
+    # integrate each physiologic interval once, not once per duplicate row.
     unique_events = source_events.drop_duplicates(subset=["onset_sec", "offset_sec"]).reset_index(drop=True)
     for event_idx, row in unique_events.iterrows():
         onset = float(row.get("onset_sec", 0.0))
         offset = float(row.get("offset_sec", onset))
+        # Use a pre-event maximum as baseline, then integrate the fall over the
+        # event plus a short recovery window.  This measures hypoxic burden, not ODI.
         pre_left = max(0, int((onset - 120.0) * sfreq))
         left = max(0, int(onset * sfreq))
         right = min(signal.size, int((offset + 60.0) * sfreq))

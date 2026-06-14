@@ -429,6 +429,8 @@ def _epoch_bandpower(
     for band_name in band_names:
         frame[f"{analyzer_name}_{band_name}_{suffix}"] = np.nan
     for token_idx in range(n_tokens):
+        # Run bandpower on the same token windows used by staging.  Later reducers
+        # can then join by token_idx without doing floating-point time matching.
         left = token_idx * samples_per_epoch
         right = left + samples_per_epoch
         segment = data[:, left:right]
@@ -508,6 +510,8 @@ def _stage_bandpower_means(
     pred_col = f"{stage_source}_pred"
     if pred_col not in stage.columns:
         raise ValueError(f"stage_source {stage_source!r} epoch output does not contain {pred_col!r}.")
+    # Stage-specific band means use the stage assigned to the same token window.
+    # This intentionally differs from event summaries, which are staged by onset.
     merged = epoch.merge(stage[["token_idx", pred_col]], on="token_idx", how="left")
     output = {}
     band_columns = [
@@ -663,6 +667,8 @@ def _stage_event_densities(
     stage_minutes: dict[str, float],
 ) -> dict[str, float]:
     output: dict[str, float] = {}
+    # These denominators mirror the usual physiologic context of each detector:
+    # spindles in N2/N3, slow waves in N3/NREM, and REM events in REM.
     if event_type == "yasa_spindle":
         output[f"{analyzer_name}_spindle_density_per_min_N2"] = _stage_density(
             events,

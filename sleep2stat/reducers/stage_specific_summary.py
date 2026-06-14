@@ -45,6 +45,8 @@ class StageSpecificSummaryReducer(BaseReducer):
                     f"stage_specific_summary stage_source {stage_source!r} is missing column {stage_col!r} "
                     f"for {record_id!r}."
                 )
+            # Join by token_idx rather than timestamps; both frames are already
+            # epoch-indexed, and this avoids rounding differences in start/end seconds.
             merged = frame.merge(stage[["token_idx", stage_col]], on="token_idx", how="inner")
             night = _stage_numeric_means(str(self.config.source), merged, stage_col)
             if night:
