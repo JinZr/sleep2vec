@@ -1358,6 +1358,24 @@ def test_load_records_reads_kaldi_manifest(tmp_path: Path):
     assert records[0].metadata["sample_key"] == "sample_a"
 
 
+@pytest.mark.parametrize("sample_key", ["site/sample_a", "site\\sample_a", ".", ".."])
+def test_load_records_rejects_unsafe_kaldi_sample_key_record_ids(tmp_path: Path, sample_key: str):
+    root = _write_tiny_kaldi_manifest(tmp_path)
+    split_manifest = root / "manifests" / "test.csv"
+    pd.DataFrame([_kaldi_row(sample_key)]).to_csv(split_manifest, index=False)
+
+    with pytest.raises(ValueError, match="path-safe sleep2stat record_id"):
+        load_records(
+            DataConfig(
+                backend="kaldi",
+                index=None,
+                split=["test"],
+                kaldi_data_root=root,
+                kaldi_manifest=root / "manifest.json",
+            )
+        )
+
+
 def test_load_records_rejects_duplicate_record_ids_by_default(tmp_path: Path):
     index = tmp_path / "index.csv"
     index.write_text(

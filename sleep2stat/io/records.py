@@ -134,9 +134,17 @@ def _load_kaldi_records(
                 for column in row.index
                 if column not in {data_cfg.path_column, data_cfg.duration_column}
             }
-            record_id = str(row["sample_key"])
             if data_cfg.record_id_columns:
                 record_id = _record_id(row, row_idx, Path(raw_path), data_cfg.record_id_columns)
+            else:
+                sample_key = row["sample_key"]
+                record_id = "" if pd.isna(sample_key) else str(sample_key)
+            # Writers store sidecars under per_record/<record_id>, so Kaldi IDs must stay one segment.
+            if record_id in {"", ".", ".."} or "/" in record_id or "\\" in record_id:
+                raise ValueError(
+                    "Kaldi record_id values must be a single path-safe sleep2stat record_id segment; "
+                    f"got {record_id!r}."
+                )
             records.append(
                 SleepRecord(
                     record_id=record_id,
