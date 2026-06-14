@@ -314,18 +314,19 @@ def test_load_config_rejects_yasa_bandpower_by_stage_without_stage_source(tmp_pa
         load_config(_write_yaml(tmp_path, payload))
 
 
-def test_load_config_allows_yasa_bandpower_outputs_stage_source_as_is(tmp_path: Path):
+def test_load_config_rejects_yasa_bandpower_outputs_stage_source(tmp_path: Path):
     payload = _minimal_payload()
     payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
     payload["analyzers"] = [
         {"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]},
+        {"name": "other_stage", "type": "yasa_stage", "input_channels": ["eeg"]},
         {
             "name": "yasa_bandpower",
             "type": "yasa_bandpower",
             "input_channels": ["eeg"],
             "stage_source": "yasa_stage",
             "outputs": {
-                "stage_source": "yasa_stage",
+                "stage_source": "other_stage",
                 "by_epoch": True,
                 "by_stage": True,
                 "by_night": True,
@@ -335,10 +336,8 @@ def test_load_config_allows_yasa_bandpower_outputs_stage_source_as_is(tmp_path: 
     ]
     payload["reducers"] = []
 
-    config = load_config(_write_yaml(tmp_path, payload))
-
-    assert config.analyzers[-1].stage_source == "yasa_stage"
-    assert config.analyzers[-1].outputs["stage_source"] == "yasa_stage"
+    with pytest.raises(ValueError, match="legacy outputs.stage_source"):
+        load_config(_write_yaml(tmp_path, payload))
 
 
 def test_load_config_accepts_yasa_bandpower_without_stage_source_when_by_stage_false(tmp_path: Path):
