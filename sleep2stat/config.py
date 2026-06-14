@@ -356,8 +356,6 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
         missing_channels = sorted(channel for channel in input_channels if channel not in signals.channels)
         if missing_channels:
             raise ValueError(f"Analyzer {name!r} references unknown signal channel(s): {missing_channels}")
-        if isinstance(item.get("threshold"), dict):
-            raise ValueError(f"Analyzer {name!r} threshold must be a scalar value.")
         postprocess = _require_mapping(item.get("postprocess") or {}, f"analyzers[{idx}].postprocess")
         if "threshold" in postprocess:
             raise ValueError(f"Analyzer {name!r} uses legacy postprocess.threshold; set threshold instead.")

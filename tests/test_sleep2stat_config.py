@@ -640,13 +640,20 @@ def test_load_config_rejects_downstream_postprocess_threshold(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
-def test_load_config_rejects_downstream_dict_threshold(tmp_path: Path):
+def test_load_config_allows_runtime_threshold_value_as_is(tmp_path: Path):
     payload = _minimal_payload()
     payload["analyzers"][0]["label_name"] = "ahi"
     payload["analyzers"][0]["threshold"] = {"value": 0.5}
+    payload["analyzers"][0]["postprocess"] = {
+        "min_event_duration_sec": 10,
+        "merge_tolerance_sec": 3,
+        "output_second_alignment": True,
+        "output_event_alignment": True,
+    }
 
-    with pytest.raises(ValueError, match="threshold must be a scalar"):
-        load_config(_write_yaml(tmp_path, payload))
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.analyzers[0].threshold == {"value": 0.5}
 
 
 def test_load_config_rejects_downstream_thresholds_field(tmp_path: Path):
