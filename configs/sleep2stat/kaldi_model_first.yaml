@@ -10,6 +10,9 @@ data:
   kaldi_data_root: index/kaldi_shhs
   kaldi_manifest: manifest.json
   split: [test]
+  path_column: path
+  duration_column: duration
+  split_column: split
   source_column: source
   token_sec: 30
   max_tokens: 1535

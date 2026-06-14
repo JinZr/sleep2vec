@@ -45,22 +45,25 @@ def test_hypnogram_stats_from_epoch_predictions():
     assert stats["stage5_model_TST_min"] == 2.0
     assert stats["stage5_model_SE_ratio"] == pytest.approx(2.0 / 3.5)
     assert stats["stage5_model_SE_pct"] == pytest.approx(100 * 2.0 / 3.5)
-    assert stats["stage5_model_SE"] == pytest.approx(2.0 / 3.5)
     assert stats["stage5_model_SOL_min"] == 0.5
     assert stats["stage5_model_REM_latency_min"] == 2.0
     assert stats["stage5_model_WASO_SPT_min"] == 0.5
-    assert stats["stage5_model_WASO_min"] == 0.5
     assert stats["stage5_model_terminal_wake_after_last_sleep_min"] == 0.5
     assert stats["stage5_model_WASO_after_sleep_onset_to_recording_end_min"] == 1.0
-    assert stats["stage5_model_pct_N2"] == pytest.approx(0.25)
     assert stats["stage5_model_N2_ratio_TST"] == pytest.approx(0.25)
     assert stats["stage5_model_N2_pct_TST"] == pytest.approx(25.0)
     assert stats["stage5_model_sleep_bout_count"] == 2
     assert stats["stage5_model_stage_shift_rate_per_sleep_hour"] == pytest.approx(4 / (2.0 / 60.0))
-    assert stats["stage5_model_stage_shift_index"] == pytest.approx(4 / (2.0 / 60.0))
     assert stats["stage5_model_sleep_to_wake_transition_index"] == pytest.approx(1 / (2.0 / 60.0))
-    assert stats["stage5_model_SFI_yasa_like"] == pytest.approx(1 / (2.0 / 60.0))
-    assert "stage5_model_SFI" not in stats
+    for legacy in [
+        "stage5_model_SE",
+        "stage5_model_WASO_min",
+        "stage5_model_pct_N2",
+        "stage5_model_stage_shift_index",
+        "stage5_model_SFI_yasa_like",
+        "stage5_model_SFI",
+    ]:
+        assert legacy not in stats
 
 
 def test_hypnogram_stats_keeps_recording_duration_when_epochs_are_unscored():

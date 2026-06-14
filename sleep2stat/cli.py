@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     cohort = subparsers.add_parser("plot-cohort", help="Plot sleep2stat cohort-level sleep architecture.")
     cohort.add_argument("--run-dir", type=Path, required=True)
     cohort.add_argument("--group-column", default="source")
-    cohort.add_argument("--stage-source", default="auto")
+    cohort.add_argument("--stage-source", default=None)
     cohort.add_argument("--adjust-covariates", nargs="*", default=None)
     return parser
 

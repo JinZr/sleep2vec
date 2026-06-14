@@ -124,11 +124,11 @@ class YasaBandpowerAnalyzer(_YasaBaseAnalyzer):
         results: list[AnalyzerResult] = []
         failures: list[FailureRecord] = []
         options = self.config.outputs
-        by_epoch = bool(options.get("by_epoch", True))
-        by_stage = bool(options.get("by_stage", True))
-        by_night = bool(options.get("by_night", True))
-        relative = bool(options.get("relative", True))
-        stage_source = options.get("stage_source")
+        by_epoch = bool(options["by_epoch"])
+        by_stage = bool(options["by_stage"])
+        by_night = bool(options["by_night"])
+        relative = bool(options["relative"])
+        stage_source = self.config.stage_source
         bands = _band_specs(options.get("bands"))
         stage_results = _stage_results_by_record(prior_results or [], str(stage_source)) if stage_source else {}
         for record in records:
@@ -147,7 +147,7 @@ class YasaBandpowerAnalyzer(_YasaBaseAnalyzer):
                     night.update(_night_bandpower_means(self.config.name, epoch))
                 if by_stage:
                     if not stage_source:
-                        raise ValueError("yasa_bandpower.outputs.stage_source is required when by_stage=true.")
+                        raise ValueError("yasa_bandpower stage_source is required when by_stage=true.")
                     stage = stage_results.get(record.record_id)
                     if stage is None:
                         raise ValueError(

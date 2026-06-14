@@ -10,9 +10,11 @@ Do not use this skill for model training, hyper-parameter tuning, direct sample 
 ## Required inputs
 Requires a sleep2stat config YAML, explicit split policy, explicit metric-use policy, and explicit overwrite policy.
 
+The config must explicitly set `data.backend`, `data.path_column`, `data.duration_column`, `data.split_column`, `data.token_sec`, and `data.max_tokens`. `sleep2stat.config.load_config()` is the schema boundary; agent tooling must report its blocking error instead of inferring or translating sleep2stat fields.
+
 For enabled `sleep2vec_downstream` analyzers, require concrete downstream config and checkpoint paths. Placeholder values such as `/path/to/...`, `ASK_USER`, `TODO`, or `<...>` must block command generation.
 
-For YASA and SpO2 analyzers, rely on `sleep2stat.config` for structural validation. Do not duplicate analyzer schema checks in agent tooling.
+For AHI `sleep2vec_downstream` analyzers, `postprocess.min_event_duration_sec`, `postprocess.merge_tolerance_sec`, `postprocess.output_second_alignment`, and `postprocess.output_event_alignment` must be explicit. For `spo2_desaturation`, `drop_thresholds` and `min_duration_sec` must be explicit. For `yasa_bandpower`, `outputs.by_epoch`, `outputs.by_stage`, `outputs.by_night`, and `outputs.relative` must be explicit. Do not duplicate these schema checks in agent tooling.
 
 ## First information-gathering commands
 - `python -m agent_tools config-summary --config <config> --json`
@@ -74,7 +76,7 @@ Summarize and plot:
 ```bash
 python -m sleep2stat summarize --run-dir <run_dir>
 python -m sleep2stat plot-record --run-dir <run_dir> --record-id <record_id>
-python -m sleep2stat plot-cohort --run-dir <run_dir> --group-column source --stage-source auto
+python -m sleep2stat plot-cohort --run-dir <run_dir> --group-column source
 ```
 
 Generate an agent plan:
@@ -168,5 +170,5 @@ Relevant index:
 
 - `doc/codex_index/branches/main/WORKFLOWS/AGENT_TOOLING.md`
 - `doc/codex_index/branches/main/FUNCTIONS/AGENT_TOOLING.md`
-- `doc/codex_index/branches/dev/fine-grained-analysis/WORKFLOWS/SLEEP2STAT.md`
-- `doc/codex_index/branches/dev/fine-grained-analysis/FUNCTIONS/SLEEP2STAT.md`
+- `doc/codex_index/branches/main/WORKFLOWS/SLEEP2STAT.md`
+- `doc/codex_index/branches/main/FUNCTIONS/SLEEP2STAT.md`

@@ -57,7 +57,7 @@ def _load_npz_records(
     for _, row in df.iterrows():
         row_idx = int(row.name)
         raw_path = str(row[data_cfg.path_column])
-        path = _resolve_npz_path(raw_path, data_cfg)
+        path = Path(raw_path)
         split = str(row[data_cfg.split_column]) if data_cfg.split_column in row.index else ""
         source = None
         if data_cfg.source_column and data_cfg.source_column in row.index:
@@ -221,30 +221,6 @@ def _json_safe_value(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
-
-
-def _resolve_npz_path(raw_path: str, data_cfg: DataConfig) -> Path:
-    path = Path(raw_path).expanduser()
-    if path.is_absolute():
-        return path
-    if data_cfg.path_base == "absolute_only":
-        raise ValueError(f"data.path_base=absolute_only requires absolute NPZ path: {raw_path!r}")
-    if data_cfg.path_base == "index_dir":
-        if data_cfg.index is None:
-            raise ValueError("data.path_base=index_dir requires data.index.")
-        base = data_cfg.index.expanduser()
-        base = base.parent if base.is_absolute() else (Path.cwd() / base).parent
-    elif data_cfg.path_base == "repo_root":
-        base = Path(__file__).resolve().parents[2]
-    elif data_cfg.path_base == "custom":
-        if data_cfg.custom_path_base is None:
-            raise ValueError("data.custom_path_base is required when data.path_base=custom.")
-        base = data_cfg.custom_path_base.expanduser()
-        if not base.is_absolute():
-            base = Path.cwd() / base
-    else:
-        base = Path.cwd()
-    return (base / path).resolve()
 
 
 def _is_manifest_scalar(value: Any) -> bool:

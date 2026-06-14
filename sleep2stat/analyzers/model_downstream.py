@@ -108,8 +108,8 @@ def _build_datasets(
     num_workers: int,
     context: Sleep2statContext,
 ) -> list[DefaultDataset]:
-    data_cfg = getattr(context.config, "data", None)
-    if getattr(data_cfg, "backend", "npz") == "kaldi":
+    data_cfg = context.config.data
+    if data_cfg.backend == "kaldi":
         return _build_kaldi_datasets(
             records=records,
             channel_specs=channel_specs,
@@ -227,16 +227,16 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         finetune_mod = importlib.import_module(f"{namespace}.sleep2vec_finetuning")
         utils_mod = importlib.import_module(f"{namespace}.utils")
 
-        data_cfg = getattr(context.config, "data", None)
+        data_cfg = context.config.data
         args = argparse.Namespace(
             config=Path(self.config.config),
             label_name=self.config.label_name,
             device=context.device,
             batch_size=self.config.batch_size or context.batch_size or 12,
             num_workers=context.num_workers,
-            data_backend=getattr(data_cfg, "backend", "npz"),
-            kaldi_data_root=getattr(data_cfg, "kaldi_data_root", None),
-            kaldi_manifest=getattr(data_cfg, "kaldi_manifest", None),
+            data_backend=data_cfg.backend,
+            kaldi_data_root=data_cfg.kaldi_data_root,
+            kaldi_manifest=data_cfg.kaldi_manifest,
             pretrained_backbone_path=None,
             print_diagnostics=False,
             diagnostics_steps=5,
@@ -445,22 +445,9 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
         return decode_regression_logits(self.config.name, logits, batch, record_by_path, record_by_id=record_by_id)
 
     def _resolve_threshold(self, checkpoint: Any) -> tuple[float | None, str | None]:
-        post_threshold = self.config.postprocess.get("threshold")
-        if isinstance(post_threshold, dict):
-            explicit = post_threshold.get("value")
-            source = str(post_threshold.get("source", "postprocess"))
-        else:
-            explicit = post_threshold
-            source = "postprocess"
-        if explicit not in (None, ""):
-            return float(explicit), source
         explicit = self.config.threshold
-        source = "config"
-        if isinstance(explicit, dict):
-            source = str(explicit.get("source", source))
-            explicit = explicit.get("value")
         if explicit not in (None, ""):
-            return float(explicit), source
+            return float(explicit), "config"
         if isinstance(checkpoint, dict) and checkpoint.get("ahi_eval_threshold") is not None:
             return float(checkpoint["ahi_eval_threshold"]), "checkpoint"
         return None, None
@@ -468,11 +455,11 @@ class Sleep2vecDownstreamAnalyzer(BaseAnalyzer):
     def _ahi_postprocess(self) -> dict[str, Any]:
         postprocess = dict(self.config.postprocess or {})
         return {
-            "min_event_duration_sec": int(postprocess.get("min_event_duration_sec", 10)),
-            "merge_tolerance_sec": int(postprocess.get("merge_tolerance_sec", 3)),
+            "min_event_duration_sec": int(postprocess["min_event_duration_sec"]),
+            "merge_tolerance_sec": int(postprocess["merge_tolerance_sec"]),
             "denominator_stage_source": postprocess.get("denominator_stage_source"),
-            "output_second_alignment": bool(postprocess.get("output_second_alignment", True)),
-            "output_event_alignment": bool(postprocess.get("output_event_alignment", True)),
+            "output_second_alignment": bool(postprocess["output_second_alignment"]),
+            "output_event_alignment": bool(postprocess["output_event_alignment"]),
         }
 
 

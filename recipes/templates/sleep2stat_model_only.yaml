@@ -14,7 +14,7 @@ runtime:
   summarize_after_run: true
   plot_cohort_after_run: true
   plot_group_column: source
-  plot_stage_source: auto
+  plot_stage_source: stage5_model
 
 artifacts:
   run_dir: results/sleep2stat/model_only_v02

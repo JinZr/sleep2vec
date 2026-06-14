@@ -103,6 +103,20 @@ def test_sleep2stat_summarize_and_plot_use_config_run_dir(tmp_path: Path):
     assert any(
         command.startswith(f"python -m sleep2stat plot-cohort --run-dir {config_run_dir}") for command in commands
     )
+    assert not any("--stage-source" in command for command in commands)
+
+
+def test_sleep2stat_plot_stage_source_auto_is_rendered_as_plain_value(tmp_path: Path):
+    payload = _tiny_recipe_payload()
+    payload["runtime"]["plot_stage_source"] = "auto"
+    recipe_path = _write_tiny_recipe(tmp_path, payload)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    commands = json.loads((output_dir / "plan.json").read_text())["commands"]
+    assert any("--stage-source auto" in command for command in commands)
 
 
 def test_sleep2stat_plan_ignores_user_decision_config_override(tmp_path: Path):
@@ -192,6 +206,9 @@ def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: P
                 "kaldi_data_root": str(kaldi_root),
                 "kaldi_manifest": "manifest.json",
                 "split": ["test"],
+                "path_column": "path",
+                "duration_column": "duration",
+                "split_column": "split",
                 "token_sec": 30,
                 "max_tokens": 4,
             },
@@ -269,7 +286,9 @@ def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: 
                 "backend": "npz",
                 "index": str(index),
                 "split": ["test"],
-                "path_base": "index_dir",
+                "path_column": "path",
+                "duration_column": "duration",
+                "split_column": "split",
                 "token_sec": 30,
                 "max_tokens": 4,
             },

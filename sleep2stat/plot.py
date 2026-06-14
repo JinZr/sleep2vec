@@ -17,9 +17,7 @@ def plot_record(run_dir: Path, record_id: str) -> list[Path]:
     plots_dir.mkdir(parents=True, exist_ok=True)
     epoch = _read_table(record_dir, "epoch_alignment")
     second = _read_table(record_dir, "second_alignment")
-    events = _read_table(record_dir, "event_alignment")
-    if events.empty:
-        events = _read_table(record_dir, "events")
+    events = _read_table(record_dir, "events")
     outputs = [
         _plot_hypnogram_overlay(epoch, plots_dir / "hypnogram_overlay.png"),
         _plot_ahi_spo2_trace(second, events, plots_dir / "ahi_spo2_trace.png"),
@@ -31,7 +29,7 @@ def plot_cohort(
     run_dir: Path,
     *,
     group_column: str = "source",
-    stage_source: str = "auto",
+    stage_source: str | None = None,
     adjust_covariates: list[str] | None = None,
 ) -> list[Path]:
     frame = _load_cohort_frame(run_dir, group_column=group_column)
@@ -99,7 +97,7 @@ def plot_cohort(
         )
 
     if not outputs:
-        raise ValueError("No usable stage source found; expected columns like <source>_N2_ratio_TST.")
+        raise ValueError("No usable sleep2stat cohort metrics found.")
     return outputs
 
 
@@ -147,47 +145,28 @@ def _load_cohort_frame(run_dir: Path, *, group_column: str) -> pd.DataFrame:
     return night
 
 
-def _select_stage_source(frame: pd.DataFrame, requested: str) -> str | None:
-    candidates = []
-    for column in frame.columns:
-        if column.endswith("_N1_ratio_TST"):
-            prefix = column.removesuffix("_N1_ratio_TST")
-            if all(_stage_ratio_column(frame, prefix, stage) is not None for stage in STAGE_LABELS):
-                candidates.append(prefix)
-    if not candidates:
-        for column in frame.columns:
-            if column.endswith("_pct_N1"):
-                prefix = column.removesuffix("_pct_N1")
-                if all(_stage_ratio_column(frame, prefix, stage) is not None for stage in STAGE_LABELS):
-                    candidates.append(prefix)
-    if requested != "auto":
-        if all(_stage_ratio_column(frame, requested, stage) is not None for stage in STAGE_LABELS):
-            return requested
-        raise ValueError(f"stage source {requested!r} does not have complete N1/N2/N3/REM ratio columns.")
-    if not candidates:
+def _select_stage_source(frame: pd.DataFrame, requested: str | None) -> str | None:
+    if requested in (None, ""):
         return None
-    preferred = [item for item in candidates if item.startswith(("stage5", "yasa", "reference"))]
-    return (preferred or candidates)[0]
+    if all(_stage_ratio_column(frame, requested, stage) is not None for stage in STAGE_LABELS):
+        return requested
+    raise ValueError(f"stage source {requested!r} does not have complete N1/N2/N3/REM ratio columns.")
 
 
 def _stage_ratio_column(frame: pd.DataFrame, prefix: str, stage: str) -> str | None:
     canonical = f"{prefix}_{stage}_ratio_TST"
-    if canonical in frame.columns:
-        return canonical
-    legacy = f"{prefix}_pct_{stage}"
-    return legacy if legacy in frame.columns else None
+    return canonical if canonical in frame.columns else None
 
 
 def _sleep_metric_specs(frame: pd.DataFrame, prefix: str) -> list[tuple[str, str, float]]:
     candidates = [
         ("TST hours", [f"{prefix}_TST_min"], 1.0 / 60.0),
-        ("Sleep efficiency %", [f"{prefix}_SE_pct", f"{prefix}_SE"], 1.0),
-        ("WASO SPT min", [f"{prefix}_WASO_SPT_min", f"{prefix}_WASO_min"], 1.0),
+        ("Sleep efficiency %", [f"{prefix}_SE_pct"], 1.0),
+        ("WASO SPT min", [f"{prefix}_WASO_SPT_min"], 1.0),
         ("SOL min", [f"{prefix}_SOL_min"], 1.0),
         ("REM latency min", [f"{prefix}_REM_latency_min"], 1.0),
         ("Sleep-to-wake index", [f"{prefix}_sleep_to_wake_transition_index"], 1.0),
-        ("SFI yasa-like", [f"{prefix}_SFI_yasa_like"], 1.0),
-        ("Stage shift / sleep hr", [f"{prefix}_stage_shift_rate_per_sleep_hour", f"{prefix}_stage_shift_index"], 1.0),
+        ("Stage shift / sleep hr", [f"{prefix}_stage_shift_rate_per_sleep_hour"], 1.0),
     ]
     selected = []
     for label, columns, scale in candidates:
@@ -208,11 +187,6 @@ def _respiratory_metric_specs(frame: pd.DataFrame) -> list[tuple[str, str, float
         ("SpO2 nadir", "spo2_nadir", 1.0),
         ("Desaturation area/hr", "desaturation_area_burden_pctmin_per_recording_hour", 1.0),
         ("Hypoxic burden/hr", "resp_event_hypoxic_burden_pctmin_per_recording_hour", 1.0),
-        ("Pred AHI REM", "_pred_ahi_rem_denominator", 1.0),
-        ("Pred AHI NREM", "_pred_ahi_nrem_denominator", 1.0),
-        ("ODI3", "ODI3_recording", 1.0),
-        ("ODI4", "ODI4_recording", 1.0),
-        ("Hypoxic burden/hr", "pred_event_hypoxic_burden_pctmin_per_hour", 1.0),
     ]
     selected = []
     used: set[str] = set()

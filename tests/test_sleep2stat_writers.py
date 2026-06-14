@@ -17,7 +17,16 @@ def _config(tmp_path: Path) -> Sleep2statConfig:
     return Sleep2statConfig(
         path=config_path,
         run=RunConfig(name="unit", output_dir=tmp_path / "run"),
-        data=DataConfig(backend="npz", index=tmp_path / "index.csv", split=["test"]),
+        data=DataConfig(
+            backend="npz",
+            index=tmp_path / "index.csv",
+            split=["test"],
+            path_column="path",
+            duration_column="duration",
+            split_column="split",
+            token_sec=30,
+            max_tokens=2,
+        ),
         signals=SignalsConfig(channels={}),
         analyzers=[
             AnalyzerConfig(
