@@ -134,9 +134,7 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, mon
                 "ppg": {"source": "ppg", "sfreq": 100, "kind": "ppg", "input_dim": 3000},
             }
         },
-        "analyzers": [
-            {"name": "reference_stage5", "type": "npz_stage_reference", "stage_key": "stage5"}
-        ],
+        "analyzers": [{"name": "reference_stage5", "type": "npz_stage_reference", "stage_key": "stage5"}],
         "reducers": [{"name": "stage5_stats", "type": "hypnogram_stats", "source": "reference_stage5"}],
         "outputs": {
             "write_global_tables": True,
@@ -198,9 +196,7 @@ def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, mo
                 "ppg": {"source": "ppg", "sfreq": 100, "kind": "ppg", "input_dim": 3000},
             }
         },
-        "analyzers": [
-            {"name": "source_model", "type": "npz_stage_reference", "stage_key": "stage5"}
-        ],
+        "analyzers": [{"name": "source_model", "type": "npz_stage_reference", "stage_key": "stage5"}],
         "reducers": [{"name": "stage5_stats", "type": "hypnogram_stats", "source": "source_model"}],
         "outputs": {
             "write_global_tables": True,
