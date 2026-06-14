@@ -640,8 +640,19 @@ def _event_night_summary(
     if resolver is not None and stage_source:
         stage_minutes = resolver.get_stage_minutes(record.record_id, stage_source)
         if stage_minutes is not None:
-            # Mirrors YASA DetectionResults.summary(grp_stage=True): event count divided by minutes in that stage.
-            output.update(_stage_event_densities(analyzer_name, event_type, events, stage_minutes))
+            density_events = events
+            stage_col = f"{analyzer_name}_stage"
+            if not events.empty and stage_col not in events.columns:
+                # Stage-specific density is event count per minute in that sleep stage, so each event needs a stage.
+                if "onset_sec" not in events.columns:
+                    raise ValueError(f"YASA event table for {analyzer_name!r} is missing 'onset_sec'.")
+                stages = resolver.stage_at_seconds(record.record_id, stage_source, events["onset_sec"].to_numpy())
+                if stages is None:
+                    raise ValueError(f"stage_source {stage_source!r} not found for {record.record_id!r}.")
+                density_events = events.copy()
+                density_events[stage_col] = stages
+            # Mirrors YASA DetectionResults.summary(grp_stage=True): stage event count divided by stage minutes.
+            output.update(_stage_event_densities(analyzer_name, event_type, density_events, stage_minutes))
     return output
 
 
@@ -700,7 +711,7 @@ def _stage_event_count(events: pd.DataFrame, analyzer_name: str, stages: set[str
     if events.empty:
         return 0
     if stage_col not in events.columns:
-        return int(len(events))
+        raise ValueError(f"YASA event table for {analyzer_name!r} is missing {stage_col!r}.")
     labels = events[stage_col].map(lambda value: STAGE_ID_TO_LABEL.get(_stage_id(value), _slug(value)))
     return int(labels.isin(stages).sum())
 

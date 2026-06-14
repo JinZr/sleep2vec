@@ -978,6 +978,41 @@ def test_yasa_spindles_outputs_stage_denominator_density(monkeypatch, tmp_path: 
     assert results[0].night["yasa_spindles_spindle_density_per_min_N2N3"] == pytest.approx(2.0)
 
 
+def test_yasa_spindles_stage_density_assigns_missing_event_stage_from_onset(monkeypatch, tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    np.savez(npz_path, eeg=np.ones(6000, dtype=np.float32))
+
+    def fake_spindles(raw, hypno=None):
+        return pd.DataFrame({"Start": [10.0, 40.0], "Duration": [1.0, 1.0]})
+
+    monkeypatch.setattr(
+        "sleep2stat.analyzers.yasa.importlib.import_module",
+        lambda name: _fake_mne_module() if name == "mne" else SimpleNamespace(spindles_detect=fake_spindles),
+    )
+    analyzer = YasaSpindlesAnalyzer(
+        AnalyzerConfig(
+            name="yasa_spindles",
+            type="yasa_spindles",
+            input_channels=["eeg"],
+            stage_source="stage5_model",
+            stages=["N2", "N3"],
+        )
+    )
+    context = _yasa_context(tmp_path)
+    stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 3]})
+
+    analyzer.prepare(context)
+    results, failures = analyzer.run(
+        [_yasa_record(npz_path)],
+        context,
+        prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
+    )
+
+    assert failures == []
+    assert results[0].night["yasa_spindles_spindle_density_per_min_N2"] == pytest.approx(2.0)
+    assert results[0].night["yasa_spindles_spindle_density_per_min_N2N3"] == pytest.approx(2.0)
+
+
 def test_yasa_rem_calls_two_eog_array_api_with_sample_level_hypno(monkeypatch, tmp_path: Path):
     npz_path = tmp_path / "rec1.npz"
     np.savez(
@@ -1202,6 +1237,29 @@ def test_spo2_desaturation_outputs_sleep_denominator_odi_when_stage_source_is_av
     assert results[0].night["ODI3_per_sleep_hour"] == pytest.approx(120.0)
 
 
+def test_spo2_desaturation_fails_when_stage_denominator_missing(tmp_path: Path):
+    npz_path = tmp_path / "rec1.npz"
+    signal = np.array([96] * 5 + [92] * 12 + [96] * 43, dtype=np.float32)
+    np.savez(npz_path, spo2=signal)
+    analyzer = Spo2DesaturationAnalyzer(
+        AnalyzerConfig(
+            name="spo2_desaturation",
+            type="spo2_desaturation",
+            input_channels=["spo2"],
+            drop_thresholds=[3],
+            min_duration_sec=10,
+            stage_source="stage5_model",
+        )
+    )
+
+    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path), prior_results=[])
+
+    assert results == []
+    assert len(failures) == 1
+    assert failures[0].record_id == "rec1"
+    assert "stage_source" in failures[0].message
+
+
 def test_event_related_hypoxic_burden_uses_pred_event_fields(tmp_path: Path):
     npz_path = tmp_path / "rec1.npz"
     signal = np.array([96] * 20 + [90] * 20 + [95] * 20, dtype=np.float32)
@@ -1372,6 +1430,22 @@ def test_load_records_rejects_unsafe_kaldi_sample_key_record_ids(tmp_path: Path,
                 split=["test"],
                 kaldi_data_root=root,
                 kaldi_manifest=root / "manifest.json",
+            )
+        )
+
+
+@pytest.mark.parametrize("patient_id", [".", ".."])
+def test_load_records_rejects_unsafe_npz_record_id_columns(tmp_path: Path, patient_id: str):
+    index = tmp_path / "index.csv"
+    index.write_text(f"path,duration,split,patient_id\n/tmp/a.npz,60,test,{patient_id}\n")
+
+    with pytest.raises(ValueError, match="path-safe sleep2stat record_id"):
+        load_records(
+            DataConfig(
+                backend="npz",
+                index=index,
+                split=["test"],
+                record_id_columns=["patient_id"],
             )
         )
 

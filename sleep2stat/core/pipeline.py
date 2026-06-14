@@ -90,16 +90,22 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
                 try:
                     reducer = create_reducer(reducer_cfg)
                     chunk_results.extend(reducer.reduce(chunk, chunk_results, context))
-                except Exception as exc:
-                    chunk_failures.extend(
-                        FailureRecord(
-                            record_id=record.record_id,
-                            analyzer=reducer_cfg.name,
-                            error_type=type(exc).__name__,
-                            message=str(exc),
-                        )
-                        for record in chunk
-                    )
+                except Exception:
+                    base_results = list(chunk_results)
+                    for record in chunk:
+                        record_results = [result for result in base_results if result.record_id == record.record_id]
+                        try:
+                            reducer = create_reducer(reducer_cfg)
+                            chunk_results.extend(reducer.reduce([record], record_results, context))
+                        except Exception as record_exc:
+                            chunk_failures.append(
+                                FailureRecord(
+                                    record_id=record.record_id,
+                                    analyzer=reducer_cfg.name,
+                                    error_type=type(record_exc).__name__,
+                                    message=str(record_exc),
+                                )
+                            )
             failed_record_ids = {failure.record_id for failure in chunk_failures if failure.record_id != "__all__"}
             result_record_ids = {result.record_id for result in chunk_results}
             chunk_completed = {

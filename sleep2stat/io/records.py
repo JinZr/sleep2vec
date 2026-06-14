@@ -70,6 +70,7 @@ def _load_npz_records(
             if column not in {data_cfg.path_column, data_cfg.duration_column}
         }
         record_id = _record_id(row, row_idx, Path(raw_path), data_cfg.record_id_columns)
+        _validate_record_id_segment(record_id, "NPZ")
         records.append(
             SleepRecord(
                 record_id=record_id,
@@ -139,12 +140,7 @@ def _load_kaldi_records(
             else:
                 sample_key = row["sample_key"]
                 record_id = "" if pd.isna(sample_key) else str(sample_key)
-            # Writers store sidecars under per_record/<record_id>, so Kaldi IDs must stay one segment.
-            if record_id in {"", ".", ".."} or "/" in record_id or "\\" in record_id:
-                raise ValueError(
-                    "Kaldi record_id values must be a single path-safe sleep2stat record_id segment; "
-                    f"got {record_id!r}."
-                )
+            _validate_record_id_segment(record_id, "Kaldi")
             records.append(
                 SleepRecord(
                     record_id=record_id,
@@ -209,6 +205,14 @@ def _record_id(row: pd.Series, row_idx: int, path: Path, columns: list[str]) -> 
 def _slug_piece(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value.strip())
     return cleaned.strip("-") or "na"
+
+
+def _validate_record_id_segment(record_id: str, backend: str) -> None:
+    if record_id in {"", ".", ".."} or "/" in record_id or "\\" in record_id:
+        raise ValueError(
+            f"{backend} record_id values must be a single path-safe sleep2stat record_id segment; "
+            f"got {record_id!r}."
+        )
 
 
 def _json_safe_value(value: Any) -> Any:

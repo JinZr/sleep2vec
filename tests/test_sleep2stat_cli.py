@@ -8,6 +8,7 @@ import yaml
 
 from sleep2stat.cli import main
 from sleep2stat.config import load_config
+from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.core.pipeline import run_pipeline
 from sleep2stat.plot import _plot_cohort_stage_composition, _respiratory_metric_specs
 
@@ -171,6 +172,93 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, mon
         lambda config: (_ for _ in ()).throw(AssertionError("no-op resume should not prepare analyzers")),
     )
     run_pipeline(config, args)
+
+
+def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, monkeypatch):
+    index_path = tmp_path / "index.csv"
+    index_path.write_text(
+        "path,duration,split,patient_id\n"
+        f"{tmp_path / 'good.npz'},60,test,good\n"
+        f"{tmp_path / 'bad.npz'},60,test,bad\n"
+    )
+    config_path = tmp_path / "config.yaml"
+    payload = {
+        "run": {"name": "reducer-failure", "output_dir": str(tmp_path / "run"), "overwrite": True},
+        "data": {
+            "backend": "npz",
+            "index": str(index_path),
+            "split": ["test"],
+            "duration_column": "duration",
+            "record_id_columns": ["patient_id"],
+            "token_sec": 30,
+            "max_tokens": 2,
+        },
+        "signals": {
+            "channels": {
+                "ppg": {"source": "ppg", "sfreq": 100, "kind": "ppg", "input_dim": 3000},
+            }
+        },
+        "analyzers": [
+            {"name": "source_model", "type": "npz_stage_reference", "label_name": "stage5", "stage_key": "stage5"}
+        ],
+        "reducers": [{"name": "stage5_stats", "type": "hypnogram_stats", "source": "source_model"}],
+        "outputs": {
+            "write_global_tables": True,
+            "write_per_record": True,
+            "include_probabilities": True,
+            "include_raw_logits": False,
+            "compression": "gzip",
+            "global_tables": {
+                "epoch_alignment": False,
+                "second_alignment": False,
+                "event_alignment": False,
+                "night_stats": True,
+            },
+        },
+    }
+    config_path.write_text(yaml.safe_dump(payload))
+
+    class FakeAnalyzer:
+        def __init__(self, config):
+            self.config = config
+
+        def prepare(self, context):
+            return None
+
+        def close(self):
+            return None
+
+        def run(self, records, context, prior_results=None):
+            return [
+                AnalyzerResult(self.config.name, record.record_id, night={f"{self.config.name}_ok": 1})
+                for record in records
+            ], []
+
+    class FakeReducer:
+        def __init__(self, config):
+            self.config = config
+
+        def reduce(self, records, results, context):
+            if len(records) > 1:
+                raise RuntimeError("chunk reducer failed")
+            record = records[0]
+            if record.record_id == "bad":
+                raise ValueError("bad reducer source")
+            return [AnalyzerResult(self.config.name, record.record_id, night={f"{self.config.name}_ok": 1})]
+
+    monkeypatch.setattr("sleep2stat.core.pipeline.create_analyzer", lambda config: FakeAnalyzer(config))
+    monkeypatch.setattr("sleep2stat.core.pipeline.create_reducer", lambda config: FakeReducer(config))
+    config = load_config(config_path)
+    args = SimpleNamespace(split=["test"], limit_records=None, dry_run=False, device="cpu", num_workers=0, batch_size=2)
+
+    run_pipeline(config, args)
+
+    assert (tmp_path / "run" / "per_record" / "good" / "_SUCCESS.json").exists()
+    assert not (tmp_path / "run" / "per_record" / "bad" / "_SUCCESS.json").exists()
+    failures = pd.read_csv(tmp_path / "run" / "status" / "failures.csv")
+    assert failures[["record_id", "analyzer", "error_type"]].to_dict("records") == [
+        {"record_id": "bad", "analyzer": "stage5_stats", "error_type": "ValueError"}
+    ]
 
 
 def test_cli_plot_record_creates_pngs_from_per_record_outputs(tmp_path: Path):

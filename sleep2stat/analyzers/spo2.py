@@ -360,7 +360,12 @@ def _odi_stats(
 ) -> dict[str, float]:
     recording_hours = record.duration_sec / 3600.0 if record.duration_sec > 0 else 0.0
     valid_spo2_hours = float(valid.sum() / sfreq / 3600.0) if sfreq > 0 else 0.0
+    # ODI (oxygen desaturation index) is a desaturation event count per hour; denominator choice is part of the metric.
     stage_denominators = resolver.get_denominator_hours(record.record_id, stage_source) if stage_source else None
+    if stage_source and stage_denominators is None:
+        raise ValueError(
+            f"spo2_desaturation stage_source {stage_source!r} has no denominator for {record.record_id!r}."
+        )
     output: dict[str, float] = {}
     for drop in drops:
         count = int(np.sum(events.get("drop_threshold_pct", pd.Series(dtype=float)) == float(drop)))
