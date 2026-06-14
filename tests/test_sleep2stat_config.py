@@ -120,26 +120,37 @@ def test_load_config_accepts_stage_reference_stage_key(tmp_path: Path):
     assert config.analyzers[0].stage_key == "stage5"
 
 
-@pytest.mark.parametrize(
-    ("field", "match"),
-    [
-        ("label_name", "legacy label_name"),
-        ("npz_key", "Unknown sleep2stat config field"),
-    ],
-)
-def test_load_config_rejects_npz_stage_reference_legacy_stage_fields(tmp_path: Path, field: str, match: str):
+def test_load_config_allows_npz_stage_reference_label_name_as_is(tmp_path: Path):
     payload = _minimal_payload()
     payload["analyzers"] = [
         {
             "name": "reference_stage5",
             "type": "npz_stage_reference",
             "stage_key": "stage5",
-            field: "stage5",
+            "label_name": "unused_stage",
         }
     ]
     payload["reducers"][0]["source"] = "reference_stage5"
 
-    with pytest.raises(ValueError, match=match):
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.analyzers[0].stage_key == "stage5"
+    assert config.analyzers[0].label_name == "unused_stage"
+
+
+def test_load_config_rejects_npz_stage_reference_unknown_stage_field(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["analyzers"] = [
+        {
+            "name": "reference_stage5",
+            "type": "npz_stage_reference",
+            "stage_key": "stage5",
+            "npz_key": "stage5",
+        }
+    ]
+    payload["reducers"][0]["source"] = "reference_stage5"
+
+    with pytest.raises(ValueError, match="Unknown sleep2stat config field"):
         load_config(_write_yaml(tmp_path, payload))
 
 
@@ -303,7 +314,7 @@ def test_load_config_rejects_yasa_bandpower_by_stage_without_stage_source(tmp_pa
         load_config(_write_yaml(tmp_path, payload))
 
 
-def test_load_config_rejects_yasa_bandpower_outputs_stage_source(tmp_path: Path):
+def test_load_config_allows_yasa_bandpower_outputs_stage_source_as_is(tmp_path: Path):
     payload = _minimal_payload()
     payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
     payload["analyzers"] = [
@@ -312,6 +323,7 @@ def test_load_config_rejects_yasa_bandpower_outputs_stage_source(tmp_path: Path)
             "name": "yasa_bandpower",
             "type": "yasa_bandpower",
             "input_channels": ["eeg"],
+            "stage_source": "yasa_stage",
             "outputs": {
                 "stage_source": "yasa_stage",
                 "by_epoch": True,
@@ -323,8 +335,10 @@ def test_load_config_rejects_yasa_bandpower_outputs_stage_source(tmp_path: Path)
     ]
     payload["reducers"] = []
 
-    with pytest.raises(ValueError, match="legacy outputs.stage_source"):
-        load_config(_write_yaml(tmp_path, payload))
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.analyzers[-1].stage_source == "yasa_stage"
+    assert config.analyzers[-1].outputs["stage_source"] == "yasa_stage"
 
 
 def test_load_config_accepts_yasa_bandpower_without_stage_source_when_by_stage_false(tmp_path: Path):

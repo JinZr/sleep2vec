@@ -377,8 +377,6 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
                 if missing:
                     raise ValueError(f"Analyzer {name!r} AHI postprocess missing required field(s): {missing}")
         if analyzer_type == "npz_stage_reference":
-            if item.get("label_name") is not None:
-                raise ValueError(f"Analyzer {name!r} uses legacy label_name; set stage_key instead.")
             if not item.get("stage_key"):
                 raise ValueError(f"Analyzer {name!r} requires stage_key.")
         if analyzer_type.startswith("yasa_") and not input_channels:
@@ -416,8 +414,6 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
         if legacy_artifact_keys:
             raise ValueError(f"Analyzer {name!r} uses legacy artifact field(s): {legacy_artifact_keys}")
         outputs = dict(item.get("outputs") or {})
-        if analyzer_type == "yasa_bandpower" and "stage_source" in outputs:
-            raise ValueError(f"Analyzer {name!r} uses legacy outputs.stage_source; set stage_source instead.")
         if analyzer_type == "yasa_bandpower":
             required_outputs = ("by_epoch", "by_stage", "by_night", "relative")
             missing = [key for key in required_outputs if key not in outputs or outputs[key] is None]
