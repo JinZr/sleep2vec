@@ -29,6 +29,7 @@ SUPPORTED_REDUCER_TYPES = {
     "event_density",
     "stage_specific_summary",
 }
+YASA_STAGE_FILTER_LABELS = {"W", "N1", "N2", "N3", "REM"}
 TOP_LEVEL_KEYS = {"run", "data", "signals", "analyzers", "reducers", "outputs"}
 RUN_KEYS = {"name", "output_dir", "overwrite", "skip_existing", "seed"}
 DATA_KEYS = {
@@ -385,6 +386,16 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
             kinds = [signals.channels[channel].kind.lower() for channel in input_channels]
             if len(input_channels) != 2 or any(kind != "eog" for kind in kinds):
                 raise ValueError(f"Analyzer {name!r} requires exactly two EOG input channels.")
+        stages = _string_list(item.get("stages", []), f"analyzers[{idx}].stages")
+        if analyzer_type.startswith("yasa_"):
+            unknown_stages = sorted(
+                {stage for stage in stages if stage.strip().upper() not in YASA_STAGE_FILTER_LABELS}
+            )
+            if unknown_stages:
+                raise ValueError(
+                    f"Analyzer {name!r} has unsupported YASA stage filter(s): {unknown_stages}. "
+                    f"Expected one of {sorted(YASA_STAGE_FILTER_LABELS)}."
+                )
         spo2_source = None if item.get("spo2_source") is None else str(item["spo2_source"])
         if analyzer_type.startswith("spo2_") or analyzer_type == "event_related_hypoxic_burden":
             if not input_channels and not spo2_source:
@@ -414,7 +425,7 @@ def _build_analyzers(raw: Any, signals: SignalsConfig) -> list[AnalyzerConfig]:
                 threshold=item.get("threshold"),
                 postprocess=dict(item.get("postprocess") or {}),
                 stage_source=None if item.get("stage_source") is None else str(item["stage_source"]),
-                stages=_string_list(item.get("stages", []), f"analyzers[{idx}].stages"),
+                stages=stages,
                 artifact=dict(item.get("artifact") or {}),
                 thresholds=item.get("thresholds"),
                 drop_thresholds=[

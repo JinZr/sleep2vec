@@ -39,24 +39,31 @@ def plot_cohort(
     plots_dir = run_dir / "plots" / "cohort"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    sleep_metrics = _sleep_metric_specs(frame, stage_prefix)
-    outputs = [
-        _plot_cohort_stage_composition(frame, stage_prefix, group_column, plots_dir / "cohort_stage_composition.png"),
-        _plot_cohort_sleep_metrics(
-            frame,
-            sleep_metrics,
-            group_column,
-            plots_dir / "cohort_sleep_metrics.png",
-        ),
-        _plot_cohort_stage_ratio_distribution(
-            frame,
-            stage_prefix,
-            group_column,
-            plots_dir / "cohort_stage_ratio_distribution.png",
-        ),
-    ]
+    outputs = []
+    sleep_metrics = []
+    if stage_prefix is not None:
+        sleep_metrics = _sleep_metric_specs(frame, stage_prefix)
+        outputs.extend(
+            [
+                _plot_cohort_stage_composition(
+                    frame, stage_prefix, group_column, plots_dir / "cohort_stage_composition.png"
+                ),
+                _plot_cohort_sleep_metrics(
+                    frame,
+                    sleep_metrics,
+                    group_column,
+                    plots_dir / "cohort_sleep_metrics.png",
+                ),
+                _plot_cohort_stage_ratio_distribution(
+                    frame,
+                    stage_prefix,
+                    group_column,
+                    plots_dir / "cohort_stage_ratio_distribution.png",
+                ),
+            ]
+        )
 
-    if frame[group_column].nunique(dropna=True) > 1:
+    if stage_prefix is not None and frame[group_column].nunique(dropna=True) > 1:
         outputs.append(
             _plot_harmonization_diagnostics(
                 frame,
@@ -91,6 +98,8 @@ def plot_cohort(
             )
         )
 
+    if not outputs:
+        raise ValueError("No usable stage source found; expected columns like <source>_N2_ratio_TST.")
     return outputs
 
 
@@ -138,7 +147,7 @@ def _load_cohort_frame(run_dir: Path, *, group_column: str) -> pd.DataFrame:
     return night
 
 
-def _select_stage_source(frame: pd.DataFrame, requested: str) -> str:
+def _select_stage_source(frame: pd.DataFrame, requested: str) -> str | None:
     candidates = []
     for column in frame.columns:
         if column.endswith("_N1_ratio_TST"):
@@ -156,7 +165,7 @@ def _select_stage_source(frame: pd.DataFrame, requested: str) -> str:
             return requested
         raise ValueError(f"stage source {requested!r} does not have complete N1/N2/N3/REM ratio columns.")
     if not candidates:
-        raise ValueError("No usable stage source found; expected columns like <source>_N2_ratio_TST.")
+        return None
     preferred = [item for item in candidates if item.startswith(("stage5", "yasa", "reference"))]
     return (preferred or candidates)[0]
 

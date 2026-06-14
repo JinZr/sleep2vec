@@ -419,6 +419,31 @@ def test_plot_cohort_resp_metric_prefers_clinical_ahi_and_new_denominators():
     ]
 
 
+def test_cli_plot_cohort_allows_respiratory_only_bundle(tmp_path: Path):
+    pytest.importorskip("matplotlib")
+    run_dir = tmp_path / "run"
+    (run_dir / "tables").mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "record_id": ["rec1", "rec2"],
+            "source": ["A", "B"],
+            "ODI3_per_recording_hour": [10.0, 18.0],
+            "ODI4_per_recording_hour": [5.0, 9.0],
+            "spo2_t90_pct_recording": [2.5, 8.0],
+            "spo2_nadir": [88.0, 82.0],
+            "resp_event_hypoxic_burden_pctmin_per_recording_hour": [0.8, 2.4],
+        }
+    ).to_csv(run_dir / "tables" / "night_stats.csv", index=False)
+
+    assert main(["plot-cohort", "--run-dir", str(run_dir)]) == 0
+
+    plot_dir = run_dir / "plots" / "cohort"
+    assert (plot_dir / "cohort_respiratory_risk.png").exists()
+    assert not (plot_dir / "cohort_stage_composition.png").exists()
+    assert not (plot_dir / "cohort_sleep_metrics.png").exists()
+    assert not (plot_dir / "cohort_stage_ratio_distribution.png").exists()
+
+
 def test_cli_plot_cohort_skips_harmonization_for_single_center(tmp_path: Path):
     pytest.importorskip("matplotlib")
     run_dir = tmp_path / "run"

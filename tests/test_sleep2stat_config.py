@@ -447,6 +447,25 @@ def test_load_config_rejects_later_yasa_bandpower_stage_source(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
+def test_load_config_rejects_unknown_yasa_stage_filter(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["signals"]["channels"]["eeg"] = {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}
+    payload["analyzers"] = [
+        {"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]},
+        {
+            "name": "yasa_spindles",
+            "type": "yasa_spindles",
+            "input_channels": ["eeg"],
+            "stage_source": "yasa_stage",
+            "stages": ["N22", "REMM"],
+        },
+    ]
+    payload["reducers"] = []
+
+    with pytest.raises(ValueError, match="unsupported YASA stage filter"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_rejects_later_ahi_denominator_stage_source(tmp_path: Path):
     payload = _minimal_payload()
     stage_analyzer = dict(payload["analyzers"][0])
