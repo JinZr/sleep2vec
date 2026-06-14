@@ -162,17 +162,173 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, mon
     assert len(pd.read_csv(rec1_path)) == 2
 
     args.limit_records = 2
+    args.num_workers = 2
     run_pipeline(config, args)
 
     assert len(pd.read_csv(rec1_path)) == 2
     global_epoch = pd.read_csv(tmp_path / "run" / "tables" / "epoch_alignment.csv.gz")
     assert sorted(global_epoch["record_id"].unique().tolist()) == ["unit__p001__s001", "unit__p002__s001"]
+    manifest = yaml.safe_load((tmp_path / "run" / "run_manifest.json").read_text())
+    assert manifest["execution_split"] == "split2"
 
     monkeypatch.setattr(
         "sleep2stat.core.pipeline.create_analyzer",
         lambda config: (_ for _ in ()).throw(AssertionError("no-op resume should not prepare analyzers")),
     )
     run_pipeline(config, args)
+
+
+def test_pipeline_record_split_matches_sequential_outputs_and_summarize(tmp_path: Path):
+    records = []
+    for idx, stages in enumerate(([0, 1], [2, 4], [0, 0], [3, 4])):
+        path = tmp_path / f"rec{idx}.npz"
+        np.savez(path, stage5=np.array(stages, dtype=np.int64))
+        records.append(f"{path},60,test,unit,p{idx:03d},s001\n")
+    index_path = tmp_path / "index.csv"
+    index_path.write_text("path,duration,split,source,patient_id,session_id\n" + "".join(records))
+    payload = {
+        "run": {"name": "reference", "output_dir": str(tmp_path / "run_seq"), "overwrite": True},
+        "data": {
+            "backend": "npz",
+            "index": str(index_path),
+            "split": ["test"],
+            "path_column": "path",
+            "duration_column": "duration",
+            "split_column": "split",
+            "record_id_columns": ["source", "patient_id", "session_id"],
+            "token_sec": 30,
+            "max_tokens": 2,
+        },
+        "signals": {
+            "channels": {"ppg": {"source": "ppg", "sfreq": 100, "kind": "ppg", "input_dim": 3000}},
+        },
+        "analyzers": [{"name": "reference_stage5", "type": "npz_stage_reference", "stage_key": "stage5"}],
+        "reducers": [{"name": "stage5_stats", "type": "hypnogram_stats", "source": "reference_stage5"}],
+        "outputs": {
+            "write_global_tables": True,
+            "write_per_record": True,
+            "include_probabilities": True,
+            "include_raw_logits": False,
+            "compression": "gzip",
+            "global_tables": {
+                "epoch_alignment": True,
+                "second_alignment": False,
+                "event_alignment": True,
+                "night_stats": True,
+            },
+        },
+    }
+    seq_config_path = tmp_path / "seq.yaml"
+    seq_config_path.write_text(yaml.safe_dump(payload))
+    seq_config = load_config(seq_config_path)
+    seq_args = SimpleNamespace(
+        split=["test"], limit_records=None, dry_run=False, device="cpu", num_workers=1, batch_size=2
+    )
+
+    run_pipeline(seq_config, seq_args)
+
+    payload["run"]["output_dir"] = str(tmp_path / "run_split")
+    split_config_path = tmp_path / "split.yaml"
+    split_config_path.write_text(yaml.safe_dump(payload))
+    split_config = load_config(split_config_path)
+    split_args = SimpleNamespace(
+        split=["test"], limit_records=None, dry_run=False, device="cpu", num_workers=2, batch_size=2
+    )
+
+    run_pipeline(split_config, split_args)
+
+    seq_night = pd.read_csv(tmp_path / "run_seq" / "tables" / "night_stats.csv").sort_values("record_id")
+    split_night = pd.read_csv(tmp_path / "run_split" / "tables" / "night_stats.csv").sort_values("record_id")
+    pd.testing.assert_frame_equal(seq_night.reset_index(drop=True), split_night.reset_index(drop=True))
+    manifest = yaml.safe_load((tmp_path / "run_split" / "run_manifest.json").read_text())
+    assert manifest["execution_split"] == "split2"
+
+    (tmp_path / "run_split" / "tables" / "night_stats.csv").unlink()
+    assert main(["summarize", "--run-dir", str(tmp_path / "run_split"), "--num-workers", "2"]) == 0
+    assert (tmp_path / "run_split" / "tables" / "night_stats.csv").exists()
+
+
+def test_pipeline_model_analyzer_keeps_canonical_chunk_path_with_num_workers(tmp_path: Path, monkeypatch):
+    index_path = tmp_path / "index.csv"
+    index_path.write_text(
+        "path,duration,split,patient_id\n"
+        f"{tmp_path / 'rec1.npz'},60,test,rec1\n"
+        f"{tmp_path / 'rec2.npz'},60,test,rec2\n"
+    )
+    config_path = tmp_path / "config.yaml"
+    payload = {
+        "run": {"name": "model-fallback", "output_dir": str(tmp_path / "run"), "overwrite": True},
+        "data": {
+            "backend": "npz",
+            "index": str(index_path),
+            "split": ["test"],
+            "path_column": "path",
+            "duration_column": "duration",
+            "split_column": "split",
+            "record_id_columns": ["patient_id"],
+            "token_sec": 30,
+            "max_tokens": 2,
+        },
+        "signals": {
+            "channels": {"ppg": {"source": "ppg", "sfreq": 100, "kind": "ppg", "input_dim": 3000}},
+        },
+        "analyzers": [
+            {
+                "name": "stage_model",
+                "type": "sleep2vec_downstream",
+                "namespace": "sleep2vec2",
+                "label_name": "stage5",
+                "config": "configs/sleep2vec2/ppg_stage5_finetune_large.yaml",
+                "ckpt_path": "/tmp/stage.ckpt",
+                "input_channels": ["ppg"],
+            }
+        ],
+        "reducers": [],
+        "outputs": {
+            "write_global_tables": True,
+            "write_per_record": True,
+            "include_probabilities": True,
+            "include_raw_logits": False,
+            "compression": "gzip",
+            "global_tables": {
+                "epoch_alignment": False,
+                "second_alignment": False,
+                "event_alignment": False,
+                "night_stats": True,
+            },
+        },
+    }
+    config_path.write_text(yaml.safe_dump(payload))
+    prepare_workers = []
+    run_sizes = []
+
+    class FakeAnalyzer:
+        def __init__(self, config):
+            self.config = config
+
+        def prepare(self, context):
+            prepare_workers.append(context.num_workers)
+
+        def run(self, records, context, prior_results=None):
+            run_sizes.append(len(records))
+            return [
+                AnalyzerResult(self.config.name, record.record_id, night={f"{self.config.name}_pred": 1})
+                for record in records
+            ], []
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("sleep2stat.core.pipeline.create_analyzer", lambda config: FakeAnalyzer(config))
+    config = load_config(config_path)
+    args = SimpleNamespace(split=["test"], limit_records=None, dry_run=False, device="cpu", num_workers=2, batch_size=2)
+
+    run_pipeline(config, args)
+
+    assert prepare_workers == [2]
+    assert run_sizes == [2]
+    manifest = yaml.safe_load((tmp_path / "run" / "run_manifest.json").read_text())
+    assert manifest["execution_split"] == "sequential"
 
 
 def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, monkeypatch):

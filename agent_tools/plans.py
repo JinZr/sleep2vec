@@ -491,7 +491,9 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
             ),
         ]
         if runtime.get("summarize_after_run", True):
-            commands.append(_render_command(["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]))
+            summarize_cmd = ["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]
+            _append_option(summarize_cmd, "--num-workers", runtime.get("num_workers"))
+            commands.append(_render_command(summarize_cmd))
         if runtime.get("plot_cohort_after_run") is True:
             plot_cmd = [
                 "python",
