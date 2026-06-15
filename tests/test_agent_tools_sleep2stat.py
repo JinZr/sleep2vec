@@ -99,7 +99,7 @@ def test_sleep2stat_summarize_and_plot_use_config_run_dir(tmp_path: Path):
     assert report.exit_code == 0
     commands = json.loads((output_dir / "plan.json").read_text())["commands"]
     config_run_dir = "results/sleep2stat/tiny_fixture"
-    assert f"python -m sleep2stat summarize --run-dir {config_run_dir}" in commands
+    assert f"python -m sleep2stat summarize --run-dir {config_run_dir} --num-workers 1" in commands
     assert any(
         command.startswith(f"python -m sleep2stat plot-cohort --run-dir {config_run_dir}") for command in commands
     )

@@ -17,7 +17,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/cli.py`
 - Signature: `main(argv: list[str] | None = None) -> int`
-- Purpose and contract: dispatch sleep2stat subcommands: `validate-config`, `run`, `summarize`, `plot-record`, and `plot-cohort`.
+- Purpose and contract: dispatch sleep2stat subcommands: `validate-config`, `run`, `summarize`, `plot-record`, and `plot-cohort`; `summarize --num-workers` controls parallel per-record sidecar reads during table rebuild.
 - Important inputs/outputs: optional argv in; process exit code out.
 - Side effects: prints run paths or summary rows, runs analysis bundles, rebuilds global tables during summarize, and writes plot files through `sleep2stat.plot`.
 - Key callers/callees: called by `sleep2stat/__main__.py`; delegates to `load_config`, `run_pipeline`, `_summarize`, `plot_record`, and `plot_cohort`.
@@ -50,10 +50,10 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/core/pipeline.py`
 - Signature: `run_pipeline(config: Sleep2statConfig, args: argparse.Namespace)`
-- Purpose and contract: execute a sleep2stat run from config and runtime args.
+- Purpose and contract: execute a sleep2stat run from config and runtime args. For non-model configs, `--num-workers > 1` uses an internal single-machine record-level `splitN`; configs with `sleep2vec_downstream` keep the canonical model/DataLoader path.
 - Important inputs/outputs: validated config plus CLI args in; run directory path out.
 - Side effects: writes output directories, progress, record manifests, per-record sidecars, global tables, failure CSVs, and run manifest.
-- Key callers/callees: caller is `sleep2stat.cli.main`; callees include `load_records`, `AnalysisBundleWriter`, `create_analyzer`, `create_reducer`, `_chunk_size`, and `_record_chunks`.
+- Key callers/callees: caller is `sleep2stat.cli.main`; callees include `load_records`, `AnalysisBundleWriter`, `create_analyzer`, `create_reducer`, `_chunk_size`, `_record_chunks`, and the internal record split helpers.
 - Reuse guidance: this is the canonical execution loop for sleep2stat analysis bundles.
 - Duplication-risk notes: dry-run, skip-existing, chunk-level failure handling, reducer fallback, and completion markers must not be reimplemented in agent scripts.
 
@@ -340,7 +340,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/io/writers.py`
 - Signature: `AnalysisBundleWriter(config: Sleep2statConfig)`
-- Purpose and contract: own all sleep2stat output bundle writes and resumable run bookkeeping.
+- Purpose and contract: own all sleep2stat output bundle writes and resumable run bookkeeping, including optional parallel reads when rebuilding global tables from per-record sidecars.
 - Important inputs/outputs: validated config in; methods write record manifests, progress, failures, run manifests, per-record sidecars, global table shards, summary tables, and completion markers.
 - Side effects: creates/removes directories, copies config, writes YAML/JSON/CSV/NPZ files, and rebuilds tables from shards or sidecars.
 - Key callers/callees: used by `run_pipeline` and CLI summarize; key methods include `prepare`, `filter_records_for_run`, `write_record_manifest`, `write_progress`, `write_failures`, `write_chunk`, `write_completion_markers`, `rebuild_global_tables`, and `write_run_manifest`.

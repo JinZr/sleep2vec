@@ -71,10 +71,12 @@ python -m sleep2stat run \
   --num-workers 8
 ```
 
+For NPZ/YASA/SpO2-only configs, `--num-workers N` runs records through an internal single-machine `splitN` plan. Configs with `sleep2vec_downstream` keep the canonical model path and pass `num_workers` to the model DataLoader.
+
 Summarize and plot:
 
 ```bash
-python -m sleep2stat summarize --run-dir <run_dir>
+python -m sleep2stat summarize --run-dir <run_dir> --num-workers 8
 python -m sleep2stat plot-record --run-dir <run_dir> --record-id <record_id>
 python -m sleep2stat plot-cohort --run-dir <run_dir> --group-column source
 ```

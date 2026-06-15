@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     summarize = subparsers.add_parser("summarize", help="Summarize a completed sleep2stat run directory.")
     summarize.add_argument("--run-dir", type=Path, required=True)
+    summarize.add_argument("--num-workers", type=int, default=8)
 
     plot = subparsers.add_parser("plot-record", help="Plot one sleep2stat per-record output directory.")
     plot.add_argument("--run-dir", type=Path, required=True)
@@ -54,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"sleep2stat config OK: {args.config}")
         return 0
     if args.command == "summarize":
-        _summarize(args.run_dir)
+        _summarize(args.run_dir, num_workers=args.num_workers)
         return 0
     if args.command == "plot-record":
         for path in plot_record(args.run_dir, args.record_id):
@@ -75,14 +76,18 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _summarize(run_dir: Path) -> None:
+def _summarize(run_dir: Path, *, num_workers: int = 8) -> None:
     config_path = run_dir / "config.yaml"
     if config_path.exists():
         config = load_config(config_path)
         config = replace(config, run=replace(config.run, output_dir=run_dir))
         writer = AnalysisBundleWriter(config)
         records = _read_record_manifest(run_dir / "record_manifest.csv", config.data.token_sec, config.data.max_tokens)
-        writer.rebuild_global_tables(records, _read_failures(run_dir / "status" / "failures.csv"))
+        writer.rebuild_global_tables(
+            records,
+            _read_failures(run_dir / "status" / "failures.csv"),
+            num_workers=num_workers,
+        )
     manifest = run_dir / "run_manifest.json"
     record_manifest = run_dir / "record_manifest.csv"
     night_stats = run_dir / "tables" / "night_stats.csv"

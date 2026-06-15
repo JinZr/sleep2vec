@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -11,6 +12,7 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 import yaml
 
 from sleep2stat.config import Sleep2statConfig
@@ -65,7 +67,15 @@ class AnalysisBundleWriter:
                 pass
         frame.to_csv(path, index=False)
 
-    def write_progress(self, *, total_records: int, completed_records: int, status: str) -> None:
+    def write_progress(
+        self,
+        *,
+        total_records: int,
+        completed_records: int,
+        status: str,
+        num_workers: int | None = None,
+        execution_split: str | None = None,
+    ) -> None:
         payload = {
             "status": status,
             "total_records": int(total_records),
@@ -73,6 +83,10 @@ class AnalysisBundleWriter:
             "config_fingerprint": _config_fingerprint_from_path(self.config.path),
             "updated_at_utc": _utc_now(),
         }
+        if num_workers is not None:
+            payload["num_workers"] = int(num_workers)
+        if execution_split is not None:
+            payload["execution_split"] = execution_split
         _write_json(payload, self.status_dir / "progress.json")
 
     def write_failures(self, failures: Iterable[FailureRecord]) -> None:
@@ -96,6 +110,8 @@ class AnalysisBundleWriter:
         records: list[SleepRecord],
         failures: list[FailureRecord],
         dry_run: bool,
+        num_workers: int | None = None,
+        execution_split: str | None = None,
     ) -> None:
         manifest = {
             "kind": "sleep2stat_run",
@@ -107,6 +123,8 @@ class AnalysisBundleWriter:
             "config_fingerprint": _config_fingerprint_from_path(self.config.path),
             "record_count": len(records),
             "failure_count": len(failures),
+            "num_workers": None if num_workers is None else int(num_workers),
+            "execution_split": execution_split,
             "paths": {
                 "run_dir": str(self.run_dir),
                 "record_manifest": str(self.run_dir / "record_manifest.csv"),
@@ -173,14 +191,18 @@ class AnalysisBundleWriter:
         self,
         records: list[SleepRecord],
         failures: Iterable[FailureRecord] | None = None,
+        *,
+        num_workers: int = 0,
     ) -> None:
         if not self.config.outputs.write_global_tables:
             return
         failures = list(failures or [])
         self._rebuild_alignment_tables_from_shards()
         if self._global_table_enabled("night_stats"):
-            self._collect_night_stats(records).to_csv(self._table_path("night_stats"), index=False)
-        summary_tables = self._collect_cumulative_summary_tables(failures)
+            self._collect_night_stats(records, num_workers=num_workers).to_csv(
+                self._table_path("night_stats"), index=False
+            )
+        summary_tables = self._collect_cumulative_summary_tables(failures, num_workers=num_workers)
         for name, frame in summary_tables.items():
             frame.to_csv(self._table_path(name), index=False)
 
@@ -283,7 +305,7 @@ class AnalysisBundleWriter:
             if path.exists():
                 path.unlink()
             wrote = False
-            for shard in shards:
+            for shard in tqdm(shards, desc=f"sleep2stat rebuild {name}", unit="shard"):
                 try:
                     chunk_iter = pd.read_csv(shard, chunksize=100_000)
                     for frame in chunk_iter:
@@ -344,30 +366,63 @@ class AnalysisBundleWriter:
             return self.per_record_dir.exists() and any(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}"))
         return (self.per_record_dir / record_id / COMPLETION_MARKER).exists()
 
-    def _collect_night_stats(self, records: list[SleepRecord]) -> pd.DataFrame:
+    def _collect_night_stats(self, records: list[SleepRecord], *, num_workers: int = 0) -> pd.DataFrame:
         rows = []
         if not self.per_record_dir.exists():
             return _merge_night_rows(rows)
-        for marker in sorted(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}")):
-            record_dir = marker.parent
-            path = record_dir / "night_stats.json"
-            if not path.exists():
-                continue
-            payload = json.loads(path.read_text())
-            if payload:
-                rows.append(payload)
+        markers = sorted(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}"))
+        workers = int(num_workers or 0)
+        if workers <= 1:
+            for marker in tqdm(markers, desc="sleep2stat collect night_stats", unit="record"):
+                payload = _read_night_stats(marker)
+                if payload:
+                    rows.append(payload)
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                payloads = executor.map(_read_night_stats, markers)
+                for payload in tqdm(
+                    payloads,
+                    total=len(markers),
+                    desc=f"sleep2stat collect night_stats split{workers}",
+                    unit="record",
+                ):
+                    if payload:
+                        rows.append(payload)
         return _merge_night_rows(rows)
 
-    def _collect_cumulative_summary_tables(self, failures: list[FailureRecord]) -> dict[str, pd.DataFrame]:
-        manifests = []
+    def _collect_cumulative_summary_tables(
+        self, failures: list[FailureRecord], *, num_workers: int = 0
+    ) -> dict[str, pd.DataFrame]:
+        paths = []
         if self.per_record_dir.exists():
-            for path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}")):
-                if not (path.parent / COMPLETION_MARKER).exists():
-                    continue
-                try:
-                    manifests.append(pd.read_csv(path))
-                except pd.errors.EmptyDataError:
-                    continue
+            paths = [
+                path
+                for path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}"))
+                if (path.parent / COMPLETION_MARKER).exists()
+            ]
+        workers = int(num_workers or 0)
+        if workers <= 1:
+            manifests = [
+                frame
+                for frame in (
+                    _read_result_manifest(path)
+                    for path in tqdm(paths, desc="sleep2stat collect result_manifest", unit="record")
+                )
+                if frame is not None
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                frames = executor.map(_read_result_manifest, paths)
+                manifests = [
+                    frame
+                    for frame in tqdm(
+                        frames,
+                        total=len(paths),
+                        desc=f"sleep2stat collect result_manifest split{workers}",
+                        unit="record",
+                    )
+                    if frame is not None
+                ]
         manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
         failure_counts: dict[str, int] = {}
         keep_global_failures = any(str(failure.record_id) == "__all__" for failure in failures)
@@ -637,6 +692,21 @@ def _result_row_count(results: list[AnalyzerResult], attr: str) -> int:
         if value is not None:
             count += len(value)
     return count
+
+
+def _read_night_stats(marker: Path) -> dict[str, Any] | None:
+    path = marker.parent / "night_stats.json"
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text())
+    return payload or None
+
+
+def _read_result_manifest(path: Path) -> pd.DataFrame | None:
+    try:
+        return pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return None
 
 
 def _read_failures(path: Path) -> list[FailureRecord]:
