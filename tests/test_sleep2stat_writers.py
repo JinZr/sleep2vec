@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -119,6 +120,21 @@ def test_writer_creates_global_and_per_record_tables(tmp_path: Path):
     assert pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")["result_count"].tolist() == [1]
     arrays = np.load(config.run.output_dir / "per_record" / "rec1" / "arrays.npz")
     assert "stage5_model__probabilities" in arrays
+
+
+def test_writer_progress_and_pid_json_are_complete(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+
+    writer.write_progress(total_records=2, completed_records=1, status="running", num_workers=2)
+
+    progress = json.loads((config.run.output_dir / "status" / "progress.json").read_text())
+    pid = json.loads((config.run.output_dir / "status" / "pid.json").read_text())
+    assert progress["status"] == "running"
+    assert progress["completed_records"] == 1
+    assert isinstance(pid["pid"], int)
+    assert not list((config.run.output_dir / "status").glob(".progress.json.tmp.*"))
 
 
 def test_csv_row_count_treats_empty_tables_as_zero(tmp_path: Path):

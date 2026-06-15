@@ -63,3 +63,32 @@ def test_progress_missing_returns_structured_status(tmp_path: Path):
 
     assert data["status"] == "missing"
     assert "progress file not found" in data["message"]
+
+
+def test_progress_empty_or_invalid_json_returns_unknown(tmp_path: Path):
+    progress = tmp_path / "status" / "progress.json"
+    progress.parent.mkdir()
+    progress.write_text("")
+
+    data = read_progress(tmp_path)
+
+    assert data["status"] == "unknown"
+    assert "empty" in data["message"]
+
+    progress.write_text("{")
+    data = read_progress(tmp_path)
+
+    assert data["status"] == "unknown"
+    assert "not valid JSON" in data["message"]
+
+
+def test_progress_remote_invalid_json_returns_unknown(monkeypatch):
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, "{", "")
+
+    monkeypatch.setattr("agent_tools.progress.subprocess.run", fake_run)
+
+    data = read_progress("/wujidata/run", remote="baichuan3")
+
+    assert data["status"] == "unknown"
+    assert data["remote"] == "baichuan3"

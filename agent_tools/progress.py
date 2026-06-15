@@ -104,13 +104,18 @@ def read_progress(
         if not path.exists():
             return {"status": "missing", "task": None, "path": str(path), "message": "progress file not found"}
         raw = path.read_text()
-    data = json.loads(raw)
+    if not raw.strip():
+        return _invalid_progress(path, remote, "progress file is empty")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return _invalid_progress(path, remote, f"progress file is not valid JSON: {exc.msg}")
     if isinstance(data, dict):
         data.setdefault("path", str(path))
         if remote:
             data.setdefault("remote", remote)
         return data
-    raise ValueError(f"Progress file must contain a JSON object: {path}")
+    return _invalid_progress(path, remote, "progress file must contain a JSON object")
 
 
 def format_progress(data: dict[str, Any]) -> str:
@@ -143,6 +148,13 @@ def _sh(value: Any) -> str:
     import shlex
 
     return shlex.quote(str(value))
+
+
+def _invalid_progress(path: Path, remote: str | None, message: str) -> dict[str, Any]:
+    payload = {"status": "unknown", "task": None, "path": str(path), "message": message}
+    if remote:
+        payload["remote"] = remote
+    return payload
 
 
 def _now() -> str:

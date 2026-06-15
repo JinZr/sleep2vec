@@ -3,7 +3,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sleep2stat.config import load_config
+from sleep2stat import analyzers as _analyzers, reducers as _reducers  # noqa: F401
+from sleep2stat.config import SUPPORTED_ANALYZER_TYPES, SUPPORTED_REDUCER_TYPES, load_config
+from sleep2stat.registry import ANALYZER_REGISTRY, REDUCER_REGISTRY
 
 
 def _minimal_payload() -> dict:
@@ -76,6 +78,11 @@ def test_load_config_accepts_minimal_model_first_yaml(tmp_path: Path):
     assert config.outputs.global_tables["night_stats"] is True
     assert config.signals.channels["ppg"].input_dim == 3000
     assert config.analyzers[0].name == "stage5_model"
+
+
+def test_supported_sleep2stat_types_match_runtime_registries():
+    assert SUPPORTED_ANALYZER_TYPES == set(ANALYZER_REGISTRY)
+    assert SUPPORTED_REDUCER_TYPES == set(REDUCER_REGISTRY)
 
 
 def test_load_config_rejects_duplicate_record_id_override(tmp_path: Path):

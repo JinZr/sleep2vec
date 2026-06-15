@@ -324,8 +324,9 @@ def _sex_to_male(value: Any) -> bool | None:
             return True
         if normalized in {"f", "female", "0", "false"}:
             return False
-        return None
-    numeric = _finite_float(value)
+        numeric = _finite_float(normalized)
+    else:
+        numeric = _finite_float(value)
     if numeric is None:
         return None
     if numeric == 0:

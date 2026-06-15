@@ -28,6 +28,12 @@ For NPZ configs, also inspect the index when path validation is local:
 
 Use the index path reported by `config-summary` or `context`; do not pass a sleep2stat config to `index-summary`.
 
+For enabled `yasa_stage` configs, run record metadata preflight before the bundle run:
+
+```bash
+python -m sleep2stat validate-config --config <config> --check-records --split <split>
+```
+
 ## Decision checklist
 Confirm:
 
@@ -81,6 +87,15 @@ python -m sleep2stat plot-record --run-dir <run_dir> --record-id <record_id>
 python -m sleep2stat plot-cohort --run-dir <run_dir> --group-column source
 ```
 
+Inspect, repair, and finalize runs:
+
+```bash
+python -m sleep2stat resume-status --run-dir <run_dir>
+python -m sleep2stat resume-status --run-root <root> --glob 'shard_*'
+python -m sleep2stat repair --run-dir <run_dir>
+python -m sleep2stat cohort-finalize --output-run-dir <out> --input-run-dir <run1> --input-run-dir <run2>
+```
+
 Generate an agent plan:
 
 ```bash
@@ -98,6 +113,7 @@ A completed run should create:
   run_manifest.json
   record_manifest.csv
   status/
+    pid.json
     progress.json
     failures.csv
   tables/
@@ -121,6 +137,7 @@ Minimum validation:
 
 ```bash
 python -m sleep2stat validate-config --config <config>
+python -m sleep2stat validate-config --config <config> --check-records  # when YASA stage is enabled
 python utils/check_configs.py <config>
 python -m agent_tools skills --validate
 ```
