@@ -40,6 +40,7 @@ def cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[st
             global_failed_ids.update(scoped_failed_ids)
 
     manifest_frame = _dedupe_by_record_id(_concat(manifests))
+    # Fill-success semantics: later successful night rows replace older rows, but failed retries keep older successes.
     night_frame = _dedupe_by_record_id(_concat(night_stats))
     completed_ids = _record_ids(night_frame)
     resolved_failures = []
