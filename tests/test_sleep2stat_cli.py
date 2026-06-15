@@ -105,6 +105,36 @@ def test_cli_summarize_uses_supplied_run_dir_over_config_output_dir(tmp_path: Pa
     assert not wrong_dir.exists()
 
 
+def test_cli_resume_status_and_repair_preserve_dry_run(tmp_path: Path, capsys):
+    config_path = _write_dry_run_config(tmp_path)
+    run_dir = tmp_path / "run"
+
+    assert main(["run", "--config", str(config_path), "--split", "test", "--limit-records", "1", "--dry-run"]) == 0
+    capsys.readouterr()
+    (run_dir / "status" / "pid.json").write_text('{"pid": 999999999}\n')
+
+    assert main(["resume-status", "--run-dir", str(run_dir), "--json"]) == 0
+    status = json.loads(capsys.readouterr().out)
+
+    assert status["status"] == "dry_run"
+    assert status["progress_status"] == "dry_run"
+    assert status["pending_records"] == 1
+
+    assert main(["resume-status", "--run-root", str(tmp_path), "--glob", "run", "--json"]) == 0
+    root_status = json.loads(capsys.readouterr().out)
+    assert root_status["incomplete_runs"] == []
+
+    assert main(["repair", "--run-dir", str(run_dir), "--json"]) == 0
+    repaired = json.loads(capsys.readouterr().out)
+
+    assert repaired["repair_status"] == "dry_run"
+    assert repaired["status"] == "dry_run"
+    progress = json.loads((run_dir / "status" / "progress.json").read_text())
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert progress["status"] == "dry_run"
+    assert manifest["status"] == "dry_run"
+
+
 def test_cli_validate_config_check_records_flags_unconvertible_yasa_sex(tmp_path: Path, capsys):
     index_path = tmp_path / "index.csv"
     index_path.write_text("path,duration,split,source,patient_id,age,sex\nmissing.npz,60,test,unit,p001,60,unknown\n")

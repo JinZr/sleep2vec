@@ -64,7 +64,9 @@ def scan_resume_status(run_root: Path, pattern: str) -> dict[str, Any]:
         "glob": pattern,
         "runs": runs,
         "dead_runs": [run["run_dir"] for run in runs if run.get("status") == "stale_running"],
-        "incomplete_runs": [run["run_dir"] for run in runs if run.get("pending_records", 0) > 0],
+        "incomplete_runs": [
+            run["run_dir"] for run in runs if run.get("pending_records", 0) > 0 and run.get("status") != "dry_run"
+        ],
     }
 
 
@@ -129,6 +131,8 @@ def _classify_status(
     progress_status: str | None,
     pid_state: str,
 ) -> str:
+    if progress_status == "dry_run":
+        return "dry_run"
     if total_records > 0 and pending_records == 0:
         return "completed_with_failures" if failed_records or failure_rows else "completed"
     if progress_status == "running":
@@ -145,6 +149,8 @@ def _classify_status(
 
 
 def _repair_status(status: dict[str, Any]) -> str:
+    if status.get("progress_status") == "dry_run" or status.get("status") == "dry_run":
+        return "dry_run"
     if status.get("total_records", 0) > 0 and status.get("pending_records", 0) == 0:
         return "completed_with_failures" if status.get("failure_rows", 0) else "completed"
     if status.get("pid_state") == "dead":
