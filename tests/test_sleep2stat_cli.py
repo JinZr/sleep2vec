@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -102,6 +103,151 @@ def test_cli_summarize_uses_supplied_run_dir_over_config_output_dir(tmp_path: Pa
 
     assert (run_dir / "tables" / "night_stats.csv").exists()
     assert not wrong_dir.exists()
+
+
+def test_cli_validate_config_check_records_flags_unconvertible_yasa_sex(tmp_path: Path, capsys):
+    index_path = tmp_path / "index.csv"
+    index_path.write_text("path,duration,split,source,patient_id,age,sex\nmissing.npz,60,test,unit,p001,60,unknown\n")
+    config_path = tmp_path / "yasa.yaml"
+    payload = {
+        "run": {"name": "yasa", "output_dir": str(tmp_path / "run"), "overwrite": True},
+        "data": {
+            "backend": "npz",
+            "index": str(index_path),
+            "split": ["test"],
+            "path_column": "path",
+            "duration_column": "duration",
+            "split_column": "split",
+            "record_id_columns": ["patient_id"],
+            "metadata_columns": ["age", "sex"],
+            "token_sec": 30,
+            "max_tokens": 2,
+        },
+        "signals": {
+            "channels": {"eeg": {"source": "eeg", "sfreq": 100, "kind": "eeg", "input_dim": 3000}},
+        },
+        "analyzers": [{"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]}],
+        "reducers": [],
+        "outputs": {"write_global_tables": True, "write_per_record": True, "compression": "gzip"},
+    }
+    config_path.write_text(yaml.safe_dump(payload))
+
+    assert main(["validate-config", "--config", str(config_path), "--check-records"]) == 1
+
+    captured = capsys.readouterr()
+    assert "YASA metadata sex: present 1/1, convertible_to_male 0/1" in captured.out
+    assert "0 are convertible to male" in captured.out
+
+
+def test_cli_resume_status_and_repair_mark_dead_running(tmp_path: Path, capsys):
+    run_dir = tmp_path / "run"
+    (run_dir / "status").mkdir(parents=True)
+    (run_dir / "per_record" / "rec1").mkdir(parents=True)
+    (run_dir / "record_manifest.csv").write_text(
+        "record_id,path,split,source,duration_sec,token_sec,max_tokens\n"
+        "rec1,rec1.npz,test,unit,60,30,2\n"
+        "rec2,rec2.npz,test,unit,60,30,2\n"
+    )
+    (run_dir / "per_record" / "rec1" / "_SUCCESS.json").write_text("{}\n")
+    (run_dir / "status" / "progress.json").write_text('{"status": "running"}\n')
+    (run_dir / "status" / "pid.json").write_text('{"pid": 999999999}\n')
+
+    assert main(["resume-status", "--run-dir", str(run_dir), "--json"]) == 0
+    status = json.loads(capsys.readouterr().out)
+
+    assert status["status"] == "stale_running"
+    assert status["pending_records"] == 1
+    assert status["pending_record_ids"] == ["rec2"]
+
+    assert main(["resume-status", "--run-root", str(tmp_path), "--glob", "run", "--json"]) == 0
+    root_status = json.loads(capsys.readouterr().out)
+    assert root_status["dead_runs"] == [str(run_dir)]
+
+    assert main(["repair", "--run-dir", str(run_dir), "--json"]) == 0
+    repaired = json.loads(capsys.readouterr().out)
+
+    assert repaired["repair_status"] == "interrupted"
+    assert repaired["status"] == "interrupted"
+    progress = json.loads((run_dir / "status" / "progress.json").read_text())
+    assert progress["status"] == "interrupted"
+    assert progress["pending_records"] == 1
+
+
+def test_cli_cohort_finalize_merges_runs_and_drops_resolved_failures(tmp_path: Path):
+    run1 = tmp_path / "run1"
+    run2 = tmp_path / "run2"
+    for run in (run1, run2):
+        (run / "tables").mkdir(parents=True)
+        (run / "status").mkdir()
+    pd.DataFrame({"record_id": ["rec1", "rec2"], "source": ["A", "A"]}).to_csv(
+        run1 / "record_manifest.csv", index=False
+    )
+    pd.DataFrame({"record_id": ["rec1", "rec2"], "metric": [1.0, 2.0]}).to_csv(
+        run1 / "tables" / "night_stats.csv", index=False
+    )
+    pd.DataFrame(
+        [{"record_id": "rec2", "analyzer": "yasa_stage", "error_type": "ValueError", "message": "old"}]
+    ).to_csv(run1 / "status" / "failures.csv", index=False)
+    pd.DataFrame({"record_id": ["rec2"], "source": ["B"]}).to_csv(run2 / "record_manifest.csv", index=False)
+    pd.DataFrame({"record_id": ["rec2"], "metric": [3.0]}).to_csv(run2 / "tables" / "night_stats.csv", index=False)
+    pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
+        run2 / "status" / "failures.csv", index=False
+    )
+
+    out = tmp_path / "final"
+
+    assert (
+        main(
+            [
+                "cohort-finalize",
+                "--output-run-dir",
+                str(out),
+                "--input-run-dir",
+                str(run1),
+                "--input-run-dir",
+                str(run2),
+            ]
+        )
+        == 0
+    )
+
+    night = pd.read_csv(out / "tables" / "night_stats.csv").set_index("record_id")
+    failures = pd.read_csv(out / "status" / "failures.csv")
+    progress = json.loads((out / "status" / "progress.json").read_text())
+    assert night.loc["rec2", "metric"] == 3.0
+    assert failures.empty
+    assert progress["status"] == "completed"
+
+
+def test_cli_cohort_finalize_reports_pending_records(tmp_path: Path):
+    run1 = tmp_path / "run1"
+    (run1 / "tables").mkdir(parents=True)
+    (run1 / "status").mkdir()
+    pd.DataFrame({"record_id": ["rec1", "rec2"], "source": ["A", "A"]}).to_csv(
+        run1 / "record_manifest.csv", index=False
+    )
+    pd.DataFrame({"record_id": ["rec1"], "metric": [1.0]}).to_csv(run1 / "tables" / "night_stats.csv", index=False)
+    pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
+        run1 / "status" / "failures.csv", index=False
+    )
+    out = tmp_path / "final"
+
+    assert main(["cohort-finalize", "--output-run-dir", str(out), "--input-run-dir", str(run1)]) == 0
+
+    progress = json.loads((out / "status" / "progress.json").read_text())
+    manifest = json.loads((out / "run_manifest.json").read_text())
+    assert progress["status"] == "incomplete"
+    assert progress["pending_records"] == 1
+    assert progress["pending_record_ids"] == ["rec2"]
+    assert manifest["status"] == "incomplete"
+
+
+def test_cli_cohort_finalize_rejects_missing_input_manifest(tmp_path: Path):
+    run1 = tmp_path / "run1"
+    run1.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="record_manifest"):
+        main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])
 
 
 def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, monkeypatch):

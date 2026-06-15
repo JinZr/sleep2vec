@@ -17,12 +17,34 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/cli.py`
 - Signature: `main(argv: list[str] | None = None) -> int`
-- Purpose and contract: dispatch sleep2stat subcommands: `validate-config`, `run`, `summarize`, `plot-record`, and `plot-cohort`; `summarize --num-workers` controls parallel per-record sidecar reads during table rebuild.
+- Purpose and contract: dispatch sleep2stat subcommands: `validate-config`, `run`, `summarize`, `resume-status`, `repair`, `cohort-finalize`, `plot-record`, and `plot-cohort`; `validate-config --check-records` performs record metadata preflight, and `summarize --num-workers` controls parallel per-record sidecar reads during table rebuild.
 - Important inputs/outputs: optional argv in; process exit code out.
-- Side effects: prints run paths or summary rows, runs analysis bundles, rebuilds global tables during summarize, and writes plot files through `sleep2stat.plot`.
-- Key callers/callees: called by `sleep2stat/__main__.py`; delegates to `load_config`, `run_pipeline`, `_summarize`, `plot_record`, and `plot_cohort`.
+- Side effects: prints run paths, status summaries, or summary rows; runs analysis bundles, rebuilds global tables during summarize, repairs status files, finalizes merged cohort tables, and writes plot files through `sleep2stat.plot`.
+- Key callers/callees: called by `sleep2stat/__main__.py`; delegates to `load_config`, `load_records`, `run_pipeline`, `_summarize`, `resume_status`, `repair_run_status`, `cohort_finalize`, `plot_record`, and `plot_cohort`.
 - Reuse guidance: generated scripts should call this CLI rather than importing pipeline internals directly.
 - Duplication-risk notes: keep CLI behavior thin; command planning and safety checks belong in `agent_tools`.
+
+## `sleep2stat.status.resume_status`
+
+- File: `sleep2stat/status.py`
+- Signature: `resume_status(run_dir: Path) -> dict[str, Any]`
+- Purpose and contract: inspect a run directory by comparing `record_manifest.csv`, per-record `_SUCCESS.json`, `status/failures.csv`, `status/progress.json`, and optional `status/pid.json`.
+- Important inputs/outputs: run directory in; structured counts and status such as `running`, `stale_running`, `interrupted`, `completed`, or `completed_with_failures` out.
+- Side effects: none.
+- Key callers/callees: called by CLI `resume-status` and `repair`; uses writer completion-marker naming.
+- Reuse guidance: use this for resume diagnostics instead of manually comparing progress, PIDs, logs, and success markers.
+- Duplication-risk notes: do not add separate shard-status scripts that reinterpret the bundle layout.
+
+## `sleep2stat.finalize.cohort_finalize`
+
+- File: `sleep2stat/finalize.py`
+- Signature: `cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[str, Any]`
+- Purpose and contract: merge completed/interrupted sleep2stat run tables into a cohort-level finalized bundle, keeping later duplicate `record_id` rows and dropping failures resolved by successful night-stat rows.
+- Important inputs/outputs: output run directory and ordered input run directories in; merged manifest/progress metadata out.
+- Side effects: writes merged `record_manifest.csv`, `tables/night_stats.csv`, `status/failures.csv`, `status/progress.json`, and `run_manifest.json`.
+- Key callers/callees: called by CLI `cohort-finalize`; optional plotting remains delegated to `plot_cohort`.
+- Reuse guidance: use for post-shard or fixed-cohort merge/finalization instead of one-off pandas combine scripts.
+- Duplication-risk notes: this command does not read raw NPZs, rerun analyzers, or copy per-record sidecars.
 
 ## `sleep2stat.io.records.load_records`
 
@@ -342,7 +364,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - Signature: `AnalysisBundleWriter(config: Sleep2statConfig)`
 - Purpose and contract: own all sleep2stat output bundle writes and resumable run bookkeeping, including optional parallel reads when rebuilding global tables from per-record sidecars.
 - Important inputs/outputs: validated config in; methods write record manifests, progress, failures, run manifests, per-record sidecars, global table shards, summary tables, and completion markers.
-- Side effects: creates/removes directories, copies config, writes YAML/JSON/CSV/NPZ files, and rebuilds tables from shards or sidecars.
+- Side effects: creates/removes directories, copies config, writes YAML/JSON/CSV/NPZ files, writes run PID/progress JSON atomically, and rebuilds tables from shards or sidecars.
 - Key callers/callees: used by `run_pipeline` and CLI summarize; key methods include `prepare`, `filter_records_for_run`, `write_record_manifest`, `write_progress`, `write_failures`, `write_chunk`, `write_completion_markers`, `rebuild_global_tables`, and `write_run_manifest`.
 - Reuse guidance: use this writer for every sleep2stat output-contract change.
 - Duplication-risk notes: skip-existing, config fingerprint validation, failure merging, sidecar completeness, and global table rebuilds belong here.

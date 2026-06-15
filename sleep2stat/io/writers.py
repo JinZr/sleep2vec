@@ -6,9 +6,11 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 from typing import Any, Iterable
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -47,6 +49,7 @@ class AnalysisBundleWriter:
         self.tables_dir.mkdir(parents=True, exist_ok=True)
         if self.config.outputs.write_per_record:
             self.per_record_dir.mkdir(parents=True, exist_ok=True)
+        _write_json({"pid": os.getpid(), "updated_at_utc": _utc_now()}, self.status_dir / "pid.json")
         config_copy = self.run_dir / "config.yaml"
         if self.config.path.resolve() != config_copy.resolve():
             shutil.copyfile(self.config.path, config_copy)
@@ -794,7 +797,9 @@ def _is_missing(value: Any) -> bool:
 
 def _write_json(payload: dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
 
 
 def _utc_now() -> str:

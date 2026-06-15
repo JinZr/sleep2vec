@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import json
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from pandas.errors import EmptyDataError
 
+from sleep2stat.analyzers.yasa import _finite_float, _sex_to_male
 from sleep2stat.config import load_config
 from sleep2stat.core.artifacts import FailureRecord
 from sleep2stat.core.pipeline import run_pipeline
-from sleep2stat.io.records import SleepRecord
+from sleep2stat.finalize import cohort_finalize
+from sleep2stat.io.records import SleepRecord, load_records
 from sleep2stat.io.writers import AnalysisBundleWriter
 from sleep2stat.plot import plot_cohort, plot_record
+from sleep2stat.status import format_resume_status, repair_run_status, resume_status, scan_resume_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,10 +35,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser("validate-config", help="Validate a sleep2stat YAML config.")
     validate.add_argument("--config", type=Path, required=True)
+    validate.add_argument("--check-records", action="store_true")
+    validate.add_argument("--split", nargs="+", default=None)
+    validate.add_argument("--limit-records", type=int, default=None)
 
     summarize = subparsers.add_parser("summarize", help="Summarize a completed sleep2stat run directory.")
     summarize.add_argument("--run-dir", type=Path, required=True)
     summarize.add_argument("--num-workers", type=int, default=8)
+
+    status = subparsers.add_parser("resume-status", help="Inspect sleep2stat resume state.")
+    status_group = status.add_mutually_exclusive_group(required=True)
+    status_group.add_argument("--run-dir", type=Path)
+    status_group.add_argument("--run-root", type=Path)
+    status.add_argument("--glob", default="*")
+    status.add_argument("--json", action="store_true")
+
+    repair = subparsers.add_parser("repair", help="Repair sleep2stat run status files without rerunning analysis.")
+    repair.add_argument("--run-dir", type=Path, required=True)
+    repair.add_argument("--json", action="store_true")
+
+    finalize = subparsers.add_parser("cohort-finalize", help="Merge completed sleep2stat cohort run tables.")
+    finalize.add_argument("--output-run-dir", type=Path, required=True)
+    finalize.add_argument("--input-run-dir", type=Path, action="append", required=True)
+    finalize.add_argument("--plot-cohort", action="store_true")
+    finalize.add_argument("--group-column", default="source")
+    finalize.add_argument("--stage-source", default=None)
+    finalize.add_argument("--adjust-covariates", nargs="*", default=None)
 
     plot = subparsers.add_parser("plot-record", help="Plot one sleep2stat per-record output directory.")
     plot.add_argument("--run-dir", type=Path, required=True)
@@ -51,11 +78,35 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "validate-config":
-        load_config(args.config)
+        config = load_config(args.config)
+        if args.check_records:
+            return 0 if _check_records(config, args) else 1
         print(f"sleep2stat config OK: {args.config}")
         return 0
     if args.command == "summarize":
         _summarize(args.run_dir, num_workers=args.num_workers)
+        return 0
+    if args.command == "resume-status":
+        data = scan_resume_status(args.run_root, args.glob) if args.run_root else resume_status(args.run_dir)
+        _print_payload(data, as_json=args.json)
+        return 0
+    if args.command == "repair":
+        data = repair_run_status(args.run_dir)
+        _print_payload(data, as_json=args.json)
+        return 0
+    if args.command == "cohort-finalize":
+        manifest = cohort_finalize(args.output_run_dir, args.input_run_dir)
+        print(f"run_dir: {args.output_run_dir}")
+        print(f"night_stats_rows: {manifest['night_stats_rows']}")
+        print(f"failure_rows: {manifest['failure_rows']}")
+        if args.plot_cohort:
+            for path in plot_cohort(
+                args.output_run_dir,
+                group_column=args.group_column,
+                stage_source=args.stage_source,
+                adjust_covariates=args.adjust_covariates,
+            ):
+                print(path)
         return 0
     if args.command == "plot-record":
         for path in plot_record(args.run_dir, args.record_id):
@@ -74,6 +125,55 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = run_pipeline(config, args)
     print(f"sleep2stat run directory: {run_dir}")
     return 0
+
+
+def _check_records(config, args: argparse.Namespace) -> bool:
+    records = load_records(config.data, split_override=args.split, limit=args.limit_records)
+    print(f"sleep2stat records OK: {len(records)}")
+    if not any(analyzer.enabled and analyzer.type == "yasa_stage" for analyzer in config.analyzers):
+        return True
+    sex = _metadata_parse_summary(records, "sex", _sex_to_male)
+    age = _metadata_parse_summary(records, "age", _finite_float)
+    print(
+        "YASA metadata sex: "
+        f"present {sex['present']}/{sex['total']}, "
+        f"convertible_to_male {sex['convertible']}/{sex['present']}, "
+        f"nonconvertible_examples {sex['examples']}"
+    )
+    print(
+        "YASA metadata age: "
+        f"present {age['present']}/{age['total']}, "
+        f"finite {age['convertible']}/{age['present']}, "
+        f"nonconvertible_examples {age['examples']}"
+    )
+    if sex["total"] > 0 and sex["present"] == sex["total"] and sex["convertible"] == 0:
+        print("ERROR: YASA metadata sex is present for all records but 0 are convertible to male.")
+        return False
+    return True
+
+
+def _metadata_parse_summary(records: list[SleepRecord], key: str, parser) -> dict[str, Any]:
+    present_values = [record.metadata.get(key) for record in records if record.metadata.get(key) is not None]
+    convertible = [value for value in present_values if parser(value) is not None]
+    examples = []
+    for value in present_values:
+        if parser(value) is None and repr(value) not in examples:
+            examples.append(repr(value))
+        if len(examples) >= 5:
+            break
+    return {
+        "total": len(records),
+        "present": len(present_values),
+        "convertible": len(convertible),
+        "examples": examples,
+    }
+
+
+def _print_payload(data: dict[str, Any], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+    else:
+        print(format_resume_status(data), end="")
 
 
 def _summarize(run_dir: Path, *, num_workers: int = 8) -> None:

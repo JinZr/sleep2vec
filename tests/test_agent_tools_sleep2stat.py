@@ -8,6 +8,7 @@ import sys
 from agent_tool_test_helpers import write_yaml
 import yaml
 
+from agent_tools.configs import sleep2stat_config_summary
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import build_context, build_plan, evaluate_recipe
 from agent_tools.skills import validate_skills
@@ -117,6 +118,77 @@ def test_sleep2stat_plot_stage_source_auto_is_rendered_as_plain_value(tmp_path: 
     assert report.exit_code == 0
     commands = json.loads((output_dir / "plan.json").read_text())["commands"]
     assert any("--stage-source auto" in command for command in commands)
+
+
+def test_sleep2stat_yasa_plan_adds_record_preflight_and_summary_types(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text(
+        "path,split,duration,source,subject_id,session_id,age,sex\nmissing.npz,test,120,tiny,S001,N1,60,1.0\n"
+    )
+    config = write_yaml(
+        tmp_path / "sleep2stat_yasa.yaml",
+        {
+            "run": {"name": "yasa", "output_dir": str(tmp_path / "run"), "overwrite": False, "skip_existing": True},
+            "data": {
+                "backend": "npz",
+                "index": str(index),
+                "split": ["test"],
+                "path_column": "path",
+                "duration_column": "duration",
+                "split_column": "split",
+                "source_column": "source",
+                "record_id_columns": ["source", "subject_id", "session_id"],
+                "metadata_columns": ["age", "sex"],
+                "token_sec": 30,
+                "max_tokens": 4,
+            },
+            "signals": {
+                "channels": {
+                    "eeg": {
+                        "source": "eeg",
+                        "sfreq": 100,
+                        "kind": "eeg",
+                        "input_dim": 3000,
+                        "mne_name": "EEG",
+                    }
+                }
+            },
+            "analyzers": [{"name": "yasa_stage", "type": "yasa_stage", "input_channels": ["eeg"]}],
+            "reducers": [{"name": "yasa_stats", "type": "hypnogram_stats", "source": "yasa_stage"}],
+            "outputs": {"write_global_tables": True, "write_per_record": True, "compression": "gzip"},
+        },
+    )
+    recipe = write_yaml(
+        tmp_path / "recipe.yaml",
+        {
+            "name": "yasa_recipe",
+            "task": "sleep2stat",
+            "inputs": {"config": str(config), "split": ["test"]},
+            "runtime": {"device": "cpu", "num_workers": 1, "limit_records": 1, "dry_run": True},
+            "artifacts": {"run_dir": str(tmp_path / "run"), "overwrite": False},
+            "execution": {"target": "local", "path_context": "local", "path_validation": "local"},
+            "evaluation_policy": {"external_test_locked": True},
+            "decisions": {
+                "task": {"value": "sleep2stat", "source": "explicit_recipe"},
+                "sleep2stat_split_policy": {"value": "descriptive", "source": "explicit_recipe"},
+                "sleep2stat_metric_use_policy": {"value": "proxy", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    summary = sleep2stat_config_summary(config)
+    assert "yasa_stage" in summary["sleep2stat"]["supported_analyzer_types"]
+    assert summary["sleep2stat"]["reducers"][0]["type"] == "hypnogram_stats"
+
+    output_dir = tmp_path / "plan"
+    report = build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    commands = json.loads((output_dir / "plan.json").read_text())["commands"]
+    assert commands[1] == (
+        f"python -m sleep2stat validate-config --config {config} " "--check-records --split test --limit-records 1"
+    )
 
 
 def test_sleep2stat_plan_ignores_user_decision_config_override(tmp_path: Path):

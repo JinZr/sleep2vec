@@ -466,6 +466,23 @@ def _sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
     return args
 
 
+def _sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    args: list[Any] = ["--check-records"]
+    _append_list_option(args, "--split", inputs.get("split"))
+    _append_option(args, "--limit-records", runtime.get("limit_records"))
+    return args
+
+
+def _sleep2stat_has_yasa_stage(cfg: dict | None) -> bool:
+    sleep2stat = (cfg or {}).get("sleep2stat") or {}
+    for analyzer in sleep2stat.get("analyzers", []):
+        if analyzer.get("enabled") is not False and analyzer.get("type") == "yasa_stage":
+            return True
+    return False
+
+
 def _decision_value(decisions: dict | None, field: str, fallback: Any = None) -> Any:
     decision = decisions.get(field) if decisions else None
     if decision is not None and decision.value not in (None, ""):
@@ -486,10 +503,19 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
             return []
         commands = [
             _render_command(["python", "-m", "sleep2stat", "validate-config", "--config", config]),
+        ]
+        if _sleep2stat_has_yasa_stage(cfg):
+            commands.append(
+                _render_command(
+                    ["python", "-m", "sleep2stat", "validate-config", "--config", config]
+                    + _sleep2stat_record_check_args(recipe)
+                )
+            )
+        commands.append(
             _render_command(
                 ["python", "-m", "sleep2stat", "run", "--config", config, *_sleep2stat_runtime_args(recipe)]
-            ),
-        ]
+            )
+        )
         if runtime.get("summarize_after_run", True):
             summarize_cmd = ["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]
             _append_option(summarize_cmd, "--num-workers", runtime.get("num_workers"))

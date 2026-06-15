@@ -21,6 +21,7 @@ from sleep2stat.analyzers.yasa import (
     YasaRemAnalyzer,
     YasaSpindlesAnalyzer,
     YasaStageAnalyzer,
+    _sex_to_male,
 )
 from sleep2stat.config import AnalyzerConfig, ChannelSpec, DataConfig, SignalsConfig
 from sleep2stat.core.artifacts import AnalyzerResult
@@ -48,6 +49,12 @@ def _batch():
         "token_start": torch.tensor([0]),
         "length": torch.tensor([3]),
     }
+
+
+def test_yasa_sex_to_male_accepts_numeric_strings():
+    assert _sex_to_male("1.0") is True
+    assert _sex_to_male("0.0") is False
+    assert _sex_to_male("unknown") is None
 
 
 def test_decode_sequence_classification_logits_to_epoch_alignment():
