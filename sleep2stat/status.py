@@ -17,11 +17,15 @@ def resume_status(run_dir: Path) -> dict[str, Any]:
     record_ids = _read_record_ids(run_dir / "record_manifest.csv")
     success_ids = _read_success_ids(run_dir)
     failures = _read_failures(run_dir / "status" / "failures.csv")
+    has_global_failure = _has_global_failure(failures)
     failed_ids = {
         str(row.get("record_id"))
         for row in failures
         if row.get("record_id") not in (None, "", "__all__") and str(row.get("record_id")) not in success_ids
     }
+    if has_global_failure:
+        # "__all__" means setup failed before per-record work; unresolved records failed at run level.
+        failed_ids.update(record_ids - success_ids)
     pending_ids = sorted(record_ids - success_ids - failed_ids)
     progress = _read_json(run_dir / "status" / "progress.json")
     pid_info = _read_json(run_dir / "status" / "pid.json")
@@ -175,6 +179,10 @@ def _read_failures(path: Path) -> list[dict[str, Any]]:
     except pd.errors.EmptyDataError:
         return []
     return frame.fillna("").to_dict("records")
+
+
+def _has_global_failure(failures: list[dict[str, Any]]) -> bool:
+    return any(str(row.get("record_id")) == "__all__" for row in failures)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

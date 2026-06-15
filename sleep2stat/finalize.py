@@ -20,9 +20,20 @@ def cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[st
     (output_run_dir / "tables").mkdir(parents=True, exist_ok=True)
     (output_run_dir / "status").mkdir(parents=True, exist_ok=True)
 
-    manifests = [_read_csv(run_dir / "record_manifest.csv") for run_dir in input_run_dirs]
-    night_stats = [_read_csv(run_dir / "tables" / "night_stats.csv") for run_dir in input_run_dirs]
-    failures = [_read_csv(run_dir / "status" / "failures.csv", columns=FAILURE_COLUMNS) for run_dir in input_run_dirs]
+    manifests = []
+    night_stats = []
+    failures = []
+    global_failed_ids: set[str] = set()
+    for run_dir in input_run_dirs:
+        manifest = _read_csv(run_dir / "record_manifest.csv")
+        night = _read_csv(run_dir / "tables" / "night_stats.csv")
+        failure = _read_csv(run_dir / "status" / "failures.csv", columns=FAILURE_COLUMNS)
+        manifests.append(manifest)
+        night_stats.append(night)
+        failures.append(failure)
+        if _has_global_failure(failure):
+            # Scope "__all__" to this input run so one failed shard does not fail other shards.
+            global_failed_ids.update(_record_ids(manifest) - _record_ids(night))
 
     manifest_frame = _dedupe_by_record_id(_concat(manifests))
     night_frame = _dedupe_by_record_id(_concat(night_stats))
@@ -39,6 +50,7 @@ def cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[st
         for record_id in _record_ids(failure_frame)
         if record_id not in {"", "__all__"} and record_id not in completed_ids
     }
+    failed_ids.update(record_id for record_id in global_failed_ids if record_id not in completed_ids)
     pending_ids = sorted(manifest_ids - completed_ids - failed_ids)
 
     manifest_frame.to_csv(output_run_dir / "record_manifest.csv", index=False)
@@ -63,7 +75,7 @@ def cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[st
             "status": status,
             "total_records": int(len(manifest_frame)),
             "completed_records": int(len(night_frame)),
-            "failed_records": int(failure_frame["record_id"].nunique()) if "record_id" in failure_frame else 0,
+            "failed_records": int(len(failed_ids)),
             "failure_rows": int(len(failure_frame)),
             "pending_records": int(len(pending_ids)),
             "pending_record_ids": pending_ids[:20],
@@ -107,3 +119,7 @@ def _record_ids(frame: pd.DataFrame) -> set[str]:
     if frame.empty or "record_id" not in frame.columns:
         return set()
     return set(frame["record_id"].astype(str))
+
+
+def _has_global_failure(frame: pd.DataFrame) -> bool:
+    return not frame.empty and "record_id" in frame.columns and frame["record_id"].astype(str).eq("__all__").any()

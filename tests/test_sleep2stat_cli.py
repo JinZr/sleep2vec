@@ -173,6 +173,34 @@ def test_cli_resume_status_and_repair_mark_dead_running(tmp_path: Path, capsys):
     assert progress["pending_records"] == 1
 
 
+def test_cli_resume_status_and_repair_treat_global_failure_as_failed_run(tmp_path: Path, capsys):
+    run_dir = tmp_path / "run"
+    (run_dir / "status").mkdir(parents=True)
+    (run_dir / "record_manifest.csv").write_text(
+        "record_id,path,split,source,duration_sec,token_sec,max_tokens\n"
+        "rec1,rec1.npz,test,unit,60,30,2\n"
+        "rec2,rec2.npz,test,unit,60,30,2\n"
+    )
+    pd.DataFrame(
+        [{"record_id": "__all__", "analyzer": "yasa_stage", "error_type": "ImportError", "message": "missing"}]
+    ).to_csv(run_dir / "status" / "failures.csv", index=False)
+    (run_dir / "status" / "progress.json").write_text('{"status": "completed_with_failures"}\n')
+    (run_dir / "status" / "pid.json").write_text('{"pid": 999999999}\n')
+
+    assert main(["resume-status", "--run-dir", str(run_dir), "--json"]) == 0
+    status = json.loads(capsys.readouterr().out)
+
+    assert status["status"] == "completed_with_failures"
+    assert status["failed_records"] == 2
+    assert status["pending_records"] == 0
+
+    assert main(["repair", "--run-dir", str(run_dir), "--json"]) == 0
+    repaired = json.loads(capsys.readouterr().out)
+
+    assert repaired["repair_status"] == "completed_with_failures"
+    assert repaired["status"] == "completed_with_failures"
+
+
 def test_cli_cohort_finalize_merges_runs_and_drops_resolved_failures(tmp_path: Path):
     run1 = tmp_path / "run1"
     run2 = tmp_path / "run2"
@@ -240,6 +268,29 @@ def test_cli_cohort_finalize_reports_pending_records(tmp_path: Path):
     assert progress["pending_records"] == 1
     assert progress["pending_record_ids"] == ["rec2"]
     assert manifest["status"] == "incomplete"
+
+
+def test_cli_cohort_finalize_counts_global_failure_as_failed_records(tmp_path: Path):
+    run1 = tmp_path / "run1"
+    (run1 / "tables").mkdir(parents=True)
+    (run1 / "status").mkdir()
+    pd.DataFrame({"record_id": ["rec1", "rec2"], "source": ["A", "A"]}).to_csv(
+        run1 / "record_manifest.csv", index=False
+    )
+    pd.DataFrame(columns=["record_id", "metric"]).to_csv(run1 / "tables" / "night_stats.csv", index=False)
+    pd.DataFrame(
+        [{"record_id": "__all__", "analyzer": "yasa_stage", "error_type": "ImportError", "message": "missing"}]
+    ).to_csv(run1 / "status" / "failures.csv", index=False)
+    out = tmp_path / "final"
+
+    assert main(["cohort-finalize", "--output-run-dir", str(out), "--input-run-dir", str(run1)]) == 0
+
+    progress = json.loads((out / "status" / "progress.json").read_text())
+    manifest = json.loads((out / "run_manifest.json").read_text())
+    assert progress["status"] == "completed_with_failures"
+    assert progress["failed_records"] == 2
+    assert progress["pending_records"] == 0
+    assert manifest["status"] == "completed_with_failures"
 
 
 def test_cli_cohort_finalize_rejects_missing_input_manifest(tmp_path: Path):
