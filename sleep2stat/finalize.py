@@ -23,6 +23,7 @@ def cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[st
     manifests = []
     night_stats = []
     failures = []
+    global_failure_scopes: list[tuple[bool, set[str]]] = []
     global_failed_ids: set[str] = set()
     for run_dir in input_run_dirs:
         manifest = _read_csv(run_dir / "record_manifest.csv")
@@ -31,20 +32,28 @@ def cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[st
         manifests.append(manifest)
         night_stats.append(night)
         failures.append(failure)
-        if _has_global_failure(failure):
+        has_global_failure = _has_global_failure(failure)
+        scoped_failed_ids = _record_ids(manifest) - _record_ids(night)
+        global_failure_scopes.append((has_global_failure, scoped_failed_ids))
+        if has_global_failure:
             # Scope "__all__" to this input run so one failed shard does not fail other shards.
-            global_failed_ids.update(_record_ids(manifest) - _record_ids(night))
+            global_failed_ids.update(scoped_failed_ids)
 
     manifest_frame = _dedupe_by_record_id(_concat(manifests))
     night_frame = _dedupe_by_record_id(_concat(night_stats))
-    failure_frame = _concat(failures, columns=FAILURE_COLUMNS).drop_duplicates().reset_index(drop=True)
+    completed_ids = _record_ids(night_frame)
+    resolved_failures = []
+    for failure, (has_global_failure, scoped_failed_ids) in zip(failures, global_failure_scopes):
+        if has_global_failure and not (scoped_failed_ids - completed_ids) and "record_id" in failure.columns:
+            # Drop "__all__" only after every record it covered has a later night_stats row.
+            failure = failure[failure["record_id"].astype(str) != "__all__"].reset_index(drop=True)
+        resolved_failures.append(failure)
+    failure_frame = _concat(resolved_failures, columns=FAILURE_COLUMNS).drop_duplicates().reset_index(drop=True)
     if not night_frame.empty and "record_id" in failure_frame.columns:
-        completed_ids = set(night_frame["record_id"].astype(str))
         failure_frame = failure_frame[~failure_frame["record_id"].astype(str).isin(completed_ids)].reset_index(
             drop=True
         )
     manifest_ids = _record_ids(manifest_frame)
-    completed_ids = _record_ids(night_frame)
     failed_ids = {
         record_id
         for record_id in _record_ids(failure_frame)

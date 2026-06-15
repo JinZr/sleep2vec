@@ -293,6 +293,52 @@ def test_cli_cohort_finalize_counts_global_failure_as_failed_records(tmp_path: P
     assert manifest["status"] == "completed_with_failures"
 
 
+def test_cli_cohort_finalize_drops_resolved_global_failure(tmp_path: Path):
+    run1 = tmp_path / "run1"
+    run2 = tmp_path / "run2"
+    for run in (run1, run2):
+        (run / "tables").mkdir(parents=True)
+        (run / "status").mkdir()
+        pd.DataFrame({"record_id": ["rec1", "rec2"], "source": ["A", "A"]}).to_csv(
+            run / "record_manifest.csv", index=False
+        )
+    pd.DataFrame(columns=["record_id", "metric"]).to_csv(run1 / "tables" / "night_stats.csv", index=False)
+    pd.DataFrame(
+        [{"record_id": "__all__", "analyzer": "yasa_stage", "error_type": "ImportError", "message": "missing"}]
+    ).to_csv(run1 / "status" / "failures.csv", index=False)
+    pd.DataFrame({"record_id": ["rec1", "rec2"], "metric": [1.0, 2.0]}).to_csv(
+        run2 / "tables" / "night_stats.csv", index=False
+    )
+    pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
+        run2 / "status" / "failures.csv", index=False
+    )
+    out = tmp_path / "final"
+
+    assert (
+        main(
+            [
+                "cohort-finalize",
+                "--output-run-dir",
+                str(out),
+                "--input-run-dir",
+                str(run1),
+                "--input-run-dir",
+                str(run2),
+            ]
+        )
+        == 0
+    )
+
+    failures = pd.read_csv(out / "status" / "failures.csv")
+    progress = json.loads((out / "status" / "progress.json").read_text())
+    manifest = json.loads((out / "run_manifest.json").read_text())
+    assert failures.empty
+    assert progress["status"] == "completed"
+    assert progress["failed_records"] == 0
+    assert progress["failure_rows"] == 0
+    assert manifest["status"] == "completed"
+
+
 def test_cli_cohort_finalize_rejects_missing_input_manifest(tmp_path: Path):
     run1 = tmp_path / "run1"
     run1.mkdir()
