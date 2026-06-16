@@ -551,7 +551,7 @@ def _validate_annotation_shape(canonical: str, annotation: AnnotationSignal) -> 
         if annotation.data.ndim != 2 or annotation.data.shape[1] != 3:
             raise ValueError(f"Annotation channel {canonical!r} must have shape (N, 3).")
     elif annotation.materialization == "event_anchor":
-        if annotation.data.ndim != 2 or annotation.data.shape[1] % 3 != 0:
+        if annotation.data.ndim != 2 or annotation.data.shape[1] < 3 or annotation.data.shape[1] % 3 != 0:
             raise ValueError(f"Annotation channel {canonical!r} must have 3 columns per anchor.")
 
 

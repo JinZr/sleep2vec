@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from hypnodata.annotations import (
+    AnnotationSignal,
     filter_events_to_sleep_stages,
     materialize_anchor_events,
     materialize_dense_events,
@@ -12,6 +13,13 @@ from hypnodata.annotations import (
     read_event_csv,
     read_stage_csv,
 )
+
+
+def test_annotation_signal_keeps_legacy_positional_steps():
+    signal = AnnotationSignal("stage5", np.asarray([0]), 1 / 30, "stage.csv", "Type", None, ["legacy_step"])
+
+    assert signal.steps == ["legacy_step"]
+    assert signal.materialization == "stage"
 
 
 def test_read_stage_csv_uses_default_stage5_mapping(tmp_path: Path):

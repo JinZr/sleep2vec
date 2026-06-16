@@ -20,8 +20,8 @@ class AnnotationSignal:
     raw_file: str
     raw_label: str
     unit: str | None = None
-    materialization: str = "stage"
     steps: list[str] = field(default_factory=list)
+    materialization: str = "stage"
 
 
 @dataclass(frozen=True)

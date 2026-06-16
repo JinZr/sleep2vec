@@ -347,6 +347,7 @@ def make_adapter(config):
         ("undeclared", "must be declared"),
         ("duplicate", "Duplicate annotation channel"),
         ("raw_duplicate", "duplicates a raw signal output"),
+        ("zero_anchor", "must have 3 columns per anchor"),
     ],
 )
 def test_pipeline_rejects_invalid_annotation_channels(tmp_path: Path, monkeypatch, mode: str, match: str):
@@ -357,7 +358,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hypnodata.annotations import AnnotationResult, materialize_dense_events
+from hypnodata.annotations import AnnotationResult, AnnotationSignal, materialize_dense_events
 from hypnodata.records import RecordTask
 
 
@@ -400,6 +401,19 @@ class BadAnnotationAdapter:
                 canonical_channel="ah_event",
             )
             return AnnotationResult([first, second])
+        if config.adapter_options["mode"] == "zero_anchor":
+            return AnnotationResult(
+                [
+                    AnnotationSignal(
+                        canonical_channel="arousal_anchor",
+                        data=np.zeros((10, 0), dtype=np.float32),
+                        sfreq=0.1,
+                        raw_file="events.csv",
+                        raw_label="events",
+                        materialization="event_anchor",
+                    )
+                ]
+            )
         return AnnotationResult(
             [
                 materialize_dense_events(
@@ -436,6 +450,12 @@ def make_adapter(config):
                         "candidates": [{"label": "EEG C3", "priority": 1}],
                     },
                     "ah_event": {"kind": "event_dense", "required": False, "interval_sec": 1, "candidates": []},
+                    "arousal_anchor": {
+                        "kind": "event_anchor",
+                        "required": False,
+                        "window_sec": 10,
+                        "candidates": [],
+                    },
                 },
             }
         )
