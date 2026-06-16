@@ -7,10 +7,10 @@ import pandas as pd
 import pytest
 import yaml
 
-import sleep2stat.core.pipeline as pipeline
 from sleep2stat.cli import main
 from sleep2stat.config import load_config
 from sleep2stat.core.artifacts import AnalyzerResult
+import sleep2stat.core.pipeline as pipeline
 from sleep2stat.core.pipeline import run_pipeline
 from sleep2stat.plot import _plot_cohort_stage_composition, _respiratory_metric_specs
 
