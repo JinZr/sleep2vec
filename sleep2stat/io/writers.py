@@ -229,6 +229,7 @@ class AnalysisBundleWriter:
         if arrays:
             np.savez_compressed(record_dir / "arrays.npz", **arrays)
 
+        # Keep this last; rebuilds use result_manifest.csv as the completed-record gate.
         self._result_manifest(record, results, failures).to_csv(record_dir / RESULT_MANIFEST, index=False)
 
     @staticmethod
@@ -302,11 +303,17 @@ class AnalysisBundleWriter:
         rows = []
         if not self.per_record_dir.exists():
             return _merge_night_rows(rows)
-        paths = [
-            path
-            for path in sorted(self.per_record_dir.glob("*/night_stats.json"))
-            if path.parent.name not in failed_record_ids
-        ]
+        paths = []
+        # result_manifest.csv is written last, so do not trust partial night_stats.json sidecars without it.
+        for manifest_path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}")):
+            if manifest_path.parent.name in failed_record_ids:
+                continue
+            manifest = _read_result_manifest(manifest_path)
+            if manifest is None or manifest.empty:
+                continue
+            night_path = manifest_path.parent / "night_stats.json"
+            if night_path.exists():
+                paths.append(night_path)
         workers = int(num_workers or 0)
         if workers <= 1:
             for path in tqdm(paths, desc="sleep2stat collect night_stats", unit="record"):
@@ -348,7 +355,7 @@ class AnalysisBundleWriter:
                     _read_result_manifest(path)
                     for path in tqdm(paths, desc="sleep2stat collect result_manifest", unit="record")
                 )
-                if frame is not None
+                if frame is not None and not frame.empty
             ]
         else:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -361,7 +368,7 @@ class AnalysisBundleWriter:
                         desc=f"sleep2stat collect result_manifest split{workers}",
                         unit="record",
                     )
-                    if frame is not None
+                    if frame is not None and not frame.empty
                 ]
         manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
         failure_counts: dict[str, int] = {}

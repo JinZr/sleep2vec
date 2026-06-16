@@ -237,6 +237,56 @@ def test_writer_rebuilds_cumulative_summary_from_sidecars(tmp_path: Path):
     assert sorted(night_stats["record_id"].tolist()) == ["rec1", "rec2"]
 
 
+def test_writer_rebuild_ignores_partial_sidecar_without_result_manifest(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+    record_dir = config.run.output_dir / "per_record" / "rec1"
+    record_dir.mkdir(parents=True)
+    (record_dir / "night_stats.json").write_text(json.dumps({"record_id": "rec1", "stage5_model_TST_min": 1.0}))
+
+    writer.rebuild_global_tables([_record()], [])
+
+    assert _csv_row_count(config.run.output_dir / "tables" / "night_stats.csv") == 0
+    summary = pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")
+    assert summary.loc[summary["name"] == "stage5_model", "record_count"].item() == 0
+    assert summary.loc[summary["name"] == "stage5_model", "result_count"].item() == 0
+
+
+def test_writer_rebuild_includes_sidecar_with_result_manifest(tmp_path: Path):
+    config = _config(tmp_path)
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+    record_dir = config.run.output_dir / "per_record" / "rec1"
+    record_dir.mkdir(parents=True)
+    (record_dir / "night_stats.json").write_text(json.dumps({"record_id": "rec1", "stage5_model_TST_min": 1.0}))
+    pd.DataFrame(
+        [
+            {
+                "record_id": "rec1",
+                "kind": "analyzer",
+                "name": "stage5_model",
+                "type": "sleep2vec_downstream",
+                "enabled": True,
+                "result_count": 1,
+                "failure_count": 0,
+                "epoch_rows": 0,
+                "second_rows": 0,
+                "event_rows": 0,
+                "night_rows": 1,
+            }
+        ]
+    ).to_csv(record_dir / "result_manifest.csv", index=False)
+
+    writer.rebuild_global_tables([_record()], [])
+
+    night_stats = pd.read_csv(config.run.output_dir / "tables" / "night_stats.csv")
+    summary = pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")
+    assert night_stats["record_id"].tolist() == ["rec1"]
+    assert summary.loc[summary["name"] == "stage5_model", "record_count"].item() == 1
+    assert summary.loc[summary["name"] == "stage5_model", "result_count"].item() == 1
+
+
 def test_writer_write_failures_replaces_previous_file(tmp_path: Path):
     config = _config(tmp_path)
     writer = AnalysisBundleWriter(config)
