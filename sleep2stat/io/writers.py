@@ -177,9 +177,7 @@ class AnalysisBundleWriter:
         failures = list(failures or [])
         self._rebuild_alignment_tables_from_shards()
         failed_record_ids = {
-            str(failure.record_id)
-            for failure in failures
-            if str(failure.record_id) not in {"", "__all__"}
+            str(failure.record_id) for failure in failures if str(failure.record_id) not in {"", "__all__"}
         }
         if self._global_table_enabled("night_stats"):
             self._collect_night_stats(failed_record_ids=failed_record_ids, num_workers=num_workers).to_csv(
