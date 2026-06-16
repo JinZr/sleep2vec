@@ -54,7 +54,6 @@ def write_hypnodata_config(
             "target_unit": "uV",
             "candidates": [{"label": label, "priority": 10}],
             "scale": scale,
-            "preprocess": ["finite_check", "truncate_to_common"],
         }
     }
     signals.update(extra_signals or {})

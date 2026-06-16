@@ -1,0 +1,25 @@
+{
+  "branch": "dev/hypnodata",
+  "last_refresh_commit": "edd0d205f3cf197e0c3e0f8f7c970430b3d94c32",
+  "last_refresh_at": "2026-06-16T02:48:06Z",
+  "mode": "initialize-branch",
+  "scope": "hypnodata config, preprocessing, pipeline, manifests, docs, and tests",
+  "baseline_index": "doc/codex_index/branches/main",
+  "files": [
+    "README.md",
+    "MANIFEST.json",
+    "SYSTEM_OVERVIEW.md",
+    "MODULE_MAP.md",
+    "REUSE_GUIDE.md",
+    "CHANGELOG.md",
+    "DELTA_FROM_MAIN.md",
+    "FUNCTIONS/HYPNODATA.md",
+    "WORKFLOWS/HYPNODATA.md"
+  ],
+  "covered_paths": [
+    "hypnodata/",
+    "configs/hypnodata/",
+    "tests/test_hypnodata_*.py",
+    "tests/hypnodata_test_helpers.py"
+  ]
+}

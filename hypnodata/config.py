@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 from typing import Any
 
@@ -35,15 +36,11 @@ SIGNAL_KEYS = {
     "preprocess",
 }
 CANDIDATE_KEYS = {"label", "regex", "priority"}
-PREPROCESS_STEPS = {
-    "scale",
-    "polarity_flip",
-    "resample",
-    "finite_check",
-    "truncate_to_common",
-    "filter",
-    "notch",
-}
+FILTER_STEP_KEYS = {"type", "method", "order", "lowcut", "highcut"}
+NOTCH_STEP_KEYS = {"type", "freq", "q"}
+# YAML preprocess only contains user-configurable signal transforms.
+# Fixed steps such as resampling, finite checks, and common truncation run in the pipeline.
+PREPROCESS_TYPES = {"filter", "notch"}
 
 
 @dataclass(frozen=True)
@@ -51,6 +48,23 @@ class CandidateSpec:
     label: str | None = None
     regex: str | None = None
     priority: int = 0
+
+
+@dataclass(frozen=True)
+class FilterStep:
+    method: str
+    order: int
+    lowcut: float | None = None
+    highcut: float | None = None
+
+
+@dataclass(frozen=True)
+class NotchStep:
+    freq: float
+    q: float
+
+
+PreprocessStep = FilterStep | NotchStep
 
 
 @dataclass(frozen=True)
@@ -63,7 +77,7 @@ class SignalSpec:
     candidates: list[CandidateSpec]
     scale: float = 1.0
     polarity: int = 1
-    preprocess: list[str] = field(default_factory=list)
+    preprocess: list[PreprocessStep] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -198,10 +212,7 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
         target_sfreq = None if spec.get("target_sfreq") is None else float(spec["target_sfreq"])
         if target_sfreq is not None and target_sfreq <= 0:
             raise ValueError(f"signals.{canonical}.target_sfreq must be positive when set.")
-        preprocess_steps = _string_list(spec.get("preprocess", []), f"signals.{canonical}.preprocess")
-        unknown_steps = sorted(set(preprocess_steps) - PREPROCESS_STEPS)
-        if unknown_steps:
-            raise ValueError(f"signals.{canonical}.preprocess has unsupported step(s): {unknown_steps}")
+        preprocess_steps = _build_preprocess_steps(spec.get("preprocess", []), canonical)
         signals[canonical] = SignalSpec(
             name=canonical,
             kind=kind,
@@ -214,6 +225,48 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
             preprocess=preprocess_steps,
         )
     return signals
+
+
+def _build_preprocess_steps(raw: Any, canonical: str) -> list[PreprocessStep]:
+    name = f"signals.{canonical}.preprocess"
+    if raw is None:
+        return []
+    items = _require_list(raw, name)
+    steps: list[PreprocessStep] = []
+    for idx, item_raw in enumerate(items):
+        item_name = f"{name}[{idx}]"
+        item = _require_mapping(item_raw, item_name)
+        step_type = str(item.get("type", ""))
+        if step_type == "filter":
+            steps.append(_build_filter_step(item, item_name))
+        elif step_type == "notch":
+            steps.append(_build_notch_step(item, item_name))
+        else:
+            raise ValueError(f"{item_name}.type must be one of: {', '.join(sorted(PREPROCESS_TYPES))}.")
+    return steps
+
+
+def _build_filter_step(item: dict[str, Any], name: str) -> FilterStep:
+    _reject_unknown_keys(item, FILTER_STEP_KEYS, name)
+    method = _required_string(item, "method", name)
+    if method not in {"bessel", "butterworth"}:
+        raise ValueError(f"{name}.method must be one of: bessel, butterworth.")
+    order = _required_positive_int(item, "order", name)
+    lowcut = _optional_positive_float(item, "lowcut", name)
+    highcut = _optional_positive_float(item, "highcut", name)
+    if lowcut is None and highcut is None:
+        raise ValueError(f"{name} must set at least one of lowcut or highcut.")
+    if lowcut is not None and highcut is not None and lowcut >= highcut:
+        raise ValueError(f"{name}.lowcut must be smaller than highcut.")
+    return FilterStep(method=method, order=order, lowcut=lowcut, highcut=highcut)
+
+
+def _build_notch_step(item: dict[str, Any], name: str) -> NotchStep:
+    _reject_unknown_keys(item, NOTCH_STEP_KEYS, name)
+    return NotchStep(
+        freq=_required_positive_float(item, "freq", name),
+        q=_required_positive_float(item, "q", name),
+    )
 
 
 def _build_candidates(raw: Any, canonical: str) -> list[CandidateSpec]:
@@ -284,6 +337,43 @@ def _reject_schema_version(data: dict[str, Any], name: str) -> None:
     forbidden = sorted(key for key in data if str(key) in {"schema_version", "version_schema"})
     if forbidden:
         raise ValueError(f"{name} must not define schema/version field(s): {forbidden}")
+
+
+def _required_string(data: dict[str, Any], key: str, name: str) -> str:
+    if key not in data or data[key] is None:
+        raise ValueError(f"{name}.{key} is required.")
+    value = str(data[key])
+    if not value:
+        raise ValueError(f"{name}.{key} must not be empty.")
+    return value
+
+
+def _required_positive_int(data: dict[str, Any], key: str, name: str) -> int:
+    if key not in data or data[key] is None:
+        raise ValueError(f"{name}.{key} is required.")
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name}.{key} must be a positive integer.")
+    return value
+
+
+def _required_positive_float(data: dict[str, Any], key: str, name: str) -> float:
+    if key not in data or data[key] is None:
+        raise ValueError(f"{name}.{key} is required.")
+    return _positive_float(data[key], f"{name}.{key}")
+
+
+def _optional_positive_float(data: dict[str, Any], key: str, name: str) -> float | None:
+    if key not in data or data[key] is None:
+        return None
+    return _positive_float(data[key], f"{name}.{key}")
+
+
+def _positive_float(value: Any, name: str) -> float:
+    parsed = float(value)
+    if parsed <= 0 or not math.isfinite(parsed):
+        raise ValueError(f"{name} must be a positive number.")
+    return parsed
 
 
 def _string_list(value: Any, name: str) -> list[str]:

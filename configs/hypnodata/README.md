@@ -37,6 +37,33 @@ Preset generation remains owned by `preprocess/save_dataset_presets.py`. hypnoda
 only supplies an index and mask columns; it does not create splits, sample windows,
 or preset pickle files.
 
+## Signal Preprocess
+
+`signals.<channel>.preprocess` is an ordered list of structured steps. Core
+hypnodata always applies `scale`, `polarity`, target-rate resampling, finite
+checks, and common-duration truncation through the fixed preprocessing path, so
+do not write those fixed steps in YAML.
+
+Use `type: filter` for NeuroKit2 filtering:
+
+```yaml
+preprocess:
+  - type: filter
+    method: bessel
+    order: 4
+    lowcut: 0.5
+    highcut: 45.0
+```
+
+Use `type: notch` when the powerline frequency and Q value must be explicit:
+
+```yaml
+preprocess:
+  - type: notch
+    freq: 50.0
+    q: 30.0
+```
+
 ## Adapter Contract
 
 Use `record_discovery.adapter: module:function` when a center needs custom

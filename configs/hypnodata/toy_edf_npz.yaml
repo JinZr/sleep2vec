@@ -20,8 +20,11 @@ signals:
     scale: 1.0
     polarity: normal
     preprocess:
-      - finite_check
-      - truncate_to_common
+      - type: filter
+        method: bessel
+        order: 4
+        lowcut: 0.5
+        highcut: 4.0
   spo2:
     kind: spo2
     required: false
@@ -30,6 +33,3 @@ signals:
     candidates:
       - regex: "^SpO2"
         priority: 5
-    preprocess:
-      - finite_check
-      - truncate_to_common

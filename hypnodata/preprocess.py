@@ -4,10 +4,10 @@ from dataclasses import dataclass
 import math
 
 import numpy as np
-from scipy.signal import resample
+from scipy.signal import filtfilt, iirnotch, resample
 
 from hypnodata.channels import ChannelSelection
-from hypnodata.config import SignalSpec
+from hypnodata.config import FilterStep, NotchStep, SignalSpec
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,13 @@ def preprocess_signal(raw: np.ndarray, selection: ChannelSelection, spec: Signal
         data = -data
         steps.append("polarity_flip")
     sfreq = float(selection.raw_sfreq)
+    for step in spec.preprocess:
+        if isinstance(step, NotchStep):
+            data = _apply_notch(data, sfreq, step, selection.canonical_channel)
+            steps.append(f"notch:{step.freq:g}Hz:q={step.q:g}")
+        elif isinstance(step, FilterStep):
+            data = _apply_filter(data, sfreq, step, selection.canonical_channel)
+            steps.append(_filter_step_label(step))
     target_sfreq = float(spec.target_sfreq or sfreq)
     if abs(sfreq - target_sfreq) > 1e-6:
         target_len = int(round(len(data) * target_sfreq / sfreq))
@@ -38,9 +45,6 @@ def preprocess_signal(raw: np.ndarray, selection: ChannelSelection, spec: Signal
         data = resample(data, target_len).astype(np.float32, copy=False)
         sfreq = target_sfreq
         steps.append(f"resample:{selection.raw_sfreq:g}->{target_sfreq:g}")
-    for step in spec.preprocess:
-        if step in {"filter", "notch"}:
-            steps.append(f"{step}:not_implemented")
     if not np.isfinite(data).all():
         raise ValueError(f"Signal {selection.canonical_channel!r} contains NaN or Inf after preprocessing.")
     steps.append("finite_check")
@@ -50,6 +54,46 @@ def preprocess_signal(raw: np.ndarray, selection: ChannelSelection, spec: Signal
         unit=spec.target_unit,
         steps=steps,
     )
+
+
+def _apply_filter(data: np.ndarray, sfreq: float, step: FilterStep, channel: str) -> np.ndarray:
+    _validate_below_nyquist(step.lowcut, sfreq, channel, "filter lowcut")
+    _validate_below_nyquist(step.highcut, sfreq, channel, "filter highcut")
+    import neurokit2 as nk
+
+    filtered = nk.signal_filter(
+        data,
+        sampling_rate=sfreq,
+        lowcut=step.lowcut,
+        highcut=step.highcut,
+        method=step.method,
+        order=step.order,
+    )
+    return np.asarray(filtered, dtype=np.float32)
+
+
+def _apply_notch(data: np.ndarray, sfreq: float, step: NotchStep, channel: str) -> np.ndarray:
+    _validate_below_nyquist(step.freq, sfreq, channel, "notch freq")
+    b, a = iirnotch(w0=step.freq, Q=step.q, fs=sfreq)
+    return filtfilt(b, a, data).astype(np.float32, copy=False)
+
+
+def _validate_below_nyquist(value: float | None, sfreq: float, channel: str, name: str) -> None:
+    if value is not None and value >= sfreq / 2:
+        raise ValueError(f"Signal {channel!r} {name} must be below Nyquist ({sfreq / 2:g} Hz).")
+
+
+def _filter_step_label(step: FilterStep) -> str:
+    if step.lowcut is not None and step.highcut is not None:
+        mode = "bandpass"
+        cutoff = f"{step.lowcut:g}-{step.highcut:g}Hz"
+    elif step.lowcut is not None:
+        mode = "highpass"
+        cutoff = f"{step.lowcut:g}Hz"
+    else:
+        mode = "lowpass"
+        cutoff = f"{step.highcut:g}Hz"
+    return f"filter:{step.method}:{mode}:{cutoff}:order={step.order:g}"
 
 
 def truncate_to_common(signals: dict[str, ProcessedSignal]) -> tuple[dict[str, ProcessedSignal], float, list[str]]:

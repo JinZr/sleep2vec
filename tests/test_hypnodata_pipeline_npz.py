@@ -43,7 +43,6 @@ def _write_config(tmp_path: Path, index: Path, *, missing_required: bool = False
             "candidates": [{"label": eeg_label, "priority": 10}],
             "scale": 2.0,
             "polarity": "invert",
-            "preprocess": ["finite_check", "truncate_to_common"],
         }
     }
     if include_spo2:
@@ -53,7 +52,6 @@ def _write_config(tmp_path: Path, index: Path, *, missing_required: bool = False
             "target_sfreq": 1,
             "target_unit": "%",
             "candidates": [{"regex": "^SpO2", "priority": 5}],
-            "preprocess": ["finite_check", "truncate_to_common"],
         }
     path = tmp_path / "hypnodata.yaml"
     path.write_text(
@@ -69,6 +67,37 @@ def _write_config(tmp_path: Path, index: Path, *, missing_required: bool = False
                 },
                 "backend": {"type": "npz"},
                 "signals": signals,
+            }
+        )
+    )
+    return path
+
+
+def _write_filter_config(tmp_path: Path, index: Path) -> Path:
+    path = tmp_path / "hypnodata_filter.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "center": "toy",
+                "record_discovery": {
+                    "type": "csv",
+                    "index": str(index),
+                    "file_column": "path",
+                    "record_id_column": "record_id",
+                },
+                "backend": {"type": "npz"},
+                "signals": {
+                    "eeg": {
+                        "kind": "eeg",
+                        "required": True,
+                        "target_sfreq": 5,
+                        "target_unit": "uV",
+                        "candidates": [{"label": "EEG C3", "priority": 10}],
+                        "preprocess": [
+                            {"type": "filter", "method": "bessel", "order": 2, "highcut": 2.0},
+                        ],
+                    }
+                },
             }
         )
     )
@@ -185,6 +214,20 @@ def test_pipeline_passes_selected_raw_index_to_edf_reader(tmp_path: Path, monkey
     run_pipeline(config, output_dir=tmp_path / "out")
 
     assert raw_indices == [0]
+
+
+def test_pipeline_manifest_records_structured_preprocess_steps(tmp_path: Path):
+    edf_path = _write_edf(tmp_path / "record.edf", labels=["EEG C3"])
+    index = _write_index(tmp_path, edf_path)
+    config = load_config(_write_filter_config(tmp_path, index))
+    output_dir = tmp_path / "out"
+
+    run_pipeline(config, output_dir=output_dir)
+
+    signal_manifest = pd.read_csv(output_dir / "manifest" / "signal_manifest.csv")
+    eeg = signal_manifest[signal_manifest["canonical_channel"] == "eeg"].iloc[0]
+    assert "filter:bessel:lowpass:2Hz:order=2" in eeg["preprocess_steps"]
+    assert "not_implemented" not in eeg["preprocess_steps"]
 
 
 def test_optional_missing_channel_sets_mask_zero(tmp_path: Path):
