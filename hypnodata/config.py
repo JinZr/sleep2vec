@@ -30,6 +30,9 @@ SIGNAL_KEYS = {
     "required",
     "target_sfreq",
     "target_unit",
+    "epoch_sec",
+    "interval_sec",
+    "window_sec",
     "candidates",
     "scale",
     "polarity",
@@ -41,6 +44,7 @@ NOTCH_STEP_KEYS = {"type", "freq", "q"}
 # YAML preprocess only contains user-configurable signal transforms.
 # Fixed steps such as resampling, finite checks, and common truncation run in the pipeline.
 PREPROCESS_TYPES = {"filter", "notch"}
+ANNOTATION_ONLY_KINDS = {"stage", "event_table", "event_dense", "event_anchor"}
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,9 @@ class SignalSpec:
     target_sfreq: float | None
     target_unit: str | None
     candidates: list[CandidateSpec]
+    epoch_sec: float | None = None
+    interval_sec: float | None = None
+    window_sec: float | None = None
     scale: float = 1.0
     polarity: int = 1
     preprocess: list[PreprocessStep] = field(default_factory=list)
@@ -207,11 +214,19 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
             raise ValueError(f"signals.{canonical}.kind is required.")
         candidates = _build_candidates(spec.get("candidates", []), canonical)
         kind = str(spec["kind"])
-        if not candidates and kind != "stage":
-            raise ValueError(f"signals.{canonical}.candidates must not be empty.")
+        if not candidates and kind not in ANNOTATION_ONLY_KINDS:
+            allowed = ", ".join(sorted(ANNOTATION_ONLY_KINDS))
+            raise ValueError(f"signals.{canonical}.candidates must not be empty unless kind is one of: {allowed}.")
+        annotation_only = not candidates and kind in ANNOTATION_ONLY_KINDS
+        epoch_sec, interval_sec, window_sec = _build_annotation_timing(spec, canonical, kind, annotation_only)
         target_sfreq = None if spec.get("target_sfreq") is None else float(spec["target_sfreq"])
         if target_sfreq is not None and target_sfreq <= 0:
             raise ValueError(f"signals.{canonical}.target_sfreq must be positive when set.")
+        if annotation_only and target_sfreq is not None:
+            raise ValueError(
+                f"signals.{canonical}.target_sfreq is not used for annotation-only signals; "
+                "use epoch_sec, interval_sec, or window_sec."
+            )
         preprocess_steps = _build_preprocess_steps(spec.get("preprocess", []), canonical)
         signals[canonical] = SignalSpec(
             name=canonical,
@@ -220,11 +235,59 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
             target_sfreq=target_sfreq,
             target_unit=None if spec.get("target_unit") is None else str(spec["target_unit"]),
             candidates=candidates,
+            epoch_sec=epoch_sec,
+            interval_sec=interval_sec,
+            window_sec=window_sec,
             scale=float(spec.get("scale", 1.0)),
             polarity=_parse_polarity(spec.get("polarity", 1), canonical),
             preprocess=preprocess_steps,
         )
     return signals
+
+
+def declared_target_sfreq(spec: SignalSpec) -> float | None:
+    if spec.epoch_sec is not None:
+        return 1.0 / spec.epoch_sec
+    if spec.interval_sec is not None:
+        return 1.0 / spec.interval_sec
+    if spec.window_sec is not None:
+        return 1.0 / spec.window_sec
+    return spec.target_sfreq
+
+
+def _build_annotation_timing(
+    spec: dict[str, Any],
+    canonical: str,
+    kind: str,
+    annotation_only: bool,
+) -> tuple[float | None, float | None, float | None]:
+    timing_keys = {"epoch_sec", "interval_sec", "window_sec"}
+    if not annotation_only:
+        unexpected = sorted(key for key in timing_keys if spec.get(key) is not None)
+        if unexpected:
+            raise ValueError(f"signals.{canonical}.{unexpected[0]} is only valid for annotation-only signals.")
+        return None, None, None
+
+    allowed_by_kind = {
+        "stage": "epoch_sec",
+        "event_dense": "interval_sec",
+        "event_anchor": "window_sec",
+        "event_table": None,
+    }
+    expected = allowed_by_kind[kind]
+    unexpected = sorted(key for key in timing_keys if key != expected and spec.get(key) is not None)
+    if unexpected:
+        raise ValueError(f"signals.{canonical}.{unexpected[0]} is not valid for kind={kind}.")
+    if expected is None:
+        return None, None, None
+    value = _optional_positive_float(spec, expected, f"signals.{canonical}")
+    if value is None:
+        raise ValueError(f"signals.{canonical}.{expected} is required for kind={kind}.")
+    if expected == "epoch_sec":
+        return value, None, None
+    if expected == "interval_sec":
+        return None, value, None
+    return None, None, value
 
 
 def _build_preprocess_steps(raw: Any, canonical: str) -> list[PreprocessStep]:

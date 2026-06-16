@@ -24,6 +24,89 @@
 - Duplication risk notes: do not accept bare string aliases or fixed internal
   steps here.
 
+## `hypnodata.config.declared_target_sfreq`
+
+- File: `hypnodata/config.py`
+- Signature: `declared_target_sfreq(spec: SignalSpec) -> float | None`
+- Purpose and contract: return the configured output frequency for raw or
+  annotation-only signals.
+- Important inputs/outputs: `SignalSpec` in; `target_sfreq` for raw signals,
+  `1/epoch_sec`, `1/interval_sec`, or `1/window_sec` for annotation-only
+  signals, or `None` when no output frequency applies.
+- Side effects: none.
+- Reuse guidance: use this in pipeline validation and backend manifest writing
+  instead of duplicating frequency derivation.
+
+## `hypnodata.annotations.read_stage_csv`
+
+- File: `hypnodata/annotations.py`
+- Signature: `read_stage_csv(path: str | Path, *, duration_sec: float, epoch_sec: float, mapping: dict[str, int] | None = None, invalid: int = -1, label_column: str = "stage", start_column: str = "start", duration_column: str = "duration", canonical_channel: str = "stage5") -> AnnotationSignal`
+- Purpose and contract: materialize stage rows into a 1D stage annotation
+  array, using the default `Wake/N1/N2/N3/REM -> 0/1/2/3/4` mapping when no
+  mapping is supplied.
+- Important inputs/outputs: CSV path and epoch seconds in; `stage`
+  `AnnotationSignal` out.
+- Side effects: reads one CSV file.
+- Reuse guidance: adapters should use this for simple stage CSVs before
+  building stage-aware event labels.
+
+## `hypnodata.annotations.read_event_csv`
+
+- File: `hypnodata/annotations.py`
+- Signature: `read_event_csv(path: str | Path, *, type_column: str | None = "Type", start_column: str = "Start", duration_column: str = "Duration", mapping: dict[str, int] | None = None, default_type: int = 0) -> np.ndarray`
+- Purpose and contract: read a standard event CSV into rows shaped `(N, 3)` as
+  `[type, start_sec, duration_sec]`.
+- Important inputs/outputs: CSV path and column names in; float32 event rows
+  out.
+- Side effects: reads one CSV file.
+- Reuse guidance: adapters should use this instead of re-parsing common
+  `Type/Start/Duration` files.
+
+## `hypnodata.annotations.materialize_event_table`
+
+- File: `hypnodata/annotations.py`
+- Signature: `materialize_event_table(events: np.ndarray, *, canonical_channel: str, raw_file: str = "", raw_label: str = "events", steps: list[str] | None = None) -> AnnotationSignal`
+- Purpose and contract: wrap standard event rows as an `event_table`
+  annotation signal.
+- Important inputs/outputs: `(N, 3)` rows in; `AnnotationSignal` with
+  `sfreq=None` out.
+- Side effects: none.
+- Reuse guidance: use for `<name>_table` annotation channels.
+
+## `hypnodata.annotations.materialize_dense_events`
+
+- File: `hypnodata/annotations.py`
+- Signature: `materialize_dense_events(events: np.ndarray, *, duration_sec: float, interval_sec: float, canonical_channel: str, raw_file: str = "", raw_label: str = "events", value: float | None = 1.0, steps: list[str] | None = None) -> AnnotationSignal`
+- Purpose and contract: convert event rows into a 1D dense event timeline.
+- Important inputs/outputs: standard event rows and interval seconds in;
+  `event_dense` annotation with `sfreq=1/interval_sec` out.
+- Side effects: none.
+- Reuse guidance: use for `ah_event`, `arousal`, `desaturation`, or
+  `snore_event` dense labels.
+
+## `hypnodata.annotations.materialize_anchor_events`
+
+- File: `hypnodata/annotations.py`
+- Signature: `materialize_anchor_events(events: np.ndarray, *, duration_sec: float, window_sec: float, anchor_num: int, canonical_channel: str, raw_file: str = "", raw_label: str = "events", steps: list[str] | None = None) -> AnnotationSignal`
+- Purpose and contract: convert event rows into window-level anchor labels
+  where each anchor stores `[present, start_frac, stop_frac]`.
+- Important inputs/outputs: standard event rows, window size, and anchor count
+  in; `event_anchor` matrix out.
+- Side effects: none.
+- Reuse guidance: use for anchor labels inspired by arousal, desaturation, and
+  snore workers.
+
+## `hypnodata.annotations.filter_events_to_sleep_stages`
+
+- File: `hypnodata/annotations.py`
+- Signature: `filter_events_to_sleep_stages(events: np.ndarray, stage: np.ndarray, *, epoch_sec: float, sleep_values: set[int] | frozenset[int] = SLEEP_STAGE_VALUES) -> np.ndarray`
+- Purpose and contract: keep event rows that overlap sleep-stage epochs.
+- Important inputs/outputs: event rows and a stage array in; filtered event
+  rows out.
+- Side effects: none.
+- Reuse guidance: use for stage-aware event label generation without writing
+  AHI/TST or clinical summaries.
+
 ## `hypnodata.config.FilterStep`
 
 - File: `hypnodata/config.py`

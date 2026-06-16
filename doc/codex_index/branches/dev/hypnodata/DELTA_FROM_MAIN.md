@@ -20,6 +20,15 @@ downstream NPZ/Kaldi/sleep2stat boundaries.
 - `type: notch` is implemented by SciPy with explicit `freq` and `q`.
 - `filter:not_implemented` and `notch:not_implemented` are obsolete and must not
   appear in manifests.
+- Annotation-only signals may use empty `candidates` only for `kind: stage`,
+  `event_table`, `event_dense`, or `event_anchor`.
+- Annotation-only signals declare output grids with `epoch_sec`,
+  `interval_sec`, or `window_sec` instead of `target_sfreq`.
+- Adapter-provided annotation sources can now materialize standard event tables,
+  dense event labels, and anchor labels in addition to `stage5`.
+- Stage-aware event filtering is available as row filtering only; hypnodata
+  still does not write AHI, ODI, T90, hypoxic burden, sleep efficiency, or other
+  downstream clinical summaries.
 - `requirements.txt` includes NeuroKit2 and a NumPy version compatible with that
   dependency.
 

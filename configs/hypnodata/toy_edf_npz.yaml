@@ -33,3 +33,22 @@ signals:
     candidates:
       - regex: "^SpO2"
         priority: 5
+  stage5:
+    kind: stage
+    required: false
+    epoch_sec: 30
+    candidates: []
+  ah_event_table:
+    kind: event_table
+    required: false
+    candidates: []
+  ah_event:
+    kind: event_dense
+    required: false
+    interval_sec: 1
+    candidates: []
+  arousal_anchor:
+    kind: event_anchor
+    required: false
+    window_sec: 10
+    candidates: []

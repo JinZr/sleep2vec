@@ -6,6 +6,7 @@
 | --- | --- | --- | --- |
 | Config schema | `hypnodata/config.py` | Strict YAML parsing, typed config dataclasses, signal candidates, structured preprocess steps | Add schema checks here, not in pipeline code |
 | Discovery and adapters | `hypnodata/discovery.py`, `hypnodata/adapters.py`, `hypnodata/records.py` | Convert glob/CSV/custom sources into `RecordTask` objects and center-specific hooks | Keep center-specific logic in adapters |
+| Annotation materialization | `hypnodata/annotations.py` | Convert adapter-provided stage/event rows into `stage`, `event_table`, `event_dense`, and `event_anchor` arrays | Reuse standard materializers; keep source parsing in adapters |
 | EDF and channel resolution | `hypnodata/edf.py`, `hypnodata/channels.py` | Inventory raw EDF files, read raw signals, select canonical channels | Reuse `resolve_channels`; do not duplicate matching logic |
 | Signal preprocessing | `hypnodata/preprocess.py` | Scale, polarity, structured filter/notch, resample, finite check, common truncation | Extend `preprocess_signal` or `truncate_to_common`; do not add parallel preprocess runners |
 | Pipeline orchestration | `hypnodata/pipeline.py` | Per-record execution, resume/overwrite/dry-run/crash behavior, QC/failure accounting, progress writes | Keep orchestration here and signal math in `preprocess.py` |
@@ -16,15 +17,19 @@
 ## Dependency Flow
 
 - `pipeline.py` depends on config, discovery, adapters, EDF, channel selection,
-  preprocessing, backends, manifests, QC, and status.
+  annotations, preprocessing, backends, manifests, QC, and status.
 - `preprocess.py` depends on parsed `FilterStep` / `NotchStep` objects from
   `config.py`; it does not parse YAML mappings.
+- `annotations.py` depends on NumPy and Pandas only; adapters call it after
+  discovering center-specific annotation files.
 - `manifests.py` depends on `HypnodataConfig` for signal metadata and mask
   columns, but does not run preprocessing.
 
 ## Ownership Notes
 
 - YAML semantic changes belong in `hypnodata/config.py` with config tests.
+- Annotation event/stage materialization changes belong in
+  `hypnodata/annotations.py` with direct annotation tests.
 - Signal math changes belong in `hypnodata/preprocess.py` with direct unit
   tests.
 - Output column or manifest semantics belong in `hypnodata/manifests.py` and

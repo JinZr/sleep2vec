@@ -7,15 +7,20 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+STAGE5_MAPPING = {"Wake": 0, "N1": 1, "N2": 2, "N3": 3, "REM": 4}
+SLEEP_STAGE_VALUES = frozenset({1, 2, 3, 4})
+ANNOTATION_MATERIALIZATIONS = {"stage", "event_table", "event_dense", "event_anchor"}
+
 
 @dataclass(frozen=True)
 class AnnotationSignal:
     canonical_channel: str
     data: np.ndarray
-    sfreq: float
+    sfreq: float | None
     raw_file: str
     raw_label: str
     unit: str | None = None
+    materialization: str = "stage"
     steps: list[str] = field(default_factory=list)
 
 
@@ -29,7 +34,7 @@ def read_stage_csv(
     *,
     duration_sec: float,
     epoch_sec: float,
-    mapping: dict[str, int],
+    mapping: dict[str, int] | None = None,
     invalid: int = -1,
     label_column: str = "stage",
     start_column: str = "start",
@@ -47,7 +52,7 @@ def read_stage_csv(
         durations=frame[duration_column].astype(float).tolist(),
         duration_sec=duration_sec,
         epoch_sec=epoch_sec,
-        mapping=mapping,
+        mapping=STAGE5_MAPPING if mapping is None else mapping,
         invalid=invalid,
     )
     return AnnotationSignal(
@@ -56,6 +61,7 @@ def read_stage_csv(
         sfreq=1.0 / float(epoch_sec),
         raw_file=str(path),
         raw_label=label_column,
+        materialization="stage",
         steps=[f"stage_csv:{epoch_sec:g}s"],
     )
 
@@ -65,7 +71,7 @@ def read_stage_edf_annotations(
     *,
     duration_sec: float,
     epoch_sec: float,
-    mapping: dict[str, int],
+    mapping: dict[str, int] | None = None,
     invalid: int = -1,
     canonical_channel: str = "stage5",
 ) -> AnnotationSignal:
@@ -82,7 +88,7 @@ def read_stage_edf_annotations(
         durations=durations,
         duration_sec=duration_sec,
         epoch_sec=epoch_sec,
-        mapping=mapping,
+        mapping=STAGE5_MAPPING if mapping is None else mapping,
         invalid=invalid,
     )
     return AnnotationSignal(
@@ -91,8 +97,150 @@ def read_stage_edf_annotations(
         sfreq=1.0 / float(epoch_sec),
         raw_file=str(path),
         raw_label="edf_annotations",
+        materialization="stage",
         steps=[f"stage_edf_annotations:{epoch_sec:g}s"],
     )
+
+
+def read_event_csv(
+    path: str | Path,
+    *,
+    type_column: str | None = "Type",
+    start_column: str = "Start",
+    duration_column: str = "Duration",
+    mapping: dict[str, int] | None = None,
+    default_type: int = 0,
+) -> np.ndarray:
+    frame = pd.read_csv(path, low_memory=False)
+    required = {start_column, duration_column}
+    if type_column is not None:
+        required.add(type_column)
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"Event CSV missing required column(s): {missing}")
+    starts = frame[start_column].astype(float).to_numpy()
+    durations = frame[duration_column].astype(float).to_numpy()
+    if type_column is None:
+        types = np.full(len(frame), float(default_type), dtype=np.float32)
+    elif mapping is None:
+        types = frame[type_column].astype(float).to_numpy()
+    else:
+        mapped = frame[type_column].astype(str).map(mapping)
+        if mapped.isna().any():
+            unknown = sorted(set(frame.loc[mapped.isna(), type_column].astype(str)))
+            raise ValueError(f"Event CSV contains unmapped type(s): {unknown}")
+        types = mapped.astype(float).to_numpy()
+    return _normalize_event_rows(np.column_stack([types, starts, durations]))
+
+
+def materialize_event_table(
+    events: np.ndarray,
+    *,
+    canonical_channel: str,
+    raw_file: str = "",
+    raw_label: str = "events",
+    steps: list[str] | None = None,
+) -> AnnotationSignal:
+    return AnnotationSignal(
+        canonical_channel=canonical_channel,
+        data=_normalize_event_rows(events),
+        sfreq=None,
+        raw_file=raw_file,
+        raw_label=raw_label,
+        materialization="event_table",
+        steps=list(steps or ["event_csv"]),
+    )
+
+
+def materialize_dense_events(
+    events: np.ndarray,
+    *,
+    duration_sec: float,
+    interval_sec: float,
+    canonical_channel: str,
+    raw_file: str = "",
+    raw_label: str = "events",
+    value: float | None = 1.0,
+    steps: list[str] | None = None,
+) -> AnnotationSignal:
+    if interval_sec <= 0:
+        raise ValueError("event dense interval_sec must be positive.")
+    n_samples = int(np.floor(float(duration_sec) / float(interval_sec)))
+    data = np.zeros(n_samples, dtype=np.float32)
+    for event_type, start, duration in _normalize_event_rows(events):
+        stop = min(float(start + duration), float(duration_sec))
+        if stop <= start:
+            continue
+        left = max(int(np.floor(float(start) / interval_sec)), 0)
+        right = min(int(np.ceil(stop / interval_sec)), n_samples)
+        if left < right:
+            data[left:right] = float(event_type if value is None else value)
+    return AnnotationSignal(
+        canonical_channel=canonical_channel,
+        data=data,
+        sfreq=1.0 / float(interval_sec),
+        raw_file=raw_file,
+        raw_label=raw_label,
+        materialization="event_dense",
+        steps=list(steps or ["event_csv"]) + [f"dense:{interval_sec:g}s"],
+    )
+
+
+def materialize_anchor_events(
+    events: np.ndarray,
+    *,
+    duration_sec: float,
+    window_sec: float,
+    anchor_num: int,
+    canonical_channel: str,
+    raw_file: str = "",
+    raw_label: str = "events",
+    steps: list[str] | None = None,
+) -> AnnotationSignal:
+    if window_sec <= 0:
+        raise ValueError("event anchor window_sec must be positive.")
+    if anchor_num <= 0:
+        raise ValueError("event anchor anchor_num must be positive.")
+    n_windows = int(np.ceil(float(duration_sec) / float(window_sec)))
+    data = np.zeros((n_windows, anchor_num * 3), dtype=np.float32)
+    if n_windows:
+        for _, start, duration in _normalize_event_rows(events):
+            _fill_anchor_event(data, float(start), float(duration), float(duration_sec), float(window_sec), anchor_num)
+    return AnnotationSignal(
+        canonical_channel=canonical_channel,
+        data=data,
+        sfreq=1.0 / float(window_sec),
+        raw_file=raw_file,
+        raw_label=raw_label,
+        materialization="event_anchor",
+        steps=list(steps or ["event_csv"]) + [f"anchor:{window_sec:g}s:{anchor_num:g}"],
+    )
+
+
+def filter_events_to_sleep_stages(
+    events: np.ndarray,
+    stage: np.ndarray,
+    *,
+    epoch_sec: float,
+    sleep_values: set[int] | frozenset[int] = SLEEP_STAGE_VALUES,
+) -> np.ndarray:
+    if epoch_sec <= 0:
+        raise ValueError("stage filter epoch_sec must be positive.")
+    rows = _normalize_event_rows(events)
+    if rows.size == 0:
+        return rows
+    stage_values = np.asarray(stage).reshape(-1)
+    kept = []
+    for row in rows:
+        _, start, duration = row
+        stop = start + duration
+        left = max(int(np.floor(float(start) / epoch_sec)), 0)
+        right = min(int(np.ceil(float(stop) / epoch_sec)), stage_values.shape[0])
+        if left < right and any(int(value) in sleep_values for value in stage_values[left:right]):
+            kept.append(row)
+    if not kept:
+        return np.empty((0, 3), dtype=np.float32)
+    return np.asarray(kept, dtype=np.float32)
 
 
 def _materialize_stage_epochs(
@@ -124,6 +272,55 @@ def _materialize_stage_epochs(
         if left < right:
             data[left:right] = value
     return data
+
+
+def _normalize_event_rows(events: np.ndarray) -> np.ndarray:
+    rows = np.asarray(events, dtype=np.float32)
+    if rows.size == 0:
+        return np.empty((0, 3), dtype=np.float32)
+    if rows.ndim != 2 or rows.shape[1] != 3:
+        raise ValueError("event rows must have shape (N, 3).")
+    rows = rows[np.isfinite(rows).all(axis=1)]
+    return rows[(rows[:, 1] >= 0) & (rows[:, 2] > 0)].astype(np.float32, copy=False)
+
+
+def _fill_anchor_event(
+    labels: np.ndarray,
+    start: float,
+    duration: float,
+    duration_sec: float,
+    window_sec: float,
+    anchor_num: int,
+) -> None:
+    stop = min(start + duration, duration_sec)
+    if stop <= start:
+        return
+    stop_for_bin = np.nextafter(stop, -np.inf)
+    start_bin = max(int(start // window_sec), 0)
+    stop_bin = min(int(stop_for_bin // window_sec), labels.shape[0] - 1)
+    for window in range(start_bin, stop_bin + 1):
+        left = start if window == start_bin else window * window_sec
+        right = stop if window == stop_bin else (window + 1) * window_sec
+        _write_anchor(labels, window, left - window * window_sec, right - window * window_sec, window_sec, anchor_num)
+
+
+def _write_anchor(
+    labels: np.ndarray,
+    window: int,
+    start_offset: float,
+    stop_offset: float,
+    window_sec: float,
+    anchor_num: int,
+) -> None:
+    for idx in range(anchor_num):
+        col = idx * 3
+        if labels[window, col] == 0:
+            labels[window, col : col + 3] = [
+                1.0,
+                max(start_offset, 0.0) / window_sec,
+                min(stop_offset, window_sec) / window_sec,
+            ]
+            return
 
 
 def _import_mne() -> Any:

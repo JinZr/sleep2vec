@@ -62,6 +62,88 @@ def test_load_config_accepts_custom_passthrough_blocks(tmp_path: Path):
     assert config.adapter_options == {"cohort": "demo"}
 
 
+@pytest.mark.parametrize("kind", ["stage", "event_table", "event_dense", "event_anchor"])
+def test_load_config_accepts_annotation_only_kinds_without_candidates(tmp_path: Path, kind: str):
+    payload = _payload()
+    payload["signals"]["events"] = {
+        "kind": kind,
+        "required": False,
+        "candidates": [],
+    }
+    payload["signals"]["events"].update(
+        {
+            "stage": {"epoch_sec": 30},
+            "event_table": {},
+            "event_dense": {"interval_sec": 1},
+            "event_anchor": {"window_sec": 10},
+        }[kind]
+    )
+
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.signals["events"].kind == kind
+    assert config.signals["events"].candidates == []
+
+
+def test_load_config_rejects_raw_signal_without_candidates(tmp_path: Path):
+    payload = _payload()
+    payload["signals"]["eeg"]["candidates"] = []
+
+    with pytest.raises(ValueError, match="candidates must not be empty"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_unknown_annotation_only_kind_without_candidates(tmp_path: Path):
+    payload = _payload()
+    payload["signals"]["mystery"] = {
+        "kind": "mystery",
+        "required": False,
+        "candidates": [],
+    }
+
+    with pytest.raises(ValueError, match="candidates must not be empty"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_annotation_source_field(tmp_path: Path):
+    payload = _payload()
+    payload["signals"]["stage5"] = {
+        "kind": "stage",
+        "required": False,
+        "epoch_sec": 30,
+        "candidates": [],
+        "annotation": {"type": "csv"},
+    }
+
+    with pytest.raises(ValueError, match="Unknown hypnodata config field"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
+    ("kind", "fields", "match"),
+    [
+        ("stage", {}, r"epoch_sec is required"),
+        ("event_dense", {}, r"interval_sec is required"),
+        ("event_anchor", {}, r"window_sec is required"),
+        ("stage", {"target_sfreq": 1.0, "epoch_sec": 30}, r"target_sfreq is not used"),
+        ("event_dense", {"window_sec": 30}, r"window_sec is not valid"),
+        ("eeg", {"epoch_sec": 30, "candidates": [{"label": "EEG C3"}]}, r"epoch_sec is only valid"),
+    ],
+)
+def test_load_config_rejects_invalid_annotation_timing(tmp_path: Path, kind: str, fields: dict, match: str):
+    payload = _payload()
+    signal = {
+        "kind": kind,
+        "required": False,
+        "candidates": [],
+    }
+    signal.update(fields)
+    payload["signals"]["event"] = signal
+
+    with pytest.raises(ValueError, match=match):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_rejects_schema_version(tmp_path: Path):
     payload = _payload()
     payload["schema_version"] = 1

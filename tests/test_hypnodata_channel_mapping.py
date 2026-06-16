@@ -106,9 +106,10 @@ def test_required_annotation_without_candidates_stays_required():
         name="stage5",
         kind="stage",
         required=True,
-        target_sfreq=0.2,
+        target_sfreq=None,
         target_unit=None,
         candidates=[],
+        epoch_sec=5,
     )
 
     selections, warnings = resolve_channels({"stage5": spec}, {"edf": inventory})

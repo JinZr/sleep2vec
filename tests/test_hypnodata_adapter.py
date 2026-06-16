@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 from hypnodata.config import load_config
@@ -138,7 +139,7 @@ def make_adapter(config):
                     "stage5": {
                         "kind": "stage",
                         "required": False,
-                        "target_sfreq": 0.2,
+                        "epoch_sec": 5,
                         "candidates": [],
                     },
                 },
@@ -164,3 +165,284 @@ def make_adapter(config):
     assert record_manifest.loc[0, "stage_mask"] == 1
     with np.load(output_dir / "backends" / "npz" / "records" / "night1.npz") as npz:
         np.testing.assert_array_equal(npz["stage5"], np.asarray([0, 1], dtype=np.int64))
+
+
+def test_custom_adapter_materializes_event_table_dense_and_anchor_annotations(tmp_path: Path, monkeypatch):
+    adapter_module = tmp_path / "event_adapter.py"
+    adapter_module.write_text("""
+from pathlib import Path
+
+import pandas as pd
+
+from hypnodata.annotations import (
+    AnnotationResult,
+    filter_events_to_sleep_stages,
+    materialize_anchor_events,
+    materialize_dense_events,
+    materialize_event_table,
+    read_event_csv,
+    read_stage_csv,
+)
+from hypnodata.records import RecordTask
+
+
+class EventAdapter:
+    def collect_records(self, config):
+        frame = pd.read_csv(config.adapter_options["index"], low_memory=False)
+        return [
+            RecordTask(
+                record_id=str(row["record_id"]),
+                center=config.center,
+                files={
+                    "edf": Path(row["edf_path"]),
+                    "stage": Path(row["stage_csv"]),
+                    "events": Path(row["event_csv"]),
+                },
+            )
+            for _, row in frame.iterrows()
+        ]
+
+    def read_annotations(self, record, config, duration_sec):
+        stage = read_stage_csv(
+            record.files["stage"],
+            duration_sec=duration_sec,
+            epoch_sec=5,
+            label_column="Type",
+            start_column="Start",
+            duration_column="Duration",
+        )
+        events = read_event_csv(record.files["events"], mapping={"Apnea": 0, "Hypopnea": 1})
+        events = filter_events_to_sleep_stages(events, stage.data, epoch_sec=5)
+        steps = ["event_csv", "stage_sleep_filter"]
+        return AnnotationResult(
+            [
+                stage,
+                materialize_event_table(
+                    events,
+                    canonical_channel="ah_event_table",
+                    raw_file=str(record.files["events"]),
+                    raw_label="Type/Start/Duration",
+                    steps=steps,
+                ),
+                materialize_dense_events(
+                    events,
+                    duration_sec=duration_sec,
+                    interval_sec=1,
+                    canonical_channel="ah_event",
+                    raw_file=str(record.files["events"]),
+                    raw_label="Type/Start/Duration",
+                    steps=steps,
+                ),
+                materialize_anchor_events(
+                    events,
+                    duration_sec=duration_sec,
+                    window_sec=10,
+                    anchor_num=2,
+                    canonical_channel="arousal_anchor",
+                    raw_file=str(record.files["events"]),
+                    raw_label="Type/Start/Duration",
+                    steps=steps,
+                ),
+            ]
+        )
+
+
+def make_adapter(config):
+    return EventAdapter()
+""")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    edf_path = write_tiny_edf(tmp_path / "night.edf", duration_sec=20)
+    stage_csv = tmp_path / "stage.csv"
+    pd.DataFrame(
+        [
+            {"Start": 0, "Duration": 5, "Type": "Wake"},
+            {"Start": 5, "Duration": 5, "Type": "N1"},
+            {"Start": 10, "Duration": 5, "Type": "N2"},
+            {"Start": 15, "Duration": 5, "Type": "Wake"},
+        ]
+    ).to_csv(stage_csv, index=False)
+    event_csv = tmp_path / "events.csv"
+    pd.DataFrame(
+        [
+            {"Start": 2, "Duration": 2, "Type": "Apnea"},
+            {"Start": 7, "Duration": 4, "Type": "Hypopnea"},
+        ]
+    ).to_csv(event_csv, index=False)
+    adapter_index = tmp_path / "event_index.csv"
+    pd.DataFrame(
+        [
+            {
+                "record_id": "night1",
+                "edf_path": str(edf_path),
+                "stage_csv": str(stage_csv),
+                "event_csv": str(event_csv),
+            }
+        ]
+    ).to_csv(adapter_index, index=False)
+    config_path = tmp_path / "hypnodata.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "center": "toy_event_center",
+                "record_discovery": {"type": "custom", "adapter": "event_adapter:make_adapter"},
+                "backend": {"type": "npz"},
+                "adapter_options": {"index": str(adapter_index)},
+                "signals": {
+                    "eeg": {
+                        "kind": "eeg",
+                        "required": True,
+                        "target_sfreq": 10,
+                        "target_unit": "uV",
+                        "candidates": [{"label": "EEG C3", "priority": 1}],
+                    },
+                    "stage5": {"kind": "stage", "required": False, "epoch_sec": 5, "candidates": []},
+                    "ah_event_table": {"kind": "event_table", "required": False, "candidates": []},
+                    "ah_event": {"kind": "event_dense", "required": False, "interval_sec": 1, "candidates": []},
+                    "arousal_anchor": {
+                        "kind": "event_anchor",
+                        "required": False,
+                        "window_sec": 10,
+                        "candidates": [],
+                    },
+                },
+            }
+        )
+    )
+    output_dir = tmp_path / "out"
+
+    run_pipeline(load_config(config_path), output_dir=output_dir)
+
+    with np.load(output_dir / "backends" / "npz" / "records" / "night1.npz") as npz:
+        assert sorted(npz.files) == ["ah_event", "ah_event_table", "arousal_anchor", "eeg", "stage5"]
+        np.testing.assert_array_equal(npz["stage5"], np.asarray([0, 1, 2, 0], dtype=np.int64))
+        np.testing.assert_allclose(npz["ah_event_table"], np.asarray([[1, 7, 4]], dtype=np.float32))
+        expected_dense = np.zeros(20, dtype=np.float32)
+        expected_dense[7:11] = 1
+        np.testing.assert_array_equal(npz["ah_event"], expected_dense)
+        np.testing.assert_allclose(npz["arousal_anchor"][0], np.asarray([1, 0.7, 1, 0, 0, 0], dtype=np.float32))
+        np.testing.assert_allclose(npz["arousal_anchor"][1], np.asarray([1, 0, 0.1, 0, 0, 0], dtype=np.float32))
+
+    record_manifest = pd.read_csv(output_dir / "manifest" / "record_manifest.csv")
+    assert record_manifest.loc[0, "ah_event_table_mask"] == 1
+    assert record_manifest.loc[0, "ah_event_mask"] == 1
+    assert record_manifest.loc[0, "arousal_anchor_mask"] == 1
+
+    signal_manifest = pd.read_csv(output_dir / "manifest" / "signal_manifest.csv")
+    table = signal_manifest[signal_manifest["canonical_channel"] == "ah_event_table"].iloc[0]
+    assert table["kind"] == "event_table"
+    assert table["selection_reason"] == "annotation"
+    assert pd.isna(table["raw_sfreq"])
+    assert pd.isna(table["target_sfreq"])
+    assert table["preprocess_steps"] == "event_csv,stage_sleep_filter"
+    dense = signal_manifest[signal_manifest["canonical_channel"] == "ah_event"].iloc[0]
+    assert dense["raw_sfreq"] == 1.0
+    assert dense["target_sfreq"] == 1.0
+    anchor = signal_manifest[signal_manifest["canonical_channel"] == "arousal_anchor"].iloc[0]
+    assert anchor["preprocess_steps"] == "event_csv,stage_sleep_filter,anchor:10s:2"
+
+
+@pytest.mark.parametrize(
+    ("mode", "match"),
+    [
+        ("undeclared", "must be declared"),
+        ("duplicate", "Duplicate annotation channel"),
+        ("raw_duplicate", "duplicates a raw signal output"),
+    ],
+)
+def test_pipeline_rejects_invalid_annotation_channels(tmp_path: Path, monkeypatch, mode: str, match: str):
+    adapter_module = tmp_path / "bad_annotation_adapter.py"
+    adapter_module.write_text("""
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from hypnodata.annotations import AnnotationResult, materialize_dense_events
+from hypnodata.records import RecordTask
+
+
+class BadAnnotationAdapter:
+    def collect_records(self, config):
+        frame = pd.read_csv(config.adapter_options["index"], low_memory=False)
+        return [
+            RecordTask(
+                record_id=str(row["record_id"]),
+                center=config.center,
+                files={"edf": Path(row["edf_path"])},
+            )
+            for _, row in frame.iterrows()
+        ]
+
+    def read_annotations(self, record, config, duration_sec):
+        rows = np.asarray([[0, 1, 2]], dtype=np.float32)
+        if config.adapter_options["mode"] == "undeclared":
+            return AnnotationResult(
+                [
+                    materialize_dense_events(
+                        rows,
+                        duration_sec=duration_sec,
+                        interval_sec=1,
+                        canonical_channel="missing_event",
+                    )
+                ]
+            )
+        if config.adapter_options["mode"] == "duplicate":
+            first = materialize_dense_events(
+                rows,
+                duration_sec=duration_sec,
+                interval_sec=1,
+                canonical_channel="ah_event",
+            )
+            second = materialize_dense_events(
+                rows,
+                duration_sec=duration_sec,
+                interval_sec=1,
+                canonical_channel="ah_event",
+            )
+            return AnnotationResult([first, second])
+        return AnnotationResult(
+            [
+                materialize_dense_events(
+                    rows,
+                    duration_sec=duration_sec,
+                    interval_sec=1,
+                    canonical_channel="eeg",
+                )
+            ]
+        )
+
+
+def make_adapter(config):
+    return BadAnnotationAdapter()
+""")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    edf_path = write_tiny_edf(tmp_path / "night.edf", duration_sec=10)
+    adapter_index = tmp_path / "bad_index.csv"
+    pd.DataFrame([{"record_id": "night1", "edf_path": str(edf_path)}]).to_csv(adapter_index, index=False)
+    config_path = tmp_path / f"hypnodata_{mode}.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "center": "toy_bad_annotation",
+                "record_discovery": {"type": "custom", "adapter": "bad_annotation_adapter:make_adapter"},
+                "backend": {"type": "npz"},
+                "adapter_options": {"index": str(adapter_index), "mode": mode},
+                "signals": {
+                    "eeg": {
+                        "kind": "eeg",
+                        "required": True,
+                        "target_sfreq": 10,
+                        "target_unit": "uV",
+                        "candidates": [{"label": "EEG C3", "priority": 1}],
+                    },
+                    "ah_event": {"kind": "event_dense", "required": False, "interval_sec": 1, "candidates": []},
+                },
+            }
+        )
+    )
+    output_dir = tmp_path / f"out_{mode}"
+
+    run_pipeline(load_config(config_path), output_dir=output_dir)
+
+    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
+    assert match in failures.loc[0, "message"]

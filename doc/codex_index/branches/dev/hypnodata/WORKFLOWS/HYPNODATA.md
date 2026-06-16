@@ -19,6 +19,22 @@
 6. Add or update pipeline manifest tests when step names or output metadata
    change.
 
+## Add Or Change Annotation Outputs
+
+1. Keep annotation source discovery in adapters; do not add
+   `signals.<name>.annotation` to core YAML.
+2. Add or extend event/stage materializers in `hypnodata/annotations.py`.
+3. Declare annotation-only outputs in `signals` with empty `candidates` and
+   `kind: stage`, `event_table`, `event_dense`, or `event_anchor`.
+4. Use `epoch_sec`, `interval_sec`, or `window_sec` for annotation output grids;
+   do not use `target_sfreq` for annotation-only outputs.
+5. Validate canonical names, duplicate annotations, raw-output collisions,
+   shape, and target sampling frequency in `hypnodata/pipeline.py`.
+6. Update `tests/test_hypnodata_annotations.py` for helper behavior and
+   `tests/test_hypnodata_adapter.py` for pipeline/manifest behavior.
+7. Do not write AHI, ODI, T90, hypoxic burden, sleep efficiency, or other
+   downstream clinical summaries from hypnodata.
+
 ## Validate Hypnodata Changes
 
 Use the smallest relevant set first, then the full hypnodata glob:
@@ -27,6 +43,8 @@ Use the smallest relevant set first, then the full hypnodata glob:
 conda run -n exp python -m pytest -q tests/test_hypnodata_config.py tests/test_hypnodata_preprocess.py tests/test_hypnodata_pipeline_npz.py
 conda run -n exp python -m pytest -q tests/test_hypnodata_*.py
 conda run -n exp flake8 hypnodata tests/test_hypnodata_*.py
+conda run -n exp black --check hypnodata tests/test_hypnodata_*.py
+conda run -n exp isort --check-only hypnodata tests/test_hypnodata_*.py
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache conda run -n exp python -m compileall hypnodata tests
 git diff --check
 ```

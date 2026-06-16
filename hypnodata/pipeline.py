@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from hypnodata.adapters import (
@@ -15,10 +16,10 @@ from hypnodata.adapters import (
     call_score_channel_candidate,
     load_adapter,
 )
-from hypnodata.annotations import AnnotationSignal
+from hypnodata.annotations import ANNOTATION_MATERIALIZATIONS, AnnotationSignal
 from hypnodata.backends import npz_record_path, write_npz_record
 from hypnodata.channels import ChannelResolutionError, ChannelSelection, resolve_channels
-from hypnodata.config import HypnodataConfig
+from hypnodata.config import HypnodataConfig, declared_target_sfreq
 from hypnodata.discovery import discover_records
 from hypnodata.edf import EdfInventory, read_edf_inventory, read_edf_signal
 from hypnodata.manifests import mask_column_for_channel, write_discovery_preview, write_manifests
@@ -280,7 +281,7 @@ def _process_record(
         if config.backend.min_duration is not None and duration < config.backend.min_duration:
             raise ValueError(f"Record duration {duration:g}s is shorter than backend.min_duration.")
         annotations = call_read_annotations(adapter, record, config, duration)
-        annotation_by_name = {signal.canonical_channel: signal for signal in annotations.signals}
+        annotation_by_name = _annotation_by_name(annotations.signals)
         _validate_annotations(config, processed, annotation_by_name)
         for canonical, selection in selections.items():
             if selection.required and not selection.available and canonical not in annotation_by_name:
@@ -475,6 +476,9 @@ def _signal_row(
 
 
 def _annotation_signal_row(record: RecordTask, annotation: AnnotationSignal, spec) -> dict[str, Any]:
+    sfreq = "" if annotation.sfreq is None else annotation.sfreq
+    configured_sfreq = declared_target_sfreq(spec)
+    target_sfreq = configured_sfreq if configured_sfreq is not None else sfreq
     return {
         "record_id": record.record_id,
         "center": record.center,
@@ -485,8 +489,8 @@ def _annotation_signal_row(record: RecordTask, annotation: AnnotationSignal, spe
         "raw_file": annotation.raw_file,
         "raw_label": annotation.raw_label,
         "selection_reason": "annotation",
-        "raw_sfreq": annotation.sfreq,
-        "target_sfreq": spec.target_sfreq if spec.target_sfreq is not None else annotation.sfreq,
+        "raw_sfreq": sfreq,
+        "target_sfreq": target_sfreq,
         "raw_unit": annotation.unit or "",
         "target_unit": spec.target_unit or "",
         "scale_applied": "",
@@ -500,6 +504,15 @@ def _annotation_signal_row(record: RecordTask, annotation: AnnotationSignal, spe
     }
 
 
+def _annotation_by_name(signals: list[AnnotationSignal]) -> dict[str, AnnotationSignal]:
+    annotations: dict[str, AnnotationSignal] = {}
+    for signal in signals:
+        if signal.canonical_channel in annotations:
+            raise ValueError(f"Duplicate annotation channel {signal.canonical_channel!r}.")
+        annotations[signal.canonical_channel] = signal
+    return annotations
+
+
 def _validate_annotations(
     config: HypnodataConfig,
     processed: dict[str, ProcessedSignal],
@@ -508,12 +521,38 @@ def _validate_annotations(
     for canonical, annotation in annotations.items():
         if canonical not in config.signals:
             raise ValueError(f"Annotation channel {canonical!r} must be declared under signals.")
-        if canonical != "stage5":
-            raise ValueError("hypnodata v2 only materializes stage5 annotations.")
         if canonical in processed:
             raise ValueError(f"Annotation channel {canonical!r} duplicates a raw signal output.")
+        if annotation.materialization not in ANNOTATION_MATERIALIZATIONS:
+            raise ValueError(f"Annotation channel {canonical!r} has unknown materialization.")
+        spec = config.signals[canonical]
+        if spec.kind != annotation.materialization:
+            raise ValueError(
+                f"Annotation channel {canonical!r} materialization {annotation.materialization!r} "
+                f"does not match configured kind {spec.kind!r}."
+            )
+        configured_sfreq = declared_target_sfreq(spec)
+        if configured_sfreq is not None:
+            if annotation.sfreq is None:
+                raise ValueError(f"Annotation channel {canonical!r} does not have a sampling frequency.")
+            if not np.isclose(float(configured_sfreq), float(annotation.sfreq)):
+                raise ValueError(
+                    f"Annotation channel {canonical!r} sfreq {annotation.sfreq:g} "
+                    f"does not match configured output frequency {configured_sfreq:g}."
+                )
+        _validate_annotation_shape(canonical, annotation)
+
+
+def _validate_annotation_shape(canonical: str, annotation: AnnotationSignal) -> None:
+    if annotation.materialization in {"stage", "event_dense"}:
         if annotation.data.ndim != 1:
             raise ValueError(f"Annotation channel {canonical!r} must be one-dimensional.")
+    elif annotation.materialization == "event_table":
+        if annotation.data.ndim != 2 or annotation.data.shape[1] != 3:
+            raise ValueError(f"Annotation channel {canonical!r} must have shape (N, 3).")
+    elif annotation.materialization == "event_anchor":
+        if annotation.data.ndim != 2 or annotation.data.shape[1] % 3 != 0:
+            raise ValueError(f"Annotation channel {canonical!r} must have 3 columns per anchor.")
 
 
 def _metadata_value(record: RecordTask, key: str, default: Any) -> Any:

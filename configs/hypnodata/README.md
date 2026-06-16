@@ -88,9 +88,52 @@ hypnodata keeps strict unknown-key validation elsewhere and does not use
 
 ## Annotation Boundary
 
-v2 only materializes explicitly configured or adapter-provided `stage5`
-annotations. Simple CSV stages and EDF annotations can be mapped to `stage5` when
-the adapter provides epoch seconds, label mapping, and invalid value.
+hypnodata materializes annotation signals only when they are declared under
+`signals` and returned by the adapter as `AnnotationResult` entries. Annotation
+sources stay adapter-owned: core config does not accept
+`signals.<name>.annotation`.
+
+Annotation-only outputs use empty candidates:
+
+```yaml
+signals:
+  stage5:
+    kind: stage
+    required: false
+    epoch_sec: 30
+    candidates: []
+  ah_event_table:
+    kind: event_table
+    required: false
+    candidates: []
+  ah_event:
+    kind: event_dense
+    required: false
+    interval_sec: 1
+    candidates: []
+  arousal_anchor:
+    kind: event_anchor
+    required: false
+    window_sec: 10
+    candidates: []
+```
+
+For annotation-only signals, use these second-based output-grid fields instead
+of `target_sfreq`: `epoch_sec` for stage arrays, `interval_sec` for dense event
+labels, and `window_sec` for anchor labels.
+
+Adapters can use `hypnodata.annotations` helpers to map CSV or EDF annotations:
+
+- `read_stage_csv` / `read_stage_edf_annotations` produce `stage5`-style stage
+  arrays with the default `Wake/N1/N2/N3/REM -> 0/1/2/3/4` mapping.
+- `read_event_csv` converts `Type/Start/Duration` tables to standard event rows
+  `[type, start_sec, duration_sec]`.
+- `materialize_event_table`, `materialize_dense_events`, and
+  `materialize_anchor_events` produce event table, dense timeline, and anchor
+  label outputs.
+- `filter_events_to_sleep_stages` may be used by adapters to keep only events
+  overlapping sleep stages. It does not write TST, AHI, ODI, or other clinical
+  summaries.
 
 hypnodata does not parse proprietary XML/event formats here and does not compute
 AHI, ODI, sleep efficiency, WASO, HRV, or YASA staging. Those remain downstream

@@ -1,15 +1,15 @@
 # Dev Hypnodata Branch Codex Engineering Index
 
 This directory is the scoped branch index for `dev/hypnodata`. It covers the
-new `hypnodata` ingestion layer and the config/preprocessing contract changed on
-this branch.
+new `hypnodata` ingestion layer and the config, preprocessing, annotation, and
+manifest contracts changed on this branch.
 
 ## Branch Scope
 
 - Branch: `dev/hypnodata`
-- Last refresh commit: `edd0d205f3cf197e0c3e0f8f7c970430b3d94c32`
-- Last refresh at: `2026-06-16T02:48:06Z`
-- Mode: `initialize-branch`
+- Last refresh commit: `296dff6bedc7ee144c5ba76676f2751bcd59a07e`
+- Last refresh at: `2026-06-16T05:52:59Z`
+- Mode: `refresh`
 - Baseline consulted: `doc/codex_index/branches/main/`
 
 ## Purpose
@@ -19,7 +19,7 @@ Use this index before changing `hypnodata` behavior. It answers:
 1. Which module owns discovery, config parsing, preprocessing, output writing,
    and downstream manifests?
 2. Which implementation should be extended instead of duplicated?
-3. Which tests pin the public NPZ and manifest contract?
+3. Which tests pin the public NPZ, annotation, and manifest contracts?
 
 ## Coverage
 

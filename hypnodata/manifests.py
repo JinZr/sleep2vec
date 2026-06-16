@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from hypnodata.config import HypnodataConfig
+from hypnodata.config import HypnodataConfig, declared_target_sfreq
 
 RECORD_COLUMNS = [
     "record_id",
@@ -89,7 +89,7 @@ def write_manifests(
         "channels": {
             name: {
                 "kind": spec.kind,
-                "target_sfreq": spec.target_sfreq,
+                "target_sfreq": declared_target_sfreq(spec),
                 "target_unit": spec.target_unit,
                 "mask_column": mask_column_for_channel(name),
                 "output_key": name,
