@@ -15,12 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--output-dir", type=Path, required=True)
     run.add_argument("--num-workers", type=int, default=1)
-    run.add_argument("--limit", type=int, default=None)
-    run.add_argument("--overwrite", action="store_true")
-    run.add_argument("--resume", action="store_true")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--crash", action="store_true")
-    run.add_argument("--record-id", default=None)
 
     validate = subparsers.add_parser("validate-config", help="Validate a hypnodata YAML config.")
     validate.add_argument("--config", type=Path, required=True)
@@ -37,12 +33,8 @@ def main(argv: list[str] | None = None) -> int:
         config,
         output_dir=args.output_dir,
         num_workers=args.num_workers,
-        limit=args.limit,
-        overwrite=args.overwrite,
-        resume=args.resume,
         dry_run=args.dry_run,
         crash=args.crash,
-        record_id=args.record_id,
     )
     print(f"hypnodata output directory: {output_dir}")
     return 0

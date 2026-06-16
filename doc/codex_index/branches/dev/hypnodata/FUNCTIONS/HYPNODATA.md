@@ -215,19 +215,17 @@
 ## `hypnodata.pipeline.run_pipeline`
 
 - File: `hypnodata/pipeline.py`
-- Signature: `run_pipeline(config: HypnodataConfig, *, output_dir: Path, num_workers: int = 1, limit: int | None = None, overwrite: bool = False, resume: bool = False, dry_run: bool = False, crash: bool = False, record_id: str | None = None) -> Path`
+- Signature: `run_pipeline(config: HypnodataConfig, *, output_dir: Path, num_workers: int = 1, dry_run: bool = False, crash: bool = False) -> Path`
 - Purpose and contract: execute hypnodata conversion for discovered records,
-  handling resume/overwrite/dry-run/crash options and writing final manifests.
+  handling dry-run/crash options and writing final manifests.
 - Important inputs/outputs: parsed config and output directory in; output
   directory out. If a record has no available raw signal, `record.metadata`
   must provide a positive finite `duration` for annotation-only materialization.
 - Side effects: reads raw records, writes NPZ files, manifests, and progress.
-  Existing NPZ conflicts without `resume` or `overwrite` abort before manifest
-  rewriting; resume manifest reads preserve `record_id` strings. Subset
-  overwrites with `record_id` or `limit` preserve manifest rows for records that
-  were not selected for reprocessing. Adapter-provided annotations are rejected
-  if arrays or event extents exceed the record duration established by the raw
-  signals or annotation-only metadata. Built-in `ahi` annotations write the NPZ
+  Existing NPZ conflicts abort before worker startup or manifest rewriting.
+  Adapter-provided annotations are rejected if arrays or event extents exceed
+  the record duration established by the raw signals or annotation-only
+  metadata. Built-in `ahi` annotations write the NPZ
   trio `ah_event`, scalar `ahi`, and scalar `tst`.
 - Reuse guidance: use this as the orchestration entrypoint.
 

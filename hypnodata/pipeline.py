@@ -7,7 +7,6 @@ import time
 from typing import Any
 
 import numpy as np
-import pandas as pd
 
 from hypnodata.adapters import call_fix_header, call_read_annotations, call_resolve_metadata, load_adapter
 from hypnodata.annotations import ANNOTATION_MATERIALIZATIONS, AnnotationSignal
@@ -32,52 +31,28 @@ class ProcessResult:
     failure_row: dict[str, Any] | None = None
 
 
-@dataclass
-class ResumeState:
-    completed_ids: set[str] = field(default_factory=set)
-    record_rows: list[dict[str, Any]] = field(default_factory=list)
-    signal_rows: list[dict[str, Any]] = field(default_factory=list)
-    qc_rows: list[dict[str, Any]] = field(default_factory=list)
-    failure_rows: list[dict[str, Any]] = field(default_factory=list)
-
-
 def run_pipeline(
     config: HypnodataConfig,
     *,
     output_dir: Path,
     num_workers: int = 1,
-    limit: int | None = None,
-    overwrite: bool = False,
-    resume: bool = False,
     dry_run: bool = False,
     crash: bool = False,
-    record_id: str | None = None,
 ) -> Path:
     if num_workers < 1:
         raise ValueError("--num-workers must be >= 1.")
-    if overwrite and resume:
-        raise ValueError("--overwrite and --resume are mutually exclusive.")
     output_dir = output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     adapter = load_adapter(config)
     records = discover_records(config, adapter=adapter)
-    if record_id is not None:
-        records = [record for record in records if record.record_id == record_id]
-        if not records:
-            raise ValueError(f"No discovered record matched --record-id {record_id!r}.")
-    if limit is not None:
-        records = records[:limit]
     if dry_run:
         write_discovery_preview(output_dir, [_preview_row(record) for record in records])
 
-    subset_overwrite = overwrite and (record_id is not None or limit is not None)
-    resume_state = _load_resume_state(output_dir, records) if resume or subset_overwrite else _empty_resume_state()
-    if subset_overwrite:
-        resume_state = replace(resume_state, completed_ids=set())
-    retry_ids = {record.record_id for record in records if record.record_id not in resume_state.completed_ids}
-    resume_state = _preserve_resume_rows(resume_state, retry_ids)
-    skipped = len(records) - len(retry_ids)
-    records_to_process = [record for record in records if record.record_id in retry_ids]
+    if not dry_run:
+        for record in records:
+            npz_path = npz_record_path(output_dir, record.record_id)
+            if npz_path.exists():
+                raise FileExistsError(f"Output NPZ already exists for record {record.record_id!r}: {npz_path}")
 
     started_at = time.time()
     write_hypnodata_progress(
@@ -87,7 +62,7 @@ def run_pipeline(
         processed_records=0,
         succeeded_records=0,
         failed_records=0,
-        skipped_records=skipped,
+        skipped_records=0,
         started_at=started_at,
     )
     result_items: list[tuple[int, ProcessResult]] = []
@@ -111,14 +86,14 @@ def run_pipeline(
             processed_records=processed,
             succeeded_records=processed - failed,
             failed_records=failed,
-            skipped_records=skipped,
+            skipped_records=0,
             started_at=started_at,
             current_record_id=result.record_id,
         )
 
     try:
         if num_workers == 1:
-            for index, record in enumerate(records_to_process):
+            for index, record in enumerate(records):
                 handle_result(
                     index,
                     _process_record(
@@ -126,8 +101,6 @@ def run_pipeline(
                         record,
                         adapter=adapter,
                         output_dir=output_dir,
-                        overwrite=overwrite,
-                        resume=resume,
                         dry_run=dry_run,
                     ),
                 )
@@ -140,11 +113,9 @@ def run_pipeline(
                     record,
                     adapter=adapter,
                     output_dir=output_dir,
-                    overwrite=overwrite,
-                    resume=resume,
                     dry_run=dry_run,
                 ): index
-                for index, record in enumerate(records_to_process)
+                for index, record in enumerate(records)
             }
             try:
                 for future in as_completed(futures):
@@ -164,7 +135,7 @@ def run_pipeline(
             processed_records=processed,
             succeeded_records=processed - failed,
             failed_records=failed_records,
-            skipped_records=skipped,
+            skipped_records=0,
             started_at=started_at,
             message=str(exc),
         )
@@ -172,12 +143,10 @@ def run_pipeline(
 
     results = [result for _, result in sorted(result_items, key=lambda item: item[0])]
 
-    record_rows = resume_state.record_rows + [result.record_row for result in results if result.record_row is not None]
-    signal_rows = resume_state.signal_rows + [row for result in results for row in result.signal_rows]
-    qc_rows = resume_state.qc_rows + [row for result in results for row in result.qc_rows]
-    failure_rows = resume_state.failure_rows + [
-        result.failure_row for result in results if result.failure_row is not None
-    ]
+    record_rows = [result.record_row for result in results if result.record_row is not None]
+    signal_rows = [row for result in results for row in result.signal_rows]
+    qc_rows = [row for result in results for row in result.qc_rows]
+    failure_rows = [result.failure_row for result in results if result.failure_row is not None]
     write_manifests(
         output_dir,
         config,
@@ -194,7 +163,7 @@ def run_pipeline(
         processed_records=processed,
         succeeded_records=len([result for result in results if result.record_row is not None]),
         failed_records=len([result for result in results if result.failure_row is not None]),
-        skipped_records=skipped,
+        skipped_records=0,
         started_at=started_at,
         message=f"Wrote {output_dir / 'manifest' / 'record_manifest.csv'}",
     )
@@ -207,12 +176,10 @@ def _process_record(
     *,
     adapter,
     output_dir: Path,
-    overwrite: bool,
-    resume: bool,
     dry_run: bool,
 ) -> ProcessResult:
     npz_path = npz_record_path(output_dir, record.record_id)
-    if npz_path.exists() and not (overwrite or resume or dry_run):
+    if npz_path.exists() and not dry_run:
         raise FileExistsError(f"Output NPZ already exists for record {record.record_id!r}: {npz_path}")
     try:
         metadata = {**record.metadata, **call_resolve_metadata(adapter, record, config)}
@@ -356,57 +323,6 @@ def _read_inventories(record: RecordTask) -> dict[str, EdfInventory]:
             continue
         inventories[key] = read_edf_inventory(path)
     return inventories
-
-
-def _empty_resume_state() -> ResumeState:
-    return ResumeState()
-
-
-def _load_resume_state(output_dir: Path, records: list[RecordTask]) -> ResumeState:
-    manifest_dir = output_dir / "manifest"
-    record_rows = _read_manifest_rows(manifest_dir / "record_manifest.csv")
-    signal_rows = _read_manifest_rows(manifest_dir / "signal_manifest.csv")
-    qc_rows = _read_manifest_rows(manifest_dir / "qc_summary.csv")
-    failure_rows = _read_manifest_rows(manifest_dir / "failures.csv")
-    selected_ids = {record.record_id for record in records}
-    completed_ids = {
-        str(row.get("record_id", ""))
-        for row in record_rows
-        if str(row.get("record_id", "")) in selected_ids
-        and str(row.get("qc_status", "")) == "ok"
-        and npz_record_path(output_dir, str(row.get("record_id", ""))).exists()
-    }
-    return ResumeState(
-        completed_ids=completed_ids,
-        record_rows=record_rows,
-        signal_rows=signal_rows,
-        qc_rows=qc_rows,
-        failure_rows=failure_rows,
-    )
-
-
-def _preserve_resume_rows(state: ResumeState, retry_ids: set[str]) -> ResumeState:
-    return ResumeState(
-        completed_ids=state.completed_ids,
-        record_rows=_rows_not_in_ids(state.record_rows, retry_ids),
-        signal_rows=_rows_not_in_ids(state.signal_rows, retry_ids),
-        qc_rows=_rows_not_in_ids(state.qc_rows, retry_ids),
-        failure_rows=_rows_not_in_ids(state.failure_rows, retry_ids),
-    )
-
-
-def _read_manifest_rows(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    frame = pd.read_csv(path, low_memory=False, dtype={"record_id": str})
-    if frame.empty:
-        return []
-    frame = frame.where(pd.notna(frame), "")
-    return frame.to_dict("records")
-
-
-def _rows_not_in_ids(rows: list[dict[str, Any]], record_ids: set[str]) -> list[dict[str, Any]]:
-    return [row for row in rows if str(row.get("record_id", "")) not in record_ids]
 
 
 def _record_row(
