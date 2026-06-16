@@ -322,6 +322,21 @@ def test_required_missing_channel_writes_failure(tmp_path: Path):
     assert not (output_dir / "backends" / "npz" / "records" / "night1.npz").exists()
 
 
+def test_pipeline_rejects_bdf_without_mne_fallback(tmp_path: Path):
+    bdf_path = tmp_path / "record.bdf"
+    bdf_path.write_bytes(b"")
+    index = _write_index(tmp_path, bdf_path)
+    config = load_config(_write_config(tmp_path, index, include_spo2=False))
+    output_dir = tmp_path / "out"
+
+    run_pipeline(config, output_dir=output_dir)
+
+    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
+    assert failures.loc[0, "record_id"] == "night1"
+    assert "BDF input is not supported" in failures.loc[0, "message"]
+    assert not (output_dir / "backends" / "npz" / "records" / "night1.npz").exists()
+
+
 def test_crash_raises_on_first_record_failure(tmp_path: Path):
     edf_path = _write_edf(tmp_path / "record.edf")
     index = _write_index(tmp_path, edf_path)

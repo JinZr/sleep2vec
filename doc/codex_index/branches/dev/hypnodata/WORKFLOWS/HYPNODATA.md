@@ -25,9 +25,11 @@
 1. Keep raw EDF inventory and signal reading in `hypnodata/edf.py`.
 2. Return each channel at its native header-declared sample count; mixed-rate
    EDF files must not expose low-rate channels on MNE's common time base.
-3. Keep channel selection in `hypnodata/channels.py` and preprocessing in
+3. Reject BDF inputs until a native BDF reader exists; do not let them fall back
+   to MNE's shared-rate view.
+4. Keep channel selection in `hypnodata/channels.py` and preprocessing in
    `hypnodata/preprocess.py`.
-4. Update `tests/test_hypnodata_pipeline_npz.py` for direct reader and pipeline
+5. Update `tests/test_hypnodata_pipeline_npz.py` for direct reader and pipeline
    NPZ behavior.
 
 ## Add Or Change Annotation Outputs

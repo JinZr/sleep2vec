@@ -58,7 +58,8 @@
   channel's native header-declared sample count.
 - Important inputs/outputs: EDF path, label, optional unit, and optional raw
   channel index in; native per-channel samples out. Mixed-rate EDF channels must
-  not be returned on MNE's common/highest-rate time base.
+  not be returned on MNE's common/highest-rate time base. BDF inputs are rejected
+  instead of falling back to MNE.
 - Side effects: reads one EDF file.
 - Reuse guidance: pipeline raw signal loading should call this instead of MNE
   directly.

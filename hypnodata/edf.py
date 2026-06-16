@@ -43,6 +43,8 @@ class _EdfHeader:
 
 
 def read_edf_inventory(path: Path) -> EdfInventory:
+    if path.suffix.lower() == ".bdf":
+        raise ValueError("BDF input is not supported by hypnodata; convert it to EDF before ingestion.")
     try:
         return _read_header_inventory(path)
     except Exception as exc:
@@ -56,6 +58,8 @@ def read_edf_signal(
     *,
     raw_index: int | None = None,
 ) -> np.ndarray:
+    if path.suffix.lower() == ".bdf":
+        raise ValueError("BDF input is not supported by hypnodata; convert it to EDF before ingestion.")
     native_error = None
     try:
         return _read_native_edf_signal(path, raw_label, raw_unit, raw_index=raw_index)
