@@ -214,10 +214,10 @@ def _process_record(
     resume: bool,
     dry_run: bool,
 ) -> ProcessResult:
+    npz_path = npz_record_path(output_dir, record.record_id)
+    if npz_path.exists() and not (overwrite or resume or dry_run):
+        raise FileExistsError(f"Output NPZ already exists for record {record.record_id!r}: {npz_path}")
     try:
-        npz_path = npz_record_path(output_dir, record.record_id)
-        if npz_path.exists() and not (overwrite or resume or dry_run):
-            raise FileExistsError(f"Output NPZ already exists for record {record.record_id!r}: {npz_path}")
         metadata = {**record.metadata, **call_resolve_metadata(adapter, record, config)}
         record = replace(record, metadata=metadata)
         inventories = call_fix_header(adapter, record, _read_inventories(record), config)
@@ -413,7 +413,7 @@ def _preserve_resume_rows(state: ResumeState, retry_ids: set[str]) -> ResumeStat
 def _read_manifest_rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    frame = pd.read_csv(path, low_memory=False)
+    frame = pd.read_csv(path, low_memory=False, dtype={"record_id": str})
     if frame.empty:
         return []
     frame = frame.where(pd.notna(frame), "")

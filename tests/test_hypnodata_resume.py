@@ -45,6 +45,21 @@ def test_hypnodata_resume_skips_existing_npz(tmp_path: Path):
     assert progress["skipped_records"] == 1
 
 
+def test_hypnodata_refuses_existing_npz_without_rewriting_manifests(tmp_path: Path):
+    config = load_config(_one_record_config(tmp_path))
+    output_dir = tmp_path / "out"
+    run_pipeline(config, output_dir=output_dir)
+    manifest_dir = output_dir / "manifest"
+    record_manifest = (manifest_dir / "record_manifest.csv").read_text()
+    signal_manifest = (manifest_dir / "signal_manifest.csv").read_text()
+
+    with pytest.raises(FileExistsError, match="Output NPZ already exists"):
+        run_pipeline(config, output_dir=output_dir)
+
+    assert (manifest_dir / "record_manifest.csv").read_text() == record_manifest
+    assert (manifest_dir / "signal_manifest.csv").read_text() == signal_manifest
+
+
 def test_hypnodata_resume_retries_failed_record(tmp_path: Path):
     output_dir = tmp_path / "out"
     bad_config = load_config(_one_record_config(tmp_path, label="Missing EEG"))
@@ -110,6 +125,52 @@ def test_hypnodata_resume_preserves_manifest_rows(tmp_path: Path):
     assert sorted(record_manifest["record_id"].tolist()) == ["night1", "night2"]
     progress = json.loads((output_dir / "status" / "progress.json").read_text())
     assert progress["total_records"] == 1
+    assert progress["skipped_records"] == 1
+
+
+def test_hypnodata_resume_preserves_numeric_string_record_id(tmp_path: Path, monkeypatch):
+    adapter_module = tmp_path / "numeric_id_adapter.py"
+    adapter_module.write_text("""
+from pathlib import Path
+
+from hypnodata.records import RecordTask
+
+
+class NumericIdAdapter:
+    def collect_records(self, config):
+        return [
+            RecordTask(
+                record_id="001",
+                center=config.center,
+                files={"edf": Path(config.adapter_options["edf"])},
+                metadata={"source": "toy_source", "split": "train"},
+            )
+        ]
+
+
+def make_adapter(config):
+    return NumericIdAdapter()
+""")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    edf_path = write_tiny_edf(tmp_path / "night.edf", duration_sec=10)
+    config = load_config(
+        write_hypnodata_config(
+            tmp_path,
+            tmp_path / "unused.csv",
+            adapter="numeric_id_adapter:make_adapter",
+            adapter_options={"edf": str(edf_path)},
+            target_sfreq=10,
+        )
+    )
+    output_dir = tmp_path / "out"
+    run_pipeline(config, output_dir=output_dir)
+
+    run_pipeline(config, output_dir=output_dir, resume=True)
+
+    record_manifest = pd.read_csv(output_dir / "manifest" / "record_manifest.csv", dtype={"record_id": str})
+    assert record_manifest["record_id"].tolist() == ["001"]
+    progress = json.loads((output_dir / "status" / "progress.json").read_text())
+    assert progress["processed_records"] == 0
     assert progress["skipped_records"] == 1
 
 
