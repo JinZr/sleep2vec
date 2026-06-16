@@ -16,7 +16,7 @@ def _write_edf(path: Path, *, labels: list[str] | None = None) -> Path:
     signals = []
     for label in labels:
         if label == "SpO2":
-            samples = np.linspace(92, 98, 10, dtype=np.int16)
+            samples = np.arange(90, 100, dtype=np.int16)
             sfreq = 1
             unit = "%"
         else:
@@ -136,6 +136,7 @@ def test_pipeline_writes_npz_and_manifests(tmp_path: Path):
         assert sorted(npz.files) == ["eeg", "spo2"]
         assert npz["eeg"].shape == (50,)
         assert npz["spo2"].shape == (10,)
+        np.testing.assert_array_equal(npz["spo2"], np.arange(90, 100, dtype=np.float32))
 
     record_manifest = pd.read_csv(output_dir / "manifest" / "record_manifest.csv")
     assert set(
@@ -176,6 +177,15 @@ def test_edf_reader_preserves_header_voltage_unit(tmp_path: Path):
     values = read_edf_signal(edf_path, "EEG C3", raw_unit="uV")
 
     np.testing.assert_allclose(values[:5], np.arange(5, dtype=np.float32))
+
+
+def test_edf_reader_uses_native_channel_sample_rate(tmp_path: Path):
+    edf_path = _write_edf(tmp_path / "record.edf", labels=["EEG C3", "SpO2"])
+
+    values = read_edf_signal(edf_path, "SpO2", raw_unit="%", raw_index=1)
+
+    assert values.shape == (10,)
+    np.testing.assert_array_equal(values, np.arange(90, 100, dtype=np.float32))
 
 
 def test_edf_reader_uses_raw_index_for_duplicate_labels(tmp_path: Path):

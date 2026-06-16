@@ -19,6 +19,16 @@
 6. Add or update pipeline manifest tests when step names or output metadata
    change.
 
+## Add Or Change EDF Reading
+
+1. Keep raw EDF inventory and signal reading in `hypnodata/edf.py`.
+2. Return each channel at its native header-declared sample count; mixed-rate
+   EDF files must not expose low-rate channels on MNE's common time base.
+3. Keep channel selection in `hypnodata/channels.py` and preprocessing in
+   `hypnodata/preprocess.py`.
+4. Update `tests/test_hypnodata_pipeline_npz.py` for direct reader and pipeline
+   NPZ behavior.
+
 ## Add Or Change Annotation Outputs
 
 1. Keep annotation source discovery in adapters; do not add

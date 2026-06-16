@@ -37,6 +37,19 @@
 - Reuse guidance: use this in pipeline validation and backend manifest writing
   instead of duplicating frequency derivation.
 
+## `hypnodata.edf.read_edf_signal`
+
+- File: `hypnodata/edf.py`
+- Signature: `read_edf_signal(path: Path, raw_label: str, raw_unit: str | None = None, *, raw_index: int | None = None) -> np.ndarray`
+- Purpose and contract: read one EDF channel as a 1D float32 array at that
+  channel's native header-declared sample count.
+- Important inputs/outputs: EDF path, label, optional unit, and optional raw
+  channel index in; native per-channel samples out. Mixed-rate EDF channels must
+  not be returned on MNE's common/highest-rate time base.
+- Side effects: reads one EDF file.
+- Reuse guidance: pipeline raw signal loading should call this instead of MNE
+  directly.
+
 ## `hypnodata.annotations.read_stage_csv`
 
 - File: `hypnodata/annotations.py`
