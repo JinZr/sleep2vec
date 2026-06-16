@@ -9,12 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from hypnodata.adapters import (
-    call_fix_header,
-    call_read_annotations,
-    call_resolve_metadata,
-    load_adapter,
-)
+from hypnodata.adapters import call_fix_header, call_read_annotations, call_resolve_metadata, load_adapter
 from hypnodata.annotations import ANNOTATION_MATERIALIZATIONS, AnnotationSignal
 from hypnodata.backends import npz_record_path, write_npz_record
 from hypnodata.channels import ChannelResolutionError, ChannelSelection, resolve_channels
