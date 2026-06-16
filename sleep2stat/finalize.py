@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from sleep2stat.io.writers import _utc_now, _write_json
+from sleep2stat.io.writers import RUN_ANALYSIS_TERMINAL_STATUSES, _require_terminal_run_manifest, _utc_now, _write_json
 
 FAILURE_COLUMNS = ["record_id", "analyzer", "error_type", "message"]
 
@@ -99,6 +99,7 @@ def cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[st
 def _validate_input_run_dir(run_dir: Path) -> None:
     if not run_dir.exists():
         raise FileNotFoundError(f"sleep2stat finalize input run_dir not found: {run_dir}")
+    _require_terminal_run_manifest(run_dir, RUN_ANALYSIS_TERMINAL_STATUSES, command="cohort-finalize")
     if not (run_dir / "record_manifest.csv").exists():
         raise FileNotFoundError(f"sleep2stat finalize input run_dir missing record_manifest.csv: {run_dir}")
 

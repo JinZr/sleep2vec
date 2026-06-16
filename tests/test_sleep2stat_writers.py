@@ -107,6 +107,8 @@ def test_writer_creates_global_and_per_record_tables(tmp_path: Path):
     writer.write_run_manifest(status="completed_with_failures", records=records, failures=[], dry_run=False)
 
     assert (config.run.output_dir / "record_manifest.csv").exists()
+    assert (config.run.output_dir / "run_manifest.json").exists()
+    assert not list(config.run.output_dir.glob(".run_manifest.json.tmp.*"))
     assert (config.run.output_dir / "tables" / "epoch_alignment.csv.gz").exists()
     assert (config.run.output_dir / "tables" / "night_stats.csv").exists()
     assert (config.run.output_dir / "tables" / "model_summary.csv").exists()

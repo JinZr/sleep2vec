@@ -75,6 +75,45 @@ def _write_dry_run_config(tmp_path: Path) -> Path:
     return config_path
 
 
+def _write_run_manifest(run_dir: Path, status: str = "completed") -> None:
+    (run_dir / "run_manifest.json").write_text(json.dumps({"kind": "sleep2stat_run", "status": status}) + "\n")
+
+
+def _write_partial_summarize_candidate(tmp_path: Path, *, status: str | None = None) -> Path:
+    config_path = _write_dry_run_config(tmp_path)
+    run_dir = tmp_path / "partial_run"
+    record_dir = run_dir / "per_record" / "unit__p001__s001"
+    record_dir.mkdir(parents=True)
+    (run_dir / "tables").mkdir()
+    (run_dir / "status").mkdir()
+
+    payload = yaml.safe_load(config_path.read_text())
+    payload["run"]["output_dir"] = str(run_dir)
+    (run_dir / "config.yaml").write_text(yaml.safe_dump(payload))
+    (run_dir / "record_manifest.csv").write_text(
+        "record_id,path,split,source,duration_sec,token_sec,max_tokens\n"
+        "unit__p001__s001,/tmp/sample.npz,test,unit,60,30,2\n"
+    )
+    (record_dir / "night_stats.json").write_text(json.dumps({"record_id": "unit__p001__s001", "metric": 1.0}))
+    pd.DataFrame(
+        [
+            {
+                "record_id": "unit__p001__s001",
+                "kind": "analyzer",
+                "name": "stage5_model",
+                "type": "sleep2vec_downstream",
+                "enabled": True,
+                "result_count": 1,
+                "failure_count": 0,
+                "night_rows": 1,
+            }
+        ]
+    ).to_csv(record_dir / "result_manifest.csv", index=False)
+    if status is not None:
+        _write_run_manifest(run_dir, status)
+    return run_dir
+
+
 def test_cli_run_dry_run_and_summarize(tmp_path: Path, capsys):
     config_path = _write_dry_run_config(tmp_path)
 
@@ -84,6 +123,24 @@ def test_cli_run_dry_run_and_summarize(tmp_path: Path, capsys):
     assert main(["summarize", "--run-dir", str(tmp_path / "run")]) == 0
     captured = capsys.readouterr()
     assert "records: 1" in captured.out
+
+
+def test_cli_summarize_rejects_missing_run_manifest_before_sidecar_rebuild(tmp_path: Path):
+    run_dir = _write_partial_summarize_candidate(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="run_manifest"):
+        main(["summarize", "--run-dir", str(run_dir)])
+
+    assert not (run_dir / "tables" / "night_stats.csv").exists()
+
+
+def test_cli_summarize_rejects_running_run_manifest_before_sidecar_rebuild(tmp_path: Path):
+    run_dir = _write_partial_summarize_candidate(tmp_path, status="running")
+
+    with pytest.raises(ValueError, match="completed run directory"):
+        main(["summarize", "--run-dir", str(run_dir)])
+
+    assert not (run_dir / "tables" / "night_stats.csv").exists()
 
 
 def test_cli_summarize_uses_supplied_run_dir_over_config_output_dir(tmp_path: Path):
@@ -157,6 +214,8 @@ def test_cli_cohort_finalize_merges_runs_and_drops_resolved_failures(tmp_path: P
     pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
         run2 / "status" / "failures.csv", index=False
     )
+    _write_run_manifest(run1, "completed_with_failures")
+    _write_run_manifest(run2, "completed")
 
     out = tmp_path / "final"
 
@@ -194,6 +253,7 @@ def test_cli_cohort_finalize_reports_pending_records(tmp_path: Path):
     pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
         run1 / "status" / "failures.csv", index=False
     )
+    _write_run_manifest(run1, "completed")
     out = tmp_path / "final"
 
     assert main(["cohort-finalize", "--output-run-dir", str(out), "--input-run-dir", str(run1)]) == 0
@@ -217,6 +277,7 @@ def test_cli_cohort_finalize_counts_global_failure_as_failed_records(tmp_path: P
     pd.DataFrame(
         [{"record_id": "__all__", "analyzer": "yasa_stage", "error_type": "ImportError", "message": "missing"}]
     ).to_csv(run1 / "status" / "failures.csv", index=False)
+    _write_run_manifest(run1, "completed_with_failures")
     out = tmp_path / "final"
 
     assert main(["cohort-finalize", "--output-run-dir", str(out), "--input-run-dir", str(run1)]) == 0
@@ -248,6 +309,8 @@ def test_cli_cohort_finalize_drops_resolved_global_failure(tmp_path: Path):
     pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
         run2 / "status" / "failures.csv", index=False
     )
+    _write_run_manifest(run1, "completed_with_failures")
+    _write_run_manifest(run2, "completed")
     out = tmp_path / "final"
 
     assert (
@@ -275,9 +338,29 @@ def test_cli_cohort_finalize_drops_resolved_global_failure(tmp_path: Path):
     assert manifest["status"] == "completed"
 
 
+def test_cli_cohort_finalize_rejects_missing_run_manifest(tmp_path: Path):
+    run1 = tmp_path / "run1"
+    run1.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="run_manifest"):
+        main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])
+
+
+@pytest.mark.parametrize("status", ["running", "dry_run"])
+def test_cli_cohort_finalize_rejects_non_analysis_run_manifest(tmp_path: Path, status: str):
+    run1 = tmp_path / "run1"
+    run1.mkdir()
+    _write_run_manifest(run1, status)
+    pd.DataFrame({"record_id": ["rec1"]}).to_csv(run1 / "record_manifest.csv", index=False)
+
+    with pytest.raises(ValueError, match="completed run directory"):
+        main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])
+
+
 def test_cli_cohort_finalize_rejects_missing_input_manifest(tmp_path: Path):
     run1 = tmp_path / "run1"
     run1.mkdir()
+    _write_run_manifest(run1, "completed")
 
     with pytest.raises(FileNotFoundError, match="record_manifest"):
         main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])

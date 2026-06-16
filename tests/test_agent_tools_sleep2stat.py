@@ -28,6 +28,18 @@ def _write_tiny_recipe(tmp_path: Path, payload: dict) -> Path:
     return write_yaml(tmp_path / "tiny_sleep2stat.yaml", payload)
 
 
+def _write_tiny_recipe_with_run_dir(tmp_path: Path, run_dir: Path, *, overwrite_policy: bool = False) -> Path:
+    config_payload = yaml.safe_load((REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml").read_text())
+    config_payload["run"]["output_dir"] = str(run_dir)
+    config = write_yaml(tmp_path / "tiny_sleep2stat_config.yaml", config_payload)
+    payload = _tiny_recipe_payload()
+    payload["inputs"]["config"] = str(config)
+    payload["artifacts"]["run_dir"] = str(run_dir)
+    payload["artifacts"]["overwrite"] = overwrite_policy
+    payload["decisions"]["overwrite_policy"]["value"] = overwrite_policy
+    return _write_tiny_recipe(tmp_path, payload)
+
+
 def _write_context_decisions(tmp_path: Path) -> Path:
     return write_yaml(
         tmp_path / "decisions.yaml",
@@ -87,6 +99,47 @@ def test_sleep2stat_run_dir_mismatch_blocks_before_command_generation(tmp_path: 
     assert any(issue.field == "artifacts.run_dir" for issue in report.issues)
     assert (output_dir / "plan.blocked.md").exists()
     assert not (output_dir / "run.sh").exists()
+
+
+def test_sleep2stat_existing_run_output_dir_blocks_before_command_generation(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "old.txt").write_text("old")
+    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 2
+    assert any(issue.field == "sleep2stat.run.output_dir" for issue in report.issues)
+    assert (output_dir / "plan.blocked.md").exists()
+    assert not (output_dir / "run.sh").exists()
+
+
+def test_sleep2stat_existing_run_output_dir_blocks_even_with_overwrite_policy(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "old.txt").write_text("old")
+    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir, overwrite_policy=True)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 2
+    assert any(issue.field == "sleep2stat.run.output_dir" for issue in report.issues)
+    assert not (output_dir / "run.sh").exists()
+
+
+def test_sleep2stat_empty_run_output_dir_allows_command_generation(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    assert (output_dir / "run.sh").exists()
 
 
 def test_sleep2stat_summarize_and_plot_use_config_run_dir(tmp_path: Path):

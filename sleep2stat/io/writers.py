@@ -25,6 +25,8 @@ RESULT_MANIFEST = "result_manifest.csv"
 TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment", "night_stats")
 ALIGNMENT_TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment")
 SUMMARY_TABLE_NAMES = ("model_summary", "analyzer_summary")
+RUN_TERMINAL_STATUSES = frozenset({"completed", "completed_with_failures", "dry_run"})
+RUN_ANALYSIS_TERMINAL_STATUSES = frozenset({"completed", "completed_with_failures"})
 
 
 class AnalysisBundleWriter:
@@ -747,6 +749,30 @@ def _write_json(payload: dict[str, Any], path: Path) -> None:
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     tmp.replace(path)
+
+
+def _require_terminal_run_manifest(
+    run_dir: Path,
+    allowed_statuses: frozenset[str],
+    *,
+    command: str,
+) -> None:
+    manifest_path = run_dir / "run_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"sleep2stat {command} requires run_manifest.json: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"sleep2stat {command} cannot read run_manifest.json: {manifest_path}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"sleep2stat {command} run_manifest.json must contain a JSON object: {manifest_path}")
+    status = manifest.get("status")
+    if status not in allowed_statuses:
+        expected = ", ".join(sorted(allowed_statuses))
+        raise ValueError(
+            f"sleep2stat {command} requires a completed run directory; "
+            f"got status={status!r}, expected one of: {expected}"
+        )
 
 
 def _utc_now() -> str:

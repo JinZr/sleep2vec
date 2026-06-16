@@ -14,7 +14,7 @@ from sleep2stat.core.artifacts import FailureRecord
 from sleep2stat.core.pipeline import run_pipeline
 from sleep2stat.finalize import cohort_finalize
 from sleep2stat.io.records import SleepRecord, load_records
-from sleep2stat.io.writers import AnalysisBundleWriter
+from sleep2stat.io.writers import AnalysisBundleWriter, RUN_TERMINAL_STATUSES, _require_terminal_run_manifest
 from sleep2stat.plot import plot_cohort, plot_record
 
 
@@ -149,6 +149,7 @@ def _metadata_parse_summary(records: list[SleepRecord], key: str, parser) -> dic
 
 
 def _summarize(run_dir: Path, *, num_workers: int = 8) -> None:
+    _require_terminal_run_manifest(run_dir, RUN_TERMINAL_STATUSES, command="summarize")
     config_path = run_dir / "config.yaml"
     if config_path.exists():
         config = load_config(config_path)

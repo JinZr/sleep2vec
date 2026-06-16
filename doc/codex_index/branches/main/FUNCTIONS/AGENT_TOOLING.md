@@ -22,7 +22,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Side effects: none.
 - Key callers/callees: called by `agent_tools.plans.evaluate_recipe` and `build_context`; uses task-specific validation helpers and path checks.
 - Reuse guidance: use this before generating runnable preset, finetune, inference, evaluation, hparam, or sleep2stat commands.
-- Duplication-risk notes: do not reimplement high-impact decision checks in recipe templates or shell generation; sleep2stat structural validation remains in `sleep2stat.config.load_config()`, with agent tooling only adding agent risk gates such as variant misuse, run-dir mismatch, locked-test policy, and placeholder model analyzer paths.
+- Duplication-risk notes: do not reimplement high-impact decision checks in recipe templates or shell generation; sleep2stat structural validation remains in `sleep2stat.config.load_config()`, with agent tooling only adding agent risk gates such as variant misuse, run-dir mismatch, existing local run-dir conflicts, locked-test policy, and placeholder model analyzer paths.
 
 ## `agent_tools.plans.build_context`
 
@@ -42,7 +42,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Purpose and contract: evaluate a task recipe and write a runnable or blocked command plan.
 - Important inputs/outputs: recipe path, output directory, optional decisions, draft allowance, and final-test unlock in; `DecisionReport` out.
 - Side effects: writes `plan.json`, `plan.md`, `run.sh`, hparam trial scripts/configs, or blocked plan/questions.
-- Key callers/callees: called by `agent_tools plan` and adaptive init/step; uses consultation gates, output overwrite guards, final-test gates, and hparam plan writers.
+- Key callers/callees: called by `agent_tools plan` and adaptive init/step; uses consultation gates, output overwrite guards, sleep2stat run-dir guards, final-test gates, and hparam plan writers.
 - Reuse guidance: use for all recipe-backed command generation.
 - Duplication-risk notes: do not emit executable training or sleep2stat scripts outside this path unless a recipe has already passed the same gates.
 
