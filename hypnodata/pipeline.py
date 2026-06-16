@@ -76,7 +76,10 @@ def run_pipeline(
     if dry_run:
         write_discovery_preview(output_dir, [_preview_row(record) for record in records])
 
-    resume_state = _load_resume_state(output_dir, records) if resume else _empty_resume_state()
+    subset_overwrite = overwrite and (record_id is not None or limit is not None)
+    resume_state = _load_resume_state(output_dir, records) if resume or subset_overwrite else _empty_resume_state()
+    if subset_overwrite:
+        resume_state = replace(resume_state, completed_ids=set())
     retry_ids = {record.record_id for record in records if record.record_id not in resume_state.completed_ids}
     resume_state = _preserve_resume_rows(resume_state, retry_ids)
     skipped = len(records) - len(retry_ids)

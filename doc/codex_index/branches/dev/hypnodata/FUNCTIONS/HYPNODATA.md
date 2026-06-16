@@ -193,7 +193,9 @@
   must provide a positive finite `duration` for annotation-only materialization.
 - Side effects: reads raw records, writes NPZ files, manifests, and progress.
   Existing NPZ conflicts without `resume` or `overwrite` abort before manifest
-  rewriting; resume manifest reads preserve `record_id` strings.
+  rewriting; resume manifest reads preserve `record_id` strings. Subset
+  overwrites with `record_id` or `limit` preserve manifest rows for records that
+  were not selected for reprocessing.
 - Reuse guidance: use this as the orchestration entrypoint.
 
 ## `hypnodata.manifests.write_manifests`

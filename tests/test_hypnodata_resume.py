@@ -89,6 +89,79 @@ def test_hypnodata_overwrite_rewrites_existing_npz(tmp_path: Path):
     assert after == before * 2
 
 
+def test_hypnodata_subset_overwrite_preserves_manifest_rows(tmp_path: Path):
+    edf1 = write_tiny_edf(tmp_path / "night1.edf", duration_sec=10)
+    edf2 = write_tiny_edf(tmp_path / "night2.edf", duration_sec=10)
+    index = write_index(
+        tmp_path,
+        [
+            {
+                "record_id": "night1",
+                "path": str(edf1),
+                "source": "toy_source",
+                "split": "train",
+                "subject_id": "sub1",
+                "session_id": "ses1",
+                "age": 50,
+            },
+            {
+                "record_id": "night2",
+                "path": str(edf2),
+                "source": "toy_source",
+                "split": "test",
+                "subject_id": "sub2",
+                "session_id": "ses2",
+                "age": 51,
+            },
+        ],
+    )
+    output_dir = tmp_path / "out"
+    run_pipeline(
+        load_config(write_hypnodata_config(tmp_path, index, scale=1.0, target_sfreq=10)), output_dir=output_dir
+    )
+    night2_path = output_dir / "backends" / "npz" / "records" / "night2.npz"
+    with np.load(night2_path) as npz:
+        night2_before = npz["eeg"].copy()
+
+    run_pipeline(
+        load_config(write_hypnodata_config(tmp_path, index, scale=2.0, target_sfreq=10)),
+        output_dir=output_dir,
+        overwrite=True,
+        record_id="night1",
+    )
+
+    record_manifest = pd.read_csv(output_dir / "manifest" / "record_manifest.csv")
+    assert sorted(record_manifest["record_id"].tolist()) == ["night1", "night2"]
+    signal_manifest = pd.read_csv(output_dir / "manifest" / "signal_manifest.csv")
+    assert sorted(signal_manifest["record_id"].tolist()) == ["night1", "night2"]
+    with np.load(night2_path) as npz:
+        np.testing.assert_array_equal(npz["eeg"], night2_before)
+
+
+def test_hypnodata_limit_overwrite_preserves_manifest_rows(tmp_path: Path):
+    edf1 = write_tiny_edf(tmp_path / "night1.edf", duration_sec=10)
+    edf2 = write_tiny_edf(tmp_path / "night2.edf", duration_sec=10)
+    index = write_index(
+        tmp_path,
+        [
+            {"record_id": "night1", "path": str(edf1), "source": "toy_source", "split": "train", "age": 50},
+            {"record_id": "night2", "path": str(edf2), "source": "toy_source", "split": "test", "age": 51},
+        ],
+    )
+    output_dir = tmp_path / "out"
+    run_pipeline(load_config(write_hypnodata_config(tmp_path, index, target_sfreq=10)), output_dir=output_dir)
+
+    run_pipeline(
+        load_config(write_hypnodata_config(tmp_path, index, scale=2.0, target_sfreq=10)),
+        output_dir=output_dir,
+        overwrite=True,
+        limit=1,
+    )
+
+    record_manifest = pd.read_csv(output_dir / "manifest" / "record_manifest.csv")
+    assert sorted(record_manifest["record_id"].tolist()) == ["night1", "night2"]
+
+
 def test_hypnodata_resume_preserves_manifest_rows(tmp_path: Path):
     edf1 = write_tiny_edf(tmp_path / "night1.edf", duration_sec=10)
     edf2 = write_tiny_edf(tmp_path / "night2.edf", duration_sec=10)
