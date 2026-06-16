@@ -48,24 +48,21 @@ def _discover_glob(config: HypnodataConfig) -> list[RecordTask]:
 def _discover_csv(config: HypnodataConfig) -> list[RecordTask]:
     discovery = config.record_discovery
     assert discovery.index is not None
-    converters = {discovery.record_id_column: str} if discovery.record_id_column else None
+    assert discovery.record_id_column is not None
+    converters = {discovery.record_id_column: str}
     df = pd.read_csv(discovery.index, low_memory=False, converters=converters)
-    file_columns = discovery.file_columns or {"edf": discovery.file_column}
+    file_columns = discovery.file_columns
     required = set(file_columns.values())
-    if discovery.record_id_column:
-        required.add(discovery.record_id_column)
+    required.add(discovery.record_id_column)
     missing = sorted(column for column in required if column not in df.columns)
     if missing:
         raise ValueError(f"hypnodata discovery CSV missing required column(s): {missing}")
 
     records = []
-    for row_idx, row in df.iterrows():
+    for _, row in df.iterrows():
         row_dict = {column: _json_safe_value(row[column]) for column in df.columns}
         files = {name: Path(str(row[column])).expanduser() for name, column in file_columns.items()}
-        if discovery.record_id_column:
-            record_id = str(row[discovery.record_id_column])
-        else:
-            record_id = _record_id_from_value(Path(str(row[discovery.file_column])).stem) + f"__row{int(row_idx)}"
+        record_id = str(row[discovery.record_id_column])
         metadata = dict(discovery.metadata)
         for column in discovery.metadata_columns:
             if column not in row.index:

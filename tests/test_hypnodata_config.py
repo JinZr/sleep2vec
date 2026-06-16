@@ -12,7 +12,7 @@ def _payload() -> dict:
         "record_discovery": {
             "type": "csv",
             "index": "records.csv",
-            "file_column": "path",
+            "file_columns": {"edf": "path"},
             "record_id_column": "record_id",
         },
         "backend": {"type": "npz"},
@@ -51,15 +51,21 @@ def test_load_config_accepts_minimal_yaml(tmp_path: Path):
     ]
 
 
-def test_load_config_accepts_custom_passthrough_blocks(tmp_path: Path):
+def test_load_config_accepts_adapter_options_passthrough(tmp_path: Path):
     payload = _payload()
-    payload["custom"] = {"site": "x"}
     payload["adapter_options"] = {"cohort": "demo"}
 
     config = load_config(_write_yaml(tmp_path, payload))
 
-    assert config.custom == {"site": "x"}
     assert config.adapter_options == {"cohort": "demo"}
+
+
+def test_load_config_rejects_custom_passthrough_block(tmp_path: Path):
+    payload = _payload()
+    payload["custom"] = {"site": "x"}
+
+    with pytest.raises(ValueError, match="Unknown hypnodata config field"):
+        load_config(_write_yaml(tmp_path, payload))
 
 
 @pytest.mark.parametrize("kind", ["stage", "event_table", "event_dense", "event_anchor"])
@@ -250,10 +256,17 @@ def test_load_config_rejects_legacy_path_column(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
+def test_load_config_rejects_legacy_file_column(tmp_path: Path):
+    payload = _payload()
+    payload["record_discovery"]["file_column"] = "path"
+
+    with pytest.raises(ValueError, match="Unknown hypnodata config field"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_requires_record_id_column_for_file_columns(tmp_path: Path):
     payload = _payload()
     del payload["record_discovery"]["record_id_column"]
-    payload["record_discovery"]["file_columns"] = {"edf": "edf_path", "annotation": "annotation_path"}
 
     with pytest.raises(ValueError, match="file_columns requires record_id_column"):
         load_config(_write_yaml(tmp_path, payload))

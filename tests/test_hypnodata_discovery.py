@@ -12,7 +12,7 @@ def _write_config(tmp_path: Path, index: Path, *, record_id_column: str | None =
     discovery = {
         "type": "csv",
         "index": str(index),
-        "file_column": "path",
+        "file_columns": {"edf": "path"},
     }
     if record_id_column is not None:
         discovery["record_id_column"] = record_id_column
@@ -65,10 +65,9 @@ def test_csv_discovery_rejects_invalid_configured_record_id(tmp_path: Path):
         discover_records(load_config(_write_config(tmp_path, index)))
 
 
-def test_csv_discovery_still_sanitizes_generated_record_id(tmp_path: Path):
+def test_csv_discovery_requires_configured_record_id_column(tmp_path: Path):
     index = tmp_path / "records.csv"
     pd.DataFrame([{"path": str(tmp_path / "subject 1.edf")}]).to_csv(index, index=False)
 
-    records = discover_records(load_config(_write_config(tmp_path, index, record_id_column=None)))
-
-    assert records[0].record_id == "subject-1__row0"
+    with pytest.raises(ValueError, match="file_columns requires record_id_column"):
+        load_config(_write_config(tmp_path, index, record_id_column=None))

@@ -6,8 +6,9 @@
 - Signature: `load_config(path: str | Path) -> HypnodataConfig`
 - Purpose and contract: parse a hypnodata YAML file into typed dataclasses,
   parse `signals.<channel>.candidates` as ordered exact-label strings, reject
-  unknown fields and schema/version fields, and enforce core config
-  requirements.
+  unknown fields and schema/version fields, require CSV discovery to use
+  `record_discovery.file_columns`, keep `adapter_options` as the only adapter
+  passthrough block, and enforce core config requirements.
 - Important inputs/outputs: YAML path in; `HypnodataConfig` out.
 - Side effects: reads one YAML file.
 - Reuse guidance: use this for all hypnodata config loading.
@@ -43,7 +44,9 @@
 - File: `hypnodata/discovery.py`
 - Signature: `discover_records(config: HypnodataConfig, adapter=None) -> list[RecordTask]`
 - Purpose and contract: discover glob, CSV, or custom-adapter records and
-  validate unique path-safe record IDs.
+  validate unique path-safe record IDs. CSV discovery uses
+  `record_discovery.file_columns` as the canonical file mapping and requires
+  `record_id_column`.
 - Important inputs/outputs: hypnodata config and optional adapter in;
   `RecordTask` list out. CSV `record_id_column` values are preserved as explicit
   external IDs and then validated; only generated file-stem IDs are sanitized.

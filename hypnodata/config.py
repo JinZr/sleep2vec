@@ -7,14 +7,13 @@ from typing import Any
 
 import yaml
 
-TOP_LEVEL_KEYS = {"center", "record_discovery", "signals", "backend", "custom", "adapter_options"}
+TOP_LEVEL_KEYS = {"center", "record_discovery", "signals", "backend", "adapter_options"}
 DISCOVERY_KEYS = {
     "type",
     "root",
     "pattern",
     "index",
     "record_id_column",
-    "file_column",
     "file_columns",
     "source_column",
     "split_column",
@@ -86,7 +85,6 @@ class DiscoveryConfig:
     pattern: str = "*.edf"
     index: Path | None = None
     record_id_column: str | None = None
-    file_column: str = "path"
     file_columns: dict[str, str] = field(default_factory=dict)
     source_column: str | None = "source"
     split_column: str | None = "split"
@@ -110,7 +108,6 @@ class HypnodataConfig:
     record_discovery: DiscoveryConfig
     signals: dict[str, SignalSpec]
     backend: BackendConfig
-    custom: dict[str, Any] = field(default_factory=dict)
     adapter_options: dict[str, Any] = field(default_factory=dict)
 
 
@@ -138,7 +135,6 @@ def load_config(path: str | Path) -> HypnodataConfig:
         record_discovery=discovery,
         signals=signals,
         backend=backend,
-        custom=_optional_mapping(raw.get("custom"), "custom"),
         adapter_options=_optional_mapping(raw.get("adapter_options"), "adapter_options"),
     )
 
@@ -159,6 +155,8 @@ def _build_discovery(raw: Any) -> DiscoveryConfig:
     file_columns = data.get("file_columns") or {}
     if not isinstance(file_columns, dict):
         raise ValueError("record_discovery.file_columns must be a mapping.")
+    if discovery_type == "csv" and not file_columns:
+        raise ValueError("record_discovery.file_columns is required for type=csv.")
     if file_columns and not data.get("record_id_column"):
         raise ValueError("record_discovery.file_columns requires record_id_column.")
     return DiscoveryConfig(
@@ -167,7 +165,6 @@ def _build_discovery(raw: Any) -> DiscoveryConfig:
         pattern=str(data.get("pattern", "*.edf")),
         index=None if data.get("index") is None else Path(data["index"]),
         record_id_column=None if data.get("record_id_column") is None else str(data["record_id_column"]),
-        file_column=str(data.get("file_column", "path")),
         file_columns={str(key): str(value) for key, value in file_columns.items()},
         source_column=_optional_column(data, "source_column", "source"),
         split_column=_optional_column(data, "split_column", "split"),

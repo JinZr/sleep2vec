@@ -37,6 +37,32 @@ Preset generation remains owned by `preprocess/save_dataset_presets.py`. hypnoda
 only supplies an index and mask columns; it does not create splits, sample windows,
 or preset pickle files.
 
+## CSV Discovery
+
+CSV discovery uses `record_discovery.file_columns` as the canonical file mapping.
+Each key becomes a `RecordTask.files` entry, and each value is a CSV column name:
+
+```yaml
+record_discovery:
+  type: csv
+  index: records.csv
+  record_id_column: record_id
+  file_columns:
+    edf: path
+```
+
+For multi-file records, add more file keys:
+
+```yaml
+file_columns:
+  edf: edf_path
+  stage: stage_csv
+  events: event_csv
+```
+
+`file_column` is not accepted; use `file_columns` for single-file and multi-file
+CSV discovery.
+
 ## Channel Candidates
 
 Raw signal candidates are ordered exact EDF labels. Put the preferred label first:
@@ -97,9 +123,9 @@ For records without any available raw signal, adapters must provide a positive
 finite `record.metadata["duration"]` so `read_annotations(record, config,
 duration_sec)` can materialize annotation-only outputs.
 
-`adapter_options` and `custom` are passthrough blocks for adapters. Core
-hypnodata keeps strict unknown-key validation elsewhere and does not use
-`schema_version` or legacy aliases.
+`adapter_options` is the passthrough block for adapters. Core hypnodata keeps
+strict unknown-key validation elsewhere and does not use `schema_version`,
+`version_schema`, or legacy aliases.
 
 ## Annotation Boundary
 

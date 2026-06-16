@@ -40,7 +40,7 @@ def write_hypnodata_config(
     record_discovery = {
         "type": "csv",
         "index": str(index),
-        "file_column": "path",
+        "file_columns": {"edf": "path"},
         "record_id_column": "record_id",
         "metadata_columns": ["age"],
     }

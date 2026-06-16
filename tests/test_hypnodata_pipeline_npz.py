@@ -61,7 +61,7 @@ def _write_config(tmp_path: Path, index: Path, *, missing_required: bool = False
                 "record_discovery": {
                     "type": "csv",
                     "index": str(index),
-                    "file_column": "path",
+                    "file_columns": {"edf": "path"},
                     "record_id_column": "record_id",
                     "metadata_columns": ["age"],
                 },
@@ -82,7 +82,7 @@ def _write_filter_config(tmp_path: Path, index: Path) -> Path:
                 "record_discovery": {
                     "type": "csv",
                     "index": str(index),
-                    "file_column": "path",
+                    "file_columns": {"edf": "path"},
                     "record_id_column": "record_id",
                 },
                 "backend": {"type": "npz"},
@@ -113,7 +113,7 @@ def _write_unit_config(tmp_path: Path, index: Path) -> Path:
                 "record_discovery": {
                     "type": "csv",
                     "index": str(index),
-                    "file_column": "path",
+                    "file_columns": {"edf": "path"},
                     "record_id_column": "record_id",
                 },
                 "backend": {"type": "npz"},
