@@ -74,6 +74,26 @@ def test_read_stage_csv_rejects_partial_stage_duration(tmp_path: Path):
         )
 
 
+def test_read_stage_csv_rejects_overlapping_stage_epochs(tmp_path: Path):
+    path = tmp_path / "stage.csv"
+    pd.DataFrame(
+        [
+            {"Type": "N2", "Start": 0, "Duration": 60},
+            {"Type": "REM", "Start": 30, "Duration": 30},
+        ]
+    ).to_csv(path, index=False)
+
+    with pytest.raises(ValueError, match="overlaps an existing epoch"):
+        read_stage_csv(
+            path,
+            duration_sec=90,
+            epoch_sec=30,
+            label_column="Type",
+            start_column="Start",
+            duration_column="Duration",
+        )
+
+
 def test_read_event_csv_maps_standard_event_rows(tmp_path: Path):
     path = tmp_path / "events.csv"
     pd.DataFrame(

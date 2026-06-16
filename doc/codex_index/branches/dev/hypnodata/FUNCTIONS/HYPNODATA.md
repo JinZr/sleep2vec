@@ -70,7 +70,8 @@
 - Signature: `read_stage_csv(path: str | Path, *, duration_sec: float, epoch_sec: float, mapping: dict[str, int] | None = None, invalid: int = -1, label_column: str = "stage", start_column: str = "start", duration_column: str = "duration", canonical_channel: str = "stage5") -> AnnotationSignal`
 - Purpose and contract: materialize stage rows into a 1D stage annotation
   array, using the default `Wake/N1/N2/N3/REM -> 0/1/2/3/4` mapping when no
-  mapping is supplied.
+  mapping is supplied. Stage rows must align to epoch boundaries and must not
+  overlap already labeled epochs.
 - Important inputs/outputs: CSV path and epoch seconds in; `stage`
   `AnnotationSignal` out.
 - Side effects: reads one CSV file.
@@ -195,7 +196,9 @@
   Existing NPZ conflicts without `resume` or `overwrite` abort before manifest
   rewriting; resume manifest reads preserve `record_id` strings. Subset
   overwrites with `record_id` or `limit` preserve manifest rows for records that
-  were not selected for reprocessing.
+  were not selected for reprocessing. Adapter-provided annotations are rejected
+  if arrays or event extents exceed the record duration established by the raw
+  signals or annotation-only metadata.
 - Reuse guidance: use this as the orchestration entrypoint.
 
 ## `hypnodata.manifests.write_manifests`

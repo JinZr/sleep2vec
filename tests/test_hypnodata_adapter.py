@@ -505,6 +505,8 @@ def test_pipeline_rejects_empty_optional_raw_without_annotations(tmp_path: Path,
         ("duplicate", "Duplicate annotation channel"),
         ("raw_duplicate", "duplicates a raw signal output"),
         ("zero_anchor", "must have 3 columns per anchor"),
+        ("long_dense", "exceeds record duration"),
+        ("event_table_beyond_duration", "exceeds record duration"),
     ],
 )
 def test_pipeline_rejects_invalid_annotation_channels(tmp_path: Path, monkeypatch, mode: str, match: str):
@@ -515,7 +517,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hypnodata.annotations import AnnotationResult, AnnotationSignal, materialize_dense_events
+from hypnodata.annotations import AnnotationResult, AnnotationSignal, materialize_dense_events, materialize_event_table
 from hypnodata.records import RecordTask
 
 
@@ -571,6 +573,28 @@ class BadAnnotationAdapter:
                     )
                 ]
             )
+        if config.adapter_options["mode"] == "long_dense":
+            return AnnotationResult(
+                [
+                    AnnotationSignal(
+                        canonical_channel="ah_event",
+                        data=np.zeros(11, dtype=np.float32),
+                        sfreq=1.0,
+                        raw_file="events.csv",
+                        raw_label="events",
+                        materialization="event_dense",
+                    )
+                ]
+            )
+        if config.adapter_options["mode"] == "event_table_beyond_duration":
+            return AnnotationResult(
+                [
+                    materialize_event_table(
+                        np.asarray([[0, duration_sec - 1, 2]], dtype=np.float32),
+                        canonical_channel="ah_event_table",
+                    )
+                ]
+            )
         return AnnotationResult(
             [
                 materialize_dense_events(
@@ -607,6 +631,7 @@ def make_adapter(config):
                         "candidates": [{"label": "EEG C3", "priority": 1}],
                     },
                     "ah_event": {"kind": "event_dense", "required": False, "interval_sec": 1, "candidates": []},
+                    "ah_event_table": {"kind": "event_table", "required": False, "candidates": []},
                     "arousal_anchor": {
                         "kind": "event_anchor",
                         "required": False,

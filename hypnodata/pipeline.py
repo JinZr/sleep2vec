@@ -298,7 +298,7 @@ def _process_record(
             raise ValueError(f"Record duration {duration:g}s is shorter than backend.min_duration.")
         annotations = call_read_annotations(adapter, record, config, duration)
         annotation_by_name = _annotation_by_name(annotations.signals)
-        _validate_annotations(config, processed, annotation_by_name)
+        _validate_annotations(config, processed, annotation_by_name, duration)
         for canonical, selection in selections.items():
             if selection.required and not selection.available and canonical not in annotation_by_name:
                 raise ChannelResolutionError(f"Missing required channel {canonical!r}.")
@@ -535,6 +535,7 @@ def _validate_annotations(
     config: HypnodataConfig,
     processed: dict[str, ProcessedSignal],
     annotations: dict[str, AnnotationSignal],
+    duration: float,
 ) -> None:
     for canonical, annotation in annotations.items():
         if canonical not in config.signals:
@@ -559,6 +560,7 @@ def _validate_annotations(
                     f"does not match configured output frequency {configured_sfreq:g}."
                 )
         _validate_annotation_shape(canonical, annotation)
+        _validate_annotation_duration(canonical, annotation, duration)
 
 
 def _validate_annotation_shape(canonical: str, annotation: AnnotationSignal) -> None:
@@ -571,6 +573,39 @@ def _validate_annotation_shape(canonical: str, annotation: AnnotationSignal) -> 
     elif annotation.materialization == "event_anchor":
         if annotation.data.ndim != 2 or annotation.data.shape[1] < 3 or annotation.data.shape[1] % 3 != 0:
             raise ValueError(f"Annotation channel {canonical!r} must have 3 columns per anchor.")
+
+
+def _validate_annotation_duration(canonical: str, annotation: AnnotationSignal, duration: float) -> None:
+    tolerance = 1e-6
+    if annotation.materialization in {"stage", "event_dense"}:
+        if annotation.sfreq is None:
+            return
+        # Stage and dense timelines use floor-sized arrays, matching their materializers.
+        max_samples = int(np.floor(float(duration) * float(annotation.sfreq) + tolerance))
+        if annotation.data.shape[0] > max_samples:
+            raise ValueError(f"Annotation channel {canonical!r} exceeds record duration {duration:g}s.")
+    elif annotation.materialization == "event_anchor":
+        if annotation.sfreq is None:
+            return
+        # Anchor labels may include a final partial window.
+        max_windows = int(np.ceil(max(float(duration) * float(annotation.sfreq) - tolerance, 0.0)))
+        if annotation.data.shape[0] > max_windows:
+            raise ValueError(f"Annotation channel {canonical!r} exceeds record duration {duration:g}s.")
+    elif annotation.materialization == "event_table" and annotation.data.size:
+        # Event tables carry second-based extents directly.
+        starts = annotation.data[:, 1]
+        durations = annotation.data[:, 2]
+        stops = starts + durations
+        invalid_extents = (
+            not np.isfinite(starts).all()
+            or not np.isfinite(durations).all()
+            or (starts < 0).any()
+            or (durations <= 0).any()
+        )
+        if invalid_extents:
+            raise ValueError(f"Annotation channel {canonical!r} contains invalid event extents.")
+        if (stops > float(duration) + tolerance).any():
+            raise ValueError(f"Annotation channel {canonical!r} exceeds record duration {duration:g}s.")
 
 
 def _metadata_value(record: RecordTask, key: str, default: Any) -> Any:

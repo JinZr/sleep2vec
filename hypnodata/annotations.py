@@ -257,6 +257,7 @@ def _materialize_stage_epochs(
         raise ValueError("stage epoch_sec must be positive.")
     n_epochs = int(np.floor(float(duration_sec) / float(epoch_sec)))
     data = np.full(n_epochs, int(invalid), dtype=np.int64)
+    filled = np.zeros(n_epochs, dtype=bool)
     for label, start, duration in zip(labels, starts, durations):
         if start < 0 or duration <= 0:
             continue
@@ -275,7 +276,10 @@ def _materialize_stage_epochs(
         left = max(first, 0)
         right = min(first + count, n_epochs)
         if left < right:
+            if filled[left:right].any():
+                raise ValueError(f"Stage annotation overlaps an existing epoch at start={start:g}.")
             data[left:right] = value
+            filled[left:right] = True
     return data
 
 
