@@ -304,12 +304,12 @@ class AnalysisBundleWriter:
         if not self.per_record_dir.exists():
             return _merge_night_rows(rows)
         paths = []
-        # result_manifest.csv is written last, so do not trust partial night_stats.json sidecars without it.
+        # result_manifest.csv is written last; only failure-free manifests count as completed records.
         for manifest_path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}")):
             if manifest_path.parent.name in failed_record_ids:
                 continue
             manifest = _read_result_manifest(manifest_path)
-            if manifest is None or manifest.empty:
+            if not _result_manifest_is_complete(manifest):
                 continue
             night_path = manifest_path.parent / "night_stats.json"
             if night_path.exists():
@@ -355,7 +355,7 @@ class AnalysisBundleWriter:
                     _read_result_manifest(path)
                     for path in tqdm(paths, desc="sleep2stat collect result_manifest", unit="record")
                 )
-                if frame is not None and not frame.empty
+                if _result_manifest_is_complete(frame)
             ]
         else:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -368,7 +368,7 @@ class AnalysisBundleWriter:
                         desc=f"sleep2stat collect result_manifest split{workers}",
                         unit="record",
                     )
-                    if frame is not None and not frame.empty
+                    if _result_manifest_is_complete(frame)
                 ]
         manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
         failure_counts: dict[str, int] = {}
@@ -650,6 +650,13 @@ def _read_result_manifest(path: Path) -> pd.DataFrame | None:
         return pd.read_csv(path)
     except pd.errors.EmptyDataError:
         return None
+
+
+def _result_manifest_is_complete(frame: pd.DataFrame | None) -> bool:
+    if frame is None or frame.empty:
+        return False
+    failure_count = pd.to_numeric(frame.get("failure_count", pd.Series(dtype=int)), errors="coerce").fillna(0)
+    return int(failure_count.sum()) == 0
 
 
 def _read_failures(path: Path) -> list[FailureRecord]:
