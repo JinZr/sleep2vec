@@ -47,6 +47,16 @@ def test_csv_discovery_preserves_configured_record_id(tmp_path: Path):
     assert records[0].record_id == "subject 1"
 
 
+def test_csv_discovery_preserves_numeric_and_na_like_configured_record_id(tmp_path: Path):
+    index = tmp_path / "records.csv"
+    csv_text = f"record_id,path\n001,{tmp_path / 'first.edf'}\nNA,{tmp_path / 'second.edf'}\n"
+    index.write_text(csv_text)
+
+    records = discover_records(load_config(_write_config(tmp_path, index)))
+
+    assert [record.record_id for record in records] == ["001", "NA"]
+
+
 def test_csv_discovery_rejects_invalid_configured_record_id(tmp_path: Path):
     index = tmp_path / "records.csv"
     pd.DataFrame([{"record_id": "a/b", "path": str(tmp_path / "record.edf")}]).to_csv(index, index=False)

@@ -90,7 +90,8 @@ def _read_mne_signal(
         data = raw.get_data(picks=[index])[0]
     finally:
         raw.close()
-    return np.asarray(data * _si_to_unit_scale(raw_unit), dtype=np.float32)
+    header_unit = _header_unit(path, raw_label, raw_index=raw_index)
+    return np.asarray(data * _mne_to_requested_scale(header_unit, raw_unit), dtype=np.float32)
 
 
 def _read_header_inventory(path: Path) -> EdfInventory:
@@ -187,7 +188,7 @@ def _read_native_edf_signal(
         header.digital_maxs[index] - header.digital_mins[index]
     )
     offset = header.physical_mins[index] - header.digital_mins[index] * gain
-    unit_scale = _physical_to_si_scale(header.units[index]) * _si_to_unit_scale(raw_unit)
+    unit_scale = _native_to_requested_scale(header.units[index], raw_unit)
     with path.open("rb") as file_obj:
         for record_idx in range(header.n_records):
             sample_offset = record_idx * record_samples + start_in_record
@@ -208,6 +209,15 @@ def _expected_native_samples(path: Path, raw_label: str, *, raw_index: int | Non
     except Exception:
         return None
     return header.n_records * header.samples_per_record[index]
+
+
+def _header_unit(path: Path, raw_label: str, *, raw_index: int | None) -> str | None:
+    try:
+        header = _read_edf_header(path)
+        index = _channel_index(header.labels, raw_label, raw_index, path)
+    except Exception:
+        return None
+    return header.units[index] or None
 
 
 def _channel_index(labels: list[str], raw_label: str, raw_index: int | None, path: Path) -> int:
@@ -270,28 +280,37 @@ def _decode(data: bytes) -> str:
     return data.decode("ascii", errors="replace").strip()
 
 
-def _physical_to_si_scale(unit: str | None) -> float:
-    if unit is None:
-        return 1.0
-    normalized = unit.strip().lower().replace("μ", "u").replace("µ", "u")
-    return {
-        "v": 1.0,
-        "mv": 1e-3,
-        "uv": 1e-6,
-        "nv": 1e-9,
-    }.get(normalized, 1.0)
+VOLTAGE_TO_SI = {"v": 1.0, "mv": 1e-3, "uv": 1e-6, "nv": 1e-9}
 
 
-def _si_to_unit_scale(unit: str | None) -> float:
+def _normalize_unit(unit: str | None) -> str | None:
     if unit is None:
-        return 1.0
+        return None
     normalized = unit.strip().lower().replace("μ", "u").replace("µ", "u")
-    return {
-        "v": 1.0,
-        "mv": 1e3,
-        "uv": 1e6,
-        "nv": 1e9,
-    }.get(normalized, 1.0)
+    return normalized or None
+
+
+def _native_to_requested_scale(header_unit: str | None, raw_unit: str | None) -> float:
+    header = _normalize_unit(header_unit)
+    target = _normalize_unit(raw_unit)
+    if target is None:
+        return VOLTAGE_TO_SI.get(header, 1.0)
+    # Adapter-corrected units label the raw signal; unknown file units must not be scaled as if they were SI.
+    if header is None or header == target:
+        return 1.0
+    if header in VOLTAGE_TO_SI and target in VOLTAGE_TO_SI:
+        return VOLTAGE_TO_SI[header] / VOLTAGE_TO_SI[target]
+    return 1.0
+
+
+def _mne_to_requested_scale(header_unit: str | None, raw_unit: str | None) -> float:
+    header = _normalize_unit(header_unit)
+    target = _normalize_unit(raw_unit)
+    if target is None or header is None:
+        return 1.0
+    if header in VOLTAGE_TO_SI and target in VOLTAGE_TO_SI:
+        return 1.0 / VOLTAGE_TO_SI[target]
+    return 1.0
 
 
 def _import_mne() -> Any:

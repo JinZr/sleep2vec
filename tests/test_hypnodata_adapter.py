@@ -204,6 +204,7 @@ def make_adapter(config):
     assert record_manifest.loc[0, "session_id"] == "adapter-session"
     assert record_manifest.loc[0, "stage_mask"] == 1
     with np.load(output_dir / "backends" / "npz" / "records" / "night1.npz") as npz:
+        np.testing.assert_allclose(npz["eeg"][:5], np.arange(5, dtype=np.float32))
         np.testing.assert_array_equal(npz["stage5"], np.asarray([0, 1], dtype=np.int64))
 
 

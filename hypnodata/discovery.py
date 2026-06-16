@@ -48,7 +48,8 @@ def _discover_glob(config: HypnodataConfig) -> list[RecordTask]:
 def _discover_csv(config: HypnodataConfig) -> list[RecordTask]:
     discovery = config.record_discovery
     assert discovery.index is not None
-    df = pd.read_csv(discovery.index, low_memory=False)
+    converters = {discovery.record_id_column: str} if discovery.record_id_column else None
+    df = pd.read_csv(discovery.index, low_memory=False, converters=converters)
     file_columns = discovery.file_columns or {"edf": discovery.file_column}
     required = set(file_columns.values())
     if discovery.record_id_column:
