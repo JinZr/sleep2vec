@@ -18,15 +18,15 @@ from tqdm import tqdm
 import yaml
 
 from sleep2stat.config import Sleep2statConfig
-from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
+from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.io.records import SleepRecord, records_to_frame
 
 RESULT_MANIFEST = "result_manifest.csv"
 TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment", "night_stats")
 ALIGNMENT_TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment")
 SUMMARY_TABLE_NAMES = ("model_summary", "analyzer_summary")
-RUN_TERMINAL_STATUSES = frozenset({"completed", "completed_with_failures", "dry_run"})
-RUN_ANALYSIS_TERMINAL_STATUSES = frozenset({"completed", "completed_with_failures"})
+RUN_TERMINAL_STATUSES = frozenset({"completed", "dry_run"})
+RUN_ANALYSIS_TERMINAL_STATUSES = frozenset({"completed"})
 
 
 class AnalysisBundleWriter:
@@ -79,17 +79,11 @@ class AnalysisBundleWriter:
             payload["execution_split"] = execution_split
         _write_json(payload, self.status_dir / "progress.json")
 
-    def write_failures(self, failures: Iterable[FailureRecord]) -> None:
-        rows = [asdict(failure) for failure in failures]
-        frame = pd.DataFrame(rows, columns=["record_id", "analyzer", "error_type", "message"])
-        frame.to_csv(self.status_dir / "failures.csv", index=False)
-
     def write_run_manifest(
         self,
         *,
         status: str,
         records: list[SleepRecord],
-        failures: list[FailureRecord],
         dry_run: bool,
         num_workers: int | None = None,
         execution_split: str | None = None,
@@ -103,13 +97,11 @@ class AnalysisBundleWriter:
             "config_path": str(self.config.path),
             "config_fingerprint": _config_fingerprint_from_path(self.config.path),
             "record_count": len(records),
-            "failure_count": len(failures),
             "num_workers": None if num_workers is None else int(num_workers),
             "execution_split": execution_split,
             "paths": {
                 "run_dir": str(self.run_dir),
                 "record_manifest": str(self.run_dir / "record_manifest.csv"),
-                "failures": str(self.status_dir / "failures.csv"),
                 "tables_dir": str(self.tables_dir),
                 "per_record_dir": str(self.per_record_dir) if self.config.outputs.write_per_record else None,
             },
@@ -120,28 +112,18 @@ class AnalysisBundleWriter:
         self,
         records: list[SleepRecord],
         results: list[AnalyzerResult],
-        failures: Iterable[FailureRecord] | None = None,
     ) -> None:
-        failures = list(failures or [])
-        failed_record_ids = {failure.record_id for failure in failures if failure.record_id != "__all__"}
-        result_record_ids = {result.record_id for result in results}
-        completed_record_ids = {
-            record.record_id
-            for record in records
-            if record.record_id in result_record_ids and record.record_id not in failed_record_ids
-        }
-        self.write_chunk(records, results, failures, completed_record_ids=completed_record_ids)
-        self.rebuild_global_tables(records, failures)
+        completed_record_ids = {record.record_id for record in records}
+        self.write_chunk(records, results, completed_record_ids=completed_record_ids)
+        self.rebuild_global_tables(records)
 
     def write_chunk(
         self,
         records: list[SleepRecord],
         results: list[AnalyzerResult],
-        failures: Iterable[FailureRecord] | None = None,
         *,
         completed_record_ids: Iterable[str],
     ) -> None:
-        failures = list(failures or [])
         tables = collect_tables(records, results)
         if self.config.outputs.write_global_tables:
             completed = {str(record_id) for record_id in completed_record_ids}
@@ -154,7 +136,6 @@ class AnalysisBundleWriter:
                 self._write_global_table_shard(name, frame)
         if self.config.outputs.write_per_record:
             output_record_ids = {result.record_id for result in results}
-            output_record_ids.update(failure.record_id for failure in failures if failure.record_id != "__all__")
             for record in records:
                 if record.record_id not in output_record_ids:
                     continue
@@ -165,29 +146,20 @@ class AnalysisBundleWriter:
                         frame = frame[frame["record_id"] == record.record_id]
                     path = record_dir / self._per_record_filename(name)
                     frame.to_csv(path, index=False, compression=self._compression_for(path))
-                self._write_per_record_sidecars(record, tables, results, failures, record_dir)
+                self._write_per_record_sidecars(record, tables, results, record_dir)
 
     def rebuild_global_tables(
         self,
         records: list[SleepRecord],
-        failures: Iterable[FailureRecord] | None = None,
         *,
         num_workers: int = 0,
     ) -> None:
         if not self.config.outputs.write_global_tables:
             return
-        failures = list(failures or [])
         self._rebuild_alignment_tables_from_shards()
-        failed_record_ids = {
-            str(failure.record_id) for failure in failures if str(failure.record_id) not in {"", "__all__"}
-        }
         if self._global_table_enabled("night_stats"):
-            self._collect_night_stats(failed_record_ids=failed_record_ids, num_workers=num_workers).to_csv(
-                self._table_path("night_stats"), index=False
-            )
-        summary_tables = self._collect_cumulative_summary_tables(
-            failures, failed_record_ids=failed_record_ids, num_workers=num_workers
-        )
+            self._collect_night_stats(num_workers=num_workers).to_csv(self._table_path("night_stats"), index=False)
+        summary_tables = self._collect_cumulative_summary_tables(num_workers=num_workers)
         for name, frame in summary_tables.items():
             frame.to_csv(self._table_path(name), index=False)
 
@@ -205,7 +177,6 @@ class AnalysisBundleWriter:
         record: SleepRecord,
         tables: dict[str, pd.DataFrame],
         results: list[AnalyzerResult],
-        failures: list[FailureRecord],
         record_dir: Path,
     ) -> None:
         events = tables["event_alignment"]
@@ -231,8 +202,7 @@ class AnalysisBundleWriter:
         if arrays:
             np.savez_compressed(record_dir / "arrays.npz", **arrays)
 
-        # Keep this last; rebuilds use result_manifest.csv as the completed-record gate.
-        self._result_manifest(record, results, failures).to_csv(record_dir / RESULT_MANIFEST, index=False)
+        self._result_manifest(record, results).to_csv(record_dir / RESULT_MANIFEST, index=False)
 
     @staticmethod
     def _compression_for(path: Path) -> str | None:
@@ -299,17 +269,13 @@ class AnalysisBundleWriter:
     def _collect_night_stats(
         self,
         *,
-        failed_record_ids: set[str],
         num_workers: int = 0,
     ) -> pd.DataFrame:
         rows = []
         if not self.per_record_dir.exists():
             return _merge_night_rows(rows)
         paths = []
-        # result_manifest.csv is written last; only failure-free manifests count as completed records.
         for manifest_path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}")):
-            if manifest_path.parent.name in failed_record_ids:
-                continue
             manifest = _read_result_manifest(manifest_path)
             if not _result_manifest_is_complete(manifest):
                 continue
@@ -337,18 +303,12 @@ class AnalysisBundleWriter:
 
     def _collect_cumulative_summary_tables(
         self,
-        failures: list[FailureRecord],
         *,
-        failed_record_ids: set[str],
         num_workers: int = 0,
     ) -> dict[str, pd.DataFrame]:
         paths = []
         if self.per_record_dir.exists():
-            paths = [
-                path
-                for path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}"))
-                if path.parent.name not in failed_record_ids
-            ]
+            paths = sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}"))
         workers = int(num_workers or 0)
         if workers <= 1:
             manifests = [
@@ -373,9 +333,6 @@ class AnalysisBundleWriter:
                     if _result_manifest_is_complete(frame)
                 ]
         manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
-        failure_counts: dict[str, int] = {}
-        for failure in _merge_failures(_read_failures(self.status_dir / "failures.csv"), failures):
-            failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
 
         rows = []
         for kind, configs in (("analyzer", self.config.analyzers), ("reducer", self.config.reducers)):
@@ -396,7 +353,6 @@ class AnalysisBundleWriter:
                             else 0
                         ),
                         "result_count": int(item_rows.get("result_count", pd.Series(dtype=int)).sum()),
-                        "failure_count": failure_counts.get(item.name, 0),
                         "epoch_rows": int(item_rows.get("epoch_rows", pd.Series(dtype=int)).sum()),
                         "second_rows": int(item_rows.get("second_rows", pd.Series(dtype=int)).sum()),
                         "event_rows": int(item_rows.get("event_rows", pd.Series(dtype=int)).sum()),
@@ -414,7 +370,6 @@ class AnalysisBundleWriter:
                     "enabled",
                     "record_count",
                     "result_count",
-                    "failure_count",
                     "epoch_rows",
                     "second_rows",
                     "event_rows",
@@ -427,11 +382,9 @@ class AnalysisBundleWriter:
         self,
         record: SleepRecord,
         results: list[AnalyzerResult],
-        failures: list[FailureRecord],
     ) -> pd.DataFrame:
         rows = []
         record_results = [result for result in results if result.record_id == record.record_id]
-        record_failures = [failure for failure in failures if failure.record_id == record.record_id]
         for kind, configs in (("analyzer", self.config.analyzers), ("reducer", self.config.reducers)):
             for item in configs:
                 item_results = [result for result in record_results if result.name == item.name]
@@ -443,7 +396,6 @@ class AnalysisBundleWriter:
                         "type": item.type,
                         "enabled": bool(item.enabled),
                         "result_count": len(item_results),
-                        "failure_count": sum(1 for failure in record_failures if failure.analyzer == item.name),
                         "epoch_rows": _result_row_count(item_results, "epoch"),
                         "second_rows": _result_row_count(item_results, "second"),
                         "event_rows": _result_row_count(item_results, "events"),
@@ -459,7 +411,6 @@ class AnalysisBundleWriter:
                 "type",
                 "enabled",
                 "result_count",
-                "failure_count",
                 "epoch_rows",
                 "second_rows",
                 "event_rows",
@@ -502,12 +453,7 @@ def collect_tables(records: list[SleepRecord], results: list[AnalyzerResult]) ->
 def collect_summary_tables(
     config: Sleep2statConfig,
     results: list[AnalyzerResult],
-    failures: list[FailureRecord],
 ) -> dict[str, pd.DataFrame]:
-    failure_counts: dict[str, int] = {}
-    for failure in failures:
-        failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
-
     analyzer_rows = []
     for kind, configs in (("analyzer", config.analyzers), ("reducer", config.reducers)):
         for item in configs:
@@ -520,7 +466,6 @@ def collect_summary_tables(
                     "enabled": bool(item.enabled),
                     "record_count": len({result.record_id for result in item_results}),
                     "result_count": len(item_results),
-                    "failure_count": failure_counts.get(item.name, 0),
                     "epoch_rows": _result_row_count(item_results, "epoch"),
                     "second_rows": _result_row_count(item_results, "second"),
                     "event_rows": _result_row_count(item_results, "events"),
@@ -539,7 +484,6 @@ def collect_summary_tables(
                 "enabled",
                 "record_count",
                 "result_count",
-                "failure_count",
                 "epoch_rows",
                 "second_rows",
                 "event_rows",
@@ -655,42 +599,7 @@ def _read_result_manifest(path: Path) -> pd.DataFrame | None:
 
 
 def _result_manifest_is_complete(frame: pd.DataFrame | None) -> bool:
-    if frame is None or frame.empty:
-        return False
-    failure_count = pd.to_numeric(frame.get("failure_count", pd.Series(dtype=int)), errors="coerce").fillna(0)
-    return int(failure_count.sum()) == 0
-
-
-def _read_failures(path: Path) -> list[FailureRecord]:
-    if not path.exists():
-        return []
-    try:
-        frame = pd.read_csv(path)
-    except pd.errors.EmptyDataError:
-        return []
-    failures = []
-    for _, row in frame.iterrows():
-        failures.append(
-            FailureRecord(
-                record_id=str(row.get("record_id", "")),
-                analyzer=str(row.get("analyzer", "")),
-                error_type=str(row.get("error_type", "")),
-                message=str(row.get("message", "")),
-            )
-        )
-    return failures
-
-
-def _merge_failures(left: list[FailureRecord], right: list[FailureRecord]) -> list[FailureRecord]:
-    output = []
-    seen = set()
-    for failure in [*left, *right]:
-        key = (failure.record_id, failure.analyzer, failure.error_type, failure.message)
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(failure)
-    return output
+    return frame is not None and not frame.empty
 
 
 def _to_yamlable(obj: Any) -> Any:

@@ -138,7 +138,6 @@ SpO2:
 - `cli_args.yaml`
 - `record_manifest.csv`
 - `status/progress.json`
-- `status/failures.csv`
 - `run_manifest.json`
 - per-record `events.csv.gz`, `night_stats.json`, `result_manifest.csv`, and optional `arrays.npz`
 - global table shards under `tables/_shards/`

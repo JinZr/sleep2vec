@@ -7,11 +7,28 @@ import pandas as pd
 import pytest
 import yaml
 
+import sleep2stat.core.pipeline as pipeline
 from sleep2stat.cli import main
 from sleep2stat.config import load_config
 from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.core.pipeline import run_pipeline
 from sleep2stat.plot import _plot_cohort_stage_composition, _respiratory_metric_specs
+
+
+class _FakeFuture:
+    def __init__(self, *, result=None, exc: Exception | None = None):
+        self._result = result
+        self._exc = exc
+        self.cancelled = False
+
+    def result(self):
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+    def cancel(self):
+        self.cancelled = True
+        return True
 
 
 def _write_dry_run_config(tmp_path: Path) -> Path:
@@ -104,7 +121,6 @@ def _write_partial_summarize_candidate(tmp_path: Path, *, status: str | None = N
                 "type": "sleep2vec_downstream",
                 "enabled": True,
                 "result_count": 1,
-                "failure_count": 0,
                 "night_rows": 1,
             }
         ]
@@ -114,15 +130,14 @@ def _write_partial_summarize_candidate(tmp_path: Path, *, status: str | None = N
     return run_dir
 
 
-def test_cli_run_dry_run_and_summarize(tmp_path: Path, capsys):
+def test_cli_run_dry_run_writes_manifest_but_summarize_rejects_it(tmp_path: Path):
     config_path = _write_dry_run_config(tmp_path)
 
     assert main(["run", "--config", str(config_path), "--split", "test", "--limit-records", "1", "--dry-run"]) == 0
     assert (tmp_path / "run" / "run_manifest.json").exists()
 
-    assert main(["summarize", "--run-dir", str(tmp_path / "run")]) == 0
-    captured = capsys.readouterr()
-    assert "records: 1" in captured.out
+    with pytest.raises(ValueError, match="completed run directory"):
+        main(["summarize", "--run-dir", str(tmp_path / "run")])
 
 
 def test_cli_summarize_rejects_missing_run_manifest_before_sidecar_rebuild(tmp_path: Path):
@@ -143,21 +158,14 @@ def test_cli_summarize_rejects_running_run_manifest_before_sidecar_rebuild(tmp_p
     assert not (run_dir / "tables" / "night_stats.csv").exists()
 
 
-def test_cli_summarize_uses_supplied_run_dir_over_config_output_dir(tmp_path: Path):
-    config_path = _write_dry_run_config(tmp_path)
-    run_dir = tmp_path / "run"
-    wrong_dir = tmp_path / "wrong_run_dir"
-
-    assert main(["run", "--config", str(config_path), "--split", "test", "--limit-records", "1", "--dry-run"]) == 0
-    copied_config = yaml.safe_load((run_dir / "config.yaml").read_text())
-    copied_config["run"]["output_dir"] = str(wrong_dir)
-    (run_dir / "config.yaml").write_text(yaml.safe_dump(copied_config))
-    (run_dir / "tables" / "night_stats.csv").unlink()
+def test_cli_summarize_is_read_only_and_does_not_rebuild_tables(tmp_path: Path, capsys):
+    run_dir = _write_partial_summarize_candidate(tmp_path, status="completed")
 
     assert main(["summarize", "--run-dir", str(run_dir)]) == 0
 
-    assert (run_dir / "tables" / "night_stats.csv").exists()
-    assert not wrong_dir.exists()
+    captured = capsys.readouterr()
+    assert "records: 1" in captured.out
+    assert not (run_dir / "tables" / "night_stats.csv").exists()
 
 
 def test_cli_validate_config_check_records_flags_unconvertible_yasa_sex(tmp_path: Path, capsys):
@@ -194,7 +202,7 @@ def test_cli_validate_config_check_records_flags_unconvertible_yasa_sex(tmp_path
     assert "0 are convertible to male" in captured.out
 
 
-def test_cli_cohort_finalize_merges_runs_and_drops_resolved_failures(tmp_path: Path):
+def test_cli_cohort_finalize_merges_completed_runs(tmp_path: Path):
     run1 = tmp_path / "run1"
     run2 = tmp_path / "run2"
     for run in (run1, run2):
@@ -206,15 +214,9 @@ def test_cli_cohort_finalize_merges_runs_and_drops_resolved_failures(tmp_path: P
     pd.DataFrame({"record_id": ["rec1", "rec2"], "metric": [1.0, 2.0]}).to_csv(
         run1 / "tables" / "night_stats.csv", index=False
     )
-    pd.DataFrame(
-        [{"record_id": "rec2", "analyzer": "yasa_stage", "error_type": "ValueError", "message": "old"}]
-    ).to_csv(run1 / "status" / "failures.csv", index=False)
     pd.DataFrame({"record_id": ["rec2"], "source": ["B"]}).to_csv(run2 / "record_manifest.csv", index=False)
     pd.DataFrame({"record_id": ["rec2"], "metric": [3.0]}).to_csv(run2 / "tables" / "night_stats.csv", index=False)
-    pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
-        run2 / "status" / "failures.csv", index=False
-    )
-    _write_run_manifest(run1, "completed_with_failures")
+    _write_run_manifest(run1, "completed")
     _write_run_manifest(run2, "completed")
 
     out = tmp_path / "final"
@@ -235,107 +237,9 @@ def test_cli_cohort_finalize_merges_runs_and_drops_resolved_failures(tmp_path: P
     )
 
     night = pd.read_csv(out / "tables" / "night_stats.csv").set_index("record_id")
-    failures = pd.read_csv(out / "status" / "failures.csv")
     progress = json.loads((out / "status" / "progress.json").read_text())
     assert night.loc["rec2", "metric"] == 3.0
-    assert failures.empty
     assert progress["status"] == "completed"
-
-
-def test_cli_cohort_finalize_reports_pending_records(tmp_path: Path):
-    run1 = tmp_path / "run1"
-    (run1 / "tables").mkdir(parents=True)
-    (run1 / "status").mkdir()
-    pd.DataFrame({"record_id": ["rec1", "rec2"], "source": ["A", "A"]}).to_csv(
-        run1 / "record_manifest.csv", index=False
-    )
-    pd.DataFrame({"record_id": ["rec1"], "metric": [1.0]}).to_csv(run1 / "tables" / "night_stats.csv", index=False)
-    pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
-        run1 / "status" / "failures.csv", index=False
-    )
-    _write_run_manifest(run1, "completed")
-    out = tmp_path / "final"
-
-    assert main(["cohort-finalize", "--output-run-dir", str(out), "--input-run-dir", str(run1)]) == 0
-
-    progress = json.loads((out / "status" / "progress.json").read_text())
-    manifest = json.loads((out / "run_manifest.json").read_text())
-    assert progress["status"] == "incomplete"
-    assert progress["pending_records"] == 1
-    assert progress["pending_record_ids"] == ["rec2"]
-    assert manifest["status"] == "incomplete"
-
-
-def test_cli_cohort_finalize_counts_global_failure_as_failed_records(tmp_path: Path):
-    run1 = tmp_path / "run1"
-    (run1 / "tables").mkdir(parents=True)
-    (run1 / "status").mkdir()
-    pd.DataFrame({"record_id": ["rec1", "rec2"], "source": ["A", "A"]}).to_csv(
-        run1 / "record_manifest.csv", index=False
-    )
-    pd.DataFrame(columns=["record_id", "metric"]).to_csv(run1 / "tables" / "night_stats.csv", index=False)
-    pd.DataFrame(
-        [{"record_id": "__all__", "analyzer": "yasa_stage", "error_type": "ImportError", "message": "missing"}]
-    ).to_csv(run1 / "status" / "failures.csv", index=False)
-    _write_run_manifest(run1, "completed_with_failures")
-    out = tmp_path / "final"
-
-    assert main(["cohort-finalize", "--output-run-dir", str(out), "--input-run-dir", str(run1)]) == 0
-
-    progress = json.loads((out / "status" / "progress.json").read_text())
-    manifest = json.loads((out / "run_manifest.json").read_text())
-    assert progress["status"] == "completed_with_failures"
-    assert progress["failed_records"] == 2
-    assert progress["pending_records"] == 0
-    assert manifest["status"] == "completed_with_failures"
-
-
-def test_cli_cohort_finalize_drops_resolved_global_failure(tmp_path: Path):
-    run1 = tmp_path / "run1"
-    run2 = tmp_path / "run2"
-    for run in (run1, run2):
-        (run / "tables").mkdir(parents=True)
-        (run / "status").mkdir()
-        pd.DataFrame({"record_id": ["rec1", "rec2"], "source": ["A", "A"]}).to_csv(
-            run / "record_manifest.csv", index=False
-        )
-    pd.DataFrame(columns=["record_id", "metric"]).to_csv(run1 / "tables" / "night_stats.csv", index=False)
-    pd.DataFrame(
-        [{"record_id": "__all__", "analyzer": "yasa_stage", "error_type": "ImportError", "message": "missing"}]
-    ).to_csv(run1 / "status" / "failures.csv", index=False)
-    pd.DataFrame({"record_id": ["rec1", "rec2"], "metric": [1.0, 2.0]}).to_csv(
-        run2 / "tables" / "night_stats.csv", index=False
-    )
-    pd.DataFrame(columns=["record_id", "analyzer", "error_type", "message"]).to_csv(
-        run2 / "status" / "failures.csv", index=False
-    )
-    _write_run_manifest(run1, "completed_with_failures")
-    _write_run_manifest(run2, "completed")
-    out = tmp_path / "final"
-
-    assert (
-        main(
-            [
-                "cohort-finalize",
-                "--output-run-dir",
-                str(out),
-                "--input-run-dir",
-                str(run1),
-                "--input-run-dir",
-                str(run2),
-            ]
-        )
-        == 0
-    )
-
-    failures = pd.read_csv(out / "status" / "failures.csv")
-    progress = json.loads((out / "status" / "progress.json").read_text())
-    manifest = json.loads((out / "run_manifest.json").read_text())
-    assert failures.empty
-    assert progress["status"] == "completed"
-    assert progress["failed_records"] == 0
-    assert progress["failure_rows"] == 0
-    assert manifest["status"] == "completed"
 
 
 def test_cli_cohort_finalize_rejects_missing_run_manifest(tmp_path: Path):
@@ -346,7 +250,7 @@ def test_cli_cohort_finalize_rejects_missing_run_manifest(tmp_path: Path):
         main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])
 
 
-@pytest.mark.parametrize("status", ["running", "dry_run"])
+@pytest.mark.parametrize("status", ["running", "dry_run", "completed_with_failures"])
 def test_cli_cohort_finalize_rejects_non_analysis_run_manifest(tmp_path: Path, status: str):
     run1 = tmp_path / "run1"
     run1.mkdir()
@@ -364,6 +268,29 @@ def test_cli_cohort_finalize_rejects_missing_input_manifest(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError, match="record_manifest"):
         main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])
+
+
+def test_cli_cohort_finalize_rejects_missing_night_stats(tmp_path: Path):
+    run1 = tmp_path / "run1"
+    (run1 / "tables").mkdir(parents=True)
+    _write_run_manifest(run1, "completed")
+    pd.DataFrame({"record_id": ["rec1"]}).to_csv(run1 / "record_manifest.csv", index=False)
+
+    with pytest.raises(FileNotFoundError, match="night_stats.csv"):
+        main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])
+    assert not (tmp_path / "final").exists()
+
+
+def test_cli_cohort_finalize_rejects_incomplete_night_stats(tmp_path: Path):
+    run1 = tmp_path / "run1"
+    (run1 / "tables").mkdir(parents=True)
+    _write_run_manifest(run1, "completed")
+    pd.DataFrame({"record_id": ["rec1", "rec2"]}).to_csv(run1 / "record_manifest.csv", index=False)
+    pd.DataFrame({"record_id": ["rec1"], "metric": [1.0]}).to_csv(run1 / "tables" / "night_stats.csv", index=False)
+
+    with pytest.raises(ValueError, match="missing night_stats rows"):
+        main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])
+    assert not (tmp_path / "final").exists()
 
 
 def test_pipeline_rejects_non_empty_output_dir_before_analyzers(tmp_path: Path, monkeypatch):
@@ -501,8 +428,48 @@ def test_pipeline_record_split_matches_sequential_outputs_and_summarize(tmp_path
     assert manifest["execution_split"] == "split2"
 
     (tmp_path / "run_split" / "tables" / "night_stats.csv").unlink()
-    assert main(["summarize", "--run-dir", str(tmp_path / "run_split"), "--num-workers", "2"]) == 0
-    assert (tmp_path / "run_split" / "tables" / "night_stats.csv").exists()
+    assert main(["summarize", "--run-dir", str(tmp_path / "run_split")]) == 0
+    assert not (tmp_path / "run_split" / "tables" / "night_stats.csv").exists()
+
+    with pytest.raises(SystemExit):
+        main(["summarize", "--run-dir", str(tmp_path / "run_split"), "--num-workers", "2"])
+
+
+def test_pipeline_record_split_cancels_pending_futures_on_failure(monkeypatch):
+    records = [SimpleNamespace(record_id="bad"), SimpleNamespace(record_id="queued")]
+    bad_future = _FakeFuture(exc=RuntimeError("bad record"))
+    queued_future = _FakeFuture(result=(records[1], []))
+    futures_by_record = {"bad": bad_future, "queued": queued_future}
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def submit(self, fn, record, context):
+            return futures_by_record[record.record_id]
+
+    class FakeWriter:
+        def write_chunk(self, *args, **kwargs):
+            raise AssertionError("split failure should not write pending records")
+
+        def write_progress(self, *args, **kwargs):
+            raise AssertionError("split failure should not report progress")
+
+    monkeypatch.setattr(pipeline, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(pipeline, "as_completed", lambda futures: iter([bad_future]))
+
+    context = SimpleNamespace(num_workers=2)
+    with pytest.raises(RuntimeError, match="bad record"):
+        pipeline._run_record_split(records, context, FakeWriter(), total_records=2, chunk_size=1)
+
+    assert queued_future.cancelled
+    assert not bad_future.cancelled
 
 
 def test_pipeline_model_analyzer_keeps_canonical_chunk_path_with_num_workers(tmp_path: Path, monkeypatch):
@@ -571,7 +538,7 @@ def test_pipeline_model_analyzer_keeps_canonical_chunk_path_with_num_workers(tmp
             return [
                 AnalyzerResult(self.config.name, record.record_id, night={f"{self.config.name}_pred": 1})
                 for record in records
-            ], []
+            ]
 
         def close(self):
             return None
@@ -588,7 +555,108 @@ def test_pipeline_model_analyzer_keeps_canonical_chunk_path_with_num_workers(tmp
     assert manifest["execution_split"] == "sequential"
 
 
-def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, monkeypatch):
+def test_pipeline_prepare_failure_closes_prepared_analyzers(tmp_path: Path, monkeypatch):
+    index_path = tmp_path / "index.csv"
+    index_path.write_text("path,duration,split,patient_id\n" f"{tmp_path / 'rec1.npz'},60,test,rec1\n")
+    config_path = tmp_path / "config.yaml"
+    payload = {
+        "run": {"name": "prepare-failure", "output_dir": str(tmp_path / "run")},
+        "data": {
+            "backend": "npz",
+            "index": str(index_path),
+            "split": ["test"],
+            "path_column": "path",
+            "duration_column": "duration",
+            "split_column": "split",
+            "record_id_columns": ["patient_id"],
+            "token_sec": 30,
+            "max_tokens": 2,
+        },
+        "signals": {"channels": {"ppg": {"source": "ppg", "sfreq": 100, "kind": "ppg", "input_dim": 3000}}},
+        "analyzers": [
+            {"name": "first_model", "type": "npz_stage_reference", "stage_key": "stage5"},
+            {"name": "second_model", "type": "npz_stage_reference", "stage_key": "stage5"},
+        ],
+        "reducers": [],
+        "outputs": {"write_global_tables": True, "write_per_record": True, "compression": "gzip"},
+    }
+    config_path.write_text(yaml.safe_dump(payload))
+    close_calls = []
+
+    class FakeAnalyzer:
+        def __init__(self, config):
+            self.config = config
+
+        def prepare(self, context):
+            if self.config.name == "second_model":
+                raise RuntimeError("prepare failed")
+
+        def run(self, records, context, prior_results=None):
+            return []
+
+        def close(self):
+            close_calls.append(self.config.name)
+
+    monkeypatch.setattr("sleep2stat.core.pipeline.create_analyzer", lambda config: FakeAnalyzer(config))
+    config = load_config(config_path)
+    args = SimpleNamespace(split=["test"], limit_records=None, dry_run=False, device="cpu", num_workers=0, batch_size=1)
+
+    with pytest.raises(RuntimeError, match="prepare failed"):
+        run_pipeline(config, args)
+
+    assert sorted(close_calls) == ["first_model", "second_model"]
+    assert not (tmp_path / "run" / "run_manifest.json").exists()
+
+
+def test_pipeline_analyzer_failure_aborts_without_terminal_manifest(tmp_path: Path, monkeypatch):
+    index_path = tmp_path / "index.csv"
+    index_path.write_text("path,duration,split,patient_id\n" f"{tmp_path / 'rec1.npz'},60,test,rec1\n")
+    config_path = tmp_path / "config.yaml"
+    payload = {
+        "run": {"name": "analyzer-failure", "output_dir": str(tmp_path / "run")},
+        "data": {
+            "backend": "npz",
+            "index": str(index_path),
+            "split": ["test"],
+            "path_column": "path",
+            "duration_column": "duration",
+            "split_column": "split",
+            "record_id_columns": ["patient_id"],
+            "token_sec": 30,
+            "max_tokens": 2,
+        },
+        "signals": {"channels": {"ppg": {"source": "ppg", "sfreq": 100, "kind": "ppg", "input_dim": 3000}}},
+        "analyzers": [{"name": "source_model", "type": "npz_stage_reference", "stage_key": "stage5"}],
+        "reducers": [],
+        "outputs": {"write_global_tables": True, "write_per_record": True, "compression": "gzip"},
+    }
+    config_path.write_text(yaml.safe_dump(payload))
+
+    class FailingAnalyzer:
+        def __init__(self, config):
+            self.config = config
+
+        def prepare(self, context):
+            return None
+
+        def run(self, records, context, prior_results=None):
+            raise ValueError("bad analyzer input")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("sleep2stat.core.pipeline.create_analyzer", lambda config: FailingAnalyzer(config))
+    config = load_config(config_path)
+    args = SimpleNamespace(split=["test"], limit_records=None, dry_run=False, device="cpu", num_workers=0, batch_size=1)
+
+    with pytest.raises(ValueError, match="bad analyzer input"):
+        run_pipeline(config, args)
+
+    assert not (tmp_path / "run" / "run_manifest.json").exists()
+    assert not (tmp_path / "run" / "status" / "failures.csv").exists()
+
+
+def test_pipeline_reducer_failure_aborts_without_terminal_manifest(tmp_path: Path, monkeypatch):
     index_path = tmp_path / "index.csv"
     index_path.write_text(
         "path,duration,split,patient_id\n"
@@ -646,7 +714,7 @@ def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, mo
             return [
                 AnalyzerResult(self.config.name, record.record_id, night={f"{self.config.name}_ok": 1})
                 for record in records
-            ], []
+            ]
 
     class FakeReducer:
         def __init__(self, config):
@@ -665,15 +733,11 @@ def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, mo
     config = load_config(config_path)
     args = SimpleNamespace(split=["test"], limit_records=None, dry_run=False, device="cpu", num_workers=0, batch_size=2)
 
-    run_pipeline(config, args)
+    with pytest.raises(RuntimeError, match="chunk reducer failed"):
+        run_pipeline(config, args)
 
-    assert not (tmp_path / "run" / "per_record" / "good" / "_SUCCESS.json").exists()
-    assert not (tmp_path / "run" / "per_record" / "bad" / "_SUCCESS.json").exists()
-    assert (tmp_path / "run" / "per_record" / "good" / "night_stats.json").exists()
-    failures = pd.read_csv(tmp_path / "run" / "status" / "failures.csv")
-    assert failures[["record_id", "analyzer", "error_type"]].to_dict("records") == [
-        {"record_id": "bad", "analyzer": "stage5_stats", "error_type": "ValueError"}
-    ]
+    assert not (tmp_path / "run" / "run_manifest.json").exists()
+    assert not (tmp_path / "run" / "status" / "failures.csv").exists()
 
 
 def test_cli_plot_record_creates_pngs_from_per_record_outputs(tmp_path: Path):

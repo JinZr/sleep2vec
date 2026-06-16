@@ -17,9 +17,9 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/cli.py`
 - Signature: `main(argv: list[str] | None = None) -> int`
-- Purpose and contract: dispatch sleep2stat subcommands: `validate-config`, `run`, `summarize`, `cohort-finalize`, `plot-record`, and `plot-cohort`; `validate-config --check-records` performs record metadata preflight, and `summarize --num-workers` rebuilds tables only for terminal run directories with `run_manifest.json`.
+- Purpose and contract: dispatch sleep2stat subcommands: `validate-config`, `run`, `summarize`, `cohort-finalize`, `plot-record`, and `plot-cohort`; `validate-config --check-records` performs record metadata preflight, and `summarize` is a read-only overview for completed run directories with `run_manifest.json`.
 - Important inputs/outputs: optional argv in; process exit code out.
-- Side effects: prints run paths or summary rows; runs analysis bundles, rebuilds global tables during summarize, finalizes merged cohort tables, and writes plot files through `sleep2stat.plot`.
+- Side effects: prints run paths or summary rows; runs analysis bundles, finalizes merged cohort tables, and writes plot files through `sleep2stat.plot`.
 - Key callers/callees: called by `sleep2stat/__main__.py`; delegates to `load_config`, `load_records`, `run_pipeline`, `_summarize`, `cohort_finalize`, `plot_record`, and `plot_cohort`.
 - Reuse guidance: generated scripts should call this CLI rather than importing pipeline internals directly.
 - Duplication-risk notes: keep CLI behavior thin; command planning and safety checks belong in `agent_tools`.
@@ -28,9 +28,9 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/finalize.py`
 - Signature: `cohort_finalize(output_run_dir: Path, input_run_dirs: list[Path]) -> dict[str, Any]`
-- Purpose and contract: merge completed sleep2stat run tables into a cohort-level finalized bundle, keeping later duplicate `record_id` rows and dropping failures resolved by successful night-stat rows; inputs must have terminal analysis run manifests.
+- Purpose and contract: merge completed sleep2stat run tables into a cohort-level finalized bundle, keeping later duplicate `record_id` rows; inputs must have completed analysis run manifests and `tables/night_stats.csv` rows for every manifest record.
 - Important inputs/outputs: output run directory and ordered input run directories in; merged manifest/progress metadata out.
-- Side effects: writes merged `record_manifest.csv`, `tables/night_stats.csv`, `status/failures.csv`, `status/progress.json`, and `run_manifest.json`.
+- Side effects: writes merged `record_manifest.csv`, `tables/night_stats.csv`, `status/progress.json`, and `run_manifest.json`.
 - Key callers/callees: called by CLI `cohort-finalize`; optional plotting remains delegated to `plot_cohort`.
 - Reuse guidance: use for post-shard or fixed-cohort merge/finalization instead of one-off pandas combine scripts.
 - Duplication-risk notes: this command does not read raw NPZs, rerun analyzers, or copy per-record sidecars.
@@ -63,10 +63,10 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - Signature: `run_pipeline(config: Sleep2statConfig, args: argparse.Namespace)`
 - Purpose and contract: execute a sleep2stat run from config and runtime args. The output directory is single-use: non-empty `run.output_dir` fails before analyzers start. For non-model configs, `--num-workers > 1` uses an internal single-machine record-level `splitN`; configs with `sleep2vec_downstream` keep the canonical model/DataLoader path.
 - Important inputs/outputs: validated config plus CLI args in; run directory path out.
-- Side effects: writes output directories, progress, record manifests, per-record sidecars, global tables, failure CSVs, and the terminal run manifest.
+- Side effects: writes output directories, progress, record manifests, per-record sidecars, global tables, and the terminal run manifest.
 - Key callers/callees: caller is `sleep2stat.cli.main`; callees include `load_records`, `AnalysisBundleWriter`, `create_analyzer`, `create_reducer`, `_chunk_size`, `_record_chunks`, and the internal record split helpers.
 - Reuse guidance: this is the canonical execution loop for sleep2stat analysis bundles.
-- Duplication-risk notes: dry-run, single-use output handling, chunk-level failure handling, and reducer fallback must not be reimplemented in agent scripts.
+- Duplication-risk notes: dry-run, single-use output handling, chunk writing, and reducer execution must not be reimplemented in agent scripts.
 
 ## `sleep2stat.core.artifacts.AnalyzerResult`
 
@@ -121,7 +121,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - File: `sleep2stat/analyzers/model_downstream.py`
 - Signature: `Sleep2vecDownstreamAnalyzer(config: AnalyzerConfig)`
 - Purpose and contract: run a trained `sleep2vec`, `sleep2vec2`, or `sleep2expert` downstream checkpoint over sleep2stat records and convert logits into epoch, second, event, or night outputs.
-- Important inputs/outputs: analyzer config with namespace, label name, finetune config, checkpoint path, input channels, optional scalar threshold, and explicit AHI postprocess controls in; analyzer results and per-record failures out.
+- Important inputs/outputs: analyzer config with namespace, label name, finetune config, checkpoint path, input channels, optional scalar threshold, and explicit AHI postprocess controls in; analyzer results out.
 - Side effects: imports namespace-local model modules, loads a checkpoint, builds datasets/loaders, moves batches to the configured device, and may create temporary filtered Kaldi manifests.
 - Key callers/callees: instantiated through registry; uses `_build_datasets`, `_build_kaldi_datasets`, namespace-local `apply_finetune_config`, namespace-local `Sleep2vecFinetuning`, `_resolve_threshold`, `_decode_batch`, and logit decoders.
 - Reuse guidance: use this analyzer for model-derived stage, age, sex, or AHI outputs inside sleep2stat.
@@ -352,11 +352,11 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - File: `sleep2stat/io/writers.py`
 - Signature: `AnalysisBundleWriter(config: Sleep2statConfig)`
 - Purpose and contract: own all sleep2stat output bundle writes, including the terminal `run_manifest.json` commit marker and optional parallel reads when rebuilding global tables from per-record sidecars.
-- Important inputs/outputs: validated config in; methods write record manifests, progress, failures, run manifests, per-record sidecars, global table shards, and summary tables.
+- Important inputs/outputs: validated config in; methods write record manifests, progress, run manifests, per-record sidecars, global table shards, and summary tables.
 - Side effects: creates directories, copies config, writes YAML/JSON/CSV/NPZ files, writes run PID/progress JSON atomically, and rebuilds tables from shards or sidecars; it does not delete existing run directories.
-- Key callers/callees: used by `run_pipeline` and CLI summarize; key methods include `prepare`, `write_record_manifest`, `write_progress`, `write_failures`, `write_chunk`, `rebuild_global_tables`, and `write_run_manifest`.
+- Key callers/callees: used by `run_pipeline`; key methods include `prepare`, `write_record_manifest`, `write_progress`, `write_chunk`, `rebuild_global_tables`, and `write_run_manifest`.
 - Reuse guidance: use this writer for every sleep2stat output-contract change.
-- Duplication-risk notes: single-use output handling, sidecar writes, current-run failure tables, and global table rebuilds belong here.
+- Duplication-risk notes: single-use output handling, sidecar writes, and global table rebuilds belong here.
 
 ## `sleep2stat.plot.plot_record`
 
@@ -377,5 +377,5 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - Important inputs/outputs: run directory, grouping field, optional concrete stage source, and optional covariates in; plot paths out.
 - Side effects: reads global tables and writes PNG plots.
 - Key callers/callees: called by CLI and agent-generated `plot-cohort` commands; uses `_load_cohort_frame`, `_select_stage_source`, metric-spec helpers, and plotting helpers.
-- Reuse guidance: use for cohort visualization after a bundle completes or after `summarize` rebuilds global tables.
+- Reuse guidance: use for cohort visualization after a bundle completes.
 - Duplication-risk notes: plot reads canonical bundle fields only; command generation should pass explicit recipe values through to the CLI without adding stage-source inference.

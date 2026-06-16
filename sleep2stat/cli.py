@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -10,11 +9,10 @@ from pandas.errors import EmptyDataError
 
 from sleep2stat.analyzers.yasa import _finite_float, _sex_to_male
 from sleep2stat.config import load_config
-from sleep2stat.core.artifacts import FailureRecord
 from sleep2stat.core.pipeline import run_pipeline
 from sleep2stat.finalize import cohort_finalize
 from sleep2stat.io.records import SleepRecord, load_records
-from sleep2stat.io.writers import RUN_TERMINAL_STATUSES, AnalysisBundleWriter, _require_terminal_run_manifest
+from sleep2stat.io.writers import RUN_ANALYSIS_TERMINAL_STATUSES, _require_terminal_run_manifest
 from sleep2stat.plot import plot_cohort, plot_record
 
 
@@ -39,7 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     summarize = subparsers.add_parser("summarize", help="Summarize a completed sleep2stat run directory.")
     summarize.add_argument("--run-dir", type=Path, required=True)
-    summarize.add_argument("--num-workers", type=int, default=8)
 
     finalize = subparsers.add_parser("cohort-finalize", help="Merge completed sleep2stat cohort run tables.")
     finalize.add_argument("--output-run-dir", type=Path, required=True)
@@ -71,13 +68,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"sleep2stat config OK: {args.config}")
         return 0
     if args.command == "summarize":
-        _summarize(args.run_dir, num_workers=args.num_workers)
+        _summarize(args.run_dir)
         return 0
     if args.command == "cohort-finalize":
         manifest = cohort_finalize(args.output_run_dir, args.input_run_dir)
         print(f"run_dir: {args.output_run_dir}")
         print(f"night_stats_rows: {manifest['night_stats_rows']}")
-        print(f"failure_rows: {manifest['failure_rows']}")
         if args.plot_cohort:
             for path in plot_cohort(
                 args.output_run_dir,
@@ -148,22 +144,13 @@ def _metadata_parse_summary(records: list[SleepRecord], key: str, parser) -> dic
     }
 
 
-def _summarize(run_dir: Path, *, num_workers: int = 8) -> None:
-    _require_terminal_run_manifest(run_dir, RUN_TERMINAL_STATUSES, command="summarize")
-    config_path = run_dir / "config.yaml"
-    if config_path.exists():
-        config = load_config(config_path)
-        config = replace(config, run=replace(config.run, output_dir=run_dir))
-        writer = AnalysisBundleWriter(config)
-        records = _read_record_manifest(run_dir / "record_manifest.csv", config.data.token_sec, config.data.max_tokens)
-        writer.rebuild_global_tables(
-            records,
-            _read_failures(run_dir / "status" / "failures.csv"),
-            num_workers=num_workers,
-        )
+def _summarize(run_dir: Path) -> None:
+    _require_terminal_run_manifest(run_dir, RUN_ANALYSIS_TERMINAL_STATUSES, command="summarize")
     manifest = run_dir / "run_manifest.json"
     record_manifest = run_dir / "record_manifest.csv"
     night_stats = run_dir / "tables" / "night_stats.csv"
+    analyzer_summary = run_dir / "tables" / "analyzer_summary.csv"
+    model_summary = run_dir / "tables" / "model_summary.csv"
     print(f"run_dir: {run_dir}")
     if manifest.exists():
         print(f"manifest: {manifest}")
@@ -171,6 +158,10 @@ def _summarize(run_dir: Path, *, num_workers: int = 8) -> None:
         print(f"records: {_csv_row_count(record_manifest)}")
     if night_stats.exists():
         print(f"night_stats_rows: {_csv_row_count(night_stats)}")
+    if analyzer_summary.exists():
+        print(f"analyzer_summary_rows: {_csv_row_count(analyzer_summary)}")
+    if model_summary.exists():
+        print(f"model_summary_rows: {_csv_row_count(model_summary)}")
 
 
 def _csv_row_count(path: Path) -> int:
@@ -178,47 +169,3 @@ def _csv_row_count(path: Path) -> int:
         return len(pd.read_csv(path))
     except EmptyDataError:
         return 0
-
-
-def _read_failures(path: Path) -> list[FailureRecord]:
-    if not path.exists():
-        return []
-    try:
-        frame = pd.read_csv(path)
-    except EmptyDataError:
-        return []
-    failures = []
-    for _, row in frame.iterrows():
-        failures.append(
-            FailureRecord(
-                record_id=str(row.get("record_id", "")),
-                analyzer=str(row.get("analyzer", "")),
-                error_type=str(row.get("error_type", "")),
-                message=str(row.get("message", "")),
-            )
-        )
-    return failures
-
-
-def _read_record_manifest(path: Path, token_sec: int, max_tokens: int) -> list[SleepRecord]:
-    if not path.exists():
-        return []
-    try:
-        frame = pd.read_csv(path)
-    except EmptyDataError:
-        return []
-    records = []
-    for _, row in frame.iterrows():
-        records.append(
-            SleepRecord(
-                record_id=str(row["record_id"]),
-                path=Path(str(row["path"])),
-                split=str(row.get("split", "")),
-                source=None if pd.isna(row.get("source")) else str(row.get("source")),
-                duration_sec=float(row.get("duration_sec", 0.0)),
-                token_sec=int(row.get("token_sec", token_sec)),
-                max_tokens=int(row.get("max_tokens", max_tokens)),
-                metadata={},
-            )
-        )
-    return records

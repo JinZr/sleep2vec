@@ -84,7 +84,7 @@ For NPZ/YASA/SpO2-only configs, `--num-workers N` runs records through an intern
 Summarize and plot:
 
 ```bash
-python -m sleep2stat summarize --run-dir <run_dir> --num-workers 8
+python -m sleep2stat summarize --run-dir <run_dir>
 python -m sleep2stat plot-record --run-dir <run_dir> --record-id <record_id>
 python -m sleep2stat plot-cohort --run-dir <run_dir> --group-column source
 ```
@@ -114,7 +114,6 @@ A completed run should create:
   status/
     pid.json
     progress.json
-    failures.csv
   tables/
     night_stats.csv
     event_alignment.csv.gz

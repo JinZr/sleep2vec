@@ -50,7 +50,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/plans.py`
 - Signature: `_commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict | None = None) -> list[str]`
-- Purpose and contract: render the approved command list for supported recipe tasks, including variant-aware model commands, preset commands, and variantless sleep2stat commands. Sleep2stat run and summarize commands share the recipe `runtime.num_workers` value.
+- Purpose and contract: render the approved command list for supported recipe tasks, including variant-aware model commands, preset commands, and variantless sleep2stat commands. Sleep2stat summarize is a read-only run-dir overview and does not inherit runtime worker settings.
 - Important inputs/outputs: recipe, optional config summary, and resolved decisions in; shell command strings out.
 - Side effects: none.
 - Key callers/callees: called by `build_context` and `build_plan`; for sleep2stat it calls `_sleep2stat_config_run_dir` and `_sleep2stat_runtime_args`.

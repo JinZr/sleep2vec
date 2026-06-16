@@ -10,7 +10,7 @@ import pandas as pd
 from data.utils import load_npz
 from sleep2stat.analyzers.base import BaseAnalyzer
 from sleep2stat.config import ChannelSpec
-from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
+from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.core.context import Sleep2statContext
 from sleep2stat.core.stage_sources import StageSourceResolver
 from sleep2stat.io.records import SleepRecord
@@ -63,54 +63,39 @@ class YasaStageAnalyzer(_YasaBaseAnalyzer):
         records: list[SleepRecord],
         context: Sleep2statContext,
         prior_results: list[AnalyzerResult] | None = None,
-    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+    ) -> list[AnalyzerResult]:
         results: list[AnalyzerResult] = []
-        failures: list[FailureRecord] = []
         include_probabilities = bool(context.config.outputs.include_probabilities)
         for record in records:
-            try:
-                raw, mne_names = self._build_raw(record, context)
-                stager = self._yasa.SleepStaging(
-                    raw,
-                    eeg_name=_first_kind_channel(self.config.input_channels, context, mne_names, "eeg"),
-                    eog_name=_first_kind_channel(self.config.input_channels, context, mne_names, "eog"),
-                    emg_name=_first_kind_channel(self.config.input_channels, context, mne_names, "emg"),
-                    metadata=_yasa_metadata(record),
-                )
-                # YASA v0.7 returns a Hypnogram object; stages and probabilities live on that object.
-                hypnogram = stager.predict()
-                labels = hypnogram.as_int().to_numpy()
-                probabilities = None if hypnogram.proba is None else pd.DataFrame(hypnogram.proba)
-                n_tokens = min(labels.shape[0], int(record.duration_sec // record.token_sec), record.max_tokens)
-                frame = _epoch_base_frame(record, n_tokens)
-                stage_ids = np.asarray([_stage_id(label) for label in labels[:n_tokens]], dtype=np.int64)
-                frame[f"{self.config.name}_pred"] = stage_ids
-                frame[f"{self.config.name}_label"] = [
-                    STAGE_ID_TO_LABEL.get(int(value), "UNKNOWN") for value in stage_ids
-                ]
-                arrays = {}
-                if probabilities is not None and n_tokens > 0:
-                    proba_frame = probabilities.iloc[:n_tokens].reset_index(drop=True)
-                    numeric = proba_frame.select_dtypes(include=[np.number])
-                    if not numeric.empty:
-                        frame[f"{self.config.name}_confidence"] = numeric.max(axis=1).to_numpy()
-                        if include_probabilities:
-                            for column in numeric.columns:
-                                frame[f"{self.config.name}_prob_{_stage_prob_label(column)}"] = numeric[
-                                    column
-                                ].to_numpy()
-                            arrays[f"{self.config.name}_probabilities"] = numeric.to_numpy(dtype=np.float32)
-                results.append(AnalyzerResult(self.config.name, record.record_id, epoch=frame, arrays=arrays))
-            except Exception as exc:
-                failures.append(
-                    FailureRecord(
-                        record_id=record.record_id,
-                        analyzer=self.config.name,
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                    )
-                )
-        return results, failures
+            raw, mne_names = self._build_raw(record, context)
+            stager = self._yasa.SleepStaging(
+                raw,
+                eeg_name=_first_kind_channel(self.config.input_channels, context, mne_names, "eeg"),
+                eog_name=_first_kind_channel(self.config.input_channels, context, mne_names, "eog"),
+                emg_name=_first_kind_channel(self.config.input_channels, context, mne_names, "emg"),
+                metadata=_yasa_metadata(record),
+            )
+            # YASA v0.7 returns a Hypnogram object; stages and probabilities live on that object.
+            hypnogram = stager.predict()
+            labels = hypnogram.as_int().to_numpy()
+            probabilities = None if hypnogram.proba is None else pd.DataFrame(hypnogram.proba)
+            n_tokens = min(labels.shape[0], int(record.duration_sec // record.token_sec), record.max_tokens)
+            frame = _epoch_base_frame(record, n_tokens)
+            stage_ids = np.asarray([_stage_id(label) for label in labels[:n_tokens]], dtype=np.int64)
+            frame[f"{self.config.name}_pred"] = stage_ids
+            frame[f"{self.config.name}_label"] = [STAGE_ID_TO_LABEL.get(int(value), "UNKNOWN") for value in stage_ids]
+            arrays = {}
+            if probabilities is not None and n_tokens > 0:
+                proba_frame = probabilities.iloc[:n_tokens].reset_index(drop=True)
+                numeric = proba_frame.select_dtypes(include=[np.number])
+                if not numeric.empty:
+                    frame[f"{self.config.name}_confidence"] = numeric.max(axis=1).to_numpy()
+                    if include_probabilities:
+                        for column in numeric.columns:
+                            frame[f"{self.config.name}_prob_{_stage_prob_label(column)}"] = numeric[column].to_numpy()
+                        arrays[f"{self.config.name}_probabilities"] = numeric.to_numpy(dtype=np.float32)
+            results.append(AnalyzerResult(self.config.name, record.record_id, epoch=frame, arrays=arrays))
+        return results
 
 
 @register_analyzer("yasa_bandpower")
@@ -120,9 +105,8 @@ class YasaBandpowerAnalyzer(_YasaBaseAnalyzer):
         records: list[SleepRecord],
         context: Sleep2statContext,
         prior_results: list[AnalyzerResult] | None = None,
-    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+    ) -> list[AnalyzerResult]:
         results: list[AnalyzerResult] = []
-        failures: list[FailureRecord] = []
         options = self.config.outputs
         by_epoch = bool(options["by_epoch"])
         by_stage = bool(options["by_stage"])
@@ -132,47 +116,37 @@ class YasaBandpowerAnalyzer(_YasaBaseAnalyzer):
         bands = _band_specs(options.get("bands"))
         stage_results = _stage_results_by_record(prior_results or [], str(stage_source)) if stage_source else {}
         for record in records:
-            try:
-                raw, _ = self._build_raw(record, context)
-                epoch = _epoch_bandpower(
-                    self._yasa,
-                    raw,
-                    record,
+            raw, _ = self._build_raw(record, context)
+            epoch = _epoch_bandpower(
+                self._yasa,
+                raw,
+                record,
+                self.config.name,
+                bands=bands,
+                relative=relative,
+            )
+            night = {}
+            if by_night:
+                night.update(_night_bandpower_means(self.config.name, epoch))
+            if by_stage:
+                if not stage_source:
+                    raise ValueError("yasa_bandpower stage_source is required when by_stage=true.")
+                stage = stage_results.get(record.record_id)
+                if stage is None:
+                    raise ValueError(
+                        f"yasa_bandpower stage_source {stage_source!r} has no "
+                        f"epoch result for {record.record_id!r}."
+                    )
+                night.update(_stage_bandpower_means(self.config.name, epoch, stage, str(stage_source)))
+            results.append(
+                AnalyzerResult(
                     self.config.name,
-                    bands=bands,
-                    relative=relative,
+                    record.record_id,
+                    epoch=epoch if by_epoch else None,
+                    night=night or None,
                 )
-                night = {}
-                if by_night:
-                    night.update(_night_bandpower_means(self.config.name, epoch))
-                if by_stage:
-                    if not stage_source:
-                        raise ValueError("yasa_bandpower stage_source is required when by_stage=true.")
-                    stage = stage_results.get(record.record_id)
-                    if stage is None:
-                        raise ValueError(
-                            f"yasa_bandpower stage_source {stage_source!r} has no "
-                            f"epoch result for {record.record_id!r}."
-                        )
-                    night.update(_stage_bandpower_means(self.config.name, epoch, stage, str(stage_source)))
-                results.append(
-                    AnalyzerResult(
-                        self.config.name,
-                        record.record_id,
-                        epoch=epoch if by_epoch else None,
-                        night=night or None,
-                    )
-                )
-            except Exception as exc:
-                failures.append(
-                    FailureRecord(
-                        record_id=record.record_id,
-                        analyzer=self.config.name,
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                    )
-                )
-        return results, failures
+            )
+        return results
 
 
 class _YasaEventAnalyzer(_YasaBaseAnalyzer):
@@ -184,42 +158,31 @@ class _YasaEventAnalyzer(_YasaBaseAnalyzer):
         records: list[SleepRecord],
         context: Sleep2statContext,
         prior_results: list[AnalyzerResult] | None = None,
-    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+    ) -> list[AnalyzerResult]:
         results: list[AnalyzerResult] = []
-        failures: list[FailureRecord] = []
         resolver = StageSourceResolver(records, prior_results or [])
         for record in records:
-            try:
-                raw, _ = self._build_raw(record, context)
-                frame = _call_yasa_event_detector(
-                    self._yasa,
-                    self.detector_name,
-                    raw,
-                    stage_source=self.config.stage_source,
-                    stages=self.config.stages,
-                    resolver=resolver,
-                    record=record,
-                )
-                events = _yasa_event_frame(record, self.config.name, self.event_type, frame)
-                night = _event_night_summary(
-                    record,
-                    self.config.name,
-                    self.event_type,
-                    events,
-                    resolver,
-                    self.config.stage_source,
-                )
-                results.append(AnalyzerResult(self.config.name, record.record_id, events=events, night=night))
-            except Exception as exc:
-                failures.append(
-                    FailureRecord(
-                        record_id=record.record_id,
-                        analyzer=self.config.name,
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                    )
-                )
-        return results, failures
+            raw, _ = self._build_raw(record, context)
+            frame = _call_yasa_event_detector(
+                self._yasa,
+                self.detector_name,
+                raw,
+                stage_source=self.config.stage_source,
+                stages=self.config.stages,
+                resolver=resolver,
+                record=record,
+            )
+            events = _yasa_event_frame(record, self.config.name, self.event_type, frame)
+            night = _event_night_summary(
+                record,
+                self.config.name,
+                self.event_type,
+                events,
+                resolver,
+                self.config.stage_source,
+            )
+            results.append(AnalyzerResult(self.config.name, record.record_id, events=events, night=night))
+        return results
 
 
 @register_analyzer("yasa_spindles")
@@ -247,42 +210,23 @@ class YasaHrvStageAnalyzer(_YasaBaseAnalyzer):
         records: list[SleepRecord],
         context: Sleep2statContext,
         prior_results: list[AnalyzerResult] | None = None,
-    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+    ) -> list[AnalyzerResult]:
         results: list[AnalyzerResult] = []
-        failures: list[FailureRecord] = []
         resolver = StageSourceResolver(records, prior_results or [])
         if not self.config.stage_source:
-            return [], [
-                FailureRecord(
-                    record_id=record.record_id,
-                    analyzer=self.config.name,
-                    error_type="ValueError",
-                    message="yasa_hrv_stage requires stage_source.",
-                )
-                for record in records
-            ]
+            raise ValueError("yasa_hrv_stage requires stage_source.")
         for record in records:
-            try:
-                raw, _ = self._build_raw(record, context)
-                data, sfreq, _ = _raw_data(raw)
-                seconds = np.arange(data.shape[1], dtype=np.float64) / sfreq
-                hypno = resolver.stage_at_seconds(record.record_id, self.config.stage_source, seconds)
-                if hypno is None:
-                    raise ValueError(f"stage_source {self.config.stage_source!r} not found for {record.record_id!r}.")
-                frame = _call_yasa_hrv_stage(self._yasa, raw, hypno)
-                results.append(
-                    AnalyzerResult(self.config.name, record.record_id, night=_flatten_hrv(self.config.name, frame))
-                )
-            except Exception as exc:
-                failures.append(
-                    FailureRecord(
-                        record_id=record.record_id,
-                        analyzer=self.config.name,
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                    )
-                )
-        return results, failures
+            raw, _ = self._build_raw(record, context)
+            data, sfreq, _ = _raw_data(raw)
+            seconds = np.arange(data.shape[1], dtype=np.float64) / sfreq
+            hypno = resolver.stage_at_seconds(record.record_id, self.config.stage_source, seconds)
+            if hypno is None:
+                raise ValueError(f"stage_source {self.config.stage_source!r} not found for {record.record_id!r}.")
+            frame = _call_yasa_hrv_stage(self._yasa, raw, hypno)
+            results.append(
+                AnalyzerResult(self.config.name, record.record_id, night=_flatten_hrv(self.config.name, frame))
+            )
+        return results
 
 
 def _mne_channel_type(spec: ChannelSpec) -> str:
