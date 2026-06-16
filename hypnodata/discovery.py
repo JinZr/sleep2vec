@@ -62,7 +62,7 @@ def _discover_csv(config: HypnodataConfig) -> list[RecordTask]:
         row_dict = {column: _json_safe_value(row[column]) for column in df.columns}
         files = {name: Path(str(row[column])).expanduser() for name, column in file_columns.items()}
         if discovery.record_id_column:
-            record_id = _record_id_from_value(row[discovery.record_id_column])
+            record_id = str(row[discovery.record_id_column])
         else:
             record_id = _record_id_from_value(Path(str(row[discovery.file_column])).stem) + f"__row{int(row_idx)}"
         metadata = dict(discovery.metadata)

@@ -40,9 +40,9 @@ or preset pickle files.
 ## Signal Preprocess
 
 `signals.<channel>.preprocess` is an ordered list of structured steps. Core
-hypnodata always applies `scale`, `polarity`, target-rate resampling, finite
-checks, and common-duration truncation through the fixed preprocessing path, so
-do not write those fixed steps in YAML.
+hypnodata always applies raw-to-target unit conversion, `scale`, `polarity`,
+target-rate resampling, finite checks, and common-duration truncation through the
+fixed preprocessing path, so do not write those fixed steps in YAML.
 
 Use `type: filter` for NeuroKit2 filtering:
 

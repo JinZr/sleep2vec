@@ -6,7 +6,7 @@ from hypnodata.config import FilterStep, NotchStep, SignalSpec
 from hypnodata.preprocess import preprocess_signal
 
 
-def _selection(sfreq: float) -> ChannelSelection:
+def _selection(sfreq: float, *, raw_unit: str | None = "uV", target_unit: str | None = "uV") -> ChannelSelection:
     return ChannelSelection(
         canonical_channel="eeg",
         kind="eeg",
@@ -17,21 +17,22 @@ def _selection(sfreq: float) -> ChannelSelection:
         raw_index=0,
         raw_sfreq=sfreq,
         target_sfreq=None,
-        raw_unit="uV",
-        target_unit="uV",
+        raw_unit=raw_unit,
+        target_unit=target_unit,
         raw_n_samples=None,
         selection_reason="label:EEG",
     )
 
 
-def _spec(*steps) -> SignalSpec:
+def _spec(*steps, target_unit: str | None = "uV", scale: float = 1.0) -> SignalSpec:
     return SignalSpec(
         name="eeg",
         kind="eeg",
         required=True,
         target_sfreq=None,
-        target_unit="uV",
+        target_unit=target_unit,
         candidates=[],
+        scale=scale,
         preprocess=list(steps),
     )
 
@@ -71,6 +72,44 @@ def test_preprocess_signal_applies_notch_filter():
     assert _fft_amplitude(processed.data, sfreq, 50.0) < _fft_amplitude(raw, sfreq, 50.0) * 0.2
     assert _fft_amplitude(processed.data, sfreq, 10.0) > _fft_amplitude(raw, sfreq, 10.0) * 0.8
     assert processed.steps == ["notch:50Hz:q=30", "finite_check"]
+
+
+def test_preprocess_signal_converts_voltage_units_before_scale():
+    raw = np.asarray([1.0], dtype=np.float32)
+
+    processed = preprocess_signal(raw, _selection(10.0, raw_unit="mV"), _spec(scale=2.0))
+
+    np.testing.assert_allclose(processed.data, np.asarray([2000.0], dtype=np.float32))
+    assert processed.unit == "uV"
+    assert processed.steps == ["unit:mV->uV", "scale:2", "finite_check"]
+
+
+def test_preprocess_signal_converts_volts_to_microvolts():
+    raw = np.asarray([1.0], dtype=np.float32)
+
+    processed = preprocess_signal(raw, _selection(10.0, raw_unit="V"), _spec())
+
+    np.testing.assert_allclose(processed.data, np.asarray([1_000_000.0], dtype=np.float32))
+    assert processed.steps == ["unit:V->uV", "finite_check"]
+
+
+def test_preprocess_signal_accepts_matching_non_voltage_units():
+    raw = np.asarray([95.0], dtype=np.float32)
+
+    processed = preprocess_signal(raw, _selection(1.0, raw_unit="%", target_unit="%"), _spec(target_unit="%"))
+
+    np.testing.assert_allclose(processed.data, raw)
+    assert processed.steps == ["finite_check"]
+
+
+def test_preprocess_signal_rejects_missing_or_incompatible_raw_unit():
+    raw = np.asarray([1.0], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="requires a raw unit"):
+        preprocess_signal(raw, _selection(10.0, raw_unit=None), _spec())
+
+    with pytest.raises(ValueError, match="cannot convert raw unit"):
+        preprocess_signal(raw, _selection(10.0, raw_unit="%", target_unit="uV"), _spec())
 
 
 def test_preprocess_signal_rejects_runtime_cutoffs_at_or_above_nyquist():

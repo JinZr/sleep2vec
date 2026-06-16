@@ -23,6 +23,10 @@ def preprocess_signal(raw: np.ndarray, selection: ChannelSelection, spec: Signal
         raise ValueError(f"Signal {selection.canonical_channel!r} has invalid sfreq: {selection.raw_sfreq}")
     data = np.asarray(raw, dtype=np.float32).reshape(-1)
     steps: list[str] = []
+    unit_scale = _unit_scale(selection.raw_unit, spec.target_unit, selection.canonical_channel)
+    if unit_scale != 1.0:
+        data = data * np.float32(unit_scale)
+        steps.append(f"unit:{_unit_label(selection.raw_unit)}->{_unit_label(spec.target_unit)}")
     if spec.scale != 1.0:
         data = data * np.float32(spec.scale)
         steps.append(f"scale:{spec.scale:g}")
@@ -81,6 +85,32 @@ def _apply_notch(data: np.ndarray, sfreq: float, step: NotchStep, channel: str) 
 def _validate_below_nyquist(value: float | None, sfreq: float, channel: str, name: str) -> None:
     if value is not None and value >= sfreq / 2:
         raise ValueError(f"Signal {channel!r} {name} must be below Nyquist ({sfreq / 2:g} Hz).")
+
+
+def _unit_scale(raw_unit: str | None, target_unit: str | None, channel: str) -> float:
+    target = _normalize_unit(target_unit)
+    if target is None:
+        return 1.0
+    raw = _normalize_unit(raw_unit)
+    if raw is None:
+        raise ValueError(f"Signal {channel!r} target_unit={target_unit!r} requires a raw unit.")
+    if raw == target:
+        return 1.0
+    voltage_scales = {"v": 1.0, "mv": 1e-3, "uv": 1e-6, "nv": 1e-9}
+    if raw in voltage_scales and target in voltage_scales:
+        return voltage_scales[raw] / voltage_scales[target]
+    raise ValueError(f"Signal {channel!r} cannot convert raw unit {raw_unit!r} to target_unit {target_unit!r}.")
+
+
+def _normalize_unit(unit: str | None) -> str | None:
+    if unit is None:
+        return None
+    normalized = unit.strip().lower().replace("μ", "u").replace("µ", "u")
+    return normalized or None
+
+
+def _unit_label(unit: str | None) -> str:
+    return "" if unit is None else unit.strip()
 
 
 def _filter_step_label(step: FilterStep) -> str:

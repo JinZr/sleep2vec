@@ -37,6 +37,19 @@
 - Reuse guidance: use this in pipeline validation and backend manifest writing
   instead of duplicating frequency derivation.
 
+## `hypnodata.discovery.discover_records`
+
+- File: `hypnodata/discovery.py`
+- Signature: `discover_records(config: HypnodataConfig, adapter=None) -> list[RecordTask]`
+- Purpose and contract: discover glob, CSV, or custom-adapter records and
+  validate unique path-safe record IDs.
+- Important inputs/outputs: hypnodata config and optional adapter in;
+  `RecordTask` list out. CSV `record_id_column` values are preserved as explicit
+  external IDs and then validated; only generated file-stem IDs are sanitized.
+- Side effects: reads discovery inputs such as CSV indexes or globs.
+- Reuse guidance: use this before pipeline execution; do not rewrite configured
+  record IDs in downstream code.
+
 ## `hypnodata.edf.read_edf_signal`
 
 - File: `hypnodata/edf.py`
@@ -146,11 +159,12 @@
 - File: `hypnodata/preprocess.py`
 - Signature: `preprocess_signal(raw: np.ndarray, selection: ChannelSelection, spec: SignalSpec) -> ProcessedSignal`
 - Purpose and contract: convert one selected raw signal into a contiguous
-  float32 output by applying scale, polarity, structured preprocess steps,
-  target resampling, and finite checks.
+  float32 output by applying raw-to-target unit conversion, scale, polarity,
+  structured preprocess steps, target resampling, and finite checks.
 - Important inputs/outputs: raw signal, selected channel metadata, and
   `SignalSpec` in; `ProcessedSignal` with data, sfreq, unit, and executed step
-  names out.
+  names out. Unsupported raw/target unit mismatches fail before output is
+  labeled with the target unit.
 - Side effects: imports NeuroKit2 only when a `FilterStep` executes.
 - Reuse guidance: this is the canonical signal preprocessing path.
 - Duplication risk notes: do not add filter execution in `pipeline.py` or

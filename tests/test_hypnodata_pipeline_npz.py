@@ -104,6 +104,34 @@ def _write_filter_config(tmp_path: Path, index: Path) -> Path:
     return path
 
 
+def _write_unit_config(tmp_path: Path, index: Path) -> Path:
+    path = tmp_path / "hypnodata_unit.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "center": "toy",
+                "record_discovery": {
+                    "type": "csv",
+                    "index": str(index),
+                    "file_column": "path",
+                    "record_id_column": "record_id",
+                },
+                "backend": {"type": "npz"},
+                "signals": {
+                    "eeg": {
+                        "kind": "eeg",
+                        "required": True,
+                        "target_sfreq": 1,
+                        "target_unit": "uV",
+                        "candidates": [{"label": "EEG C3", "priority": 10}],
+                    }
+                },
+            }
+        )
+    )
+    return path
+
+
 def _write_index(tmp_path: Path, edf_path: Path) -> Path:
     index = tmp_path / "records.csv"
     pd.DataFrame(
@@ -177,6 +205,28 @@ def test_edf_reader_preserves_header_voltage_unit(tmp_path: Path):
     values = read_edf_signal(edf_path, "EEG C3", raw_unit="uV")
 
     np.testing.assert_allclose(values[:5], np.arange(5, dtype=np.float32))
+
+
+def test_pipeline_converts_raw_unit_to_target_unit(tmp_path: Path):
+    edf_path = tmp_path / "record.edf"
+    write_edf_manual(
+        str(edf_path),
+        [SignalSpec(label="EEG C3", samples=np.arange(1, 11, dtype=np.int16), sample_frequency=1, dimension="mV")],
+        StudyMetadata(source_path=str(edf_path), patient_code="toy"),
+    )
+    index = _write_index(tmp_path, edf_path)
+    config = load_config(_write_unit_config(tmp_path, index))
+    output_dir = tmp_path / "out"
+
+    run_pipeline(config, output_dir=output_dir)
+
+    with np.load(output_dir / "backends" / "npz" / "records" / "night1.npz") as npz:
+        np.testing.assert_allclose(npz["eeg"], np.arange(1, 11, dtype=np.float32) * 1000.0)
+    signal_manifest = pd.read_csv(output_dir / "manifest" / "signal_manifest.csv")
+    eeg = signal_manifest[signal_manifest["canonical_channel"] == "eeg"].iloc[0]
+    assert eeg["raw_unit"] == "mV"
+    assert eeg["target_unit"] == "uV"
+    assert "unit:mV->uV" in eeg["preprocess_steps"]
 
 
 def test_edf_reader_uses_native_channel_sample_rate(tmp_path: Path):

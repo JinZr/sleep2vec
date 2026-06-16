@@ -12,8 +12,9 @@
 
 1. Parse user-facing YAML into typed steps in `hypnodata/config.py`.
 2. Execute parsed steps in `hypnodata/preprocess.py`.
-3. Keep execution order explicit: scale, polarity, structured preprocess list,
-   target-rate resampling, finite check, then common-duration truncation.
+3. Keep execution order explicit: raw-to-target unit conversion, scale,
+   polarity, structured preprocess list, target-rate resampling, finite check,
+   then common-duration truncation.
 4. Record real executed steps in `ProcessedSignal.steps`.
 5. Add or update direct signal tests in `tests/test_hypnodata_preprocess.py`.
 6. Add or update pipeline manifest tests when step names or output metadata
