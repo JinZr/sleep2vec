@@ -1,7 +1,6 @@
 run:
   name: kaldi_model_stats_v01
   output_dir: results/sleep2stat/kaldi_model_stats_v01
-  overwrite: false
   skip_existing: true
   seed: 4523
 

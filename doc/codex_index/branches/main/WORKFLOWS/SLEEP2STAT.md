@@ -147,6 +147,8 @@ SpO2:
 
 When `run.skip_existing=true`, completed records are identified by per-record `_SUCCESS.json`. Summarize can rebuild global tables from an existing run directory and its archived config.
 
+Config-level overwrite is not supported. Reruns that should discard previous outputs must use a new `run.output_dir` or a manually cleared directory.
+
 ## Plotting
 
 Use bundle outputs as the source of truth:

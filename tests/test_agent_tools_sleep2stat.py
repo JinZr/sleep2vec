@@ -128,7 +128,7 @@ def test_sleep2stat_yasa_plan_adds_record_preflight_and_summary_types(tmp_path: 
     config = write_yaml(
         tmp_path / "sleep2stat_yasa.yaml",
         {
-            "run": {"name": "yasa", "output_dir": str(tmp_path / "run"), "overwrite": False, "skip_existing": True},
+            "run": {"name": "yasa", "output_dir": str(tmp_path / "run"), "skip_existing": True},
             "data": {
                 "backend": "npz",
                 "index": str(index),
@@ -244,20 +244,10 @@ def test_sleep2stat_external_test_locked_false_blocks_test_split(tmp_path: Path)
     assert any(issue.field == "external_test_locked" for issue in report.issues)
 
 
-def test_sleep2stat_config_overwrite_conflicts_with_overwrite_policy(tmp_path: Path):
-    config_payload = yaml.safe_load((REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml").read_text())
-    config_payload["run"]["overwrite"] = True
-    config = write_yaml(tmp_path / "sleep2stat_overwrite.yaml", config_payload)
-    payload = _tiny_recipe_payload()
-    payload["inputs"]["config"] = str(config)
-    payload["artifacts"]["overwrite"] = False
-    payload["decisions"]["overwrite_policy"] = {"value": False, "source": "explicit_recipe"}
-    recipe_path = _write_tiny_recipe(tmp_path, payload)
+def test_sleep2stat_config_summary_omits_config_overwrite():
+    summary = sleep2stat_config_summary(REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml")
 
-    _recipe, _cfg, report = evaluate_recipe(recipe_path)
-
-    assert report.exit_code == 2
-    assert any(issue.field == "overwrite_policy" for issue in report.issues)
+    assert "overwrite" not in summary["sleep2stat"]["run"]
 
 
 def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: Path):
@@ -270,7 +260,6 @@ def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: P
             "run": {
                 "name": "kaldi_relative_manifest",
                 "output_dir": str(tmp_path / "run"),
-                "overwrite": False,
                 "skip_existing": True,
             },
             "data": {
@@ -351,7 +340,6 @@ def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: 
             "run": {
                 "name": "placeholder_model",
                 "output_dir": str(tmp_path / "run"),
-                "overwrite": False,
                 "skip_existing": True,
             },
             "data": {

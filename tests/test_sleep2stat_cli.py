@@ -22,7 +22,6 @@ def _write_dry_run_config(tmp_path: Path) -> Path:
         "run": {
             "name": "cli",
             "output_dir": str(tmp_path / "run"),
-            "overwrite": True,
             "skip_existing": True,
         },
         "data": {
@@ -140,7 +139,7 @@ def test_cli_validate_config_check_records_flags_unconvertible_yasa_sex(tmp_path
     index_path.write_text("path,duration,split,source,patient_id,age,sex\nmissing.npz,60,test,unit,p001,60,unknown\n")
     config_path = tmp_path / "yasa.yaml"
     payload = {
-        "run": {"name": "yasa", "output_dir": str(tmp_path / "run"), "overwrite": True},
+        "run": {"name": "yasa", "output_dir": str(tmp_path / "run")},
         "data": {
             "backend": "npz",
             "index": str(index_path),
@@ -391,7 +390,6 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, mon
         "run": {
             "name": "skip",
             "output_dir": str(tmp_path / "run"),
-            "overwrite": False,
             "skip_existing": True,
         },
         "data": {
@@ -460,7 +458,7 @@ def test_pipeline_record_split_matches_sequential_outputs_and_summarize(tmp_path
     index_path = tmp_path / "index.csv"
     index_path.write_text("path,duration,split,source,patient_id,session_id\n" + "".join(records))
     payload = {
-        "run": {"name": "reference", "output_dir": str(tmp_path / "run_seq"), "overwrite": True},
+        "run": {"name": "reference", "output_dir": str(tmp_path / "run_seq")},
         "data": {
             "backend": "npz",
             "index": str(index_path),
@@ -530,7 +528,7 @@ def test_pipeline_model_analyzer_keeps_canonical_chunk_path_with_num_workers(tmp
     )
     config_path = tmp_path / "config.yaml"
     payload = {
-        "run": {"name": "model-fallback", "output_dir": str(tmp_path / "run"), "overwrite": True},
+        "run": {"name": "model-fallback", "output_dir": str(tmp_path / "run")},
         "data": {
             "backend": "npz",
             "index": str(index_path),
@@ -613,7 +611,7 @@ def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, mo
     )
     config_path = tmp_path / "config.yaml"
     payload = {
-        "run": {"name": "reducer-failure", "output_dir": str(tmp_path / "run"), "overwrite": True},
+        "run": {"name": "reducer-failure", "output_dir": str(tmp_path / "run")},
         "data": {
             "backend": "npz",
             "index": str(index_path),

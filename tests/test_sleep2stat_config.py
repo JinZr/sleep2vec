@@ -80,6 +80,14 @@ def test_load_config_accepts_minimal_model_first_yaml(tmp_path: Path):
     assert config.analyzers[0].name == "stage5_model"
 
 
+def test_load_config_rejects_run_overwrite(tmp_path: Path):
+    payload = _minimal_payload()
+    payload["run"]["overwrite"] = False
+
+    with pytest.raises(ValueError, match="Unknown sleep2stat config field"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_supported_sleep2stat_types_match_runtime_registries():
     assert SUPPORTED_ANALYZER_TYPES == set(ANALYZER_REGISTRY)
     assert SUPPORTED_REDUCER_TYPES == set(REDUCER_REGISTRY)

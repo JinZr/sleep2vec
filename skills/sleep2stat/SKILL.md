@@ -8,7 +8,7 @@ Use this skill for model-derived sleep statistics, YASA PSG microstructure summa
 Do not use this skill for model training, hyper-parameter tuning, direct sample exclusion, raw NPZ/index mutation, or automatic cleaning-rule selection.
 
 ## Required inputs
-Requires a sleep2stat config YAML, explicit split policy, explicit metric-use policy, and explicit overwrite policy.
+Requires a sleep2stat config YAML, explicit split policy, explicit metric-use policy, and explicit recipe-level overwrite policy.
 
 The config must explicitly set `data.backend`, `data.path_column`, `data.duration_column`, `data.split_column`, `data.token_sec`, and `data.max_tokens`. `sleep2stat.config.load_config()` is the schema boundary; agent tooling must report its blocking error instead of inferring or translating sleep2stat fields.
 
@@ -43,7 +43,7 @@ Confirm:
 - `artifacts.run_dir`, when present, exactly matches config `run.output_dir`.
 - test split outputs are descriptive-only unless the user explicitly unlocks a different policy.
 - model-derived respiratory metrics are treated as proxy metrics unless clinical annotation analyzers are configured.
-- `run.overwrite`, `run.skip_existing`, and recipe `overwrite_policy` are explicit.
+- `run.skip_existing` and recipe `overwrite_policy` are explicit; config-level `run.overwrite` is unsupported.
 
 ## Stop-and-consult gates
 Stop and ask the user before continuing if:

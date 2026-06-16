@@ -48,6 +48,8 @@ The package-local variant mirrors expose equivalent pretrain/adapt/finetune/infe
 5. `sleep2stat.io.writers.AnalysisBundleWriter` owns per-record `_SUCCESS.json`, `events.csv.gz`, `night_stats.json`, `arrays.npz`, `result_manifest.csv`, global table shards, rebuilt cohort tables, failure merging, and run manifests.
 6. `sleep2stat.plot` renders per-record traces and cohort-level sleep, respiratory, microstructure, and harmonization panels from completed bundles.
 
+`sleep2stat` does not support config-level overwrite; use a new or manually cleared `run.output_dir` when discarding prior outputs.
+
 Agent-generated `sleep2stat` commands must go through `agent_tools` consultation gates first. `task=sleep2stat` is variantless; adding a `variant` value blocks command generation.
 
 ## Runtime Stack

@@ -6,7 +6,7 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 
 - File: `sleep2stat/config.py`
 - Signature: `load_config(path: str | Path) -> Sleep2statConfig`
-- Purpose and contract: parse and validate sleep2stat YAML with strict top-level blocks: `run`, `data`, `signals`, `analyzers`, `reducers`, and `outputs`. Semantic data fields such as backend, path/duration/split columns, token length, and max tokens must be explicit in YAML.
+- Purpose and contract: parse and validate sleep2stat YAML with strict top-level blocks: `run`, `data`, `signals`, `analyzers`, `reducers`, and `outputs`. Semantic data fields such as backend, path/duration/split columns, token length, and max tokens must be explicit in YAML; config-level `run.overwrite` is not supported.
 - Important inputs/outputs: config path in; frozen `Sleep2statConfig` dataclass out.
 - Side effects: reads YAML.
 - Key callers/callees: callers include `sleep2stat.cli.main`, `agent_tools.configs.sleep2stat_config_summary`, and `utils.check_configs.check_config_file`; callees include `_build_run_config`, `_build_data_config`, `_build_signals_config`, `_build_analyzers`, `_validate_backend_analyzer_support`, `_build_reducers`, `_validate_reducer_references`, and `_build_outputs`.
@@ -364,10 +364,10 @@ This catalog covers `sleep2stat/`, a derived-analysis runtime for per-record and
 - Signature: `AnalysisBundleWriter(config: Sleep2statConfig)`
 - Purpose and contract: own all sleep2stat output bundle writes and resumable run bookkeeping, including optional parallel reads when rebuilding global tables from per-record sidecars.
 - Important inputs/outputs: validated config in; methods write record manifests, progress, failures, run manifests, per-record sidecars, global table shards, summary tables, and completion markers.
-- Side effects: creates/removes directories, copies config, writes YAML/JSON/CSV/NPZ files, writes run PID/progress JSON atomically, and rebuilds tables from shards or sidecars.
+- Side effects: creates directories, copies config, writes YAML/JSON/CSV/NPZ files, writes run PID/progress JSON atomically, and rebuilds tables from shards or sidecars; it does not delete existing run directories.
 - Key callers/callees: used by `run_pipeline` and CLI summarize; key methods include `prepare`, `filter_records_for_run`, `write_record_manifest`, `write_progress`, `write_failures`, `write_chunk`, `write_completion_markers`, `rebuild_global_tables`, and `write_run_manifest`.
 - Reuse guidance: use this writer for every sleep2stat output-contract change.
-- Duplication-risk notes: skip-existing, config fingerprint validation, failure merging, sidecar completeness, and global table rebuilds belong here.
+- Duplication-risk notes: skip-existing, config fingerprint validation, failure merging, sidecar completeness, no-overwrite output handling, and global table rebuilds belong here.
 
 ## `sleep2stat.plot.plot_record`
 

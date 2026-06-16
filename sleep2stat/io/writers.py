@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
+from shutil import copyfile
 from typing import Any, Iterable
 import uuid
 
@@ -38,8 +38,6 @@ class AnalysisBundleWriter:
         self.shards_dir = self.tables_dir / "_shards"
 
     def prepare(self, *, args: argparse.Namespace) -> None:
-        if self.run_dir.exists() and self.config.run.overwrite:
-            shutil.rmtree(self.run_dir)
         if self.run_dir.exists() and any(self.run_dir.iterdir()) and not self.config.run.skip_existing:
             raise FileExistsError(f"sleep2stat output_dir already exists: {self.run_dir}")
         if self.run_dir.exists() and self.config.run.skip_existing and not self.config.outputs.write_per_record:
@@ -52,7 +50,7 @@ class AnalysisBundleWriter:
         _write_json({"pid": os.getpid(), "updated_at_utc": _utc_now()}, self.status_dir / "pid.json")
         config_copy = self.run_dir / "config.yaml"
         if self.config.path.resolve() != config_copy.resolve():
-            shutil.copyfile(self.config.path, config_copy)
+            copyfile(self.config.path, config_copy)
         with (self.run_dir / "cli_args.yaml").open("w") as f:
             yaml.safe_dump(_to_yamlable(args), f, sort_keys=True)
 
@@ -332,7 +330,7 @@ class AnalysisBundleWriter:
 
     def _validate_resume_config(self) -> None:
         existing_config = self.run_dir / "config.yaml"
-        if self.config.run.overwrite or not existing_config.exists():
+        if not existing_config.exists():
             return
         existing = _config_fingerprint_from_path(existing_config)
         current = _config_fingerprint_from_path(self.config.path)

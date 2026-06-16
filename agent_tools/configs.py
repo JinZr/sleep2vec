@@ -128,7 +128,6 @@ def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
             "run": {
                 "name": cfg.run.name,
                 "output_dir": str(cfg.run.output_dir),
-                "overwrite": cfg.run.overwrite,
                 "skip_existing": cfg.run.skip_existing,
             },
             "data": {

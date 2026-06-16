@@ -30,7 +30,7 @@ SUPPORTED_REDUCER_TYPES = {
 }
 YASA_STAGE_FILTER_LABELS = {"W", "N1", "N2", "N3", "REM"}
 TOP_LEVEL_KEYS = {"run", "data", "signals", "analyzers", "reducers", "outputs"}
-RUN_KEYS = {"name", "output_dir", "overwrite", "skip_existing", "seed"}
+RUN_KEYS = {"name", "output_dir", "skip_existing", "seed"}
 DATA_KEYS = {
     "backend",
     "index",
@@ -98,7 +98,6 @@ GLOBAL_TABLE_KEYS = {"epoch_alignment", "second_alignment", "event_alignment", "
 class RunConfig:
     name: str
     output_dir: Path
-    overwrite: bool = False
     skip_existing: bool = True
     seed: int = 4523
 
@@ -266,7 +265,6 @@ def _build_run_config(raw: Any) -> RunConfig:
     return RunConfig(
         name=str(data["name"]),
         output_dir=Path(data["output_dir"]),
-        overwrite=bool(data.get("overwrite", False)),
         skip_existing=bool(data.get("skip_existing", True)),
         seed=int(data.get("seed", 4523)),
     )

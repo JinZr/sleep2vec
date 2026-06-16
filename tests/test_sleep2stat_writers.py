@@ -144,6 +144,18 @@ def test_csv_row_count_treats_empty_tables_as_zero(tmp_path: Path):
     assert _csv_row_count(path) == 0
 
 
+def test_writer_prepare_preserves_existing_run_directory(tmp_path: Path):
+    config = _config(tmp_path)
+    config.run.output_dir.mkdir(parents=True)
+    marker = config.run.output_dir / "existing.txt"
+    marker.write_text("keep\n")
+
+    writer = AnalysisBundleWriter(config)
+    writer.prepare(args=type("Args", (), {"dry_run": False})())
+
+    assert marker.read_text() == "keep\n"
+
+
 def test_writer_skip_existing_filters_records_and_merges_global_tables(tmp_path: Path):
     config = _config(tmp_path)
     writer = AnalysisBundleWriter(config)
