@@ -505,7 +505,8 @@ def test_pipeline_rejects_empty_optional_raw_without_annotations(tmp_path: Path,
         ("duplicate", "Duplicate annotation channel"),
         ("raw_duplicate", "duplicates a raw signal output"),
         ("zero_anchor", "must have 3 columns per anchor"),
-        ("long_dense", "exceeds record duration"),
+        ("long_dense", "does not match record duration"),
+        ("short_dense", "does not match record duration"),
         ("event_table_beyond_duration", "exceeds record duration"),
     ],
 )
@@ -579,6 +580,19 @@ class BadAnnotationAdapter:
                     AnnotationSignal(
                         canonical_channel="ah_event",
                         data=np.zeros(11, dtype=np.float32),
+                        sfreq=1.0,
+                        raw_file="events.csv",
+                        raw_label="events",
+                        materialization="event_dense",
+                    )
+                ]
+            )
+        if config.adapter_options["mode"] == "short_dense":
+            return AnnotationResult(
+                [
+                    AnnotationSignal(
+                        canonical_channel="ah_event",
+                        data=np.zeros(9, dtype=np.float32),
                         sfreq=1.0,
                         raw_file="events.csv",
                         raw_label="events",

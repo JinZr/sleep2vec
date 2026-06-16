@@ -581,9 +581,14 @@ def _validate_annotation_duration(canonical: str, annotation: AnnotationSignal, 
         if annotation.sfreq is None:
             return
         # Stage and dense timelines use floor-sized arrays, matching their materializers.
-        max_samples = int(np.floor(float(duration) * float(annotation.sfreq) + tolerance))
-        if annotation.data.shape[0] > max_samples:
-            raise ValueError(f"Annotation channel {canonical!r} exceeds record duration {duration:g}s.")
+        # Short arrays would make record_manifest advertise labels beyond the stored timeline.
+        expected_samples = int(np.floor(float(duration) * float(annotation.sfreq) + tolerance))
+        actual_samples = int(annotation.data.shape[0])
+        if actual_samples != expected_samples:
+            raise ValueError(
+                f"Annotation channel {canonical!r} length {actual_samples} does not match record duration "
+                f"{duration:g}s; expected {expected_samples} samples."
+            )
     elif annotation.materialization == "event_anchor":
         if annotation.sfreq is None:
             return
