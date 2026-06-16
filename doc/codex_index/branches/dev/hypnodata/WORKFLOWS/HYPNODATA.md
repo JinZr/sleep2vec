@@ -28,11 +28,13 @@
    `kind: stage`, `event_table`, `event_dense`, or `event_anchor`.
 4. Use `epoch_sec`, `interval_sec`, or `window_sec` for annotation output grids;
    do not use `target_sfreq` for annotation-only outputs.
-5. Validate canonical names, duplicate annotations, raw-output collisions,
+5. If a record can have no raw signal, make the adapter/discovery metadata
+   provide positive finite `record.metadata["duration"]`.
+6. Validate canonical names, duplicate annotations, raw-output collisions,
    shape, and target sampling frequency in `hypnodata/pipeline.py`.
-6. Update `tests/test_hypnodata_annotations.py` for helper behavior and
+7. Update `tests/test_hypnodata_annotations.py` for helper behavior and
    `tests/test_hypnodata_adapter.py` for pipeline/manifest behavior.
-7. Do not write AHI, ODI, T90, hypoxic burden, sleep efficiency, or other
+8. Do not write AHI, ODI, T90, hypoxic burden, sleep efficiency, or other
    downstream clinical summaries from hypnodata.
 
 ## Validate Hypnodata Changes

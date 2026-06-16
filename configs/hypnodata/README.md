@@ -82,6 +82,10 @@ Adapters must return hypnodata structures such as `RecordTask`, `EdfInventory`,
 and `AnnotationResult`. Keep center-specific behavior in the adapter; do not add
 real center names or hardcoded center rules to core hypnodata.
 
+For records without any available raw signal, adapters must provide a positive
+finite `record.metadata["duration"]` so `read_annotations(record, config,
+duration_sec)` can materialize annotation-only outputs.
+
 `adapter_options` and `custom` are passthrough blocks for adapters. Core
 hypnodata keeps strict unknown-key validation elsewhere and does not use
 `schema_version` or legacy aliases.

@@ -261,11 +261,16 @@ def _materialize_stage_epochs(
         if start < 0 or duration <= 0:
             continue
         first = int(round(start / epoch_sec))
-        count = int(round(duration / epoch_sec))
-        if count < 1:
-            continue
         if abs(first * epoch_sec - start) > 1e-6:
             raise ValueError(f"Stage annotation start={start:g} is not aligned to epoch_sec={epoch_sec:g}.")
+        stop = start + duration
+        last = int(round(stop / epoch_sec))
+        # Stage labels are epoch-granular; reject partial rows instead of rounding them into full epochs.
+        if abs(last * epoch_sec - stop) > 1e-6:
+            raise ValueError(f"Stage annotation stop={stop:g} is not aligned to epoch_sec={epoch_sec:g}.")
+        count = last - first
+        if count < 1:
+            continue
         value = int(mapping.get(str(label), invalid))
         left = max(first, 0)
         right = min(first + count, n_epochs)

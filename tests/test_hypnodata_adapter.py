@@ -10,6 +10,46 @@ from hypnodata.pipeline import run_pipeline
 from tests.hypnodata_test_helpers import write_tiny_edf
 
 
+def _write_annotation_only_adapter(tmp_path: Path, monkeypatch) -> str:
+    adapter_module = tmp_path / "annotation_only_adapter.py"
+    adapter_module.write_text("""
+from pathlib import Path
+
+from hypnodata.annotations import AnnotationResult, read_stage_csv
+from hypnodata.records import RecordTask
+
+
+class AnnotationOnlyAdapter:
+    def collect_records(self, config):
+        metadata = {"source": "annotation_source", "split": "test"}
+        if config.adapter_options.get("include_duration", True):
+            metadata["duration"] = config.adapter_options["duration"]
+        files = {}
+        if "stage_csv" in config.adapter_options:
+            files["stage"] = Path(config.adapter_options["stage_csv"])
+        return [RecordTask(record_id="night1", center=config.center, files=files, metadata=metadata)]
+
+    def read_annotations(self, record, config, duration_sec):
+        if config.adapter_options.get("mode") == "empty":
+            return AnnotationResult()
+        stage = read_stage_csv(
+            record.files["stage"],
+            duration_sec=duration_sec,
+            epoch_sec=config.adapter_options["epoch_sec"],
+            label_column="Type",
+            start_column="Start",
+            duration_column="Duration",
+        )
+        return AnnotationResult([stage])
+
+
+def make_adapter(config):
+    return AnnotationOnlyAdapter()
+""")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return "annotation_only_adapter:make_adapter"
+
+
 def test_custom_adapter_hooks_cover_multifile_metadata_header_scoring_and_annotations(
     tmp_path: Path,
     monkeypatch,
@@ -339,6 +379,122 @@ def make_adapter(config):
     assert dense["target_sfreq"] == 1.0
     anchor = signal_manifest[signal_manifest["canonical_channel"] == "arousal_anchor"].iloc[0]
     assert anchor["preprocess_steps"] == "event_csv,stage_sleep_filter,anchor:10s:2"
+
+
+def test_pipeline_writes_annotation_only_record_with_metadata_duration(tmp_path: Path, monkeypatch):
+    adapter_ref = _write_annotation_only_adapter(tmp_path, monkeypatch)
+    stage_csv = tmp_path / "stage.csv"
+    pd.DataFrame(
+        [
+            {"Start": 0, "Duration": 5, "Type": "Wake"},
+            {"Start": 5, "Duration": 5, "Type": "N1"},
+        ]
+    ).to_csv(stage_csv, index=False)
+    config_path = tmp_path / "annotation_only.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "center": "annotation_center",
+                "record_discovery": {"type": "custom", "adapter": adapter_ref},
+                "backend": {"type": "npz"},
+                "adapter_options": {
+                    "duration": 10,
+                    "epoch_sec": 5,
+                    "stage_csv": str(stage_csv),
+                },
+                "signals": {
+                    "stage5": {
+                        "kind": "stage",
+                        "required": True,
+                        "epoch_sec": 5,
+                        "candidates": [],
+                    },
+                },
+            }
+        )
+    )
+    output_dir = tmp_path / "annotation_only_out"
+
+    run_pipeline(load_config(config_path), output_dir=output_dir)
+
+    with np.load(output_dir / "backends" / "npz" / "records" / "night1.npz") as npz:
+        assert sorted(npz.files) == ["stage5"]
+        np.testing.assert_array_equal(npz["stage5"], np.asarray([0, 1], dtype=np.int64))
+
+    record_manifest = pd.read_csv(output_dir / "manifest" / "record_manifest.csv")
+    assert record_manifest.loc[0, "duration"] == 10.0
+    assert record_manifest.loc[0, "stage_mask"] == 1
+    signal_manifest = pd.read_csv(output_dir / "manifest" / "signal_manifest.csv")
+    stage = signal_manifest[signal_manifest["canonical_channel"] == "stage5"].iloc[0]
+    assert stage["selection_reason"] == "annotation"
+
+
+def test_pipeline_rejects_annotation_only_record_without_metadata_duration(tmp_path: Path, monkeypatch):
+    adapter_ref = _write_annotation_only_adapter(tmp_path, monkeypatch)
+    stage_csv = tmp_path / "stage.csv"
+    pd.DataFrame([{"Start": 0, "Duration": 5, "Type": "Wake"}]).to_csv(stage_csv, index=False)
+    config_path = tmp_path / "annotation_only_missing_duration.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "center": "annotation_center",
+                "record_discovery": {"type": "custom", "adapter": adapter_ref},
+                "backend": {"type": "npz"},
+                "adapter_options": {
+                    "include_duration": False,
+                    "epoch_sec": 5,
+                    "stage_csv": str(stage_csv),
+                },
+                "signals": {
+                    "stage5": {
+                        "kind": "stage",
+                        "required": True,
+                        "epoch_sec": 5,
+                        "candidates": [],
+                    },
+                },
+            }
+        )
+    )
+    output_dir = tmp_path / "annotation_only_missing_duration_out"
+
+    run_pipeline(load_config(config_path), output_dir=output_dir)
+
+    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
+    assert "record.metadata['duration'] is required" in failures.loc[0, "message"]
+
+
+def test_pipeline_rejects_empty_optional_raw_without_annotations(tmp_path: Path, monkeypatch):
+    adapter_ref = _write_annotation_only_adapter(tmp_path, monkeypatch)
+    config_path = tmp_path / "empty_optional_raw.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "center": "annotation_center",
+                "record_discovery": {"type": "custom", "adapter": adapter_ref},
+                "backend": {"type": "npz"},
+                "adapter_options": {
+                    "duration": 10,
+                    "mode": "empty",
+                },
+                "signals": {
+                    "eeg": {
+                        "kind": "eeg",
+                        "required": False,
+                        "target_sfreq": 10,
+                        "target_unit": "uV",
+                        "candidates": [{"label": "EEG C3", "priority": 1}],
+                    },
+                },
+            }
+        )
+    )
+    output_dir = tmp_path / "empty_optional_raw_out"
+
+    run_pipeline(load_config(config_path), output_dir=output_dir)
+
+    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
+    assert failures.loc[0, "message"] == "No available signals to write."
 
 
 @pytest.mark.parametrize(

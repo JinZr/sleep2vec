@@ -161,7 +161,8 @@
 - Purpose and contract: execute hypnodata conversion for discovered records,
   handling resume/overwrite/dry-run/crash options and writing final manifests.
 - Important inputs/outputs: parsed config and output directory in; output
-  directory out.
+  directory out. If a record has no available raw signal, `record.metadata`
+  must provide a positive finite `duration` for annotation-only materialization.
 - Side effects: reads raw records, writes NPZ files, manifests, and progress.
 - Reuse guidance: use this as the orchestration entrypoint.
 

@@ -264,20 +264,33 @@ def _process_record(
             )
             signal = preprocess_signal(raw, selection, spec)
             processed[canonical] = signal
-        processed, duration, truncated_channels = truncate_to_common(processed)
-        for channel in truncated_channels:
-            qc_rows.append(
-                issue_row(
-                    QCIssue(
-                        record_id=record.record_id,
-                        scope="signal",
-                        canonical_channel=channel,
-                        code="length_mismatch",
-                        severity="warning",
-                        message="Signal was truncated to the common record duration.",
+        if processed:
+            processed, duration, truncated_channels = truncate_to_common(processed)
+            for channel in truncated_channels:
+                qc_rows.append(
+                    issue_row(
+                        QCIssue(
+                            record_id=record.record_id,
+                            scope="signal",
+                            canonical_channel=channel,
+                            code="length_mismatch",
+                            severity="warning",
+                            message="Signal was truncated to the common record duration.",
+                        )
                     )
                 )
-            )
+        else:
+            try:
+                duration = float(record.metadata.get("duration"))
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "Record has no raw signals; record.metadata['duration'] is required for annotation-only output."
+                ) from None
+            if not np.isfinite(duration) or duration <= 0:
+                raise ValueError(
+                    "Record has no raw signals; record.metadata['duration'] must be a positive finite number "
+                    "for annotation-only output."
+                )
         if config.backend.min_duration is not None and duration < config.backend.min_duration:
             raise ValueError(f"Record duration {duration:g}s is shorter than backend.min_duration.")
         annotations = call_read_annotations(adapter, record, config, duration)
@@ -288,6 +301,8 @@ def _process_record(
                 raise ChannelResolutionError(f"Missing required channel {canonical!r}.")
         arrays = {name: signal.data for name, signal in processed.items()}
         arrays.update({name: signal.data for name, signal in annotation_by_name.items()})
+        if not arrays:
+            raise ValueError("No available signals to write.")
         output_path = npz_path if dry_run else write_npz_record(output_dir, record.record_id, arrays)
         signal_rows: list[dict[str, Any]] = []
         for canonical, selection in selections.items():
