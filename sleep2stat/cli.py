@@ -14,7 +14,7 @@ from sleep2stat.core.artifacts import FailureRecord
 from sleep2stat.core.pipeline import run_pipeline
 from sleep2stat.finalize import cohort_finalize
 from sleep2stat.io.records import SleepRecord, load_records
-from sleep2stat.io.writers import AnalysisBundleWriter, RUN_TERMINAL_STATUSES, _require_terminal_run_manifest
+from sleep2stat.io.writers import RUN_TERMINAL_STATUSES, AnalysisBundleWriter, _require_terminal_run_manifest
 from sleep2stat.plot import plot_cohort, plot_record
 
 
