@@ -15,8 +15,7 @@ signals:
     target_sfreq: 10
     target_unit: uV
     candidates:
-      - label: "EEG C3"
-        priority: 10
+      - "EEG C3"
     scale: 1.0
     polarity: normal
     preprocess:
@@ -31,8 +30,7 @@ signals:
     target_sfreq: 1
     target_unit: "%"
     candidates:
-      - regex: "^SpO2"
-        priority: 5
+      - "SpO2"
   stage5:
     kind: stage
     required: false
@@ -42,8 +40,8 @@ signals:
     kind: event_table
     required: false
     candidates: []
-  ah_event:
-    kind: event_dense
+  ahi:
+    kind: ahi
     required: false
     interval_sec: 1
     candidates: []

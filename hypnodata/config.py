@@ -38,20 +38,12 @@ SIGNAL_KEYS = {
     "polarity",
     "preprocess",
 }
-CANDIDATE_KEYS = {"label", "regex", "priority"}
 FILTER_STEP_KEYS = {"type", "method", "order", "lowcut", "highcut"}
 NOTCH_STEP_KEYS = {"type", "freq", "q"}
 # YAML preprocess only contains user-configurable signal transforms.
 # Fixed steps such as resampling, finite checks, and common truncation run in the pipeline.
 PREPROCESS_TYPES = {"filter", "notch"}
-ANNOTATION_ONLY_KINDS = {"stage", "event_table", "event_dense", "event_anchor"}
-
-
-@dataclass(frozen=True)
-class CandidateSpec:
-    label: str | None = None
-    regex: str | None = None
-    priority: int = 0
+ANNOTATION_ONLY_KINDS = {"stage", "event_table", "event_dense", "event_anchor", "ahi"}
 
 
 @dataclass(frozen=True)
@@ -78,7 +70,7 @@ class SignalSpec:
     required: bool
     target_sfreq: float | None
     target_unit: str | None
-    candidates: list[CandidateSpec]
+    candidates: list[str]
     epoch_sec: float | None = None
     interval_sec: float | None = None
     window_sec: float | None = None
@@ -214,6 +206,8 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
             raise ValueError(f"signals.{canonical}.kind is required.")
         candidates = _build_candidates(spec.get("candidates", []), canonical)
         kind = str(spec["kind"])
+        if kind == "ahi" and candidates:
+            raise ValueError(f"signals.{canonical}.candidates must be empty for kind=ahi.")
         if not candidates and kind not in ANNOTATION_ONLY_KINDS:
             allowed = ", ".join(sorted(ANNOTATION_ONLY_KINDS))
             raise ValueError(f"signals.{canonical}.candidates must not be empty unless kind is one of: {allowed}.")
@@ -242,6 +236,7 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
             polarity=_parse_polarity(spec.get("polarity", 1), canonical),
             preprocess=preprocess_steps,
         )
+    _validate_builtin_ahi_contract(signals)
     return signals
 
 
@@ -273,6 +268,7 @@ def _build_annotation_timing(
         "event_dense": "interval_sec",
         "event_anchor": "window_sec",
         "event_table": None,
+        "ahi": "interval_sec",
     }
     expected = allowed_by_kind[kind]
     unexpected = sorted(key for key in timing_keys if key != expected and spec.get(key) is not None)
@@ -288,6 +284,24 @@ def _build_annotation_timing(
     if expected == "interval_sec":
         return None, value, None
     return None, None, value
+
+
+def _validate_builtin_ahi_contract(signals: dict[str, SignalSpec]) -> None:
+    ahi_names = [name for name, spec in signals.items() if spec.kind == "ahi"]
+    if not ahi_names:
+        return
+    if ahi_names != ["ahi"]:
+        raise ValueError("kind=ahi must be declared as signals.ahi.")
+    ahi = signals["ahi"]
+    if ahi.interval_sec is None or not math.isclose(float(ahi.interval_sec), 1.0):
+        raise ValueError("signals.ahi.interval_sec must be 1 for built-in AHI output.")
+    if "ah_event" in signals:
+        raise ValueError("signals.ah_event cannot be declared with signals.ahi because AHI writes NPZ key 'ah_event'.")
+    stage = signals.get("stage5")
+    if stage is None or stage.kind != "stage":
+        raise ValueError("signals.ahi requires signals.stage5 with kind=stage.")
+    if stage.epoch_sec is None or not math.isclose(float(stage.epoch_sec), 30.0):
+        raise ValueError("signals.ahi requires signals.stage5.epoch_sec to be 30.")
 
 
 def _build_preprocess_steps(raw: Any, canonical: str) -> list[PreprocessStep]:
@@ -332,23 +346,13 @@ def _build_notch_step(item: dict[str, Any], name: str) -> NotchStep:
     )
 
 
-def _build_candidates(raw: Any, canonical: str) -> list[CandidateSpec]:
+def _build_candidates(raw: Any, canonical: str) -> list[str]:
     items = _require_list(raw, f"signals.{canonical}.candidates")
-    candidates: list[CandidateSpec] = []
+    candidates: list[str] = []
     for idx, item_raw in enumerate(items):
-        item = _require_mapping(item_raw, f"signals.{canonical}.candidates[{idx}]")
-        _reject_unknown_keys(item, CANDIDATE_KEYS, f"signals.{canonical}.candidates[{idx}]")
-        has_label = item.get("label") not in (None, "")
-        has_regex = item.get("regex") not in (None, "")
-        if has_label == has_regex:
-            raise ValueError(f"signals.{canonical}.candidates[{idx}] must set exactly one of label or regex.")
-        candidates.append(
-            CandidateSpec(
-                label=None if not has_label else str(item["label"]),
-                regex=None if not has_regex else str(item["regex"]),
-                priority=int(item.get("priority", 0)),
-            )
-        )
+        if not isinstance(item_raw, str) or item_raw == "":
+            raise ValueError(f"signals.{canonical}.candidates[{idx}] must be a non-empty string.")
+        candidates.append(item_raw)
     return candidates
 
 

@@ -40,7 +40,7 @@ def _write_config(tmp_path: Path, index: Path, *, missing_required: bool = False
             "required": True,
             "target_sfreq": 5,
             "target_unit": "uV",
-            "candidates": [{"label": eeg_label, "priority": 10}],
+            "candidates": [eeg_label],
             "scale": 2.0,
             "polarity": "invert",
         }
@@ -51,7 +51,7 @@ def _write_config(tmp_path: Path, index: Path, *, missing_required: bool = False
             "required": False,
             "target_sfreq": 1,
             "target_unit": "%",
-            "candidates": [{"regex": "^SpO2", "priority": 5}],
+            "candidates": ["SpO2"],
         }
     path = tmp_path / "hypnodata.yaml"
     path.write_text(
@@ -92,7 +92,7 @@ def _write_filter_config(tmp_path: Path, index: Path) -> Path:
                         "required": True,
                         "target_sfreq": 5,
                         "target_unit": "uV",
-                        "candidates": [{"label": "EEG C3", "priority": 10}],
+                        "candidates": ["EEG C3"],
                         "preprocess": [
                             {"type": "filter", "method": "bessel", "order": 2, "highcut": 2.0},
                         ],
@@ -123,7 +123,7 @@ def _write_unit_config(tmp_path: Path, index: Path) -> Path:
                         "required": True,
                         "target_sfreq": 1,
                         "target_unit": "uV",
-                        "candidates": [{"label": "EEG C3", "priority": 10}],
+                        "candidates": ["EEG C3"],
                     }
                 },
             }

@@ -9,7 +9,7 @@ import pandas as pd
 
 STAGE5_MAPPING = {"Wake": 0, "N1": 1, "N2": 2, "N3": 3, "REM": 4}
 SLEEP_STAGE_VALUES = frozenset({1, 2, 3, 4})
-ANNOTATION_MATERIALIZATIONS = {"stage", "event_table", "event_dense", "event_anchor"}
+ANNOTATION_MATERIALIZATIONS = {"stage", "event_table", "event_dense", "event_anchor", "ahi"}
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,8 @@ class AnnotationSignal:
     unit: str | None = None
     steps: list[str] = field(default_factory=list)
     materialization: str = "stage"
+    output_key: str | None = None
+    extra_outputs: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -214,6 +216,59 @@ def materialize_anchor_events(
         raw_label=raw_label,
         materialization="event_anchor",
         steps=list(steps or ["event_csv"]) + [f"anchor:{window_sec:g}s:{anchor_num:g}"],
+    )
+
+
+def materialize_ahi_from_events(
+    events: np.ndarray,
+    stage: np.ndarray,
+    *,
+    duration_sec: float,
+    epoch_sec: float = 30.0,
+    interval_sec: float = 1.0,
+    canonical_channel: str = "ahi",
+    raw_file: str = "",
+    raw_label: str = "events",
+    steps: list[str] | None = None,
+) -> AnnotationSignal:
+    if epoch_sec <= 0:
+        raise ValueError("AHI epoch_sec must be positive.")
+    if interval_sec <= 0:
+        raise ValueError("AHI interval_sec must be positive.")
+    stage_values = np.asarray(stage).reshape(-1)
+    sleep_mask = np.isin(stage_values, list(SLEEP_STAGE_VALUES))
+    tst_hours = float(sleep_mask.sum()) * float(epoch_sec) / 3600.0
+    if tst_hours <= 0:
+        raise ValueError("AHI output requires positive TST from sleep stages.")
+
+    rows = _normalize_event_rows(events)
+    # AASM adult respiratory events must last at least 10 seconds.
+    rows = rows[rows[:, 2] >= 10.0]
+    rows = filter_events_to_sleep_stages(rows, stage_values, epoch_sec=epoch_sec)
+    dense = materialize_dense_events(
+        rows,
+        duration_sec=duration_sec,
+        interval_sec=interval_sec,
+        canonical_channel=canonical_channel,
+        raw_file=raw_file,
+        raw_label=raw_label,
+        value=1.0,
+        steps=list(steps or ["event_csv"]) + ["aasm_min_duration:10s", "stage_sleep_filter"],
+    )
+    ahi = float(rows.shape[0]) / tst_hours
+    return AnnotationSignal(
+        canonical_channel=canonical_channel,
+        data=dense.data,
+        sfreq=dense.sfreq,
+        raw_file=raw_file,
+        raw_label=raw_label,
+        materialization="ahi",
+        steps=dense.steps + ["ahi_from_events"],
+        output_key="ah_event",
+        extra_outputs={
+            "ahi": np.asarray(ahi, dtype=np.float32),
+            "tst": np.asarray(tst_hours, dtype=np.float32),
+        },
     )
 
 

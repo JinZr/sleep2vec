@@ -7,6 +7,7 @@ import pytest
 from hypnodata.annotations import (
     AnnotationSignal,
     filter_events_to_sleep_stages,
+    materialize_ahi_from_events,
     materialize_anchor_events,
     materialize_dense_events,
     materialize_event_table,
@@ -166,3 +167,41 @@ def test_filter_events_to_sleep_stages_keeps_only_sleep_overlap():
     filtered = filter_events_to_sleep_stages(rows, stage, epoch_sec=30)
 
     np.testing.assert_allclose(filtered, rows[1:])
+
+
+def test_materialize_ahi_from_events_filters_events_and_writes_scalars():
+    stage = np.asarray([0, 1, -1, 2, 0, 4], dtype=np.int64)
+    rows = np.asarray(
+        [
+            [0, 35, 9],
+            [0, 35, 10],
+            [0, 0, 12],
+            [0, 55, 20],
+            [0, 125, 10],
+            [0, 145, 10],
+        ],
+        dtype=np.float32,
+    )
+
+    signal = materialize_ahi_from_events(rows, stage, duration_sec=180, epoch_sec=30, interval_sec=1)
+
+    expected = np.zeros(180, dtype=np.float32)
+    expected[35:45] = 1
+    expected[55:75] = 1
+    expected[145:155] = 1
+    np.testing.assert_array_equal(signal.data, expected)
+    assert signal.materialization == "ahi"
+    assert signal.output_key == "ah_event"
+    assert set(signal.extra_outputs) == {"ahi", "tst"}
+    np.testing.assert_allclose(signal.extra_outputs["tst"], np.asarray(90 / 3600, dtype=np.float32))
+    np.testing.assert_allclose(signal.extra_outputs["ahi"], np.asarray(120.0, dtype=np.float32))
+    assert "aasm_min_duration:10s" in signal.steps
+    assert "stage_sleep_filter" in signal.steps
+
+
+def test_materialize_ahi_from_events_rejects_zero_tst():
+    stage = np.asarray([0, -1], dtype=np.int64)
+    rows = np.asarray([[0, 0, 10]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="positive TST"):
+        materialize_ahi_from_events(rows, stage, duration_sec=60, epoch_sec=30, interval_sec=1)

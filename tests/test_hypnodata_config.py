@@ -22,7 +22,7 @@ def _payload() -> dict:
                 "required": True,
                 "target_sfreq": 10,
                 "target_unit": "uV",
-                "candidates": [{"label": "EEG C3", "priority": 5}],
+                "candidates": ["EEG C3", "C3-A2"],
                 "preprocess": [
                     {"type": "notch", "freq": 50.0, "q": 30.0},
                     {"type": "filter", "method": "bessel", "order": 4, "lowcut": 0.5, "highcut": 45.0},
@@ -44,7 +44,7 @@ def test_load_config_accepts_minimal_yaml(tmp_path: Path):
     assert config.center == "toy"
     assert config.record_discovery.type == "csv"
     assert config.backend.type == "npz"
-    assert config.signals["eeg"].candidates[0].label == "EEG C3"
+    assert config.signals["eeg"].candidates == ["EEG C3", "C3-A2"]
     assert config.signals["eeg"].preprocess == [
         NotchStep(freq=50.0, q=30.0),
         FilterStep(method="bessel", order=4, lowcut=0.5, highcut=45.0),
@@ -85,11 +85,93 @@ def test_load_config_accepts_annotation_only_kinds_without_candidates(tmp_path: 
     assert config.signals["events"].candidates == []
 
 
+def test_load_config_accepts_builtin_ahi_signal(tmp_path: Path):
+    payload = _payload()
+    payload["signals"]["stage5"] = {
+        "kind": "stage",
+        "required": True,
+        "epoch_sec": 30,
+        "candidates": [],
+    }
+    payload["signals"]["ahi"] = {
+        "kind": "ahi",
+        "required": True,
+        "interval_sec": 1,
+        "candidates": [],
+    }
+
+    config = load_config(_write_yaml(tmp_path, payload))
+
+    assert config.signals["ahi"].kind == "ahi"
+    assert config.signals["ahi"].interval_sec == 1
+
+
+@pytest.mark.parametrize(
+    ("signals", "match"),
+    [
+        (
+            {"ahi": {"kind": "ahi", "required": True, "interval_sec": 1, "candidates": []}},
+            "requires signals.stage5",
+        ),
+        (
+            {
+                "stage5": {"kind": "stage", "required": True, "epoch_sec": 20, "candidates": []},
+                "ahi": {"kind": "ahi", "required": True, "interval_sec": 1, "candidates": []},
+            },
+            "stage5.epoch_sec to be 30",
+        ),
+        (
+            {
+                "stage5": {"kind": "stage", "required": True, "epoch_sec": 30, "candidates": []},
+                "ahi": {"kind": "ahi", "required": True, "interval_sec": 2, "candidates": []},
+            },
+            "interval_sec must be 1",
+        ),
+        (
+            {
+                "stage5": {"kind": "stage", "required": True, "epoch_sec": 30, "candidates": []},
+                "ahi": {"kind": "ahi", "required": True, "interval_sec": 1, "candidates": ["AHI"]},
+            },
+            "candidates must be empty",
+        ),
+        (
+            {
+                "stage5": {"kind": "stage", "required": True, "epoch_sec": 30, "candidates": []},
+                "ahi": {"kind": "ahi", "required": True, "interval_sec": 1, "candidates": []},
+                "ah_event": {"kind": "event_dense", "required": False, "interval_sec": 1, "candidates": []},
+            },
+            "cannot be declared with signals.ahi",
+        ),
+        (
+            {
+                "stage5": {"kind": "stage", "required": True, "epoch_sec": 30, "candidates": []},
+                "ahi_label": {"kind": "ahi", "required": True, "interval_sec": 1, "candidates": []},
+            },
+            "kind=ahi must be declared as signals.ahi",
+        ),
+    ],
+)
+def test_load_config_rejects_invalid_builtin_ahi_contract(tmp_path: Path, signals: dict, match: str):
+    payload = _payload()
+    payload["signals"].update(signals)
+
+    with pytest.raises(ValueError, match=match):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_rejects_raw_signal_without_candidates(tmp_path: Path):
     payload = _payload()
     payload["signals"]["eeg"]["candidates"] = []
 
     with pytest.raises(ValueError, match="candidates must not be empty"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_empty_candidate_label(tmp_path: Path):
+    payload = _payload()
+    payload["signals"]["eeg"]["candidates"] = [""]
+
+    with pytest.raises(ValueError, match="must be a non-empty string"):
         load_config(_write_yaml(tmp_path, payload))
 
 
@@ -127,7 +209,7 @@ def test_load_config_rejects_annotation_source_field(tmp_path: Path):
         ("event_anchor", {}, r"window_sec is required"),
         ("stage", {"target_sfreq": 1.0, "epoch_sec": 30}, r"target_sfreq is not used"),
         ("event_dense", {"window_sec": 30}, r"window_sec is not valid"),
-        ("eeg", {"epoch_sec": 30, "candidates": [{"label": "EEG C3"}]}, r"epoch_sec is only valid"),
+        ("eeg", {"epoch_sec": 30, "candidates": ["EEG C3"]}, r"epoch_sec is only valid"),
     ],
 )
 def test_load_config_rejects_invalid_annotation_timing(tmp_path: Path, kind: str, fields: dict, match: str):
@@ -193,11 +275,19 @@ def test_load_config_rejects_non_npz_backend(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
-def test_load_config_requires_exactly_one_candidate_matcher(tmp_path: Path):
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {"label": "EEG"},
+        {"regex": "EEG"},
+        {"label": "EEG", "priority": 1},
+    ],
+)
+def test_load_config_rejects_candidate_mappings(tmp_path: Path, candidate: dict):
     payload = _payload()
-    payload["signals"]["eeg"]["candidates"] = [{"label": "EEG", "regex": "EEG"}]
+    payload["signals"]["eeg"]["candidates"] = [candidate]
 
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="must be a non-empty string"):
         load_config(_write_yaml(tmp_path, payload))
 
 

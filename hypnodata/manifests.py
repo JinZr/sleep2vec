@@ -55,6 +55,12 @@ def mask_column_for_channel(channel_name: str) -> str:
     return f"{channel_name}_mask"
 
 
+def output_key_for_channel(channel_name: str) -> str:
+    if channel_name == "ahi":
+        return "ah_event"
+    return channel_name
+
+
 def write_manifests(
     output_dir: Path,
     config: HypnodataConfig,
@@ -92,7 +98,7 @@ def write_manifests(
                 "target_sfreq": declared_target_sfreq(spec),
                 "target_unit": spec.target_unit,
                 "mask_column": mask_column_for_channel(name),
-                "output_key": name,
+                "output_key": output_key_for_channel(name),
             }
             for name, spec in config.signals.items()
         },

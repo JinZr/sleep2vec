@@ -52,7 +52,7 @@ def write_hypnodata_config(
             "required": True,
             "target_sfreq": target_sfreq,
             "target_unit": "uV",
-            "candidates": [{"label": label, "priority": 10}],
+            "candidates": [label],
             "scale": scale,
         }
     }

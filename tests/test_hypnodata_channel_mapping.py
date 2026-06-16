@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from hypnodata.channels import ChannelResolutionError, resolve_channels
-from hypnodata.config import CandidateSpec, SignalSpec
+from hypnodata.config import SignalSpec
 from hypnodata.edf import EdfInventory, EdfSignalInfo
 
 
@@ -26,49 +26,34 @@ def _spec(required: bool = True, candidates=None) -> SignalSpec:
         required=required,
         target_sfreq=10.0,
         target_unit="uV",
-        candidates=[CandidateSpec(label="EEG C3", priority=1)] if candidates is None else candidates,
+        candidates=["EEG C3"] if candidates is None else candidates,
     )
 
 
-def test_resolve_channels_prefers_higher_priority_exact_alias():
+def test_resolve_channels_prefers_first_matching_candidate():
     inventory = EdfInventory(
         path=Path("record.edf"),
         signals=[_signal("EEG C4", 0), _signal("EEG C3", 1)],
         duration=10.0,
         warnings=[],
     )
-    spec = _spec(candidates=[CandidateSpec(label="EEG C4", priority=1), CandidateSpec(label="EEG C3", priority=5)])
+    spec = _spec(candidates=["EEG C3", "EEG C4"])
 
     selections, warnings = resolve_channels({"eeg": spec}, {"edf": inventory})
 
     assert warnings == []
     assert selections["eeg"].raw_label == "EEG C3"
-    assert selections["eeg"].selection_reason == "label:EEG C3; priority=5"
-
-
-def test_resolve_channels_supports_regex_candidate():
-    inventory = EdfInventory(
-        path=Path("record.edf"),
-        signals=[_signal("C3-M2", 0)],
-        duration=10.0,
-        warnings=[],
-    )
-    spec = _spec(candidates=[CandidateSpec(regex=r"^C3", priority=2)])
-
-    selections, _ = resolve_channels({"eeg": spec}, {"edf": inventory})
-
-    assert selections["eeg"].raw_label == "C3-M2"
-    assert selections["eeg"].selection_reason == "regex:C3-M2; priority=2"
+    assert selections["eeg"].selection_reason == "label:EEG C3"
 
 
 def test_required_ambiguity_fails():
     inventory = EdfInventory(
         path=Path("record.edf"),
-        signals=[_signal("EEG C3", 0), _signal("EEG C4", 1)],
+        signals=[_signal("EEG C3", 0), _signal("EEG C3", 1)],
         duration=10.0,
         warnings=[],
     )
-    spec = _spec(candidates=[CandidateSpec(regex=r"^EEG", priority=1)])
+    spec = _spec(candidates=["EEG C3"])
 
     with pytest.raises(ChannelResolutionError, match="Ambiguous required channel"):
         resolve_channels({"eeg": spec}, {"edf": inventory})
@@ -77,15 +62,16 @@ def test_required_ambiguity_fails():
 def test_optional_ambiguity_warns_and_selects_deterministically():
     inventory = EdfInventory(
         path=Path("record.edf"),
-        signals=[_signal("EEG C4", 1), _signal("EEG C3", 0)],
+        signals=[_signal("EEG C3", 1), _signal("EEG C3", 0)],
         duration=10.0,
         warnings=[],
     )
-    spec = _spec(required=False, candidates=[CandidateSpec(regex=r"^EEG", priority=1)])
+    spec = _spec(required=False, candidates=["EEG C3"])
 
     selections, warnings = resolve_channels({"eeg": spec}, {"edf": inventory})
 
     assert selections["eeg"].raw_label == "EEG C3"
+    assert selections["eeg"].raw_index == 0
     assert warnings
     assert "Ambiguous optional channel" in warnings[0]
 

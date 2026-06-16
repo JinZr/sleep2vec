@@ -11,14 +11,15 @@ out.
    glob, CSV, or custom adapter discovery.
 3. `hypnodata.edf.read_edf_inventory` inspects raw EDF files.
 4. `hypnodata.channels.resolve_channels` resolves configured canonical signals
-   to raw labels or marks optional channels missing.
+   to raw labels by ordered exact-label candidates or marks optional channels
+   missing.
 5. `hypnodata.edf.read_edf_signal` reads the selected raw signal.
 6. `hypnodata.preprocess.preprocess_signal` applies scale, polarity,
    structured filter/notch steps, resampling, and finite checks.
 7. `hypnodata.preprocess.truncate_to_common` aligns available raw signals to a
    common duration.
 8. Adapter annotations may materialize configured `stage`, `event_table`,
-   `event_dense`, or `event_anchor` outputs.
+   `event_dense`, `event_anchor`, or built-in `ahi` outputs.
 9. `hypnodata.backends.write_npz_record` writes standardized arrays.
 10. `hypnodata.manifests.write_manifests` writes record, signal, QC, failure,
     backend, and progress outputs.
@@ -46,6 +47,8 @@ Annotation-only signals use empty `candidates` and one of these `kind` values:
 - `event_dense`: 1D dense event labels; declare `interval_sec`
 - `event_anchor`: 2D anchor labels with three columns per anchor; declare
   `window_sec`
+- `ahi`: built-in AHI finetune output; declare `interval_sec: 1`, require
+  `stage5.epoch_sec: 30`, and write `ah_event`, scalar `ahi`, and scalar `tst`
 
 Annotation-only signals must not use `target_sfreq` in YAML. Core config
 derives the effective output frequency from the second-based fields when

@@ -38,7 +38,8 @@
    `signals.<name>.annotation` to core YAML.
 2. Add or extend event/stage materializers in `hypnodata/annotations.py`.
 3. Declare annotation-only outputs in `signals` with empty `candidates` and
-   `kind: stage`, `event_table`, `event_dense`, or `event_anchor`.
+   `kind: stage`, `event_table`, `event_dense`, `event_anchor`, or built-in
+   `ahi`.
 4. Use `epoch_sec`, `interval_sec`, or `window_sec` for annotation output grids;
    do not use `target_sfreq` for annotation-only outputs.
 5. If a record can have no raw signal, make the adapter/discovery metadata
@@ -47,7 +48,10 @@
    shape, and target sampling frequency in `hypnodata/pipeline.py`.
 7. Update `tests/test_hypnodata_annotations.py` for helper behavior and
    `tests/test_hypnodata_adapter.py` for pipeline/manifest behavior.
-8. Do not write AHI, ODI, T90, hypoxic burden, sleep efficiency, or other
+8. For built-in AHI finetune data, use `signals.ahi` and
+   `materialize_ahi_from_events` so `ah_event`, scalar `ahi`, and scalar `tst`
+   are written as one contract.
+9. Do not write ODI, T90, hypoxic burden, sleep efficiency, or other unrelated
    downstream clinical summaries from hypnodata.
 
 ## Validate Hypnodata Changes

@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from hypnodata.annotations import AnnotationResult
-from hypnodata.config import CandidateSpec, HypnodataConfig, SignalSpec
-from hypnodata.edf import EdfInventory, EdfSignalInfo
+from hypnodata.config import HypnodataConfig
+from hypnodata.edf import EdfInventory
 from hypnodata.records import RecordTask
 from hypnodata.registry import resolve_callable
 
@@ -25,17 +25,6 @@ class DefaultAdapter:
         config: HypnodataConfig,
     ) -> dict[str, EdfInventory]:
         return inventories
-
-    def score_channel_candidate(
-        self,
-        record: RecordTask,
-        canonical: str,
-        spec: SignalSpec,
-        candidate: CandidateSpec,
-        signal: EdfSignalInfo,
-        config: HypnodataConfig,
-    ) -> float | None:
-        return None
 
     def read_annotations(
         self,
@@ -89,22 +78,6 @@ def call_fix_header(
     if not isinstance(fixed, dict):
         raise ValueError("adapter.fix_header must return an inventory mapping.")
     return fixed
-
-
-def call_score_channel_candidate(
-    adapter: Any,
-    record: RecordTask,
-    canonical: str,
-    spec: SignalSpec,
-    candidate: CandidateSpec,
-    signal: EdfSignalInfo,
-    config: HypnodataConfig,
-) -> float | None:
-    scorer = getattr(adapter, "score_channel_candidate", None)
-    if not callable(scorer):
-        return None
-    score = scorer(record, canonical, spec, candidate, signal, config)
-    return None if score is None else float(score)
 
 
 def call_read_annotations(

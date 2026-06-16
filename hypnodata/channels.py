@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
-from typing import Callable
 
-from hypnodata.config import CandidateSpec, SignalSpec
+from hypnodata.config import SignalSpec
 from hypnodata.edf import EdfInventory, EdfSignalInfo
 
 
@@ -33,12 +31,11 @@ class ChannelResolutionError(ValueError):
 def resolve_channels(
     signals: dict[str, SignalSpec],
     inventories: dict[str, EdfInventory],
-    scorer: Callable[[str, SignalSpec, CandidateSpec, EdfSignalInfo], float | None] | None = None,
 ) -> tuple[dict[str, ChannelSelection], list[str]]:
     selections: dict[str, ChannelSelection] = {}
     warnings: list[str] = []
     for canonical, spec in signals.items():
-        selection = _resolve_one(canonical, spec, inventories, scorer=scorer)
+        selection = _resolve_one(canonical, spec, inventories)
         if selection.warning:
             warnings.append(selection.warning)
         selections[canonical] = selection
@@ -49,33 +46,13 @@ def _resolve_one(
     canonical: str,
     spec: SignalSpec,
     inventories: dict[str, EdfInventory],
-    *,
-    scorer: Callable[[str, SignalSpec, CandidateSpec, EdfSignalInfo], float | None] | None,
 ) -> ChannelSelection:
     matches = []
-    for file_key, inventory in sorted(inventories.items()):
-        for signal in inventory.signals:
-            for candidate_idx, candidate in enumerate(spec.candidates):
-                match_type = ""
-                if candidate.label is not None and signal.raw_label == candidate.label:
-                    match_type = "label"
-                elif candidate.regex is not None and re.search(candidate.regex, signal.raw_label):
-                    match_type = "regex"
-                if match_type:
-                    adapter_score = 0.0 if scorer is None else scorer(canonical, spec, candidate, signal)
-                    score = float(candidate.priority) + float(adapter_score or 0.0)
-                    matches.append(
-                        (
-                            score,
-                            candidate.priority,
-                            adapter_score,
-                            file_key,
-                            signal.raw_index,
-                            candidate_idx,
-                            signal,
-                            match_type,
-                        )
-                    )
+    for candidate_idx, candidate_label in enumerate(spec.candidates):
+        for file_key, inventory in sorted(inventories.items()):
+            for signal in inventory.signals:
+                if signal.raw_label == candidate_label:
+                    matches.append((candidate_idx, file_key, signal.raw_index, signal.raw_label, signal))
 
     if not matches:
         if spec.required and spec.candidates:
@@ -96,34 +73,30 @@ def _resolve_one(
             selection_reason="missing required annotation" if spec.required else "missing optional channel",
         )
 
-    best_score = max(item[0] for item in matches)
-    best = [item for item in matches if item[0] == best_score]
-    best.sort(key=lambda item: (item[3], item[4], item[5], item[6].raw_label))
+    best_idx = min(item[0] for item in matches)
+    best = [item for item in matches if item[0] == best_idx]
+    best.sort(key=lambda item: (item[1], item[2], item[3]))
     if len(best) > 1 and spec.required:
-        labels = [item[6].raw_label for item in best]
-        raise ChannelResolutionError(f"Ambiguous required channel {canonical!r} at score {best_score:g}: {labels}")
-    _, priority, adapter_score, file_key, _, _, signal, match_type = best[0]
+        labels = [item[4].raw_label for item in best]
+        raise ChannelResolutionError(
+            f"Ambiguous required channel {canonical!r} for candidate {spec.candidates[best_idx]!r}: {labels}"
+        )
+    _, file_key, _, _, signal = best[0]
     warning = None
     if len(best) > 1:
         warning = (
-            f"Ambiguous optional channel {canonical!r} at score {best_score:g}; "
+            f"Ambiguous optional channel {canonical!r} for candidate {spec.candidates[best_idx]!r}; "
             f"selected {signal.raw_label!r} from {file_key!r} deterministically."
         )
-    return _selection_from_signal(canonical, spec, signal, priority, adapter_score, match_type, warning)
+    return _selection_from_signal(canonical, spec, signal, warning)
 
 
 def _selection_from_signal(
     canonical: str,
     spec: SignalSpec,
     signal: EdfSignalInfo,
-    priority: int,
-    adapter_score: float | None,
-    match_type: str,
     warning: str | None,
 ) -> ChannelSelection:
-    reason = f"{match_type}:{signal.raw_label}; priority={priority}"
-    if adapter_score not in (None, 0, 0.0):
-        reason = f"{reason}; adapter_score={float(adapter_score):g}"
     return ChannelSelection(
         canonical_channel=canonical,
         kind=spec.kind,
@@ -137,6 +110,6 @@ def _selection_from_signal(
         raw_unit=signal.unit,
         target_unit=spec.target_unit,
         raw_n_samples=signal.n_samples,
-        selection_reason=reason,
+        selection_reason=f"label:{signal.raw_label}",
         warning=warning,
     )

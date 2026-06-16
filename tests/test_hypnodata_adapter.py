@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 import yaml
 
+from data.utils import load_builtin_ahi_metadata
 from hypnodata.config import load_config
 from hypnodata.pipeline import run_pipeline
 from tests.hypnodata_test_helpers import write_tiny_edf
@@ -109,9 +110,6 @@ class ToyAdapter:
             )
         return fixed
 
-    def score_channel_candidate(self, record, canonical, spec, candidate, signal, config):
-        return 10 if signal.raw_label == config.adapter_options["preferred_label"] else 0
-
     def read_annotations(self, record, config, duration_sec):
         signal = read_stage_csv(
             record.files["stage"],
@@ -174,7 +172,7 @@ def make_adapter(config):
                         "required": True,
                         "target_sfreq": 10,
                         "target_unit": "uV",
-                        "candidates": [{"regex": "^C3-", "priority": 1}],
+                        "candidates": ["C3-A2", "C3-A1"],
                     },
                     "stage5": {
                         "kind": "stage",
@@ -194,7 +192,7 @@ def make_adapter(config):
     eeg = signal_manifest[signal_manifest["canonical_channel"] == "eeg"].iloc[0]
     assert eeg["raw_label"] == "C3-A2"
     assert eeg["raw_unit"] == "uV"
-    assert "adapter_score=10" in eeg["selection_reason"]
+    assert eeg["selection_reason"] == "label:C3-A2"
     stage = signal_manifest[signal_manifest["canonical_channel"] == "stage5"].iloc[0]
     assert stage["selection_reason"] == "annotation"
     assert stage["mask_column"] == "stage_mask"
@@ -334,7 +332,7 @@ def make_adapter(config):
                         "required": True,
                         "target_sfreq": 10,
                         "target_unit": "uV",
-                        "candidates": [{"label": "EEG C3", "priority": 1}],
+                        "candidates": ["EEG C3"],
                     },
                     "stage5": {"kind": "stage", "required": False, "epoch_sec": 5, "candidates": []},
                     "ah_event_table": {"kind": "event_table", "required": False, "candidates": []},
@@ -378,8 +376,126 @@ def make_adapter(config):
     dense = signal_manifest[signal_manifest["canonical_channel"] == "ah_event"].iloc[0]
     assert dense["raw_sfreq"] == 1.0
     assert dense["target_sfreq"] == 1.0
+    assert dense["mask_column"] == "ah_event_mask"
     anchor = signal_manifest[signal_manifest["canonical_channel"] == "arousal_anchor"].iloc[0]
     assert anchor["preprocess_steps"] == "event_csv,stage_sleep_filter,anchor:10s:2"
+
+
+def test_custom_adapter_materializes_builtin_ahi_output(tmp_path: Path, monkeypatch):
+    adapter_module = tmp_path / "ahi_adapter.py"
+    adapter_module.write_text("""
+from pathlib import Path
+
+import pandas as pd
+
+from hypnodata.annotations import AnnotationResult, materialize_ahi_from_events, read_event_csv, read_stage_csv
+from hypnodata.records import RecordTask
+
+
+class AhiAdapter:
+    def collect_records(self, config):
+        frame = pd.read_csv(config.adapter_options["index"], low_memory=False)
+        return [
+            RecordTask(
+                record_id=str(row["record_id"]),
+                center=config.center,
+                files={"stage": Path(row["stage_csv"]), "events": Path(row["event_csv"])},
+                metadata={"duration": float(row["duration"]), "split": "train"},
+            )
+            for _, row in frame.iterrows()
+        ]
+
+    def read_annotations(self, record, config, duration_sec):
+        stage = read_stage_csv(
+            record.files["stage"],
+            duration_sec=duration_sec,
+            epoch_sec=30,
+            label_column="Type",
+            start_column="Start",
+            duration_column="Duration",
+        )
+        events = read_event_csv(record.files["events"], mapping={"Apnea": 0, "Hypopnea": 1})
+        ahi = materialize_ahi_from_events(
+            events,
+            stage.data,
+            duration_sec=duration_sec,
+            epoch_sec=30,
+            interval_sec=1,
+            raw_file=str(record.files["events"]),
+            raw_label="Type/Start/Duration",
+        )
+        return AnnotationResult([stage, ahi])
+
+
+def make_adapter(config):
+    return AhiAdapter()
+""")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    stage_csv = tmp_path / "stage.csv"
+    pd.DataFrame(
+        [
+            {"Start": 0, "Duration": 30, "Type": "Wake"},
+            {"Start": 30, "Duration": 30, "Type": "N1"},
+            {"Start": 60, "Duration": 30, "Type": "N2"},
+            {"Start": 90, "Duration": 30, "Type": "Wake"},
+        ]
+    ).to_csv(stage_csv, index=False)
+    event_csv = tmp_path / "events.csv"
+    pd.DataFrame(
+        [
+            {"Start": 35, "Duration": 9, "Type": "Apnea"},
+            {"Start": 35, "Duration": 10, "Type": "Apnea"},
+            {"Start": 5, "Duration": 20, "Type": "Hypopnea"},
+            {"Start": 85, "Duration": 20, "Type": "Hypopnea"},
+        ]
+    ).to_csv(event_csv, index=False)
+    adapter_index = tmp_path / "ahi_index.csv"
+    pd.DataFrame(
+        [{"record_id": "night1", "stage_csv": str(stage_csv), "event_csv": str(event_csv), "duration": 120}]
+    ).to_csv(adapter_index, index=False)
+    config_path = tmp_path / "hypnodata_ahi.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "center": "toy_ahi_center",
+                "record_discovery": {"type": "custom", "adapter": "ahi_adapter:make_adapter"},
+                "backend": {"type": "npz"},
+                "adapter_options": {"index": str(adapter_index)},
+                "signals": {
+                    "stage5": {"kind": "stage", "required": True, "epoch_sec": 30, "candidates": []},
+                    "ahi": {"kind": "ahi", "required": True, "interval_sec": 1, "candidates": []},
+                },
+            }
+        )
+    )
+    output_dir = tmp_path / "out_ahi"
+
+    run_pipeline(load_config(config_path), output_dir=output_dir)
+
+    npz_path = output_dir / "backends" / "npz" / "records" / "night1.npz"
+    with np.load(npz_path) as npz:
+        assert sorted(npz.files) == ["ah_event", "ahi", "stage5", "tst"]
+        expected = np.zeros(120, dtype=np.float32)
+        expected[35:45] = 1
+        expected[85:105] = 1
+        np.testing.assert_array_equal(npz["ah_event"], expected)
+        np.testing.assert_array_equal(npz["stage5"], np.asarray([0, 1, 2, 0], dtype=np.int64))
+        ahi_value, tst_value = load_builtin_ahi_metadata(npz)
+    assert ahi_value == pytest.approx(120.0)
+    assert tst_value == pytest.approx(60 / 3600)
+
+    record_manifest = pd.read_csv(output_dir / "manifest" / "record_manifest.csv")
+    assert record_manifest.loc[0, "stage_mask"] == 1
+    assert record_manifest.loc[0, "ah_event_mask"] == 1
+    assert record_manifest.loc[0, "duration"] == 120
+
+    signal_manifest = pd.read_csv(output_dir / "manifest" / "signal_manifest.csv")
+    ahi = signal_manifest[signal_manifest["canonical_channel"] == "ahi"].iloc[0]
+    assert ahi["kind"] == "ahi"
+    assert ahi["output_key"] == "ah_event"
+    assert ahi["mask_column"] == "ah_event_mask"
+    assert ahi["target_sfreq"] == 1.0
+    assert "ahi_from_events" in ahi["preprocess_steps"]
 
 
 def test_pipeline_writes_annotation_only_record_with_metadata_duration(tmp_path: Path, monkeypatch):
@@ -484,7 +600,7 @@ def test_pipeline_rejects_empty_optional_raw_without_annotations(tmp_path: Path,
                         "required": False,
                         "target_sfreq": 10,
                         "target_unit": "uV",
-                        "candidates": [{"label": "EEG C3", "priority": 1}],
+                        "candidates": ["EEG C3"],
                     },
                 },
             }
@@ -642,7 +758,7 @@ def make_adapter(config):
                         "required": True,
                         "target_sfreq": 10,
                         "target_unit": "uV",
-                        "candidates": [{"label": "EEG C3", "priority": 1}],
+                        "candidates": ["EEG C3"],
                     },
                     "ah_event": {"kind": "event_dense", "required": False, "interval_sec": 1, "candidates": []},
                     "ah_event_table": {"kind": "event_table", "required": False, "candidates": []},

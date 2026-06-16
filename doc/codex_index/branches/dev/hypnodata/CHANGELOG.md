@@ -2,6 +2,11 @@
 
 ## 2026-06-16
 
+- Simplified raw-signal candidates to ordered exact-label strings and removed
+  regex, priority, and adapter scoring from the indexed channel-resolution
+  contract.
+- Documented built-in hypnodata AHI output: `signals.ahi` writes `ah_event`,
+  scalar `ahi`, and scalar `tst` for downstream AHI finetune recipes.
 - Refreshed scoped branch index after adding hypnodata annotation/event
   materialization support.
 - Refreshed annotation config guidance to use second-based output-grid fields

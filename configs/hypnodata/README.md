@@ -37,6 +37,18 @@ Preset generation remains owned by `preprocess/save_dataset_presets.py`. hypnoda
 only supplies an index and mask columns; it does not create splits, sample windows,
 or preset pickle files.
 
+## Channel Candidates
+
+Raw signal candidates are ordered exact EDF labels. Put the preferred label first:
+
+```yaml
+candidates:
+  - "EEG C3"
+  - "C3-A2"
+```
+
+Core hypnodata does not use regex or priority fields for channel resolution.
+
 ## Signal Preprocess
 
 `signals.<channel>.preprocess` is an ordered list of structured steps. Core
@@ -75,7 +87,6 @@ Optional adapter methods:
 - `collect_records(config)` for `record_discovery.type=custom`
 - `resolve_metadata(record, config)`
 - `fix_header(record, inventories, config)`
-- `score_channel_candidate(record, canonical, spec, candidate, signal, config)`
 - `read_annotations(record, config, duration_sec)`
 
 Adapters must return hypnodata structures such as `RecordTask`, `EdfInventory`,
@@ -110,8 +121,8 @@ signals:
     kind: event_table
     required: false
     candidates: []
-  ah_event:
-    kind: event_dense
+  ahi:
+    kind: ahi
     required: false
     interval_sec: 1
     candidates: []
@@ -124,7 +135,9 @@ signals:
 
 For annotation-only signals, use these second-based output-grid fields instead
 of `target_sfreq`: `epoch_sec` for stage arrays, `interval_sec` for dense event
-labels, and `window_sec` for anchor labels.
+labels and built-in AHI labels, and `window_sec` for anchor labels. Built-in
+`signals.ahi` requires `stage5.epoch_sec: 30` and `interval_sec: 1`; it writes
+the downstream AHI finetune trio `ah_event`, scalar `ahi`, and scalar `tst`.
 
 Adapters can use `hypnodata.annotations` helpers to map CSV or EDF annotations:
 
@@ -136,11 +149,13 @@ Adapters can use `hypnodata.annotations` helpers to map CSV or EDF annotations:
   `materialize_anchor_events` produce event table, dense timeline, and anchor
   label outputs.
 - `filter_events_to_sleep_stages` may be used by adapters to keep only events
-  overlapping sleep stages. It does not write TST, AHI, ODI, or other clinical
-  summaries.
+  overlapping sleep stages.
+- `materialize_ahi_from_events` produces the built-in AHI finetune output from
+  apnea/hypopnea event rows plus `stage5`: 1 Hz `ah_event`, scalar `ahi`, and
+  scalar `tst` in hours.
 
 hypnodata does not parse proprietary XML/event formats here and does not compute
-AHI, ODI, sleep efficiency, WASO, HRV, or YASA staging. Those remain downstream
+ODI, sleep efficiency, WASO, HRV, or YASA staging. Those remain downstream
 analysis tasks.
 
 ## Wuji-dl Notes

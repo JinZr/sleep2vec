@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from hypnodata.config import BackendConfig, CandidateSpec, DiscoveryConfig, HypnodataConfig, SignalSpec
-from hypnodata.manifests import mask_column_for_channel, write_manifests
+from hypnodata.config import BackendConfig, DiscoveryConfig, HypnodataConfig, SignalSpec
+from hypnodata.manifests import mask_column_for_channel, output_key_for_channel, write_manifests
 
 
 def _config(tmp_path: Path) -> HypnodataConfig:
@@ -19,7 +19,7 @@ def _config(tmp_path: Path) -> HypnodataConfig:
                 required=True,
                 target_sfreq=10,
                 target_unit="uV",
-                candidates=[CandidateSpec(label="EEG")],
+                candidates=["EEG"],
             ),
             "stage5": SignalSpec(
                 name="stage5",
@@ -27,7 +27,7 @@ def _config(tmp_path: Path) -> HypnodataConfig:
                 required=False,
                 target_sfreq=None,
                 target_unit=None,
-                candidates=[CandidateSpec(label="Stage")],
+                candidates=["Stage"],
             ),
         },
     )
@@ -37,6 +37,13 @@ def test_mask_column_for_channel_matches_downstream_contract():
     assert mask_column_for_channel("eeg") == "eeg_mask"
     assert mask_column_for_channel("stage5") == "stage_mask"
     assert mask_column_for_channel("ahi") == "ah_event_mask"
+    assert mask_column_for_channel("ah_event") == "ah_event_mask"
+
+
+def test_output_key_for_channel_matches_downstream_contract():
+    assert output_key_for_channel("eeg") == "eeg"
+    assert output_key_for_channel("ahi") == "ah_event"
+    assert output_key_for_channel("ah_event") == "ah_event"
 
 
 def test_write_manifests_preserves_required_columns(tmp_path: Path):

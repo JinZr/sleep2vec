@@ -13,7 +13,6 @@ from hypnodata.adapters import (
     call_fix_header,
     call_read_annotations,
     call_resolve_metadata,
-    call_score_channel_candidate,
     load_adapter,
 )
 from hypnodata.annotations import ANNOTATION_MATERIALIZATIONS, AnnotationSignal
@@ -224,19 +223,7 @@ def _process_record(
         metadata = {**record.metadata, **call_resolve_metadata(adapter, record, config)}
         record = replace(record, metadata=metadata)
         inventories = call_fix_header(adapter, record, _read_inventories(record), config)
-        selections, warnings = resolve_channels(
-            config.signals,
-            inventories,
-            scorer=lambda canonical, spec, candidate, signal: call_score_channel_candidate(
-                adapter,
-                record,
-                canonical,
-                spec,
-                candidate,
-                signal,
-                config,
-            ),
-        )
+        selections, warnings = resolve_channels(config.signals, inventories)
         processed: dict[str, ProcessedSignal] = {}
         qc_rows: list[dict[str, Any]] = []
         for warning in warnings:
@@ -303,7 +290,7 @@ def _process_record(
             if selection.required and not selection.available and canonical not in annotation_by_name:
                 raise ChannelResolutionError(f"Missing required channel {canonical!r}.")
         arrays = {name: signal.data for name, signal in processed.items()}
-        arrays.update({name: signal.data for name, signal in annotation_by_name.items()})
+        _add_annotation_outputs(arrays, annotation_by_name)
         if not arrays:
             raise ValueError("No available signals to write.")
         output_path = npz_path if dry_run else write_npz_record(output_dir, record.record_id, arrays)
@@ -497,6 +484,7 @@ def _annotation_signal_row(record: RecordTask, annotation: AnnotationSignal, spe
     sfreq = "" if annotation.sfreq is None else annotation.sfreq
     configured_sfreq = declared_target_sfreq(spec)
     target_sfreq = configured_sfreq if configured_sfreq is not None else sfreq
+    output_key = annotation.output_key or annotation.canonical_channel
     return {
         "record_id": record.record_id,
         "center": record.center,
@@ -517,9 +505,23 @@ def _annotation_signal_row(record: RecordTask, annotation: AnnotationSignal, spe
         "output_n_samples": int(annotation.data.shape[0]),
         "preprocess_steps": ",".join(annotation.steps),
         "qc_status": "ok",
-        "output_key": annotation.canonical_channel,
+        "output_key": output_key,
         "mask_column": mask_column_for_channel(annotation.canonical_channel),
     }
+
+
+def _add_annotation_outputs(arrays: dict[str, np.ndarray], annotations: dict[str, AnnotationSignal]) -> None:
+    for annotation in annotations.values():
+        output_key = annotation.output_key or annotation.canonical_channel
+        _add_output_array(arrays, output_key, annotation.data)
+        for key, value in annotation.extra_outputs.items():
+            _add_output_array(arrays, key, np.asarray(value))
+
+
+def _add_output_array(arrays: dict[str, np.ndarray], key: str, value: np.ndarray) -> None:
+    if key in arrays:
+        raise ValueError(f"Duplicate output key {key!r}.")
+    arrays[key] = value
 
 
 def _annotation_by_name(signals: list[AnnotationSignal]) -> dict[str, AnnotationSignal]:
@@ -564,7 +566,7 @@ def _validate_annotations(
 
 
 def _validate_annotation_shape(canonical: str, annotation: AnnotationSignal) -> None:
-    if annotation.materialization in {"stage", "event_dense"}:
+    if annotation.materialization in {"stage", "event_dense", "ahi"}:
         if annotation.data.ndim != 1:
             raise ValueError(f"Annotation channel {canonical!r} must be one-dimensional.")
     elif annotation.materialization == "event_table":
@@ -573,11 +575,32 @@ def _validate_annotation_shape(canonical: str, annotation: AnnotationSignal) -> 
     elif annotation.materialization == "event_anchor":
         if annotation.data.ndim != 2 or annotation.data.shape[1] < 3 or annotation.data.shape[1] % 3 != 0:
             raise ValueError(f"Annotation channel {canonical!r} must have 3 columns per anchor.")
+    if annotation.materialization == "ahi":
+        _validate_ahi_outputs(canonical, annotation)
+    elif annotation.extra_outputs:
+        raise ValueError(f"Annotation channel {canonical!r} has unexpected extra outputs.")
+
+
+def _validate_ahi_outputs(canonical: str, annotation: AnnotationSignal) -> None:
+    if annotation.output_key != "ah_event":
+        raise ValueError(f"Annotation channel {canonical!r} must write output_key='ah_event'.")
+    if set(annotation.extra_outputs) != {"ahi", "tst"}:
+        raise ValueError(f"Annotation channel {canonical!r} must provide scalar 'ahi' and 'tst' outputs.")
+    ahi = np.asarray(annotation.extra_outputs["ahi"])
+    tst = np.asarray(annotation.extra_outputs["tst"])
+    if ahi.ndim != 0 or tst.ndim != 0:
+        raise ValueError(f"Annotation channel {canonical!r} must provide scalar 'ahi' and 'tst' outputs.")
+    ahi_value = float(ahi)
+    tst_value = float(tst)
+    if not np.isfinite(ahi_value) or ahi_value < 0:
+        raise ValueError(f"Annotation channel {canonical!r} has invalid scalar 'ahi'.")
+    if not np.isfinite(tst_value) or tst_value <= 0:
+        raise ValueError(f"Annotation channel {canonical!r} has invalid scalar 'tst'.")
 
 
 def _validate_annotation_duration(canonical: str, annotation: AnnotationSignal, duration: float) -> None:
     tolerance = 1e-6
-    if annotation.materialization in {"stage", "event_dense"}:
+    if annotation.materialization in {"stage", "event_dense", "ahi"}:
         if annotation.sfreq is None:
             return
         # Stage and dense timelines use floor-sized arrays, matching their materializers.

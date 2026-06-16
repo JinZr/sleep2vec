@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from hypnodata.config import BackendConfig, CandidateSpec, DiscoveryConfig, HypnodataConfig, SignalSpec, load_config
+from hypnodata.config import BackendConfig, DiscoveryConfig, HypnodataConfig, SignalSpec, load_config
 from hypnodata.pipeline import ProcessResult, run_pipeline
 from tests.hypnodata_test_helpers import run_tiny_hypnodata, write_hypnodata_config, write_index, write_tiny_edf
 
@@ -41,7 +41,7 @@ def test_hypnodata_multiworker_progress_tracks_completed_records(tmp_path: Path,
                 required=True,
                 target_sfreq=1,
                 target_unit="uV",
-                candidates=[CandidateSpec(label="EEG")],
+                candidates=["EEG"],
             )
         },
     )

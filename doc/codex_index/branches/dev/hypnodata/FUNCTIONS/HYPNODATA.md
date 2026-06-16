@@ -5,7 +5,8 @@
 - File: `hypnodata/config.py`
 - Signature: `load_config(path: str | Path) -> HypnodataConfig`
 - Purpose and contract: parse a hypnodata YAML file into typed dataclasses,
-  reject unknown fields and schema/version fields, and enforce core config
+  parse `signals.<channel>.candidates` as ordered exact-label strings, reject
+  unknown fields and schema/version fields, and enforce core config
   requirements.
 - Important inputs/outputs: YAML path in; `HypnodataConfig` out.
 - Side effects: reads one YAML file.
@@ -32,7 +33,7 @@
   annotation-only signals.
 - Important inputs/outputs: `SignalSpec` in; `target_sfreq` for raw signals,
   `1/epoch_sec`, `1/interval_sec`, or `1/window_sec` for annotation-only
-  signals, or `None` when no output frequency applies.
+  signals including built-in `ahi`, or `None` when no output frequency applies.
 - Side effects: none.
 - Reuse guidance: use this in pipeline validation and backend manifest writing
   instead of duplicating frequency derivation.
@@ -63,6 +64,18 @@
 - Side effects: reads one EDF file.
 - Reuse guidance: pipeline raw signal loading should call this instead of MNE
   directly.
+
+## `hypnodata.channels.resolve_channels`
+
+- File: `hypnodata/channels.py`
+- Signature: `resolve_channels(signals: dict[str, SignalSpec], inventories: dict[str, EdfInventory]) -> tuple[dict[str, ChannelSelection], list[str]]`
+- Purpose and contract: resolve raw-signal specs by exact EDF label, using the
+  order of `SignalSpec.candidates` as the preference order.
+- Important inputs/outputs: signal specs and EDF inventories in; canonical
+  channel selections plus optional ambiguity warnings out.
+- Side effects: none.
+- Reuse guidance: use this for all raw channel selection; do not add regex,
+  priority, or adapter-score matching paths.
 
 ## `hypnodata.annotations.read_stage_csv`
 
@@ -132,8 +145,21 @@
 - Important inputs/outputs: event rows and a stage array in; filtered event
   rows out.
 - Side effects: none.
-- Reuse guidance: use for stage-aware event label generation without writing
-  AHI/TST or clinical summaries.
+- Reuse guidance: use for stage-aware event label generation when no built-in
+  AHI scalar output is needed.
+
+## `hypnodata.annotations.materialize_ahi_from_events`
+
+- File: `hypnodata/annotations.py`
+- Signature: `materialize_ahi_from_events(events: np.ndarray, stage: np.ndarray, *, duration_sec: float, epoch_sec: float = 30.0, interval_sec: float = 1.0, canonical_channel: str = "ahi", raw_file: str = "", raw_label: str = "events", steps: list[str] | None = None) -> AnnotationSignal`
+- Purpose and contract: convert apnea/hypopnea event rows plus `stage5` into
+  the built-in AHI finetune output.
+- Important inputs/outputs: standard event rows and stage epochs in;
+  `AnnotationSignal` out with `materialization="ahi"`, primary output key
+  `ah_event`, scalar `ahi`, and scalar `tst` in hours.
+- Side effects: none.
+- Reuse guidance: adapters should use this when a config declares
+  `signals.ahi`; do not recompute AHI/TST in adapter code.
 
 ## `hypnodata.config.FilterStep`
 
@@ -198,7 +224,8 @@
   overwrites with `record_id` or `limit` preserve manifest rows for records that
   were not selected for reprocessing. Adapter-provided annotations are rejected
   if arrays or event extents exceed the record duration established by the raw
-  signals or annotation-only metadata.
+  signals or annotation-only metadata. Built-in `ahi` annotations write the NPZ
+  trio `ah_event`, scalar `ahi`, and scalar `tst`.
 - Reuse guidance: use this as the orchestration entrypoint.
 
 ## `hypnodata.manifests.write_manifests`

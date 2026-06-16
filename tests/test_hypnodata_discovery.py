@@ -29,7 +29,7 @@ def _write_config(tmp_path: Path, index: Path, *, record_id_column: str | None =
                         "required": True,
                         "target_sfreq": 10,
                         "target_unit": "uV",
-                        "candidates": [{"label": "EEG C3"}],
+                        "candidates": ["EEG C3"],
                     }
                 },
             }
