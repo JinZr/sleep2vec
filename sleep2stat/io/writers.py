@@ -21,7 +21,6 @@ from sleep2stat.config import Sleep2statConfig
 from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
 from sleep2stat.io.records import SleepRecord, records_to_frame
 
-COMPLETION_MARKER = "_SUCCESS.json"
 RESULT_MANIFEST = "result_manifest.csv"
 TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment", "night_stats")
 ALIGNMENT_TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment")
@@ -38,11 +37,8 @@ class AnalysisBundleWriter:
         self.shards_dir = self.tables_dir / "_shards"
 
     def prepare(self, *, args: argparse.Namespace) -> None:
-        if self.run_dir.exists() and any(self.run_dir.iterdir()) and not self.config.run.skip_existing:
+        if self.run_dir.exists() and any(self.run_dir.iterdir()):
             raise FileExistsError(f"sleep2stat output_dir already exists: {self.run_dir}")
-        if self.run_dir.exists() and self.config.run.skip_existing and not self.config.outputs.write_per_record:
-            raise ValueError("run.skip_existing requires outputs.write_per_record=true in sleep2stat v0.1.")
-        self._validate_resume_config()
         self.status_dir.mkdir(parents=True, exist_ok=True)
         self.tables_dir.mkdir(parents=True, exist_ok=True)
         if self.config.outputs.write_per_record:
@@ -57,15 +53,6 @@ class AnalysisBundleWriter:
     def write_record_manifest(self, records: list[SleepRecord]) -> None:
         path = self.run_dir / "record_manifest.csv"
         frame = records_to_frame(records, metadata_columns=self.config.data.metadata_columns)
-        if path.exists():
-            try:
-                existing = pd.read_csv(path)
-                incoming_ids = set(frame.get("record_id", pd.Series(dtype=object)).astype(str))
-                if incoming_ids and "record_id" in existing.columns:
-                    existing = existing[~existing["record_id"].astype(str).isin(incoming_ids)]
-                frame = pd.concat([existing, frame], ignore_index=True, sort=False)
-            except pd.errors.EmptyDataError:
-                pass
         frame.to_csv(path, index=False)
 
     def write_progress(
@@ -93,15 +80,6 @@ class AnalysisBundleWriter:
     def write_failures(self, failures: Iterable[FailureRecord]) -> None:
         rows = [asdict(failure) for failure in failures]
         frame = pd.DataFrame(rows, columns=["record_id", "analyzer", "error_type", "message"])
-        has_current_global_failure = frame["record_id"].astype(str).eq("__all__").any()
-        existing_path = self.status_dir / "failures.csv"
-        if existing_path.exists():
-            try:
-                existing = pd.read_csv(existing_path)
-                frame = pd.concat([existing, frame], ignore_index=True, sort=False).drop_duplicates()
-            except pd.errors.EmptyDataError:
-                pass
-        frame = self._drop_completed_record_failures(frame, keep_global_failures=has_current_global_failure)
         frame.to_csv(self.status_dir / "failures.csv", index=False)
 
     def write_run_manifest(
@@ -151,7 +129,6 @@ class AnalysisBundleWriter:
             if record.record_id in result_record_ids and record.record_id not in failed_record_ids
         }
         self.write_chunk(records, results, failures, completed_record_ids=completed_record_ids)
-        self.write_completion_markers(completed_record_ids)
         self.rebuild_global_tables(records, failures)
 
     def write_chunk(
@@ -199,22 +176,20 @@ class AnalysisBundleWriter:
             return
         failures = list(failures or [])
         self._rebuild_alignment_tables_from_shards()
+        failed_record_ids = {
+            str(failure.record_id)
+            for failure in failures
+            if str(failure.record_id) not in {"", "__all__"}
+        }
         if self._global_table_enabled("night_stats"):
-            self._collect_night_stats(records, num_workers=num_workers).to_csv(
+            self._collect_night_stats(failed_record_ids=failed_record_ids, num_workers=num_workers).to_csv(
                 self._table_path("night_stats"), index=False
             )
-        summary_tables = self._collect_cumulative_summary_tables(failures, num_workers=num_workers)
+        summary_tables = self._collect_cumulative_summary_tables(
+            failures, failed_record_ids=failed_record_ids, num_workers=num_workers
+        )
         for name, frame in summary_tables.items():
             frame.to_csv(self._table_path(name), index=False)
-
-    def write_completion_markers(self, record_ids: Iterable[str]) -> None:
-        if not self.config.outputs.write_per_record:
-            return
-        for record_id in record_ids:
-            record_dir = self.per_record_dir / str(record_id)
-            if not record_dir.exists():
-                continue
-            _write_json({"status": "completed", "updated_at_utc": _utc_now()}, record_dir / COMPLETION_MARKER)
 
     def _table_path(self, name: str) -> Path:
         uncompressed = {"night_stats", *SUMMARY_TABLE_NAMES}
@@ -261,14 +236,6 @@ class AnalysisBundleWriter:
     @staticmethod
     def _compression_for(path: Path) -> str | None:
         return "gzip" if path.suffix == ".gz" else None
-
-    def filter_records_for_run(self, records: list[SleepRecord]) -> list[SleepRecord]:
-        if not self.config.run.skip_existing or not self.config.outputs.write_per_record:
-            return records
-        return [record for record in records if not self._record_has_outputs(record)]
-
-    def _record_has_outputs(self, record: SleepRecord) -> bool:
-        return (self.per_record_dir / record.record_id / COMPLETION_MARKER).exists()
 
     def _write_global_table_shard(self, name: str, frame: pd.DataFrame) -> None:
         if not self._global_table_enabled(name):
@@ -328,62 +295,32 @@ class AnalysisBundleWriter:
     def _global_table_enabled(self, name: str) -> bool:
         return bool(self.config.outputs.global_tables.get(name, True))
 
-    def _validate_resume_config(self) -> None:
-        existing_config = self.run_dir / "config.yaml"
-        if not existing_config.exists():
-            return
-        existing = _config_fingerprint_from_path(existing_config)
-        current = _config_fingerprint_from_path(self.config.path)
-        if existing != current:
-            raise ValueError(
-                "sleep2stat output_dir already contains a run with a different config fingerprint; "
-                f"existing={existing}, current={current}."
-            )
-
-    def _drop_completed_record_failures(
-        self, frame: pd.DataFrame, *, keep_global_failures: bool = False
+    def _collect_night_stats(
+        self,
+        *,
+        failed_record_ids: set[str],
+        num_workers: int = 0,
     ) -> pd.DataFrame:
-        if frame.empty or "record_id" not in frame.columns:
-            return frame
-        completed = (
-            frame["record_id"]
-            .astype(str)
-            .map(
-                lambda record_id: self._failure_record_id_is_completed(
-                    record_id, keep_global_failures=keep_global_failures
-                )
-            )
-        )
-        return frame[~completed].reset_index(drop=True)
-
-    def _failure_record_is_completed(self, failure: FailureRecord, *, keep_global_failures: bool = False) -> bool:
-        return self._failure_record_id_is_completed(failure.record_id, keep_global_failures=keep_global_failures)
-
-    def _failure_record_id_is_completed(self, record_id: str, *, keep_global_failures: bool = False) -> bool:
-        record_id = str(record_id)
-        if record_id == "__all__":
-            if keep_global_failures:
-                return False
-            return self.per_record_dir.exists() and any(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}"))
-        return (self.per_record_dir / record_id / COMPLETION_MARKER).exists()
-
-    def _collect_night_stats(self, records: list[SleepRecord], *, num_workers: int = 0) -> pd.DataFrame:
         rows = []
         if not self.per_record_dir.exists():
             return _merge_night_rows(rows)
-        markers = sorted(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}"))
+        paths = [
+            path
+            for path in sorted(self.per_record_dir.glob("*/night_stats.json"))
+            if path.parent.name not in failed_record_ids
+        ]
         workers = int(num_workers or 0)
         if workers <= 1:
-            for marker in tqdm(markers, desc="sleep2stat collect night_stats", unit="record"):
-                payload = _read_night_stats(marker)
+            for path in tqdm(paths, desc="sleep2stat collect night_stats", unit="record"):
+                payload = _read_night_stats(path)
                 if payload:
                     rows.append(payload)
         else:
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                payloads = executor.map(_read_night_stats, markers)
+                payloads = executor.map(_read_night_stats, paths)
                 for payload in tqdm(
                     payloads,
-                    total=len(markers),
+                    total=len(paths),
                     desc=f"sleep2stat collect night_stats split{workers}",
                     unit="record",
                 ):
@@ -392,14 +329,18 @@ class AnalysisBundleWriter:
         return _merge_night_rows(rows)
 
     def _collect_cumulative_summary_tables(
-        self, failures: list[FailureRecord], *, num_workers: int = 0
+        self,
+        failures: list[FailureRecord],
+        *,
+        failed_record_ids: set[str],
+        num_workers: int = 0,
     ) -> dict[str, pd.DataFrame]:
         paths = []
         if self.per_record_dir.exists():
             paths = [
                 path
                 for path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}"))
-                if (path.parent / COMPLETION_MARKER).exists()
+                if path.parent.name not in failed_record_ids
             ]
         workers = int(num_workers or 0)
         if workers <= 1:
@@ -426,10 +367,7 @@ class AnalysisBundleWriter:
                 ]
         manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
         failure_counts: dict[str, int] = {}
-        keep_global_failures = any(str(failure.record_id) == "__all__" for failure in failures)
         for failure in _merge_failures(_read_failures(self.status_dir / "failures.csv"), failures):
-            if self._failure_record_is_completed(failure, keep_global_failures=keep_global_failures):
-                continue
             failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
 
         rows = []
@@ -695,8 +633,7 @@ def _result_row_count(results: list[AnalyzerResult], attr: str) -> int:
     return count
 
 
-def _read_night_stats(marker: Path) -> dict[str, Any] | None:
-    path = marker.parent / "night_stats.json"
+def _read_night_stats(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     payload = json.loads(path.read_text())

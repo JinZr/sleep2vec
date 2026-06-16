@@ -1,7 +1,6 @@
 run:
   name: psg_yasa_microstructure_v02
   output_dir: results/sleep2stat/psg_yasa_microstructure_v02
-  skip_existing: true
   seed: 4523
 
 data:

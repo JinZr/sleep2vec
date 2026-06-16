@@ -19,13 +19,11 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
     records = load_records(config.data, split_override=split_override, limit=args.limit_records)
     writer = AnalysisBundleWriter(config)
     writer.prepare(args=args)
-    pending_records = writer.filter_records_for_run(records)
-    skipped_records = len(records) - len(pending_records)
     writer.write_record_manifest(records)
     execution_split = _execution_split(config, args)
     writer.write_progress(
         total_records=len(records),
-        completed_records=skipped_records,
+        completed_records=0,
         status="dry_run" if args.dry_run else "running",
         num_workers=args.num_workers,
         execution_split=execution_split,
@@ -38,7 +36,7 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
         writer.write_results(records, results, failures)
         writer.write_progress(
             total_records=len(records),
-            completed_records=skipped_records,
+            completed_records=0,
             status="dry_run",
             num_workers=args.num_workers,
             execution_split=execution_split,
@@ -53,41 +51,20 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
         )
         return writer.run_dir
 
-    if not pending_records:
-        writer.write_failures(failures)
-        writer.rebuild_global_tables(records, failures, num_workers=args.num_workers)
-        writer.write_progress(
-            total_records=len(records),
-            completed_records=skipped_records,
-            status="completed",
-            num_workers=args.num_workers,
-            execution_split=execution_split,
-        )
-        writer.write_run_manifest(
-            status="completed",
-            records=records,
-            failures=failures,
-            dry_run=False,
-            num_workers=args.num_workers,
-            execution_split=execution_split,
-        )
-        return writer.run_dir
-
     context = Sleep2statContext(
         config=config, device=args.device, num_workers=args.num_workers, batch_size=args.batch_size
     )
     if _use_record_split(config, args):
         completed_record_ids, failures = _run_record_split(
-            pending_records,
+            records,
             context,
             writer,
-            skipped_records=skipped_records,
             total_records=len(records),
             chunk_size=_chunk_size(config, args),
         )
         writer.write_failures(failures)
         writer.rebuild_global_tables(records, failures, num_workers=args.num_workers)
-        completed = skipped_records + len(completed_record_ids)
+        completed = len(completed_record_ids)
         status = "completed_with_failures" if failures else "completed"
         writer.write_progress(
             total_records=len(records),
@@ -128,7 +105,7 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
 
     completed_record_ids: set[str] = set()
     if not any(failure.record_id == "__all__" for failure in failures):
-        for chunk in _record_chunks(pending_records, _chunk_size(config, args)):
+        for chunk in _record_chunks(records, _chunk_size(config, args)):
             chunk_results = []
             chunk_failures: list[FailureRecord] = []
             for analyzer in prepared_analyzers:
@@ -178,12 +155,11 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
                 if record.record_id in result_record_ids and record.record_id not in failed_record_ids
             }
             writer.write_chunk(chunk, chunk_results, chunk_failures, completed_record_ids=chunk_completed)
-            writer.write_completion_markers(chunk_completed)
             completed_record_ids.update(chunk_completed)
             failures.extend(chunk_failures)
             writer.write_progress(
                 total_records=len(records),
-                completed_records=skipped_records + len(completed_record_ids),
+                completed_records=len(completed_record_ids),
                 status="running",
                 num_workers=args.num_workers,
                 execution_split=execution_split,
@@ -194,7 +170,7 @@ def run_pipeline(config: Sleep2statConfig, args: argparse.Namespace):
 
     writer.write_failures(failures)
     writer.rebuild_global_tables(records, failures, num_workers=args.num_workers)
-    completed = skipped_records + len(completed_record_ids)
+    completed = len(completed_record_ids)
     status = "completed_with_failures" if failures else "completed"
     writer.write_progress(
         total_records=len(records),
@@ -231,7 +207,6 @@ def _run_record_split(
     context: Sleep2statContext,
     writer: AnalysisBundleWriter,
     *,
-    skipped_records: int,
     total_records: int,
     chunk_size: int,
 ) -> tuple[set[str], list[FailureRecord]]:
@@ -272,7 +247,7 @@ def _run_record_split(
                     )
                     writer.write_progress(
                         total_records=total_records,
-                        completed_records=skipped_records + len(completed_record_ids),
+                        completed_records=len(completed_record_ids),
                         status="running",
                         num_workers=context.num_workers,
                         execution_split=f"split{context.num_workers}",
@@ -295,7 +270,6 @@ def _write_pending(
     if not records:
         return
     writer.write_chunk(records, results, failures, completed_record_ids=completed_record_ids)
-    writer.write_completion_markers(completed_record_ids)
 
 
 def _run_one_record(record, context: Sleep2statContext):

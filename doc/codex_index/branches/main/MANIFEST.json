@@ -34,7 +34,7 @@
       "preset generation, split assignment, mask normalization, and WatchPAT conversion CLIs",
       "standalone UKB/asleep night cutting, UKB annotation parsing, UKB demographic collection, Kaldi index repair, and case-control matching utilities",
       "downstream evaluation metrics including specificity, downstream evaluation plots, pair-accuracy heatmaps, and diagnostics hooks",
-      "sleep2stat config parsing, NPZ/Kaldi record loading, analyzer/reducer registries, model/YASA/SpO2 analyzers, output bundle writers, plotting, and resume semantics",
+      "sleep2stat config parsing, NPZ/Kaldi record loading, analyzer/reducer registries, model/YASA/SpO2 analyzers, output bundle writers, plotting, and single-use output semantics",
       "agent_tools CLI, recipe schemas, skill manifests, consultation gates, context bundles, generated command plans, hparam launch/monitor/select/export, experiment monitoring, adaptive hparam loops, progress files, and external-test locking policy"
     ],
     "workflow_scope": [

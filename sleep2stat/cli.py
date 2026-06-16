@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-import json
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +16,6 @@ from sleep2stat.finalize import cohort_finalize
 from sleep2stat.io.records import SleepRecord, load_records
 from sleep2stat.io.writers import AnalysisBundleWriter
 from sleep2stat.plot import plot_cohort, plot_record
-from sleep2stat.status import format_resume_status, repair_run_status, resume_status, scan_resume_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,17 +40,6 @@ def build_parser() -> argparse.ArgumentParser:
     summarize = subparsers.add_parser("summarize", help="Summarize a completed sleep2stat run directory.")
     summarize.add_argument("--run-dir", type=Path, required=True)
     summarize.add_argument("--num-workers", type=int, default=8)
-
-    status = subparsers.add_parser("resume-status", help="Inspect sleep2stat resume state.")
-    status_group = status.add_mutually_exclusive_group(required=True)
-    status_group.add_argument("--run-dir", type=Path)
-    status_group.add_argument("--run-root", type=Path)
-    status.add_argument("--glob", default="*")
-    status.add_argument("--json", action="store_true")
-
-    repair = subparsers.add_parser("repair", help="Repair sleep2stat run status files without rerunning analysis.")
-    repair.add_argument("--run-dir", type=Path, required=True)
-    repair.add_argument("--json", action="store_true")
 
     finalize = subparsers.add_parser("cohort-finalize", help="Merge completed sleep2stat cohort run tables.")
     finalize.add_argument("--output-run-dir", type=Path, required=True)
@@ -85,14 +72,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "summarize":
         _summarize(args.run_dir, num_workers=args.num_workers)
-        return 0
-    if args.command == "resume-status":
-        data = scan_resume_status(args.run_root, args.glob) if args.run_root else resume_status(args.run_dir)
-        _print_payload(data, as_json=args.json)
-        return 0
-    if args.command == "repair":
-        data = repair_run_status(args.run_dir)
-        _print_payload(data, as_json=args.json)
         return 0
     if args.command == "cohort-finalize":
         manifest = cohort_finalize(args.output_run_dir, args.input_run_dir)
@@ -167,13 +146,6 @@ def _metadata_parse_summary(records: list[SleepRecord], key: str, parser) -> dic
         "convertible": len(convertible),
         "examples": examples,
     }
-
-
-def _print_payload(data: dict[str, Any], *, as_json: bool) -> None:
-    if as_json:
-        print(json.dumps(data, indent=2, sort_keys=True))
-    else:
-        print(format_resume_status(data), end="")
 
 
 def _summarize(run_dir: Path, *, num_workers: int = 8) -> None:

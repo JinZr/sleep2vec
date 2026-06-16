@@ -693,7 +693,6 @@ def _sleep2stat_expected_artifacts(cfg: dict | None) -> list[dict[str, str]]:
         {"name": "sleep2stat failures", "path": f"{run_dir}/status/failures.csv"},
         {"name": "sleep2stat model summary", "path": f"{run_dir}/tables/model_summary.csv"},
         {"name": "sleep2stat analyzer summary", "path": f"{run_dir}/tables/analyzer_summary.csv"},
-        {"name": "sleep2stat per-record success marker", "path": f"{run_dir}/per_record/<record_id>/_SUCCESS.json"},
         {"name": "sleep2stat per-record events", "path": f"{run_dir}/per_record/<record_id>/events{event_suffix}"},
         {"name": "sleep2stat per-record night stats", "path": f"{run_dir}/per_record/<record_id>/night_stats.json"},
         {

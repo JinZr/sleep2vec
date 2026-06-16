@@ -22,7 +22,6 @@ def _write_dry_run_config(tmp_path: Path) -> Path:
         "run": {
             "name": "cli",
             "output_dir": str(tmp_path / "run"),
-            "skip_existing": True,
         },
         "data": {
             "backend": "npz",
@@ -104,36 +103,6 @@ def test_cli_summarize_uses_supplied_run_dir_over_config_output_dir(tmp_path: Pa
     assert not wrong_dir.exists()
 
 
-def test_cli_resume_status_and_repair_preserve_dry_run(tmp_path: Path, capsys):
-    config_path = _write_dry_run_config(tmp_path)
-    run_dir = tmp_path / "run"
-
-    assert main(["run", "--config", str(config_path), "--split", "test", "--limit-records", "1", "--dry-run"]) == 0
-    capsys.readouterr()
-    (run_dir / "status" / "pid.json").write_text('{"pid": 999999999}\n')
-
-    assert main(["resume-status", "--run-dir", str(run_dir), "--json"]) == 0
-    status = json.loads(capsys.readouterr().out)
-
-    assert status["status"] == "dry_run"
-    assert status["progress_status"] == "dry_run"
-    assert status["pending_records"] == 1
-
-    assert main(["resume-status", "--run-root", str(tmp_path), "--glob", "run", "--json"]) == 0
-    root_status = json.loads(capsys.readouterr().out)
-    assert root_status["incomplete_runs"] == []
-
-    assert main(["repair", "--run-dir", str(run_dir), "--json"]) == 0
-    repaired = json.loads(capsys.readouterr().out)
-
-    assert repaired["repair_status"] == "dry_run"
-    assert repaired["status"] == "dry_run"
-    progress = json.loads((run_dir / "status" / "progress.json").read_text())
-    manifest = json.loads((run_dir / "run_manifest.json").read_text())
-    assert progress["status"] == "dry_run"
-    assert manifest["status"] == "dry_run"
-
-
 def test_cli_validate_config_check_records_flags_unconvertible_yasa_sex(tmp_path: Path, capsys):
     index_path = tmp_path / "index.csv"
     index_path.write_text("path,duration,split,source,patient_id,age,sex\nmissing.npz,60,test,unit,p001,60,unknown\n")
@@ -166,68 +135,6 @@ def test_cli_validate_config_check_records_flags_unconvertible_yasa_sex(tmp_path
     captured = capsys.readouterr()
     assert "YASA metadata sex: present 1/1, convertible_to_male 0/1" in captured.out
     assert "0 are convertible to male" in captured.out
-
-
-def test_cli_resume_status_and_repair_mark_dead_running(tmp_path: Path, capsys):
-    run_dir = tmp_path / "run"
-    (run_dir / "status").mkdir(parents=True)
-    (run_dir / "per_record" / "rec1").mkdir(parents=True)
-    (run_dir / "record_manifest.csv").write_text(
-        "record_id,path,split,source,duration_sec,token_sec,max_tokens\n"
-        "rec1,rec1.npz,test,unit,60,30,2\n"
-        "rec2,rec2.npz,test,unit,60,30,2\n"
-    )
-    (run_dir / "per_record" / "rec1" / "_SUCCESS.json").write_text("{}\n")
-    (run_dir / "status" / "progress.json").write_text('{"status": "running"}\n')
-    (run_dir / "status" / "pid.json").write_text('{"pid": 999999999}\n')
-
-    assert main(["resume-status", "--run-dir", str(run_dir), "--json"]) == 0
-    status = json.loads(capsys.readouterr().out)
-
-    assert status["status"] == "stale_running"
-    assert status["pending_records"] == 1
-    assert status["pending_record_ids"] == ["rec2"]
-
-    assert main(["resume-status", "--run-root", str(tmp_path), "--glob", "run", "--json"]) == 0
-    root_status = json.loads(capsys.readouterr().out)
-    assert root_status["dead_runs"] == [str(run_dir)]
-
-    assert main(["repair", "--run-dir", str(run_dir), "--json"]) == 0
-    repaired = json.loads(capsys.readouterr().out)
-
-    assert repaired["repair_status"] == "interrupted"
-    assert repaired["status"] == "interrupted"
-    progress = json.loads((run_dir / "status" / "progress.json").read_text())
-    assert progress["status"] == "interrupted"
-    assert progress["pending_records"] == 1
-
-
-def test_cli_resume_status_and_repair_treat_global_failure_as_failed_run(tmp_path: Path, capsys):
-    run_dir = tmp_path / "run"
-    (run_dir / "status").mkdir(parents=True)
-    (run_dir / "record_manifest.csv").write_text(
-        "record_id,path,split,source,duration_sec,token_sec,max_tokens\n"
-        "rec1,rec1.npz,test,unit,60,30,2\n"
-        "rec2,rec2.npz,test,unit,60,30,2\n"
-    )
-    pd.DataFrame(
-        [{"record_id": "__all__", "analyzer": "yasa_stage", "error_type": "ImportError", "message": "missing"}]
-    ).to_csv(run_dir / "status" / "failures.csv", index=False)
-    (run_dir / "status" / "progress.json").write_text('{"status": "completed_with_failures"}\n')
-    (run_dir / "status" / "pid.json").write_text('{"pid": 999999999}\n')
-
-    assert main(["resume-status", "--run-dir", str(run_dir), "--json"]) == 0
-    status = json.loads(capsys.readouterr().out)
-
-    assert status["status"] == "completed_with_failures"
-    assert status["failed_records"] == 2
-    assert status["pending_records"] == 0
-
-    assert main(["repair", "--run-dir", str(run_dir), "--json"]) == 0
-    repaired = json.loads(capsys.readouterr().out)
-
-    assert repaired["repair_status"] == "completed_with_failures"
-    assert repaired["status"] == "completed_with_failures"
 
 
 def test_cli_cohort_finalize_merges_runs_and_drops_resolved_failures(tmp_path: Path):
@@ -376,7 +283,7 @@ def test_cli_cohort_finalize_rejects_missing_input_manifest(tmp_path: Path):
         main(["cohort-finalize", "--output-run-dir", str(tmp_path / "final"), "--input-run-dir", str(run1)])
 
 
-def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, monkeypatch):
+def test_pipeline_rejects_non_empty_output_dir_before_analyzers(tmp_path: Path, monkeypatch):
     np.savez(tmp_path / "rec1.npz", stage5=np.array([0, 1], dtype=np.int64))
     np.savez(tmp_path / "rec2.npz", stage5=np.array([2, 4], dtype=np.int64))
     index_path = tmp_path / "index.csv"
@@ -388,9 +295,8 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, mon
     config_path = tmp_path / "config.yaml"
     payload = {
         "run": {
-            "name": "skip",
+            "name": "single_use",
             "output_dir": str(tmp_path / "run"),
-            "skip_existing": True,
         },
         "data": {
             "backend": "npz",
@@ -434,19 +340,16 @@ def test_pipeline_skip_existing_preserves_per_record_outputs(tmp_path: Path, mon
 
     args.limit_records = 2
     args.num_workers = 2
-    run_pipeline(config, args)
-
-    assert len(pd.read_csv(rec1_path)) == 2
-    global_epoch = pd.read_csv(tmp_path / "run" / "tables" / "epoch_alignment.csv.gz")
-    assert sorted(global_epoch["record_id"].unique().tolist()) == ["unit__p001__s001", "unit__p002__s001"]
-    manifest = yaml.safe_load((tmp_path / "run" / "run_manifest.json").read_text())
-    assert manifest["execution_split"] == "split2"
-
     monkeypatch.setattr(
         "sleep2stat.core.pipeline.create_analyzer",
-        lambda config: (_ for _ in ()).throw(AssertionError("no-op resume should not prepare analyzers")),
+        lambda config: (_ for _ in ()).throw(AssertionError("output conflict should fail before analyzers")),
     )
-    run_pipeline(config, args)
+
+    with pytest.raises(FileExistsError, match="output_dir already exists"):
+        run_pipeline(config, args)
+
+    assert len(pd.read_csv(rec1_path)) == 2
+    assert not (tmp_path / "run" / "per_record" / "unit__p002__s001").exists()
 
 
 def test_pipeline_record_split_matches_sequential_outputs_and_summarize(tmp_path: Path):
@@ -681,8 +584,9 @@ def test_pipeline_limits_reducer_failures_to_affected_records(tmp_path: Path, mo
 
     run_pipeline(config, args)
 
-    assert (tmp_path / "run" / "per_record" / "good" / "_SUCCESS.json").exists()
+    assert not (tmp_path / "run" / "per_record" / "good" / "_SUCCESS.json").exists()
     assert not (tmp_path / "run" / "per_record" / "bad" / "_SUCCESS.json").exists()
+    assert (tmp_path / "run" / "per_record" / "good" / "night_stats.json").exists()
     failures = pd.read_csv(tmp_path / "run" / "status" / "failures.csv")
     assert failures[["record_id", "analyzer", "error_type"]].to_dict("records") == [
         {"record_id": "bad", "analyzer": "stage5_stats", "error_type": "ValueError"}

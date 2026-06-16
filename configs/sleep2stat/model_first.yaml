@@ -1,7 +1,6 @@
 run:
   name: ppg_model_stats_v01
   output_dir: results/sleep2stat/ppg_model_stats_v01
-  skip_existing: true
   seed: 4523
 
 data:

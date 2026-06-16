@@ -128,7 +128,7 @@ def test_sleep2stat_yasa_plan_adds_record_preflight_and_summary_types(tmp_path: 
     config = write_yaml(
         tmp_path / "sleep2stat_yasa.yaml",
         {
-            "run": {"name": "yasa", "output_dir": str(tmp_path / "run"), "skip_existing": True},
+            "run": {"name": "yasa", "output_dir": str(tmp_path / "run")},
             "data": {
                 "backend": "npz",
                 "index": str(index),
@@ -244,10 +244,11 @@ def test_sleep2stat_external_test_locked_false_blocks_test_split(tmp_path: Path)
     assert any(issue.field == "external_test_locked" for issue in report.issues)
 
 
-def test_sleep2stat_config_summary_omits_config_overwrite():
+def test_sleep2stat_config_summary_omits_removed_run_controls():
     summary = sleep2stat_config_summary(REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml")
 
     assert "overwrite" not in summary["sleep2stat"]["run"]
+    assert "skip_existing" not in summary["sleep2stat"]["run"]
 
 
 def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: Path):
@@ -260,7 +261,6 @@ def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: P
             "run": {
                 "name": "kaldi_relative_manifest",
                 "output_dir": str(tmp_path / "run"),
-                "skip_existing": True,
             },
             "data": {
                 "backend": "kaldi",
@@ -340,7 +340,6 @@ def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: 
             "run": {
                 "name": "placeholder_model",
                 "output_dir": str(tmp_path / "run"),
-                "skip_existing": True,
             },
             "data": {
                 "backend": "npz",
@@ -436,10 +435,11 @@ def test_sleep2stat_skill_examples_validate_without_variant():
 def test_sleep2stat_skill_documents_stable_sidecars():
     text = (REPO_ROOT / "skills/sleep2stat/SKILL.md").read_text()
 
-    for expected in ["_SUCCESS.json", "events.csv.gz", "events.csv", "night_stats.json", "result_manifest.csv"]:
+    for expected in ["events.csv.gz", "events.csv", "night_stats.json", "result_manifest.csv"]:
         assert expected in text
+    assert "_SUCCESS.json" not in text
     assert "arrays.npz" in text
-    assert "not the stable agent-facing success contract" in text
+    assert "run directories are single-use" in text
 
 
 def test_sleep2stat_cli_skills_validate_accepts_examples():

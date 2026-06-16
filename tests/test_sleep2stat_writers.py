@@ -116,6 +116,7 @@ def test_writer_creates_global_and_per_record_tables(tmp_path: Path):
     assert (config.run.output_dir / "per_record" / "rec1" / "night_stats.json").exists()
     assert (config.run.output_dir / "per_record" / "rec1" / "arrays.npz").exists()
     assert (config.run.output_dir / "per_record" / "rec1" / "result_manifest.csv").exists()
+    assert not (config.run.output_dir / "per_record" / "rec1" / "_SUCCESS.json").exists()
     assert len(pd.read_csv(config.run.output_dir / "tables" / "epoch_alignment.csv.gz")) == 2
     assert pd.read_csv(config.run.output_dir / "tables" / "analyzer_summary.csv")["result_count"].tolist() == [1]
     arrays = np.load(config.run.output_dir / "per_record" / "rec1" / "arrays.npz")
@@ -144,53 +145,27 @@ def test_csv_row_count_treats_empty_tables_as_zero(tmp_path: Path):
     assert _csv_row_count(path) == 0
 
 
-def test_writer_prepare_preserves_existing_run_directory(tmp_path: Path):
+def test_writer_prepare_rejects_non_empty_run_directory(tmp_path: Path):
     config = _config(tmp_path)
     config.run.output_dir.mkdir(parents=True)
     marker = config.run.output_dir / "existing.txt"
     marker.write_text("keep\n")
 
     writer = AnalysisBundleWriter(config)
-    writer.prepare(args=type("Args", (), {"dry_run": False})())
+    with pytest.raises(FileExistsError, match="output_dir already exists"):
+        writer.prepare(args=type("Args", (), {"dry_run": False})())
 
     assert marker.read_text() == "keep\n"
 
 
-def test_writer_skip_existing_filters_records_and_merges_global_tables(tmp_path: Path):
+def test_writer_prepare_allows_existing_empty_run_directory(tmp_path: Path):
     config = _config(tmp_path)
+    config.run.output_dir.mkdir(parents=True)
+
     writer = AnalysisBundleWriter(config)
     writer.prepare(args=type("Args", (), {"dry_run": False})())
-    record = _record()
-    existing_epoch = pd.DataFrame(
-        {
-            "record_id": ["rec1"],
-            "path": ["rec1.npz"],
-            "token_idx": [0],
-            "start_sec": [0.0],
-            "end_sec": [30.0],
-            "stage5_model_pred": [1],
-        }
-    )
-    writer.write_results([record], [AnalyzerResult("stage5_model", "rec1", epoch=existing_epoch)])
-    writer.write_completion_markers([record.record_id])
 
-    assert writer.filter_records_for_run([record]) == []
-
-    new_epoch = pd.DataFrame(
-        {
-            "record_id": ["rec2"],
-            "path": ["rec2.npz"],
-            "token_idx": [0],
-            "start_sec": [0.0],
-            "end_sec": [30.0],
-            "stage5_model_pred": [2],
-        }
-    )
-    record2 = SleepRecord("rec2", Path("rec2.npz"), "test", "unit", 30, 30, 1, {})
-    writer.write_results([record2], [AnalyzerResult("stage5_model", "rec2", epoch=new_epoch)])
-
-    frame = pd.read_csv(config.run.output_dir / "tables" / "epoch_alignment.csv.gz")
-    assert sorted(frame["record_id"].tolist()) == ["rec1", "rec2"]
+    assert (config.run.output_dir / "status" / "pid.json").exists()
 
 
 def test_writer_rebuilds_global_alignment_with_sparse_chunk_columns(tmp_path: Path):
@@ -230,7 +205,7 @@ def test_writer_rebuilds_global_alignment_with_sparse_chunk_columns(tmp_path: Pa
     assert frame.loc[frame["record_id"] == "rec2", "stage5_model_prob_REM"].item() == 0.7
 
 
-def test_writer_skip_existing_does_not_treat_empty_per_record_outputs_as_complete(tmp_path: Path):
+def test_writer_empty_results_do_not_create_success_marker(tmp_path: Path):
     config = _config(tmp_path)
     writer = AnalysisBundleWriter(config)
     writer.prepare(args=type("Args", (), {"dry_run": False})())
@@ -238,11 +213,10 @@ def test_writer_skip_existing_does_not_treat_empty_per_record_outputs_as_complet
 
     writer.write_results([record], [])
 
-    assert writer.filter_records_for_run([record]) == [record]
     assert not (config.run.output_dir / "per_record" / "rec1" / "_SUCCESS.json").exists()
 
 
-def test_writer_rebuilds_cumulative_summary_across_resume(tmp_path: Path):
+def test_writer_rebuilds_cumulative_summary_from_sidecars(tmp_path: Path):
     config = _config(tmp_path)
     writer = AnalysisBundleWriter(config)
     writer.prepare(args=type("Args", (), {"dry_run": False})())
@@ -263,27 +237,7 @@ def test_writer_rebuilds_cumulative_summary_across_resume(tmp_path: Path):
     assert sorted(night_stats["record_id"].tolist()) == ["rec1", "rec2"]
 
 
-def test_writer_resume_from_archived_config_skips_same_file_copy(tmp_path: Path):
-    config = _config(tmp_path)
-    writer = AnalysisBundleWriter(config)
-    writer.prepare(args=type("Args", (), {"dry_run": False})())
-    archived_config = Sleep2statConfig(
-        path=config.run.output_dir / "config.yaml",
-        run=config.run,
-        data=config.data,
-        signals=config.signals,
-        analyzers=config.analyzers,
-        reducers=config.reducers,
-        outputs=config.outputs,
-    )
-
-    writer = AnalysisBundleWriter(archived_config)
-    writer.prepare(args=type("Args", (), {"dry_run": False})())
-
-    assert (config.run.output_dir / "config.yaml").exists()
-
-
-def test_writer_drops_resolved_failures_after_successful_resume(tmp_path: Path):
+def test_writer_write_failures_replaces_previous_file(tmp_path: Path):
     config = _config(tmp_path)
     writer = AnalysisBundleWriter(config)
     writer.prepare(args=type("Args", (), {"dry_run": False})())
@@ -300,7 +254,7 @@ def test_writer_drops_resolved_failures_after_successful_resume(tmp_path: Path):
     assert summary.loc[summary["name"] == "stage5_model", "failure_count"].item() == 0
 
 
-def test_writer_preserves_record_manifest_rows_across_subset_resume(tmp_path: Path):
+def test_writer_record_manifest_writes_current_records_only(tmp_path: Path):
     config = _config(tmp_path)
     writer = AnalysisBundleWriter(config)
     writer.prepare(args=type("Args", (), {"dry_run": False})())
@@ -310,12 +264,11 @@ def test_writer_preserves_record_manifest_rows_across_subset_resume(tmp_path: Pa
 
     manifest = pd.read_csv(config.run.output_dir / "record_manifest.csv")
     by_record = manifest.set_index("record_id")
-    assert set(by_record.index) == {"rec1", "rec2"}
-    assert by_record.loc["rec1", "source"] == "site_a"
+    assert set(by_record.index) == {"rec2"}
     assert by_record.loc["rec2", "source"] == "site_c"
 
 
-def test_writer_drops_resolved_global_failure_after_successful_resume(tmp_path: Path):
+def test_writer_rebuild_uses_current_global_failures(tmp_path: Path):
     config = _config(tmp_path)
     writer = AnalysisBundleWriter(config)
     writer.prepare(args=type("Args", (), {"dry_run": False})())
@@ -409,15 +362,3 @@ def test_writer_default_global_tables_skip_epoch_and_second(tmp_path: Path):
     assert not (config.run.output_dir / "tables" / "epoch_alignment.csv.gz").exists()
     assert not (config.run.output_dir / "tables" / "second_alignment.csv.gz").exists()
     assert (config.run.output_dir / "tables" / "night_stats.csv").exists()
-
-
-def test_writer_resume_rejects_config_fingerprint_mismatch(tmp_path: Path):
-    config = _config(tmp_path)
-    writer = AnalysisBundleWriter(config)
-    writer.prepare(args=type("Args", (), {"dry_run": False})())
-    config.path.write_text("run:\n  name: changed\n")
-
-    writer = AnalysisBundleWriter(config)
-
-    with pytest.raises(ValueError, match="different config fingerprint"):
-        writer.prepare(args=type("Args", (), {"dry_run": False})())

@@ -130,7 +130,7 @@ SpO2:
 - ODI metrics distinguish recording-hour, valid-SpO2-hour, and optional sleep-hour denominators
 - event-related hypoxic burden deduplicates source events by onset/offset before integration
 
-## Writing And Resume
+## Writing
 
 `AnalysisBundleWriter` owns output side effects:
 
@@ -140,14 +140,13 @@ SpO2:
 - `status/progress.json`
 - `status/failures.csv`
 - `run_manifest.json`
-- per-record `_SUCCESS.json`
 - per-record `events.csv.gz`, `night_stats.json`, `result_manifest.csv`, and optional `arrays.npz`
 - global table shards under `tables/_shards/`
 - rebuilt `tables/night_stats.csv`, `model_summary.csv`, `analyzer_summary.csv`, and optional alignment tables
 
-When `run.skip_existing=true`, completed records are identified by per-record `_SUCCESS.json`. Summarize can rebuild global tables from an existing run directory and its archived config.
+Output directories are single-use. `run` and `dry-run` fail when `run.output_dir` already exists and is non-empty. Summarize can rebuild global tables from an existing complete run directory and its archived config.
 
-Config-level overwrite is not supported. Reruns that should discard previous outputs must use a new `run.output_dir` or a manually cleared directory.
+Config-level overwrite and skip-existing are not supported. Reruns must use a new `run.output_dir` or a manually cleared directory.
 
 ## Plotting
 
@@ -195,5 +194,5 @@ Use the repository `exp` environment on this machine when base Python lacks proj
 - SpO2 metrics: `sleep2stat/analyzers/spo2.py`, `tests/test_sleep2stat_analyzers.py`
 - YASA metrics: `sleep2stat/analyzers/yasa.py`, `tests/test_sleep2stat_analyzers.py`
 - Reducer metrics: `sleep2stat/reducers/`, `tests/test_sleep2stat_reducers.py`
-- Bundle outputs and resume: `sleep2stat/io/writers.py`, `sleep2stat/core/pipeline.py`, `tests/test_sleep2stat_writers.py`, `tests/test_sleep2stat_cli.py`
+- Bundle outputs: `sleep2stat/io/writers.py`, `sleep2stat/core/pipeline.py`, `tests/test_sleep2stat_writers.py`, `tests/test_sleep2stat_cli.py`
 - Agent recipe support: `agent_tools/configs.py`, `agent_tools/decisions.py`, `agent_tools/plans.py`, `recipes/templates/sleep2stat_*.yaml`, `skills/sleep2stat/`, `tests/test_agent_tools_sleep2stat.py`
