@@ -325,15 +325,20 @@ class Sleep2vecFinetuning(pl.LightningModule):
             raise ValueError(
                 f"Survival head output shape {tuple(logits.shape)} does not match labels {tuple(event_time.shape)}."
             )
-        if not (has_label > 0.5).any():
+        # Prediction export is independent of Cox likelihood terms; keep raw risk scores for unlabeled batches.
+        export_predictions = stage == "test" and prediction_export_enabled(self.args)
+        if not (has_label > 0.5).any() and not export_predictions:
             return
 
+        token_start = batch["token_start"].to(torch.long).detach().cpu()
         self._stage_outputs[stage].append(
             {
                 "pred": logits.detach().to(device="cpu", dtype=torch.float32),
                 "event_time": event_time.detach().to(device="cpu", dtype=torch.float32),
                 "is_event": is_event.detach().to(device="cpu", dtype=torch.float32),
                 "has_label": has_label.detach().to(device="cpu", dtype=torch.float32),
+                "path": [str(path) for path in batch["metadata"]["path"]],
+                "token_start": [int(value) for value in token_start.tolist()],
             }
         )
 
@@ -362,6 +367,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if not records:
             return
 
+        # Export before the event-count check so all-censored inference still writes risk scores.
+        if stage == "test" and prediction_export_enabled(self.args):
+            self.prediction_rows = self._build_survival_prediction_rows(records)
+
         device = torch.device(getattr(self.args, "device", "cpu"))
         pred = torch.cat([record["pred"] for record in records], dim=0).to(device)
         event_time = torch.cat([record["event_time"] for record in records], dim=0).to(device)
@@ -381,6 +390,61 @@ class Sleep2vecFinetuning(pl.LightningModule):
             on_step=False,
             on_epoch=True,
         )
+
+    def _build_survival_prediction_rows(self, records) -> list[dict[str, object]]:
+        grouped: dict[str, list[dict[str, object]]] = {}
+        seen: set[tuple[str, int]] = set()
+        for record in records:
+            pred = record["pred"].numpy()
+            event_time = record["event_time"].numpy()
+            is_event = record["is_event"].numpy()
+            has_label = record["has_label"].numpy()
+            for idx, path in enumerate(record["path"]):
+                token_start = int(record["token_start"][idx])
+                key = (str(path), token_start)
+                if key in seen:
+                    continue
+                seen.add(key)
+                grouped.setdefault(str(path), []).append(
+                    {
+                        "token_start": token_start,
+                        "pred": pred[idx],
+                        "event_time": event_time[idx],
+                        "is_event": is_event[idx],
+                        "has_label": has_label[idx],
+                    }
+                )
+
+        rows: list[dict[str, object]] = []
+        for path, items in grouped.items():
+            items.sort(key=lambda item: int(item["token_start"]))
+            token_starts = [int(item["token_start"]) for item in items]
+            log_risk = np.stack([np.asarray(item["pred"], dtype=np.float32) for item in items], axis=0).mean(axis=0)
+            # Survival labels are sidecar metadata, so all windows for one path share the same vectors.
+            event_time = np.asarray(items[0]["event_time"], dtype=np.float32)
+            is_event = (np.asarray(items[0]["is_event"], dtype=np.float32) > 0.5).astype(np.int64)
+            has_label = (np.asarray(items[0]["has_label"], dtype=np.float32) > 0.5).astype(np.int64)
+            groundtruth = {
+                "event_time": event_time.tolist(),
+                "is_event": is_event.tolist(),
+                "has_label": has_label.tolist(),
+            }
+            rows.append(
+                {
+                    "path": path,
+                    "kind": "survival",
+                    "groundtruth": groundtruth,
+                    "prediction": log_risk.tolist(),
+                    "log_risk": log_risk.tolist(),
+                    "event_time": event_time.tolist(),
+                    "is_event": is_event.tolist(),
+                    "has_label": has_label.tolist(),
+                    "n_predictions": int(log_risk.size),
+                    "n_windows": len(items),
+                    "token_starts": token_starts,
+                }
+            )
+        return rows
 
     def _extract_valid_predictions(self, batch, logits):
         labels = self._get_targets(batch)
