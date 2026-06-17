@@ -51,7 +51,7 @@ values:
 
 - `stage`: 1D stage arrays such as `stage5`; declare `epoch_sec`
 - `event_table`: `(N, 3)` event tables `[type, start_sec, duration_sec]`
-- `event_dense`: 1D dense event labels; declare `interval_sec`
+- `event_dense`: 1D dense event labels; declare integer-second `interval_sec`
 - `event_anchor`: 2D anchor labels with three columns per anchor; declare
   `window_sec`
 - `ahi`: built-in AHI finetune output; declare `interval_sec: 1`, require

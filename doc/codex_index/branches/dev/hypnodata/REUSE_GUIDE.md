@@ -38,6 +38,7 @@
 - Use `epoch_sec`, `interval_sec`, or `window_sec` for annotation output grids;
   do not use raw-only fields such as `target_sfreq`, `target_unit`, `scale`,
   `polarity`, or `preprocess` for annotation-only signals.
+- Use integer seconds for dense event `interval_sec`.
 - Use standard event rows `[type, start_sec, duration_sec]` before producing
   table, dense, or anchor outputs.
 - `signals.ahi` is the only built-in clinical summary output in hypnodata; it

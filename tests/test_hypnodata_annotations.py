@@ -165,6 +165,13 @@ def test_dense_event_materializer_rejects_overlong_event_rows():
         materialize_dense_events(rows, duration_sec=8, interval_sec=1, canonical_channel="ah_event")
 
 
+def test_dense_event_materializer_rejects_fractional_interval():
+    rows = np.empty((0, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="positive integer"):
+        materialize_dense_events(rows, duration_sec=1, interval_sec=0.1, canonical_channel="ah_event")
+
+
 def test_anchor_event_materializer_splits_events_across_windows():
     rows = np.asarray([[0, 50.0, 20.0]], dtype=np.float32)
 

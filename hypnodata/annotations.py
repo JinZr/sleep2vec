@@ -167,6 +167,8 @@ def materialize_dense_events(
 ) -> AnnotationSignal:
     if interval_sec <= 0:
         raise ValueError("event dense interval_sec must be positive.")
+    if not float(interval_sec).is_integer():
+        raise ValueError("event dense interval_sec must be a positive integer.")
     rows = _normalize_event_rows(events)
     # Fixed-length labels must match the source extents; rows that need clipping are invalid input.
     if (rows[:, 1] + rows[:, 2] > float(duration_sec) + 1e-6).any():

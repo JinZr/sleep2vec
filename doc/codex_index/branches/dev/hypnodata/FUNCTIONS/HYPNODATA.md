@@ -125,7 +125,7 @@
 - Signature: `materialize_dense_events(events: np.ndarray, *, duration_sec: float, interval_sec: float, canonical_channel: str, raw_file: str = "", raw_label: str = "events", value: float | None = 1.0, steps: list[str] | None = None) -> AnnotationSignal`
 - Purpose and contract: convert event rows into a 1D dense event timeline.
 - Important inputs/outputs: standard event rows and interval seconds in;
-  `event_dense` annotation with `sfreq=1/interval_sec` out.
+  `event_dense` annotation with integer-second `sfreq=1/interval_sec` out.
 - Side effects: none.
 - Reuse guidance: use for `ah_event`, `arousal`, `desaturation`, or
   `snore_event` dense labels.

@@ -180,8 +180,9 @@ of `target_sfreq`: `epoch_sec` for stage arrays, `interval_sec` for dense event
 labels and built-in AHI labels, and `window_sec` for anchor labels. Annotation
 labels also do not use `target_unit`, `scale`, `polarity`, or `preprocess`;
 their values are written from adapter-provided annotation arrays. Built-in
-`signals.ahi` requires `stage5.epoch_sec: 30` and `interval_sec: 1`; it writes
-the downstream AHI finetune trio `ah_event`, scalar `ahi`, and scalar `tst`.
+event-dense labels require an integer `interval_sec`; `signals.ahi` requires
+`stage5.epoch_sec: 30` and `interval_sec: 1`; it writes the downstream AHI
+finetune trio `ah_event`, scalar `ahi`, and scalar `tst`.
 
 Adapters can use `hypnodata.annotations` helpers to map CSV or EDF annotations:
 

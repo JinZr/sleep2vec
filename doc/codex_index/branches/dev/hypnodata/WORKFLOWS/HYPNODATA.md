@@ -43,6 +43,7 @@
 4. Use `epoch_sec`, `interval_sec`, or `window_sec` for annotation output grids;
    do not use raw-only fields such as `target_sfreq`, `target_unit`, `scale`,
    `polarity`, or `preprocess` for annotation-only outputs.
+   Dense event `interval_sec` must be an integer number of seconds.
 5. If a record can have no raw signal, make the adapter/discovery metadata
    provide positive finite `record.metadata["duration"]`.
 6. Validate canonical names, duplicate annotations, raw-output collisions,

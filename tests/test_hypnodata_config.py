@@ -282,6 +282,7 @@ def test_load_config_rejects_annotation_source_field(tmp_path: Path):
         ("event_anchor", {}, r"window_sec is required"),
         ("stage", {"target_sfreq": 1.0, "epoch_sec": 30}, r"target_sfreq is not used"),
         ("event_dense", {"window_sec": 30}, r"window_sec is not valid"),
+        ("event_dense", {"interval_sec": 0.1}, r"interval_sec must be a positive integer"),
         ("eeg", {"epoch_sec": 30, "candidates": ["EEG C3"]}, r"epoch_sec is only valid"),
     ],
 )

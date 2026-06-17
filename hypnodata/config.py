@@ -287,6 +287,8 @@ def _build_annotation_timing(
     value = _optional_positive_float(spec, expected, f"signals.{canonical}")
     if value is None:
         raise ValueError(f"signals.{canonical}.{expected} is required for kind={kind}.")
+    if kind == "event_dense" and not value.is_integer():
+        raise ValueError(f"signals.{canonical}.{expected} must be a positive integer.")
     if expected == "epoch_sec":
         return value, None, None
     if expected == "interval_sec":
