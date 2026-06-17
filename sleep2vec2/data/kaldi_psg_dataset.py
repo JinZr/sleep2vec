@@ -10,6 +10,7 @@ import torch
 from sleep2vec2.data.default_dataset import DefaultDataset, SampleIndex
 from sleep2vec2.data.kaldi_io import KaldiChannelSpec, KaldiReaderPool
 from sleep2vec2.data.psg_pretrain_dataset import _build_channel_registry, _normalize_channel_input_dims
+from sleep2vec2.data.survival import attach_survival_metadata, load_survival_label_table
 
 
 def _is_missing(value: t.Any) -> bool:
@@ -49,6 +50,8 @@ class KaldiPSGDataset(DefaultDataset):
         train_pair_track_unique_samples: bool = False,
         weighted_random_sampler: bool = False,
         weighted_random_sampler_target: str | None = None,
+        survival_label_config: t.Any | None = None,
+        survival_output_dim: int | None = None,
         generative: bool = False,
         is_train_set: bool = True,
         **dataloader_kwargs: t.Any,
@@ -72,6 +75,7 @@ class KaldiPSGDataset(DefaultDataset):
             raise ValueError(f"KaldiPSGDataset expects exactly one split, got {split_list}.")
 
         manifest_data = self._load_manifest_json()
+        survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
         split_name = str(split_list[0])
         raw_splits = manifest_data.get("splits")
         if not isinstance(raw_splits, dict) or split_name not in raw_splits:
@@ -84,7 +88,7 @@ class KaldiPSGDataset(DefaultDataset):
         channel_specs = self._load_channel_specs(channel_input_dims, split_spec)
         self.reader_pool = KaldiReaderPool(self.kaldi_data_root, channel_specs)
 
-        data = self._load_manifest_samples(split_list, max_tokens)
+        data = self._load_manifest_samples(split_list, max_tokens, survival_labels)
         if not data:
             raise ValueError("No Kaldi manifest rows remain after split/channel filtering.")
 
@@ -110,6 +114,7 @@ class KaldiPSGDataset(DefaultDataset):
             pair_selector=pair_selector,
             weighted_random_sampler=weighted_random_sampler,
             weighted_random_sampler_target=weighted_random_sampler_target,
+            survival_output_dim=None if survival_labels is None else len(survival_labels.label_names),
             dataloader_config=dataloader_kwargs,
         )
 
@@ -160,7 +165,9 @@ class KaldiPSGDataset(DefaultDataset):
         self.channel_input_dims = {**provided_dims, **resolved_dims}
         return specs
 
-    def _load_manifest_samples(self, split: list[str], max_tokens: int) -> list[SampleIndex]:
+    def _load_manifest_samples(
+        self, split: list[str], max_tokens: int, survival_labels: t.Any | None
+    ) -> list[SampleIndex]:
         if not self.manifest.exists():
             raise FileNotFoundError(f"Kaldi split manifest CSV not found: {self.manifest}")
 
@@ -218,6 +225,12 @@ class KaldiPSGDataset(DefaultDataset):
                     "split": row["split"],
                 }
             )
+            if survival_labels is not None:
+                if survival_labels.key_column not in row.index:
+                    raise ValueError(
+                        f"Required survival key column '{survival_labels.key_column}' is missing from Kaldi manifest."
+                    )
+                attach_survival_metadata(metadata, row[survival_labels.key_column], survival_labels)
             if "ahi" in requested and (
                 "ahi" not in selected
                 or "tst" not in row.index

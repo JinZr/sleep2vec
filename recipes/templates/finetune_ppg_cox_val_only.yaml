@@ -1,0 +1,59 @@
+name: ppg_cox_finetune_example
+task: finetune
+variant: sleep2vec
+
+inputs:
+  config: configs/ppg_cox_finetune_large.yaml
+  label_name: incident_cox
+  pretrained_backbone_path: null
+  ckpt_path: null
+
+runtime:
+  devices: [0]
+  accelerator: gpu
+  precision: bf16-mixed
+  epochs: 30
+  batch_size: 12
+  num_workers: 8
+  lr: 1.0e-6
+  weight_decay: 1.0e-5
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  wandb_mode: offline
+
+artifacts:
+  version_name: ppg-cox-agent-example
+  results_csv_path: results/ppg_cox_agent_example.csv
+
+evaluation_policy:
+  selection_metric: val_loss
+  selection_mode: min
+  selection_split: val
+  final_eval_split: test
+  external_test_locked: true
+  test_after_fit: false
+  require_manual_unlock_for_final_test: true
+
+decisions:
+  task:
+    value: finetune
+    source: explicit_recipe
+  label_name:
+    value: incident_cox
+    source: explicit_recipe
+  pretrained_backbone_path:
+    value: null
+    source: explicit_recipe
+    meaning: "train downstream model without loading a pretrained backbone"
+  train_val_test_policy:
+    value: "select on val; keep test locked"
+    source: explicit_recipe
+  external_test_locked:
+    value: true
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe
+  required_channels:
+    value: [ppg]
+    source: explicit_config

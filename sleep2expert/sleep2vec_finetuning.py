@@ -14,6 +14,7 @@ from sleep2expert import diagnostics
 from sleep2expert.averagings.base import BaseModelAverager, build_model_averager
 from sleep2expert.common import remap_stage_labels
 from sleep2expert.distributed import get_rank_world_size, is_torch_distributed_ready
+from sleep2expert.losses.cox import CoxPHLossVectorized
 from sleep2expert.losses.moe_regularization import compute_downstream_moe_metrics, compute_downstream_moe_regularization
 from sleep2expert.metrics import (
     AHI_FINE_THRESHOLD_GRID,
@@ -119,6 +120,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1, weight=class_weight_tensor)
         self._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight_tensor)
         self._regression_loss = torch.nn.MSELoss()
+        self._survival_loss = CoxPHLossVectorized()
         self._ahi_eval_threshold: float | None = None
         self._ahi_train_pointwise_counts = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
         self._eval_loss_sums = {"val": 0.0, "test": 0.0}
@@ -549,6 +551,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 eval_loss_sums[stage] += float(loss.detach().item()) * valid_count
                 eval_loss_counts[stage] += int(valid_count)
 
+        if self._is_survival_task():
+            return loss if stage == "train" else None
+
         if self._is_ahi_task() and stage == "train":
             self._accumulate_ahi_train_pointwise_counts(batch, logits)
         elif self._is_ahi_task() and stage in {"val", "test"}:
@@ -566,6 +571,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return loss if stage == "train" else None
 
     def _compute_loss(self, logits, batch):
+        if self._is_survival_task():
+            return self._compute_survival_loss(logits, batch)
+
         targets = self._get_targets(batch)
 
         if getattr(self.args, "is_multilabel", False):
@@ -593,6 +601,24 @@ class Sleep2vecFinetuning(pl.LightningModule):
         valid_targets = targets_flat[valid_mask]
         loss = self._regression_loss(preds, valid_targets)
         return loss, int(valid_targets.numel())
+
+    def _compute_survival_loss(self, logits, batch):
+        metadata = batch["metadata"]
+        event_time = metadata["event_time"].to(self.args.device)
+        is_event = metadata["is_event"].to(self.args.device)
+        has_label = metadata["has_label"].to(self.args.device)
+
+        if logits.shape != event_time.shape:
+            raise ValueError(
+                f"Survival head output shape {tuple(logits.shape)} does not match labels {tuple(event_time.shape)}."
+            )
+
+        valid_mask = has_label > 0.5
+        if not valid_mask.any():
+            return None
+        loss = self._survival_loss(logits, has_label, event_time, is_event)
+        event_count = int(((is_event > 0.5) & valid_mask).sum().item())
+        return loss, max(event_count, 1)
 
     def _extract_valid_predictions(self, batch, logits):
         labels = self._get_targets(batch)
@@ -669,6 +695,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return records
 
     def _get_targets(self, batch):
+        if self._is_survival_task():
+            raise ValueError("Survival tasks use event_time/is_event/has_label metadata, not label_name targets.")
         if not self.args.is_seq:
             return batch["metadata"][self.args.label_name].to(self.args.device)
 
@@ -680,6 +708,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _is_ahi_task(self) -> bool:
         return getattr(self.args, "label_name", None) == "ahi"
+
+    def _is_survival_task(self) -> bool:
+        return bool(getattr(self.args, "is_survival", False))
 
     def _accumulate_ahi_train_pointwise_counts(self, batch, logits) -> None:
         labels = self._get_targets(batch)
@@ -982,6 +1013,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self.prediction_rows = []
         if stage in getattr(self, "_eval_loss_sums", {}):
             self._log_eval_loss(stage)
+
+        if self._is_survival_task():
+            outputs.clear()
+            return None
 
         if self._is_ahi_task() and stage == "train":
             metrics = self._compute_reduced_ahi_train_pointwise_metrics()

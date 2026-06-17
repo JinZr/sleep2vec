@@ -5,6 +5,7 @@ import typing as t
 import pandas as pd
 
 from data.default_dataset import DefaultDataset, SampleIndex
+from data.survival import attach_survival_metadata, load_survival_label_table
 from data.utils import default_extractor, default_mlm_mask_generator, default_tokenizer, window
 
 PAD_STAGE = -1
@@ -85,6 +86,8 @@ class PSGPretrainDataset(DefaultDataset):
         train_pair_track_unique_samples: bool = False,
         weighted_random_sampler: bool = False,
         weighted_random_sampler_target: str | None = None,
+        survival_label_config: t.Any | None = None,
+        survival_output_dim: int | None = None,
         generative: bool = False,
         is_train_set: bool = True,
         filter_max_workers: int | None = None,
@@ -105,10 +108,13 @@ class PSGPretrainDataset(DefaultDataset):
         meta_data_names = meta_data_names or []
         built_in_ahi_runtime_metadata = "ahi" in channel_names
         sources = sources or []
+        survival_labels = None
 
         split_list = [split] if isinstance(split, str) else list(split or [])
 
         if not load_preset_path:
+            survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
+
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
                 idx: t.Union[str, os.PathLike, t.List[t.Union[str, os.PathLike]]],
@@ -155,6 +161,12 @@ class PSGPretrainDataset(DefaultDataset):
                 for optional_meta_name in ("age", "sex"):
                     if optional_meta_name in row.index:
                         metadata[optional_meta_name] = row[optional_meta_name]
+                if survival_labels is not None:
+                    if survival_labels.key_column not in row.index:
+                        raise ValueError(
+                            f"Required survival key column '{survival_labels.key_column}' is missing from index CSV."
+                        )
+                    attach_survival_metadata(metadata, row[survival_labels.key_column], survival_labels)
 
                 for meta_data_name in meta_data_names:
                     # Built-in AHI summary scalars come from NPZ backfill, not CSV columns.
@@ -184,6 +196,10 @@ class PSGPretrainDataset(DefaultDataset):
         else:
             data = None
 
+        effective_survival_output_dim = survival_output_dim if load_preset_path else None
+        if survival_labels is not None:
+            effective_survival_output_dim = len(survival_labels.label_names)
+
         registry = _build_channel_registry(
             channel_names=channel_names,
             channel_input_dims=self.channel_input_dims,
@@ -209,6 +225,7 @@ class PSGPretrainDataset(DefaultDataset):
             pair_selector=pair_selector,
             weighted_random_sampler=weighted_random_sampler,
             weighted_random_sampler_target=weighted_random_sampler_target,
+            survival_output_dim=effective_survival_output_dim,
             dataloader_config=kwargs,
             filter_max_workers=filter_max_workers,
         )

@@ -187,7 +187,11 @@ def _build_finetune_loader(
     data_backend = getattr(args, "data_backend", "npz")
 
     is_seq_task = is_builtin_seq_task(args.label_name)
-    if args.label_name == "ahi":
+    is_survival_task = bool(getattr(args, "is_survival", False))
+    if is_survival_task:
+        meta_data_names = []
+        meta_data_regression_names = []
+    elif args.label_name == "ahi":
         meta_data_names = ["ahi", "tst"]
         meta_data_regression_names = ["ahi", "tst"]
     else:
@@ -210,6 +214,7 @@ def _build_finetune_loader(
         if auxiliary_name not in dataset_channel_names:
             dataset_channel_names.append(auxiliary_name)
 
+    use_weighted_random_sampler = getattr(args, "weighted_random_sampler", False) and is_train_set
     dataset_kwargs = dict(
         channel_names=dataset_channel_names,
         channel_input_dims=dataset_channel_input_dims,
@@ -222,10 +227,10 @@ def _build_finetune_loader(
         randomly_select_channels=False,
         allow_missing_channels=False,
         min_channels=len(dataset_channel_names),
-        weighted_random_sampler=getattr(args, "weighted_random_sampler", False) and is_train_set,
-        weighted_random_sampler_target=(
-            args.label_name if getattr(args, "weighted_random_sampler", False) and is_train_set else None
-        ),
+        weighted_random_sampler=use_weighted_random_sampler,
+        weighted_random_sampler_target=args.label_name if use_weighted_random_sampler else None,
+        survival_label_config=getattr(args, "survival", None) if is_survival_task else None,
+        survival_output_dim=args.output_dim if is_survival_task else None,
         is_train_set=is_train_set,
         batch_size=args.batch_size,
         shuffle=shuffle,
