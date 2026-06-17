@@ -17,11 +17,3 @@ class AnalyzerResult:
     night: dict[str, Any] | None = None
     arrays: dict[str, np.ndarray] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
-
-
-@dataclass
-class FailureRecord:
-    record_id: str
-    analyzer: str
-    error_type: str
-    message: str

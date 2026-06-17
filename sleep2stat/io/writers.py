@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
+from shutil import copyfile
 from typing import Any, Iterable
 import uuid
 
@@ -18,14 +18,15 @@ from tqdm import tqdm
 import yaml
 
 from sleep2stat.config import Sleep2statConfig
-from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
+from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.io.records import SleepRecord, records_to_frame
 
-COMPLETION_MARKER = "_SUCCESS.json"
 RESULT_MANIFEST = "result_manifest.csv"
 TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment", "night_stats")
 ALIGNMENT_TABLE_NAMES = ("epoch_alignment", "second_alignment", "event_alignment")
 SUMMARY_TABLE_NAMES = ("model_summary", "analyzer_summary")
+RUN_TERMINAL_STATUSES = frozenset({"completed", "dry_run"})
+RUN_ANALYSIS_TERMINAL_STATUSES = frozenset({"completed"})
 
 
 class AnalysisBundleWriter:
@@ -38,13 +39,8 @@ class AnalysisBundleWriter:
         self.shards_dir = self.tables_dir / "_shards"
 
     def prepare(self, *, args: argparse.Namespace) -> None:
-        if self.run_dir.exists() and self.config.run.overwrite:
-            shutil.rmtree(self.run_dir)
-        if self.run_dir.exists() and any(self.run_dir.iterdir()) and not self.config.run.skip_existing:
+        if self.run_dir.exists() and any(self.run_dir.iterdir()):
             raise FileExistsError(f"sleep2stat output_dir already exists: {self.run_dir}")
-        if self.run_dir.exists() and self.config.run.skip_existing and not self.config.outputs.write_per_record:
-            raise ValueError("run.skip_existing requires outputs.write_per_record=true in sleep2stat v0.1.")
-        self._validate_resume_config()
         self.status_dir.mkdir(parents=True, exist_ok=True)
         self.tables_dir.mkdir(parents=True, exist_ok=True)
         if self.config.outputs.write_per_record:
@@ -52,22 +48,13 @@ class AnalysisBundleWriter:
         _write_json({"pid": os.getpid(), "updated_at_utc": _utc_now()}, self.status_dir / "pid.json")
         config_copy = self.run_dir / "config.yaml"
         if self.config.path.resolve() != config_copy.resolve():
-            shutil.copyfile(self.config.path, config_copy)
+            copyfile(self.config.path, config_copy)
         with (self.run_dir / "cli_args.yaml").open("w") as f:
             yaml.safe_dump(_to_yamlable(args), f, sort_keys=True)
 
     def write_record_manifest(self, records: list[SleepRecord]) -> None:
         path = self.run_dir / "record_manifest.csv"
         frame = records_to_frame(records, metadata_columns=self.config.data.metadata_columns)
-        if path.exists():
-            try:
-                existing = pd.read_csv(path)
-                incoming_ids = set(frame.get("record_id", pd.Series(dtype=object)).astype(str))
-                if incoming_ids and "record_id" in existing.columns:
-                    existing = existing[~existing["record_id"].astype(str).isin(incoming_ids)]
-                frame = pd.concat([existing, frame], ignore_index=True, sort=False)
-            except pd.errors.EmptyDataError:
-                pass
         frame.to_csv(path, index=False)
 
     def write_progress(
@@ -92,26 +79,11 @@ class AnalysisBundleWriter:
             payload["execution_split"] = execution_split
         _write_json(payload, self.status_dir / "progress.json")
 
-    def write_failures(self, failures: Iterable[FailureRecord]) -> None:
-        rows = [asdict(failure) for failure in failures]
-        frame = pd.DataFrame(rows, columns=["record_id", "analyzer", "error_type", "message"])
-        has_current_global_failure = frame["record_id"].astype(str).eq("__all__").any()
-        existing_path = self.status_dir / "failures.csv"
-        if existing_path.exists():
-            try:
-                existing = pd.read_csv(existing_path)
-                frame = pd.concat([existing, frame], ignore_index=True, sort=False).drop_duplicates()
-            except pd.errors.EmptyDataError:
-                pass
-        frame = self._drop_completed_record_failures(frame, keep_global_failures=has_current_global_failure)
-        frame.to_csv(self.status_dir / "failures.csv", index=False)
-
     def write_run_manifest(
         self,
         *,
         status: str,
         records: list[SleepRecord],
-        failures: list[FailureRecord],
         dry_run: bool,
         num_workers: int | None = None,
         execution_split: str | None = None,
@@ -125,13 +97,11 @@ class AnalysisBundleWriter:
             "config_path": str(self.config.path),
             "config_fingerprint": _config_fingerprint_from_path(self.config.path),
             "record_count": len(records),
-            "failure_count": len(failures),
             "num_workers": None if num_workers is None else int(num_workers),
             "execution_split": execution_split,
             "paths": {
                 "run_dir": str(self.run_dir),
                 "record_manifest": str(self.run_dir / "record_manifest.csv"),
-                "failures": str(self.status_dir / "failures.csv"),
                 "tables_dir": str(self.tables_dir),
                 "per_record_dir": str(self.per_record_dir) if self.config.outputs.write_per_record else None,
             },
@@ -142,29 +112,18 @@ class AnalysisBundleWriter:
         self,
         records: list[SleepRecord],
         results: list[AnalyzerResult],
-        failures: Iterable[FailureRecord] | None = None,
     ) -> None:
-        failures = list(failures or [])
-        failed_record_ids = {failure.record_id for failure in failures if failure.record_id != "__all__"}
-        result_record_ids = {result.record_id for result in results}
-        completed_record_ids = {
-            record.record_id
-            for record in records
-            if record.record_id in result_record_ids and record.record_id not in failed_record_ids
-        }
-        self.write_chunk(records, results, failures, completed_record_ids=completed_record_ids)
-        self.write_completion_markers(completed_record_ids)
-        self.rebuild_global_tables(records, failures)
+        completed_record_ids = {record.record_id for record in records}
+        self.write_chunk(records, results, completed_record_ids=completed_record_ids)
+        self.rebuild_global_tables(records)
 
     def write_chunk(
         self,
         records: list[SleepRecord],
         results: list[AnalyzerResult],
-        failures: Iterable[FailureRecord] | None = None,
         *,
         completed_record_ids: Iterable[str],
     ) -> None:
-        failures = list(failures or [])
         tables = collect_tables(records, results)
         if self.config.outputs.write_global_tables:
             completed = {str(record_id) for record_id in completed_record_ids}
@@ -177,7 +136,6 @@ class AnalysisBundleWriter:
                 self._write_global_table_shard(name, frame)
         if self.config.outputs.write_per_record:
             output_record_ids = {result.record_id for result in results}
-            output_record_ids.update(failure.record_id for failure in failures if failure.record_id != "__all__")
             for record in records:
                 if record.record_id not in output_record_ids:
                     continue
@@ -188,35 +146,22 @@ class AnalysisBundleWriter:
                         frame = frame[frame["record_id"] == record.record_id]
                     path = record_dir / self._per_record_filename(name)
                     frame.to_csv(path, index=False, compression=self._compression_for(path))
-                self._write_per_record_sidecars(record, tables, results, failures, record_dir)
+                self._write_per_record_sidecars(record, tables, results, record_dir)
 
     def rebuild_global_tables(
         self,
         records: list[SleepRecord],
-        failures: Iterable[FailureRecord] | None = None,
         *,
         num_workers: int = 0,
     ) -> None:
         if not self.config.outputs.write_global_tables:
             return
-        failures = list(failures or [])
         self._rebuild_alignment_tables_from_shards()
         if self._global_table_enabled("night_stats"):
-            self._collect_night_stats(records, num_workers=num_workers).to_csv(
-                self._table_path("night_stats"), index=False
-            )
-        summary_tables = self._collect_cumulative_summary_tables(failures, num_workers=num_workers)
+            self._collect_night_stats(num_workers=num_workers).to_csv(self._table_path("night_stats"), index=False)
+        summary_tables = self._collect_cumulative_summary_tables(num_workers=num_workers)
         for name, frame in summary_tables.items():
             frame.to_csv(self._table_path(name), index=False)
-
-    def write_completion_markers(self, record_ids: Iterable[str]) -> None:
-        if not self.config.outputs.write_per_record:
-            return
-        for record_id in record_ids:
-            record_dir = self.per_record_dir / str(record_id)
-            if not record_dir.exists():
-                continue
-            _write_json({"status": "completed", "updated_at_utc": _utc_now()}, record_dir / COMPLETION_MARKER)
 
     def _table_path(self, name: str) -> Path:
         uncompressed = {"night_stats", *SUMMARY_TABLE_NAMES}
@@ -232,7 +177,6 @@ class AnalysisBundleWriter:
         record: SleepRecord,
         tables: dict[str, pd.DataFrame],
         results: list[AnalyzerResult],
-        failures: list[FailureRecord],
         record_dir: Path,
     ) -> None:
         events = tables["event_alignment"]
@@ -258,19 +202,11 @@ class AnalysisBundleWriter:
         if arrays:
             np.savez_compressed(record_dir / "arrays.npz", **arrays)
 
-        self._result_manifest(record, results, failures).to_csv(record_dir / RESULT_MANIFEST, index=False)
+        self._result_manifest(record, results).to_csv(record_dir / RESULT_MANIFEST, index=False)
 
     @staticmethod
     def _compression_for(path: Path) -> str | None:
         return "gzip" if path.suffix == ".gz" else None
-
-    def filter_records_for_run(self, records: list[SleepRecord]) -> list[SleepRecord]:
-        if not self.config.run.skip_existing or not self.config.outputs.write_per_record:
-            return records
-        return [record for record in records if not self._record_has_outputs(record)]
-
-    def _record_has_outputs(self, record: SleepRecord) -> bool:
-        return (self.per_record_dir / record.record_id / COMPLETION_MARKER).exists()
 
     def _write_global_table_shard(self, name: str, frame: pd.DataFrame) -> None:
         if not self._global_table_enabled(name):
@@ -330,62 +266,34 @@ class AnalysisBundleWriter:
     def _global_table_enabled(self, name: str) -> bool:
         return bool(self.config.outputs.global_tables.get(name, True))
 
-    def _validate_resume_config(self) -> None:
-        existing_config = self.run_dir / "config.yaml"
-        if self.config.run.overwrite or not existing_config.exists():
-            return
-        existing = _config_fingerprint_from_path(existing_config)
-        current = _config_fingerprint_from_path(self.config.path)
-        if existing != current:
-            raise ValueError(
-                "sleep2stat output_dir already contains a run with a different config fingerprint; "
-                f"existing={existing}, current={current}."
-            )
-
-    def _drop_completed_record_failures(
-        self, frame: pd.DataFrame, *, keep_global_failures: bool = False
+    def _collect_night_stats(
+        self,
+        *,
+        num_workers: int = 0,
     ) -> pd.DataFrame:
-        if frame.empty or "record_id" not in frame.columns:
-            return frame
-        completed = (
-            frame["record_id"]
-            .astype(str)
-            .map(
-                lambda record_id: self._failure_record_id_is_completed(
-                    record_id, keep_global_failures=keep_global_failures
-                )
-            )
-        )
-        return frame[~completed].reset_index(drop=True)
-
-    def _failure_record_is_completed(self, failure: FailureRecord, *, keep_global_failures: bool = False) -> bool:
-        return self._failure_record_id_is_completed(failure.record_id, keep_global_failures=keep_global_failures)
-
-    def _failure_record_id_is_completed(self, record_id: str, *, keep_global_failures: bool = False) -> bool:
-        record_id = str(record_id)
-        if record_id == "__all__":
-            if keep_global_failures:
-                return False
-            return self.per_record_dir.exists() and any(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}"))
-        return (self.per_record_dir / record_id / COMPLETION_MARKER).exists()
-
-    def _collect_night_stats(self, records: list[SleepRecord], *, num_workers: int = 0) -> pd.DataFrame:
         rows = []
         if not self.per_record_dir.exists():
             return _merge_night_rows(rows)
-        markers = sorted(self.per_record_dir.glob(f"*/{COMPLETION_MARKER}"))
+        paths = []
+        for manifest_path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}")):
+            manifest = _read_result_manifest(manifest_path)
+            if not _result_manifest_is_complete(manifest):
+                continue
+            night_path = manifest_path.parent / "night_stats.json"
+            if night_path.exists():
+                paths.append(night_path)
         workers = int(num_workers or 0)
         if workers <= 1:
-            for marker in tqdm(markers, desc="sleep2stat collect night_stats", unit="record"):
-                payload = _read_night_stats(marker)
+            for path in tqdm(paths, desc="sleep2stat collect night_stats", unit="record"):
+                payload = _read_night_stats(path)
                 if payload:
                     rows.append(payload)
         else:
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                payloads = executor.map(_read_night_stats, markers)
+                payloads = executor.map(_read_night_stats, paths)
                 for payload in tqdm(
                     payloads,
-                    total=len(markers),
+                    total=len(paths),
                     desc=f"sleep2stat collect night_stats split{workers}",
                     unit="record",
                 ):
@@ -394,15 +302,13 @@ class AnalysisBundleWriter:
         return _merge_night_rows(rows)
 
     def _collect_cumulative_summary_tables(
-        self, failures: list[FailureRecord], *, num_workers: int = 0
+        self,
+        *,
+        num_workers: int = 0,
     ) -> dict[str, pd.DataFrame]:
         paths = []
         if self.per_record_dir.exists():
-            paths = [
-                path
-                for path in sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}"))
-                if (path.parent / COMPLETION_MARKER).exists()
-            ]
+            paths = sorted(self.per_record_dir.glob(f"*/{RESULT_MANIFEST}"))
         workers = int(num_workers or 0)
         if workers <= 1:
             manifests = [
@@ -411,7 +317,7 @@ class AnalysisBundleWriter:
                     _read_result_manifest(path)
                     for path in tqdm(paths, desc="sleep2stat collect result_manifest", unit="record")
                 )
-                if frame is not None
+                if _result_manifest_is_complete(frame)
             ]
         else:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -424,15 +330,9 @@ class AnalysisBundleWriter:
                         desc=f"sleep2stat collect result_manifest split{workers}",
                         unit="record",
                     )
-                    if frame is not None
+                    if _result_manifest_is_complete(frame)
                 ]
         manifest = pd.concat(manifests, ignore_index=True, sort=False) if manifests else pd.DataFrame()
-        failure_counts: dict[str, int] = {}
-        keep_global_failures = any(str(failure.record_id) == "__all__" for failure in failures)
-        for failure in _merge_failures(_read_failures(self.status_dir / "failures.csv"), failures):
-            if self._failure_record_is_completed(failure, keep_global_failures=keep_global_failures):
-                continue
-            failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
 
         rows = []
         for kind, configs in (("analyzer", self.config.analyzers), ("reducer", self.config.reducers)):
@@ -453,7 +353,6 @@ class AnalysisBundleWriter:
                             else 0
                         ),
                         "result_count": int(item_rows.get("result_count", pd.Series(dtype=int)).sum()),
-                        "failure_count": failure_counts.get(item.name, 0),
                         "epoch_rows": int(item_rows.get("epoch_rows", pd.Series(dtype=int)).sum()),
                         "second_rows": int(item_rows.get("second_rows", pd.Series(dtype=int)).sum()),
                         "event_rows": int(item_rows.get("event_rows", pd.Series(dtype=int)).sum()),
@@ -471,7 +370,6 @@ class AnalysisBundleWriter:
                     "enabled",
                     "record_count",
                     "result_count",
-                    "failure_count",
                     "epoch_rows",
                     "second_rows",
                     "event_rows",
@@ -484,11 +382,9 @@ class AnalysisBundleWriter:
         self,
         record: SleepRecord,
         results: list[AnalyzerResult],
-        failures: list[FailureRecord],
     ) -> pd.DataFrame:
         rows = []
         record_results = [result for result in results if result.record_id == record.record_id]
-        record_failures = [failure for failure in failures if failure.record_id == record.record_id]
         for kind, configs in (("analyzer", self.config.analyzers), ("reducer", self.config.reducers)):
             for item in configs:
                 item_results = [result for result in record_results if result.name == item.name]
@@ -500,7 +396,6 @@ class AnalysisBundleWriter:
                         "type": item.type,
                         "enabled": bool(item.enabled),
                         "result_count": len(item_results),
-                        "failure_count": sum(1 for failure in record_failures if failure.analyzer == item.name),
                         "epoch_rows": _result_row_count(item_results, "epoch"),
                         "second_rows": _result_row_count(item_results, "second"),
                         "event_rows": _result_row_count(item_results, "events"),
@@ -516,7 +411,6 @@ class AnalysisBundleWriter:
                 "type",
                 "enabled",
                 "result_count",
-                "failure_count",
                 "epoch_rows",
                 "second_rows",
                 "event_rows",
@@ -559,12 +453,7 @@ def collect_tables(records: list[SleepRecord], results: list[AnalyzerResult]) ->
 def collect_summary_tables(
     config: Sleep2statConfig,
     results: list[AnalyzerResult],
-    failures: list[FailureRecord],
 ) -> dict[str, pd.DataFrame]:
-    failure_counts: dict[str, int] = {}
-    for failure in failures:
-        failure_counts[failure.analyzer] = failure_counts.get(failure.analyzer, 0) + 1
-
     analyzer_rows = []
     for kind, configs in (("analyzer", config.analyzers), ("reducer", config.reducers)):
         for item in configs:
@@ -577,7 +466,6 @@ def collect_summary_tables(
                     "enabled": bool(item.enabled),
                     "record_count": len({result.record_id for result in item_results}),
                     "result_count": len(item_results),
-                    "failure_count": failure_counts.get(item.name, 0),
                     "epoch_rows": _result_row_count(item_results, "epoch"),
                     "second_rows": _result_row_count(item_results, "second"),
                     "event_rows": _result_row_count(item_results, "events"),
@@ -596,7 +484,6 @@ def collect_summary_tables(
                 "enabled",
                 "record_count",
                 "result_count",
-                "failure_count",
                 "epoch_rows",
                 "second_rows",
                 "event_rows",
@@ -697,8 +584,7 @@ def _result_row_count(results: list[AnalyzerResult], attr: str) -> int:
     return count
 
 
-def _read_night_stats(marker: Path) -> dict[str, Any] | None:
-    path = marker.parent / "night_stats.json"
+def _read_night_stats(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     payload = json.loads(path.read_text())
@@ -712,36 +598,8 @@ def _read_result_manifest(path: Path) -> pd.DataFrame | None:
         return None
 
 
-def _read_failures(path: Path) -> list[FailureRecord]:
-    if not path.exists():
-        return []
-    try:
-        frame = pd.read_csv(path)
-    except pd.errors.EmptyDataError:
-        return []
-    failures = []
-    for _, row in frame.iterrows():
-        failures.append(
-            FailureRecord(
-                record_id=str(row.get("record_id", "")),
-                analyzer=str(row.get("analyzer", "")),
-                error_type=str(row.get("error_type", "")),
-                message=str(row.get("message", "")),
-            )
-        )
-    return failures
-
-
-def _merge_failures(left: list[FailureRecord], right: list[FailureRecord]) -> list[FailureRecord]:
-    output = []
-    seen = set()
-    for failure in [*left, *right]:
-        key = (failure.record_id, failure.analyzer, failure.error_type, failure.message)
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(failure)
-    return output
+def _result_manifest_is_complete(frame: pd.DataFrame | None) -> bool:
+    return frame is not None and not frame.empty
 
 
 def _to_yamlable(obj: Any) -> Any:
@@ -800,6 +658,30 @@ def _write_json(payload: dict[str, Any], path: Path) -> None:
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     tmp.replace(path)
+
+
+def _require_terminal_run_manifest(
+    run_dir: Path,
+    allowed_statuses: frozenset[str],
+    *,
+    command: str,
+) -> None:
+    manifest_path = run_dir / "run_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"sleep2stat {command} requires run_manifest.json: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"sleep2stat {command} cannot read run_manifest.json: {manifest_path}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"sleep2stat {command} run_manifest.json must contain a JSON object: {manifest_path}")
+    status = manifest.get("status")
+    if status not in allowed_statuses:
+        expected = ", ".join(sorted(allowed_statuses))
+        raise ValueError(
+            f"sleep2stat {command} requires a completed run directory; "
+            f"got status={status!r}, expected one of: {expected}"
+        )
 
 
 def _utc_now() -> str:

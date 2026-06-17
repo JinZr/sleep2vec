@@ -49,7 +49,7 @@ This page answers the practical question: when you need to add or change behavio
 | Config validation | `utils/check_configs.py` | Canonical repo policy check for config-loader compatibility and `preset_build` strictness | One-off shell loops or YAML linters without repo semantics |
 | sleep2stat YAML parsing | `sleep2stat.config.load_config` | Enforces strict run/data/signals/analyzers/reducers/outputs schema, analyzer/reducer references, backend support, and stage-source ordering | Ad hoc YAML parsing in `sleep2stat.cli`, agent tooling, or recipes |
 | sleep2stat record loading | `sleep2stat.io.records.load_records` | Single NPZ/Kaldi `SleepRecord` loader with split filtering, path preservation, path-safe record ids, and duplicate-id rejection | Direct pandas reads in analyzers or writers |
-| sleep2stat execution loop | `sleep2stat.core.pipeline.run_pipeline` | Owns dry-run, skip-existing, chunking, analyzer preparation, reducer fallback, failure accounting, progress, and manifest writes | A parallel execution manager in `agent_tools` or scripts |
+| sleep2stat execution loop | `sleep2stat.core.pipeline.run_pipeline` | Owns dry-run, single-use output checks, chunking, analyzer preparation, reducer execution, progress, and manifest writes | A parallel execution manager in `agent_tools` or scripts |
 | sleep2stat result object | `sleep2stat.core.artifacts.AnalyzerResult` | Single carrier for analyzer/reducer `epoch`, `second`, `events`, `night`, `arrays`, and warnings | Parallel result DTOs or writer-specific row objects |
 | sleep2stat analyzer/reducer construction | `sleep2stat.registry.create_analyzer` and `create_reducer` | Keeps analyzer/reducer type dispatch centralized through registration side effects | Type-name `if`/`elif` trees outside the registry |
 | sleep2stat stage denominators | `sleep2stat.core.stage_sources.StageSourceResolver` | Single source for stage epoch lookup, sleep/REM/NREM hour denominators, stage-minute denominators, and onset-time stage assignment | Recomputing sleep masks independently in model, YASA, or SpO2 analyzers |
@@ -57,7 +57,7 @@ This page answers the practical question: when you need to add or change behavio
 | sleep2stat AHI decoding | `sleep2stat.analyzers.model_downstream.decode_ahi_logits` | Centralizes threshold resolution, second alignment, event extraction, model/recording/sleep denominators, and clinical `pred_ahi` naming | Respiratory-event postprocessing in reducers or plot code |
 | sleep2stat YASA event summaries | `sleep2stat.analyzers.yasa._event_night_summary` | Mirrors YASA event-count and stage-density semantics while using configured stage sources | Stage-density calculations copied into reducers |
 | sleep2stat SpO2 loading and ODI | `sleep2stat.analyzers.spo2._spo2_signal` and `_odi_stats` | Centralizes SpO2 scaling, artifact masking, valid-SpO2 denominators, recording denominators, and optional sleep denominators | Independent oximetry artifact filters per analyzer |
-| sleep2stat bundle writing | `sleep2stat.io.writers.AnalysisBundleWriter` | Owns resumable per-record sidecars, global shards, cumulative summaries, failures, progress, and manifest schema | Writing bundle files directly from analyzers or CLI code |
+| sleep2stat bundle writing | `sleep2stat.io.writers.AnalysisBundleWriter` | Owns single-use per-record sidecars, global shards, cumulative summaries, progress, and manifest schema | Writing bundle files directly from analyzers or CLI code |
 | sleep2stat plotting | `sleep2stat.plot.plot_record` and `plot_cohort` | Reads completed bundle contracts and canonical cohort metric fields for record/cohort visualizations | Plot scripts that inspect analyzer internals directly or reintroduce legacy field fallbacks |
 | Agent workflow support | `agent_tools.plans`, `agent_tools.recipes`, `agent_tools.decisions`, `agent_tools.hparam`, `agent_tools.experiments`, `agent_tools.adaptive_hparam`, and `agent_tools.progress` | Centralizes context bundles, recipe loading, plan generation, stop-and-consult gates, hparam orchestration, experiment monitoring, and machine-readable progress | A second training entrypoint or natural-language-only policy |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
@@ -138,7 +138,7 @@ This page answers the practical question: when you need to add or change behavio
 - Reuse `load_records` for NPZ/Kaldi record discovery; do not let analyzers read index CSVs directly.
 - Reuse `AnalyzerResult` for analyzer and reducer outputs; add fields to existing tables instead of inventing parallel result objects.
 - Reuse `StageSourceResolver` whenever a metric needs TST, sleep-hour, REM/NREM-hour, or stage-minute denominators.
-- Reuse `AnalysisBundleWriter` for output files, skip-existing behavior, failure merging, and global table rebuilds.
+- Reuse `AnalysisBundleWriter` for output files, single-use output checks, and global table rebuilds.
 - Keep model-derived respiratory event semantics in `decode_ahi_logits`; reducers should consume analyzer outputs rather than reinterpret logits.
 - Keep `task=sleep2stat` variantless in `agent_tools`; generated commands should call the existing `sleep2stat` CLI only.
 

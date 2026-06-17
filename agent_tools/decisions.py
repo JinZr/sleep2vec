@@ -419,17 +419,10 @@ def _task_specific_issues(
                     {"recipe": recipe_run_dir, "config": config_run_dir},
                 )
             )
-        overwrite_decision = decisions.get("overwrite_policy")
-        if cfg_run.get("overwrite") is True and overwrite_decision is not None and overwrite_decision.value is False:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "overwrite_policy",
-                    "sleep2stat config run.overwrite=true conflicts with overwrite_policy=false.",
-                    "Should config run.overwrite be false, or should overwrite_policy be changed to true?",
-                    {"config_run_overwrite": cfg_run.get("overwrite"), "overwrite_policy": overwrite_decision.value},
-                )
-            )
+        if config_run_dir:
+            existing_run_dir_issue = _sleep2stat_existing_run_dir_issue(recipe, config_run_dir)
+            if existing_run_dir_issue is not None:
+                issues.append(existing_run_dir_issue)
         effective_split = _as_list(inputs.get("split") or cfg_data.get("split"))
         if not effective_split:
             issues.append(
@@ -1133,6 +1126,25 @@ def _validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured:
         f"{_path_label(configured)} path does not exist: {raw_path}",
         None,
         {"path": str(raw_path), "path_context": "local", "path_validation": validation},
+    )
+
+
+def _sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIssue | None:
+    context = _path_context(recipe, raw_path)
+    validation = _path_validation(recipe, context)
+    if context != "local" or validation in {"remote", "ssh"}:
+        return None
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    if not path.exists() or (path.is_dir() and not any(path.iterdir())):
+        return None
+    return DecisionIssue(
+        DecisionStatus.NEEDS_USER_INPUT,
+        "sleep2stat.run.output_dir",
+        "sleep2stat run.output_dir already exists and is not empty; sleep2stat run directories are single-use.",
+        "Use a fresh run.output_dir or manually clear the existing directory before generating commands.",
+        {"path": str(raw_path), "resolved_path": str(path)},
     )
 
 

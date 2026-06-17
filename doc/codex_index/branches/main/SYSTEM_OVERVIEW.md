@@ -43,10 +43,12 @@ The package-local variant mirrors expose equivalent pretrain/adapt/finetune/infe
 
 1. `sleep2stat.config.load_config` validates the strict YAML blocks: `run`, `data`, `signals`, `analyzers`, `reducers`, and `outputs`.
 2. `sleep2stat.io.records.load_records` builds `SleepRecord` objects from NPZ index rows or Kaldi `manifest.json` split manifests.
-3. `sleep2stat.core.pipeline.run_pipeline` prepares an `AnalysisBundleWriter`, filters already-completed records when `run.skip_existing=true`, prepares enabled analyzers, executes analyzers chunk by chunk, applies reducers, and writes progress, failures, manifests, and result bundles.
+3. `sleep2stat.core.pipeline.run_pipeline` prepares an `AnalysisBundleWriter`, rejects non-empty output directories, prepares enabled analyzers, executes analyzers chunk by chunk, applies reducers, and writes progress, manifests, and result bundles.
 4. Analyzer/reducer construction goes through `sleep2stat.registry.create_analyzer` and `create_reducer`; registration side effects live under `sleep2stat/analyzers/` and `sleep2stat/reducers/`.
-5. `sleep2stat.io.writers.AnalysisBundleWriter` owns per-record `_SUCCESS.json`, `events.csv.gz`, `night_stats.json`, `arrays.npz`, `result_manifest.csv`, global table shards, rebuilt cohort tables, failure merging, and run manifests.
+5. `sleep2stat.io.writers.AnalysisBundleWriter` owns per-record `events.csv.gz`, `night_stats.json`, `arrays.npz`, `result_manifest.csv`, global table shards, rebuilt cohort tables, and run manifests.
 6. `sleep2stat.plot` renders per-record traces and cohort-level sleep, respiratory, microstructure, and harmonization panels from completed bundles.
+
+`sleep2stat` does not support config-level overwrite or skip-existing; use a new or manually cleared `run.output_dir` when rerunning.
 
 Agent-generated `sleep2stat` commands must go through `agent_tools` consultation gates first. `task=sleep2stat` is variantless; adding a `variant` value blocks command generation.
 
@@ -234,8 +236,8 @@ The canonical Kaldi path is:
   - blocked question files when consultation gates require user input
 - sleep2stat outputs:
   - `config.yaml`, `cli_args.yaml`, `run_manifest.json`, and `record_manifest.csv`
-  - `status/progress.json` and `status/failures.csv`
-  - per-record `_SUCCESS.json`, `events.csv.gz`, `night_stats.json`, optional `arrays.npz`, and `result_manifest.csv`
+  - `status/progress.json`
+  - per-record `events.csv.gz`, `night_stats.json`, optional `arrays.npz`, and `result_manifest.csv`
   - global `tables/night_stats.csv`, summary tables, and optionally epoch/second/event alignment tables
   - `plots/` outputs for per-record and cohort visualization commands
 

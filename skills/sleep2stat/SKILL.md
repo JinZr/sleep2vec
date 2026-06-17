@@ -8,7 +8,9 @@ Use this skill for model-derived sleep statistics, YASA PSG microstructure summa
 Do not use this skill for model training, hyper-parameter tuning, direct sample exclusion, raw NPZ/index mutation, or automatic cleaning-rule selection.
 
 ## Required inputs
-Requires a sleep2stat config YAML, explicit split policy, explicit metric-use policy, and explicit overwrite policy.
+Requires a sleep2stat config YAML, explicit split policy, explicit metric-use policy, and explicit recipe-level overwrite policy.
+
+Sleep2stat run directories are single-use. Re-run with a new `run.output_dir`, or manually clear the old directory before running again.
 
 The config must explicitly set `data.backend`, `data.path_column`, `data.duration_column`, `data.split_column`, `data.token_sec`, and `data.max_tokens`. `sleep2stat.config.load_config()` is the schema boundary; agent tooling must report its blocking error instead of inferring or translating sleep2stat fields.
 
@@ -43,7 +45,7 @@ Confirm:
 - `artifacts.run_dir`, when present, exactly matches config `run.output_dir`.
 - test split outputs are descriptive-only unless the user explicitly unlocks a different policy.
 - model-derived respiratory metrics are treated as proxy metrics unless clinical annotation analyzers are configured.
-- `run.overwrite`, `run.skip_existing`, and recipe `overwrite_policy` are explicit.
+- recipe `overwrite_policy` is explicit; config-level `run.overwrite` and output-dir reuse are unsupported.
 
 ## Stop-and-consult gates
 Stop and ask the user before continuing if:
@@ -82,17 +84,14 @@ For NPZ/YASA/SpO2-only configs, `--num-workers N` runs records through an intern
 Summarize and plot:
 
 ```bash
-python -m sleep2stat summarize --run-dir <run_dir> --num-workers 8
+python -m sleep2stat summarize --run-dir <run_dir>
 python -m sleep2stat plot-record --run-dir <run_dir> --record-id <record_id>
 python -m sleep2stat plot-cohort --run-dir <run_dir> --group-column source
 ```
 
-Inspect, repair, and finalize runs:
+Finalize completed runs:
 
 ```bash
-python -m sleep2stat resume-status --run-dir <run_dir>
-python -m sleep2stat resume-status --run-root <root> --glob 'shard_*'
-python -m sleep2stat repair --run-dir <run_dir>
 python -m sleep2stat cohort-finalize --output-run-dir <out> --input-run-dir <run1> --input-run-dir <run2>
 ```
 
@@ -115,7 +114,6 @@ A completed run should create:
   status/
     pid.json
     progress.json
-    failures.csv
   tables/
     night_stats.csv
     event_alignment.csv.gz
@@ -123,14 +121,13 @@ A completed run should create:
     analyzer_summary.csv
   per_record/
     <record_id>/
-      _SUCCESS.json
       events.csv.gz
       night_stats.json
       result_manifest.csv
       arrays.npz
 ```
 
-`events.csv` is used instead of `events.csv.gz` when compression is disabled. `arrays.npz` is optional and appears only when analyzers emit arrays. Per-record `epoch_alignment.csv.gz`, `second_alignment.csv.gz`, `event_alignment.csv.gz`, and `night_stats.csv` may exist, but they are not the stable agent-facing success contract.
+`events.csv` is used instead of `events.csv.gz` when compression is disabled. `arrays.npz` is optional and appears only when analyzers emit arrays. Per-record `epoch_alignment.csv.gz`, `second_alignment.csv.gz`, `event_alignment.csv.gz`, and `night_stats.csv` may exist as analysis sidecars.
 
 ## Validation gates
 Minimum validation:

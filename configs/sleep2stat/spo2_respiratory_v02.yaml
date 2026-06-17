@@ -1,8 +1,6 @@
 run:
   name: spo2_respiratory_v02
   output_dir: results/sleep2stat/spo2_respiratory_v02
-  overwrite: false
-  skip_existing: true
   seed: 4523
 
 data:
