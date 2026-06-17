@@ -223,9 +223,9 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
             )
         # Annotation outputs are adapter-provided labels, not raw waveforms to be converted or preprocessed.
         raw_only_fields = ["target_unit", "scale", "polarity", "preprocess"]
-        for field in raw_only_fields:
-            if annotation_only and spec.get(field) is not None:
-                raise ValueError(f"signals.{canonical}.{field} is only valid for raw signals.")
+        for raw_field in raw_only_fields:
+            if annotation_only and spec.get(raw_field) is not None:
+                raise ValueError(f"signals.{canonical}.{raw_field} is only valid for raw signals.")
         required = spec.get("required", True)
         if not isinstance(required, bool):
             raise ValueError(f"signals.{canonical}.required must be a boolean.")
