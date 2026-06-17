@@ -95,6 +95,29 @@ def test_read_stage_csv_rejects_overlapping_stage_epochs(tmp_path: Path):
         )
 
 
+@pytest.mark.parametrize(
+    ("row", "match"),
+    [
+        ({"Type": "N2", "Start": -30, "Duration": 30}, "invalid extent"),
+        ({"Type": "N2", "Start": 30, "Duration": 0}, "invalid extent"),
+        ({"Type": "N2", "Start": 60, "Duration": 60}, "exceeds duration_sec"),
+    ],
+)
+def test_read_stage_csv_rejects_invalid_or_overlong_extents(tmp_path: Path, row: dict[str, object], match: str):
+    path = tmp_path / "stage.csv"
+    pd.DataFrame([row]).to_csv(path, index=False)
+
+    with pytest.raises(ValueError, match=match):
+        read_stage_csv(
+            path,
+            duration_sec=90,
+            epoch_sec=30,
+            label_column="Type",
+            start_column="Start",
+            duration_column="Duration",
+        )
+
+
 def test_read_event_csv_maps_standard_event_rows(tmp_path: Path):
     path = tmp_path / "events.csv"
     pd.DataFrame(
@@ -135,6 +158,13 @@ def test_dense_event_materializer_can_use_event_type_values():
     np.testing.assert_array_equal(signal.data, np.asarray([0, 4, 4, 0], dtype=np.float32))
 
 
+def test_dense_event_materializer_rejects_overlong_event_rows():
+    rows = np.asarray([[0, 7.0, 2.0]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="exceed record duration"):
+        materialize_dense_events(rows, duration_sec=8, interval_sec=1, canonical_channel="ah_event")
+
+
 def test_anchor_event_materializer_splits_events_across_windows():
     rows = np.asarray([[0, 50.0, 20.0]], dtype=np.float32)
 
@@ -151,6 +181,19 @@ def test_anchor_event_materializer_splits_events_across_windows():
     np.testing.assert_allclose(signal.data[0], np.asarray([1, 50 / 60, 1, 0, 0, 0], dtype=np.float32))
     np.testing.assert_allclose(signal.data[1], np.asarray([1, 0, 10 / 60, 0, 0, 0], dtype=np.float32))
     assert signal.steps == ["event_csv", "anchor:60s:2"]
+
+
+def test_anchor_event_materializer_rejects_overlong_event_rows():
+    rows = np.asarray([[0, 110.0, 20.0]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="exceed record duration"):
+        materialize_anchor_events(
+            rows,
+            duration_sec=120,
+            window_sec=60,
+            anchor_num=2,
+            canonical_channel="desaturation_anchor",
+        )
 
 
 def test_filter_events_to_sleep_stages_keeps_only_sleep_overlap():
@@ -197,6 +240,14 @@ def test_materialize_ahi_from_events_filters_events_and_writes_scalars():
     np.testing.assert_allclose(signal.extra_outputs["ahi"], np.asarray(120.0, dtype=np.float32))
     assert "aasm_min_duration:10s" in signal.steps
     assert "stage_sleep_filter" in signal.steps
+
+
+def test_materialize_ahi_from_events_rejects_overlong_rows_before_stage_filter():
+    stage = np.asarray([0, 2, 0], dtype=np.int64)
+    rows = np.asarray([[0, 80, 20]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="exceed record duration"):
+        materialize_ahi_from_events(rows, stage, duration_sec=90, epoch_sec=30, interval_sec=1)
 
 
 def test_materialize_ahi_from_events_rejects_zero_tst():

@@ -620,7 +620,9 @@ def test_pipeline_rejects_empty_optional_raw_without_annotations(tmp_path: Path,
         ("undeclared", "must be declared"),
         ("duplicate", "Duplicate annotation channel"),
         ("raw_duplicate", "duplicates a raw signal output"),
+        ("aliased_output_key", "canonical output key"),
         ("zero_anchor", "must have 3 columns per anchor"),
+        ("short_anchor", "does not match record duration"),
         ("long_dense", "does not match record duration"),
         ("short_dense", "does not match record duration"),
         ("event_table_beyond_duration", "exceeds record duration"),
@@ -677,12 +679,39 @@ class BadAnnotationAdapter:
                 canonical_channel="ah_event",
             )
             return AnnotationResult([first, second])
+        if config.adapter_options["mode"] == "aliased_output_key":
+            return AnnotationResult(
+                [
+                    AnnotationSignal(
+                        canonical_channel="ah_event",
+                        data=np.zeros(int(duration_sec), dtype=np.float32),
+                        sfreq=1.0,
+                        raw_file="events.csv",
+                        raw_label="events",
+                        materialization="event_dense",
+                        output_key="event_alias",
+                    )
+                ]
+            )
         if config.adapter_options["mode"] == "zero_anchor":
             return AnnotationResult(
                 [
                     AnnotationSignal(
                         canonical_channel="arousal_anchor",
                         data=np.zeros((10, 0), dtype=np.float32),
+                        sfreq=0.1,
+                        raw_file="events.csv",
+                        raw_label="events",
+                        materialization="event_anchor",
+                    )
+                ]
+            )
+        if config.adapter_options["mode"] == "short_anchor":
+            return AnnotationResult(
+                [
+                    AnnotationSignal(
+                        canonical_channel="arousal_anchor",
+                        data=np.zeros((0, 3), dtype=np.float32),
                         sfreq=0.1,
                         raw_file="events.csv",
                         raw_label="events",

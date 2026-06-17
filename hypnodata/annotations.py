@@ -167,10 +167,12 @@ def materialize_dense_events(
 ) -> AnnotationSignal:
     if interval_sec <= 0:
         raise ValueError("event dense interval_sec must be positive.")
+    # Validate source extents before binning; clipped dense arrays would hide mismatched annotation files.
+    rows = _normalize_event_rows(events, duration_sec=duration_sec)
     n_samples = int(np.floor(float(duration_sec) / float(interval_sec)))
     data = np.zeros(n_samples, dtype=np.float32)
-    for event_type, start, duration in _normalize_event_rows(events):
-        stop = min(float(start + duration), float(duration_sec))
+    for event_type, start, duration in rows:
+        stop = float(start + duration)
         if stop <= start:
             continue
         left = max(int(np.floor(float(start) / interval_sec)), 0)
@@ -203,11 +205,13 @@ def materialize_anchor_events(
         raise ValueError("event anchor window_sec must be positive.")
     if anchor_num <= 0:
         raise ValueError("event anchor anchor_num must be positive.")
+    # Anchor labels can represent the final partial window, so overlong source rows must fail before filling.
+    rows = _normalize_event_rows(events, duration_sec=duration_sec)
     n_windows = int(np.ceil(float(duration_sec) / float(window_sec)))
     data = np.zeros((n_windows, anchor_num * 3), dtype=np.float32)
     if n_windows:
-        for _, start, duration in _normalize_event_rows(events):
-            _fill_anchor_event(data, float(start), float(duration), float(duration_sec), float(window_sec), anchor_num)
+        for _, start, duration in rows:
+            _fill_anchor_event(data, float(start), float(duration), float(window_sec), anchor_num)
     return AnnotationSignal(
         canonical_channel=canonical_channel,
         data=data,
@@ -241,7 +245,8 @@ def materialize_ahi_from_events(
     if tst_hours <= 0:
         raise ValueError("AHI output requires positive TST from sleep stages.")
 
-    rows = _normalize_event_rows(events)
+    # Validate before sleep-stage filtering so invalid source rows cannot disappear before QC.
+    rows = _normalize_event_rows(events, duration_sec=duration_sec)
     # AASM adult respiratory events must last at least 10 seconds.
     rows = rows[rows[:, 2] >= 10.0]
     rows = filter_events_to_sleep_stages(rows, stage_values, epoch_sec=epoch_sec)
@@ -313,16 +318,20 @@ def _materialize_stage_epochs(
     n_epochs = int(np.floor(float(duration_sec) / float(epoch_sec)))
     data = np.full(n_epochs, int(invalid), dtype=np.int64)
     filled = np.zeros(n_epochs, dtype=bool)
+    tolerance = 1e-6
     for label, start, duration in zip(labels, starts, durations):
-        if start < 0 or duration <= 0:
-            continue
-        first = int(round(start / epoch_sec))
-        if abs(first * epoch_sec - start) > 1e-6:
-            raise ValueError(f"Stage annotation start={start:g} is not aligned to epoch_sec={epoch_sec:g}.")
+        # Validate row extents before epoch clipping; clipped stage rows would hide mismatched hypnograms.
+        if not np.isfinite(start) or not np.isfinite(duration) or start < 0 or duration <= 0:
+            raise ValueError(f"Stage annotation has invalid extent at start={start:g}, duration={duration:g}.")
         stop = start + duration
+        if stop > float(duration_sec) + tolerance:
+            raise ValueError(f"Stage annotation stop={stop:g} exceeds duration_sec={duration_sec:g}.")
+        first = int(round(start / epoch_sec))
+        if abs(first * epoch_sec - start) > tolerance:
+            raise ValueError(f"Stage annotation start={start:g} is not aligned to epoch_sec={epoch_sec:g}.")
         last = int(round(stop / epoch_sec))
         # Stage labels are epoch-granular; reject partial rows instead of rounding them into full epochs.
-        if abs(last * epoch_sec - stop) > 1e-6:
+        if abs(last * epoch_sec - stop) > tolerance:
             raise ValueError(f"Stage annotation stop={stop:g} is not aligned to epoch_sec={epoch_sec:g}.")
         count = last - first
         if count < 1:
@@ -338,25 +347,35 @@ def _materialize_stage_epochs(
     return data
 
 
-def _normalize_event_rows(events: np.ndarray) -> np.ndarray:
+def _normalize_event_rows(events: np.ndarray, *, duration_sec: float | None = None) -> np.ndarray:
     rows = np.asarray(events, dtype=np.float32)
     if rows.size == 0:
         return np.empty((0, 3), dtype=np.float32)
     if rows.ndim != 2 or rows.shape[1] != 3:
         raise ValueError("event rows must have shape (N, 3).")
-    rows = rows[np.isfinite(rows).all(axis=1)]
-    return rows[(rows[:, 1] >= 0) & (rows[:, 2] > 0)].astype(np.float32, copy=False)
+    starts = rows[:, 1]
+    durations = rows[:, 2]
+    stops = starts + durations
+    invalid_extents = (
+        not np.isfinite(rows).all()
+        or (starts < 0).any()
+        or (durations <= 0).any()
+    )
+    if invalid_extents:
+        raise ValueError("event rows contain invalid extents.")
+    if duration_sec is not None and (stops > float(duration_sec) + 1e-6).any():
+        raise ValueError(f"event rows exceed record duration {float(duration_sec):g}s.")
+    return rows.astype(np.float32, copy=False)
 
 
 def _fill_anchor_event(
     labels: np.ndarray,
     start: float,
     duration: float,
-    duration_sec: float,
     window_sec: float,
     anchor_num: int,
 ) -> None:
-    stop = min(start + duration, duration_sec)
+    stop = start + duration
     if stop <= start:
         return
     stop_for_bin = np.nextafter(stop, -np.inf)

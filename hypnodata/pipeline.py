@@ -488,8 +488,12 @@ def _validate_annotation_shape(canonical: str, annotation: AnnotationSignal) -> 
             raise ValueError(f"Annotation channel {canonical!r} must have 3 columns per anchor.")
     if annotation.materialization == "ahi":
         _validate_ahi_outputs(canonical, annotation)
-    elif annotation.extra_outputs:
-        raise ValueError(f"Annotation channel {canonical!r} has unexpected extra outputs.")
+    else:
+        # Non-AHI annotations must keep NPZ keys aligned with canonical manifest and mask contracts.
+        if annotation.output_key not in {None, canonical}:
+            raise ValueError(f"Annotation channel {canonical!r} must write to its canonical output key.")
+        if annotation.extra_outputs:
+            raise ValueError(f"Annotation channel {canonical!r} has unexpected extra outputs.")
 
 
 def _validate_ahi_outputs(canonical: str, annotation: AnnotationSignal) -> None:
@@ -526,10 +530,14 @@ def _validate_annotation_duration(canonical: str, annotation: AnnotationSignal, 
     elif annotation.materialization == "event_anchor":
         if annotation.sfreq is None:
             return
-        # Anchor labels may include a final partial window.
-        max_windows = int(np.ceil(max(float(duration) * float(annotation.sfreq) - tolerance, 0.0)))
-        if annotation.data.shape[0] > max_windows:
-            raise ValueError(f"Annotation channel {canonical!r} exceeds record duration {duration:g}s.")
+        # Anchor labels use ceil-sized windows, including the final partial window.
+        expected_windows = int(np.ceil(max(float(duration) * float(annotation.sfreq) - tolerance, 0.0)))
+        actual_windows = int(annotation.data.shape[0])
+        if actual_windows != expected_windows:
+            raise ValueError(
+                f"Annotation channel {canonical!r} length {actual_windows} does not match record duration "
+                f"{duration:g}s; expected {expected_windows} windows."
+            )
     elif annotation.materialization == "event_table" and annotation.data.size:
         # Event tables carry second-based extents directly.
         starts = annotation.data[:, 1]
