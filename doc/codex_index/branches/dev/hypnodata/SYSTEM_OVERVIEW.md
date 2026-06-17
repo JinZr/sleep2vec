@@ -6,6 +6,12 @@ out.
 
 ## Runtime Flow
 
+`hypnodata run` is the production NPZ conversion path. It hard-fails on the
+first record error and writes terminal manifests only after all records succeed.
+`hypnodata run --dry-run` is a lightweight discovery preview. `hypnodata
+validate` performs full per-record validation without writing NPZ records and
+collects failures into reports.
+
 1. `hypnodata.config.load_config` parses YAML and builds typed config objects.
 2. `hypnodata.discovery.discover_records` creates `RecordTask` objects from
    glob, CSV, or custom adapter discovery.
@@ -22,7 +28,7 @@ out.
    `event_dense`, `event_anchor`, or built-in `ahi` outputs.
 9. `hypnodata.backends.write_npz_record` writes standardized arrays.
 10. `hypnodata.manifests.write_manifests` writes record, signal, QC, failure,
-    backend, and progress outputs.
+    backend, and progress outputs after a successful run or a validation report.
 
 ## Preprocess Contract
 

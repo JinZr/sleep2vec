@@ -215,19 +215,37 @@
 ## `hypnodata.pipeline.run_pipeline`
 
 - File: `hypnodata/pipeline.py`
-- Signature: `run_pipeline(config: HypnodataConfig, *, output_dir: Path, num_workers: int = 1, dry_run: bool = False, crash: bool = False) -> Path`
+- Signature: `run_pipeline(config: HypnodataConfig, *, output_dir: Path, num_workers: int = 1, dry_run: bool = False) -> Path`
 - Purpose and contract: execute hypnodata conversion for discovered records,
-  handling dry-run/crash options and writing final manifests.
+  writing NPZ records and terminal manifests only when every selected record
+  succeeds. `dry_run=True` is a lightweight discovery preview and does not read
+  raw records, preprocess signals, materialize annotations, or write terminal
+  manifests.
 - Important inputs/outputs: parsed config and output directory in; output
   directory out. If a record has no available raw signal, `record.metadata`
   must provide a positive finite `duration` for annotation-only materialization.
 - Side effects: reads raw records, writes NPZ files, manifests, and progress.
-  Existing NPZ conflicts abort before worker startup or manifest rewriting.
+  Non-dry runs reject non-empty output directories before record processing.
   Adapter-provided annotations are rejected if arrays or event extents exceed
   the record duration established by the raw signals or annotation-only
   metadata. Built-in `ahi` annotations write the NPZ
   trio `ah_event`, scalar `ahi`, and scalar `tst`.
 - Reuse guidance: use this as the orchestration entrypoint.
+
+## `hypnodata.pipeline.validate_pipeline`
+
+- File: `hypnodata/pipeline.py`
+- Signature: `validate_pipeline(config: HypnodataConfig, *, output_dir: Path, num_workers: int = 1) -> int`
+- Purpose and contract: run full per-record validation without writing NPZ
+  records, collecting record failures into manifests and returning the failure
+  count.
+- Important inputs/outputs: parsed config and output directory in; integer
+  failure count out.
+- Side effects: reads raw records, preprocesses signals, materializes
+  annotations, writes validation manifests, QC rows, failures, and progress.
+  Non-empty output directories are rejected.
+- Reuse guidance: use this for full QC reports; do not use `run --dry-run` when
+  EDF/annotation validation is required.
 
 ## `hypnodata.manifests.write_manifests`
 

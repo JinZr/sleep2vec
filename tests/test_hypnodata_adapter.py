@@ -575,10 +575,8 @@ def test_pipeline_rejects_annotation_only_record_without_metadata_duration(tmp_p
     )
     output_dir = tmp_path / "annotation_only_missing_duration_out"
 
-    run_pipeline(load_config(config_path), output_dir=output_dir)
-
-    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
-    assert "record.metadata['duration'] is required" in failures.loc[0, "message"]
+    with pytest.raises(ValueError, match=r"record\.metadata\['duration'\] is required"):
+        run_pipeline(load_config(config_path), output_dir=output_dir)
 
 
 def test_pipeline_rejects_empty_optional_raw_without_annotations(tmp_path: Path, monkeypatch):
@@ -608,10 +606,8 @@ def test_pipeline_rejects_empty_optional_raw_without_annotations(tmp_path: Path,
     )
     output_dir = tmp_path / "empty_optional_raw_out"
 
-    run_pipeline(load_config(config_path), output_dir=output_dir)
-
-    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
-    assert failures.loc[0, "message"] == "No available signals to write."
+    with pytest.raises(ValueError, match="No available signals to write"):
+        run_pipeline(load_config(config_path), output_dir=output_dir)
 
 
 @pytest.mark.parametrize(
@@ -803,7 +799,5 @@ def make_adapter(config):
     )
     output_dir = tmp_path / f"out_{mode}"
 
-    run_pipeline(load_config(config_path), output_dir=output_dir)
-
-    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
-    assert match in failures.loc[0, "message"]
+    with pytest.raises(ValueError, match=match):
+        run_pipeline(load_config(config_path), output_dir=output_dir)

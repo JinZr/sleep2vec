@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 
 from hypnodata.config import load_config
@@ -127,5 +126,23 @@ def test_hypnodata_dry_run_ignores_existing_npz_conflicts(tmp_path: Path):
     assert not (npz_dir / "night1.npz").exists()
     assert (npz_dir / "night2.npz").exists()
     assert (output_dir / "manifest" / "discovery_preview.csv").exists()
-    record_manifest = pd.read_csv(output_dir / "manifest" / "record_manifest.csv")
-    assert sorted(record_manifest["record_id"].tolist()) == ["night1", "night2"]
+    assert not (output_dir / "manifest" / "record_manifest.csv").exists()
+    assert not (output_dir / "manifest" / "backend_manifest.json").exists()
+
+
+def test_hypnodata_dry_run_stays_lightweight(tmp_path: Path, monkeypatch):
+    config = load_config(_two_record_config(tmp_path))
+    output_dir = tmp_path / "out"
+    calls = []
+
+    def fail_if_called(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("dry-run should not process records")
+
+    monkeypatch.setattr("hypnodata.pipeline._process_record", fail_if_called)
+
+    run_pipeline(config, output_dir=output_dir, dry_run=True)
+
+    assert calls == []
+    assert (output_dir / "manifest" / "discovery_preview.csv").exists()
+    assert not (output_dir / "backends" / "npz" / "records" / "night1.npz").exists()

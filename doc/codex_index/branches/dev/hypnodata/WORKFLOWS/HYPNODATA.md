@@ -77,3 +77,13 @@ git diff --check
   compatibility.
 
 Hypnodata should not write Kaldi archives or preset pickle files directly.
+
+## Choose Runtime Mode
+
+- Use `hypnodata run` for production NPZ conversion. It is hard-fail: one
+  record failure aborts the command and no terminal manifests are written.
+- Use `hypnodata run --dry-run` only for lightweight config/discovery preview.
+  It does not read EDF data or validate annotations.
+- Use `hypnodata validate` for full QC without NPZ writes. It continues across
+  records, writes manifests and failures, and returns non-zero when any record
+  fails.

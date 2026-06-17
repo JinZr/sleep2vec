@@ -14,6 +14,22 @@ The main output is:
 - `status/progress.json`
 - `backends/npz/records/<record_id>.npz`
 
+## Runtime Modes
+
+`hypnodata run` is the production conversion path. It writes NPZ records and
+terminal manifests only when every selected record succeeds. The output
+directory is single-use: a non-empty directory fails before record processing.
+
+`hypnodata run --dry-run` is a lightweight discovery preview. It loads the
+config, discovers records, writes `manifest/discovery_preview.csv` plus
+`status/progress.json`, and does not read EDF data, materialize annotations, or
+write NPZ records.
+
+`hypnodata validate` is the full QC path. It reads records, preprocesses
+signals, materializes annotations, writes manifests and `failures.csv`, but does
+not write NPZ records. If any record fails validation, the report is still
+written and the command exits non-zero.
+
 ## Downstream Contract
 
 `record_manifest.csv` is the public NPZ index. Downstream consumers should read
@@ -192,7 +208,6 @@ Historical `wuji-dl` code is useful as implementation background:
 - collector/builder separation
 - per-record pipeline execution
 - simple factory/import path extension
-- crash/continue failure mode
 - physiological signal filtering and stage materialization experience
 
 hypnodata intentionally does not copy:

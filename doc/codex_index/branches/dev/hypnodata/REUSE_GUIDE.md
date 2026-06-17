@@ -18,7 +18,8 @@
 | Resolve channels | `hypnodata.channels.resolve_channels` | New label matching or priority logic |
 | Write NPZ records | `hypnodata.backends.write_npz_record` | Direct `np.savez` calls from pipeline branches |
 | Write public manifests | `hypnodata.manifests.write_manifests` | Ad hoc CSV writers |
-| Run record conversion | `hypnodata.pipeline.run_pipeline` | Separate orchestration entrypoints |
+| Run record conversion | `hypnodata.pipeline.run_pipeline` | Soft-failure or overwrite wrappers |
+| Run full validation | `hypnodata.pipeline.validate_pipeline` | Treating `run --dry-run` as a validation path |
 
 ## Structured Preprocess Rules
 

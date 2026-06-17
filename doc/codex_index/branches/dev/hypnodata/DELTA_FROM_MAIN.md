@@ -32,6 +32,9 @@ downstream NPZ/Kaldi/sleep2stat boundaries.
   scalar `ahi`, and scalar `tst` from stage5 plus apnea/hypopnea event rows.
 - Hypnodata still does not write ODI, T90, hypoxic burden, sleep efficiency, or
   other downstream clinical summaries.
+- `hypnodata run` is hard-fail and single-use; `run --dry-run` is lightweight
+  discovery preview; `hypnodata validate` is the full QC/reporting path without
+  NPZ writes.
 - `requirements.txt` includes NeuroKit2 and a NumPy version compatible with that
   dependency.
 

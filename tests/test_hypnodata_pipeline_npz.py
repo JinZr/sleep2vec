@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -307,18 +308,20 @@ def test_optional_missing_channel_sets_mask_zero(tmp_path: Path):
     assert spo2["mask_column"] == "spo2_mask"
 
 
-def test_required_missing_channel_writes_failure(tmp_path: Path):
+def test_required_missing_channel_fails_without_terminal_manifests(tmp_path: Path):
     edf_path = _write_edf(tmp_path / "record.edf")
     index = _write_index(tmp_path, edf_path)
     config = load_config(_write_config(tmp_path, index, missing_required=True))
     output_dir = tmp_path / "out"
 
-    run_pipeline(config, output_dir=output_dir)
+    with pytest.raises(ValueError, match="Missing required channel"):
+        run_pipeline(config, output_dir=output_dir)
 
-    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
-    assert failures.loc[0, "record_id"] == "night1"
-    assert failures.loc[0, "error_type"] == "channel_resolution"
-    assert "Missing required channel" in failures.loc[0, "message"]
+    progress = json.loads((output_dir / "status" / "progress.json").read_text())
+    assert progress["status"] == "failed"
+    assert progress["failed_records"] == 1
+    assert not (output_dir / "manifest" / "record_manifest.csv").exists()
+    assert not (output_dir / "manifest" / "backend_manifest.json").exists()
     assert not (output_dir / "backends" / "npz" / "records" / "night1.npz").exists()
 
 
@@ -329,18 +332,19 @@ def test_pipeline_rejects_bdf_without_mne_fallback(tmp_path: Path):
     config = load_config(_write_config(tmp_path, index, include_spo2=False))
     output_dir = tmp_path / "out"
 
-    run_pipeline(config, output_dir=output_dir)
+    with pytest.raises(ValueError, match="BDF input is not supported"):
+        run_pipeline(config, output_dir=output_dir)
 
-    failures = pd.read_csv(output_dir / "manifest" / "failures.csv")
-    assert failures.loc[0, "record_id"] == "night1"
-    assert "BDF input is not supported" in failures.loc[0, "message"]
+    progress = json.loads((output_dir / "status" / "progress.json").read_text())
+    assert progress["status"] == "failed"
+    assert not (output_dir / "manifest" / "record_manifest.csv").exists()
     assert not (output_dir / "backends" / "npz" / "records" / "night1.npz").exists()
 
 
-def test_crash_raises_on_first_record_failure(tmp_path: Path):
+def test_run_raises_on_first_record_failure(tmp_path: Path):
     edf_path = _write_edf(tmp_path / "record.edf")
     index = _write_index(tmp_path, edf_path)
     config = load_config(_write_config(tmp_path, index, missing_required=True))
 
-    with pytest.raises(RuntimeError, match="Missing required channel"):
-        run_pipeline(config, output_dir=tmp_path / "out", crash=True)
+    with pytest.raises(ValueError, match="Missing required channel"):
+        run_pipeline(config, output_dir=tmp_path / "out")

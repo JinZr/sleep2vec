@@ -84,7 +84,7 @@ def test_hypnodata_multiworker_progress_tracks_completed_records(tmp_path: Path,
     assert running_records[0] == "2_fast"
 
 
-def test_hypnodata_crash_progress_counts_failed_record_once(tmp_path: Path):
+def test_hypnodata_hard_failure_progress_counts_failed_record_once(tmp_path: Path):
     edf_path = write_tiny_edf(tmp_path / "night1.edf", duration_sec=10)
     index = write_index(
         tmp_path,
@@ -103,10 +103,11 @@ def test_hypnodata_crash_progress_counts_failed_record_once(tmp_path: Path):
     config = load_config(write_hypnodata_config(tmp_path, index, label="Missing EEG"))
     output_dir = tmp_path / "out"
 
-    with pytest.raises(RuntimeError, match="Missing required channel"):
-        run_pipeline(config, output_dir=output_dir, crash=True)
+    with pytest.raises(ValueError, match="Missing required channel"):
+        run_pipeline(config, output_dir=output_dir)
 
     progress = json.loads((output_dir / "status" / "progress.json").read_text())
     assert progress["status"] == "failed"
     assert progress["processed_records"] == 1
+    assert progress["succeeded_records"] == 0
     assert progress["failed_records"] == 1

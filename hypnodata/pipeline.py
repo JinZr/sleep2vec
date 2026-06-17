@@ -37,24 +37,32 @@ def run_pipeline(
     output_dir: Path,
     num_workers: int = 1,
     dry_run: bool = False,
-    crash: bool = False,
 ) -> Path:
     if num_workers < 1:
         raise ValueError("--num-workers must be >= 1.")
     output_dir = output_dir.expanduser()
-    if not dry_run and output_dir.exists() and output_dir.is_dir() and any(output_dir.iterdir()):
-        raise FileExistsError(f"Output directory must be empty for hypnodata run: {output_dir}")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        _ensure_empty_output_dir(output_dir, command="hypnodata run")
     adapter = load_adapter(config)
     records = discover_records(config, adapter=adapter)
     if dry_run:
+        started_at = time.time()
+        output_dir.mkdir(parents=True, exist_ok=True)
         write_discovery_preview(output_dir, [_preview_row(record) for record in records])
+        write_hypnodata_progress(
+            output_dir,
+            status="dry_run",
+            total_records=len(records),
+            processed_records=0,
+            succeeded_records=0,
+            failed_records=0,
+            skipped_records=0,
+            started_at=started_at,
+            message=f"Wrote {output_dir / 'manifest' / 'discovery_preview.csv'}",
+        )
+        return output_dir
 
-    if not dry_run:
-        for record in records:
-            npz_path = npz_record_path(output_dir, record.record_id)
-            if npz_path.exists():
-                raise FileExistsError(f"Output NPZ already exists for record {record.record_id!r}: {npz_path}")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     started_at = time.time()
     write_hypnodata_progress(
@@ -69,25 +77,18 @@ def run_pipeline(
     )
     result_items: list[tuple[int, ProcessResult]] = []
     processed = 0
-    failed = 0
-    counted_failure = False
 
     def handle_result(index: int, result: ProcessResult) -> None:
-        nonlocal counted_failure, failed, processed
+        nonlocal processed
         processed += 1
-        if result.failure_row is not None:
-            failed += 1
-            if crash:
-                counted_failure = True
-                raise RuntimeError(result.failure_row["message"])
         result_items.append((index, result))
         write_hypnodata_progress(
             output_dir,
             status="running",
             total_records=len(records),
             processed_records=processed,
-            succeeded_records=processed - failed,
-            failed_records=failed,
+            succeeded_records=processed,
+            failed_records=0,
             skipped_records=0,
             started_at=started_at,
             current_record_id=result.record_id,
@@ -103,7 +104,7 @@ def run_pipeline(
                         record,
                         adapter=adapter,
                         output_dir=output_dir,
-                        dry_run=dry_run,
+                        write_npz=True,
                     ),
                 )
         else:
@@ -115,7 +116,7 @@ def run_pipeline(
                     record,
                     adapter=adapter,
                     output_dir=output_dir,
-                    dry_run=dry_run,
+                    write_npz=True,
                 ): index
                 for index, record in enumerate(records)
             }
@@ -129,14 +130,13 @@ def run_pipeline(
             finally:
                 executor.shutdown(wait=True, cancel_futures=True)
     except Exception as exc:
-        failed_records = failed if counted_failure else failed + 1
         write_hypnodata_progress(
             output_dir,
             status="failed",
             total_records=len(records),
-            processed_records=processed,
-            succeeded_records=processed - failed,
-            failed_records=failed_records,
+            processed_records=min(processed + 1, len(records)),
+            succeeded_records=processed,
+            failed_records=1,
             skipped_records=0,
             started_at=started_at,
             message=str(exc),
@@ -148,6 +148,95 @@ def run_pipeline(
     record_rows = [result.record_row for result in results if result.record_row is not None]
     signal_rows = [row for result in results for row in result.signal_rows]
     qc_rows = [row for result in results for row in result.qc_rows]
+    write_manifests(
+        output_dir,
+        config,
+        record_rows=record_rows,
+        signal_rows=signal_rows,
+        qc_rows=qc_rows,
+        failure_rows=[],
+        dry_run=False,
+    )
+    write_hypnodata_progress(
+        output_dir,
+        status="completed",
+        total_records=len(records),
+        processed_records=processed,
+        succeeded_records=len(results),
+        failed_records=0,
+        skipped_records=0,
+        started_at=started_at,
+        message=f"Wrote {output_dir / 'manifest' / 'record_manifest.csv'}",
+    )
+    return output_dir
+
+
+def validate_pipeline(
+    config: HypnodataConfig,
+    *,
+    output_dir: Path,
+    num_workers: int = 1,
+) -> int:
+    if num_workers < 1:
+        raise ValueError("--num-workers must be >= 1.")
+    output_dir = output_dir.expanduser()
+    _ensure_empty_output_dir(output_dir, command="hypnodata validate")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    adapter = load_adapter(config)
+    records = discover_records(config, adapter=adapter)
+    started_at = time.time()
+    write_hypnodata_progress(
+        output_dir,
+        status="running",
+        total_records=len(records),
+        processed_records=0,
+        succeeded_records=0,
+        failed_records=0,
+        skipped_records=0,
+        started_at=started_at,
+    )
+
+    result_items: list[tuple[int, ProcessResult]] = []
+    processed = 0
+    failed = 0
+
+    def handle_result(index: int, result: ProcessResult) -> None:
+        nonlocal failed, processed
+        processed += 1
+        if result.failure_row is not None:
+            failed += 1
+        result_items.append((index, result))
+        write_hypnodata_progress(
+            output_dir,
+            status="running",
+            total_records=len(records),
+            processed_records=processed,
+            succeeded_records=processed - failed,
+            failed_records=failed,
+            skipped_records=0,
+            started_at=started_at,
+            current_record_id=result.record_id,
+        )
+
+    if num_workers == 1:
+        for index, record in enumerate(records):
+            handle_result(index, _validate_record(config, record, adapter=adapter, output_dir=output_dir))
+    else:
+        executor = ThreadPoolExecutor(max_workers=num_workers)
+        futures = {
+            executor.submit(_validate_record, config, record, adapter=adapter, output_dir=output_dir): index
+            for index, record in enumerate(records)
+        }
+        try:
+            for future in as_completed(futures):
+                handle_result(futures[future], future.result())
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    results = [result for _, result in sorted(result_items, key=lambda item: item[0])]
+    record_rows = [result.record_row for result in results if result.record_row is not None]
+    signal_rows = [row for result in results for row in result.signal_rows]
+    qc_rows = [row for result in results for row in result.qc_rows]
     failure_rows = [result.failure_row for result in results if result.failure_row is not None]
     write_manifests(
         output_dir,
@@ -156,20 +245,20 @@ def run_pipeline(
         signal_rows=signal_rows,
         qc_rows=qc_rows,
         failure_rows=failure_rows,
-        dry_run=dry_run,
+        dry_run=True,
     )
     write_hypnodata_progress(
         output_dir,
-        status="completed",
+        status="failed" if failure_rows else "completed",
         total_records=len(records),
         processed_records=processed,
-        succeeded_records=len([result for result in results if result.record_row is not None]),
-        failed_records=len([result for result in results if result.failure_row is not None]),
+        succeeded_records=len(record_rows),
+        failed_records=len(failure_rows),
         skipped_records=0,
         started_at=started_at,
         message=f"Wrote {output_dir / 'manifest' / 'record_manifest.csv'}",
     )
-    return output_dir
+    return len(failure_rows)
 
 
 def _process_record(
@@ -178,116 +267,116 @@ def _process_record(
     *,
     adapter,
     output_dir: Path,
-    dry_run: bool,
+    write_npz: bool,
 ) -> ProcessResult:
     npz_path = npz_record_path(output_dir, record.record_id)
-    if npz_path.exists() and not dry_run:
+    if npz_path.exists() and write_npz:
         raise FileExistsError(f"Output NPZ already exists for record {record.record_id!r}: {npz_path}")
-    try:
-        metadata = {**record.metadata, **call_resolve_metadata(adapter, record, config)}
-        record = replace(record, metadata=metadata)
-        inventories = call_fix_header(adapter, record, _read_inventories(record), config)
-        selections, warnings = resolve_channels(config.signals, inventories)
-        processed: dict[str, ProcessedSignal] = {}
-        qc_rows: list[dict[str, Any]] = []
-        for warning in warnings:
+    metadata = {**record.metadata, **call_resolve_metadata(adapter, record, config)}
+    record = replace(record, metadata=metadata)
+    inventories = call_fix_header(adapter, record, _read_inventories(record), config)
+    selections, warnings = resolve_channels(config.signals, inventories)
+    processed: dict[str, ProcessedSignal] = {}
+    qc_rows: list[dict[str, Any]] = []
+    for warning in warnings:
+        qc_rows.append(
+            issue_row(
+                QCIssue(
+                    record_id=record.record_id,
+                    scope="signal",
+                    canonical_channel="",
+                    code="channel_ambiguity",
+                    severity="warning",
+                    message=warning,
+                )
+            )
+        )
+    for canonical, selection in selections.items():
+        spec = config.signals[canonical]
+        if not selection.available:
+            continue
+        assert selection.raw_file is not None and selection.raw_label is not None and selection.raw_index is not None
+        raw = read_edf_signal(
+            Path(selection.raw_file),
+            selection.raw_label,
+            raw_unit=selection.raw_unit,
+            raw_index=selection.raw_index,
+        )
+        signal = preprocess_signal(raw, selection, spec)
+        processed[canonical] = signal
+    if processed:
+        processed, duration, truncated_channels = truncate_to_common(processed)
+        for channel in truncated_channels:
             qc_rows.append(
                 issue_row(
                     QCIssue(
                         record_id=record.record_id,
                         scope="signal",
-                        canonical_channel="",
-                        code="channel_ambiguity",
+                        canonical_channel=channel,
+                        code="length_mismatch",
                         severity="warning",
-                        message=warning,
+                        message="Signal was truncated to the common record duration.",
                     )
                 )
             )
-        for canonical, selection in selections.items():
-            spec = config.signals[canonical]
-            if not selection.available:
-                continue
-            assert (
-                selection.raw_file is not None and selection.raw_label is not None and selection.raw_index is not None
+    else:
+        try:
+            duration = float(record.metadata.get("duration"))
+        except (TypeError, ValueError):
+            raise ValueError(
+                "Record has no raw signals; record.metadata['duration'] is required for annotation-only output."
+            ) from None
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError(
+                "Record has no raw signals; record.metadata['duration'] must be a positive finite number "
+                "for annotation-only output."
             )
-            raw = read_edf_signal(
-                Path(selection.raw_file),
-                selection.raw_label,
-                raw_unit=selection.raw_unit,
-                raw_index=selection.raw_index,
-            )
-            signal = preprocess_signal(raw, selection, spec)
-            processed[canonical] = signal
-        if processed:
-            processed, duration, truncated_channels = truncate_to_common(processed)
-            for channel in truncated_channels:
-                qc_rows.append(
-                    issue_row(
-                        QCIssue(
-                            record_id=record.record_id,
-                            scope="signal",
-                            canonical_channel=channel,
-                            code="length_mismatch",
-                            severity="warning",
-                            message="Signal was truncated to the common record duration.",
-                        )
-                    )
-                )
+    if config.backend.min_duration is not None and duration < config.backend.min_duration:
+        raise ValueError(f"Record duration {duration:g}s is shorter than backend.min_duration.")
+    annotations = call_read_annotations(adapter, record, config, duration)
+    annotation_by_name = _annotation_by_name(annotations.signals)
+    _validate_annotations(config, processed, annotation_by_name, duration)
+    for canonical, selection in selections.items():
+        if selection.required and not selection.available and canonical not in annotation_by_name:
+            raise ChannelResolutionError(f"Missing required channel {canonical!r}.")
+    arrays = {name: signal.data for name, signal in processed.items()}
+    _add_annotation_outputs(arrays, annotation_by_name)
+    if not arrays:
+        raise ValueError("No available signals to write.")
+    output_path = write_npz_record(output_dir, record.record_id, arrays) if write_npz else npz_path
+    signal_rows: list[dict[str, Any]] = []
+    for canonical, selection in selections.items():
+        spec = config.signals[canonical]
+        signal = processed.get(canonical)
+        annotation = annotation_by_name.get(canonical)
+        if annotation is not None:
+            signal_rows.append(_annotation_signal_row(record, annotation, spec))
+            continue
+        if selection.required and signal is None:
+            raise ChannelResolutionError(f"Missing required channel {canonical!r}.")
+        if selection.available:
+            signal_rows.append(_signal_row(record, selection, spec, signal, qc_status="ok" if signal else "missing"))
         else:
-            try:
-                duration = float(record.metadata.get("duration"))
-            except (TypeError, ValueError):
-                raise ValueError(
-                    "Record has no raw signals; record.metadata['duration'] is required for annotation-only output."
-                ) from None
-            if not np.isfinite(duration) or duration <= 0:
-                raise ValueError(
-                    "Record has no raw signals; record.metadata['duration'] must be a positive finite number "
-                    "for annotation-only output."
-                )
-        if config.backend.min_duration is not None and duration < config.backend.min_duration:
-            raise ValueError(f"Record duration {duration:g}s is shorter than backend.min_duration.")
-        annotations = call_read_annotations(adapter, record, config, duration)
-        annotation_by_name = _annotation_by_name(annotations.signals)
-        _validate_annotations(config, processed, annotation_by_name, duration)
-        for canonical, selection in selections.items():
-            if selection.required and not selection.available and canonical not in annotation_by_name:
-                raise ChannelResolutionError(f"Missing required channel {canonical!r}.")
-        arrays = {name: signal.data for name, signal in processed.items()}
-        _add_annotation_outputs(arrays, annotation_by_name)
-        if not arrays:
-            raise ValueError("No available signals to write.")
-        output_path = npz_path if dry_run else write_npz_record(output_dir, record.record_id, arrays)
-        signal_rows: list[dict[str, Any]] = []
-        for canonical, selection in selections.items():
-            spec = config.signals[canonical]
-            signal = processed.get(canonical)
-            annotation = annotation_by_name.get(canonical)
-            if annotation is not None:
-                signal_rows.append(_annotation_signal_row(record, annotation, spec))
-                continue
-            if selection.required and signal is None:
-                raise ChannelResolutionError(f"Missing required channel {canonical!r}.")
-            if selection.available:
-                signal_rows.append(
-                    _signal_row(record, selection, spec, signal, qc_status="ok" if signal else "missing")
-                )
-            else:
-                signal_rows.append(_signal_row(record, selection, spec, None, qc_status="missing_optional"))
-        return ProcessResult(
-            record_id=record.record_id,
-            record_row=_record_row(
-                config,
-                record,
-                selections,
-                output_path,
-                duration,
-                qc_status="ok",
-                annotation_names=set(annotation_by_name),
-            ),
-            signal_rows=signal_rows,
-            qc_rows=qc_rows,
-        )
+            signal_rows.append(_signal_row(record, selection, spec, None, qc_status="missing_optional"))
+    return ProcessResult(
+        record_id=record.record_id,
+        record_row=_record_row(
+            config,
+            record,
+            selections,
+            output_path,
+            duration,
+            qc_status="ok",
+            annotation_names=set(annotation_by_name),
+        ),
+        signal_rows=signal_rows,
+        qc_rows=qc_rows,
+    )
+
+
+def _validate_record(config: HypnodataConfig, record: RecordTask, *, adapter, output_dir: Path) -> ProcessResult:
+    try:
+        return _process_record(config, record, adapter=adapter, output_dir=output_dir, write_npz=False)
     except Exception as exc:
         if isinstance(exc, ChannelResolutionError):
             code = "channel_resolution"
@@ -316,6 +405,11 @@ def _process_record(
                 "message": str(exc),
             },
         )
+
+
+def _ensure_empty_output_dir(output_dir: Path, *, command: str) -> None:
+    if output_dir.exists() and output_dir.is_dir() and any(output_dir.iterdir()):
+        raise FileExistsError(f"Output directory must be empty for {command}: {output_dir}")
 
 
 def _read_inventories(record: RecordTask) -> dict[str, EdfInventory]:

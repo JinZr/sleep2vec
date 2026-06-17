@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-17
+
+- Updated hypnodata orchestration contract: production `run` is hard-fail,
+  `run --dry-run` is discovery preview only, and full QC belongs to
+  `hypnodata validate`.
+- Indexed `hypnodata.pipeline.validate_pipeline` as the full validation/report
+  entrypoint.
+
 ## 2026-06-16
 
 - Simplified raw-signal candidates to ordered exact-label strings and removed
