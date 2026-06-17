@@ -196,6 +196,19 @@ def test_anchor_event_materializer_rejects_overlong_event_rows():
         )
 
 
+def test_anchor_event_materializer_rejects_anchor_overflow():
+    rows = np.asarray([[0, 10.0, 5.0], [0, 20.0, 5.0]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="exceeds anchor_num"):
+        materialize_anchor_events(
+            rows,
+            duration_sec=60,
+            window_sec=60,
+            anchor_num=1,
+            canonical_channel="desaturation_anchor",
+        )
+
+
 def test_filter_events_to_sleep_stages_keeps_only_sleep_overlap():
     rows = np.asarray(
         [
