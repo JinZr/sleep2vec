@@ -43,6 +43,13 @@ bash utils/style_check.sh
 - Name outputs by their real unit and denominator. If both ratio and percent are emitted, both names must say so; do not also emit ambiguous historical aliases.
 - Let tests pin removals as well as additions. When deleting legacy behavior, test that hidden fallbacks and ambiguous legacy entrypoints fail validation or disappear from outputs; do not add tests that require special rejection of ordinary bad values unless they would otherwise produce misleading results.
 
+## Runtime Failure & Output Directory Policy
+- Prefer `let it fail` for repository-owned analysis and derived-artifact pipelines. If an analyzer, reducer, parser, or writer raises, let the command fail with a non-zero exit instead of converting it into a partial-success bundle.
+- Do not add resume, repair, skip-existing, overwrite, or partial-rebuild protocols unless the user explicitly asks for them and the runtime need is concrete. For normal research runs, rerun with a fresh output directory or manually clear the failed output.
+- Treat committed run directories as single-use artifacts. A non-empty output directory should generally fail before expensive work starts unless the tool has an explicit append-only contract.
+- Write terminal manifests only after the run has completed successfully. Interrupted or failed directories should be considered invalid rather than interpreted through sidecars, shards, or partial tables.
+- Keep summary commands read-only unless their contract explicitly says they repair or rebuild data. A `summarize`-style command should inspect committed outputs, not infer completion from partial intermediate files.
+
 ## Codex Index Usage Policy
 - Before editing code, determine the current Git branch and consult the matching index under `doc/codex_index/branches/<branch>/`.
 - For small, localized fixes or routine updates, keep the consult lightweight: review `README.md` plus the single most relevant page from `REUSE_GUIDE.md`, `MODULE_MAP.md`, `FUNCTIONS/`, or `WORKFLOWS/` for the area being changed.

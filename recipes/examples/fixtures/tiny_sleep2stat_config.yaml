@@ -1,8 +1,6 @@
 run:
   name: tiny_sleep2stat
   output_dir: results/sleep2stat/tiny_fixture
-  overwrite: false
-  skip_existing: true
   seed: 4523
 
 data:

@@ -516,11 +516,9 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
                 ["python", "-m", "sleep2stat", "run", "--config", config, *_sleep2stat_runtime_args(recipe)]
             )
         )
-        if runtime.get("summarize_after_run", True):
-            summarize_cmd = ["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]
-            _append_option(summarize_cmd, "--num-workers", runtime.get("num_workers"))
-            commands.append(_render_command(summarize_cmd))
-        if runtime.get("plot_cohort_after_run") is True:
+        if runtime.get("summarize_after_run", True) and not runtime.get("dry_run"):
+            commands.append(_render_command(["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]))
+        if runtime.get("plot_cohort_after_run") is True and not runtime.get("dry_run"):
             plot_cmd = [
                 "python",
                 "-m",
@@ -690,10 +688,8 @@ def _sleep2stat_expected_artifacts(cfg: dict | None) -> list[dict[str, str]]:
         {"name": "sleep2stat run manifest", "path": f"{run_dir}/run_manifest.json"},
         {"name": "sleep2stat record manifest", "path": f"{run_dir}/record_manifest.csv"},
         {"name": "sleep2stat progress", "path": f"{run_dir}/status/progress.json"},
-        {"name": "sleep2stat failures", "path": f"{run_dir}/status/failures.csv"},
         {"name": "sleep2stat model summary", "path": f"{run_dir}/tables/model_summary.csv"},
         {"name": "sleep2stat analyzer summary", "path": f"{run_dir}/tables/analyzer_summary.csv"},
-        {"name": "sleep2stat per-record success marker", "path": f"{run_dir}/per_record/<record_id>/_SUCCESS.json"},
         {"name": "sleep2stat per-record events", "path": f"{run_dir}/per_record/<record_id>/events{event_suffix}"},
         {"name": "sleep2stat per-record night stats", "path": f"{run_dir}/per_record/<record_id>/night_stats.json"},
         {

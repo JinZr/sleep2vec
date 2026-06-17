@@ -7,7 +7,7 @@ import pandas as pd
 
 from data.utils import load_npz
 from sleep2stat.analyzers.base import BaseAnalyzer
-from sleep2stat.core.artifacts import AnalyzerResult, FailureRecord
+from sleep2stat.core.artifacts import AnalyzerResult
 from sleep2stat.core.context import Sleep2statContext
 from sleep2stat.core.stage_sources import StageSourceResolver
 from sleep2stat.io.records import SleepRecord
@@ -21,18 +21,14 @@ class Spo2SummaryAnalyzer(BaseAnalyzer):
         records: list[SleepRecord],
         context: Sleep2statContext,
         prior_results: list[AnalyzerResult] | None = None,
-    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+    ) -> list[AnalyzerResult]:
         results: list[AnalyzerResult] = []
-        failures: list[FailureRecord] = []
         for record in records:
-            try:
-                signal, sfreq, valid = _spo2_signal(record, context, self.config)
-                results.append(
-                    AnalyzerResult(self.config.name, record.record_id, night=_spo2_summary(signal, sfreq, valid))
-                )
-            except Exception as exc:
-                failures.append(_failure(record, self.config.name, exc))
-        return results, failures
+            signal, sfreq, valid = _spo2_signal(record, context, self.config)
+            results.append(
+                AnalyzerResult(self.config.name, record.record_id, night=_spo2_summary(signal, sfreq, valid))
+            )
+        return results
 
 
 @register_analyzer("spo2_desaturation")
@@ -42,37 +38,33 @@ class Spo2DesaturationAnalyzer(BaseAnalyzer):
         records: list[SleepRecord],
         context: Sleep2statContext,
         prior_results: list[AnalyzerResult] | None = None,
-    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+    ) -> list[AnalyzerResult]:
         results: list[AnalyzerResult] = []
-        failures: list[FailureRecord] = []
         drops = self.config.drop_thresholds
         min_duration = float(self.config.min_duration_sec)
         max_duration = self.config.max_duration_sec
         resolver = StageSourceResolver(records, prior_results or [])
         for record in records:
-            try:
-                signal, sfreq, valid = _spo2_signal(record, context, self.config)
-                events = _desaturation_events(
-                    record,
+            signal, sfreq, valid = _spo2_signal(record, context, self.config)
+            events = _desaturation_events(
+                record,
+                self.config.name,
+                signal,
+                sfreq,
+                valid,
+                drops=drops,
+                min_duration_sec=min_duration,
+                max_duration_sec=max_duration,
+            )
+            results.append(
+                AnalyzerResult(
                     self.config.name,
-                    signal,
-                    sfreq,
-                    valid,
-                    drops=drops,
-                    min_duration_sec=min_duration,
-                    max_duration_sec=max_duration,
+                    record.record_id,
+                    events=events,
+                    night=_odi_stats(record, events, drops, valid, sfreq, resolver, self.config.stage_source),
                 )
-                results.append(
-                    AnalyzerResult(
-                        self.config.name,
-                        record.record_id,
-                        events=events,
-                        night=_odi_stats(record, events, drops, valid, sfreq, resolver, self.config.stage_source),
-                    )
-                )
-            except Exception as exc:
-                failures.append(_failure(record, self.config.name, exc))
-        return results, failures
+            )
+        return results
 
 
 @register_analyzer("event_related_hypoxic_burden")
@@ -82,56 +74,35 @@ class EventRelatedHypoxicBurdenAnalyzer(BaseAnalyzer):
         records: list[SleepRecord],
         context: Sleep2statContext,
         prior_results: list[AnalyzerResult] | None = None,
-    ) -> tuple[list[AnalyzerResult], list[FailureRecord]]:
+    ) -> list[AnalyzerResult]:
         results: list[AnalyzerResult] = []
-        failures: list[FailureRecord] = []
         event_source = self.config.event_source
         if not event_source:
-            return [], [
-                FailureRecord(
-                    record_id=record.record_id,
-                    analyzer=self.config.name,
-                    error_type="ValueError",
-                    message="event_related_hypoxic_burden requires event_source.",
-                )
-                for record in records
-            ]
+            raise ValueError("event_related_hypoxic_burden requires event_source.")
         events_by_record = _events_by_record(prior_results or [], event_source)
         for record in records:
-            try:
-                source_events = events_by_record.get(record.record_id)
-                if source_events is None:
-                    failures.append(
-                        FailureRecord(
-                            record_id=record.record_id,
-                            analyzer=self.config.name,
-                            error_type="MissingEventSource",
-                            message=(
-                                f"event_source {event_source!r} produced no event result for "
-                                f"record {record.record_id!r}."
-                            ),
-                        )
-                    )
-                    continue
-                if source_events.empty:
-                    results.append(
-                        AnalyzerResult(self.config.name, record.record_id, night=_empty_burden(record, event_source))
-                    )
-                    continue
-                signal, sfreq, valid = _spo2_signal(record, context, self.config)
-                events, night = _event_related_burden(
-                    record,
-                    self.config.name,
-                    event_source,
-                    source_events,
-                    signal,
-                    sfreq,
-                    valid,
+            source_events = events_by_record.get(record.record_id)
+            if source_events is None:
+                raise ValueError(
+                    f"event_source {event_source!r} produced no event result for record {record.record_id!r}."
                 )
-                results.append(AnalyzerResult(self.config.name, record.record_id, events=events, night=night))
-            except Exception as exc:
-                failures.append(_failure(record, self.config.name, exc))
-        return results, failures
+            if source_events.empty:
+                results.append(
+                    AnalyzerResult(self.config.name, record.record_id, night=_empty_burden(record, event_source))
+                )
+                continue
+            signal, sfreq, valid = _spo2_signal(record, context, self.config)
+            events, night = _event_related_burden(
+                record,
+                self.config.name,
+                event_source,
+                source_events,
+                signal,
+                sfreq,
+                valid,
+            )
+            results.append(AnalyzerResult(self.config.name, record.record_id, events=events, night=night))
+        return results
 
 
 def _spo2_signal(record: SleepRecord, context: Sleep2statContext, config) -> tuple[np.ndarray, float, np.ndarray]:
@@ -477,7 +448,3 @@ def _events_by_record(results: list[AnalyzerResult], source: str) -> dict[str, p
         if result.name == source and result.events is not None:
             output[result.record_id] = result.events
     return output
-
-
-def _failure(record: SleepRecord, analyzer: str, exc: Exception) -> FailureRecord:
-    return FailureRecord(record.record_id, analyzer, type(exc).__name__, str(exc))

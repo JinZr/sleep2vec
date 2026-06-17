@@ -296,7 +296,7 @@ def test_downstream_analyzer_prepare_and_run_with_mock_checkpoint(monkeypatch, t
     )
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [
             SleepRecord(
                 record_id="rec1",
@@ -313,7 +313,6 @@ def test_downstream_analyzer_prepare_and_run_with_mock_checkpoint(monkeypatch, t
     )
 
     assert calls == {"on_load_checkpoint": 1, "load_state_dict": 1, "eval_model": 1}
-    assert failures == []
     torch.testing.assert_close(captured_tokens["ppg"], torch.tensor([[[0.0, 2.0], [4.0, 6.0]]]))
     assert results[0].night["sex_model_pred"] == 1
 
@@ -399,7 +398,7 @@ def test_downstream_analyzer_preserves_duplicate_npz_path_records(monkeypatch, t
     )
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [
             SleepRecord(
                 record_id="rec_a",
@@ -424,13 +423,11 @@ def test_downstream_analyzer_preserves_duplicate_npz_path_records(monkeypatch, t
         ],
         context,
     )
-
-    assert failures == []
     assert captured_ids["id"] == ["rec_a", "rec_b"]
     assert [result.record_id for result in results] == ["rec_a", "rec_b"]
 
 
-def test_downstream_analyzer_retries_failed_batch_by_record(monkeypatch, tmp_path: Path):
+def test_downstream_analyzer_batch_failure_raises(monkeypatch, tmp_path: Path):
     for name in ("good", "bad"):
         np.savez(tmp_path / f"{name}.npz", ppg=np.arange(4, dtype=np.float32))
     ckpt_path = tmp_path / "model.ckpt"
@@ -512,16 +509,14 @@ def test_downstream_analyzer_retries_failed_batch_by_record(monkeypatch, tmp_pat
     )
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
-        [
-            SleepRecord("good", tmp_path / "good.npz", "test", "unit", 60, 30, 2, {}),
-            SleepRecord("bad", tmp_path / "bad.npz", "test", "unit", 60, 30, 2, {}),
-        ],
-        context,
-    )
-
-    assert [result.record_id for result in results] == ["good"]
-    assert [(failure.record_id, failure.error_type) for failure in failures] == [("bad", "ValueError")]
+    with pytest.raises(RuntimeError, match="batch failed"):
+        analyzer.run(
+            [
+                SleepRecord("good", tmp_path / "good.npz", "test", "unit", 60, 30, 2, {}),
+                SleepRecord("bad", tmp_path / "bad.npz", "test", "unit", 60, 30, 2, {}),
+            ],
+            context,
+        )
 
 
 def test_downstream_analyzer_respects_epoch_probability_flag(monkeypatch, tmp_path: Path):
@@ -604,7 +599,7 @@ def test_downstream_analyzer_respects_epoch_probability_flag(monkeypatch, tmp_pa
     )
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [
             SleepRecord(
                 record_id="rec1",
@@ -621,7 +616,6 @@ def test_downstream_analyzer_respects_epoch_probability_flag(monkeypatch, tmp_pa
     )
 
     frame = results[0].epoch
-    assert failures == []
     assert "stage5_model_pred" in frame.columns
     assert "stage5_model_confidence" in frame.columns
     assert not any(column.startswith("stage5_model_prob_") for column in frame.columns)
@@ -698,25 +692,22 @@ def test_downstream_analyzer_reports_prefiltered_records(monkeypatch, tmp_path: 
     )
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
-        [
-            SleepRecord(
-                record_id="rec1",
-                path=tmp_path / "missing.npz",
-                split="test",
-                source="unit",
-                duration_sec=60,
-                token_sec=30,
-                max_tokens=2,
-                metadata={},
-            )
-        ],
-        context,
-    )
-
-    assert results == []
-    assert failures[0].record_id == "rec1"
-    assert failures[0].error_type == "RecordUnavailable"
+    with pytest.raises(ValueError, match="Records were dropped before model inference"):
+        analyzer.run(
+            [
+                SleepRecord(
+                    record_id="rec1",
+                    path=tmp_path / "missing.npz",
+                    split="test",
+                    source="unit",
+                    duration_sec=60,
+                    token_sec=30,
+                    max_tokens=2,
+                    metadata={},
+                )
+            ],
+            context,
+        )
 
 
 def test_yasa_stage_analyzer_with_mock_sleep_staging(monkeypatch, tmp_path: Path):
@@ -739,9 +730,7 @@ def test_yasa_stage_analyzer_with_mock_sleep_staging(monkeypatch, tmp_path: Path
     context = _yasa_context(tmp_path)
 
     analyzer.prepare(context)
-    results, failures = analyzer.run([_yasa_record(npz_path)], context)
-
-    assert failures == []
+    results = analyzer.run([_yasa_record(npz_path)], context)
     frame = results[0].epoch
     assert frame["yasa_stage_pred"].tolist() == [0, 2]
     assert frame["yasa_stage_label"].tolist() == ["W", "N2"]
@@ -768,9 +757,7 @@ def test_yasa_stage_probability_arrays_follow_output_flag(monkeypatch, tmp_path:
     context = _yasa_context(tmp_path, include_probabilities=False)
 
     analyzer.prepare(context)
-    results, failures = analyzer.run([_yasa_record(npz_path)], context)
-
-    assert failures == []
+    results = analyzer.run([_yasa_record(npz_path)], context)
     assert "yasa_stage_prob_W" not in results[0].epoch.columns
     assert results[0].arrays == {}
 
@@ -797,9 +784,7 @@ def test_yasa_stage_drops_non_binary_numeric_sex_metadata(monkeypatch, tmp_path:
     record.metadata["sex"] = -1
 
     analyzer.prepare(context)
-    _, failures = analyzer.run([record], context)
-
-    assert failures == []
+    analyzer.run([record], context)
     assert captured["metadata"] == {"age": 60.0}
 
 
@@ -832,9 +817,7 @@ def test_yasa_bandpower_analyzer_with_mock_bandpower(monkeypatch, tmp_path: Path
     context = _yasa_context(tmp_path)
 
     analyzer.prepare(context)
-    results, failures = analyzer.run([_yasa_record(npz_path)], context)
-
-    assert failures == []
+    results = analyzer.run([_yasa_record(npz_path)], context)
     assert results[0].epoch["yasa_bandpower_delta_rel"].tolist() == [0.4, 0.4]
     assert results[0].night["yasa_bandpower_delta_rel_mean"] == 0.4
     assert results[0].night["yasa_bandpower_alpha_rel_mean"] == 0.2
@@ -879,9 +862,7 @@ def test_yasa_bandpower_array_api_receives_uv(monkeypatch, tmp_path: Path):
     )
 
     analyzer.prepare(context)
-    results, failures = analyzer.run([_yasa_record(npz_path)], context)
-
-    assert failures == []
+    results = analyzer.run([_yasa_record(npz_path)], context)
     assert captured["mean"] == pytest.approx(1.0)
     assert captured["relative"] is False
     assert results[0].epoch["yasa_bandpower_delta_abs"].tolist() == [1.0, 1.0]
@@ -912,13 +893,11 @@ def test_yasa_bandpower_by_stage_uses_prior_stage_source(monkeypatch, tmp_path: 
     stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "yasa_stage_pred": [2, 3]})
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_yasa_record(npz_path)],
         context,
         prior_results=[AnalyzerResult("yasa_stage", "rec1", epoch=stage_epoch)],
     )
-
-    assert failures == []
     assert results[0].night["yasa_bandpower_N2_sigma_mean"] == 0.3
     assert results[0].night["yasa_bandpower_N3_sigma_mean"] == 0.3
 
@@ -941,11 +920,8 @@ def test_yasa_bandpower_by_stage_requires_stage_source(monkeypatch, tmp_path: Pa
     context = _yasa_context(tmp_path)
 
     analyzer.prepare(context)
-    results, failures = analyzer.run([_yasa_record(npz_path)], context)
-
-    assert results == []
-    assert failures[0].record_id == "rec1"
-    assert "stage_source" in failures[0].message
+    with pytest.raises(ValueError, match="stage_source"):
+        analyzer.run([_yasa_record(npz_path)], context)
 
 
 def test_yasa_spindles_analyzer_with_mock_detector(monkeypatch, tmp_path: Path):
@@ -963,9 +939,7 @@ def test_yasa_spindles_analyzer_with_mock_detector(monkeypatch, tmp_path: Path):
     context = _yasa_context(tmp_path)
 
     analyzer.prepare(context)
-    results, failures = analyzer.run([_yasa_record(npz_path)], context)
-
-    assert failures == []
+    results = analyzer.run([_yasa_record(npz_path)], context)
     assert results[0].events["event_type"].tolist() == ["yasa_spindle"]
     assert results[0].events["yasa_spindles_confidence"].tolist() == [0.8]
     assert results[0].night["yasa_spindles_event_count"] == 1
@@ -998,13 +972,11 @@ def test_yasa_spindles_stage_filter_uses_sample_level_hypno(monkeypatch, tmp_pat
     stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 4]})
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_yasa_record(npz_path)],
         context,
         prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
     )
-
-    assert failures == []
     assert len(results) == 1
     assert captured["hypno"].shape == (captured["raw_samples"],)
     assert captured["raw_samples"] == 6000
@@ -1042,13 +1014,11 @@ def test_yasa_spindles_outputs_stage_denominator_density(monkeypatch, tmp_path: 
     stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 3]})
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_yasa_record(npz_path)],
         context,
         prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
     )
-
-    assert failures == []
     assert results[0].night["yasa_spindles_spindle_density_per_min_N2"] == pytest.approx(2.0)
     assert results[0].night["yasa_spindles_spindle_density_per_min_N2N3"] == pytest.approx(2.0)
 
@@ -1077,13 +1047,11 @@ def test_yasa_spindles_stage_density_assigns_missing_event_stage_from_onset(monk
     stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 3]})
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_yasa_record(npz_path)],
         context,
         prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
     )
-
-    assert failures == []
     assert results[0].night["yasa_spindles_spindle_density_per_min_N2"] == pytest.approx(2.0)
     assert results[0].night["yasa_spindles_spindle_density_per_min_N2N3"] == pytest.approx(2.0)
 
@@ -1137,13 +1105,11 @@ def test_yasa_rem_calls_two_eog_array_api_with_sample_level_hypno(monkeypatch, t
     stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [4, 2]})
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_yasa_record(npz_path)],
         context,
         prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
     )
-
-    assert failures == []
     assert captured["loc"].shape == (6000,)
     assert captured["roc"].shape == (6000,)
     assert captured["loc"].mean() == pytest.approx(1.0)
@@ -1193,13 +1159,11 @@ def test_yasa_hrv_stage_uses_single_channel_sample_level_hypno(monkeypatch, tmp_
     stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [2, 4]})
 
     analyzer.prepare(context)
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_yasa_record(npz_path)],
         context,
         prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
     )
-
-    assert failures == []
     assert captured["data"].shape == (6000,)
     assert captured["sf"] == 100
     assert captured["hypno"].shape == (6000,)
@@ -1225,9 +1189,7 @@ def test_spo2_summary_handles_artifact_and_threshold_time(tmp_path: Path):
         )
     )
 
-    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
-
-    assert failures == []
+    results = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
     night = results[0].night
     assert night["spo2_nadir"] == 87.0
     assert night["spo2_t90_min"] == pytest.approx(2 / 60)
@@ -1249,9 +1211,7 @@ def test_spo2_summary_excludes_large_jump_artifact(tmp_path: Path):
         )
     )
 
-    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
-
-    assert failures == []
+    results = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
     assert results[0].night["spo2_nadir"] == 95.0
     assert results[0].night["spo2_t90_min"] == 0.0
 
@@ -1270,9 +1230,7 @@ def test_spo2_desaturation_detects_events_and_odi(tmp_path: Path):
         )
     )
 
-    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
-
-    assert failures == []
+    results = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path))
     assert sorted(results[0].events["drop_threshold_pct"].tolist()) == [3.0, 4.0]
     assert results[0].events["spo2_desat_area_pctsec"].tolist() == [48.0, 48.0]
     assert results[0].events["spo2_desat_area_pctmin"].tolist() == [0.8, 0.8]
@@ -1302,13 +1260,11 @@ def test_spo2_desaturation_outputs_sleep_denominator_odi_when_stage_source_is_av
     )
     stage_epoch = pd.DataFrame({"record_id": ["rec1", "rec1"], "token_idx": [0, 1], "stage5_model_pred": [0, 2]})
 
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_spo2_record(npz_path)],
         _spo2_context(tmp_path),
         prior_results=[AnalyzerResult("stage5_model", "rec1", epoch=stage_epoch)],
     )
-
-    assert failures == []
     assert results[0].night["ODI3_per_sleep_hour"] == pytest.approx(120.0)
 
 
@@ -1327,12 +1283,8 @@ def test_spo2_desaturation_fails_when_stage_denominator_missing(tmp_path: Path):
         )
     )
 
-    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path), prior_results=[])
-
-    assert results == []
-    assert len(failures) == 1
-    assert failures[0].record_id == "rec1"
-    assert "stage_source" in failures[0].message
+    with pytest.raises(ValueError, match="stage_source"):
+        analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path), prior_results=[])
 
 
 def test_event_related_hypoxic_burden_uses_pred_event_fields(tmp_path: Path):
@@ -1349,13 +1301,11 @@ def test_event_related_hypoxic_burden_uses_pred_event_fields(tmp_path: Path):
         )
     )
 
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_spo2_record(npz_path)],
         _spo2_context(tmp_path),
         prior_results=[AnalyzerResult("ahi_model", "rec1", events=source_events)],
     )
-
-    assert failures == []
     assert "resp_event_hypoxic_burden_pctmin" in results[0].events.columns
     assert results[0].night["resp_event_hypoxic_burden_event_count"] == 1
     assert results[0].night["resp_event_hypoxic_burden_pctmin"] == pytest.approx(140 / 60)
@@ -1383,13 +1333,11 @@ def test_event_related_hypoxic_burden_deduplicates_multi_threshold_events(tmp_pa
         )
     )
 
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_spo2_record(npz_path)],
         _spo2_context(tmp_path),
         prior_results=[AnalyzerResult("spo2_desaturation", "rec1", events=source_events)],
     )
-
-    assert failures == []
     assert len(results[0].events) == 1
     assert "desaturation_area_burden_pctmin" in results[0].events.columns
     assert results[0].night["desaturation_area_burden_event_count"] == 1
@@ -1408,10 +1356,8 @@ def test_event_related_hypoxic_burden_fails_when_source_result_is_missing(tmp_pa
         )
     )
 
-    results, failures = analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path), prior_results=[])
-
-    assert results == []
-    assert failures[0].error_type == "MissingEventSource"
+    with pytest.raises(ValueError, match="event_source"):
+        analyzer.run([_spo2_record(npz_path)], _spo2_context(tmp_path), prior_results=[])
 
 
 def test_event_related_hypoxic_burden_allows_real_empty_source_events(tmp_path: Path):
@@ -1427,13 +1373,11 @@ def test_event_related_hypoxic_burden_allows_real_empty_source_events(tmp_path: 
     )
     source_events = pd.DataFrame(columns=["record_id", "onset_sec", "offset_sec"])
 
-    results, failures = analyzer.run(
+    results = analyzer.run(
         [_spo2_record(npz_path)],
         _spo2_context(tmp_path),
         prior_results=[AnalyzerResult("ahi_model", "rec1", events=source_events)],
     )
-
-    assert failures == []
     assert results[0].night["resp_event_hypoxic_burden_event_count"] == 0
     assert results[0].night["resp_event_hypoxic_burden_pctmin"] == 0.0
     assert results[0].night["resp_event_hypoxic_burden_pctmin_per_recording_hour"] == 0.0

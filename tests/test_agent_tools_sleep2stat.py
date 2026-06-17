@@ -28,6 +28,18 @@ def _write_tiny_recipe(tmp_path: Path, payload: dict) -> Path:
     return write_yaml(tmp_path / "tiny_sleep2stat.yaml", payload)
 
 
+def _write_tiny_recipe_with_run_dir(tmp_path: Path, run_dir: Path, *, overwrite_policy: bool = False) -> Path:
+    config_payload = yaml.safe_load((REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml").read_text())
+    config_payload["run"]["output_dir"] = str(run_dir)
+    config = write_yaml(tmp_path / "tiny_sleep2stat_config.yaml", config_payload)
+    payload = _tiny_recipe_payload()
+    payload["inputs"]["config"] = str(config)
+    payload["artifacts"]["run_dir"] = str(run_dir)
+    payload["artifacts"]["overwrite"] = overwrite_policy
+    payload["decisions"]["overwrite_policy"]["value"] = overwrite_policy
+    return _write_tiny_recipe(tmp_path, payload)
+
+
 def _write_context_decisions(tmp_path: Path) -> Path:
     return write_yaml(
         tmp_path / "decisions.yaml",
@@ -89,8 +101,50 @@ def test_sleep2stat_run_dir_mismatch_blocks_before_command_generation(tmp_path: 
     assert not (output_dir / "run.sh").exists()
 
 
+def test_sleep2stat_existing_run_output_dir_blocks_before_command_generation(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "old.txt").write_text("old")
+    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 2
+    assert any(issue.field == "sleep2stat.run.output_dir" for issue in report.issues)
+    assert (output_dir / "plan.blocked.md").exists()
+    assert not (output_dir / "run.sh").exists()
+
+
+def test_sleep2stat_existing_run_output_dir_blocks_even_with_overwrite_policy(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "old.txt").write_text("old")
+    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir, overwrite_policy=True)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 2
+    assert any(issue.field == "sleep2stat.run.output_dir" for issue in report.issues)
+    assert not (output_dir / "run.sh").exists()
+
+
+def test_sleep2stat_empty_run_output_dir_allows_command_generation(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    assert (output_dir / "run.sh").exists()
+
+
 def test_sleep2stat_summarize_and_plot_use_config_run_dir(tmp_path: Path):
     payload = _tiny_recipe_payload()
+    payload["runtime"]["dry_run"] = False
     payload["artifacts"].pop("run_dir")
     recipe_path = _write_tiny_recipe(tmp_path, payload)
     output_dir = tmp_path / "plan"
@@ -100,15 +154,31 @@ def test_sleep2stat_summarize_and_plot_use_config_run_dir(tmp_path: Path):
     assert report.exit_code == 0
     commands = json.loads((output_dir / "plan.json").read_text())["commands"]
     config_run_dir = "results/sleep2stat/tiny_fixture"
-    assert f"python -m sleep2stat summarize --run-dir {config_run_dir} --num-workers 1" in commands
+    assert f"python -m sleep2stat summarize --run-dir {config_run_dir}" in commands
     assert any(
         command.startswith(f"python -m sleep2stat plot-cohort --run-dir {config_run_dir}") for command in commands
     )
     assert not any("--stage-source" in command for command in commands)
 
 
+def test_sleep2stat_dry_run_plan_skips_post_run_commands(tmp_path: Path):
+    payload = _tiny_recipe_payload()
+    payload["runtime"]["dry_run"] = True
+    recipe_path = _write_tiny_recipe(tmp_path, payload)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    commands = json.loads((output_dir / "plan.json").read_text())["commands"]
+    assert any(command.startswith("python -m sleep2stat run ") and "--dry-run" in command for command in commands)
+    assert not any(command.startswith("python -m sleep2stat summarize ") for command in commands)
+    assert not any(command.startswith("python -m sleep2stat plot-cohort ") for command in commands)
+
+
 def test_sleep2stat_plot_stage_source_auto_is_rendered_as_plain_value(tmp_path: Path):
     payload = _tiny_recipe_payload()
+    payload["runtime"]["dry_run"] = False
     payload["runtime"]["plot_stage_source"] = "auto"
     recipe_path = _write_tiny_recipe(tmp_path, payload)
     output_dir = tmp_path / "plan"
@@ -128,7 +198,7 @@ def test_sleep2stat_yasa_plan_adds_record_preflight_and_summary_types(tmp_path: 
     config = write_yaml(
         tmp_path / "sleep2stat_yasa.yaml",
         {
-            "run": {"name": "yasa", "output_dir": str(tmp_path / "run"), "overwrite": False, "skip_existing": True},
+            "run": {"name": "yasa", "output_dir": str(tmp_path / "run")},
             "data": {
                 "backend": "npz",
                 "index": str(index),
@@ -244,20 +314,11 @@ def test_sleep2stat_external_test_locked_false_blocks_test_split(tmp_path: Path)
     assert any(issue.field == "external_test_locked" for issue in report.issues)
 
 
-def test_sleep2stat_config_overwrite_conflicts_with_overwrite_policy(tmp_path: Path):
-    config_payload = yaml.safe_load((REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml").read_text())
-    config_payload["run"]["overwrite"] = True
-    config = write_yaml(tmp_path / "sleep2stat_overwrite.yaml", config_payload)
-    payload = _tiny_recipe_payload()
-    payload["inputs"]["config"] = str(config)
-    payload["artifacts"]["overwrite"] = False
-    payload["decisions"]["overwrite_policy"] = {"value": False, "source": "explicit_recipe"}
-    recipe_path = _write_tiny_recipe(tmp_path, payload)
+def test_sleep2stat_config_summary_omits_removed_run_controls():
+    summary = sleep2stat_config_summary(REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml")
 
-    _recipe, _cfg, report = evaluate_recipe(recipe_path)
-
-    assert report.exit_code == 2
-    assert any(issue.field == "overwrite_policy" for issue in report.issues)
+    assert "overwrite" not in summary["sleep2stat"]["run"]
+    assert "skip_existing" not in summary["sleep2stat"]["run"]
 
 
 def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: Path):
@@ -270,8 +331,6 @@ def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: P
             "run": {
                 "name": "kaldi_relative_manifest",
                 "output_dir": str(tmp_path / "run"),
-                "overwrite": False,
-                "skip_existing": True,
             },
             "data": {
                 "backend": "kaldi",
@@ -351,8 +410,6 @@ def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: 
             "run": {
                 "name": "placeholder_model",
                 "output_dir": str(tmp_path / "run"),
-                "overwrite": False,
-                "skip_existing": True,
             },
             "data": {
                 "backend": "npz",
@@ -448,10 +505,11 @@ def test_sleep2stat_skill_examples_validate_without_variant():
 def test_sleep2stat_skill_documents_stable_sidecars():
     text = (REPO_ROOT / "skills/sleep2stat/SKILL.md").read_text()
 
-    for expected in ["_SUCCESS.json", "events.csv.gz", "events.csv", "night_stats.json", "result_manifest.csv"]:
+    for expected in ["events.csv.gz", "events.csv", "night_stats.json", "result_manifest.csv"]:
         assert expected in text
+    assert "_SUCCESS.json" not in text
     assert "arrays.npz" in text
-    assert "not the stable agent-facing success contract" in text
+    assert "run directories are single-use" in text
 
 
 def test_sleep2stat_cli_skills_validate_accepts_examples():
