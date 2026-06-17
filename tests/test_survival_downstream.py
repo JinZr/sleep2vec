@@ -258,6 +258,37 @@ def _import_finetuning_class(module_name: str):
         raise
 
 
+class _StaticLogitModel:
+    def __init__(self, logits: torch.Tensor):
+        self.logits = logits
+
+    def __call__(self, batch):
+        return self.logits
+
+
+def _new_survival_finetuning_module(module_name: str, loss_module_name: str):
+    finetuning_cls = _import_finetuning_class(module_name)
+    loss_cls = __import__(loss_module_name, fromlist=["CoxPHLossVectorized"]).CoxPHLossVectorized
+    module = finetuning_cls.__new__(finetuning_cls)
+    object.__setattr__(module, "args", SimpleNamespace(device=torch.device("cpu"), is_survival=True))
+    object.__setattr__(module, "_survival_loss", loss_cls())
+    object.__setattr__(module, "_stage_outputs", {"train": [], "val": [], "test": []})
+    object.__setattr__(module, "prediction_rows", [])
+    return finetuning_cls, module
+
+
+def _capture_logged_metrics(module):
+    logged = []
+
+    def _log(name, value, **kwargs):
+        if torch.is_tensor(value):
+            value = float(value.detach().cpu().item())
+        logged.append((name, value, kwargs))
+
+    object.__setattr__(module, "log", _log)
+    return logged
+
+
 @pytest.mark.parametrize(
     ("module_name", "loss_module_name"),
     [
@@ -267,11 +298,7 @@ def _import_finetuning_class(module_name: str):
     ],
 )
 def test_survival_loss_reports_zero_events_for_all_censored_batches(module_name: str, loss_module_name: str):
-    finetuning_cls = _import_finetuning_class(module_name)
-    loss_cls = __import__(loss_module_name, fromlist=["CoxPHLossVectorized"]).CoxPHLossVectorized
-    module = finetuning_cls.__new__(finetuning_cls)
-    module.args = SimpleNamespace(device=torch.device("cpu"))
-    module._survival_loss = loss_cls()
+    _, module = _new_survival_finetuning_module(module_name, loss_module_name)
     logits = torch.tensor([[0.0, 1.0], [2.0, 3.0]], requires_grad=True)
     batch = {
         "metadata": {
@@ -285,6 +312,81 @@ def test_survival_loss_reports_zero_events_for_all_censored_batches(module_name:
 
     assert event_count == 0
     assert loss.item() == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_eval_loss_uses_epoch_risk_set_for_singleton_batches(module_name: str, loss_module_name: str):
+    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    logged = _capture_logged_metrics(module)
+    event_batch = {
+        "metadata": {
+            "event_time": torch.tensor([[1.0]]),
+            "is_event": torch.tensor([[1.0]]),
+            "has_label": torch.tensor([[1.0]]),
+        }
+    }
+    censored_batch = {
+        "metadata": {
+            "event_time": torch.tensor([[2.0]]),
+            "is_event": torch.tensor([[0.0]]),
+            "has_label": torch.tensor([[1.0]]),
+        }
+    }
+
+    singleton_loss = module._survival_loss(
+        torch.tensor([[0.0]]),
+        event_batch["metadata"]["has_label"],
+        event_batch["metadata"]["event_time"],
+        event_batch["metadata"]["is_event"],
+    )
+    assert singleton_loss.item() == pytest.approx(0.0)
+
+    finetuning_cls._shared_step(module, event_batch, stage="val", model=_StaticLogitModel(torch.tensor([[0.0]])))
+    finetuning_cls._shared_step(module, censored_batch, stage="val", model=_StaticLogitModel(torch.tensor([[1.0]])))
+    finetuning_cls._finalize_epoch(module, "val")
+
+    expected = module._survival_loss(
+        torch.tensor([[0.0], [1.0]]),
+        torch.ones(2, 1),
+        torch.tensor([[1.0], [2.0]]),
+        torch.tensor([[1.0], [0.0]]),
+    )
+    assert logged[0][0] == "val_loss"
+    assert logged[0][1] == pytest.approx(float(expected))
+    assert module._stage_outputs["val"] == []
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_eval_epoch_without_events_does_not_log_loss(module_name: str, loss_module_name: str):
+    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    logged = _capture_logged_metrics(module)
+    batch = {
+        "metadata": {
+            "event_time": torch.tensor([[1.0], [2.0]]),
+            "is_event": torch.zeros(2, 1),
+            "has_label": torch.ones(2, 1),
+        }
+    }
+
+    finetuning_cls._shared_step(module, batch, stage="val", model=_StaticLogitModel(torch.tensor([[0.0], [1.0]])))
+    finetuning_cls._finalize_epoch(module, "val")
+
+    assert logged == []
+    assert module._stage_outputs["val"] == []
 
 
 def test_survival_sidecars_attach_subject_labels_to_multiple_rows(tmp_path: Path):

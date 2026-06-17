@@ -482,6 +482,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _shared_step(self, batch, stage: str, model=None):
         model = model or self.model
         logits = model(batch)
+        if self._is_survival_task() and stage in {"val", "test"}:
+            # Cox eval risk sets span the whole epoch, so batch losses are not meaningful.
+            self._collect_survival_eval_batch(stage, logits, batch)
+            return None
+
         loss_info = self._compute_loss(logits, batch)
         if loss_info is None:
             if stage == "train":
@@ -619,6 +624,73 @@ class Sleep2vecFinetuning(pl.LightningModule):
         loss = self._survival_loss(logits, has_label, event_time, is_event)
         event_count = int(((is_event > 0.5) & valid_mask).sum().item())
         return loss, event_count
+
+    def _collect_survival_eval_batch(self, stage: str, logits, batch) -> None:
+        metadata = batch["metadata"]
+        event_time = metadata["event_time"]
+        is_event = metadata["is_event"]
+        has_label = metadata["has_label"]
+
+        if logits.shape != event_time.shape:
+            raise ValueError(
+                f"Survival head output shape {tuple(logits.shape)} does not match labels {tuple(event_time.shape)}."
+            )
+        if not (has_label > 0.5).any():
+            return
+
+        self._stage_outputs[stage].append(
+            {
+                "pred": logits.detach().to(device="cpu", dtype=torch.float32),
+                "event_time": event_time.detach().to(device="cpu", dtype=torch.float32),
+                "is_event": is_event.detach().to(device="cpu", dtype=torch.float32),
+                "has_label": has_label.detach().to(device="cpu", dtype=torch.float32),
+            }
+        )
+
+    def _gather_survival_eval_records(self, records):
+        if not is_torch_distributed_ready():
+            return records
+
+        _, world_size = get_rank_world_size()
+        gathered: list[list[dict[str, torch.Tensor]] | None] = [None] * world_size
+        dist.all_gather_object(gathered, records)
+
+        merged: list[dict[str, torch.Tensor]] = []
+        for item in gathered:
+            if isinstance(item, list):
+                merged.extend(item)
+        return merged
+
+    def _finalize_survival_epoch(self, stage: str, outputs) -> None:
+        records = list(outputs)
+        outputs.clear()
+        if stage == "train":
+            return
+
+        # Build the monitored Cox loss from the full eval risk set, including all DDP ranks.
+        records = self._gather_survival_eval_records(records)
+        if not records:
+            return
+
+        device = torch.device(getattr(self.args, "device", "cpu"))
+        pred = torch.cat([record["pred"] for record in records], dim=0).to(device)
+        event_time = torch.cat([record["event_time"] for record in records], dim=0).to(device)
+        is_event = torch.cat([record["is_event"] for record in records], dim=0).to(device)
+        has_label = torch.cat([record["has_label"] for record in records], dim=0).to(device)
+        event_count = int(((is_event > 0.5) & (has_label > 0.5)).sum().item())
+        if event_count == 0:
+            return
+
+        loss = self._survival_loss(pred, has_label, event_time, is_event)
+        self.log(
+            f"{stage}_loss",
+            loss,
+            prog_bar=True,
+            logger=True,
+            sync_dist=False,
+            on_step=False,
+            on_epoch=True,
+        )
 
     def _extract_valid_predictions(self, batch, logits):
         labels = self._get_targets(batch)
@@ -1011,12 +1083,12 @@ class Sleep2vecFinetuning(pl.LightningModule):
         outputs = self._stage_outputs[stage]
         if stage == "test":
             self.prediction_rows = []
+        if self._is_survival_task():
+            self._finalize_survival_epoch(stage, outputs)
+            return None
+
         if stage in getattr(self, "_eval_loss_sums", {}):
             self._log_eval_loss(stage)
-
-        if self._is_survival_task():
-            outputs.clear()
-            return None
 
         if self._is_ahi_task() and stage == "train":
             metrics = self._compute_reduced_ahi_train_pointwise_metrics()
