@@ -308,7 +308,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return None
         loss = self._survival_loss(logits, has_label, event_time, is_event)
         event_count = int(((is_event > 0.5) & valid_mask).sum().item())
-        return loss, max(event_count, 1)
+        return loss, event_count
 
     def _extract_valid_predictions(self, batch, logits):
         labels = self._get_targets(batch)

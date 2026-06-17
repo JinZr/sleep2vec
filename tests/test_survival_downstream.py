@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import pickle
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -245,6 +246,45 @@ def test_cox_loss_skips_disease_columns_without_events_and_returns_connected_zer
     zero.backward()
     assert zero.item() == pytest.approx(0.0)
     assert pred.grad is not None
+
+
+def _import_finetuning_class(module_name: str):
+    try:
+        return __import__(module_name, fromlist=["Sleep2vecFinetuning"]).Sleep2vecFinetuning
+    except (AttributeError, ImportError, RuntimeError) as exc:
+        message = str(exc)
+        if "torchvision" in message or "RoFormerModel" in message:
+            pytest.skip(f"Skipping finetuning import because local optional vision dependencies are unavailable: {exc}")
+        raise
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_loss_reports_zero_events_for_all_censored_batches(module_name: str, loss_module_name: str):
+    finetuning_cls = _import_finetuning_class(module_name)
+    loss_cls = __import__(loss_module_name, fromlist=["CoxPHLossVectorized"]).CoxPHLossVectorized
+    module = finetuning_cls.__new__(finetuning_cls)
+    module.args = SimpleNamespace(device=torch.device("cpu"))
+    module._survival_loss = loss_cls()
+    logits = torch.tensor([[0.0, 1.0], [2.0, 3.0]], requires_grad=True)
+    batch = {
+        "metadata": {
+            "event_time": torch.tensor([[10.0, 20.0], [30.0, 40.0]]),
+            "is_event": torch.zeros(2, 2),
+            "has_label": torch.ones(2, 2),
+        }
+    }
+
+    loss, event_count = module._compute_survival_loss(logits, batch)
+
+    assert event_count == 0
+    assert loss.item() == pytest.approx(0.0)
 
 
 def test_survival_sidecars_attach_subject_labels_to_multiple_rows(tmp_path: Path):
