@@ -150,7 +150,7 @@ hypnodata materializes annotation signals only when they are declared under
 sources stay adapter-owned: core config does not accept
 `signals.<name>.annotation`.
 
-Annotation-only outputs use empty candidates:
+Annotation-only outputs must use empty candidates:
 
 ```yaml
 signals:
@@ -177,7 +177,9 @@ signals:
 
 For annotation-only signals, use these second-based output-grid fields instead
 of `target_sfreq`: `epoch_sec` for stage arrays, `interval_sec` for dense event
-labels and built-in AHI labels, and `window_sec` for anchor labels. Built-in
+labels and built-in AHI labels, and `window_sec` for anchor labels. Annotation
+labels also do not use `target_unit`, `scale`, `polarity`, or `preprocess`;
+their values are written from adapter-provided annotation arrays. Built-in
 `signals.ahi` requires `stage5.epoch_sec: 30` and `interval_sec: 1`; it writes
 the downstream AHI finetune trio `ah_event`, scalar `ahi`, and scalar `tst`.
 

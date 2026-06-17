@@ -203,21 +203,29 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
             raise ValueError(f"signals.{canonical}.kind is required.")
         candidates = _build_candidates(spec.get("candidates", []), canonical)
         kind = str(spec["kind"])
-        if kind == "ahi" and candidates:
-            raise ValueError(f"signals.{canonical}.candidates must be empty for kind=ahi.")
-        if not candidates and kind not in ANNOTATION_ONLY_KINDS:
+        annotation_only = kind in ANNOTATION_ONLY_KINDS
+        if canonical == "ahi" and kind != "ahi":
+            raise ValueError("signals.ahi must use kind=ahi.")
+        if annotation_only and candidates:
+            raise ValueError(f"signals.{canonical}.candidates must be empty for kind={kind}.")
+        if not annotation_only and not candidates:
             allowed = ", ".join(sorted(ANNOTATION_ONLY_KINDS))
             raise ValueError(f"signals.{canonical}.candidates must not be empty unless kind is one of: {allowed}.")
-        annotation_only = not candidates and kind in ANNOTATION_ONLY_KINDS
         epoch_sec, interval_sec, window_sec = _build_annotation_timing(spec, canonical, kind, annotation_only)
         target_sfreq = None if spec.get("target_sfreq") is None else float(spec["target_sfreq"])
         if target_sfreq is not None and target_sfreq <= 0:
             raise ValueError(f"signals.{canonical}.target_sfreq must be positive when set.")
+        target_unit = None if spec.get("target_unit") is None else str(spec["target_unit"])
         if annotation_only and target_sfreq is not None:
             raise ValueError(
                 f"signals.{canonical}.target_sfreq is not used for annotation-only signals; "
                 "use epoch_sec, interval_sec, or window_sec."
             )
+        # Annotation outputs are adapter-provided labels, not raw waveforms to be converted or preprocessed.
+        raw_only_fields = ["target_unit", "scale", "polarity", "preprocess"]
+        for field in raw_only_fields:
+            if annotation_only and spec.get(field) is not None:
+                raise ValueError(f"signals.{canonical}.{field} is only valid for raw signals.")
         required = spec.get("required", True)
         if not isinstance(required, bool):
             raise ValueError(f"signals.{canonical}.required must be a boolean.")
@@ -227,7 +235,7 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
             kind=kind,
             required=required,
             target_sfreq=target_sfreq,
-            target_unit=None if spec.get("target_unit") is None else str(spec["target_unit"]),
+            target_unit=target_unit,
             candidates=candidates,
             epoch_sec=epoch_sec,
             interval_sec=interval_sec,

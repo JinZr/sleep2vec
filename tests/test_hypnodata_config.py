@@ -173,6 +173,29 @@ def test_load_config_rejects_raw_signal_without_candidates(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
+@pytest.mark.parametrize(
+    ("kind", "fields"),
+    [
+        ("stage", {"epoch_sec": 30}),
+        ("event_table", {}),
+        ("event_dense", {"interval_sec": 1}),
+        ("event_anchor", {"window_sec": 10}),
+    ],
+)
+def test_load_config_rejects_annotation_kind_with_candidates(tmp_path: Path, kind: str, fields: dict):
+    payload = _payload()
+    signal = {
+        "kind": kind,
+        "required": False,
+        "candidates": ["Annotation Channel"],
+    }
+    signal.update(fields)
+    payload["signals"]["stage5"] = signal
+
+    with pytest.raises(ValueError, match=rf"signals\.stage5\.candidates must be empty for kind={kind}"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_rejects_empty_candidate_label(tmp_path: Path):
     payload = _payload()
     payload["signals"]["eeg"]["candidates"] = [""]
@@ -186,6 +209,42 @@ def test_load_config_rejects_non_boolean_required(tmp_path: Path):
     payload["signals"]["eeg"]["required"] = "false"
 
     with pytest.raises(ValueError, match=r"signals\.eeg\.required must be a boolean"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("target_unit", "uV"),
+        ("scale", 2.0),
+        ("polarity", -1),
+        ("preprocess", [{"type": "notch", "freq": 50, "q": 30}]),
+    ],
+)
+def test_load_config_rejects_annotation_only_raw_processing_fields(tmp_path: Path, field: str, value):
+    payload = _payload()
+    payload["signals"]["event"] = {
+        "kind": "event_dense",
+        "required": False,
+        "candidates": [],
+        "interval_sec": 1,
+        field: value,
+    }
+
+    with pytest.raises(ValueError, match=rf"signals\.event\.{field} is only valid for raw signals"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
+def test_load_config_rejects_non_ahi_signal_named_ahi(tmp_path: Path):
+    payload = _payload()
+    payload["signals"]["ahi"] = {
+        "kind": "event_dense",
+        "required": False,
+        "candidates": [],
+        "interval_sec": 1,
+    }
+
+    with pytest.raises(ValueError, match="signals.ahi must use kind=ahi"):
         load_config(_write_yaml(tmp_path, payload))
 
 

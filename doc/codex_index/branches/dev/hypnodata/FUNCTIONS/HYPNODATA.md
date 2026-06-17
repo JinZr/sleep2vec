@@ -8,7 +8,9 @@
   parse `signals.<channel>.candidates` as ordered exact-label strings, reject
   unknown fields and schema/version fields, require CSV discovery to use
   `record_discovery.file_columns`, keep `adapter_options` as the only adapter
-  passthrough block, and enforce core config requirements.
+  passthrough block, enforce annotation-only signal grammar by `kind`, reject
+  raw-only fields on annotation-only signals, and enforce core config
+  requirements.
 - Important inputs/outputs: YAML path in; `HypnodataConfig` out.
 - Side effects: reads one YAML file.
 - Reuse guidance: use this for all hypnodata config loading.

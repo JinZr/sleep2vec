@@ -32,10 +32,12 @@
 
 - Keep annotation sources adapter-owned; core YAML only declares canonical
   outputs under `signals`.
-- Empty `candidates` are reserved for `kind: stage`, `event_table`,
-  `event_dense`, `event_anchor`, and built-in `ahi`.
+- Empty `candidates` are required for `kind: stage`, `event_table`,
+  `event_dense`, `event_anchor`, and built-in `ahi`; raw signals must declare
+  non-empty candidates.
 - Use `epoch_sec`, `interval_sec`, or `window_sec` for annotation output grids;
-  do not use `target_sfreq` for annotation-only signals.
+  do not use raw-only fields such as `target_sfreq`, `target_unit`, `scale`,
+  `polarity`, or `preprocess` for annotation-only signals.
 - Use standard event rows `[type, start_sec, duration_sec]` before producing
   table, dense, or anchor outputs.
 - `signals.ahi` is the only built-in clinical summary output in hypnodata; it

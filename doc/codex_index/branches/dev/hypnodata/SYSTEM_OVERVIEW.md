@@ -46,7 +46,8 @@ fixed pipeline behavior and are not YAML preprocess step types.
 Annotation sources remain adapter-owned. Core YAML declares canonical outputs
 under `signals`, but does not accept `signals.<name>.annotation`.
 
-Annotation-only signals use empty `candidates` and one of these `kind` values:
+Annotation-only signals must use empty `candidates` and one of these `kind`
+values:
 
 - `stage`: 1D stage arrays such as `stage5`; declare `epoch_sec`
 - `event_table`: `(N, 3)` event tables `[type, start_sec, duration_sec]`
@@ -56,7 +57,8 @@ Annotation-only signals use empty `candidates` and one of these `kind` values:
 - `ahi`: built-in AHI finetune output; declare `interval_sec: 1`, require
   `stage5.epoch_sec: 30`, and write `ah_event`, scalar `ahi`, and scalar `tst`
 
-Annotation-only signals must not use `target_sfreq` in YAML. Core config
+Annotation-only signals must not use raw-only fields such as `target_sfreq`,
+`target_unit`, `scale`, `polarity`, or `preprocess` in YAML. Core config
 derives the effective output frequency from the second-based fields when
 validating adapter output and writing manifests.
 

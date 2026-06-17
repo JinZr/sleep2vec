@@ -22,10 +22,12 @@ downstream NPZ/Kaldi/sleep2stat boundaries.
   appear in manifests.
 - Raw-signal `candidates` are ordered exact-label strings; regex, priority, and
   adapter scoring are not part of the hypnodata config contract.
-- Annotation-only signals may use empty `candidates` only for `kind: stage`,
-  `event_table`, `event_dense`, `event_anchor`, or built-in `ahi`.
+- Annotation-only signals must use empty `candidates` for `kind: stage`,
+  `event_table`, `event_dense`, `event_anchor`, or built-in `ahi`; raw signals
+  must declare non-empty candidates.
 - Annotation-only signals declare output grids with `epoch_sec`,
-  `interval_sec`, or `window_sec` instead of `target_sfreq`.
+  `interval_sec`, or `window_sec` instead of raw-only fields such as
+  `target_sfreq`, `target_unit`, `scale`, `polarity`, or `preprocess`.
 - Adapter-provided annotation sources can now materialize standard event tables,
   dense event labels, and anchor labels in addition to `stage5`.
 - Built-in `signals.ahi` writes the downstream AHI finetune trio `ah_event`,
