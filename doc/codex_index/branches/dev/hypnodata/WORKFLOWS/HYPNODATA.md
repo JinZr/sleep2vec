@@ -1,0 +1,91 @@
+# Hypnodata Workflows
+
+## Add Or Change Config Fields
+
+1. Update dataclasses and parsing in `hypnodata/config.py`.
+2. Reject unknown or duplicate semantic fields at the config boundary.
+3. Update `tests/test_hypnodata_config.py`.
+4. Update `configs/hypnodata/README.md` and `configs/hypnodata/toy_edf_npz.yaml`
+   when the user-facing schema changes.
+
+## Add Or Change Signal Preprocessing
+
+1. Parse user-facing YAML into typed steps in `hypnodata/config.py`.
+2. Execute parsed steps in `hypnodata/preprocess.py`.
+3. Keep execution order explicit: raw-to-target unit conversion, scale,
+   polarity, structured preprocess list, target-rate resampling, finite check,
+   then common-duration truncation.
+4. Record real executed steps in `ProcessedSignal.steps`.
+5. Add or update direct signal tests in `tests/test_hypnodata_preprocess.py`.
+6. Add or update pipeline manifest tests when step names or output metadata
+   change.
+
+## Add Or Change EDF Reading
+
+1. Keep raw EDF inventory and signal reading in `hypnodata/edf.py`.
+2. Return each channel at its native header-declared sample count; mixed-rate
+   EDF files must not expose low-rate channels on MNE's common time base.
+3. Reject BDF inputs until a native BDF reader exists; do not let them fall back
+   to MNE's shared-rate view.
+4. Keep channel selection in `hypnodata/channels.py` and preprocessing in
+   `hypnodata/preprocess.py`.
+5. Update `tests/test_hypnodata_pipeline_npz.py` for direct reader and pipeline
+   NPZ behavior.
+
+## Add Or Change Annotation Outputs
+
+1. Keep annotation source discovery in adapters; do not add
+   `signals.<name>.annotation` to core YAML.
+2. Add or extend event/stage materializers in `hypnodata/annotations.py`.
+3. Declare annotation-only outputs in `signals` with empty `candidates` and
+   `kind: stage`, `event_table`, `event_dense`, `event_anchor`, or built-in
+   `ahi`.
+4. Use `epoch_sec`, `interval_sec`, or `window_sec` for annotation output grids;
+   do not use raw-only fields such as `target_sfreq`, `target_unit`, `scale`,
+   `polarity`, or `preprocess` for annotation-only outputs.
+   Dense event `interval_sec` must be an integer number of seconds.
+5. If a record can have no raw signal, make the adapter/discovery metadata
+   provide positive finite `record.metadata["duration"]`.
+6. Validate canonical names, duplicate annotations, raw-output collisions,
+   shape, and target sampling frequency in `hypnodata/pipeline.py`.
+7. Update `tests/test_hypnodata_annotations.py` for helper behavior and
+   `tests/test_hypnodata_adapter.py` for pipeline/manifest behavior.
+8. For built-in AHI finetune data, use `signals.ahi` and
+   `materialize_ahi_from_events` so `ah_event`, scalar `ahi`, and scalar `tst`
+   are written as one contract.
+9. Do not write ODI, T90, hypoxic burden, sleep efficiency, or other unrelated
+   downstream clinical summaries from hypnodata.
+
+## Validate Hypnodata Changes
+
+Use the smallest relevant set first, then the full hypnodata glob:
+
+```bash
+conda run -n exp python -m pytest -q tests/test_hypnodata_config.py tests/test_hypnodata_preprocess.py tests/test_hypnodata_pipeline_npz.py
+conda run -n exp python -m pytest -q tests/test_hypnodata_*.py
+conda run -n exp flake8 hypnodata tests/test_hypnodata_*.py
+conda run -n exp black --check hypnodata tests/test_hypnodata_*.py
+conda run -n exp isort --check-only hypnodata tests/test_hypnodata_*.py
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache conda run -n exp python -m compileall hypnodata tests
+git diff --check
+```
+
+## Downstream Compatibility
+
+- Use `tests/test_hypnodata_downstream_sleep2stat.py` for sleep2stat record
+  loading compatibility.
+- Use `tests/test_hypnodata_downstream_presets.py` for preset mask filtering.
+- Use `tests/test_hypnodata_downstream_kaldi_converter.py` for NPZ-to-Kaldi
+  compatibility.
+
+Hypnodata should not write Kaldi archives or preset pickle files directly.
+
+## Choose Runtime Mode
+
+- Use `hypnodata run` for production NPZ conversion. It is hard-fail: one
+  record failure aborts the command and no terminal manifests are written.
+- Use `hypnodata run --dry-run` only for lightweight config/discovery preview.
+  It does not read EDF data or validate annotations.
+- Use `hypnodata validate` for full QC without NPZ writes. It continues across
+  records, writes manifests and failures, and returns non-zero when any record
+  fails.

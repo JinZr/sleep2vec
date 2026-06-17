@@ -1,0 +1,38 @@
+# Module Map
+
+## Natural Edit Boundaries
+
+| Boundary | Primary files | Responsibility | Reuse guidance |
+| --- | --- | --- | --- |
+| Config schema | `hypnodata/config.py` | Strict YAML parsing, typed config dataclasses, ordered exact-label signal candidates, structured preprocess steps | Add schema checks here, not in pipeline code |
+| Discovery and adapters | `hypnodata/discovery.py`, `hypnodata/adapters.py`, `hypnodata/records.py` | Convert glob/CSV/custom sources into `RecordTask` objects and center-specific hooks | Keep center-specific logic in adapters |
+| Annotation materialization | `hypnodata/annotations.py` | Convert adapter-provided stage/event rows into `stage`, `event_table`, `event_dense`, `event_anchor`, and built-in `ahi` outputs | Reuse standard materializers; keep source parsing in adapters |
+| EDF and channel resolution | `hypnodata/edf.py`, `hypnodata/channels.py` | Inventory raw EDF files, read raw signals at native per-channel sample counts, select canonical channels by candidate order | Reuse `resolve_channels`; do not duplicate matching logic |
+| Signal preprocessing | `hypnodata/preprocess.py` | Raw-to-target unit conversion, scale, polarity, structured filter/notch, resample, finite check, common truncation | Extend `preprocess_signal` or `truncate_to_common`; do not add parallel preprocess runners |
+| Pipeline orchestration | `hypnodata/pipeline.py` | Production run, lightweight dry-run preview, full validation reports, progress writes | Keep orchestration here and signal math in `preprocess.py` |
+| Output manifests | `hypnodata/manifests.py`, `hypnodata/backends.py`, `hypnodata/status.py` | NPZ path layout, CSV/JSON manifests, mask columns, progress JSON | Preserve downstream names: `path`, `duration`, mask columns |
+| Example config and docs | `configs/hypnodata/` | User-facing contract examples and boundaries | Keep examples aligned with `load_config` |
+| Contract tests | `tests/test_hypnodata_*.py`, `tests/hypnodata_test_helpers.py` | Pin schema, preprocessing, pipeline outputs, adapter hooks, downstream compatibility, progress/conflict behavior | Add focused tests near the owning contract |
+
+## Dependency Flow
+
+- `pipeline.py` depends on config, discovery, adapters, EDF, channel selection,
+  annotations, preprocessing, backends, manifests, QC, and status.
+- `preprocess.py` depends on parsed `FilterStep` / `NotchStep` objects from
+  `config.py`; it does not parse YAML mappings.
+- `annotations.py` depends on NumPy and Pandas only; adapters call it after
+  discovering center-specific annotation files.
+- `manifests.py` depends on `HypnodataConfig` for signal metadata and mask
+  columns, but does not run preprocessing.
+
+## Ownership Notes
+
+- YAML semantic changes belong in `hypnodata/config.py` with config tests.
+- Annotation event/stage materialization changes belong in
+  `hypnodata/annotations.py` with direct annotation tests.
+- Signal math changes belong in `hypnodata/preprocess.py` with direct unit
+  tests.
+- Output column or manifest semantics belong in `hypnodata/manifests.py` and
+  pipeline tests.
+- Downstream compatibility with sleep2stat, presets, and Kaldi conversion is
+  pinned by dedicated `tests/test_hypnodata_downstream_*.py` files.
