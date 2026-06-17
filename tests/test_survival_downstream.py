@@ -9,7 +9,6 @@ import pytest
 import torch
 
 from data.default_dataset import Sample
-from data.psg_pretrain_dataset import PSGPretrainDataset
 from data.survival import attach_survival_metadata, load_survival_label_table, stack_survival_metadata
 from sleep2vec.config import SurvivalConfig, load_finetune_config
 from sleep2vec.losses.cox import CoxPHLossVectorized
@@ -101,6 +100,7 @@ def _write_survival_preset(
     sample_index_cls,
     *,
     include_survival_metadata: bool = True,
+    include_survival_key: bool = True,
 ) -> Path:
     npz_path = tmp_path / "sample.npz"
     np.savez(npz_path, ppg=np.asarray([0.0, 1.0], dtype=np.float32))
@@ -117,6 +117,8 @@ def _write_survival_preset(
                 "has_label": np.asarray([1.0, 1.0], dtype=np.float32),
             }
         )
+        if include_survival_key:
+            metadata["eid"] = "1"
     preset_path = tmp_path / "preset.pkl"
     with preset_path.open("wb") as f:
         pickle.dump(
@@ -140,11 +142,15 @@ def _load_dataset_from_survival_preset(
     default_dataset_module: str,
     *,
     include_survival_metadata: bool = True,
+    include_survival_key: bool = True,
 ):
     dataset_cls = __import__(dataset_module, fromlist=["PSGPretrainDataset"]).PSGPretrainDataset
     sample_index_cls = __import__(default_dataset_module, fromlist=["SampleIndex"]).SampleIndex
     preset_path = _write_survival_preset(
-        tmp_path, sample_index_cls, include_survival_metadata=include_survival_metadata
+        tmp_path,
+        sample_index_cls,
+        include_survival_metadata=include_survival_metadata,
+        include_survival_key=include_survival_key,
     )
     return dataset_cls(
         channel_names=["ppg"],
@@ -277,6 +283,7 @@ def _new_survival_finetuning_module(module_name: str, loss_module_name: str, *, 
         SimpleNamespace(
             device=torch.device("cpu"),
             is_survival=True,
+            survival=SimpleNamespace(key_column="eid"),
             inference_prediction_csv_path=prediction_csv_path,
         ),
     )
@@ -337,6 +344,7 @@ def test_survival_eval_loss_uses_epoch_risk_set_for_singleton_batches(module_nam
     event_batch = {
         "metadata": {
             "path": ["event.npz"],
+            "eid": ["event"],
             "event_time": torch.tensor([[1.0]]),
             "is_event": torch.tensor([[1.0]]),
             "has_label": torch.tensor([[1.0]]),
@@ -346,6 +354,7 @@ def test_survival_eval_loss_uses_epoch_risk_set_for_singleton_batches(module_nam
     censored_batch = {
         "metadata": {
             "path": ["censored.npz"],
+            "eid": ["censored"],
             "event_time": torch.tensor([[2.0]]),
             "is_event": torch.tensor([[0.0]]),
             "has_label": torch.tensor([[1.0]]),
@@ -384,12 +393,61 @@ def test_survival_eval_loss_uses_epoch_risk_set_for_singleton_batches(module_nam
         ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
     ],
 )
+def test_survival_eval_loss_aggregates_multiple_nights_by_subject(module_name: str, loss_module_name: str):
+    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    logged = _capture_logged_metrics(module)
+    batch = {
+        "metadata": {
+            "path": ["eid_a_night1.npz", "eid_a_night2.npz", "eid_b_night1.npz"],
+            "eid": ["a", "a", "b"],
+            "event_time": torch.tensor([[1.0], [1.0], [2.0]]),
+            "is_event": torch.tensor([[1.0], [1.0], [0.0]]),
+            "has_label": torch.ones(3, 1),
+        },
+        "token_start": torch.tensor([0, 0, 0]),
+    }
+
+    finetuning_cls._shared_step(
+        module,
+        batch,
+        stage="val",
+        model=_StaticLogitModel(torch.tensor([[0.0], [2.0], [3.0]])),
+    )
+    finetuning_cls._finalize_epoch(module, "val")
+
+    expected = module._survival_loss(
+        torch.tensor([[1.0], [3.0]]),
+        torch.ones(2, 1),
+        torch.tensor([[1.0], [2.0]]),
+        torch.tensor([[1.0], [0.0]]),
+    )
+    raw_window_loss = module._survival_loss(
+        torch.tensor([[0.0], [2.0], [3.0]]),
+        torch.ones(3, 1),
+        torch.tensor([[1.0], [1.0], [2.0]]),
+        torch.tensor([[1.0], [1.0], [0.0]]),
+    )
+    assert logged[0][0] == "val_loss"
+    assert logged[0][1] == pytest.approx(float(expected))
+    assert logged[0][1] != pytest.approx(float(raw_window_loss))
+    assert module._stage_outputs["val"] == []
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
 def test_survival_eval_epoch_without_events_does_not_log_loss(module_name: str, loss_module_name: str):
     finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
     logged = _capture_logged_metrics(module)
     batch = {
         "metadata": {
             "path": ["first.npz", "second.npz"],
+            "eid": ["first", "second"],
             "event_time": torch.tensor([[1.0], [2.0]]),
             "is_event": torch.zeros(2, 1),
             "has_label": torch.ones(2, 1),
@@ -418,6 +476,7 @@ def test_survival_test_prediction_export_preserves_raw_log_risk(module_name: str
     first_batch = {
         "metadata": {
             "path": ["same_path.npz"],
+            "eid": ["same"],
             "event_time": torch.tensor([[10.0, 20.0]]),
             "is_event": torch.tensor([[1.0, 0.0]]),
             "has_label": torch.tensor([[1.0, 1.0]]),
@@ -427,6 +486,7 @@ def test_survival_test_prediction_export_preserves_raw_log_risk(module_name: str
     second_batch = {
         "metadata": {
             "path": ["same_path.npz"],
+            "eid": ["same"],
             "event_time": torch.tensor([[10.0, 20.0]]),
             "is_event": torch.tensor([[1.0, 0.0]]),
             "has_label": torch.tensor([[1.0, 1.0]]),
@@ -475,6 +535,7 @@ def test_survival_all_censored_test_epoch_exports_predictions_without_loss(modul
     batch = {
         "metadata": {
             "path": ["all_censored.npz"],
+            "eid": ["all_censored"],
             "event_time": torch.tensor([[1.0, 2.0]]),
             "is_event": torch.zeros(1, 2),
             "has_label": torch.ones(1, 2),
@@ -506,6 +567,7 @@ def test_survival_test_prediction_export_keeps_unlabeled_batches(module_name: st
     batch = {
         "metadata": {
             "path": ["unlabeled.npz"],
+            "eid": ["unlabeled"],
             "event_time": torch.zeros(1, 2),
             "is_event": torch.zeros(1, 2),
             "has_label": torch.zeros(1, 2),
@@ -538,15 +600,25 @@ def test_survival_sidecars_attach_subject_labels_to_multiple_rows(tmp_path: Path
         Sample(id="b", length=1, payload={}, tokens={}, masks={}, metadata=second_metadata),
     ]
 
-    stacked = stack_survival_metadata(samples, expected_output_dim=2)
+    stacked = stack_survival_metadata(samples, expected_output_dim=2, key_column="eid")
 
     assert stacked["event_time"].shape == (2, 2)
     assert torch.equal(stacked["event_time"][0], stacked["event_time"][1])
     assert torch.equal(stacked["is_event"][0], stacked["is_event"][1])
     assert torch.equal(stacked["has_label"][0], stacked["has_label"][1])
+    assert stacked["eid"] == ["1", "1"]
 
 
-def test_psg_dataset_stacks_survival_metadata_for_repeated_subject(tmp_path: Path):
+@pytest.mark.parametrize(
+    "dataset_module",
+    [
+        "data.psg_pretrain_dataset",
+        "sleep2vec2.data.psg_pretrain_dataset",
+        "sleep2expert.data.psg_pretrain_dataset",
+    ],
+)
+def test_psg_dataset_stacks_survival_metadata_for_repeated_subject(dataset_module: str, tmp_path: Path):
+    dataset_cls = __import__(dataset_module, fromlist=["PSGPretrainDataset"]).PSGPretrainDataset
     config = _write_sidecars(tmp_path / "sidecars")
     np.savez(tmp_path / "first.npz", ppg=np.asarray([0.0, 1.0], dtype=np.float32))
     np.savez(tmp_path / "second.npz", ppg=np.asarray([2.0, 3.0], dtype=np.float32))
@@ -562,7 +634,7 @@ def test_psg_dataset_stacks_survival_metadata_for_repeated_subject(tmp_path: Pat
         + "\n"
     )
 
-    dataset = PSGPretrainDataset(
+    dataset = dataset_cls(
         channel_names=["ppg"],
         channel_input_dims={"ppg": 1},
         save_preset_path=None,
@@ -585,6 +657,7 @@ def test_psg_dataset_stacks_survival_metadata_for_repeated_subject(tmp_path: Pat
     batch = next(iter(dataset.dataloader()))
 
     assert batch["metadata"]["event_time"].shape == (2, 2)
+    assert batch["metadata"]["eid"] == ["1", "1"]
     assert torch.equal(batch["metadata"]["event_time"][0], batch["metadata"]["event_time"][1])
     assert torch.equal(batch["metadata"]["is_event"][0], batch["metadata"]["is_event"][1])
     assert torch.equal(batch["metadata"]["has_label"][0], batch["metadata"]["has_label"][1])
@@ -610,6 +683,7 @@ def test_survival_preset_loads_without_sidecar_files(
     assert batch["metadata"]["event_time"].shape == (1, 2)
     assert batch["metadata"]["is_event"].shape == (1, 2)
     assert batch["metadata"]["has_label"].shape == (1, 2)
+    assert batch["metadata"]["eid"] == ["1"]
 
 
 def test_survival_preset_load_requires_embedded_survival_metadata(tmp_path: Path):
@@ -621,6 +695,30 @@ def test_survival_preset_load_requires_embedded_survival_metadata(tmp_path: Path
     )
 
     with pytest.raises(ValueError, match="regenerate presets with survival sidecars"):
+        next(iter(dataset.dataloader()))
+
+
+@pytest.mark.parametrize(
+    ("dataset_module", "default_dataset_module"),
+    [
+        ("data.psg_pretrain_dataset", "data.default_dataset"),
+        ("sleep2vec2.data.psg_pretrain_dataset", "sleep2vec2.data.default_dataset"),
+        ("sleep2expert.data.psg_pretrain_dataset", "sleep2expert.data.default_dataset"),
+    ],
+)
+def test_survival_preset_load_requires_embedded_survival_key(
+    dataset_module: str,
+    default_dataset_module: str,
+    tmp_path: Path,
+):
+    dataset = _load_dataset_from_survival_preset(
+        tmp_path,
+        dataset_module,
+        default_dataset_module,
+        include_survival_key=False,
+    )
+
+    with pytest.raises(ValueError, match="missing metadata field 'eid'"):
         next(iter(dataset.dataloader()))
 
 

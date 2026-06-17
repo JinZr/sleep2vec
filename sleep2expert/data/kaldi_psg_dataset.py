@@ -115,6 +115,7 @@ class KaldiPSGDataset(DefaultDataset):
             weighted_random_sampler=weighted_random_sampler,
             weighted_random_sampler_target=weighted_random_sampler_target,
             survival_output_dim=None if survival_labels is None else len(survival_labels.label_names),
+            survival_key_column=None if survival_labels is None else survival_labels.key_column,
             dataloader_config=dataloader_kwargs,
         )
 

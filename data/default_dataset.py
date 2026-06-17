@@ -68,6 +68,7 @@ class DefaultDataset(BaseDataset):
         weighted_random_sampler: bool = False,
         weighted_random_sampler_target: str | None = None,
         survival_output_dim: int | None = None,
+        survival_key_column: str | None = None,
         seed: int = 42,
         filter_max_workers: int | None = None,
     ) -> None:
@@ -93,6 +94,7 @@ class DefaultDataset(BaseDataset):
         self.weighted_random_sampler = bool(weighted_random_sampler)
         self.weighted_random_sampler_target = weighted_random_sampler_target
         self.survival_output_dim = survival_output_dim
+        self.survival_key_column = survival_key_column
         # self.collators = collators
         self.dataloader_config = dataloader_config
 
@@ -435,7 +437,13 @@ class DefaultDataset(BaseDataset):
 
             metadata_batch = process_metadata(samples, disease_names, self.meta_data_regression_names)
             if self.survival_output_dim is not None:
-                metadata_batch.update(stack_survival_metadata(samples, expected_output_dim=self.survival_output_dim))
+                metadata_batch.update(
+                    stack_survival_metadata(
+                        samples,
+                        expected_output_dim=self.survival_output_dim,
+                        key_column=self.survival_key_column,
+                    )
+                )
 
             batch = {
                 "id": [s.id for s in samples],

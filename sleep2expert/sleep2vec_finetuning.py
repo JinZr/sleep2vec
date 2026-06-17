@@ -630,6 +630,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         event_time = metadata["event_time"]
         is_event = metadata["is_event"]
         has_label = metadata["has_label"]
+        key_column = self._survival_key_column()
 
         if logits.shape != event_time.shape:
             raise ValueError(
@@ -641,16 +642,29 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return
 
         token_start = batch["token_start"].to(torch.long).detach().cpu()
+        if key_column not in metadata:
+            raise ValueError(
+                f"Survival batch metadata is missing key column {key_column!r}; "
+                "regenerate presets with survival sidecars."
+            )
         self._stage_outputs[stage].append(
             {
                 "pred": logits.detach().to(device="cpu", dtype=torch.float32),
                 "event_time": event_time.detach().to(device="cpu", dtype=torch.float32),
                 "is_event": is_event.detach().to(device="cpu", dtype=torch.float32),
                 "has_label": has_label.detach().to(device="cpu", dtype=torch.float32),
+                "survival_key": [str(key) for key in metadata[key_column]],
                 "path": [str(path) for path in batch["metadata"]["path"]],
                 "token_start": [int(value) for value in token_start.tolist()],
             }
         )
+
+    def _survival_key_column(self) -> str:
+        survival = getattr(self.args, "survival", None)
+        key_column = getattr(survival, "key_column", None)
+        if key_column in (None, ""):
+            raise ValueError("Survival eval requires finetune.survival.key_column.")
+        return str(key_column)
 
     def _gather_survival_eval_records(self, records):
         if not is_torch_distributed_ready():
@@ -681,11 +695,12 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if stage == "test" and prediction_export_enabled(self.args):
             self.prediction_rows = self._build_survival_prediction_rows(records)
 
+        tensors = self._aggregate_survival_eval_records(records)
         device = torch.device(getattr(self.args, "device", "cpu"))
-        pred = torch.cat([record["pred"] for record in records], dim=0).to(device)
-        event_time = torch.cat([record["event_time"] for record in records], dim=0).to(device)
-        is_event = torch.cat([record["is_event"] for record in records], dim=0).to(device)
-        has_label = torch.cat([record["has_label"] for record in records], dim=0).to(device)
+        pred = tensors["pred"].to(device)
+        event_time = tensors["event_time"].to(device)
+        is_event = tensors["is_event"].to(device)
+        has_label = tensors["has_label"].to(device)
         event_count = int(((is_event > 0.5) & (has_label > 0.5)).sum().item())
         if event_count == 0:
             return
@@ -700,6 +715,53 @@ class Sleep2vecFinetuning(pl.LightningModule):
             on_step=False,
             on_epoch=True,
         )
+
+    def _aggregate_survival_eval_records(self, records) -> dict[str, torch.Tensor]:
+        grouped: dict[str, dict[str, object]] = {}
+        seen: set[tuple[str, str, int]] = set()
+        for record in records:
+            pred = record["pred"]
+            event_time = record["event_time"]
+            is_event = record["is_event"]
+            has_label = record["has_label"]
+            for idx, key in enumerate(record["survival_key"]):
+                path = str(record["path"][idx])
+                token_start = int(record["token_start"][idx])
+                dedupe_key = (str(key), path, token_start)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+
+                item = grouped.get(str(key))
+                current_labels = {
+                    "event_time": event_time[idx],
+                    "is_event": is_event[idx],
+                    "has_label": has_label[idx],
+                }
+                if item is None:
+                    grouped[str(key)] = {**current_labels, "preds": [pred[idx]]}
+                    continue
+
+                for label_name, label_value in current_labels.items():
+                    if not torch.allclose(item[label_name], label_value, equal_nan=True):
+                        raise ValueError(f"Survival labels differ across eval records for key {key!r}.")
+                item["preds"].append(pred[idx])
+
+        rows = []
+        event_times = []
+        is_events = []
+        has_labels = []
+        for item in grouped.values():
+            rows.append(torch.stack(item["preds"], dim=0).mean(dim=0))
+            event_times.append(item["event_time"])
+            is_events.append(item["is_event"])
+            has_labels.append(item["has_label"])
+        return {
+            "pred": torch.stack(rows, dim=0),
+            "event_time": torch.stack(event_times, dim=0),
+            "is_event": torch.stack(is_events, dim=0),
+            "has_label": torch.stack(has_labels, dim=0),
+        }
 
     def _build_survival_prediction_rows(self, records) -> list[dict[str, object]]:
         grouped: dict[str, list[dict[str, object]]] = {}

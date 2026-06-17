@@ -57,7 +57,7 @@ def attach_survival_metadata(metadata: dict[str, Any], key_value: Any, labels: S
     key = normalize_survival_key(key_value, labels.key_column)
     if key not in labels.event_time:
         raise ValueError(f"Main index key {key!r} is missing from survival sidecars.")
-    metadata[labels.key_column] = key_value
+    metadata[labels.key_column] = key
     metadata["event_time"] = labels.event_time[key].copy()
     metadata["is_event"] = labels.is_event[key].copy()
     metadata["has_label"] = labels.has_label[key].copy()
@@ -66,9 +66,10 @@ def attach_survival_metadata(metadata: dict[str, Any], key_value: Any, labels: S
 def stack_survival_metadata(
     samples: list[Any],
     expected_output_dim: int | None = None,
-) -> dict[str, torch.Tensor]:
+    key_column: str | None = None,
+) -> dict[str, Any]:
     expected_length = None if expected_output_dim is None else int(expected_output_dim)
-    stacked: dict[str, torch.Tensor] = {}
+    stacked: dict[str, Any] = {}
     for key in SURVIVAL_METADATA_KEYS:
         values = []
         for sample in samples:
@@ -85,6 +86,16 @@ def stack_survival_metadata(
                 )
             values.append(value)
         stacked[key] = torch.as_tensor(np.stack(values), dtype=torch.float32)
+    if key_column is not None:
+        keys = []
+        for sample in samples:
+            if key_column not in sample.metadata:
+                raise ValueError(
+                    f"Survival preset is missing metadata field {key_column!r}; "
+                    "regenerate presets with survival sidecars."
+                )
+            keys.append(normalize_survival_key(sample.metadata[key_column], key_column))
+        stacked[key_column] = keys
     return stacked
 
 

@@ -111,9 +111,12 @@ class PSGPretrainDataset(DefaultDataset):
         survival_labels = None
 
         split_list = [split] if isinstance(split, str) else list(split or [])
+        survival_key_column = getattr(survival_label_config, "key_column", None)
 
         if not load_preset_path:
             survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
+            if survival_labels is not None:
+                survival_key_column = survival_labels.key_column
 
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
@@ -226,6 +229,7 @@ class PSGPretrainDataset(DefaultDataset):
             weighted_random_sampler=weighted_random_sampler,
             weighted_random_sampler_target=weighted_random_sampler_target,
             survival_output_dim=effective_survival_output_dim,
+            survival_key_column=survival_key_column,
             dataloader_config=kwargs,
             filter_max_workers=filter_max_workers,
         )
