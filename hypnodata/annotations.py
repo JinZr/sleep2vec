@@ -356,11 +356,7 @@ def _normalize_event_rows(events: np.ndarray, *, duration_sec: float | None = No
     starts = rows[:, 1]
     durations = rows[:, 2]
     stops = starts + durations
-    invalid_extents = (
-        not np.isfinite(rows).all()
-        or (starts < 0).any()
-        or (durations <= 0).any()
-    )
+    invalid_extents = not np.isfinite(rows).all() or (starts < 0).any() or (durations <= 0).any()
     if invalid_extents:
         raise ValueError("event rows contain invalid extents.")
     if duration_sec is not None and (stops > float(duration_sec) + 1e-6).any():
