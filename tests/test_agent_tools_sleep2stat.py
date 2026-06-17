@@ -144,6 +144,7 @@ def test_sleep2stat_empty_run_output_dir_allows_command_generation(tmp_path: Pat
 
 def test_sleep2stat_summarize_and_plot_use_config_run_dir(tmp_path: Path):
     payload = _tiny_recipe_payload()
+    payload["runtime"]["dry_run"] = False
     payload["artifacts"].pop("run_dir")
     recipe_path = _write_tiny_recipe(tmp_path, payload)
     output_dir = tmp_path / "plan"
@@ -160,8 +161,24 @@ def test_sleep2stat_summarize_and_plot_use_config_run_dir(tmp_path: Path):
     assert not any("--stage-source" in command for command in commands)
 
 
+def test_sleep2stat_dry_run_plan_skips_post_run_commands(tmp_path: Path):
+    payload = _tiny_recipe_payload()
+    payload["runtime"]["dry_run"] = True
+    recipe_path = _write_tiny_recipe(tmp_path, payload)
+    output_dir = tmp_path / "plan"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    commands = json.loads((output_dir / "plan.json").read_text())["commands"]
+    assert any(command.startswith("python -m sleep2stat run ") and "--dry-run" in command for command in commands)
+    assert not any(command.startswith("python -m sleep2stat summarize ") for command in commands)
+    assert not any(command.startswith("python -m sleep2stat plot-cohort ") for command in commands)
+
+
 def test_sleep2stat_plot_stage_source_auto_is_rendered_as_plain_value(tmp_path: Path):
     payload = _tiny_recipe_payload()
+    payload["runtime"]["dry_run"] = False
     payload["runtime"]["plot_stage_source"] = "auto"
     recipe_path = _write_tiny_recipe(tmp_path, payload)
     output_dir = tmp_path / "plan"

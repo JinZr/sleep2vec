@@ -516,9 +516,9 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
                 ["python", "-m", "sleep2stat", "run", "--config", config, *_sleep2stat_runtime_args(recipe)]
             )
         )
-        if runtime.get("summarize_after_run", True):
+        if runtime.get("summarize_after_run", True) and not runtime.get("dry_run"):
             commands.append(_render_command(["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]))
-        if runtime.get("plot_cohort_after_run") is True:
+        if runtime.get("plot_cohort_after_run") is True and not runtime.get("dry_run"):
             plot_cmd = [
                 "python",
                 "-m",
