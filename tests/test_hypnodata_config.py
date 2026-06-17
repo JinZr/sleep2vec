@@ -181,6 +181,14 @@ def test_load_config_rejects_empty_candidate_label(tmp_path: Path):
         load_config(_write_yaml(tmp_path, payload))
 
 
+def test_load_config_rejects_non_boolean_required(tmp_path: Path):
+    payload = _payload()
+    payload["signals"]["eeg"]["required"] = "false"
+
+    with pytest.raises(ValueError, match=r"signals\.eeg\.required must be a boolean"):
+        load_config(_write_yaml(tmp_path, payload))
+
+
 def test_load_config_rejects_unknown_annotation_only_kind_without_candidates(tmp_path: Path):
     payload = _payload()
     payload["signals"]["mystery"] = {

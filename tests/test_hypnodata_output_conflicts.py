@@ -65,7 +65,7 @@ def test_hypnodata_refuses_existing_npz_without_rewriting_manifests(tmp_path: Pa
     record_manifest = (manifest_dir / "record_manifest.csv").read_text()
     signal_manifest = (manifest_dir / "signal_manifest.csv").read_text()
 
-    with pytest.raises(FileExistsError, match="Output NPZ already exists"):
+    with pytest.raises(FileExistsError, match="Output directory must be empty"):
         run_pipeline(config, output_dir=output_dir)
 
     assert (manifest_dir / "record_manifest.csv").read_text() == record_manifest
@@ -86,12 +86,34 @@ def test_hypnodata_preflights_existing_npz_before_workers(tmp_path: Path, monkey
 
     monkeypatch.setattr("hypnodata.pipeline._process_record", fail_if_called)
 
-    with pytest.raises(FileExistsError, match="night2"):
+    with pytest.raises(FileExistsError, match="Output directory must be empty"):
         run_pipeline(config, output_dir=output_dir, num_workers=2)
 
     assert calls == []
     assert not (output_dir / "backends" / "npz" / "records" / "night1.npz").exists()
     assert not (output_dir / "manifest" / "record_manifest.csv").exists()
+
+
+def test_hypnodata_rejects_stale_manifest_before_workers(tmp_path: Path, monkeypatch):
+    config = load_config(_one_record_config(tmp_path))
+    output_dir = tmp_path / "out"
+    manifest_dir = output_dir / "manifest"
+    manifest_dir.mkdir(parents=True)
+    stale_manifest = manifest_dir / "record_manifest.csv"
+    stale_manifest.write_text("stale\n")
+    calls = []
+
+    def fail_if_called(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("workers should not start")
+
+    monkeypatch.setattr("hypnodata.pipeline._process_record", fail_if_called)
+
+    with pytest.raises(FileExistsError, match="Output directory must be empty"):
+        run_pipeline(config, output_dir=output_dir)
+
+    assert calls == []
+    assert stale_manifest.read_text() == "stale\n"
 
 
 def test_hypnodata_dry_run_ignores_existing_npz_conflicts(tmp_path: Path):

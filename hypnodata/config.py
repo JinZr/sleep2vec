@@ -218,11 +218,14 @@ def _build_signals(raw: Any) -> dict[str, SignalSpec]:
                 f"signals.{canonical}.target_sfreq is not used for annotation-only signals; "
                 "use epoch_sec, interval_sec, or window_sec."
             )
+        required = spec.get("required", True)
+        if not isinstance(required, bool):
+            raise ValueError(f"signals.{canonical}.required must be a boolean.")
         preprocess_steps = _build_preprocess_steps(spec.get("preprocess", []), canonical)
         signals[canonical] = SignalSpec(
             name=canonical,
             kind=kind,
-            required=bool(spec.get("required", True)),
+            required=required,
             target_sfreq=target_sfreq,
             target_unit=None if spec.get("target_unit") is None else str(spec["target_unit"]),
             candidates=candidates,

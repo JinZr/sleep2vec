@@ -42,6 +42,8 @@ def run_pipeline(
     if num_workers < 1:
         raise ValueError("--num-workers must be >= 1.")
     output_dir = output_dir.expanduser()
+    if not dry_run and output_dir.exists() and output_dir.is_dir() and any(output_dir.iterdir()):
+        raise FileExistsError(f"Output directory must be empty for hypnodata run: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     adapter = load_adapter(config)
     records = discover_records(config, adapter=adapter)
