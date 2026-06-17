@@ -16,8 +16,6 @@ def test_sleep2stat_load_records_consumes_hypnodata_record_manifest(tmp_path: Pa
                 "run": {
                     "name": "hypnodata_smoke",
                     "output_dir": str(tmp_path / "sleep2stat_out"),
-                    "overwrite": False,
-                    "skip_existing": True,
                 },
                 "data": {
                     "backend": "npz",
