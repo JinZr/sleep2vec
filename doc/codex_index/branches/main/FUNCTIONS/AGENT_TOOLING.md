@@ -20,9 +20,9 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Purpose and contract: enforce stop-and-consult policy for high-impact recipe and runtime decisions, including variantless `sleep2stat` gates.
 - Important inputs/outputs: task, recipe, config summary, CLI/user decisions, policy, and defaults in; `DecisionReport` with resolved decisions, issues, status, and exit-code semantics out.
 - Side effects: none.
-- Key callers/callees: called by `agent_tools.plans.evaluate_recipe` and `build_context`; uses task-specific validation helpers and path checks.
+- Key callers/callees: called by `agent_tools.plans.evaluate_recipe` and `build_context`; delegates task-specific gates to same-file private helpers and uses path checks.
 - Reuse guidance: use this before generating runnable preset, finetune, inference, evaluation, hparam, or sleep2stat commands.
-- Duplication-risk notes: do not reimplement high-impact decision checks in recipe templates or shell generation; sleep2stat structural validation remains in `sleep2stat.config.load_config()`, with agent tooling only adding agent risk gates such as variant misuse, run-dir mismatch, existing local run-dir conflicts, locked-test policy, and placeholder model analyzer paths.
+- Duplication-risk notes: do not reimplement high-impact decision checks in recipe templates or shell generation; add task-specific gates through the private helpers in `agent_tools.decisions`, while sleep2stat structural validation remains in `sleep2stat.config.load_config()`.
 
 ## `agent_tools.plans.build_context`
 

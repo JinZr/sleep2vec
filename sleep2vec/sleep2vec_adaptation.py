@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import typing as t
 
 import pytorch_lightning as pl
@@ -10,6 +9,7 @@ import torch
 from data.channel_selection import build_all_pairs
 from sleep2vec.checkpoints import load_pretrain_init_weights
 from sleep2vec.config import AdaptConfig
+from sleep2vec.schedulers import build_warmup_cosine_scheduler
 from sleep2vec.sleep2vec_modelling import Sleep2vecPretraining
 
 Pair = tuple[str, str]
@@ -194,21 +194,11 @@ class Sleep2vecAdaptation(Sleep2vecPretraining):
             eps=1e-8,
         )
 
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = getattr(self.args, "warmup_steps", None)
-        if warmup_steps is None:
-            warmup = int(0.03 * total_steps)
-        else:
-            warmup = int(warmup_steps)
-        warmup = max(0, min(warmup, total_steps))
-
-        def lr_lambda(step):
-            if step < warmup:
-                return float(step) / float(max(1, warmup))
-            progress = (step - warmup) / float(max(1, total_steps - warmup))
-            return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress))
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        scheduler = build_warmup_cosine_scheduler(
+            optimizer,
+            total_steps=self.trainer.estimated_stepping_batches,
+            warmup_steps=getattr(self.args, "warmup_steps", None),
+        )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
 

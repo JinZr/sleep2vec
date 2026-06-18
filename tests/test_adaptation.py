@@ -29,13 +29,7 @@ def _adapt_model_config() -> ModelConfig:
 
 def _build_model() -> Sleep2vecPretrainModel:
     return Sleep2vecPretrainModel(
-        transformer_hidden_size=8,
-        transformer_num_hidden_layers=1,
-        transformer_num_attention_heads=2,
-        channel_names=["eeg", "ecg", "ppg"],
-        projection=True,
         model_config=_adapt_model_config(),
-        projection_config=_adapt_model_config().projection,
         device="cpu",
     )
 

@@ -1,5 +1,4 @@
 from dataclasses import asdict
-import math
 
 import pytorch_lightning as pl
 import torch
@@ -10,6 +9,7 @@ from sleep2expert.averagings.base import BaseModelAverager, build_model_averager
 from sleep2expert.losses import create_loss
 from sleep2expert.losses.moe_regularization import compute_moe_regularization
 from sleep2expert.pretrain_model import Sleep2vecPretrainModel
+from sleep2expert.schedulers import build_warmup_cosine_scheduler
 
 
 class Sleep2vecPretraining(pl.LightningModule):
@@ -21,15 +21,7 @@ class Sleep2vecPretraining(pl.LightningModule):
         self.averaging_config = averaging_config
         self.loss_fn = self._build_loss()
         self.model = Sleep2vecPretrainModel(
-            channel_feature_dim=None,
-            transformer_hidden_size=model_config.backbone.hidden_size,
-            transformer_num_hidden_layers=model_config.backbone.num_hidden_layers,
-            transformer_num_attention_heads=model_config.backbone.num_attention_heads,
-            channel_names=[c.name for c in model_config.channels],
-            projection=True,
-            encoder_factory=None,
             model_config=model_config,
-            projection_config=model_config.projection,
         )
 
         # Optional tensor diagnostics (borrowed from icefall)
@@ -218,23 +210,11 @@ class Sleep2vecPretraining(pl.LightningModule):
             eps=1e-8,
         )
 
-        # 线性 warmup + 余弦退火
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = getattr(self.args, "warmup_steps", None)
-        if warmup_steps is None:
-            warmup = int(0.03 * total_steps)  # 3% 亦可 2%~5%
-        else:
-            warmup = int(warmup_steps)
-        warmup = max(0, min(warmup, total_steps))
-
-        def lr_lambda(step):
-            if step < warmup:
-                return float(step) / float(max(1, warmup))
-            # cosine from 1→0.1
-            progress = (step - warmup) / float(max(1, total_steps - warmup))
-            return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress))
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        scheduler = build_warmup_cosine_scheduler(
+            optimizer,
+            total_steps=self.trainer.estimated_stepping_batches,
+            warmup_steps=getattr(self.args, "warmup_steps", None),
+        )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def _build_loss(self):

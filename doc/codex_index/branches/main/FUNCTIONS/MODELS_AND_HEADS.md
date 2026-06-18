@@ -3,13 +3,13 @@
 ## `Sleep2vecPretrainModel.__init__`
 
 - File: `sleep2vec/pretrain_model.py`
-- Signature: `Sleep2vecPretrainModel.__init__(..., model_config: ModelConfig | None = None, projection_config: ProjectionConfig | None = None)`
+- Signature: `Sleep2vecPretrainModel.__init__(model_config: ModelConfig, *, device: str = "cuda", specified_two_mods: list[str] | None = None)`
 - Purpose and contract: build the shared backbone module, tokenizer mapping, CLS strategy, mask embeddings, hidden projection layer, and optional projection head.
-- Important inputs/outputs: either a full `ModelConfig` or legacy manual dimensions/channel names; produces a ready-to-run module.
+- Important inputs/outputs: a full `ModelConfig` in; produces a ready-to-run module. `specified_two_mods` only fixes pretraining channel selection for tests or controlled runs.
 - Side effects: instantiates many submodules and logs parameter counts.
-- Key callers/callees: callers are `Sleep2vecPretraining`, `Sleep2vecFinetuning`, and adaptation-related code; callees include `build_tokenizers_and_dim`, `build_encoder_factory`, `build_cls_embedding`, and `build_projection`.
+- Key callers/callees: callers are `Sleep2vecPretraining`, `Sleep2vecFinetuning`, embedding extraction, and tests; callees include `build_tokenizers_and_dim`, `build_encoder_factory`, `build_cls_embedding`, and `build_projection`.
 - Reuse guidance: this is the canonical backbone construction path.
-- Duplication risk notes: when `model_config is None`, a legacy hardcoded tokenizer map is used; do not extend that path for new work.
+- Duplication risk notes: construction is config-only; do not reintroduce manual channel, hidden-size, projection, or encoder-factory constructor branches.
 
 ## `Sleep2vecPretrainModel._token_embeddings_to_hidden`
 
@@ -185,9 +185,20 @@
 - Purpose and contract: create AdamW parameter groups and a warmup-plus-cosine scheduler for pretraining.
 - Important inputs/outputs: uses `self.args` and `self.trainer`; returns Lightning optimizer/scheduler structure.
 - Side effects: none beyond object creation.
-- Key callers/callees: called by Lightning.
+- Key callers/callees: called by Lightning; callees include `build_warmup_cosine_scheduler`.
 - Reuse guidance: use as the reference optimizer schedule when aligning pretrain and finetune behavior.
-- Duplication risk notes: this policy overlaps with finetune and adaptation schedules.
+- Duplication risk notes: optimizer grouping remains local to this method; warmup-plus-cosine scheduling is shared through package-local `schedulers.py`.
+
+## `build_warmup_cosine_scheduler`
+
+- File: `sleep2vec/schedulers.py`
+- Signature: `build_warmup_cosine_scheduler(optimizer, *, total_steps: int, warmup_steps: int | None) -> LambdaLR`
+- Purpose and contract: build the shared step-wise LR schedule used by pretrain, finetune, and adaptation.
+- Important inputs/outputs: optimizer and trainer step count in; `LambdaLR` out.
+- Side effects: none beyond scheduler construction.
+- Key callers/callees: callers are `Sleep2vecPretraining.configure_optimizers`, `Sleep2vecFinetuning.configure_optimizers`, and `Sleep2vecAdaptation.configure_optimizers`.
+- Reuse guidance: use this helper for package-local warmup-plus-cosine LR schedules instead of inlining `lr_lambda`.
+- Duplication risk notes: variants keep package-local copies to preserve namespace isolation.
 
 ## `Sleep2vecAdaptation.configure_optimizers`
 
@@ -196,9 +207,9 @@
 - Purpose and contract: create stage-specific AdamW parameter groups for adaptation, with learning-rate scaling across encoder/CLS, shared legacy projection, and new modalities.
 - Important inputs/outputs: uses `self.args`, `self.adapt_config`, and trainer step count; returns Lightning optimizer/scheduler structure.
 - Side effects: none beyond object creation.
-- Key callers/callees: called by Lightning; callees include `self.model.get_adaptation_param_groups`.
+- Key callers/callees: called by Lightning; callees include `self.model.get_adaptation_param_groups` and `build_warmup_cosine_scheduler`.
 - Reuse guidance: use this as the reference optimizer path for adaptation-specific schedules.
-- Duplication risk notes: stage1 vs stage2 group composition belongs here.
+- Duplication risk notes: stage1 vs stage2 group composition belongs here; scheduler construction should stay in package-local `schedulers.py`.
 
 ## `Sleep2vecFinetuning._shared_step`
 
@@ -264,15 +275,16 @@
 - Purpose and contract: create AdamW parameter groups and a warmup-plus-cosine scheduler for finetuning.
 - Important inputs/outputs: uses `self.args` and `self.trainer`; returns Lightning optimizer/scheduler structure.
 - Side effects: none beyond object creation.
-- Key callers/callees: called by Lightning.
+- Key callers/callees: called by Lightning; callees include `build_warmup_cosine_scheduler`.
 - Reuse guidance: use as the finetune optimizer reference path.
-- Duplication risk notes: this policy overlaps with pretrain and adaptation schedules; avoid creating additional variants casually.
+- Duplication risk notes: optimizer grouping remains local to this method; warmup-plus-cosine scheduling is shared through package-local `schedulers.py`.
 
 ## Loss factory family
 
-- Files: `sleep2vec/losses/base.py`, `sleep2vec/losses/info_nce.py`, `sleep2vec/losses/weighted_info_nce.py`
+- Files: `sleep2vec/losses/base.py`, `sleep2vec/losses/info_nce.py`, `sleep2vec/losses/weighted_info_nce.py`, `sleep2vec/losses/utils.py`
 - Functions and methods:
   - `create_loss(name: str, **kwargs) -> ContrastiveLoss`
+  - `contrastive_accuracy(logits_12, logits_21, labels) -> torch.Tensor`
   - `InfoNCELoss.forward(first_hidden, second_hidden, batch) -> LossOutput`
   - `WeightedInfoNCELoss.forward(first_hidden, second_hidden, batch) -> LossOutput`
 - Purpose and contract: resolve contrastive objectives by name and compute symmetric token-level InfoNCE, optionally with weight and hardness matrices.
@@ -280,7 +292,7 @@
 - Side effects: none.
 - Key callers/callees: caller is `Sleep2vecPretraining._build_loss` and then `_contrastive_step`.
 - Reuse guidance: new contrastive objectives should register here.
-- Duplication risk notes: `_contrastive_accuracy` is duplicated between the two shipped loss modules.
+- Duplication risk notes: contrastive accuracy is centralized in package-local `losses/utils.py`; variants should keep their own local helper rather than cross-namespace imports.
 
 ## `sleep2expert.losses.moe_regularization.compute_moe_regularization`
 
