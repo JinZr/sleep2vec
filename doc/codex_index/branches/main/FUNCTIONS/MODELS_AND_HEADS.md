@@ -185,9 +185,20 @@
 - Purpose and contract: create AdamW parameter groups and a warmup-plus-cosine scheduler for pretraining.
 - Important inputs/outputs: uses `self.args` and `self.trainer`; returns Lightning optimizer/scheduler structure.
 - Side effects: none beyond object creation.
-- Key callers/callees: called by Lightning.
+- Key callers/callees: called by Lightning; callees include `build_warmup_cosine_scheduler`.
 - Reuse guidance: use as the reference optimizer schedule when aligning pretrain and finetune behavior.
-- Duplication risk notes: this policy overlaps with finetune and adaptation schedules.
+- Duplication risk notes: optimizer grouping remains local to this method; warmup-plus-cosine scheduling is shared through package-local `schedulers.py`.
+
+## `build_warmup_cosine_scheduler`
+
+- File: `sleep2vec/schedulers.py`
+- Signature: `build_warmup_cosine_scheduler(optimizer, *, total_steps: int, warmup_steps: int | None) -> LambdaLR`
+- Purpose and contract: build the shared step-wise LR schedule used by pretrain, finetune, and adaptation.
+- Important inputs/outputs: optimizer and trainer step count in; `LambdaLR` out.
+- Side effects: none beyond scheduler construction.
+- Key callers/callees: callers are `Sleep2vecPretraining.configure_optimizers`, `Sleep2vecFinetuning.configure_optimizers`, and `Sleep2vecAdaptation.configure_optimizers`.
+- Reuse guidance: use this helper for package-local warmup-plus-cosine LR schedules instead of inlining `lr_lambda`.
+- Duplication risk notes: variants keep package-local copies to preserve namespace isolation.
 
 ## `Sleep2vecAdaptation.configure_optimizers`
 
@@ -196,9 +207,9 @@
 - Purpose and contract: create stage-specific AdamW parameter groups for adaptation, with learning-rate scaling across encoder/CLS, shared legacy projection, and new modalities.
 - Important inputs/outputs: uses `self.args`, `self.adapt_config`, and trainer step count; returns Lightning optimizer/scheduler structure.
 - Side effects: none beyond object creation.
-- Key callers/callees: called by Lightning; callees include `self.model.get_adaptation_param_groups`.
+- Key callers/callees: called by Lightning; callees include `self.model.get_adaptation_param_groups` and `build_warmup_cosine_scheduler`.
 - Reuse guidance: use this as the reference optimizer path for adaptation-specific schedules.
-- Duplication risk notes: stage1 vs stage2 group composition belongs here.
+- Duplication risk notes: stage1 vs stage2 group composition belongs here; scheduler construction should stay in package-local `schedulers.py`.
 
 ## `Sleep2vecFinetuning._shared_step`
 
@@ -264,9 +275,9 @@
 - Purpose and contract: create AdamW parameter groups and a warmup-plus-cosine scheduler for finetuning.
 - Important inputs/outputs: uses `self.args` and `self.trainer`; returns Lightning optimizer/scheduler structure.
 - Side effects: none beyond object creation.
-- Key callers/callees: called by Lightning.
+- Key callers/callees: called by Lightning; callees include `build_warmup_cosine_scheduler`.
 - Reuse guidance: use as the finetune optimizer reference path.
-- Duplication risk notes: this policy overlaps with pretrain and adaptation schedules; avoid creating additional variants casually.
+- Duplication risk notes: optimizer grouping remains local to this method; warmup-plus-cosine scheduling is shared through package-local `schedulers.py`.
 
 ## Loss factory family
 

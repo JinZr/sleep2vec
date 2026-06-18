@@ -1,6 +1,5 @@
 from dataclasses import asdict
 import logging
-import math
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,6 +23,7 @@ from sleep2expert.metrics import (
     compute_downstream_metrics,
     extract_ahi_summary_scatter_arrays,
 )
+from sleep2expert.schedulers import build_warmup_cosine_scheduler
 from sleep2expert.sleep2vec_inference import (
     build_ahi_prediction_rows,
     build_prediction_rows,
@@ -1432,19 +1432,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 eps=1e-8,
             )
 
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = getattr(self.args, "warmup_steps", None)
-        if warmup_steps is None:
-            warmup = int(0.03 * total_steps)
-        else:
-            warmup = int(warmup_steps)
-        warmup = max(0, min(warmup, total_steps))
-
-        def lr_lambda(step):
-            if step < warmup:
-                return float(step) / float(max(1, warmup))
-            progress = (step - warmup) / float(max(1, total_steps - warmup))
-            return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress))
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        scheduler = build_warmup_cosine_scheduler(
+            optimizer,
+            total_steps=self.trainer.estimated_stepping_batches,
+            warmup_steps=getattr(self.args, "warmup_steps", None),
+        )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]

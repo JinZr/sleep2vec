@@ -243,10 +243,7 @@ class Sleep2vecPretrainModel(nn.Module):
                 return output.last_hidden_state
             if isinstance(output, (list, tuple)):
                 return output[0]
-            raise ValueError(
-                f"Encoder '{self.encoder_name}' returned unsupported output type "
-                f"{type(output)}."
-            )
+            raise ValueError(f"Encoder '{self.encoder_name}' returned unsupported output type " f"{type(output)}.")
 
         last_hidden = _extract_last_hidden(encoder_output)
         if not return_hidden_states:
