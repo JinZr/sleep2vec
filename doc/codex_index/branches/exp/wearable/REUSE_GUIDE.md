@@ -153,11 +153,11 @@ Preferred sequence:
 
 ## Test Anchors To Update When Contracts Change
 
-- Config/task semantics: `tests/test_config_loading.py`, `tests/test_common_finetune_apply.py`, `tests/test_metadata_task_validation.py`
-- Adapt runtime and schedule logic: `tests/test_adapt.py`, `tests/test_adapt_pair_schedule_callback.py`, `tests/test_adaptation.py`
-- Missing-channel sampling and collate rules: `tests/test_pair_first_sampler.py`, `tests/test_bucket_sampler.py`, `tests/test_generic_channel_dataset.py`, `tests/test_pretrain_pair_filtering.py`
-- Preset generation: `tests/test_save_dataset_presets.py`
-- Checkpoint selection and init loading: `tests/test_checkpoints.py`
+- Config/task semantics: `tests/config/test_config_loading.py`, `tests/config/test_common_finetune_apply.py`, `tests/config/test_metadata_task_validation.py`
+- Adapt runtime and schedule logic: `tests/runtime/test_adapt.py`, `tests/runtime/test_adapt_pair_schedule_callback.py`, `tests/runtime/test_adaptation.py`
+- Missing-channel sampling and collate rules: `tests/data/test_pair_first_sampler.py`, `tests/data/test_bucket_sampler.py`, `tests/data/test_generic_channel_dataset.py`, `tests/data/test_pretrain_pair_filtering.py`
+- Preset generation: `tests/preprocess/test_save_dataset_presets.py`
+- Checkpoint selection and init loading: `tests/runtime/test_checkpoints.py`
 
 ## Known Non-Reuse Areas On This Branch
 

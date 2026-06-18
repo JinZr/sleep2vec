@@ -9,7 +9,7 @@ import yaml
 from sleep2vec.common import apply_finetune_config
 from utils.check_configs import check_config_file
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FINETUNE_CONFIGS = [
     ("stage3", REPO_ROOT / "configs" / "examples" / "stage3" / "FINETUNE_EXAMPLE.yaml"),
     ("stage4", REPO_ROOT / "configs" / "examples" / "stage4" / "FINETUNE_EXAMPLE.yaml"),

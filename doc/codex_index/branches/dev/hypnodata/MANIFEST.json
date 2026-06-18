@@ -19,7 +19,7 @@
   "covered_paths": [
     "hypnodata/",
     "configs/hypnodata/",
-    "tests/test_hypnodata_*.py",
+    "tests/hypnodata/test_hypnodata_*.py",
     "tests/hypnodata_test_helpers.py"
   ]
 }

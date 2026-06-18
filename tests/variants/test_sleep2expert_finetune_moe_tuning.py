@@ -320,7 +320,7 @@ def test_configure_optimizers_uses_semantic_lr_multipliers():
 
 
 def test_sleep2expert_finetune_cli_default_lr_is_sleep_staging_scale():
-    tree = ast.parse((Path(__file__).parents[1] / "sleep2expert" / "finetune.py").read_text())
+    tree = ast.parse((Path(__file__).parents[2] / "sleep2expert" / "finetune.py").read_text())
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or getattr(node.func, "attr", None) != "add_argument":

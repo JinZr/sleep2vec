@@ -33,7 +33,7 @@ def _load_sleep2vec_adaptation_module():
 
         spec = importlib.util.spec_from_file_location(
             module_name,
-            Path(__file__).resolve().parents[1] / "sleep2vec/sleep2vec_adaptation.py",
+            Path(__file__).resolve().parents[2] / "sleep2vec/sleep2vec_adaptation.py",
         )
         if spec is None or spec.loader is None:
             raise RuntimeError("Failed to load sleep2vec.sleep2vec_adaptation for testing.")

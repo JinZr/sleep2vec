@@ -507,7 +507,7 @@ def test_build_ahi_prediction_row_includes_threshold_and_summary(package_name: s
 
 
 def _config_package_name(path: Path) -> str:
-    rel_path = path.relative_to(Path(__file__).resolve().parents[1] / "configs")
+    rel_path = path.relative_to(Path(__file__).resolve().parents[2] / "configs")
     if rel_path.parts and rel_path.parts[0] in {"sleep2vec2", "sleep2expert"}:
         return rel_path.parts[0]
     return "sleep2vec"
@@ -522,7 +522,7 @@ def _prediction_export_supports_task(task) -> bool:
 
 
 def test_prediction_export_supports_all_finetune_recipe_task_families():
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     recipe_paths: list[Path] = []
     for path in sorted((repo_root / "configs").rglob("*.yaml")):
         data = yaml.safe_load(path.read_text()) or {}

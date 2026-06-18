@@ -21,9 +21,9 @@ When editing `sleep2vec2` or `sleep2expert`:
 
 Primary namespace guards:
 
-- `tests/test_sleep2vec2_namespace.py`
-- `tests/test_sleep2expert_namespace.py`
-- `tests/test_variant_data_protocol.py`
+- `tests/variants/test_sleep2vec2_namespace.py`
+- `tests/variants/test_sleep2expert_namespace.py`
+- `tests/variants/test_variant_data_protocol.py`
 
 ## sleep2expert MoE Recipe Flow
 

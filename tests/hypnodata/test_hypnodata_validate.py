@@ -105,7 +105,7 @@ def test_validate_cli_returns_nonzero_after_writing_report(tmp_path: Path):
             "--output-dir",
             str(output_dir),
         ],
-        cwd=Path(__file__).resolve().parents[1],
+        cwd=Path(__file__).resolve().parents[2],
         text=True,
         capture_output=True,
     )

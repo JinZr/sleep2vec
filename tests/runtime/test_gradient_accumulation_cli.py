@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAINING_ENTRYPOINTS = (
     Path("sleep2vec/pretrain.py"),
     Path("sleep2vec/finetune.py"),

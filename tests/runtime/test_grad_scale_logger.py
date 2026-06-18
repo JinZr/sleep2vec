@@ -7,7 +7,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 CALLBACK_PATHS = (
     Path("sleep2vec/callbacks/grad_scale_logger.py"),
     Path("sleep2vec2/callbacks/grad_scale_logger.py"),

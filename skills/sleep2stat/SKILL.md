@@ -150,12 +150,12 @@ Targeted tests after changing this skill or sleep2stat agent support:
 
 ```bash
 python -m pytest -q \
-  tests/test_agent_tools_sleep2stat.py \
-  tests/test_agent_tools_skills.py \
-  tests/test_agent_tools_recipes.py \
-  tests/test_agent_consultation_policy.py \
-  tests/test_agent_plan_blocks_on_ambiguity.py \
-  tests/test_agent_tools_config_summary.py
+  tests/agent_tools/test_agent_tools_sleep2stat.py \
+  tests/agent_tools/test_agent_tools_skills.py \
+  tests/agent_tools/test_agent_tools_recipes.py \
+  tests/agent_tools/test_agent_consultation_policy.py \
+  tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py \
+  tests/agent_tools/test_agent_tools_config_summary.py
 ```
 
 ## Common failure modes

@@ -243,7 +243,7 @@ def test_load_pretrain_config_validates_adapt_schedule_endpoint(tmp_path: Path):
     ],
 )
 def test_ppg_actigraphy_adapt_configs_keep_uniform_final_stage_sampling(config_name: str):
-    config_path = Path(__file__).resolve().parents[1] / "configs" / config_name
+    config_path = Path(__file__).resolve().parents[2] / "configs" / config_name
     bundle = load_pretrain_config(config_path)
 
     assert bundle.adapt is not None

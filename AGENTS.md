@@ -109,26 +109,26 @@ High-impact decisions include label selection, split policy, external-test locki
 - Owns: `data/default_dataset.py`, `data/psg_pretrain_dataset.py`, `data/utils.py`, `data/samplers.py`, `data/channel_selection.py`, `data/metadata.py`.
 - Responsibilities: sample index semantics, `available_channels`, `source` and metadata filtering, token-window validity, few-shot behavior, pair-first batching, collate invariants.
 - Invoke when: changing dataset fields, preset payload shape, filtering rules, missing-channel handling, sampler behavior, or data/label loading semantics.
-- Must not be split from: pair-first and available-channel tests in `tests/test_pair_first_sampler.py`, `tests/test_bucket_sampler.py`, and `tests/test_data_utils.py`.
+- Must not be split from: pair-first and available-channel tests in `tests/data/test_pair_first_sampler.py`, `tests/data/test_bucket_sampler.py`, and `tests/data/test_data_utils.py`.
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall data tests
-python3.10 -m pytest -q tests/test_pair_first_sampler.py tests/test_bucket_sampler.py tests/test_data_utils.py
+python3.10 -m pytest -q tests/data/test_pair_first_sampler.py tests/data/test_bucket_sampler.py tests/data/test_data_utils.py
 ```
 
 #### `config-task-contract`
 - Owns: `sleep2vec/config.py`, `sleep2vec/common.py`, `sleep2vec/builders.py`, `sleep2vec/registry.py`, `sleep2vec/backbones/encoder_factory.py`, `sleep2vec/modules/tokenizers.py`, `sleep2vec/modules/projection.py`.
 - Responsibilities: YAML schema strictness, built-in task semantics, channel parity checks, registry wiring, builder contracts, required vs optional config fields.
 - Invoke when: adding config fields, changing task semantics, changing registry names, changing builder signatures, or changing YAML validation behavior.
-- Must not be split from: `tests/test_config_loading.py`, `tests/test_common_finetune_apply.py`, `tests/test_metadata_task_validation.py`, `tests/test_registries_and_builders.py`.
+- Must not be split from: `tests/config/test_config_loading.py`, `tests/config/test_common_finetune_apply.py`, `tests/config/test_metadata_task_validation.py`, `tests/config/test_registries_and_builders.py`.
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
 python3.10 -m pytest -q \
-  tests/test_config_loading.py \
-  tests/test_common_finetune_apply.py \
-  tests/test_metadata_task_validation.py \
-  tests/test_registries_and_builders.py
+  tests/config/test_config_loading.py \
+  tests/config/test_common_finetune_apply.py \
+  tests/config/test_metadata_task_validation.py \
+  tests/config/test_registries_and_builders.py
 ```
 
 #### `model-integration`
@@ -140,23 +140,23 @@ python3.10 -m pytest -q \
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
 python3.10 -m pytest -q \
-  tests/test_losses.py \
-  tests/test_layer_mix_visualization.py \
-  tests/test_registries_and_builders.py
+  tests/models/test_losses.py \
+  tests/visualization/test_layer_mix_visualization.py \
+  tests/config/test_registries_and_builders.py
 ```
 
 #### `runtime-orchestrator`
 - Owns: `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `sleep2vec/checkpoints.py`, `sleep2vec/metrics.py`, `sleep2vec/callbacks/pair_acc_logger.py`, `sleep2vec/diagnostics.py`.
 - Responsibilities: trainer wiring, W&B behavior, checkpoint naming and averaging, inference execution, results CSV schema, diagnostics mode, runtime callbacks and logging.
 - Invoke when: changing CLI flags, trainer strategies, checkpoint alias behavior, runtime logging, diagnostics flow, or evaluation/export behavior.
-- Must not be split from: `tests/test_checkpoints.py` and config/task guard tests when runtime flags or monitor names change.
+- Must not be split from: `tests/runtime/test_checkpoints.py` and config/task guard tests when runtime flags or monitor names change.
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
 python3.10 -m pytest -q \
-  tests/test_checkpoints.py \
-  tests/test_common_finetune_apply.py \
-  tests/test_metadata_task_validation.py
+  tests/runtime/test_checkpoints.py \
+  tests/config/test_common_finetune_apply.py \
+  tests/config/test_metadata_task_validation.py
 ```
 - Smoke gate:
 ```bash
@@ -188,7 +188,7 @@ python preprocess/mask_missing_stats.py --help
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec_moe sleep2vec2
-python3.10 -m pytest -q tests/test_checkpoints.py tests/test_config_loading.py
+python3.10 -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_config_loading.py
 ```
 
 #### `agent-tooling-maintainer`
@@ -199,7 +199,7 @@ python3.10 -m pytest -q tests/test_checkpoints.py tests/test_config_loading.py
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall agent_tools tests
-python3 -m pytest -q tests/test_agent_tools_*.py tests/test_agent_consultation_policy.py tests/test_agent_user_decisions.py tests/test_agent_plan_blocks_on_ambiguity.py
+python3 -m pytest -q tests/agent_tools/test_agent_tools_*.py tests/agent_tools/test_agent_consultation_policy.py tests/agent_tools/test_agent_user_decisions.py tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py
 python -m agent_tools skills --validate
 ```
 

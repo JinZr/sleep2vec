@@ -149,7 +149,7 @@ This page answers the practical question: when you need to add or change behavio
 - Mirror root data/preprocess behavior only when the contract is meant to stay identical.
 - Keep standalone RoFormer attention-backend changes aligned across `sleep2vec2` and `sleep2expert`.
 - Keep LoRA/DoRA config and downstream insertion behavior aligned with root; for `sleep2expert`, use `finetune.moe_tuning.lr_scales.lora` for adapter optimizer grouping.
-- Use variant-specific tests such as `tests/test_sleep2vec2_namespace.py`, `tests/test_sleep2expert_namespace.py`, `tests/test_variant_data_protocol.py`, and the Kaldi backend parity tests to guard namespace drift.
+- Use variant-specific tests such as `tests/variants/test_sleep2vec2_namespace.py`, `tests/variants/test_sleep2expert_namespace.py`, `tests/variants/test_variant_data_protocol.py`, and the Kaldi backend parity tests to guard namespace drift.
 - For `sleep2expert` MoE behavior, route schema changes through `sleep2expert.config`, routing changes through `sleep2expert.backbones.roformer.moe`, and export changes through `sleep2expert.routing_analysis`.
 
 ## Major Duplication Risks

@@ -4,7 +4,7 @@
 
 1. Update dataclasses and parsing in `hypnodata/config.py`.
 2. Reject unknown or duplicate semantic fields at the config boundary.
-3. Update `tests/test_hypnodata_config.py`.
+3. Update `tests/hypnodata/test_hypnodata_config.py`.
 4. Update `configs/hypnodata/README.md` and `configs/hypnodata/toy_edf_npz.yaml`
    when the user-facing schema changes.
 
@@ -16,7 +16,7 @@
    polarity, structured preprocess list, target-rate resampling, finite check,
    then common-duration truncation.
 4. Record real executed steps in `ProcessedSignal.steps`.
-5. Add or update direct signal tests in `tests/test_hypnodata_preprocess.py`.
+5. Add or update direct signal tests in `tests/hypnodata/test_hypnodata_preprocess.py`.
 6. Add or update pipeline manifest tests when step names or output metadata
    change.
 
@@ -29,7 +29,7 @@
    to MNE's shared-rate view.
 4. Keep channel selection in `hypnodata/channels.py` and preprocessing in
    `hypnodata/preprocess.py`.
-5. Update `tests/test_hypnodata_pipeline_npz.py` for direct reader and pipeline
+5. Update `tests/hypnodata/test_hypnodata_pipeline_npz.py` for direct reader and pipeline
    NPZ behavior.
 
 ## Add Or Change Annotation Outputs
@@ -48,8 +48,8 @@
    provide positive finite `record.metadata["duration"]`.
 6. Validate canonical names, duplicate annotations, raw-output collisions,
    shape, and target sampling frequency in `hypnodata/pipeline.py`.
-7. Update `tests/test_hypnodata_annotations.py` for helper behavior and
-   `tests/test_hypnodata_adapter.py` for pipeline/manifest behavior.
+7. Update `tests/hypnodata/test_hypnodata_annotations.py` for helper behavior and
+   `tests/hypnodata/test_hypnodata_adapter.py` for pipeline/manifest behavior.
 8. For built-in AHI finetune data, use `signals.ahi` and
    `materialize_ahi_from_events` so `ah_event`, scalar `ahi`, and scalar `tst`
    are written as one contract.
@@ -61,21 +61,21 @@
 Use the smallest relevant set first, then the full hypnodata glob:
 
 ```bash
-conda run -n exp python -m pytest -q tests/test_hypnodata_config.py tests/test_hypnodata_preprocess.py tests/test_hypnodata_pipeline_npz.py
-conda run -n exp python -m pytest -q tests/test_hypnodata_*.py
-conda run -n exp flake8 hypnodata tests/test_hypnodata_*.py
-conda run -n exp black --check hypnodata tests/test_hypnodata_*.py
-conda run -n exp isort --check-only hypnodata tests/test_hypnodata_*.py
+conda run -n exp python -m pytest -q tests/hypnodata/test_hypnodata_config.py tests/hypnodata/test_hypnodata_preprocess.py tests/hypnodata/test_hypnodata_pipeline_npz.py
+conda run -n exp python -m pytest -q tests/hypnodata/test_hypnodata_*.py
+conda run -n exp flake8 hypnodata tests/hypnodata/test_hypnodata_*.py
+conda run -n exp black --check hypnodata tests/hypnodata/test_hypnodata_*.py
+conda run -n exp isort --check-only hypnodata tests/hypnodata/test_hypnodata_*.py
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache conda run -n exp python -m compileall hypnodata tests
 git diff --check
 ```
 
 ## Downstream Compatibility
 
-- Use `tests/test_hypnodata_downstream_sleep2stat.py` for sleep2stat record
+- Use `tests/hypnodata/test_hypnodata_downstream_sleep2stat.py` for sleep2stat record
   loading compatibility.
-- Use `tests/test_hypnodata_downstream_presets.py` for preset mask filtering.
-- Use `tests/test_hypnodata_downstream_kaldi_converter.py` for NPZ-to-Kaldi
+- Use `tests/hypnodata/test_hypnodata_downstream_presets.py` for preset mask filtering.
+- Use `tests/hypnodata/test_hypnodata_downstream_kaldi_converter.py` for NPZ-to-Kaldi
   compatibility.
 
 Hypnodata should not write Kaldi archives or preset pickle files directly.

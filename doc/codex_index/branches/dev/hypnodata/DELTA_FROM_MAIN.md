@@ -8,7 +8,7 @@ downstream NPZ/Kaldi/sleep2stat boundaries.
 
 - `hypnodata/`: raw clinical EDF-style ingestion and standardized NPZ output.
 - `configs/hypnodata/`: example config and boundary documentation.
-- `tests/test_hypnodata_*.py`: contract tests for config, preprocessing,
+- `tests/hypnodata/test_hypnodata_*.py`: contract tests for config, preprocessing,
   pipeline outputs, adapters, manifests, conflict/progress, and downstream
   compatibility.
 

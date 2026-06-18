@@ -26,7 +26,7 @@
   ],
   "working_tree_dirty": true,
   "working_tree_notes": [
-    "tracked modifications in sleep2vec/common.py, sleep2vec/utils.py, sleep2vec/sleep2vec_finetuning.py, sleep2vec/metrics.py, sleep2vec/finetune.py, sleep2vec/infer.py, tests/test_common_finetune_apply.py, and tests/test_metadata_task_validation.py were incorporated into this refresh",
+    "tracked modifications in sleep2vec/common.py, sleep2vec/utils.py, sleep2vec/sleep2vec_finetuning.py, sleep2vec/metrics.py, sleep2vec/finetune.py, sleep2vec/infer.py, tests/config/test_common_finetune_apply.py, and tests/config/test_metadata_task_validation.py were incorporated into this refresh",
     "untracked files under configs/ and tests/ were excluded because this handbook indexes tracked code only"
   ],
   "required_outputs": [
