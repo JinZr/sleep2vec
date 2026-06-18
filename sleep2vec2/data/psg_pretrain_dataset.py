@@ -5,6 +5,7 @@ import typing as t
 import pandas as pd
 
 from sleep2vec2.data.default_dataset import DefaultDataset, SampleIndex
+from sleep2vec2.data.survival import attach_survival_metadata, load_survival_label_table
 from sleep2vec2.data.utils import default_extractor, default_mlm_mask_generator, default_tokenizer, window
 
 PAD_STAGE = -1
@@ -85,6 +86,8 @@ class PSGPretrainDataset(DefaultDataset):
         train_pair_track_unique_samples: bool = False,
         weighted_random_sampler: bool = False,
         weighted_random_sampler_target: str | None = None,
+        survival_label_config: t.Any | None = None,
+        survival_output_dim: int | None = None,
         generative: bool = False,
         is_train_set: bool = True,
         filter_max_workers: int | None = None,
@@ -105,17 +108,26 @@ class PSGPretrainDataset(DefaultDataset):
         meta_data_names = meta_data_names or []
         built_in_ahi_runtime_metadata = "ahi" in channel_names
         sources = sources or []
+        survival_labels = None
 
         split_list = [split] if isinstance(split, str) else list(split or [])
+        survival_key_column = getattr(survival_label_config, "key_column", None)
 
         if not load_preset_path:
+            survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
+            if survival_labels is not None:
+                survival_key_column = survival_labels.key_column
+            read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+            if survival_key_column is not None:
+                read_csv_kwargs["converters"] = {str(survival_key_column): str}
+
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
                 idx: t.Union[str, os.PathLike, t.List[t.Union[str, os.PathLike]]],
             ) -> pd.DataFrame:
                 # 单个路径
                 if isinstance(idx, (str, os.PathLike, Path)):
-                    df = pd.read_csv(idx, low_memory=False)
+                    df = pd.read_csv(idx, **read_csv_kwargs)
                     if "source" not in df.columns:
                         df["source"] = str(idx)
                     else:
@@ -126,7 +138,7 @@ class PSGPretrainDataset(DefaultDataset):
                 if isinstance(idx, (list, tuple)):
                     dfs = []
                     for p in idx:
-                        dfi = pd.read_csv(p, low_memory=False)
+                        dfi = pd.read_csv(p, **read_csv_kwargs)
                         if "source" not in dfi.columns:
                             dfi["source"] = str(p)
                         else:
@@ -155,6 +167,12 @@ class PSGPretrainDataset(DefaultDataset):
                 for optional_meta_name in ("age", "sex"):
                     if optional_meta_name in row.index:
                         metadata[optional_meta_name] = row[optional_meta_name]
+                if survival_labels is not None:
+                    if survival_labels.key_column not in row.index:
+                        raise ValueError(
+                            f"Required survival key column '{survival_labels.key_column}' is missing from index CSV."
+                        )
+                    attach_survival_metadata(metadata, row[survival_labels.key_column], survival_labels)
 
                 for meta_data_name in meta_data_names:
                     # Built-in AHI summary scalars come from NPZ backfill, not CSV columns.
@@ -184,6 +202,10 @@ class PSGPretrainDataset(DefaultDataset):
         else:
             data = None
 
+        effective_survival_output_dim = survival_output_dim if load_preset_path else None
+        if survival_labels is not None:
+            effective_survival_output_dim = len(survival_labels.label_names)
+
         registry = _build_channel_registry(
             channel_names=channel_names,
             channel_input_dims=self.channel_input_dims,
@@ -209,6 +231,8 @@ class PSGPretrainDataset(DefaultDataset):
             pair_selector=pair_selector,
             weighted_random_sampler=weighted_random_sampler,
             weighted_random_sampler_target=weighted_random_sampler_target,
+            survival_output_dim=effective_survival_output_dim,
+            survival_key_column=survival_key_column,
             dataloader_config=kwargs,
             filter_max_workers=filter_max_workers,
         )

@@ -16,6 +16,7 @@ from data.metadata import (
     make_weighted_sampler_from_labels,
     process_metadata,
 )
+from data.survival import stack_survival_metadata
 from data.utils import filter_valid_sample_indices, load_builtin_ahi_metadata, load_npz
 
 
@@ -66,6 +67,8 @@ class DefaultDataset(BaseDataset):
         pair_selector: t.Any | None = None,
         weighted_random_sampler: bool = False,
         weighted_random_sampler_target: str | None = None,
+        survival_output_dim: int | None = None,
+        survival_key_column: str | None = None,
         seed: int = 42,
         filter_max_workers: int | None = None,
     ) -> None:
@@ -90,6 +93,8 @@ class DefaultDataset(BaseDataset):
         self.pair_selector = pair_selector
         self.weighted_random_sampler = bool(weighted_random_sampler)
         self.weighted_random_sampler_target = weighted_random_sampler_target
+        self.survival_output_dim = survival_output_dim
+        self.survival_key_column = survival_key_column
         # self.collators = collators
         self.dataloader_config = dataloader_config
 
@@ -430,6 +435,16 @@ class DefaultDataset(BaseDataset):
             # 2️⃣ 获取整个 batch 中的最大 token 长度（裁剪后），用于 pad
             max_len = max(next(iter(s.tokens.values())).shape[0] for s in samples)
 
+            metadata_batch = process_metadata(samples, disease_names, self.meta_data_regression_names)
+            if self.survival_output_dim is not None:
+                metadata_batch.update(
+                    stack_survival_metadata(
+                        samples,
+                        expected_output_dim=self.survival_output_dim,
+                        key_column=self.survival_key_column,
+                    )
+                )
+
             batch = {
                 "id": [s.id for s in samples],
                 "length": torch.tensor(
@@ -437,7 +452,7 @@ class DefaultDataset(BaseDataset):
                     # device=device
                 ),
                 "token_start": torch.tensor(token_starts, dtype=torch.long),
-                "metadata": process_metadata(samples, disease_names, self.meta_data_regression_names),
+                "metadata": metadata_batch,
             }
             if len(chosen) == 2:
                 batch["pair"] = (str(chosen[0]), str(chosen[1]))

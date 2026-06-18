@@ -561,7 +561,7 @@ def test_load_finetune_config_rejects_task_extra_fields(tmp_path: Path):
 @pytest.mark.parametrize(
     ("task_patch", "pattern"),
     [
-        ({"type": "invalid"}, "must be 'classification' or 'regression'"),
+        ({"type": "invalid"}, "must be 'classification', 'regression', or 'survival'"),
         ({"output_dim": 0}, "must be a positive integer"),
         ({"is_seq": "yes"}, "must be a boolean"),
         ({"monitor_mod": "up"}, "must be 'min' or 'max'"),

@@ -269,6 +269,30 @@ def _load_preset_build_block(
     return required_channels, min_channels
 
 
+def _load_survival_build_config(config_data: dict[str, t.Any]) -> tuple[t.Any | None, int | None]:
+    finetune_block = config_data.get("finetune")
+    if not isinstance(finetune_block, dict):
+        return None, None
+
+    task_block = finetune_block.get("task")
+    if not isinstance(task_block, dict) or task_block.get("type") != "survival":
+        if finetune_block.get("survival") is not None:
+            raise ValueError("finetune.survival is only supported when finetune.task.type is survival.")
+        return None, None
+
+    output_dim = task_block.get("output_dim")
+    if not isinstance(output_dim, int) or output_dim < 1:
+        raise ValueError("finetune.task.output_dim must be a positive integer for survival preset generation.")
+
+    survival_block = finetune_block.get("survival")
+    if not isinstance(survival_block, dict):
+        raise ValueError("finetune.survival is required for survival preset generation.")
+
+    from sleep2expert.config import SurvivalConfig
+
+    return SurvivalConfig(**survival_block), output_dim
+
+
 def _resolve_validation_channels(
     *,
     model_channels: list[str],
@@ -352,9 +376,13 @@ def _resolve_single_index_path(index_paths: list[str]) -> Path:
     return Path(index_paths[0]).expanduser()
 
 
-def _load_index_df(index_paths: list[str]) -> pd.DataFrame:
+def _load_index_df(index_paths: list[str], survival_key_column: str | None = None) -> pd.DataFrame:
     path = _resolve_single_index_path(index_paths)
-    df = pd.read_csv(path, low_memory=False)
+    key_column = None if survival_key_column in (None, "") else str(survival_key_column)
+    read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+    if key_column is not None:
+        read_csv_kwargs["converters"] = {key_column: str}
+    df = pd.read_csv(path, **read_csv_kwargs)
     if "source" not in df.columns:
         df["source"] = str(path)
     else:
@@ -400,6 +428,8 @@ def _build_preset_job(
     min_channels: int,
     batch_size: int,
     shuffle: bool,
+    survival_label_config: t.Any | None = None,
+    survival_output_dim: int | None = None,
     filter_max_workers: int | None,
 ) -> tuple[Path, int]:
     from sleep2expert.data.psg_pretrain_dataset import PSGPretrainDataset
@@ -407,7 +437,10 @@ def _build_preset_job(
     index = [str(_resolve_single_index_path(index_paths))]
     filtered_index_path: str | None = None
     if not allow_missing_channels:
-        filtered_index = _filter_index_df_for_required_channels(_load_index_df(index_paths), channel_names)
+        survival_key_column = getattr(survival_label_config, "key_column", None)
+        filtered_index = _filter_index_df_for_required_channels(
+            _load_index_df(index_paths, survival_key_column=survival_key_column), channel_names
+        )
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".csv",
@@ -433,6 +466,8 @@ def _build_preset_job(
             mask_rate=mask_rate,
             allow_missing_channels=allow_missing_channels,
             min_channels=min_channels,
+            survival_label_config=survival_label_config,
+            survival_output_dim=survival_output_dim,
             batch_size=batch_size,
             shuffle=shuffle,
             filter_max_workers=filter_max_workers,
@@ -462,6 +497,7 @@ def main() -> None:
     config_data = _load_config_mapping(args.config)
     model_channels, model_channel_input_dims = _load_model_channels(config_data)
     preset_required_channels, preset_min_channels = _load_preset_build_block(config_data)
+    survival_label_config, survival_output_dim = _load_survival_build_config(config_data)
     channel_names, channel_input_dims = _resolve_validation_channels(
         model_channels=model_channels,
         channel_input_dims=model_channel_input_dims,
@@ -548,6 +584,8 @@ def main() -> None:
                     "min_channels": effective_min_channels,
                     "batch_size": args.batch_size,
                     "shuffle": args.shuffle,
+                    "survival_label_config": survival_label_config,
+                    "survival_output_dim": survival_output_dim,
                 }
             )
 

@@ -14,6 +14,7 @@ from sleep2vec2 import diagnostics
 from sleep2vec2.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec2.common import remap_stage_labels
 from sleep2vec2.distributed import get_rank_world_size, is_torch_distributed_ready
+from sleep2vec2.losses.cox import CoxPHLossVectorized
 from sleep2vec2.metrics import (
     AHI_FINE_THRESHOLD_GRID,
     _aggregate_prepared_ahi_records,
@@ -106,6 +107,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._classification_loss = torch.nn.CrossEntropyLoss(ignore_index=-1, weight=class_weight_tensor)
         self._multilabel_loss = torch.nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight_tensor)
         self._regression_loss = torch.nn.MSELoss()
+        self._survival_loss = CoxPHLossVectorized()
         self._ahi_eval_threshold: float | None = None
         self._ahi_train_pointwise_counts = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
         self._eval_loss_sums = {"val": 0.0, "test": 0.0}
@@ -215,6 +217,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _shared_step(self, batch, stage: str, model=None):
         model = model or self.model
         logits = model(batch)
+        if self._is_survival_task() and stage in {"val", "test"}:
+            # Cox eval risk sets span the whole epoch, so batch losses are not meaningful.
+            self._collect_survival_eval_batch(stage, logits, batch)
+            return None
+
         loss_info = self._compute_loss(logits, batch)
         if loss_info is None:
             if stage == "train":
@@ -239,6 +246,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 eval_loss_sums[stage] += float(loss.detach().item()) * valid_count
                 eval_loss_counts[stage] += int(valid_count)
 
+        if self._is_survival_task():
+            return loss if stage == "train" else None
+
         if self._is_ahi_task() and stage == "train":
             self._accumulate_ahi_train_pointwise_counts(batch, logits)
         elif self._is_ahi_task() and stage in {"val", "test"}:
@@ -256,6 +266,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return loss if stage == "train" else None
 
     def _compute_loss(self, logits, batch):
+        if self._is_survival_task():
+            return self._compute_survival_loss(logits, batch)
+
         targets = self._get_targets(batch)
 
         if getattr(self.args, "is_multilabel", False):
@@ -283,6 +296,246 @@ class Sleep2vecFinetuning(pl.LightningModule):
         valid_targets = targets_flat[valid_mask]
         loss = self._regression_loss(preds, valid_targets)
         return loss, int(valid_targets.numel())
+
+    def _compute_survival_loss(self, logits, batch):
+        metadata = batch["metadata"]
+        event_time = metadata["event_time"].to(self.args.device)
+        is_event = metadata["is_event"].to(self.args.device)
+        has_label = metadata["has_label"].to(self.args.device)
+
+        if logits.shape != event_time.shape:
+            raise ValueError(
+                f"Survival head output shape {tuple(logits.shape)} does not match labels {tuple(event_time.shape)}."
+            )
+
+        valid_mask = has_label > 0.5
+        if not valid_mask.any():
+            return None
+        token_start = batch["token_start"].to(torch.long).detach().cpu()
+        key_column = self._survival_key_column()
+        if key_column not in metadata:
+            raise ValueError(
+                f"Survival batch metadata is missing key column {key_column!r}; "
+                "regenerate presets with survival sidecars."
+            )
+        # Cox labels are subject-level, so repeated nights/windows in a train batch should share one risk-set row.
+        tensors = self._aggregate_survival_records(
+            [
+                {
+                    "pred": logits,
+                    "event_time": event_time,
+                    "is_event": is_event,
+                    "has_label": has_label,
+                    "survival_key": [str(key) for key in metadata[key_column]],
+                    "path": [str(path) for path in metadata["path"]],
+                    "token_start": [int(value) for value in token_start.tolist()],
+                }
+            ]
+        )
+        logits = tensors["pred"]
+        event_time = tensors["event_time"]
+        is_event = tensors["is_event"]
+        has_label = tensors["has_label"]
+        valid_mask = has_label > 0.5
+        loss = self._survival_loss(logits, has_label, event_time, is_event)
+        event_count = int(((is_event > 0.5) & valid_mask).sum().item())
+        return loss, event_count
+
+    def _collect_survival_eval_batch(self, stage: str, logits, batch) -> None:
+        metadata = batch["metadata"]
+        event_time = metadata["event_time"]
+        is_event = metadata["is_event"]
+        has_label = metadata["has_label"]
+        key_column = self._survival_key_column()
+
+        if logits.shape != event_time.shape:
+            raise ValueError(
+                f"Survival head output shape {tuple(logits.shape)} does not match labels {tuple(event_time.shape)}."
+            )
+        # Prediction export is independent of Cox likelihood terms; keep raw risk scores for unlabeled batches.
+        export_predictions = stage == "test" and prediction_export_enabled(self.args)
+        if not (has_label > 0.5).any() and not export_predictions:
+            return
+
+        token_start = batch["token_start"].to(torch.long).detach().cpu()
+        if key_column not in metadata:
+            raise ValueError(
+                f"Survival batch metadata is missing key column {key_column!r}; "
+                "regenerate presets with survival sidecars."
+            )
+        self._stage_outputs[stage].append(
+            {
+                "pred": logits.detach().to(device="cpu", dtype=torch.float32),
+                "event_time": event_time.detach().to(device="cpu", dtype=torch.float32),
+                "is_event": is_event.detach().to(device="cpu", dtype=torch.float32),
+                "has_label": has_label.detach().to(device="cpu", dtype=torch.float32),
+                "survival_key": [str(key) for key in metadata[key_column]],
+                "path": [str(path) for path in batch["metadata"]["path"]],
+                "token_start": [int(value) for value in token_start.tolist()],
+            }
+        )
+
+    def _survival_key_column(self) -> str:
+        survival = getattr(self.args, "survival", None)
+        key_column = getattr(survival, "key_column", None)
+        if key_column in (None, ""):
+            raise ValueError("Survival task requires finetune.survival.key_column.")
+        return str(key_column)
+
+    def _gather_survival_eval_records(self, records):
+        if not is_torch_distributed_ready():
+            return records
+
+        _, world_size = get_rank_world_size()
+        gathered: list[list[dict[str, torch.Tensor]] | None] = [None] * world_size
+        dist.all_gather_object(gathered, records)
+
+        merged: list[dict[str, torch.Tensor]] = []
+        for item in gathered:
+            if isinstance(item, list):
+                merged.extend(item)
+        return merged
+
+    def _finalize_survival_epoch(self, stage: str, outputs) -> None:
+        records = list(outputs)
+        outputs.clear()
+        if stage == "train":
+            return
+
+        # Build the monitored Cox loss from the full eval risk set, including all DDP ranks.
+        records = self._gather_survival_eval_records(records)
+        if not records:
+            return
+
+        # Export before the event-count check so all-censored inference still writes risk scores.
+        if stage == "test" and prediction_export_enabled(self.args):
+            self.prediction_rows = self._build_survival_prediction_rows(records)
+
+        # Loss aggregation is subject-level; prediction export above intentionally remains per path.
+        tensors = self._aggregate_survival_records(records)
+        device = torch.device(getattr(self.args, "device", "cpu"))
+        pred = tensors["pred"].to(device)
+        event_time = tensors["event_time"].to(device)
+        is_event = tensors["is_event"].to(device)
+        has_label = tensors["has_label"].to(device)
+        event_count = int(((is_event > 0.5) & (has_label > 0.5)).sum().item())
+        if event_count == 0:
+            return
+
+        loss = self._survival_loss(pred, has_label, event_time, is_event)
+        self.log(
+            f"{stage}_loss",
+            loss,
+            prog_bar=True,
+            logger=True,
+            sync_dist=False,
+            on_step=False,
+            on_epoch=True,
+        )
+
+    def _aggregate_survival_records(self, records) -> dict[str, torch.Tensor]:
+        # Keep one Cox row per survival key. Multiple nights/windows contribute a mean raw log-risk,
+        # while labels must remain identical because sidecars are subject-level metadata.
+        grouped: dict[str, dict[str, object]] = {}
+        seen: set[tuple[str, str, int]] = set()
+        for record in records:
+            pred = record["pred"]
+            event_time = record["event_time"]
+            is_event = record["is_event"]
+            has_label = record["has_label"]
+            for idx, key in enumerate(record["survival_key"]):
+                path = str(record["path"][idx])
+                token_start = int(record["token_start"][idx])
+                dedupe_key = (str(key), path, token_start)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+
+                item = grouped.get(str(key))
+                current_labels = {
+                    "event_time": event_time[idx],
+                    "is_event": is_event[idx],
+                    "has_label": has_label[idx],
+                }
+                if item is None:
+                    grouped[str(key)] = {**current_labels, "preds": [pred[idx]]}
+                    continue
+
+                for label_name, label_value in current_labels.items():
+                    if not torch.allclose(item[label_name], label_value, equal_nan=True):
+                        raise ValueError(f"Survival labels differ across records for key {key!r}.")
+                item["preds"].append(pred[idx])
+
+        rows = []
+        event_times = []
+        is_events = []
+        has_labels = []
+        for item in grouped.values():
+            rows.append(torch.stack(item["preds"], dim=0).mean(dim=0))
+            event_times.append(item["event_time"])
+            is_events.append(item["is_event"])
+            has_labels.append(item["has_label"])
+        return {
+            "pred": torch.stack(rows, dim=0),
+            "event_time": torch.stack(event_times, dim=0),
+            "is_event": torch.stack(is_events, dim=0),
+            "has_label": torch.stack(has_labels, dim=0),
+        }
+
+    def _build_survival_prediction_rows(self, records) -> list[dict[str, object]]:
+        grouped: dict[str, list[dict[str, object]]] = {}
+        seen: set[tuple[str, int]] = set()
+        for record in records:
+            pred = record["pred"].numpy()
+            event_time = record["event_time"].numpy()
+            is_event = record["is_event"].numpy()
+            has_label = record["has_label"].numpy()
+            for idx, path in enumerate(record["path"]):
+                token_start = int(record["token_start"][idx])
+                key = (str(path), token_start)
+                if key in seen:
+                    continue
+                seen.add(key)
+                grouped.setdefault(str(path), []).append(
+                    {
+                        "token_start": token_start,
+                        "pred": pred[idx],
+                        "event_time": event_time[idx],
+                        "is_event": is_event[idx],
+                        "has_label": has_label[idx],
+                    }
+                )
+
+        rows: list[dict[str, object]] = []
+        for path, items in grouped.items():
+            items.sort(key=lambda item: int(item["token_start"]))
+            token_starts = [int(item["token_start"]) for item in items]
+            log_risk = np.stack([np.asarray(item["pred"], dtype=np.float32) for item in items], axis=0).mean(axis=0)
+            # Survival labels are sidecar metadata, so all windows for one path share the same vectors.
+            event_time = np.asarray(items[0]["event_time"], dtype=np.float32)
+            is_event = (np.asarray(items[0]["is_event"], dtype=np.float32) > 0.5).astype(np.int64)
+            has_label = (np.asarray(items[0]["has_label"], dtype=np.float32) > 0.5).astype(np.int64)
+            groundtruth = {
+                "event_time": event_time.tolist(),
+                "is_event": is_event.tolist(),
+                "has_label": has_label.tolist(),
+            }
+            rows.append(
+                {
+                    "path": path,
+                    "kind": "survival",
+                    "groundtruth": groundtruth,
+                    "prediction": log_risk.tolist(),
+                    "log_risk": log_risk.tolist(),
+                    "event_time": event_time.tolist(),
+                    "is_event": is_event.tolist(),
+                    "has_label": has_label.tolist(),
+                    "n_predictions": int(log_risk.size),
+                    "n_windows": len(items),
+                    "token_starts": token_starts,
+                }
+            )
+        return rows
 
     def _extract_valid_predictions(self, batch, logits):
         labels = self._get_targets(batch)
@@ -359,6 +612,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return records
 
     def _get_targets(self, batch):
+        if self._is_survival_task():
+            raise ValueError("Survival tasks use event_time/is_event/has_label metadata, not label_name targets.")
         if not self.args.is_seq:
             return batch["metadata"][self.args.label_name].to(self.args.device)
 
@@ -370,6 +625,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _is_ahi_task(self) -> bool:
         return getattr(self.args, "label_name", None) == "ahi"
+
+    def _is_survival_task(self) -> bool:
+        return bool(getattr(self.args, "is_survival", False))
 
     def _accumulate_ahi_train_pointwise_counts(self, batch, logits) -> None:
         labels = self._get_targets(batch)
@@ -670,6 +928,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
         outputs = self._stage_outputs[stage]
         if stage == "test":
             self.prediction_rows = []
+        if self._is_survival_task():
+            self._finalize_survival_epoch(stage, outputs)
+            return None
+
         if stage in getattr(self, "_eval_loss_sums", {}):
             self._log_eval_loss(stage)
 

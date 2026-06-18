@@ -258,6 +258,7 @@ def _apply_builtin_task_attrs(args: argparse.Namespace, label_name: str) -> None
     args.class_labels = get_task_class_labels(label_name)
     args.label_merge_map = get_task_label_merge_map(label_name)
     args.is_multilabel = get_task_is_multilabel(label_name)
+    args.is_survival = False
     args.auxiliary_label_source_names = get_task_auxiliary_label_source_names(label_name)
 
 
@@ -267,6 +268,7 @@ def _apply_custom_task_attrs(args: argparse.Namespace) -> None:
     args.class_labels = None
     args.label_merge_map = None
     args.is_multilabel = False
+    args.is_survival = False
     args.auxiliary_label_source_names = []
 
 
@@ -281,6 +283,7 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
             _apply_custom_task_attrs(args)
         args.output_dim = task_cfg.output_dim
         args.is_classification = task_cfg.type == "classification"
+        args.is_survival = task_cfg.type == "survival"
         args.is_seq = task_cfg.is_seq
         args.monitor = task_cfg.monitor
         args.monitor_mod = task_cfg.monitor_mod
@@ -300,6 +303,7 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
         _apply_builtin_task_attrs(args, args.label_name)
         args.output_dim = builtin_spec["output_dim"]
         args.is_classification = builtin_spec["type"] == "classification"
+        args.is_survival = False
         args.is_seq = builtin_spec["is_seq"]
         args.monitor = builtin_spec["monitor"]
         args.monitor_mod = builtin_spec["monitor_mod"]
@@ -385,6 +389,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.lora_use_dora = lora_cfg.use_dora
     args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
     args.eval_visualizations = finetune_cfg.eval_visualizations
+    args.survival = finetune_cfg.survival
     args.head_kwargs = {}
 
     # Fail fast if requested dataloader channels differ from model/backbone channels.

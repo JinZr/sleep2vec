@@ -193,11 +193,22 @@ def _resolve_channels(args: argparse.Namespace) -> tuple[list[str], dict[str, in
     return channel_names, channel_input_dims, effective_min_channels
 
 
-def _load_index_df(index_paths: t.Sequence[Path]) -> pd.DataFrame:
-    frames = [pd.read_csv(path, low_memory=False) for path in index_paths]
+def _load_index_df(index_paths: t.Sequence[Path], survival_key_column: str | None = None) -> pd.DataFrame:
+    key_column = None if survival_key_column in (None, "") else str(survival_key_column)
+    read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+    if key_column is not None:
+        read_csv_kwargs["converters"] = {key_column: str}
+    frames = [pd.read_csv(path, **read_csv_kwargs) for path in index_paths]
     if not frames:
         raise ValueError("At least one --index CSV is required.")
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+    if key_column is not None:
+        if key_column not in df.columns:
+            raise ValueError(f"Input index CSV is missing required survival key column {key_column!r}.")
+        missing_key = df[key_column].isna() | df[key_column].astype(str).str.strip().eq("")
+        if missing_key.any():
+            raise ValueError(f"Input index CSV contains missing values in required survival key column {key_column!r}.")
+    return df
 
 
 def _validate_required_columns(df: pd.DataFrame, source_field: str) -> None:
@@ -508,7 +519,11 @@ def convert(args: argparse.Namespace) -> Path:
     extractors = {name: registry[name][0] for name in channel_names}
     tokenizers = {name: registry[name][1] for name in channel_names}
 
-    df = _load_index_df(index_paths)
+    config_data = _load_config_mapping(args.config)
+    finetune_block = config_data.get("finetune", {})
+    survival_block = finetune_block.get("survival", {}) if isinstance(finetune_block, dict) else {}
+    survival_key_column = survival_block.get("key_column") if isinstance(survival_block, dict) else None
+    df = _load_index_df(index_paths, survival_key_column=survival_key_column)
     _validate_required_columns(df, args.source_field)
     if args.split is not None:
         requested_splits = {str(split) for split in args.split}

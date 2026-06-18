@@ -242,6 +242,15 @@ class FinetuneSamplerConfig:
 
 
 @dataclass
+class SurvivalConfig:
+    key_column: str
+    disease_columns_index: str
+    event_time_index: str
+    is_event_index: str
+    has_label_index: str
+
+
+@dataclass
 class FinetuneConfig:
     freeze_tokenizer: bool = True
     lora: LoraConfig = field(default_factory=LoraConfig)
@@ -249,6 +258,7 @@ class FinetuneConfig:
     loss: FinetuneLossConfig = field(default_factory=FinetuneLossConfig)
     sampler: FinetuneSamplerConfig = field(default_factory=FinetuneSamplerConfig)
     task: TaskConfig | None = None
+    survival: SurvivalConfig | None = None
     eval_visualizations: EvalVisualizationsConfig | None = None
 
 
@@ -473,8 +483,8 @@ def _build_task_config(raw: t.Any) -> TaskConfig | None:
         raise ValueError(f"finetune.task missing required fields: {missing}")
 
     task_type = raw.get("type")
-    if task_type not in {"classification", "regression"}:
-        raise ValueError("finetune.task.type must be 'classification' or 'regression'.")
+    if task_type not in {"classification", "regression", "survival"}:
+        raise ValueError("finetune.task.type must be 'classification', 'regression', or 'survival'.")
 
     output_dim = raw.get("output_dim")
     if not isinstance(output_dim, int) or output_dim < 1:
@@ -500,6 +510,11 @@ def _build_task_config(raw: t.Any) -> TaskConfig | None:
         raise ValueError("finetune.task.output_dim must be >= 2 for classification tasks.")
     if task_type == "regression" and output_dim != 1:
         raise ValueError("finetune.task.output_dim must be 1 for regression tasks.")
+    if task_type == "survival":
+        if is_seq:
+            raise ValueError("finetune.task.is_seq must be false for survival tasks.")
+        if monitor != "val_loss" or monitor_mod != "min":
+            raise ValueError("survival tasks must monitor val_loss with monitor_mod min.")
 
     return TaskConfig(
         type=task_type,
@@ -562,6 +577,31 @@ def _build_finetune_sampler_config(raw: t.Any) -> FinetuneSamplerConfig:
     if not isinstance(weighted_random, bool):
         raise ValueError("finetune.sampler.weighted_random must be a boolean.")
     return FinetuneSamplerConfig(weighted_random=weighted_random)
+
+
+def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalConfig | None:
+    if raw is None:
+        if task_cfg is not None and task_cfg.type == "survival":
+            raise ValueError("finetune.survival is required for survival tasks.")
+        return None
+    if task_cfg is None or task_cfg.type != "survival":
+        raise ValueError("finetune.survival is only supported when finetune.task.type is survival.")
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.survival must be a mapping when provided.")
+
+    required = {"key_column", "disease_columns_index", "event_time_index", "is_event_index", "has_label_index"}
+    missing = sorted(required - set(raw.keys()))
+    if missing:
+        raise ValueError(f"finetune.survival missing required fields: {missing}")
+    extra = sorted(set(raw.keys()) - required)
+    if extra:
+        raise ValueError(f"finetune.survival has unsupported fields: {extra}")
+    for field_name in required:
+        value = raw[field_name]
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"finetune.survival.{field_name} must be a non-empty string.")
+
+    return SurvivalConfig(**raw)
 
 
 def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cfg: BackboneConfig) -> None:
@@ -771,6 +811,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     sampler_cfg = _build_finetune_sampler_config(finetune_block.get("sampler"))
     eval_visualizations_cfg = _build_eval_visualizations_config(finetune_block.get("eval_visualizations"))
     task_cfg = _build_task_config(finetune_block.get("task"))
+    survival_cfg = _build_survival_config(finetune_block.get("survival"), task_cfg)
     _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
@@ -781,6 +822,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         loss=loss_cfg,
         sampler=sampler_cfg,
         task=task_cfg,
+        survival=survival_cfg,
         eval_visualizations=eval_visualizations_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
@@ -792,6 +834,7 @@ __all__ = [
     "FinetuneConfig",
     "FinetuneLossConfig",
     "FinetuneSamplerConfig",
+    "SurvivalConfig",
     "PretrainConfigBundle",
     "FinetuneDataConfig",
     "PretrainDataConfig",
