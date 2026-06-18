@@ -12,7 +12,7 @@
 | Pipeline orchestration | `hypnodata/pipeline.py` | Production run, lightweight dry-run preview, full validation reports, progress writes | Keep orchestration here and signal math in `preprocess.py` |
 | Output manifests | `hypnodata/manifests.py`, `hypnodata/backends.py`, `hypnodata/status.py` | NPZ path layout, CSV/JSON manifests, mask columns, progress JSON | Preserve downstream names: `path`, `duration`, mask columns |
 | Example config and docs | `configs/hypnodata/` | User-facing contract examples and boundaries | Keep examples aligned with `load_config` |
-| Contract tests | `tests/test_hypnodata_*.py`, `tests/hypnodata_test_helpers.py` | Pin schema, preprocessing, pipeline outputs, adapter hooks, downstream compatibility, progress/conflict behavior | Add focused tests near the owning contract |
+| Contract tests | `tests/hypnodata/test_hypnodata_*.py`, `tests/hypnodata_test_helpers.py` | Pin schema, preprocessing, pipeline outputs, adapter hooks, downstream compatibility, progress/conflict behavior | Add focused tests near the owning contract |
 
 ## Dependency Flow
 
@@ -35,4 +35,4 @@
 - Output column or manifest semantics belong in `hypnodata/manifests.py` and
   pipeline tests.
 - Downstream compatibility with sleep2stat, presets, and Kaldi conversion is
-  pinned by dedicated `tests/test_hypnodata_downstream_*.py` files.
+  pinned by dedicated `tests/hypnodata/test_hypnodata_downstream_*.py` files.

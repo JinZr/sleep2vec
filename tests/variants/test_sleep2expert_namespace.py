@@ -11,7 +11,7 @@ import yaml
 
 from sleep2expert.config import load_finetune_config, load_pretrain_config, validate_model_config
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_sleep2expert_copied_runtime_uses_local_namespace():

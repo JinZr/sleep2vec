@@ -88,7 +88,7 @@ Use `StageSourceResolver` for sleep-hour, REM/NREM-hour, stage-minute, and onset
 2. Reuse `StageSourceResolver` for stage denominators instead of creating local masks.
 3. Encode units and denominators in public night-stat field names.
 4. Do not add duplicate aliases for existing output metrics.
-5. Add or update focused tests in `tests/test_sleep2stat_analyzers.py`, `tests/test_sleep2stat_reducers.py`, `tests/test_sleep2stat_writers.py`, or `tests/test_sleep2stat_cli.py`.
+5. Add or update focused tests in `tests/sleep2stat/test_sleep2stat_analyzers.py`, `tests/sleep2stat/test_sleep2stat_reducers.py`, `tests/sleep2stat/test_sleep2stat_writers.py`, or `tests/sleep2stat/test_sleep2stat_cli.py`.
 
 ## Model Analyzer
 
@@ -169,17 +169,17 @@ Analyzer/reducer/writer changes:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2stat tests
 python3 -m pytest -q \
-  tests/test_sleep2stat_config.py \
-  tests/test_sleep2stat_analyzers.py \
-  tests/test_sleep2stat_reducers.py \
-  tests/test_sleep2stat_writers.py \
-  tests/test_sleep2stat_cli.py
+  tests/sleep2stat/test_sleep2stat_config.py \
+  tests/sleep2stat/test_sleep2stat_analyzers.py \
+  tests/sleep2stat/test_sleep2stat_reducers.py \
+  tests/sleep2stat/test_sleep2stat_writers.py \
+  tests/sleep2stat/test_sleep2stat_cli.py
 ```
 
 Agent recipe changes:
 
 ```bash
-python3 -m pytest -q tests/test_agent_tools_sleep2stat.py tests/test_agent_plan_blocks_on_ambiguity.py
+python3 -m pytest -q tests/agent_tools/test_agent_tools_sleep2stat.py tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py
 python -m agent_tools skills --validate
 ```
 
@@ -187,11 +187,11 @@ Use the repository `exp` environment on this machine when base Python lacks proj
 
 ## Common Edit Hotspots
 
-- Schema or analyzer type support: `sleep2stat/config.py`, `configs/sleep2stat/`, `tests/test_sleep2stat_config.py`
-- Model analyzer data/model flow: `sleep2stat/analyzers/model_downstream.py`, `data/default_dataset.py`, `data/kaldi_psg_dataset.py`, `tests/test_sleep2stat_analyzers.py`
+- Schema or analyzer type support: `sleep2stat/config.py`, `configs/sleep2stat/`, `tests/sleep2stat/test_sleep2stat_config.py`
+- Model analyzer data/model flow: `sleep2stat/analyzers/model_downstream.py`, `data/default_dataset.py`, `data/kaldi_psg_dataset.py`, `tests/sleep2stat/test_sleep2stat_analyzers.py`
 - Stage denominators: `sleep2stat/core/stage_sources.py`, analyzer tests
-- SpO2 metrics: `sleep2stat/analyzers/spo2.py`, `tests/test_sleep2stat_analyzers.py`
-- YASA metrics: `sleep2stat/analyzers/yasa.py`, `tests/test_sleep2stat_analyzers.py`
-- Reducer metrics: `sleep2stat/reducers/`, `tests/test_sleep2stat_reducers.py`
-- Bundle outputs: `sleep2stat/io/writers.py`, `sleep2stat/core/pipeline.py`, `tests/test_sleep2stat_writers.py`, `tests/test_sleep2stat_cli.py`
-- Agent recipe support: `agent_tools/configs.py`, `agent_tools/decisions.py`, `agent_tools/plans.py`, `recipes/templates/sleep2stat_*.yaml`, `skills/sleep2stat/`, `tests/test_agent_tools_sleep2stat.py`
+- SpO2 metrics: `sleep2stat/analyzers/spo2.py`, `tests/sleep2stat/test_sleep2stat_analyzers.py`
+- YASA metrics: `sleep2stat/analyzers/yasa.py`, `tests/sleep2stat/test_sleep2stat_analyzers.py`
+- Reducer metrics: `sleep2stat/reducers/`, `tests/sleep2stat/test_sleep2stat_reducers.py`
+- Bundle outputs: `sleep2stat/io/writers.py`, `sleep2stat/core/pipeline.py`, `tests/sleep2stat/test_sleep2stat_writers.py`, `tests/sleep2stat/test_sleep2stat_cli.py`
+- Agent recipe support: `agent_tools/configs.py`, `agent_tools/decisions.py`, `agent_tools/plans.py`, `recipes/templates/sleep2stat_*.yaml`, `skills/sleep2stat/`, `tests/agent_tools/test_agent_tools_sleep2stat.py`

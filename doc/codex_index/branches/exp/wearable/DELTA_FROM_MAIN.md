@@ -19,9 +19,9 @@ Added:
 
 - `sleep2vec/adapt.py`
 - `sleep2vec/sleep2vec_adaptation.py`
-- `tests/test_adapt.py`
-- `tests/test_adapt_pair_schedule_callback.py`
-- `tests/test_adaptation.py`
+- `tests/runtime/test_adapt.py`
+- `tests/runtime/test_adapt_pair_schedule_callback.py`
+- `tests/runtime/test_adaptation.py`
 
 Effect:
 
@@ -35,7 +35,7 @@ Changed:
 
 - `sleep2vec/config.py`
 - `sleep2vec/common.py`
-- `tests/test_config_loading.py`
+- `tests/config/test_config_loading.py`
 
 Effect:
 
@@ -52,8 +52,8 @@ Changed:
 - `data/psg_pretrain_dataset.py`
 - `sleep2vec/common.py`
 - `sleep2vec/utils.py`
-- `tests/test_generic_channel_dataset.py`
-- `tests/test_save_dataset_presets.py`
+- `tests/data/test_generic_channel_dataset.py`
+- `tests/preprocess/test_save_dataset_presets.py`
 
 Effect:
 
@@ -69,8 +69,8 @@ Changed:
 - `data/psg_pretrain_dataset.py`
 - `data/samplers.py`
 - `sleep2vec/utils.py`
-- `tests/test_bucket_sampler.py`
-- `tests/test_pair_first_sampler.py`
+- `tests/data/test_bucket_sampler.py`
+- `tests/data/test_pair_first_sampler.py`
 
 Effect:
 
@@ -89,7 +89,7 @@ Changed:
 - `sleep2vec/checkpoints.py`
 - `sleep2vec/pretrain_model.py`
 - `sleep2vec/downstream_model.py`
-- `tests/test_checkpoints.py`
+- `tests/runtime/test_checkpoints.py`
 
 Effect:
 
@@ -123,8 +123,8 @@ Changed:
 - `sleep2vec/metrics.py`
 - `sleep2vec/finetune.py`
 - `sleep2vec/infer.py`
-- `tests/test_common_finetune_apply.py`
-- `tests/test_metadata_task_validation.py`
+- `tests/config/test_common_finetune_apply.py`
+- `tests/config/test_metadata_task_validation.py`
 
 Effect:
 
@@ -154,6 +154,6 @@ These areas are effectively outside branch-local code analysis for this handbook
 ## Unresolved Ambiguities
 
 - the tracked downstream-task edits described above are not represented by the current `HEAD` commit or the `main...HEAD` diff
-- untracked files `configs/ppg_stage3_finetune*.yaml`, `configs/ppg_stage4_finetune*.yaml`, `configs/ppg_stage5_finetune*.yaml`, and `tests/test_stage_task_remapping.py` were excluded from branch-canonical indexing until they become tracked
+- untracked files `configs/ppg_stage3_finetune*.yaml`, `configs/ppg_stage4_finetune*.yaml`, `configs/ppg_stage5_finetune*.yaml`, and `tests/runtime/test_stage_task_remapping.py` were excluded from branch-canonical indexing until they become tracked
 - without a populated `main` handbook, document-to-document stale-entry comparison is not possible
 - variant-package parity versus other branches is `unknown`

@@ -15,12 +15,12 @@
 - `sleep2vec2/visualization/assets/`: local copy of tracked visualization font assets used by the copied plotting theme.
 - `configs/sleep2vec2/`: duplicated YAML recipe tree.
 - `sleep2vec2/backbones/roformer/`: copied standalone RoFormer implementation from `/Users/zrjin/git/vendor/roformer_standalone`.
-- `tests/test_sleep2vec2_namespace.py`, `tests/test_sleep2vec2_roformer_parity.py`, and `tests/test_sleep2vec2_kaldi_backend.py`: isolation, forward-parity, and Kaldi backend coverage.
+- `tests/variants/test_sleep2vec2_namespace.py`, `tests/variants/test_sleep2vec2_roformer_parity.py`, and `tests/variants/test_sleep2vec2_kaldi_backend.py`: isolation, forward-parity, and Kaldi backend coverage.
 - `sleep2expert/`: standalone mirror of `sleep2vec2` with imports rewritten to the `sleep2expert` namespace.
 - `sleep2expert/data/kaldi_io.py`, `sleep2expert/data/kaldi_psg_dataset.py`, and `sleep2expert/preprocess/convert_npz_to_kaldi.py`: package-local Kaldi backend mirror for `kaldi_native_io` storage.
 - `configs/sleep2expert/`: duplicated YAML recipe tree.
-- `tests/test_sleep2expert_namespace.py` and `tests/test_sleep2expert_roformer_parity.py`: isolation and parity coverage against `sleep2vec2`.
-- `tests/test_sleep2expert_kaldi_backend.py`: package-local config, routing, dataset, and converter coverage for the Kaldi backend.
+- `tests/variants/test_sleep2expert_namespace.py` and `tests/variants/test_sleep2expert_roformer_parity.py`: isolation and parity coverage against `sleep2vec2`.
+- `tests/variants/test_sleep2expert_kaldi_backend.py`: package-local config, routing, dataset, and converter coverage for the Kaldi backend.
 
 ## Behavioral Contract
 

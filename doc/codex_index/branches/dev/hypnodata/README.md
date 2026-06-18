@@ -27,7 +27,7 @@ Indexed in detail:
 
 - `hypnodata/`
 - `configs/hypnodata/`
-- `tests/test_hypnodata_*.py`
+- `tests/hypnodata/test_hypnodata_*.py`
 - `tests/hypnodata_test_helpers.py`
 
 This scoped index does not rebuild the full `main` manual for model training,

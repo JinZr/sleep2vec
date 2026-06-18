@@ -50,6 +50,6 @@ The branch also contains directories named `sleep2vec2/`, `sleep2vec_moe/`, and 
 
 - `doc/codex_index/branches/main/` exists but is empty on this checkout, so there is no usable main-branch handbook baseline.
 - `DELTA_FROM_MAIN.md` is derived from `git diff main...HEAD`, not from existing main index files.
-- This refresh incorporates tracked working-tree edits in `sleep2vec/common.py`, `sleep2vec/utils.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `tests/test_common_finetune_apply.py`, and `tests/test_metadata_task_validation.py`.
+- This refresh incorporates tracked working-tree edits in `sleep2vec/common.py`, `sleep2vec/utils.py`, `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `tests/config/test_common_finetune_apply.py`, and `tests/config/test_metadata_task_validation.py`.
 - Untracked files under `configs/` and `tests/` were excluded because this handbook indexes tracked code only.
 - When details could not be confirmed cheaply from code, this handbook says `unknown` instead of guessing.

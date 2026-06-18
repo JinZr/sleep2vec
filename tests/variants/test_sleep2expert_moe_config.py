@@ -9,7 +9,7 @@ import yaml
 
 from sleep2expert.config import FinetuneMoeTuningConfig, MoeConfig, load_finetune_config, load_pretrain_config
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _base_payload() -> dict[str, t.Any]:

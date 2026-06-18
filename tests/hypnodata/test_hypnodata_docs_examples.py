@@ -4,7 +4,7 @@ from hypnodata.config import load_config
 
 
 def test_hypnodata_toy_config_and_readme_document_boundaries():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
 
     config = load_config(root / "configs" / "hypnodata" / "toy_edf_npz.yaml")
     readme = (root / "configs" / "hypnodata" / "README.md").read_text()

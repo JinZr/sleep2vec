@@ -9,7 +9,7 @@ On commit `dbe6a5e4cf40811138a35870b011a2a6d1bf8b83`, tracked variant coverage i
 
 ## `sleep2vec2` Standalone Mirror
 
-- Files: `sleep2vec2/`, `configs/sleep2vec2/`, `tests/test_sleep2vec2_namespace.py`, `tests/test_sleep2vec2_roformer_parity.py`, `tests/test_sleep2vec2_kaldi_backend.py`
+- Files: `sleep2vec2/`, `configs/sleep2vec2/`, `tests/variants/test_sleep2vec2_namespace.py`, `tests/variants/test_sleep2vec2_roformer_parity.py`, `tests/variants/test_sleep2vec2_kaldi_backend.py`
 - Purpose and contract: keep a package-local dense recipe mirror whose runtime, data, preprocessing, visualization, LoRA/DoRA adapter behavior, and config imports stay under `sleep2vec2`.
 - Important inputs/outputs: same pretrain/adapt/finetune/infer contracts as root `sleep2vec`, including package-local finetune imbalance loss/sampler schema, LoRA rank/alpha/dropout/target/use_dora settings, distributed-aware weighted metadata sampler, automatic inference prediction export, inference W&B artifacts, downstream specificity metrics, plus package-local Kaldi conversion and dataset routing.
 - Side effects: runtime side effects mirror root entrypoints, including inference artifact writes and optional W&B artifact logging, but W&B projects use `sleep2vec2-*` names.
@@ -18,7 +18,7 @@ On commit `dbe6a5e4cf40811138a35870b011a2a6d1bf8b83`, tracked variant coverage i
 
 ## `sleep2expert` Standalone MoE Mirror
 
-- Files: `sleep2expert/`, `configs/sleep2expert/`, `tests/test_sleep2expert_namespace.py`, `tests/test_sleep2expert_roformer_parity.py`, `tests/test_sleep2expert_moe_*.py`, `tests/test_sleep2expert_routing_analysis.py`
+- Files: `sleep2expert/`, `configs/sleep2expert/`, `tests/variants/test_sleep2expert_namespace.py`, `tests/variants/test_sleep2expert_roformer_parity.py`, `tests/variants/test_sleep2expert_moe_*.py`, `tests/variants/test_sleep2expert_routing_analysis.py`
 - Purpose and contract: keep a package-local mirror that adds MoE RoFormer layers, routing aux capture, pretrain MoE regularization, finetune MoE tuning, LoRA/DoRA adapter behavior, dense-to-MoE checkpoint expansion, and routing export.
 - Important inputs/outputs: same dense runtime inputs as root for non-MoE recipes, including package-local finetune imbalance loss/sampler schema, LoRA rank/alpha/dropout/target/use_dora settings, distributed-aware weighted metadata sampler, automatic inference prediction export, inference W&B artifacts, downstream specificity metrics, and standalone RoFormer `model.backbone.attention_backend`; MoE recipes add `model.backbone.moe`, optional `finetune.moe_tuning` blocks, and optional expert LoRA targets `dense_in` / `dense_out`.
 - Side effects: runtime side effects mirror root entrypoints, W&B projects use `sleep2expert-*` names, and routing analysis writes CSV/PNG artifacts.
