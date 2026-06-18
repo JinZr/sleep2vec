@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-18
+
+- Updated the `Sleep2vecPretrainModel` constructor guidance to reflect config-only construction and removal of the legacy manual channel/dimension path.
+- Updated reuse and module-map notes so future changes do not reintroduce manual backbone-constructor branches.
+
 ## 2026-06-14
 
 - Repaired the `main` branch index for commit `65a86e37a1d1da2ed7cb02ec21d9457504dcfa0a`.

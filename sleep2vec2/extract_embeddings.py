@@ -396,15 +396,7 @@ def _build_backbone(
     config_kind: str,
 ) -> Sleep2vecPretrainModel:
     backbone = Sleep2vecPretrainModel(
-        channel_feature_dim=None,
-        transformer_hidden_size=model_cfg.backbone.hidden_size,
-        transformer_num_hidden_layers=model_cfg.backbone.num_hidden_layers,
-        transformer_num_attention_heads=model_cfg.backbone.num_attention_heads,
-        channel_names=[c.name for c in model_cfg.channels],
-        projection=model_cfg.projection.enabled,
-        encoder_factory=None,
         model_config=model_cfg,
-        projection_config=model_cfg.projection,
         device=device,
     ).to(device)
     if _finetune_adapters_enabled(bundle, config_kind):

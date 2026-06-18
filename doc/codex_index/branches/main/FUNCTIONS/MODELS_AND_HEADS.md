@@ -3,13 +3,13 @@
 ## `Sleep2vecPretrainModel.__init__`
 
 - File: `sleep2vec/pretrain_model.py`
-- Signature: `Sleep2vecPretrainModel.__init__(..., model_config: ModelConfig | None = None, projection_config: ProjectionConfig | None = None)`
+- Signature: `Sleep2vecPretrainModel.__init__(model_config: ModelConfig, *, device: str = "cuda", specified_two_mods: list[str] | None = None)`
 - Purpose and contract: build the shared backbone module, tokenizer mapping, CLS strategy, mask embeddings, hidden projection layer, and optional projection head.
-- Important inputs/outputs: either a full `ModelConfig` or legacy manual dimensions/channel names; produces a ready-to-run module.
+- Important inputs/outputs: a full `ModelConfig` in; produces a ready-to-run module. `specified_two_mods` only fixes pretraining channel selection for tests or controlled runs.
 - Side effects: instantiates many submodules and logs parameter counts.
-- Key callers/callees: callers are `Sleep2vecPretraining`, `Sleep2vecFinetuning`, and adaptation-related code; callees include `build_tokenizers_and_dim`, `build_encoder_factory`, `build_cls_embedding`, and `build_projection`.
+- Key callers/callees: callers are `Sleep2vecPretraining`, `Sleep2vecFinetuning`, embedding extraction, and tests; callees include `build_tokenizers_and_dim`, `build_encoder_factory`, `build_cls_embedding`, and `build_projection`.
 - Reuse guidance: this is the canonical backbone construction path.
-- Duplication risk notes: when `model_config is None`, a legacy hardcoded tokenizer map is used; do not extend that path for new work.
+- Duplication risk notes: construction is config-only; do not reintroduce manual channel, hidden-size, projection, or encoder-factory constructor branches.
 
 ## `Sleep2vecPretrainModel._token_embeddings_to_hidden`
 

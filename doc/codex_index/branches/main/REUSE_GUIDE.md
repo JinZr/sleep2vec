@@ -153,7 +153,7 @@ This page answers the practical question: when you need to add or change behavio
 
 ## Major Duplication Risks
 
-1. `Sleep2vecPretrainModel` still contains a legacy non-config code path with hardcoded tokenizer wiring. Treat the config-backed path as authoritative.
+1. `Sleep2vecPretrainModel` construction is config-only. Do not reintroduce manual channel, hidden-size, projection, or encoder-factory constructor branches.
 2. `_contrastive_accuracy` is still duplicated in both shipped contrastive loss modules.
 3. Warmup-plus-cosine optimizer scheduling now exists in pretrain, finetune, and adaptation. Avoid creating a fourth copy unless the schedule contract truly changes.
 4. Available-channel resolution is duplicated between `sleep2vec.utils`, `data.utils`, sampler initialization, and `DefaultDataset` internals. Avoid creating another interpretation.

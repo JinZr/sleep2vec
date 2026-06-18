@@ -5,138 +5,28 @@ import typing as t
 import torch
 import torch.nn as nn
 
-from sleep2vec2.backbones.encoder_factory import TransformerEncoderFactory
 from sleep2vec2.builders import build_encoder_factory, build_projection, build_tokenizers_and_dim
 from sleep2vec2.cls import build_cls_embedding
-from sleep2vec2.config import ModelConfig, ProjectionConfig
-from sleep2vec2.modules.tokenizers import LinearTokenizer, SundialTokenizer
+from sleep2vec2.config import ModelConfig
 
 
 class Sleep2vecPretrainModel(nn.Module):
     def __init__(
         self,
-        channel_feature_dim: int | None = None,
-        transformer_hidden_size: int | None = None,
-        channel_names: t.List[str] | None = None,
-        projection: bool | None = None,
-        transformer_num_hidden_layers: int = 12,
-        transformer_num_attention_heads: int = 16,
-        encoder_factory: TransformerEncoderFactory | None = None,
-        encoder_config_overrides: t.Optional[t.Dict[t.Dict, t.Any]] = None,
-        encoder_forward: t.Optional[t.Callable[[nn.Module, torch.Tensor, torch.Tensor], torch.Tensor]] = None,
-        specified_two_mods: t.List[str] | None = None,
-        two_layer_embedding: bool = False,
+        model_config: ModelConfig,
+        *,
         device: str = "cuda",
-        model_config: ModelConfig | None = None,
-        projection_config: ProjectionConfig | None = None,
+        specified_two_mods: list[str] | None = None,
     ):
         super().__init__()
         self.specified_two_mods = specified_two_mods
         self.device = device
-        self.high_sr, self.low_sr = 3840, 120
-        self._custom_encoder_forward = encoder_forward
-        overrides = dict(encoder_config_overrides or {})
-        self.cls_cfg = None
+        self.channel_names = [c.name for c in model_config.channels]
+        tokenizer_mapping, channel_feature_dim = build_tokenizers_and_dim(model_config, device=self.device)
+        self.tokenizer_mapping = nn.ModuleDict(tokenizer_mapping)
+        self.cls_cfg = model_config.cls
 
-        if model_config is not None:
-            self.channel_names = [c.name for c in model_config.channels]
-            tokenizer_mapping, channel_feature_dim = build_tokenizers_and_dim(model_config, device=self.device)
-            self.tokenizer_mapping = nn.ModuleDict(tokenizer_mapping)
-            projection_config = projection_config or model_config.projection
-            projection = projection_config.enabled
-            encoder_factory = encoder_factory or build_encoder_factory(model_config.backbone)
-            transformer_hidden_size = transformer_hidden_size or model_config.backbone.hidden_size
-            self.cls_cfg = model_config.cls
-        else:
-            if channel_feature_dim is None or channel_names is None:
-                raise ValueError("channel_feature_dim and channel_names are required when model_config is absent.")
-
-            self.channel_names = channel_names
-            tokenizer_type = SundialTokenizer if two_layer_embedding else LinearTokenizer
-
-            self.high_tokenizer_1 = tokenizer_type(
-                in_feature_dim=self.high_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-            self.high_tokenizer_2 = tokenizer_type(
-                in_feature_dim=self.high_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-            self.high_tokenizer_3 = tokenizer_type(
-                in_feature_dim=self.high_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-            self.high_tokenizer_4 = tokenizer_type(
-                in_feature_dim=self.high_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-            self.low_tokenizer_1 = tokenizer_type(
-                in_feature_dim=self.low_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-            self.low_tokenizer_2 = tokenizer_type(
-                in_feature_dim=self.low_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-            self.low_tokenizer_3 = tokenizer_type(
-                in_feature_dim=self.low_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-            self.low_tokenizer_4 = tokenizer_type(
-                in_feature_dim=self.low_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-            self.low_tokenizer_5 = tokenizer_type(
-                in_feature_dim=self.low_sr,
-                out_feature_dim=channel_feature_dim,
-                device=self.device,
-            )
-
-            self.tokenizer_mapping = {
-                "eeg_original": self.high_tokenizer_1,
-                "eog_original": self.high_tokenizer_2,
-                "emg_original": self.high_tokenizer_3,
-                "ecg_original": self.high_tokenizer_4,
-                "heartbeat": self.low_tokenizer_1,
-                "spo2": self.low_tokenizer_2,
-                "breath": self.low_tokenizer_3,
-                "resp_original": self.low_tokenizer_4,
-                "resp_nasal_original": self.low_tokenizer_5,
-            }
-            self.tokenizer_mapping = nn.ModuleDict(self.tokenizer_mapping)
-
-            if projection_config is None:
-                projection_config = ProjectionConfig(
-                    name="simclr",
-                    enabled=bool(projection) if projection is not None else True,
-                    hidden_dim=transformer_hidden_size,
-                    out_dim=128,
-                )
-
-            if encoder_factory is None:
-                vocab_size = overrides.pop("vocab_size", 1)
-                encoder_factory = TransformerEncoderFactory.roformer(
-                    hidden_size=transformer_hidden_size,
-                    num_hidden_layers=transformer_num_hidden_layers,
-                    num_attention_heads=transformer_num_attention_heads,
-                    vocab_size=vocab_size,
-                    **overrides,
-                )
-
-        if transformer_hidden_size is None:
-            raise ValueError("transformer_hidden_size must be provided or inferred.")
-
-        if encoder_factory is None:
-            raise ValueError("encoder_factory could not be built.")
-
+        encoder_factory = build_encoder_factory(model_config.backbone)
         self.encoder_factory = encoder_factory
         self.encoder, inferred_hidden_size = encoder_factory.build()
         self.transformer_hidden_size = inferred_hidden_size
@@ -155,7 +45,7 @@ class Sleep2vecPretrainModel(nn.Module):
         self.embedding_projection = nn.Linear(channel_feature_dim, self.transformer_hidden_size)
 
         self.proj_head = build_projection(
-            (projection_config if projection_config is not None else ProjectionConfig(enabled=projection or False)),
+            model_config.projection,
             in_dim=self.transformer_hidden_size,
         )
         self.projection = bool(self.proj_head)
@@ -268,11 +158,6 @@ class Sleep2vecPretrainModel(nn.Module):
 
     def _run_encoder(self, token_embeddings, attention_mask, *, return_hidden_states: bool = False):
         """Routes embeddings through the selected encoder."""
-        if self._custom_encoder_forward is not None:
-            if return_hidden_states:
-                raise ValueError("Custom encoder forward does not support hidden states.")
-            return self._custom_encoder_forward(self.encoder, token_embeddings, attention_mask)
-
         try:
             encoder_output = self.encoder(
                 inputs_embeds=token_embeddings,
@@ -293,8 +178,7 @@ class Sleep2vecPretrainModel(nn.Module):
                 return output[0]
             raise ValueError(
                 f"Encoder '{self.encoder_name}' returned unsupported output type "
-                f"{type(output)}. Provide encoder_forward to customize the "
-                "forward pass."
+                f"{type(output)}."
             )
 
         last_hidden = _extract_last_hidden(encoder_output)

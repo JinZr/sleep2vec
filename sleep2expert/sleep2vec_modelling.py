@@ -21,15 +21,7 @@ class Sleep2vecPretraining(pl.LightningModule):
         self.averaging_config = averaging_config
         self.loss_fn = self._build_loss()
         self.model = Sleep2vecPretrainModel(
-            channel_feature_dim=None,
-            transformer_hidden_size=model_config.backbone.hidden_size,
-            transformer_num_hidden_layers=model_config.backbone.num_hidden_layers,
-            transformer_num_attention_heads=model_config.backbone.num_attention_heads,
-            channel_names=[c.name for c in model_config.channels],
-            projection=True,
-            encoder_factory=None,
             model_config=model_config,
-            projection_config=model_config.projection,
         )
 
         # Optional tensor diagnostics (borrowed from icefall)
