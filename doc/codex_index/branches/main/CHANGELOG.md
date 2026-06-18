@@ -6,6 +6,7 @@
 - Updated reuse and module-map notes so future changes do not reintroduce manual backbone-constructor branches.
 - Updated loss reuse guidance after moving contrastive accuracy into package-local `losses/utils.py` helpers.
 - Updated runtime reuse guidance after moving warmup-plus-cosine LR scheduling into package-local `schedulers.py` helpers.
+- Updated dataset reuse guidance after moving batch channel/source narrowing into `DefaultDataset._select_batch_channels`.
 
 ## 2026-06-14
 

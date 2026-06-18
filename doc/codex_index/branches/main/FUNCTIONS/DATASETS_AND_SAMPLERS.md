@@ -90,6 +90,17 @@
 - Reuse guidance: override these hooks when adding a storage backend while preserving the canonical batch contract.
 - Duplication risk notes: do not fork `DefaultDataset.dataloader` just to change where tokens are read from.
 
+## `DefaultDataset._select_batch_channels`
+
+- File: `data/default_dataset.py`
+- Signature: `_select_batch_channels(self, resolved_indices: list[SampleIndex], selected_pair: tuple[str, str] | None) -> tuple[list[str], list[SampleIndex]]`
+- Purpose and contract: choose the channels to load for one resolved batch and the source records that can support them. It owns missing-channel filtering, pair-first validation, `pair_selector` use, random two-channel selection, generative EEG-first ordering, and the best-pair fallback.
+- Important inputs/outputs: resolved `SampleIndex` records plus an optional scheduled pair in; selected channel names and selected source records out.
+- Side effects: may call `_get_available_channels_for_src`; does not load tokens, tensorize metadata, pad, or choose samplers.
+- Key callers/callees: caller is the nested collate function inside `DefaultDataset.dataloader`; callee is `_get_available_channels_for_src`.
+- Reuse guidance: keep batch-time channel/source narrowing here rather than adding another branch inside collate or storage backends.
+- Duplication risk notes: pair-first, missing-channel, and generative channel-choice semantics should not be reimplemented outside this helper.
+
 ## `DefaultDataset.filter_with_metadata`
 
 - File: `data/default_dataset.py`
@@ -116,10 +127,10 @@
 
 - File: `data/default_dataset.py`
 - Signature: `DefaultDataset.dataloader(self, device: str = "cpu") -> DataLoader`
-- Purpose and contract: canonical runtime collate path. It decides channel choice, reads NPZ slices, tokenizes, builds masks, pads sequences, constructs `token_start`, metadata tensors, `w/h`, and selects the correct sampler, including optional binary-label weighted random sampling for train-only downstream imbalance runs.
+- Purpose and contract: canonical runtime collate path. It delegates batch channel/source selection to `_select_batch_channels`, reads NPZ slices, tokenizes, builds masks, pads sequences, constructs `token_start`, metadata tensors, `w/h`, and selects the correct sampler, including optional binary-label weighted random sampling for train-only downstream imbalance runs.
 - Important inputs/outputs: dataset state in; fully configured `DataLoader` out.
 - Side effects: nested `collate_fn` performs NPZ I/O on every batch, may select channels dynamically, and backfills built-in AHI metadata into sample-level metadata.
-- Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `load_npz`, `load_builtin_ahi_metadata`, `process_metadata`, `build_w_h_age_sex_center`, `extract_binary_labels`, `make_weighted_sampler_from_labels`, `WeightedRandomDistributedSampler`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
+- Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `_select_batch_channels`, `load_npz`, `load_builtin_ahi_metadata`, `process_metadata`, `build_w_h_age_sex_center`, `extract_binary_labels`, `make_weighted_sampler_from_labels`, `WeightedRandomDistributedSampler`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
 - Reuse guidance: this is the canonical place to change batch structure.
 - Duplication risk notes: avoid adding parallel collate implementations elsewhere in the repo.
 

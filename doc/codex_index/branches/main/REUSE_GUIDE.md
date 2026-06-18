@@ -28,6 +28,7 @@ This page answers the practical question: when you need to add or change behavio
 | Sample validation | `data.utils.filter_valid_sample_indices` | Produces `payload["available_channels"]`, validates built-in AHI samples, and drops broken samples early | Custom preset-building loops |
 | Built-in AHI metadata loading | `data.utils.load_builtin_ahi_metadata` | Single contract for `ah_event`, scalar `ahi`, and scalar `tst` | Custom scalar parsing in dataset or metrics code |
 | Runtime batch assembly | `DefaultDataset.dataloader` | Single source for collate-time NPZ reads, tokenization, metadata packing, `token_start`, `w/h`, and sampler choice | New collate functions outside `data/default_dataset.py` |
+| Batch channel/source selection | `DefaultDataset._select_batch_channels` | Owns missing-channel filtering, pair-first validation, random/generative channel choice, and best-pair fallback for one resolved batch | Channel narrowing branches inside loaders, storage backends, or entrypoints |
 | Runtime token storage hooks | `DefaultDataset._get_available_channels_for_src` and `_load_tokens_for_src` | Extension points that let `KaldiPSGDataset` reuse collate semantics without NPZ reads | Separate Kaldi collate functions |
 | Kaldi matrix reads | `data.kaldi_io.KaldiReaderPool` | Owns sorted `scp:` reader construction, process-local reader reopening, and shape checks | Direct `kaldi_native_io` readers in datasets |
 | Kaldi runtime dataset | `data.kaldi_psg_dataset.KaldiPSGDataset` | Reuses `DefaultDataset` batch contract from `manifest.json` format v2 and split CSVs | New dataset classes that bypass `SampleIndex` payload semantics |
@@ -156,7 +157,7 @@ This page answers the practical question: when you need to add or change behavio
 1. `Sleep2vecPretrainModel` construction is config-only. Do not reintroduce manual channel, hidden-size, projection, or encoder-factory constructor branches.
 2. Contrastive loss accuracy lives in package-local `losses/utils.py`; keep variant namespaces local rather than importing across packages.
 3. Warmup-plus-cosine optimizer scheduling lives in package-local `schedulers.py`; keep optimizer parameter grouping in pretrain, finetune, and adaptation methods.
-4. Available-channel resolution is duplicated between `sleep2vec.utils`, `data.utils`, sampler initialization, and `DefaultDataset` internals. Avoid creating another interpretation.
+4. Available-channel metadata is still produced and consumed by `sleep2vec.utils`, `data.utils`, and samplers, but batch-time channel/source narrowing belongs in `DefaultDataset._select_batch_channels`. Avoid creating another interpretation.
 5. `_mask` truthiness now matters in both split preparation and strict preset prefiltering. Keep `normalize_mask_frame` semantics aligned everywhere.
 6. AHI evaluation is split into pointwise training reduction and event-based validation/test reduction. Do not create a third metric path.
 7. Config folder names are not authoritative semantics. Inspect actual `finetune.task`, `model.cls`, and `preset_build` fields before assuming behavior from file names.
