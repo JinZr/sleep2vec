@@ -318,16 +318,62 @@ def test_survival_loss_reports_zero_events_for_all_censored_batches(module_name:
     logits = torch.tensor([[0.0, 1.0], [2.0, 3.0]], requires_grad=True)
     batch = {
         "metadata": {
+            "path": ["first.npz", "second.npz"],
+            "eid": ["first", "second"],
             "event_time": torch.tensor([[10.0, 20.0], [30.0, 40.0]]),
             "is_event": torch.zeros(2, 2),
             "has_label": torch.ones(2, 2),
-        }
+        },
+        "token_start": torch.tensor([0, 0]),
     }
 
     loss, event_count = module._compute_survival_loss(logits, batch)
 
     assert event_count == 0
     assert loss.item() == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_train_loss_aggregates_duplicate_subjects_within_batch(module_name: str, loss_module_name: str):
+    _, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    logits = torch.tensor([[0.0], [2.0], [3.0]], requires_grad=True)
+    batch = {
+        "metadata": {
+            "path": ["eid_a_night1.npz", "eid_a_night2.npz", "eid_b_night1.npz"],
+            "eid": ["a", "a", "b"],
+            "event_time": torch.tensor([[1.0], [1.0], [2.0]]),
+            "is_event": torch.tensor([[1.0], [1.0], [0.0]]),
+            "has_label": torch.ones(3, 1),
+        },
+        "token_start": torch.tensor([0, 0, 0]),
+    }
+
+    loss, event_count = module._compute_survival_loss(logits, batch)
+
+    expected = module._survival_loss(
+        torch.tensor([[1.0], [3.0]]),
+        torch.ones(2, 1),
+        torch.tensor([[1.0], [2.0]]),
+        torch.tensor([[1.0], [0.0]]),
+    )
+    raw_row_loss = module._survival_loss(
+        torch.tensor([[0.0], [2.0], [3.0]]),
+        torch.ones(3, 1),
+        torch.tensor([[1.0], [1.0], [2.0]]),
+        torch.tensor([[1.0], [1.0], [0.0]]),
+    )
+    assert event_count == 1
+    assert loss.item() == pytest.approx(float(expected))
+    assert loss.item() != pytest.approx(float(raw_row_loss))
+    loss.backward()
+    assert logits.grad is not None
 
 
 @pytest.mark.parametrize(

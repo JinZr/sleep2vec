@@ -621,6 +621,32 @@ class Sleep2vecFinetuning(pl.LightningModule):
         valid_mask = has_label > 0.5
         if not valid_mask.any():
             return None
+        token_start = batch["token_start"].to(torch.long).detach().cpu()
+        key_column = self._survival_key_column()
+        if key_column not in metadata:
+            raise ValueError(
+                f"Survival batch metadata is missing key column {key_column!r}; "
+                "regenerate presets with survival sidecars."
+            )
+        # Cox labels are subject-level, so repeated nights/windows in a train batch should share one risk-set row.
+        tensors = self._aggregate_survival_records(
+            [
+                {
+                    "pred": logits,
+                    "event_time": event_time,
+                    "is_event": is_event,
+                    "has_label": has_label,
+                    "survival_key": [str(key) for key in metadata[key_column]],
+                    "path": [str(path) for path in metadata["path"]],
+                    "token_start": [int(value) for value in token_start.tolist()],
+                }
+            ]
+        )
+        logits = tensors["pred"]
+        event_time = tensors["event_time"]
+        is_event = tensors["is_event"]
+        has_label = tensors["has_label"]
+        valid_mask = has_label > 0.5
         loss = self._survival_loss(logits, has_label, event_time, is_event)
         event_count = int(((is_event > 0.5) & valid_mask).sum().item())
         return loss, event_count
@@ -663,7 +689,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         survival = getattr(self.args, "survival", None)
         key_column = getattr(survival, "key_column", None)
         if key_column in (None, ""):
-            raise ValueError("Survival eval requires finetune.survival.key_column.")
+            raise ValueError("Survival task requires finetune.survival.key_column.")
         return str(key_column)
 
     def _gather_survival_eval_records(self, records):
@@ -695,7 +721,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if stage == "test" and prediction_export_enabled(self.args):
             self.prediction_rows = self._build_survival_prediction_rows(records)
 
-        tensors = self._aggregate_survival_eval_records(records)
+        # Loss aggregation is subject-level; prediction export above intentionally remains per path.
+        tensors = self._aggregate_survival_records(records)
         device = torch.device(getattr(self.args, "device", "cpu"))
         pred = tensors["pred"].to(device)
         event_time = tensors["event_time"].to(device)
@@ -716,7 +743,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
             on_epoch=True,
         )
 
-    def _aggregate_survival_eval_records(self, records) -> dict[str, torch.Tensor]:
+    def _aggregate_survival_records(self, records) -> dict[str, torch.Tensor]:
+        # Keep one Cox row per survival key. Multiple nights/windows contribute a mean raw log-risk,
+        # while labels must remain identical because sidecars are subject-level metadata.
         grouped: dict[str, dict[str, object]] = {}
         seen: set[tuple[str, str, int]] = set()
         for record in records:
@@ -744,7 +773,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
                 for label_name, label_value in current_labels.items():
                     if not torch.allclose(item[label_name], label_value, equal_nan=True):
-                        raise ValueError(f"Survival labels differ across eval records for key {key!r}.")
+                        raise ValueError(f"Survival labels differ across records for key {key!r}.")
                 item["preds"].append(pred[idx])
 
         rows = []
