@@ -4,6 +4,7 @@
 
 - Updated the `Sleep2vecPretrainModel` constructor guidance to reflect config-only construction and removal of the legacy manual channel/dimension path.
 - Updated reuse and module-map notes so future changes do not reintroduce manual backbone-constructor branches.
+- Updated loss reuse guidance after moving contrastive accuracy into package-local `losses/utils.py` helpers.
 
 ## 2026-06-14
 

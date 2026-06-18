@@ -270,9 +270,10 @@
 
 ## Loss factory family
 
-- Files: `sleep2vec/losses/base.py`, `sleep2vec/losses/info_nce.py`, `sleep2vec/losses/weighted_info_nce.py`
+- Files: `sleep2vec/losses/base.py`, `sleep2vec/losses/info_nce.py`, `sleep2vec/losses/weighted_info_nce.py`, `sleep2vec/losses/utils.py`
 - Functions and methods:
   - `create_loss(name: str, **kwargs) -> ContrastiveLoss`
+  - `contrastive_accuracy(logits_12, logits_21, labels) -> torch.Tensor`
   - `InfoNCELoss.forward(first_hidden, second_hidden, batch) -> LossOutput`
   - `WeightedInfoNCELoss.forward(first_hidden, second_hidden, batch) -> LossOutput`
 - Purpose and contract: resolve contrastive objectives by name and compute symmetric token-level InfoNCE, optionally with weight and hardness matrices.
@@ -280,7 +281,7 @@
 - Side effects: none.
 - Key callers/callees: caller is `Sleep2vecPretraining._build_loss` and then `_contrastive_step`.
 - Reuse guidance: new contrastive objectives should register here.
-- Duplication risk notes: `_contrastive_accuracy` is duplicated between the two shipped loss modules.
+- Duplication risk notes: contrastive accuracy is centralized in package-local `losses/utils.py`; variants should keep their own local helper rather than cross-namespace imports.
 
 ## `sleep2expert.losses.moe_regularization.compute_moe_regularization`
 

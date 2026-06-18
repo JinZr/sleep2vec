@@ -154,7 +154,7 @@ This page answers the practical question: when you need to add or change behavio
 ## Major Duplication Risks
 
 1. `Sleep2vecPretrainModel` construction is config-only. Do not reintroduce manual channel, hidden-size, projection, or encoder-factory constructor branches.
-2. `_contrastive_accuracy` is still duplicated in both shipped contrastive loss modules.
+2. Contrastive loss accuracy lives in package-local `losses/utils.py`; keep variant namespaces local rather than importing across packages.
 3. Warmup-plus-cosine optimizer scheduling now exists in pretrain, finetune, and adaptation. Avoid creating a fourth copy unless the schedule contract truly changes.
 4. Available-channel resolution is duplicated between `sleep2vec.utils`, `data.utils`, sampler initialization, and `DefaultDataset` internals. Avoid creating another interpretation.
 5. `_mask` truthiness now matters in both split preparation and strict preset prefiltering. Keep `normalize_mask_frame` semantics aligned everywhere.
