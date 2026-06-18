@@ -890,6 +890,59 @@ def test_kaldi_converter_requires_survival_key_for_every_index_row(converter_mod
 
 
 @pytest.mark.parametrize(
+    "preset_module",
+    [
+        "preprocess.save_dataset_presets",
+        "sleep2vec2.preprocess.save_dataset_presets",
+        "sleep2expert.preprocess.save_dataset_presets",
+    ],
+)
+def test_survival_preset_prefilter_preserves_key_strings(preset_module: str, tmp_path: Path):
+    module = __import__(preset_module, fromlist=["_build_preset_job"])
+    config = _write_sidecars(tmp_path / "sidecars", row_keys=("001", "NA"))
+    first_npz = tmp_path / "first.npz"
+    second_npz = tmp_path / "second.npz"
+    np.savez(first_npz, ppg=np.asarray([0.0, 1.0], dtype=np.float32))
+    np.savez(second_npz, ppg=np.asarray([2.0, 3.0], dtype=np.float32))
+    index = tmp_path / "index.csv"
+    index.write_text(
+        "\n".join(
+            [
+                "path,split,duration,eid,ppg_mask",
+                f"{first_npz},train,60,001,1",
+                f"{second_npz},train,60,NA,1",
+            ]
+        )
+        + "\n"
+    )
+    output_path = tmp_path / "preset.pkl"
+
+    module._build_preset_job(
+        output_path=output_path,
+        index_paths=[str(index)],
+        channel_names=["ppg"],
+        channel_input_dims={"ppg": 1},
+        split="train",
+        meta_data_name=None,
+        n_tokens=2,
+        stride_tokens=0,
+        mask_rate=0.0,
+        allow_missing_channels=False,
+        min_channels=1,
+        batch_size=1,
+        shuffle=False,
+        survival_label_config=config,
+        survival_output_dim=2,
+        filter_max_workers=None,
+    )
+
+    with output_path.open("rb") as file_obj:
+        samples = pickle.load(file_obj)
+
+    assert [sample.metadata["eid"] for sample in samples] == ["001", "NA"]
+
+
+@pytest.mark.parametrize(
     ("dataset_module", "default_dataset_module"),
     [
         ("data.psg_pretrain_dataset", "data.default_dataset"),

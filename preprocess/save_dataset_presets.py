@@ -390,9 +390,13 @@ def _resolve_single_index_path(index_paths: list[str]) -> Path:
     return Path(index_paths[0]).expanduser()
 
 
-def _load_index_df(index_paths: list[str]) -> pd.DataFrame:
+def _load_index_df(index_paths: list[str], survival_key_column: str | None = None) -> pd.DataFrame:
     path = _resolve_single_index_path(index_paths)
-    df = pd.read_csv(path, low_memory=False)
+    key_column = None if survival_key_column in (None, "") else str(survival_key_column)
+    read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+    if key_column is not None:
+        read_csv_kwargs["converters"] = {key_column: str}
+    df = pd.read_csv(path, **read_csv_kwargs)
     if "source" not in df.columns:
         df["source"] = str(path)
     else:
@@ -449,7 +453,10 @@ def _build_preset_job(
     index = [str(_resolve_single_index_path(index_paths))]
     filtered_index_path: str | None = None
     if not allow_missing_channels:
-        filtered_index = _filter_index_df_for_required_channels(_load_index_df(index_paths), channel_names)
+        survival_key_column = getattr(survival_label_config, "key_column", None)
+        filtered_index = _filter_index_df_for_required_channels(
+            _load_index_df(index_paths, survival_key_column=survival_key_column), channel_names
+        )
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".csv",
