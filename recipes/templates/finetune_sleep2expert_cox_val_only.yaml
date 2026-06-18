@@ -3,7 +3,7 @@ task: finetune
 variant: sleep2expert
 
 inputs:
-  config: configs/sleep2expert/heartbeat_breath_cox_finetune_large.yaml
+  config: configs/sleep2expert/moe/heartbeat_breath_cox_finetune.yaml
   label_name: incident_cox
   pretrained_backbone_path: null
 

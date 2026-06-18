@@ -3,7 +3,7 @@ task: infer
 variant: sleep2expert
 
 inputs:
-  config: configs/sleep2expert/heartbeat_breath_ahi_finetune_large.yaml
+  config: configs/sleep2expert/moe/heartbeat_breath_ahi_finetune.yaml
   label_name: ahi
   ckpt_path: ASK_USER
   eval_split: test
