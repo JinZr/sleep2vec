@@ -218,12 +218,12 @@
 ## `SequentialPairEvalBatchSampler`
 
 - File: `data/samplers.py`
-- Signature: `SequentialPairEvalBatchSampler(data: Sequence[Any], *, channel_names: Sequence[str], batch_size: int, min_channels: int = 2)`
-- Purpose and contract: build validation/test batches that iterate feasible modality pairs deterministically while still carrying the scheduled pair into `DefaultDataset.__getitem__`.
-- Important inputs/outputs: dataset records and channel list in; batches of `(index, pair)` tuples out.
+- Signature: `SequentialPairEvalBatchSampler(sampler: Sequence[Any] | Sampler[int], *, channel_names: Sequence[str] | None = None, batch_size: int, min_channels: int = 2, drop_last: bool = False)`
+- Purpose and contract: PyTorch `BatchSampler` for validation/test batches that iterate feasible modality pairs deterministically while still carrying the scheduled pair into `DefaultDataset.__getitem__`; supports Lightning reconstruction with an injected distributed sampler and shards/pads at the pair-batch level so DDP ranks run equal validation steps.
+- Important inputs/outputs: dataset records or a dataset-backed sampler plus channel/min-channel context in; batches of `(index, pair)` tuples out.
 - Side effects: none beyond iterator state.
 - Key callers/callees: caller is `sleep2vec.utils.get_pretrain_dataloader`.
-- Reuse guidance: use this sampler for pair-aware evaluation rather than building one loader object per pair.
+- Reuse guidance: use this sampler for pair-aware evaluation rather than building one loader object per pair; keep it `BatchSampler`-compatible so Lightning can shard ordinary validation loaders under DDP.
 - Duplication risk notes: pretrain validation now depends on this sampler instead of separate per-pair loaders.
 
 ## `sleep2vec.utils.get_pretrain_dataloader`

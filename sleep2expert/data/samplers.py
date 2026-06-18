@@ -28,7 +28,7 @@ import random
 import typing as t
 
 import torch
-from torch.utils.data import Sampler
+from torch.utils.data import BatchSampler, Sampler
 from torch.utils.data.distributed import DistributedSampler
 
 from sleep2expert.distributed import get_rank_world_size
@@ -465,40 +465,139 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
         return self._track_unique_sample_counts
 
 
-class SequentialPairEvalBatchSampler(Sampler[list[tuple[int, Pair]]]):
+class SequentialPairEvalBatchSampler(BatchSampler):
     handles_distributed_sharding = False
 
     def __init__(
         self,
-        data: t.Sequence[t.Any],
+        sampler: t.Sequence[t.Any] | Sampler[int],
         *,
-        channel_names: t.Sequence[str],
+        channel_names: t.Sequence[str] | None = None,
         batch_size: int,
         min_channels: int = 2,
+        drop_last: bool = False,
     ) -> None:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        dataset = getattr(sampler, "dataset", None)
+        if dataset is None:
+            resolved_data = sampler
+            index_sampler = range(len(resolved_data))
+        else:
+            resolved_data = getattr(dataset, "data", None)
+            if resolved_data is None:
+                raise ValueError("Injected sampler dataset must expose a 'data' attribute.")
+            index_sampler = sampler
+
+        if channel_names is None:
+            channel_names = getattr(dataset, "channel_names", None) if dataset is not None else None
+        if channel_names is None:
+            raise ValueError("channel_names must be provided when source is not a dataset sampler.")
+
+        if dataset is not None and min_channels == 2:
+            min_channels = int(getattr(dataset, "min_channels", min_channels))
+        else:
+            min_channels = int(min_channels)
         if min_channels < 2:
             raise ValueError(f"min_channels must be >= 2, got {min_channels}")
         if len(channel_names) < 2:
             raise ValueError(f"Need at least 2 channels to build pairs, got {len(channel_names)}")
 
-        self._batch_size = int(batch_size)
+        super().__init__(index_sampler, int(batch_size), bool(drop_last))
+        if isinstance(index_sampler, DistributedSampler):
+            self._num_replicas = int(index_sampler.num_replicas)
+            self._rank = int(index_sampler.rank)
+            self._distributed_drop_last = bool(index_sampler.drop_last)
+        else:
+            self._num_replicas = 1
+            self._rank = 0
+            self._distributed_drop_last = False
         self._pairs, self._pair_to_indices, _ = _build_pair_index_pools(
-            data,
+            resolved_data,
             channel_names=channel_names,
             min_channels=int(min_channels),
         )
+        self._pair_to_index_sets = {pair: set(indices) for pair, indices in self._pair_to_indices.items()}
 
     def __len__(self) -> int:
-        return sum(math.ceil(len(indices) / self._batch_size) for indices in self._pair_to_indices.values())
+        if self._num_replicas > 1:
+            # Keep all ranks at the same number of validation steps.
+            total_batches = self._distributed_total_batches(self._global_batch_count())
+            return total_batches // self._num_replicas
+
+        pair_batches = 0
+        active_indices = list(self.sampler)
+        for pair in self._pairs:
+            pair_indices = self._pair_to_index_sets[pair]
+            pair_size = sum(1 for idx in active_indices if int(idx) in pair_indices)
+            if self.drop_last:
+                pair_batches += pair_size // self.batch_size
+            else:
+                pair_batches += math.ceil(pair_size / self.batch_size)
+        return pair_batches
 
     def __iter__(self):
+        if self._num_replicas > 1:
+            # Shard global pair-batches, not local sample indices; otherwise
+            # heterogeneous channel availability can leave ranks with uneven steps.
+            yield from self._iter_distributed_pair_batches()
+            return
+
+        active_indices = [int(idx) for idx in self.sampler]
+        for pair in self._pairs:
+            pair_indices = self._pair_to_index_sets[pair]
+            indices = [idx for idx in active_indices if idx in pair_indices]
+            for start in range(0, len(indices), self.batch_size):
+                batch = indices[start : start + self.batch_size]
+                if self.drop_last and len(batch) < self.batch_size:
+                    continue
+                yield [(idx, pair) for idx in batch]
+
+    def _global_batch_count(self) -> int:
+        total = 0
+        for indices in self._pair_to_indices.values():
+            if self.drop_last:
+                total += len(indices) // self.batch_size
+            else:
+                total += math.ceil(len(indices) / self.batch_size)
+        return total
+
+    def _distributed_total_batches(self, global_batches: int) -> int:
+        if self._distributed_drop_last:
+            return (global_batches // self._num_replicas) * self._num_replicas
+        return math.ceil(global_batches / self._num_replicas) * self._num_replicas
+
+    def _iter_pair_batches(self):
         for pair in self._pairs:
             indices = self._pair_to_indices[pair]
-            for start in range(0, len(indices), self._batch_size):
-                batch = [int(idx) for idx in indices[start : start + self._batch_size]]
+            for start in range(0, len(indices), self.batch_size):
+                batch = [int(idx) for idx in indices[start : start + self.batch_size]]
+                if self.drop_last and len(batch) < self.batch_size:
+                    continue
                 yield [(idx, pair) for idx in batch]
+
+    def _iter_distributed_pair_batches(self):
+        global_batches = self._global_batch_count()
+        total_batches = self._distributed_total_batches(global_batches)
+        padding_size = max(0, total_batches - global_batches)
+        padding_batches = []
+
+        for global_batch_idx, batch in enumerate(self._iter_pair_batches()):
+            if global_batch_idx >= total_batches:
+                return
+            # Mirror DistributedSampler padding: repeat early global batches so
+            # every rank enters the same number of sync_dist validation collectives.
+            if len(padding_batches) < padding_size:
+                padding_batches.append(batch)
+            if global_batch_idx % self._num_replicas == self._rank:
+                yield batch
+
+        if not padding_batches:
+            return
+        for offset in range(padding_size):
+            global_batch_idx = global_batches + offset
+            if global_batch_idx % self._num_replicas == self._rank:
+                yield padding_batches[offset % len(padding_batches)]
 
     @property
     def pairs(self) -> list[Pair]:
