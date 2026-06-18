@@ -112,7 +112,7 @@ def test_sleep2expert_configs_parse_with_sleep2expert_loaders():
     config_root = REPO_ROOT / "configs" / "sleep2expert"
     config_paths = sorted(config_root.rglob("*.yaml"))
 
-    assert (config_root / "sleep2expert_dense_pretrain.yaml") in config_paths
+    assert (config_root / "moe" / "sleep2expert_phase_moe_pretrain.yaml") in config_paths
 
     for path in config_paths:
         data = yaml.safe_load(path.read_text())
@@ -150,7 +150,7 @@ def test_sleep2expert_finetune_configs_disable_lora():
     [["query", "key", "value"], ["query", "dense_in", "dense_out"]],
 )
 def test_sleep2expert_finetune_config_accepts_lora_flags(tmp_path: Path, target_modules: list[str]):
-    source = REPO_ROOT / "configs" / "sleep2expert" / "heartbeat_breath_ahi_finetune_large.yaml"
+    source = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "heartbeat_breath_ahi_finetune.yaml"
     data = yaml.safe_load(source.read_text())
     payload = deepcopy(data)
     payload["finetune"]["lora"].update(
@@ -182,7 +182,7 @@ def test_sleep2expert_finetune_config_accepts_lora_flags(tmp_path: Path, target_
 
 @pytest.mark.parametrize("target_modules", [["router"], ["moe_ffn.router"], ["query", "router"]])
 def test_sleep2expert_finetune_config_rejects_router_lora_targets(tmp_path: Path, target_modules: list[str]):
-    source = REPO_ROOT / "configs" / "sleep2expert" / "heartbeat_breath_ahi_finetune_large.yaml"
+    source = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "heartbeat_breath_ahi_finetune.yaml"
     data = yaml.safe_load(source.read_text())
     payload = deepcopy(data)
     payload["finetune"]["lora"]["target_modules"] = target_modules
