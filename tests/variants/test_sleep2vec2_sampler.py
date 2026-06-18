@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 from torch.utils.data import BatchSampler
@@ -64,6 +65,11 @@ def test_sleep2vec2_pair_eval_sampler_supports_lightning_distributed_rebuild() -
     assert len(rebuilt) == 3
     assert rebuilt.pairs == [("a", "b"), ("a", "c"), ("b", "c")]
     assert list(rebuilt)[0] == [(1, ("a", "b")), (2, ("a", "b"))]
+
+
+def test_sleep2vec2_pair_eval_sampler_exposes_lightning_sampler_argument() -> None:
+    parameters = list(inspect.signature(SequentialPairEvalBatchSampler.__init__).parameters)
+    assert parameters[1] == "sampler"
 
 
 def test_sleep2vec2_pair_eval_sampler_shards_pair_batches_evenly_after_lightning_rebuild() -> None:

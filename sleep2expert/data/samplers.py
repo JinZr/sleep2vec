@@ -470,7 +470,7 @@ class SequentialPairEvalBatchSampler(BatchSampler):
 
     def __init__(
         self,
-        data: t.Sequence[t.Any] | Sampler[int],
+        sampler: t.Sequence[t.Any] | Sampler[int],
         *,
         channel_names: t.Sequence[str] | None = None,
         batch_size: int,
@@ -479,15 +479,15 @@ class SequentialPairEvalBatchSampler(BatchSampler):
     ) -> None:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}")
-        dataset = getattr(data, "dataset", None)
+        dataset = getattr(sampler, "dataset", None)
         if dataset is None:
-            resolved_data = data
+            resolved_data = sampler
             index_sampler = range(len(resolved_data))
         else:
             resolved_data = getattr(dataset, "data", None)
             if resolved_data is None:
                 raise ValueError("Injected sampler dataset must expose a 'data' attribute.")
-            index_sampler = data
+            index_sampler = sampler
 
         if channel_names is None:
             channel_names = getattr(dataset, "channel_names", None) if dataset is not None else None
