@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 import pytest
+from torch.utils.data import BatchSampler
+from torch.utils.data.distributed import DistributedSampler
 
 from data.samplers import PairFirstBatchSampler, SequentialPairEvalBatchSampler
 
@@ -11,6 +13,18 @@ def _make_sample(sample_id: int, channels: list[str]):
         path=f"/tmp/sample_{sample_id}.npz",
         payload={"available_channels": channels},
     )
+
+
+class _EvalDataset:
+    channel_names = ["a", "b", "c"]
+    min_channels = 3
+
+    def __init__(self) -> None:
+        self.data = [_make_sample(i, list(self.channel_names)) for i in range(5)]
+        self.data[0] = _make_sample(0, ["a", "b"])
+
+    def __len__(self) -> int:
+        return len(self.data)
 
 
 def test_pair_first_sampler_requires_available_channels() -> None:
@@ -204,6 +218,28 @@ def test_sequential_pair_eval_sampler_preserves_pair_order_and_tail_batches() ->
     assert observed_pairs[3:6] == [{("a", "c")}] * 3
     assert observed_pairs[6:] == [{("b", "c")}] * 3
     assert [len(batch) for batch in batches] == [2, 2, 1, 2, 2, 1, 2, 2, 1]
+
+
+def test_sequential_pair_eval_sampler_supports_lightning_distributed_rebuild() -> None:
+    dataset = _EvalDataset()
+    batch_sampler = SequentialPairEvalBatchSampler(
+        dataset.data,
+        channel_names=dataset.channel_names,
+        batch_size=2,
+        min_channels=dataset.min_channels,
+    )
+    distributed_sampler = DistributedSampler(dataset, num_replicas=2, rank=0, shuffle=False)
+
+    rebuilt = type(batch_sampler)(
+        distributed_sampler,
+        batch_size=batch_sampler.batch_size,
+        drop_last=batch_sampler.drop_last,
+    )
+
+    assert isinstance(batch_sampler, BatchSampler)
+    assert len(rebuilt) == 3
+    assert rebuilt.pairs == [("a", "b"), ("a", "c"), ("b", "c")]
+    assert list(rebuilt)[0] == [(2, ("a", "b")), (4, ("a", "b"))]
 
 
 def test_sequential_pair_eval_sampler_fails_when_configured_pair_pool_is_empty() -> None:

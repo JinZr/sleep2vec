@@ -28,7 +28,7 @@ import random
 import typing as t
 
 import torch
-from torch.utils.data import Sampler
+from torch.utils.data import BatchSampler, Sampler
 from torch.utils.data.distributed import DistributedSampler
 
 from sleep2expert.distributed import get_rank_world_size
@@ -465,39 +465,73 @@ class PairFirstBatchSampler(DistributedShardedBatchSampler):
         return self._track_unique_sample_counts
 
 
-class SequentialPairEvalBatchSampler(Sampler[list[tuple[int, Pair]]]):
+class SequentialPairEvalBatchSampler(BatchSampler):
     handles_distributed_sharding = False
 
     def __init__(
         self,
-        data: t.Sequence[t.Any],
+        data: t.Sequence[t.Any] | Sampler[int],
         *,
-        channel_names: t.Sequence[str],
+        channel_names: t.Sequence[str] | None = None,
         batch_size: int,
         min_channels: int = 2,
+        drop_last: bool = False,
     ) -> None:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        dataset = getattr(data, "dataset", None)
+        if dataset is None:
+            resolved_data = data
+            index_sampler = range(len(resolved_data))
+        else:
+            resolved_data = getattr(dataset, "data", None)
+            if resolved_data is None:
+                raise ValueError("Injected sampler dataset must expose a 'data' attribute.")
+            index_sampler = data
+
+        if channel_names is None:
+            channel_names = getattr(dataset, "channel_names", None) if dataset is not None else None
+        if channel_names is None:
+            raise ValueError("channel_names must be provided when source is not a dataset sampler.")
+
+        if dataset is not None and min_channels == 2:
+            min_channels = int(getattr(dataset, "min_channels", min_channels))
+        else:
+            min_channels = int(min_channels)
         if min_channels < 2:
             raise ValueError(f"min_channels must be >= 2, got {min_channels}")
         if len(channel_names) < 2:
             raise ValueError(f"Need at least 2 channels to build pairs, got {len(channel_names)}")
 
-        self._batch_size = int(batch_size)
+        super().__init__(index_sampler, int(batch_size), bool(drop_last))
         self._pairs, self._pair_to_indices, _ = _build_pair_index_pools(
-            data,
+            resolved_data,
             channel_names=channel_names,
             min_channels=int(min_channels),
         )
+        self._pair_to_index_sets = {pair: set(indices) for pair, indices in self._pair_to_indices.items()}
 
     def __len__(self) -> int:
-        return sum(math.ceil(len(indices) / self._batch_size) for indices in self._pair_to_indices.values())
+        pair_batches = 0
+        active_indices = list(self.sampler)
+        for pair in self._pairs:
+            pair_indices = self._pair_to_index_sets[pair]
+            pair_size = sum(1 for idx in active_indices if int(idx) in pair_indices)
+            if self.drop_last:
+                pair_batches += pair_size // self.batch_size
+            else:
+                pair_batches += math.ceil(pair_size / self.batch_size)
+        return pair_batches
 
     def __iter__(self):
+        active_indices = [int(idx) for idx in self.sampler]
         for pair in self._pairs:
-            indices = self._pair_to_indices[pair]
-            for start in range(0, len(indices), self._batch_size):
-                batch = [int(idx) for idx in indices[start : start + self._batch_size]]
+            pair_indices = self._pair_to_index_sets[pair]
+            indices = [idx for idx in active_indices if idx in pair_indices]
+            for start in range(0, len(indices), self.batch_size):
+                batch = indices[start : start + self.batch_size]
+                if self.drop_last and len(batch) < self.batch_size:
+                    continue
                 yield [(idx, pair) for idx in batch]
 
     @property
