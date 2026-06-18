@@ -84,12 +84,14 @@ def _write_config(tmp_path: Path, payload: dict[str, t.Any]) -> Path:
     return path
 
 
-def test_sleep2expert_dense_yaml_has_no_moe_config():
-    path = REPO_ROOT / "configs" / "sleep2expert" / "sleep2expert_dense_pretrain.yaml"
+def test_sleep2expert_checked_pretrain_yaml_has_moe_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_pretrain.yaml"
 
     bundle = load_pretrain_config(path)
 
-    assert bundle.model.backbone.moe is None
+    moe_cfg = bundle.model.backbone.moe
+    assert isinstance(moe_cfg, MoeConfig)
+    assert moe_cfg.enabled is True
 
 
 def test_sleep2expert_moe_yaml_parses_into_moe_config(tmp_path: Path):
@@ -221,11 +223,10 @@ def test_sleep2expert_non_learned_router_ablations_keep_aux_losses_disabled(rela
 @pytest.mark.parametrize(
     "relative_path",
     [
-        "configs/sleep2expert/sleep2expert_dense_finetune_cls.yaml",
         "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls.yaml",
     ],
 )
-def test_sleep2expert_existing_finetune_yamls_do_not_enable_moe_tuning(relative_path: str):
+def test_sleep2expert_plain_moe_finetune_yaml_does_not_enable_moe_tuning(relative_path: str):
     bundle = load_finetune_config(REPO_ROOT / relative_path)
 
     assert bundle.finetune.moe_tuning is None

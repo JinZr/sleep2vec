@@ -1034,7 +1034,7 @@ def test_survival_sidecars_validate_headers_duplicates_missing_keys_and_output_d
     [
         ("sleep2vec.config", "configs/ppg_cox_finetune_large.yaml"),
         ("sleep2vec2.config", "configs/sleep2vec2/ppg_cox_finetune_large.yaml"),
-        ("sleep2expert.config", "configs/sleep2expert/heartbeat_breath_cox_finetune_large.yaml"),
+        ("sleep2expert.config", "configs/sleep2expert/moe/heartbeat_breath_cox_finetune.yaml"),
     ],
 )
 def test_survival_config_templates_load_for_all_variants(module_name: str, config_path: str):
@@ -1062,7 +1062,7 @@ def test_survival_config_rejects_invalid_task_contract(tmp_path: Path):
     [
         ("sleep2vec.config", "configs/ppg_cox_finetune_large.yaml"),
         ("sleep2vec2.config", "configs/sleep2vec2/ppg_cox_finetune_large.yaml"),
-        ("sleep2expert.config", "configs/sleep2expert/heartbeat_breath_cox_finetune_large.yaml"),
+        ("sleep2expert.config", "configs/sleep2expert/moe/heartbeat_breath_cox_finetune.yaml"),
     ],
 )
 def test_survival_config_requires_disease_columns_index(module_name: str, config_path: str, tmp_path: Path):
