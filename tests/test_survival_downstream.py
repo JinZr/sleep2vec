@@ -20,6 +20,7 @@ def _write_sidecars(
     duplicate_key: bool = False,
     disease_lines: list[str] | None = None,
     sidecar_columns: list[str] | None = None,
+    row_keys: tuple[str, str] = ("1", "2"),
 ) -> SurvivalConfig:
     tmp_path.mkdir(parents=True, exist_ok=True)
     disease_columns = tmp_path / "disease_columns.txt"
@@ -31,24 +32,25 @@ def _write_sidecars(
     if sidecar_columns is None:
         sidecar_columns = ["d1", "d2"]
 
+    first_key, second_key = row_keys
     disease_columns.write_text("\n".join(disease_lines) + "\n")
     rows = _sidecar_rows(
         sidecar_columns,
         [
-            ("1", {"d1": "10", "d2": "20", "d3": "30"}),
-            ("2", {"d1": "40", "d2": "50", "d3": "60"}),
+            (first_key, {"d1": "10", "d2": "20", "d3": "30"}),
+            (second_key, {"d1": "40", "d2": "50", "d3": "60"}),
         ],
     )
     if duplicate_key:
-        rows.append(_sidecar_row("2", {"d1": "70", "d2": "80", "d3": "90"}, sidecar_columns))
+        rows.append(_sidecar_row(second_key, {"d1": "70", "d2": "80", "d3": "90"}, sidecar_columns))
     event_time.write_text("\n".join(rows) + "\n")
     is_event.write_text(
         "\n".join(
             _sidecar_rows(
                 sidecar_columns,
                 [
-                    ("1", {"d1": "1", "d2": "0", "d3": "1"}),
-                    ("2", {"d1": "0", "d2": "1", "d3": "0"}),
+                    (first_key, {"d1": "1", "d2": "0", "d3": "1"}),
+                    (second_key, {"d1": "0", "d2": "1", "d3": "0"}),
                 ],
             )
         )
@@ -59,8 +61,8 @@ def _write_sidecars(
             _sidecar_rows(
                 sidecar_columns,
                 [
-                    ("1", {"d1": "1", "d2": "1", "d3": "1"}),
-                    ("2", {"d1": "1", "d2": "1", "d3": "1"}),
+                    (first_key, {"d1": "1", "d2": "1", "d3": "1"}),
+                    (second_key, {"d1": "1", "d2": "1", "d3": "1"}),
                 ],
             )
         )
@@ -656,6 +658,48 @@ def test_survival_sidecars_attach_subject_labels_to_multiple_rows(tmp_path: Path
 
 
 @pytest.mark.parametrize(
+    "survival_module",
+    [
+        "data.survival",
+        "sleep2vec2.data.survival",
+        "sleep2expert.data.survival",
+    ],
+)
+def test_survival_sidecar_keys_preserve_numeric_strings(survival_module: str, tmp_path: Path):
+    module = __import__(survival_module, fromlist=["attach_survival_metadata", "load_survival_label_table"])
+    config = _write_sidecars(tmp_path / "sidecars", row_keys=("001", "1"))
+
+    labels = module.load_survival_label_table(config, expected_output_dim=2)
+    metadata = {}
+    module.attach_survival_metadata(metadata, "001", labels)
+
+    assert set(labels.event_time) == {"001", "1"}
+    assert metadata["eid"] == "001"
+    assert metadata["event_time"].tolist() == pytest.approx([10.0, 20.0])
+
+
+@pytest.mark.parametrize(
+    "survival_module",
+    [
+        "data.survival",
+        "sleep2vec2.data.survival",
+        "sleep2expert.data.survival",
+    ],
+)
+def test_survival_sidecar_keys_preserve_default_na_strings(survival_module: str, tmp_path: Path):
+    module = __import__(survival_module, fromlist=["attach_survival_metadata", "load_survival_label_table"])
+    config = _write_sidecars(tmp_path / "sidecars", row_keys=("NA", "NULL"))
+
+    labels = module.load_survival_label_table(config, expected_output_dim=2)
+    metadata = {}
+    module.attach_survival_metadata(metadata, "NA", labels)
+
+    assert set(labels.event_time) == {"NA", "NULL"}
+    assert metadata["eid"] == "NA"
+    assert metadata["event_time"].tolist() == pytest.approx([10.0, 20.0])
+
+
+@pytest.mark.parametrize(
     "dataset_module",
     [
         "data.psg_pretrain_dataset",
@@ -665,7 +709,7 @@ def test_survival_sidecars_attach_subject_labels_to_multiple_rows(tmp_path: Path
 )
 def test_psg_dataset_stacks_survival_metadata_for_repeated_subject(dataset_module: str, tmp_path: Path):
     dataset_cls = __import__(dataset_module, fromlist=["PSGPretrainDataset"]).PSGPretrainDataset
-    config = _write_sidecars(tmp_path / "sidecars")
+    config = _write_sidecars(tmp_path / "sidecars", row_keys=("001", "2"))
     np.savez(tmp_path / "first.npz", ppg=np.asarray([0.0, 1.0], dtype=np.float32))
     np.savez(tmp_path / "second.npz", ppg=np.asarray([2.0, 3.0], dtype=np.float32))
     index = tmp_path / "index.csv"
@@ -673,8 +717,8 @@ def test_psg_dataset_stacks_survival_metadata_for_repeated_subject(dataset_modul
         "\n".join(
             [
                 "path,split,duration,eid",
-                f"{tmp_path / 'first.npz'},train,60,1",
-                f"{tmp_path / 'second.npz'},train,60,1",
+                f"{tmp_path / 'first.npz'},train,60,001",
+                f"{tmp_path / 'second.npz'},train,60,001",
             ]
         )
         + "\n"
@@ -703,10 +747,146 @@ def test_psg_dataset_stacks_survival_metadata_for_repeated_subject(dataset_modul
     batch = next(iter(dataset.dataloader()))
 
     assert batch["metadata"]["event_time"].shape == (2, 2)
-    assert batch["metadata"]["eid"] == ["1", "1"]
+    assert batch["metadata"]["eid"] == ["001", "001"]
     assert torch.equal(batch["metadata"]["event_time"][0], batch["metadata"]["event_time"][1])
     assert torch.equal(batch["metadata"]["is_event"][0], batch["metadata"]["is_event"][1])
     assert torch.equal(batch["metadata"]["has_label"][0], batch["metadata"]["has_label"][1])
+
+
+@pytest.mark.parametrize(
+    "dataset_module",
+    [
+        "data.psg_pretrain_dataset",
+        "sleep2vec2.data.psg_pretrain_dataset",
+        "sleep2expert.data.psg_pretrain_dataset",
+    ],
+)
+def test_psg_dataset_preserves_default_na_survival_key(dataset_module: str, tmp_path: Path):
+    dataset_cls = __import__(dataset_module, fromlist=["PSGPretrainDataset"]).PSGPretrainDataset
+    config = _write_sidecars(tmp_path / "sidecars", row_keys=("NA", "2"))
+    np.savez(tmp_path / "sample.npz", ppg=np.asarray([0.0, 1.0], dtype=np.float32))
+    index = tmp_path / "index.csv"
+    index.write_text(
+        "\n".join(
+            [
+                "path,split,duration,eid",
+                f"{tmp_path / 'sample.npz'},train,60,NA",
+            ]
+        )
+        + "\n"
+    )
+
+    dataset = dataset_cls(
+        channel_names=["ppg"],
+        channel_input_dims={"ppg": 1},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index),
+        split=["train"],
+        max_tokens=2,
+        stride_tokens=0,
+        mask_rate=0.0,
+        allow_missing_channels=False,
+        min_channels=1,
+        randomly_select_channels=False,
+        survival_label_config=config,
+        survival_output_dim=2,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    batch = next(iter(dataset.dataloader()))
+
+    assert batch["metadata"]["eid"] == ["NA"]
+    assert batch["metadata"]["event_time"][0].tolist() == pytest.approx([10.0, 20.0])
+
+
+@pytest.mark.parametrize(
+    "converter_module",
+    [
+        "preprocess.convert_npz_to_kaldi",
+        "sleep2vec2.preprocess.convert_npz_to_kaldi",
+        "sleep2expert.preprocess.convert_npz_to_kaldi",
+    ],
+)
+def test_kaldi_converter_preserves_survival_key_strings_in_source_index(converter_module: str, tmp_path: Path):
+    module = __import__(converter_module, fromlist=["_load_index_df"])
+    index = tmp_path / "index.csv"
+    index.write_text(
+        "\n".join(
+            [
+                "path,split,duration,dataset,eid",
+                f"{tmp_path / 'first.npz'},train,60,ukb,001",
+                f"{tmp_path / 'second.npz'},train,60,ukb,NA",
+            ]
+        )
+        + "\n"
+    )
+
+    frame = module._load_index_df([index], survival_key_column="eid")
+
+    assert frame["eid"].tolist() == ["001", "NA"]
+
+
+@pytest.mark.parametrize(
+    "converter_module",
+    [
+        "preprocess.convert_npz_to_kaldi",
+        "sleep2vec2.preprocess.convert_npz_to_kaldi",
+        "sleep2expert.preprocess.convert_npz_to_kaldi",
+    ],
+)
+def test_kaldi_converter_requires_configured_survival_key_column(converter_module: str, tmp_path: Path):
+    module = __import__(converter_module, fromlist=["_load_index_df"])
+    index = tmp_path / "index.csv"
+    index.write_text(
+        "\n".join(
+            [
+                "path,split,duration,dataset",
+                f"{tmp_path / 'sample.npz'},train,60,ukb",
+            ]
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="missing required survival key column 'eid'"):
+        module._load_index_df([index], survival_key_column="eid")
+
+
+@pytest.mark.parametrize(
+    "converter_module",
+    [
+        "preprocess.convert_npz_to_kaldi",
+        "sleep2vec2.preprocess.convert_npz_to_kaldi",
+        "sleep2expert.preprocess.convert_npz_to_kaldi",
+    ],
+)
+def test_kaldi_converter_requires_survival_key_for_every_index_row(converter_module: str, tmp_path: Path):
+    module = __import__(converter_module, fromlist=["_load_index_df"])
+    first_index = tmp_path / "first.csv"
+    first_index.write_text(
+        "\n".join(
+            [
+                "path,split,duration,dataset,eid",
+                f"{tmp_path / 'first.npz'},train,60,ukb,001",
+            ]
+        )
+        + "\n"
+    )
+    second_index = tmp_path / "second.csv"
+    second_index.write_text(
+        "\n".join(
+            [
+                "path,split,duration,dataset",
+                f"{tmp_path / 'second.npz'},train,60,ukb",
+            ]
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="missing values in required survival key column 'eid'"):
+        module._load_index_df([first_index, second_index], survival_key_column="eid")
 
 
 @pytest.mark.parametrize(

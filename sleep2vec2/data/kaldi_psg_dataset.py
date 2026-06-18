@@ -172,7 +172,10 @@ class KaldiPSGDataset(DefaultDataset):
         if not self.manifest.exists():
             raise FileNotFoundError(f"Kaldi split manifest CSV not found: {self.manifest}")
 
-        df = pd.read_csv(self.manifest, low_memory=False)
+        read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+        if survival_labels is not None:
+            read_csv_kwargs["converters"] = {str(survival_labels.key_column): str}
+        df = pd.read_csv(self.manifest, **read_csv_kwargs)
         required = {"sample_key", "path", "split", "token_start", "token_end", "available_channels"}
         missing = sorted(required - set(df.columns))
         if missing:

@@ -117,6 +117,9 @@ class PSGPretrainDataset(DefaultDataset):
             survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
             if survival_labels is not None:
                 survival_key_column = survival_labels.key_column
+            read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+            if survival_key_column is not None:
+                read_csv_kwargs["converters"] = {str(survival_key_column): str}
 
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
@@ -124,7 +127,7 @@ class PSGPretrainDataset(DefaultDataset):
             ) -> pd.DataFrame:
                 # 单个路径
                 if isinstance(idx, (str, os.PathLike, Path)):
-                    df = pd.read_csv(idx, low_memory=False)
+                    df = pd.read_csv(idx, **read_csv_kwargs)
                     if "source" not in df.columns:
                         df["source"] = str(idx)
                     else:
@@ -135,7 +138,7 @@ class PSGPretrainDataset(DefaultDataset):
                 if isinstance(idx, (list, tuple)):
                     dfs = []
                     for p in idx:
-                        dfi = pd.read_csv(p, low_memory=False)
+                        dfi = pd.read_csv(p, **read_csv_kwargs)
                         if "source" not in dfi.columns:
                             dfi["source"] = str(p)
                         else:

@@ -102,14 +102,10 @@ def stack_survival_metadata(
 def normalize_survival_key(value: Any, key_column: str) -> str:
     if pd.isna(value):
         raise ValueError(f"Survival key column {key_column!r} contains a missing value.")
-    if isinstance(value, (int, np.integer)):
-        return str(int(value))
-    if isinstance(value, (float, np.floating)):
-        if not np.isfinite(value):
-            raise ValueError(f"Survival key column {key_column!r} contains a non-finite value.")
-        if float(value).is_integer():
-            return str(int(value))
-    return str(value).strip()
+    key = str(value).strip()
+    if not key:
+        raise ValueError(f"Survival key column {key_column!r} contains an empty value.")
+    return key
 
 
 def _load_disease_columns(path: str | Path) -> list[str]:
@@ -134,7 +130,7 @@ def _load_sidecar(
     label_names: list[str],
     field_name: str,
 ) -> dict[str, np.ndarray]:
-    frame = pd.read_csv(path)
+    frame = pd.read_csv(path, converters={key_column: str})
     expected_columns = [key_column, *label_names]
     if list(frame.columns) != expected_columns:
         raise ValueError(f"{field_name} columns must exactly match [key_column] + disease_columns_index.")
