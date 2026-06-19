@@ -294,6 +294,107 @@ def test_prediction_run_id_matches_results_and_predictions(tmp_path, monkeypatch
     assert result_df.loc[0, "run_dir"] == str(args.run_dir)
 
 
+def test_sleep2expert_inference_outputs_record_route_filter_metadata(tmp_path, monkeypatch):
+    results_mod = importlib.import_module("sleep2expert.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    args = _infer_args()
+    args.route_filter_active = True
+    args.route_filter_groups = ["shared", "cardiac"]
+    args.route_filter_expert_ids = [0, 3, 4]
+    results_mod.prepare_inference_result_paths(
+        args,
+        namespace="sleep2expert",
+        root=tmp_path / "results" / "inference",
+        timestamp="20260524T000000Z",
+    )
+
+    results_mod.save_result_csv({"test_loss": 0.1}, str(args.inference_metrics_csv_path), args)
+    results_mod.save_result_csv({"test_loss": 0.1}, str(args.inference_overview_csv_path), args)
+    results_mod.save_prediction_csv(
+        [
+            {
+                "path": "a.npz",
+                "groundtruth": 1,
+                "prediction": 1,
+                "n_predictions": 1,
+                "n_windows": 1,
+                "token_starts": [0],
+            }
+        ],
+        str(args.inference_prediction_csv_path),
+        args,
+    )
+    results_mod.save_inference_manifest(args, {"test_loss": 0.1}, prediction_row_count=1)
+
+    result_df = pd.read_csv(args.inference_metrics_csv_path)
+    overview_df = pd.read_csv(args.inference_overview_csv_path)
+    prediction_df = pd.read_csv(args.inference_prediction_csv_path)
+    manifest = json.loads(Path(args.manifest_path).read_text())
+
+    for frame in (result_df, overview_df):
+        assert bool(frame.loc[0, "route_filter_active"]) is True
+        assert frame.loc[0, "route_filter_groups"] == "shared,cardiac"
+        assert frame.loc[0, "route_filter_expert_ids"] == "0,3,4"
+    assert "route_filter_active" not in prediction_df.columns
+    assert "route_filter_groups" not in prediction_df.columns
+    assert "route_filter_expert_ids" not in prediction_df.columns
+    assert manifest["route_filter"] == {
+        "active": True,
+        "groups": ["shared", "cardiac"],
+        "expert_ids": [0, 3, 4],
+    }
+
+
+def test_sleep2expert_inference_result_csv_records_inactive_route_filter(tmp_path, monkeypatch):
+    results_mod = importlib.import_module("sleep2expert.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    args = _infer_args()
+    results_mod.prepare_inference_result_paths(
+        args,
+        namespace="sleep2expert",
+        root=tmp_path / "results" / "inference",
+        timestamp="20260524T000000Z",
+    )
+
+    results_mod.save_result_csv({"test_loss": 0.1}, str(args.inference_metrics_csv_path), args)
+
+    df = pd.read_csv(args.inference_metrics_csv_path)
+
+    assert str(df.loc[0, "route_filter_active"]).lower() == "false"
+    assert pd.isna(df.loc[0, "route_filter_groups"]) or df.loc[0, "route_filter_groups"] == ""
+    assert pd.isna(df.loc[0, "route_filter_expert_ids"]) or df.loc[0, "route_filter_expert_ids"] == ""
+
+
+def test_sleep2expert_prediction_run_id_hash_includes_route_filter(monkeypatch):
+    results_mod = importlib.import_module("sleep2expert.results")
+
+    class _FixedUuid:
+        hex = "abcdef1234567890"
+
+    monkeypatch.setattr(results_mod.uuid, "uuid4", lambda: _FixedUuid())
+    full_args = _infer_args()
+    filtered_args = _infer_args()
+    filtered_args.route_filter_active = True
+    filtered_args.route_filter_groups = ["shared"]
+    filtered_args.route_filter_expert_ids = [0, 2]
+
+    full_id = results_mod.make_prediction_run_id(
+        full_args,
+        timestamp="20260524T000000Z",
+        namespace="sleep2expert",
+    )
+    filtered_id = results_mod.make_prediction_run_id(
+        filtered_args,
+        timestamp="20260524T000000Z",
+        namespace="sleep2expert",
+    )
+
+    assert full_id.rsplit("__", 1)[0] == filtered_id.rsplit("__", 1)[0]
+    assert full_id.rsplit("__", 1)[1] != filtered_id.rsplit("__", 1)[1]
+
+
 def test_save_prediction_csv_skips_nonzero_rank(tmp_path, monkeypatch):
     monkeypatch.setenv("RANK", "2")
     monkeypatch.delenv("LOCAL_RANK", raising=False)
