@@ -10,8 +10,9 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("pytorch_lightning")
 
-from sleep2expert.backbones.roformer.moe import MoERoutingOutput
+from sleep2expert.backbones.roformer.moe import MoERoutingOutput, TopKRouter
 from sleep2expert.config import BackboneConfig, ChannelConfig, ModelConfig, MoeConfig, TokenizerConfig
+import sleep2expert.infer as infer_mod
 import sleep2expert.routing_analysis as routing_analysis
 from sleep2expert.routing_analysis import (
     ROUTING_CSV_COLUMNS,
@@ -102,6 +103,35 @@ def test_build_routing_usage_matrices_masks_unavailable_experts_and_normalizes_r
     assert breath[0, 2] == pytest.approx(1.0)
     assert np.isnan(breath[:, 1]).all()
     assert np.isnan(breath[:, 3]).all()
+
+
+def test_build_routing_usage_matrices_masks_route_filtered_experts():
+    moe_cfg = MoeConfig(
+        enabled=True,
+        layer_indices=[4],
+        num_experts=4,
+        top_k=1,
+        expert_groups={"shared": [0], "cardiac": [1], "respiratory": [2]},
+        modality_to_groups={"heartbeat": ["shared", "cardiac"], "breath": ["shared", "respiratory"]},
+        use_modality_group_mask=True,
+    )
+    rows = [
+        {"modality": "heartbeat", "layer_idx": 4, "expert_id": 0, "usage_count": 2},
+        {"modality": "heartbeat", "layer_idx": 4, "expert_id": 1, "usage_count": 6},
+        {"modality": "breath", "layer_idx": 4, "expert_id": 2, "usage_count": 5},
+    ]
+
+    matrices = build_routing_usage_matrices(rows, moe_cfg, active_expert_ids=[0])
+
+    heartbeat = matrices["heartbeat"]
+    assert heartbeat[0, 0] == pytest.approx(1.0)
+    assert np.isnan(heartbeat[:, 1]).all()
+    assert np.isnan(heartbeat[:, 2]).all()
+
+    breath = matrices["breath"]
+    assert breath[0, 0] == pytest.approx(0.0)
+    assert np.isnan(breath[:, 1]).all()
+    assert np.isnan(breath[:, 2]).all()
 
 
 def test_write_routing_heatmaps_writes_per_modality_png_and_logs_wandb(monkeypatch, tmp_path):
@@ -209,6 +239,7 @@ def test_build_routing_rows_groups_scalar_label_once_per_sample():
             "layer_idx": 4,
             "expert_id": 0,
             "expert_group": "shared",
+            "route_filter_groups": "",
             "usage_count": 2,
             "mean_router_prob": pytest.approx(0.85),
             "router_entropy": pytest.approx(float((-(router_probs * router_probs.log()).sum(dim=-1)).mean().item())),
@@ -299,8 +330,93 @@ def test_run_routing_analysis_writes_fixed_columns(monkeypatch, tmp_path):
     assert {row["expert_id"] for row in written_rows} == {"0", "1"}
     assert all(row["label_name"] == "age" for row in written_rows)
     assert all(row["label_value_if_available"] == "50.0" for row in written_rows)
+    assert all(row["route_filter_groups"] == "" for row in written_rows)
     assert all(row["analysis_tag"] == "" for row in written_rows)
     assert all(row["split"] == "test" for row in written_rows)
+
+
+def test_run_routing_analysis_applies_route_expert_groups(monkeypatch, tmp_path):
+    output = tmp_path / "routing.csv"
+    batch = {
+        "id": ["s7"],
+        "length": torch.tensor([2]),
+        "tokens": {"eeg": torch.zeros(1, 2, 1)},
+        "metadata": {"age": torch.tensor([54.0]), "source": ["site-g"], "path": ["/tmp/s7.npz"]},
+    }
+    moe_cfg = MoeConfig(
+        enabled=True,
+        layer_indices=[4],
+        num_experts=2,
+        top_k=1,
+        expert_groups={"shared": [0], "cardiac": [1]},
+        modality_to_groups={"eeg": ["shared", "cardiac"]},
+    )
+    model_cfg = _model_config(moe_cfg)
+
+    def fake_apply(args):
+        args.is_seq = False
+        args.is_multilabel = False
+        return SimpleNamespace(finetune=None, averaging=None), model_cfg
+
+    class DummyDownstream(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = SimpleNamespace(last_moe_aux=None)
+            router_config = SimpleNamespace(hidden_size=1, moe=moe_cfg)
+            self.router = TopKRouter(router_config, layer_idx=4)
+
+        def forward(self, batch):
+            assert self.router.route_filter_expert_ids == (0,)
+            router_probs = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]], dtype=torch.float32)
+            aux = _routing_aux(router_probs, top_k=1)
+            self.backbone.last_moe_aux = [{"modality": "eeg", "aux": (aux,), "attention_mask": torch.tensor([[1, 1]])}]
+            return torch.zeros(1, 1)
+
+    class DummyModule(torch.nn.Module):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            self.eval_model = DummyDownstream()
+
+        def load_state_dict(self, state_dict, strict=True):
+            return [], []
+
+        def _get_eval_model(self):
+            return self.eval_model
+
+    monkeypatch.setattr(routing_analysis, "apply_finetune_config", fake_apply)
+    monkeypatch.setattr(routing_analysis, "_build_inference_loader", lambda args: [batch])
+    monkeypatch.setattr(routing_analysis, "Sleep2vecFinetuning", DummyModule)
+    monkeypatch.setattr(routing_analysis, "_load_analysis_weights", lambda module, args: None)
+
+    rows = run_routing_analysis(
+        Namespace(
+            config=tmp_path / "config.yaml",
+            ckpt_path=str(tmp_path / "model.ckpt"),
+            label_name="age",
+            output=output,
+            batch_size=1,
+            num_workers=0,
+            device="cpu",
+            eval_split="test",
+            analysis_tag="",
+            pretrained_only=False,
+            override_dataset_names=None,
+            avg_ckpts=1,
+            avg_ckpt_dir=None,
+            seed=1,
+            lr=1e-6,
+            weight_decay=0.0,
+            pretrained_backbone_path=None,
+            route_expert_groups=["shared"],
+        )
+    )
+
+    assert {row["expert_id"] for row in rows} == {0}
+    assert {row["route_filter_groups"] for row in rows} == {"shared"}
+    with output.open(newline="") as file_obj:
+        written_rows = list(csv.DictReader(file_obj))
+    assert {row["expert_id"] for row in written_rows} == {"0"}
+    assert {row["route_filter_groups"] for row in written_rows} == {"shared"}
 
 
 def test_run_routing_analysis_writes_analysis_tag_and_split_columns(monkeypatch, tmp_path):
@@ -677,6 +793,54 @@ def test_parse_args_accepts_analysis_tag(monkeypatch, tmp_path):
     assert args.analysis_tag == "post_finetune"
     assert args.lr == 1e-6
     assert args.weight_decay == 1e-5
+
+
+def test_parse_args_accepts_route_expert_groups(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        routing_analysis.sys,
+        "argv",
+        [
+            "routing_analysis.py",
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--ckpt-path",
+            str(tmp_path / "model.ckpt"),
+            "--label-name",
+            "age",
+            "--output",
+            str(tmp_path / "routing.csv"),
+            "--route-expert-groups",
+            "shared",
+            "cardiac",
+        ],
+    )
+
+    args = routing_analysis.parse_args()
+
+    assert args.route_expert_groups == ["shared", "cardiac"]
+
+
+def test_sleep2expert_infer_parse_args_accepts_route_expert_groups(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        infer_mod.sys,
+        "argv",
+        [
+            "infer.py",
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--ckpt-path",
+            str(tmp_path / "model.ckpt"),
+            "--label-name",
+            "age",
+            "--route-expert-groups",
+            "shared",
+            "cardiac",
+        ],
+    )
+
+    args = infer_mod.parse_args()
+
+    assert args.route_expert_groups == ["shared", "cardiac"]
 
 
 def test_parse_args_accepts_heatmap_and_wandb_flags(monkeypatch, tmp_path):

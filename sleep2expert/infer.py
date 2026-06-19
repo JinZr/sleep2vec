@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2expert.backbones.roformer.moe import apply_route_expert_filter
 from sleep2expert.checkpoints import average_checkpoints, select_checkpoints
 from sleep2expert.common import apply_finetune_config
 from sleep2expert.distributed import is_rank_zero_process
@@ -154,6 +155,10 @@ def run_inference(args):
             logging.warning("Unexpected keys when loading averaged checkpoint: %s", unexpected_keys)
         ckpt_path = None
 
+    route_expert_groups = getattr(args, "route_expert_groups", None)
+    if route_expert_groups:
+        apply_route_expert_filter(model, model_cfg.backbone.moe, route_expert_groups)
+
     prepare_inference_result_paths(args, namespace="sleep2expert", checkpoint_paths=selected_ckpt_paths)
     logging.info("Running inference on split=%s with %s samples/batch", args.eval_split, args.batch_size)
     wandb_run = _init_wandb(args)
@@ -283,6 +288,13 @@ def parse_args():
         type=str,
         default=None,
         help="Optional pretrain-model init checkpoint to load before downstream weights.",
+    )
+    parser.add_argument(
+        "--route-expert-groups",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Optional MoE expert group names to keep active during inference.",
     )
     parser.add_argument(
         "--wandb",
