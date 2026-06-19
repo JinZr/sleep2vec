@@ -410,11 +410,27 @@ def _route_filter_payload(args: Any | None) -> dict[str, Any]:
     return {"active": active, "groups": groups, "expert_ids": expert_ids}
 
 
-def _add_route_filter_result_metadata(row: dict[str, Any], args: Any | None) -> None:
+def set_route_filter_metadata(args: Any, group_names: Any, expert_ids: Any) -> None:
+    groups = _as_string_list(group_names)
+    args.route_filter_active = bool(groups)
+    args.route_filter_groups = groups
+    args.route_filter_expert_ids = _as_int_list(expert_ids) if groups else []
+
+
+def _route_filter_flat_metadata(args: Any | None) -> dict[str, Any]:
     payload = _route_filter_payload(args)
-    row["route_filter_active"] = payload["active"]
-    row["route_filter_groups"] = ",".join(payload["groups"])
-    row["route_filter_expert_ids"] = ",".join(str(expert_id) for expert_id in payload["expert_ids"])
+    return {
+        "route_filter_active": payload["active"],
+        "route_filter_groups": payload["groups"],
+        "route_filter_expert_ids": payload["expert_ids"],
+    }
+
+
+def _add_route_filter_result_metadata(row: dict[str, Any], args: Any | None) -> None:
+    payload = _route_filter_flat_metadata(args)
+    row["route_filter_active"] = payload["route_filter_active"]
+    row["route_filter_groups"] = ",".join(payload["route_filter_groups"])
+    row["route_filter_expert_ids"] = ",".join(str(expert_id) for expert_id in payload["route_filter_expert_ids"])
 
 
 def _as_string_list(value: Any) -> list[str]:

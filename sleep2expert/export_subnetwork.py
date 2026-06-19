@@ -17,6 +17,7 @@ from sleep2expert.checkpoints import get_state_dict_from_checkpoint, load_checkp
 from sleep2expert.config import load_finetune_config, load_pretrain_config
 
 _EXPERT_KEY_RE = re.compile(r"^(?P<prefix>.*moe_ffn\.experts\.)(?P<expert_id>\d+)(?P<suffix>\..*)$")
+_MOE_LAYER_KEY_RE = re.compile(r"^(?P<root>.*\.layer\.)\d+\.moe_ffn\.")
 _ROUTER_KEY_RE = re.compile(r"^(?P<prefix>.*moe_ffn\.)router\.router\.(?P<param>weight|bias)$")
 _RESUME_STATE_KEYS = ("optimizer_states", "lr_schedulers")
 
@@ -148,9 +149,14 @@ def _rewrite_checkpoint(
     expert_keys_dropped = 0
     router_keys_sliced = 0
     expert_suffixes_by_prefix: dict[str, dict[int, set[str]]] = {}
+    moe_layer_roots: set[str] = set()
     router_params_by_prefix: dict[str, set[str]] = {}
 
     for key, value in state_dict.items():
+        layer_match = _MOE_LAYER_KEY_RE.match(key)
+        if layer_match is not None:
+            moe_layer_roots.add(layer_match.group("root"))
+
         expert_match = _EXPERT_KEY_RE.match(key)
         if expert_match is not None:
             expert_keys_seen += 1
@@ -182,11 +188,17 @@ def _rewrite_checkpoint(
 
     if expert_keys_seen == 0:
         raise ValueError("Checkpoint state_dict does not contain sleep2expert MoE expert weights.")
+    moe_block = exported_config["model"]["backbone"]["moe"]
+    _validate_expected_moe_layer_expert_weights(
+        expert_suffixes_by_prefix,
+        moe_layer_roots,
+        layer_indices=moe_block.get("layer_indices", []),
+    )
     _validate_selected_expert_weights(expert_suffixes_by_prefix, selected_expert_ids)
     _validate_learned_router_weights(
         expert_suffixes_by_prefix,
         router_params_by_prefix,
-        router_type=exported_config["model"]["backbone"]["moe"].get("router_type", "learned"),
+        router_type=moe_block.get("router_type", "learned"),
     )
 
     exported_checkpoint = dict(checkpoint)
@@ -209,6 +221,37 @@ def _rewrite_checkpoint(
         "router_keys_sliced": router_keys_sliced,
         "removed_resume_keys": removed_resume_keys,
     }
+
+
+def _validate_expected_moe_layer_expert_weights(
+    expert_suffixes_by_prefix: dict[str, dict[int, set[str]]],
+    moe_layer_roots: set[str],
+    *,
+    layer_indices: t.Sequence[int],
+) -> None:
+    # Config layer_indices are 1-indexed; state_dict ModuleList layer keys are 0-indexed.
+    expected_layer_offsets = [int(layer_idx) - 1 for layer_idx in layer_indices]
+    if not expected_layer_offsets:
+        return
+    if not moe_layer_roots:
+        raise ValueError(
+            "Checkpoint MoE keys do not include recognizable sleep2expert RoFormer layer prefixes. "
+            "Ensure --config and --ckpt-path describe the same MoE expert layout."
+        )
+
+    expected_prefixes = [
+        f"{root}{layer_offset}.moe_ffn.experts."
+        for root in sorted(moe_layer_roots)
+        for layer_offset in expected_layer_offsets
+    ]
+    missing_prefixes = [prefix for prefix in expected_prefixes if prefix not in expert_suffixes_by_prefix]
+
+    if missing_prefixes:
+        details = "; ".join(missing_prefixes)
+        raise ValueError(
+            "Checkpoint is missing expected MoE layer expert weights: "
+            f"{details}. Ensure --config and --ckpt-path describe the same MoE expert layout."
+        )
 
 
 def _validate_learned_router_weights(
