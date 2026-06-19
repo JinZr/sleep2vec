@@ -17,7 +17,7 @@ from sleep2expert.checkpoints import get_state_dict_from_checkpoint, load_checkp
 from sleep2expert.config import load_finetune_config, load_pretrain_config
 
 _EXPERT_KEY_RE = re.compile(r"^(?P<prefix>.*moe_ffn\.experts\.)(?P<expert_id>\d+)(?P<suffix>\..*)$")
-_ROUTER_KEY_RE = re.compile(r"^.*moe_ffn\.router\.router\.(?:weight|bias)$")
+_ROUTER_KEY_RE = re.compile(r"^(?P<prefix>.*moe_ffn\.)router\.router\.(?P<param>weight|bias)$")
 _RESUME_STATE_KEYS = ("optimizer_states", "lr_schedulers")
 
 
@@ -147,32 +147,47 @@ def _rewrite_checkpoint(
     expert_keys_seen = 0
     expert_keys_dropped = 0
     router_keys_sliced = 0
+    expert_suffixes_by_prefix: dict[str, dict[int, set[str]]] = {}
+    router_params_by_prefix: dict[str, set[str]] = {}
 
     for key, value in state_dict.items():
         expert_match = _EXPERT_KEY_RE.match(key)
         if expert_match is not None:
             expert_keys_seen += 1
             old_id = int(expert_match.group("expert_id"))
+            prefix = expert_match.group("prefix")
+            suffix = expert_match.group("suffix")
+            expert_suffixes_by_prefix.setdefault(prefix, {}).setdefault(old_id, set()).add(suffix)
             if old_id not in old_to_new:
                 expert_keys_dropped += 1
                 continue
             # Compact checkpoints need old expert IDs remapped into the small model's 0..N-1 ModuleList.
-            new_key = f"{expert_match.group('prefix')}{old_to_new[old_id]}{expert_match.group('suffix')}"
+            new_key = f"{prefix}{old_to_new[old_id]}{suffix}"
             new_state[new_key] = value
             continue
 
-        if _ROUTER_KEY_RE.match(key) and isinstance(value, torch.Tensor):
+        router_match = _ROUTER_KEY_RE.match(key)
+        if router_match is not None:
+            if not isinstance(value, torch.Tensor):
+                raise ValueError(f"Router tensor '{key}' must be a torch.Tensor.")
             if value.dim() == 0 or max(selected_expert_ids) >= value.shape[0]:
                 raise ValueError(f"Router tensor '{key}' cannot be sliced for selected expert IDs.")
             # Learned router outputs are indexed by old expert ID; keep the same order as the compact remap.
             new_state[key] = value.index_select(0, selected_index.to(device=value.device))
             router_keys_sliced += 1
+            router_params_by_prefix.setdefault(router_match.group("prefix"), set()).add(router_match.group("param"))
             continue
 
         new_state[key] = value
 
     if expert_keys_seen == 0:
         raise ValueError("Checkpoint state_dict does not contain sleep2expert MoE expert weights.")
+    _validate_selected_expert_weights(expert_suffixes_by_prefix, selected_expert_ids)
+    _validate_learned_router_weights(
+        expert_suffixes_by_prefix,
+        router_params_by_prefix,
+        router_type=exported_config["model"]["backbone"]["moe"].get("router_type", "learned"),
+    )
 
     exported_checkpoint = dict(checkpoint)
     removed_resume_keys = [key for key in _RESUME_STATE_KEYS if key in exported_checkpoint]
@@ -194,6 +209,74 @@ def _rewrite_checkpoint(
         "router_keys_sliced": router_keys_sliced,
         "removed_resume_keys": removed_resume_keys,
     }
+
+
+def _validate_learned_router_weights(
+    expert_suffixes_by_prefix: dict[str, dict[int, set[str]]],
+    router_params_by_prefix: dict[str, set[str]],
+    *,
+    router_type: str,
+) -> None:
+    if router_type != "learned":
+        return
+
+    missing_by_prefix: dict[str, list[str]] = {}
+    for expert_prefix in expert_suffixes_by_prefix:
+        layer_prefix = expert_prefix[: -len("experts.")]
+        missing_params = sorted({"weight", "bias"} - router_params_by_prefix.get(layer_prefix, set()))
+        if missing_params:
+            missing_by_prefix[layer_prefix] = missing_params
+
+    if not missing_by_prefix:
+        return
+
+    details = "; ".join(
+        f"{prefix}router.router missing parameter(s) {params}" for prefix, params in sorted(missing_by_prefix.items())
+    )
+    raise ValueError(
+        "Checkpoint is missing learned MoE router weights: "
+        f"{details}. Ensure --config and --ckpt-path describe the same MoE expert layout."
+    )
+
+
+def _validate_selected_expert_weights(
+    expert_suffixes_by_prefix: dict[str, dict[int, set[str]]],
+    selected_expert_ids: t.Sequence[int],
+) -> None:
+    selected_ids = [int(expert_id) for expert_id in selected_expert_ids]
+    missing_by_prefix: dict[str, list[int]] = {}
+    incomplete_by_prefix: dict[str, dict[int, list[str]]] = {}
+
+    for prefix, suffixes_by_expert in expert_suffixes_by_prefix.items():
+        expected_suffixes = set().union(*suffixes_by_expert.values()) if suffixes_by_expert else set()
+        for expert_id in selected_ids:
+            observed_suffixes = suffixes_by_expert.get(expert_id, set())
+            if not observed_suffixes:
+                missing_by_prefix.setdefault(prefix, []).append(expert_id)
+                continue
+            missing_suffixes = sorted(expected_suffixes - observed_suffixes)
+            if missing_suffixes:
+                incomplete_by_prefix.setdefault(prefix, {})[expert_id] = missing_suffixes
+
+    if missing_by_prefix:
+        details = "; ".join(
+            f"{prefix} missing old expert ID(s) {expert_ids}"
+            for prefix, expert_ids in sorted(missing_by_prefix.items())
+        )
+        raise ValueError(
+            "Checkpoint is missing selected MoE expert weights: "
+            f"{details}. Ensure --config and --ckpt-path describe the same MoE expert layout."
+        )
+
+    if incomplete_by_prefix:
+        detail_parts = []
+        for prefix, missing_by_expert in sorted(incomplete_by_prefix.items()):
+            for expert_id, suffixes in sorted(missing_by_expert.items()):
+                detail_parts.append(f"{prefix} old expert ID {expert_id} missing parameter suffix(es) {suffixes}")
+        raise ValueError(
+            "Checkpoint has incomplete selected MoE expert weights: "
+            f"{'; '.join(detail_parts)}. Ensure --config and --ckpt-path describe the same MoE expert layout."
+        )
 
 
 def _prepare_output_dir(path: Path) -> None:

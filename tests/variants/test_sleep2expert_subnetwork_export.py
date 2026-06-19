@@ -185,6 +185,52 @@ def test_sleep2expert_export_subnetwork_rejects_channel_with_too_few_experts(tmp
         )
 
 
+def test_sleep2expert_export_subnetwork_rejects_missing_selected_expert_weights(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    ckpt_path = tmp_path / "source.ckpt"
+    output_dir = tmp_path / "exported"
+    _write_config(config_path, finetune=False)
+    _write_checkpoint(ckpt_path)
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    checkpoint["state_dict"].pop("model.encoder.encoder.layer.0.moe_ffn.experts.4.dense_in.weight")
+    torch.save(checkpoint, ckpt_path)
+
+    with pytest.raises(ValueError, match="missing selected MoE expert weights.*old expert ID\\(s\\) \\[4\\]"):
+        export_subnetwork(
+            argparse.Namespace(
+                config=config_path,
+                ckpt_path=ckpt_path,
+                route_expert_groups=["shared", "cardiac"],
+                output_dir=output_dir,
+            )
+        )
+
+    assert not output_dir.exists()
+
+
+def test_sleep2expert_export_subnetwork_rejects_missing_learned_router_weights(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    ckpt_path = tmp_path / "source.ckpt"
+    output_dir = tmp_path / "exported"
+    _write_config(config_path, finetune=False)
+    _write_checkpoint(ckpt_path)
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    checkpoint["state_dict"].pop("model.encoder.encoder.layer.0.moe_ffn.router.router.bias")
+    torch.save(checkpoint, ckpt_path)
+
+    with pytest.raises(ValueError, match="missing learned MoE router weights.*router\\.router.*bias"):
+        export_subnetwork(
+            argparse.Namespace(
+                config=config_path,
+                ckpt_path=ckpt_path,
+                route_expert_groups=["shared", "cardiac"],
+                output_dir=output_dir,
+            )
+        )
+
+    assert not output_dir.exists()
+
+
 def test_sleep2expert_export_subnetwork_rejects_nonempty_output_dir(tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     ckpt_path = tmp_path / "source.ckpt"
