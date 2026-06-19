@@ -326,9 +326,7 @@ def test_run_inference_logs_metrics_and_files_to_wandb(
     assert len(captured["artifact_name"]) <= 128
     assert captured["artifact_type"] == "inference"
     if package_name == "sleep2expert":
-        assert captured["artifact_metadata"] == {
-            "route_filter": {"active": False, "groups": [], "expert_ids": []}
-        }
+        assert captured["artifact_metadata"] == {"route_filter": {"active": False, "groups": [], "expert_ids": []}}
     assert captured["artifact_files"] == [
         (args.inference_metrics_csv_path.name, "metrics.csv"),
         (args.inference_prediction_csv_path.name, "predictions.csv"),
@@ -468,9 +466,7 @@ def test_sleep2expert_init_wandb_includes_route_filter_metadata(monkeypatch: pyt
     assert config["route_filter_expert_ids"] == [0, 3, 4]
 
 
-def test_sleep2expert_wandb_artifact_records_route_filter_metadata(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_sleep2expert_wandb_artifact_records_route_filter_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     infer_mod = importlib.import_module("sleep2expert.infer")
     captured: dict[str, object] = {}
     metrics_path = tmp_path / "metrics.csv"

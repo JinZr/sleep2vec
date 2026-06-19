@@ -22,6 +22,7 @@ from sleep2expert.backbones.roformer.moe import apply_route_expert_filter, resol
 from sleep2expert.checkpoints import average_checkpoints, load_checkpoint, select_checkpoints
 from sleep2expert.common import apply_finetune_config, remap_stage_labels
 from sleep2expert.infer import _build_inference_loader
+from sleep2expert.results import _route_filter_payload
 from sleep2expert.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2expert.utils import move_to_device
 from sleep2expert.visualization.routing_heatmap import render_routing_usage_heatmap
@@ -68,6 +69,7 @@ def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
             raise ValueError("Routing analysis requires model.backbone.moe.enabled=true.")
         route_expert_groups = _route_expert_groups(args)
         active_expert_ids = resolve_route_expert_ids(moe_cfg, route_expert_groups)
+        _set_route_filter_metadata(args, route_expert_groups, active_expert_ids)
 
         wandb_run, created_wandb_run = _init_wandb(args)
         dataloader = _build_inference_loader(args)
@@ -395,13 +397,46 @@ def _route_filter_label(args: argparse.Namespace) -> str:
     return ",".join(groups or [])
 
 
+def _set_route_filter_metadata(
+    args: argparse.Namespace,
+    group_names: t.Sequence[str] | None,
+    expert_ids: t.Sequence[int] | None,
+) -> None:
+    groups = [str(group_name) for group_name in (group_names or [])]
+    args.route_filter_active = bool(groups)
+    args.route_filter_groups = groups if groups else []
+    args.route_filter_expert_ids = [int(expert_id) for expert_id in (expert_ids or [])] if groups else []
+
+
+def _route_filter_wandb_config(args: argparse.Namespace) -> dict[str, t.Any]:
+    route_filter = _route_filter_payload(args)
+    return {
+        "route_filter_active": route_filter["active"],
+        "route_filter_groups": route_filter["groups"],
+        "route_filter_expert_ids": route_filter["expert_ids"],
+    }
+
+
+def _update_existing_wandb_route_filter_config(run, args: argparse.Namespace) -> None:
+    config = getattr(run, "config", None)
+    if config is None:
+        return
+    payload = _route_filter_wandb_config(args)
+    try:
+        config.update(payload, allow_val_change=True)
+    except TypeError:
+        config.update(payload)
+
+
 def _init_wandb(args: argparse.Namespace):
     if not getattr(args, "wandb", False):
         return None, False
     if getattr(wandb, "run", None) is not None:
+        _update_existing_wandb_route_filter_config(wandb.run, args)
         return wandb.run, False
 
     output_path = Path(getattr(args, "output", "routing"))
+    route_filter_config = _route_filter_wandb_config(args)
     init_kwargs = {
         "project": getattr(args, "wandb_project", None) or "sleep2expert-routing-analysis",
         "name": getattr(args, "wandb_name", None)
@@ -426,6 +461,7 @@ def _init_wandb(args: argparse.Namespace):
                 else None
             ),
             "avg_ckpts": getattr(args, "avg_ckpts", None),
+            **route_filter_config,
         },
     }
     init_kwargs = {key: value for key, value in init_kwargs.items() if value is not None}

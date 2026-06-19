@@ -337,6 +337,9 @@ def test_run_routing_analysis_writes_fixed_columns(monkeypatch, tmp_path):
 
 def test_run_routing_analysis_applies_route_expert_groups(monkeypatch, tmp_path):
     output = tmp_path / "routing.csv"
+    init_calls = []
+    finish_calls = []
+    run_obj = object()
     batch = {
         "id": ["s7"],
         "length": torch.tensor([2]),
@@ -387,6 +390,9 @@ def test_run_routing_analysis_applies_route_expert_groups(monkeypatch, tmp_path)
     monkeypatch.setattr(routing_analysis, "_build_inference_loader", lambda args: [batch])
     monkeypatch.setattr(routing_analysis, "Sleep2vecFinetuning", DummyModule)
     monkeypatch.setattr(routing_analysis, "_load_analysis_weights", lambda module, args: None)
+    monkeypatch.setattr(routing_analysis.wandb, "run", None, raising=False)
+    monkeypatch.setattr(routing_analysis.wandb, "init", lambda **kwargs: init_calls.append(kwargs) or run_obj)
+    monkeypatch.setattr(routing_analysis.wandb, "finish", lambda: finish_calls.append(True))
 
     rows = run_routing_analysis(
         Namespace(
@@ -408,6 +414,7 @@ def test_run_routing_analysis_applies_route_expert_groups(monkeypatch, tmp_path)
             weight_decay=0.0,
             pretrained_backbone_path=None,
             route_expert_groups=["shared"],
+            wandb=True,
         )
     )
 
@@ -417,6 +424,50 @@ def test_run_routing_analysis_applies_route_expert_groups(monkeypatch, tmp_path)
         written_rows = list(csv.DictReader(file_obj))
     assert {row["expert_id"] for row in written_rows} == {"0"}
     assert {row["route_filter_groups"] for row in written_rows} == {"shared"}
+    assert init_calls[0]["config"]["route_filter_active"] is True
+    assert init_calls[0]["config"]["route_filter_groups"] == ["shared"]
+    assert init_calls[0]["config"]["route_filter_expert_ids"] == [0]
+    assert finish_calls == [True]
+
+
+def test_init_wandb_updates_existing_run_with_route_filter_metadata(monkeypatch, tmp_path):
+    updates = []
+
+    class DummyConfig:
+        def update(self, payload, allow_val_change=False):
+            updates.append((payload, allow_val_change))
+
+    existing_run = SimpleNamespace(config=DummyConfig())
+    monkeypatch.setattr(routing_analysis.wandb, "run", existing_run, raising=False)
+    monkeypatch.setattr(
+        routing_analysis.wandb,
+        "init",
+        lambda **kwargs: pytest.fail("existing W&B run should be reused"),
+    )
+
+    args = Namespace(
+        wandb=True,
+        output=tmp_path / "routing.csv",
+        eval_split="test",
+        route_filter_active=True,
+        route_filter_groups=["shared", "cardiac"],
+        route_filter_expert_ids=[0, 3, 4],
+    )
+
+    run, created = routing_analysis._init_wandb(args)
+
+    assert run is existing_run
+    assert created is False
+    assert updates == [
+        (
+            {
+                "route_filter_active": True,
+                "route_filter_groups": ["shared", "cardiac"],
+                "route_filter_expert_ids": [0, 3, 4],
+            },
+            True,
+        )
+    ]
 
 
 def test_run_routing_analysis_writes_analysis_tag_and_split_columns(monkeypatch, tmp_path):
