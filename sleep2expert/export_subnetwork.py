@@ -17,7 +17,7 @@ from sleep2expert.checkpoints import get_state_dict_from_checkpoint, load_checkp
 from sleep2expert.config import load_finetune_config, load_pretrain_config
 
 _EXPERT_KEY_RE = re.compile(r"^(?P<prefix>.*moe_ffn\.experts\.)(?P<expert_id>\d+)(?P<suffix>\..*)$")
-_MOE_LAYER_KEY_RE = re.compile(r"^(?P<root>.*\.layer\.)\d+\.moe_ffn\.")
+_MOE_LAYER_KEY_RE = re.compile(r"^(?P<root>.*\.layer\.)(?P<layer_idx>\d+)\.moe_ffn\.")
 _ROUTER_KEY_RE = re.compile(r"^(?P<prefix>.*moe_ffn\.)router\.router\.(?P<param>weight|bias)$")
 _RESUME_STATE_KEYS = ("optimizer_states", "lr_schedulers")
 
@@ -143,6 +143,8 @@ def _rewrite_checkpoint(
     exported_config: dict[str, t.Any],
 ) -> tuple[dict[str, t.Any], dict[str, t.Any]]:
     state_dict = get_state_dict_from_checkpoint(checkpoint)
+    moe_block = exported_config["model"]["backbone"]["moe"]
+    router_type = moe_block.get("router_type", "learned")
     new_state: dict[str, t.Any] = {}
     selected_index = torch.tensor(list(selected_expert_ids), dtype=torch.long)
     expert_keys_seen = 0
@@ -150,12 +152,15 @@ def _rewrite_checkpoint(
     router_keys_sliced = 0
     expert_suffixes_by_prefix: dict[str, dict[int, set[str]]] = {}
     moe_layer_roots: set[str] = set()
+    moe_layer_prefixes: set[str] = set()
     router_params_by_prefix: dict[str, set[str]] = {}
 
     for key, value in state_dict.items():
         layer_match = _MOE_LAYER_KEY_RE.match(key)
         if layer_match is not None:
-            moe_layer_roots.add(layer_match.group("root"))
+            root = layer_match.group("root")
+            moe_layer_roots.add(root)
+            moe_layer_prefixes.add(f"{root}{layer_match.group('layer_idx')}.moe_ffn.")
 
         expert_match = _EXPERT_KEY_RE.match(key)
         if expert_match is not None:
@@ -174,6 +179,11 @@ def _rewrite_checkpoint(
 
         router_match = _ROUTER_KEY_RE.match(key)
         if router_match is not None:
+            if router_type != "learned":
+                raise ValueError(
+                    f"Checkpoint contains learned MoE router weights for router_type='{router_type}': {key}. "
+                    "Ensure --config and --ckpt-path describe the same MoE expert layout."
+                )
             if not isinstance(value, torch.Tensor):
                 raise ValueError(f"Router tensor '{key}' must be a torch.Tensor.")
             if value.dim() == 0 or max(selected_expert_ids) >= value.shape[0]:
@@ -188,17 +198,17 @@ def _rewrite_checkpoint(
 
     if expert_keys_seen == 0:
         raise ValueError("Checkpoint state_dict does not contain sleep2expert MoE expert weights.")
-    moe_block = exported_config["model"]["backbone"]["moe"]
     _validate_expected_moe_layer_expert_weights(
         expert_suffixes_by_prefix,
         moe_layer_roots,
+        moe_layer_prefixes,
         layer_indices=moe_block.get("layer_indices", []),
     )
     _validate_selected_expert_weights(expert_suffixes_by_prefix, selected_expert_ids)
     _validate_learned_router_weights(
         expert_suffixes_by_prefix,
         router_params_by_prefix,
-        router_type=moe_block.get("router_type", "learned"),
+        router_type=router_type,
     )
 
     exported_checkpoint = dict(checkpoint)
@@ -226,6 +236,7 @@ def _rewrite_checkpoint(
 def _validate_expected_moe_layer_expert_weights(
     expert_suffixes_by_prefix: dict[str, dict[int, set[str]]],
     moe_layer_roots: set[str],
+    moe_layer_prefixes: set[str],
     *,
     layer_indices: t.Sequence[int],
 ) -> None:
@@ -239,12 +250,22 @@ def _validate_expected_moe_layer_expert_weights(
             "Ensure --config and --ckpt-path describe the same MoE expert layout."
         )
 
-    expected_prefixes = [
-        f"{root}{layer_offset}.moe_ffn.experts."
-        for root in sorted(moe_layer_roots)
-        for layer_offset in expected_layer_offsets
+    expected_layer_prefixes = [
+        f"{root}{layer_offset}.moe_ffn." for root in sorted(moe_layer_roots) for layer_offset in expected_layer_offsets
     ]
-    missing_prefixes = [prefix for prefix in expected_prefixes if prefix not in expert_suffixes_by_prefix]
+    unexpected_prefixes = [prefix for prefix in sorted(moe_layer_prefixes) if prefix not in expected_layer_prefixes]
+    if unexpected_prefixes:
+        details = "; ".join(unexpected_prefixes)
+        raise ValueError(
+            "Checkpoint contains unexpected MoE layer weights: "
+            f"{details}. Ensure --config and --ckpt-path describe the same MoE expert layout."
+        )
+
+    missing_prefixes = [
+        f"{prefix}experts."
+        for prefix in expected_layer_prefixes
+        if f"{prefix}experts." not in expert_suffixes_by_prefix
+    ]
 
     if missing_prefixes:
         details = "; ".join(missing_prefixes)

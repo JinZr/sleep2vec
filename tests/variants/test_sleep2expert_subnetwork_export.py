@@ -18,6 +18,7 @@ def _write_config(
     finetune: bool,
     num_hidden_layers: int = 1,
     moe_layer_indices: list[int] | None = None,
+    router_type: str = "learned",
 ) -> None:
     payload = {
         "model": {
@@ -33,7 +34,7 @@ def _write_config(
                     "num_experts": 6,
                     "top_k": 2,
                     "expert_hidden_size": 8,
-                    "router_type": "learned",
+                    "router_type": router_type,
                     "use_modality_group_mask": True,
                     "expert_groups": {
                         "shared": [0, 5],
@@ -237,6 +238,26 @@ def test_sleep2expert_export_subnetwork_rejects_missing_learned_router_weights(t
     assert not output_dir.exists()
 
 
+def test_sleep2expert_export_subnetwork_rejects_learned_router_weights_for_hard_router(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    ckpt_path = tmp_path / "source.ckpt"
+    output_dir = tmp_path / "exported"
+    _write_config(config_path, finetune=False, router_type="hard_group")
+    _write_checkpoint(ckpt_path)
+
+    with pytest.raises(ValueError, match="contains learned MoE router weights.*router_type='hard_group'"):
+        export_subnetwork(
+            argparse.Namespace(
+                config=config_path,
+                ckpt_path=ckpt_path,
+                route_expert_groups=["shared", "cardiac"],
+                output_dir=output_dir,
+            )
+        )
+
+    assert not output_dir.exists()
+
+
 def test_sleep2expert_export_subnetwork_rejects_missing_expected_moe_layer(tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     ckpt_path = tmp_path / "source.ckpt"
@@ -271,6 +292,38 @@ def test_sleep2expert_export_subnetwork_rejects_missing_expected_moe_layer_route
     torch.save(checkpoint, ckpt_path)
 
     with pytest.raises(ValueError, match="missing learned MoE router weights.*layer\\.1\\.moe_ffn\\.router\\.router"):
+        export_subnetwork(
+            argparse.Namespace(
+                config=config_path,
+                ckpt_path=ckpt_path,
+                route_expert_groups=["shared", "cardiac"],
+                output_dir=output_dir,
+            )
+        )
+
+    assert not output_dir.exists()
+
+
+def test_sleep2expert_export_subnetwork_rejects_unexpected_moe_layer(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    ckpt_path = tmp_path / "source.ckpt"
+    output_dir = tmp_path / "exported"
+    _write_config(config_path, finetune=False, num_hidden_layers=2, moe_layer_indices=[1])
+    _write_checkpoint(ckpt_path)
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    checkpoint["state_dict"]["model.encoder.encoder.layer.1.moe_ffn.router.router.weight"] = torch.arange(
+        12, dtype=torch.float32
+    ).view(6, 2)
+    checkpoint["state_dict"]["model.encoder.encoder.layer.1.moe_ffn.router.router.bias"] = torch.arange(
+        6, dtype=torch.float32
+    )
+    for expert_id in range(6):
+        checkpoint["state_dict"][f"model.encoder.encoder.layer.1.moe_ffn.experts.{expert_id}.dense_in.weight"] = (
+            torch.full((1,), float(expert_id))
+        )
+    torch.save(checkpoint, ckpt_path)
+
+    with pytest.raises(ValueError, match="unexpected MoE layer weights.*layer\\.1\\.moe_ffn"):
         export_subnetwork(
             argparse.Namespace(
                 config=config_path,
