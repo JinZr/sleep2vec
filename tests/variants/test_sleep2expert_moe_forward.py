@@ -5,6 +5,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from sleep2expert.backbones.roformer import RoFormerConfig, RoFormerEncoderModel
+from sleep2expert.backbones.roformer.moe import apply_route_expert_filter, resolve_route_expert_ids
 from sleep2expert.config import (
     BackboneConfig,
     ChannelAggConfig,
@@ -200,6 +201,52 @@ def test_sleep2expert_moe_group_mask_excludes_disallowed_experts():
     for aux in output.moe_aux:
         assert (aux.topk_indices.unsqueeze(-1) == allowed).any(dim=-1).all()
         assert not (aux.topk_indices == 1).any()
+
+
+def test_sleep2expert_route_expert_filter_excludes_disallowed_experts():
+    torch.manual_seed(0)
+    model = _model(_moe_config(router_type="learned")).eval()
+    apply_route_expert_filter(model, model.config.moe, ["neuro"])
+    inputs = torch.randn(2, 4, 16)
+
+    with torch.no_grad():
+        output = model(inputs_embeds=inputs, modality_name="eeg", collect_moe_aux=True)
+
+    assert output.moe_aux is not None
+    allowed = torch.tensor([2, 3])
+    for aux in output.moe_aux:
+        assert (aux.topk_indices.unsqueeze(-1) == allowed).any(dim=-1).all()
+        assert not (aux.topk_indices == 0).any()
+        assert not (aux.topk_indices == 1).any()
+
+
+def test_sleep2expert_route_expert_filter_intersects_modality_group_mask():
+    model = _model(_moe_config(router_type="hard_group", top_k=1)).eval()
+    apply_route_expert_filter(model, model.config.moe, ["neuro"])
+    inputs = torch.randn(2, 4, 16)
+
+    with torch.no_grad():
+        output = model(inputs_embeds=inputs, modality_name="ppg", collect_moe_aux=True)
+
+    assert output.moe_aux is not None
+    for aux in output.moe_aux:
+        assert (aux.topk_indices == 3).all()
+
+
+def test_sleep2expert_route_expert_filter_rejects_unknown_group():
+    moe_cfg = _moe_config()
+
+    with pytest.raises(ValueError, match="Unknown route expert group"):
+        resolve_route_expert_ids(moe_cfg, ["unknown"])
+
+
+def test_sleep2expert_route_expert_filter_requires_enough_candidates():
+    model = _model(_moe_config(router_type="learned", top_k=2)).eval()
+    apply_route_expert_filter(model, model.config.moe, ["cardiac"])
+    inputs = torch.randn(2, 4, 16)
+
+    with pytest.raises(ValueError, match="after route expert group filtering"):
+        model(inputs_embeds=inputs, modality_name="eeg", collect_moe_aux=True)
 
 
 def test_sleep2expert_moe_entropy_uses_full_router_distribution():

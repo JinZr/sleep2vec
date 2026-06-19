@@ -15,14 +15,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2expert.backbones.roformer.moe import apply_route_expert_filter
 from sleep2expert.checkpoints import average_checkpoints, select_checkpoints
 from sleep2expert.common import apply_finetune_config
 from sleep2expert.distributed import is_rank_zero_process
 from sleep2expert.results import (
+    _route_filter_flat_metadata,
+    _route_filter_payload,
     prepare_inference_result_paths,
     save_inference_manifest,
     save_prediction_csv,
     save_result_csv,
+    set_route_filter_metadata,
 )
 from sleep2expert.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2expert.utils import _build_finetune_loader
@@ -57,6 +61,7 @@ def _init_wandb(args):
         return None
 
     inference_preset_path = getattr(args, "inference_preset_path", None) or getattr(args, "finetune_preset_path", None)
+    route_filter = _route_filter_flat_metadata(args)
     init_kwargs = {
         "project": args.wandb_project,
         "name": args.wandb_name,
@@ -76,6 +81,7 @@ def _init_wandb(args):
             "precision": args.precision,
             "avg_ckpts": args.avg_ckpts,
             "inference_preset_path": str(inference_preset_path) if inference_preset_path is not None else None,
+            **route_filter,
         },
     }
     init_kwargs = {k: v for k, v in init_kwargs.items() if v is not None}
@@ -88,7 +94,9 @@ def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count):
     # W&B caps artifact names at 128 chars; CSVs and the manifest keep the full prediction_run_id.
     run_id_hash = args.prediction_run_id.rsplit("__", 1)[-1]
     artifact = wandb.Artifact(
-        f"inference-{args.timestamp_utc}__{args.inference_namespace}__{run_id_hash}", type="inference"
+        f"inference-{args.timestamp_utc}__{args.inference_namespace}__{run_id_hash}",
+        type="inference",
+        metadata={"route_filter": _route_filter_payload(args)},
     )
     artifact.add_file(str(args.inference_metrics_csv_path), name="metrics.csv")
     artifact.add_file(str(args.inference_prediction_csv_path), name="predictions.csv")
@@ -153,6 +161,12 @@ def run_inference(args):
         if unexpected_keys:
             logging.warning("Unexpected keys when loading averaged checkpoint: %s", unexpected_keys)
         ckpt_path = None
+
+    route_expert_groups = getattr(args, "route_expert_groups", None)
+    active_expert_ids = None
+    if route_expert_groups:
+        active_expert_ids = apply_route_expert_filter(model, model_cfg.backbone.moe, route_expert_groups)
+    set_route_filter_metadata(args, route_expert_groups, active_expert_ids)
 
     prepare_inference_result_paths(args, namespace="sleep2expert", checkpoint_paths=selected_ckpt_paths)
     logging.info("Running inference on split=%s with %s samples/batch", args.eval_split, args.batch_size)
@@ -283,6 +297,13 @@ def parse_args():
         type=str,
         default=None,
         help="Optional pretrain-model init checkpoint to load before downstream weights.",
+    )
+    parser.add_argument(
+        "--route-expert-groups",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Optional MoE expert group names to keep active during inference.",
     )
     parser.add_argument(
         "--wandb",

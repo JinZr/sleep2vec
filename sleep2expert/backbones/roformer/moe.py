@@ -3,6 +3,7 @@ from __future__ import annotations
 """Sparse MoE feed-forward block for standalone RoFormer."""
 
 from dataclasses import dataclass
+import typing as t
 from typing import Callable
 
 import torch
@@ -32,8 +33,16 @@ class TopKRouter(nn.Module):
         self.num_experts = self.moe.num_experts
         self.top_k = self.moe.top_k
         self.router_type = self.moe.router_type
+        # Runtime-only restriction; keep checkpoint/state_dict keys unchanged.
+        self.route_filter_expert_ids: tuple[int, ...] | None = None
         if self.router_type == "learned":
             self.router = nn.Linear(config.hidden_size, self.num_experts)
+
+    def set_route_filter_expert_ids(self, expert_ids: t.Iterable[int] | None) -> None:
+        if expert_ids is None:
+            self.route_filter_expert_ids = None
+            return
+        self.route_filter_expert_ids = tuple(sorted({int(expert_id) for expert_id in expert_ids}))
 
     def forward(
         self,
@@ -44,7 +53,8 @@ class TopKRouter(nn.Module):
         allowed_experts = self._allowed_experts(hidden_states.device, modality_name)
         if allowed_experts.numel() < self.top_k:
             raise ValueError(
-                f"MoE modality '{modality_name}' exposes {allowed_experts.numel()} experts, " f"but top_k={self.top_k}."
+                f"MoE modality '{modality_name}' exposes {allowed_experts.numel()} experts after route expert "
+                f"group filtering, but top_k={self.top_k}."
             )
 
         if self.router_type in {"hard_modality", "hard_group"}:
@@ -71,15 +81,20 @@ class TopKRouter(nn.Module):
 
     def _allowed_experts(self, device: torch.device, modality_name: str | None) -> torch.Tensor:
         if not self.moe.use_modality_group_mask:
-            return torch.arange(self.num_experts, device=device)
-        if modality_name is None or modality_name not in self.moe.modality_to_groups:
-            raise ValueError(
-                "modality_name must reference model.backbone.moe.modality_to_groups " "when MoE group mask is enabled."
-            )
+            expert_ids = set(range(self.num_experts))
+        else:
+            if modality_name is None or modality_name not in self.moe.modality_to_groups:
+                raise ValueError(
+                    "modality_name must reference model.backbone.moe.modality_to_groups "
+                    "when MoE group mask is enabled."
+                )
 
-        expert_ids: set[int] = set()
-        for group_name in self.moe.modality_to_groups[modality_name]:
-            expert_ids.update(self.moe.expert_groups[group_name])
+            expert_ids = set()
+            for group_name in self.moe.modality_to_groups[modality_name]:
+                expert_ids.update(self.moe.expert_groups[group_name])
+        if self.route_filter_expert_ids is not None:
+            # Keep modality eligibility first, then narrow it for specialist-style evaluation.
+            expert_ids &= set(self.route_filter_expert_ids)
         return torch.tensor(sorted(expert_ids), device=device, dtype=torch.long)
 
     def _mask_logits(self, router_logits: torch.Tensor, allowed_experts: torch.Tensor) -> torch.Tensor:
@@ -241,3 +256,38 @@ class SparseMoEFFN(nn.Module):
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.layer_norm(hidden_states + input_tensor)
         return hidden_states, routing if collect_aux else None
+
+
+def resolve_route_expert_ids(moe_cfg, group_names: t.Sequence[str] | None) -> tuple[int, ...] | None:
+    if not group_names:
+        return None
+    if moe_cfg is None or not getattr(moe_cfg, "enabled", False):
+        raise ValueError("--route-expert-groups requires model.backbone.moe.enabled=true.")
+
+    expert_groups = getattr(moe_cfg, "expert_groups", None) or {}
+    missing = [group_name for group_name in group_names if group_name not in expert_groups]
+    if missing:
+        raise ValueError(f"Unknown route expert group(s): {missing}. Available groups: {sorted(expert_groups)}.")
+
+    expert_ids: set[int] = set()
+    for group_name in group_names:
+        expert_ids.update(int(expert_id) for expert_id in expert_groups[group_name])
+    return tuple(sorted(expert_ids))
+
+
+def apply_route_expert_filter(
+    module: nn.Module,
+    moe_cfg,
+    group_names: t.Sequence[str] | None,
+) -> tuple[int, ...] | None:
+    expert_ids = resolve_route_expert_ids(moe_cfg, group_names)
+    for child in module.modules():
+        if isinstance(child, TopKRouter):
+            child.set_route_filter_expert_ids(expert_ids)
+    return expert_ids
+
+
+def clear_route_expert_filter(module: nn.Module) -> None:
+    for child in module.modules():
+        if isinstance(child, TopKRouter):
+            child.set_route_filter_expert_ids(None)

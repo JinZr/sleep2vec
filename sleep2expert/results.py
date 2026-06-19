@@ -42,6 +42,9 @@ RESULT_METADATA_COLUMNS = (
     "ckpt_tag",
     "task_family",
     "timestamp_utc",
+    "route_filter_active",
+    "route_filter_groups",
+    "route_filter_expert_ids",
     "lr",
     "batch_size",
     "n_few_shot",
@@ -94,6 +97,7 @@ def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: A
     if prediction_run_id not in (None, ""):
         new_row["prediction_run_id"] = prediction_run_id
         _add_inference_run_metadata(new_row, args)
+        _add_route_filter_result_metadata(new_row, args)
     new_row["config_path"] = _stringify_optional_path(getattr(args, "config", None)) if args is not None else ""
     new_row["eval_split"] = getattr(args, "eval_split", None) if args is not None else None
 
@@ -213,6 +217,8 @@ def make_prediction_run_id(
         "eval_split": eval_split,
         "timestamp_utc": timestamp,
         "launch_nonce": launch_nonce,
+        # Route filters change model behavior but stay out of the visible run-id slug.
+        "route_filter": _route_filter_payload(args),
     }
     short_hash = hashlib.sha1(json.dumps(hash_payload, sort_keys=True).encode("utf-8")).hexdigest()[:8]
     pieces = [timestamp, namespace, experiment_version, label_name, eval_split, ckpt_tag, short_hash]
@@ -315,6 +321,7 @@ def save_inference_manifest(
             "inference_preset_path": _stringify_optional_path(getattr(args, "inference_preset_path", None)),
             "finetune_preset_path": _stringify_optional_path(getattr(args, "finetune_preset_path", None)),
         },
+        "route_filter": _route_filter_payload(args),
         "metrics": dict(metrics or {}),
         "prediction_row_count": prediction_row_count,
     }
@@ -391,6 +398,63 @@ def _add_inference_run_metadata(row: dict[str, Any], args: Any | None) -> None:
     row["ckpt_tag"] = getattr(args, "ckpt_tag", None)
     row["task_family"] = getattr(args, "task_family", None)
     row["timestamp_utc"] = getattr(args, "timestamp_utc", None)
+
+
+def _route_filter_payload(args: Any | None) -> dict[str, Any]:
+    groups = _as_string_list(getattr(args, "route_filter_groups", None) if args is not None else None)
+    expert_ids = _as_int_list(getattr(args, "route_filter_expert_ids", None) if args is not None else None)
+    active = bool(getattr(args, "route_filter_active", bool(groups)) if args is not None else False)
+    if not active:
+        groups = []
+        expert_ids = []
+    return {"active": active, "groups": groups, "expert_ids": expert_ids}
+
+
+def set_route_filter_metadata(args: Any, group_names: Any, expert_ids: Any) -> None:
+    groups = _as_string_list(group_names)
+    args.route_filter_active = bool(groups)
+    args.route_filter_groups = groups
+    args.route_filter_expert_ids = _as_int_list(expert_ids) if groups else []
+
+
+def _route_filter_flat_metadata(args: Any | None) -> dict[str, Any]:
+    payload = _route_filter_payload(args)
+    return {
+        "route_filter_active": payload["active"],
+        "route_filter_groups": payload["groups"],
+        "route_filter_expert_ids": payload["expert_ids"],
+    }
+
+
+def _add_route_filter_result_metadata(row: dict[str, Any], args: Any | None) -> None:
+    payload = _route_filter_flat_metadata(args)
+    row["route_filter_active"] = payload["route_filter_active"]
+    row["route_filter_groups"] = ",".join(payload["route_filter_groups"])
+    row["route_filter_expert_ids"] = ",".join(str(expert_id) for expert_id in payload["route_filter_expert_ids"])
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [] if value == "" else [value]
+    try:
+        return [str(item) for item in value]
+    except TypeError:
+        return [str(value)]
+
+
+def _as_int_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [] if value == "" else [value]
+    else:
+        try:
+            values = list(value)
+        except TypeError:
+            values = [value]
+    return [int(item) for item in values]
 
 
 def _stringify_optional_path(value: Any) -> str:

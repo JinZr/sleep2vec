@@ -18,9 +18,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2expert.backbones.roformer.moe import apply_route_expert_filter, resolve_route_expert_ids
 from sleep2expert.checkpoints import average_checkpoints, load_checkpoint, select_checkpoints
 from sleep2expert.common import apply_finetune_config, remap_stage_labels
 from sleep2expert.infer import _build_inference_loader
+from sleep2expert.results import _route_filter_flat_metadata, set_route_filter_metadata
 from sleep2expert.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2expert.utils import move_to_device
 from sleep2expert.visualization.routing_heatmap import render_routing_usage_heatmap
@@ -34,6 +36,7 @@ ROUTING_CSV_COLUMNS = [
     "layer_idx",
     "expert_id",
     "expert_group",
+    "route_filter_groups",
     "usage_count",
     "mean_router_prob",
     "router_entropy",
@@ -64,6 +67,9 @@ def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
         moe_cfg = getattr(model_cfg.backbone, "moe", None)
         if moe_cfg is None or not getattr(moe_cfg, "enabled", False):
             raise ValueError("Routing analysis requires model.backbone.moe.enabled=true.")
+        route_expert_groups = _route_expert_groups(args)
+        active_expert_ids = resolve_route_expert_ids(moe_cfg, route_expert_groups)
+        set_route_filter_metadata(args, route_expert_groups, active_expert_ids)
 
         wandb_run, created_wandb_run = _init_wandb(args)
         dataloader = _build_inference_loader(args)
@@ -77,6 +83,8 @@ def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
             _load_analysis_weights(module, args)
         module = module.to(torch.device(args.device))
         module.eval()
+        if route_expert_groups:
+            apply_route_expert_filter(module, moe_cfg, route_expert_groups)
 
         expert_groups = _build_expert_group_lookup(moe_cfg)
         rows: list[dict[str, t.Any]] = []
@@ -84,6 +92,9 @@ def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
             for batch in tqdm(dataloader, desc=f"Exporting routing ({args.eval_split})", unit="batch"):
                 batch = move_to_device(batch, args.device)
                 eval_model = module._get_eval_model()
+                if route_expert_groups and isinstance(eval_model, torch.nn.Module):
+                    # Model averaging can return a separate eval copy, so filter the active forward path too.
+                    apply_route_expert_filter(eval_model, moe_cfg, route_expert_groups)
                 eval_model(batch)
                 moe_aux = getattr(eval_model.backbone, "last_moe_aux", None)
                 if not moe_aux:
@@ -102,6 +113,7 @@ def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
                 Path(heatmap_output_dir),
                 split=getattr(args, "eval_split", ""),
                 analysis_tag=getattr(args, "analysis_tag", ""),
+                active_expert_ids=active_expert_ids,
                 log_to_wandb=wandb_run is not None,
             )
         return rows
@@ -119,6 +131,7 @@ def build_routing_rows(
     rows: list[dict[str, t.Any]] = []
     label_name = str(getattr(args, "label_name", ""))
     is_seq = bool(getattr(args, "is_seq", False))
+    route_filter_groups = _route_filter_label(args)
 
     for record in moe_aux:
         modality = record.get("modality")
@@ -141,6 +154,7 @@ def build_routing_rows(
                     args=args,
                     expert_groups=expert_groups,
                     modality=modality,
+                    route_filter_groups=route_filter_groups,
                 )
             )
     return rows
@@ -156,6 +170,7 @@ def _build_aux_rows(
     args: argparse.Namespace,
     expert_groups: dict[int, str],
     modality: str | None,
+    route_filter_groups: str,
 ) -> list[dict[str, t.Any]]:
     router_probs = aux.router_probs.detach()
     topk_indices = aux.topk_indices.detach()
@@ -217,6 +232,7 @@ def _build_aux_rows(
                         "layer_idx": int(aux.layer_idx),
                         "expert_id": expert_id,
                         "expert_group": expert_groups.get(expert_id, ""),
+                        "route_filter_groups": route_filter_groups,
                         "usage_count": usage_count,
                         "mean_router_prob": float(selected_router_probs[token_expert_mask, expert_id].mean().item()),
                         "router_entropy": float(selected_entropy[token_expert_mask].mean().item()),
@@ -266,7 +282,12 @@ def _build_expert_group_lookup(moe_cfg) -> dict[int, str]:
     return {expert_id: "|".join(sorted(group_names)) for expert_id, group_names in names_by_expert.items()}
 
 
-def build_routing_usage_matrices(rows: t.Sequence[dict[str, t.Any]], moe_cfg) -> dict[str, np.ndarray]:
+def build_routing_usage_matrices(
+    rows: t.Sequence[dict[str, t.Any]],
+    moe_cfg,
+    *,
+    active_expert_ids: t.Sequence[int] | None = None,
+) -> dict[str, np.ndarray]:
     layer_ids = [int(layer_idx) for layer_idx in getattr(moe_cfg, "layer_indices", [])]
     num_experts = int(getattr(moe_cfg, "num_experts", 0))
     if not layer_ids or num_experts <= 0:
@@ -277,6 +298,9 @@ def build_routing_usage_matrices(rows: t.Sequence[dict[str, t.Any]], moe_cfg) ->
     matrices: dict[str, np.ndarray] = {}
     for modality in modalities:
         allowed_experts = _allowed_experts_for_modality(moe_cfg, modality, num_experts=num_experts)
+        if active_expert_ids is not None:
+            # Filtered-out experts should render as unavailable, not as available experts with zero usage.
+            allowed_experts &= {int(expert_id) for expert_id in active_expert_ids}
         matrix = np.full((len(layer_ids), num_experts), np.nan, dtype=np.float32)
         for expert_id in allowed_experts:
             matrix[:, expert_id] = 0.0
@@ -315,9 +339,10 @@ def write_routing_heatmaps(
     *,
     split: str,
     analysis_tag: str,
+    active_expert_ids: t.Sequence[int] | None = None,
     log_to_wandb: bool = False,
 ) -> dict[str, Path]:
-    matrices = build_routing_usage_matrices(rows, moe_cfg)
+    matrices = build_routing_usage_matrices(rows, moe_cfg, active_expert_ids=active_expert_ids)
     if not matrices:
         return {}
 
@@ -360,13 +385,38 @@ def _routing_heatmap_title(modality: str, *, split: str, analysis_tag: str) -> s
     return f"MoE routing usage: {modality}{suffix}"
 
 
+def _route_expert_groups(args: argparse.Namespace) -> list[str] | None:
+    groups = getattr(args, "route_expert_groups", None)
+    if not groups:
+        return None
+    return [str(group_name) for group_name in groups]
+
+
+def _route_filter_label(args: argparse.Namespace) -> str:
+    groups = _route_expert_groups(args)
+    return ",".join(groups or [])
+
+
+def _update_existing_wandb_route_filter_config(run, args: argparse.Namespace) -> None:
+    config = getattr(run, "config", None)
+    if config is None:
+        return
+    payload = _route_filter_flat_metadata(args)
+    try:
+        config.update(payload, allow_val_change=True)
+    except TypeError:
+        config.update(payload)
+
+
 def _init_wandb(args: argparse.Namespace):
     if not getattr(args, "wandb", False):
         return None, False
     if getattr(wandb, "run", None) is not None:
+        _update_existing_wandb_route_filter_config(wandb.run, args)
         return wandb.run, False
 
     output_path = Path(getattr(args, "output", "routing"))
+    route_filter_config = _route_filter_flat_metadata(args)
     init_kwargs = {
         "project": getattr(args, "wandb_project", None) or "sleep2expert-routing-analysis",
         "name": getattr(args, "wandb_name", None)
@@ -391,6 +441,7 @@ def _init_wandb(args: argparse.Namespace):
                 else None
             ),
             "avg_ckpts": getattr(args, "avg_ckpts", None),
+            **route_filter_config,
         },
     }
     init_kwargs = {key: value for key, value in init_kwargs.items() if value is not None}
@@ -581,6 +632,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--override-dataset-names", type=str, nargs="+", default=None)
     parser.add_argument("--analysis-tag", type=str, default="")
+    parser.add_argument(
+        "--route-expert-groups",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Optional MoE expert group names to keep active during routing.",
+    )
     parser.add_argument(
         "--heatmap-output-dir",
         type=Path,
