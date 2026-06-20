@@ -22,6 +22,7 @@ def index_summary(
     missing_inputs = [str(path) for path in paths if not path.exists()]
     cfg = config_summary(config) if config else None
     survival_key_column = _survival_key_column(cfg)
+    survival_sidecar_keys = _survival_sidecar_keys(cfg)
     read_csv_kwargs: dict[str, Any] = {"low_memory": False}
     if survival_key_column:
         read_csv_kwargs["converters"] = {survival_key_column: str}
@@ -107,11 +108,17 @@ def index_summary(
     for column, exists in required_columns.items():
         if not exists:
             blocking_issues.append(f"Index CSV missing required column: {column}")
-    survival_key = _survival_key_summary(df, survival_key_column)
+    survival_key = _survival_key_summary(df, survival_key_column, sidecar_keys=survival_sidecar_keys)
     if survival_key_column and not survival_key["exists"]:
         blocking_issues.append(f"Index CSV missing required survival key column: {survival_key_column}")
     if survival_key_column and survival_key["missing_rows"]:
         blocking_issues.append(f"Index CSV contains empty survival key values in column: {survival_key_column}")
+    if survival_key_column and survival_key["missing_from_sidecars"]:
+        examples = ", ".join(survival_key["missing_from_sidecars_examples"])
+        blocking_issues.append(
+            f"Index CSV contains survival key values missing from sidecars in column {survival_key_column}: "
+            f"{survival_key['missing_from_sidecars']} missing (examples: {examples})"
+        )
     if sample_npz_check:
         warnings.append("--sample-npz-check is accepted but only path existence is checked by this lightweight tool.")
 
@@ -151,7 +158,29 @@ def _survival_key_column(cfg: dict[str, Any] | None) -> str | None:
     return str(key_column)
 
 
-def _survival_key_summary(df: pd.DataFrame, key_column: str | None) -> dict[str, Any] | None:
+def _survival_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
+    if not cfg:
+        return None
+    survival = (cfg.get("finetune") or {}).get("survival") or {}
+    if not survival.get("valid"):
+        return None
+    key_column = survival.get("key_column")
+    event_time_path = resolve_repo_path(survival.get("event_time_index"))
+    if not key_column or event_time_path is None:
+        return None
+
+    from data.survival import normalize_survival_key
+
+    frame = pd.read_csv(event_time_path, converters={str(key_column): str})
+    return {normalize_survival_key(value, str(key_column)) for value in frame[str(key_column)]}
+
+
+def _survival_key_summary(
+    df: pd.DataFrame,
+    key_column: str | None,
+    *,
+    sidecar_keys: set[str] | None = None,
+) -> dict[str, Any] | None:
     if not key_column:
         return None
     if key_column not in df.columns:
@@ -161,17 +190,24 @@ def _survival_key_summary(df: pd.DataFrame, key_column: str | None) -> dict[str,
             "non_null_rows": 0,
             "missing_rows": int(len(df)),
             "unique_keys": 0,
+            "sidecar_key_count": len(sidecar_keys) if sidecar_keys is not None else None,
+            "missing_from_sidecars": None,
+            "missing_from_sidecars_examples": [],
         }
 
     keys = df[key_column]
     missing = keys.isna() | keys.astype(str).str.strip().eq("")
-    valid_keys = keys[~missing].astype(str)
+    valid_keys = keys[~missing].astype(str).str.strip()
+    missing_from_sidecars = sorted(set(valid_keys) - sidecar_keys) if sidecar_keys is not None else []
     return {
         "key_column": key_column,
         "exists": True,
         "non_null_rows": int((~missing).sum()),
         "missing_rows": int(missing.sum()),
         "unique_keys": int(valid_keys.nunique()),
+        "sidecar_key_count": len(sidecar_keys) if sidecar_keys is not None else None,
+        "missing_from_sidecars": len(missing_from_sidecars) if sidecar_keys is not None else None,
+        "missing_from_sidecars_examples": missing_from_sidecars[:5],
     }
 
 

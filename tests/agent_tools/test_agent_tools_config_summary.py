@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
+import sys
 
 from agent_tool_test_helpers import config_payload, survival_config_payload, write_survival_sidecars, write_yaml
 

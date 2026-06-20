@@ -72,9 +72,13 @@ def test_index_summary_reports_survival_key_column(tmp_path: Path):
             {"path": "c.npz", "split": "val", "duration": 60, "eid": "NA", "ppg_mask": 1},
         ]
     ).to_csv(index, index=False)
+    sidecars = write_survival_sidecars(tmp_path)
+    Path(sidecars["event_time_index"]).write_text("eid,d1,d2\n001,10,20\nNA,30,40\n")
+    Path(sidecars["is_event_index"]).write_text("eid,d1,d2\n001,1,0\nNA,0,1\n")
+    Path(sidecars["has_label_index"]).write_text("eid,d1,d2\n001,1,1\nNA,1,1\n")
     config = write_yaml(
         tmp_path / "survival.yaml",
-        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+        survival_config_payload(index, sidecars),
     )
 
     summary = index_summary([index], config=config)
@@ -85,6 +89,9 @@ def test_index_summary_reports_survival_key_column(tmp_path: Path):
         "non_null_rows": 3,
         "missing_rows": 0,
         "unique_keys": 2,
+        "sidecar_key_count": 2,
+        "missing_from_sidecars": 0,
+        "missing_from_sidecars_examples": [],
     }
     assert "Index CSV contains empty survival key values in column: eid" not in summary["blocking_issues"]
 
@@ -101,6 +108,29 @@ def test_index_summary_blocks_missing_survival_key_column(tmp_path: Path):
 
     assert summary["survival_key"]["exists"] is False
     assert "Index CSV missing required survival key column: eid" in summary["blocking_issues"]
+
+
+def test_index_summary_blocks_survival_keys_missing_from_sidecars(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "eid": "001", "ppg_mask": 1},
+            {"path": "b.npz", "split": "val", "duration": 60, "eid": "003", "ppg_mask": 1},
+        ]
+    ).to_csv(index, index=False)
+    config = write_yaml(
+        tmp_path / "survival.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+
+    summary = index_summary([index], config=config)
+
+    assert summary["survival_key"]["missing_from_sidecars"] == 1
+    assert summary["survival_key"]["missing_from_sidecars_examples"] == ["003"]
+    assert (
+        "Index CSV contains survival key values missing from sidecars in column eid: 1 missing (examples: 003)"
+        in summary["blocking_issues"]
+    )
 
 
 def test_index_summary_blocks_empty_survival_keys(tmp_path: Path):
