@@ -34,6 +34,40 @@ def config_payload(index_path: Path) -> dict:
     }
 
 
+def write_survival_sidecars(tmp_path: Path, *, disease_count: int = 2) -> dict[str, str]:
+    diseases = [f"d{i + 1}" for i in range(disease_count)]
+    disease_columns = tmp_path / "disease_columns.txt"
+    event_time = tmp_path / "event_time.csv"
+    is_event = tmp_path / "is_event.csv"
+    has_label = tmp_path / "has_label.csv"
+    disease_columns.write_text("\n".join(diseases) + "\n")
+    header = ",".join(["eid", *diseases])
+    event_time.write_text(f"{header}\n001,10,20\n002,30,40\n")
+    is_event.write_text(f"{header}\n001,1,0\n002,0,1\n")
+    has_label.write_text(f"{header}\n001,1,1\n002,1,1\n")
+    return {
+        "disease_columns_index": str(disease_columns),
+        "event_time_index": str(event_time),
+        "is_event_index": str(is_event),
+        "has_label_index": str(has_label),
+    }
+
+
+def survival_config_payload(index_path: Path, sidecars: dict[str, str], *, output_dim: int = 2) -> dict:
+    payload = config_payload(index_path)
+    payload["model"]["head"] = {"name": "regression"}
+    payload["finetune"]["task"] = {
+        "type": "survival",
+        "output_dim": output_dim,
+        "is_seq": False,
+        "monitor": "val_loss",
+        "monitor_mod": "min",
+    }
+    payload["finetune"]["survival"] = {"key_column": "eid", **sidecars}
+    payload["preset_build"] = {"required_channels": ["ppg"], "min_channels": 1}
+    return payload
+
+
 def write_yaml(path: Path, payload: dict) -> Path:
     path.write_text(yaml.safe_dump(payload))
     return path

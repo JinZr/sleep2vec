@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_tool_test_helpers import config_payload, write_yaml
+from agent_tool_test_helpers import config_payload, survival_config_payload, write_survival_sidecars, write_yaml
 import pandas as pd
 
 from agent_tools.index_csv import index_summary
@@ -61,3 +61,58 @@ def test_index_summary_counts_splits_masks_and_labels(tmp_path: Path):
     assert summary["channel_mask_coverage_by_split_source"]["ppg_mask"]
     assert "wake_frac" in summary["numeric_shift_metrics"]
     assert "sleep_hours" in summary["numeric_shift_metrics"]
+
+
+def test_index_summary_reports_survival_key_column(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "eid": "001", "ppg_mask": 1},
+            {"path": "b.npz", "split": "train", "duration": 60, "eid": "001", "ppg_mask": 1},
+            {"path": "c.npz", "split": "val", "duration": 60, "eid": "NA", "ppg_mask": 1},
+        ]
+    ).to_csv(index, index=False)
+    config = write_yaml(
+        tmp_path / "survival.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+
+    summary = index_summary([index], config=config)
+
+    assert summary["survival_key"] == {
+        "key_column": "eid",
+        "exists": True,
+        "non_null_rows": 3,
+        "missing_rows": 0,
+        "unique_keys": 2,
+    }
+    assert "Index CSV contains empty survival key values in column: eid" not in summary["blocking_issues"]
+
+
+def test_index_summary_blocks_missing_survival_key_column(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    pd.DataFrame([{"path": "a.npz", "split": "train", "duration": 60, "ppg_mask": 1}]).to_csv(index, index=False)
+    config = write_yaml(
+        tmp_path / "survival.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+
+    summary = index_summary([index], config=config)
+
+    assert summary["survival_key"]["exists"] is False
+    assert "Index CSV missing required survival key column: eid" in summary["blocking_issues"]
+
+
+def test_index_summary_blocks_empty_survival_keys(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid,ppg_mask\na.npz,train,60,001,1\nb.npz,val,60,,1\n")
+    config = write_yaml(
+        tmp_path / "survival.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+
+    summary = index_summary([index], config=config)
+
+    assert summary["survival_key"]["exists"] is True
+    assert summary["survival_key"]["missing_rows"] == 1
+    assert "Index CSV contains empty survival key values in column: eid" in summary["blocking_issues"]

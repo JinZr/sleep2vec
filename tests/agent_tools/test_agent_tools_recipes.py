@@ -18,7 +18,12 @@ RECIPE_CASES = [
     _recipe_case("recipes/examples/tiny_fixture_hparam.yaml", 0, "PASS"),
     _recipe_case("recipes/examples/tiny_fixture_sleep2stat.yaml", 0, "PASS"),
     _recipe_case("recipes/templates/finetune_ppg_ahi_val_only.yaml", 2, "NEEDS_USER_INPUT", {"data_input"}),
-    _recipe_case("recipes/templates/finetune_ppg_cox_val_only.yaml", 2, "NEEDS_USER_INPUT", {"data_input"}),
+    _recipe_case(
+        "recipes/templates/finetune_ppg_cox_val_only.yaml",
+        2,
+        "NEEDS_USER_INPUT",
+        {"data_input", "survival_sidecars"},
+    ),
     _recipe_case(
         "recipes/templates/finetune_sleep2expert_ahi_val_only.yaml",
         2,
@@ -29,7 +34,7 @@ RECIPE_CASES = [
         "recipes/templates/finetune_sleep2expert_cox_val_only.yaml",
         2,
         "NEEDS_USER_INPUT",
-        {"data_input"},
+        {"data_input", "survival_sidecars"},
     ),
     _recipe_case(
         "recipes/templates/finetune_sleep2vec2_ppg_ahi_val_only.yaml",
@@ -41,7 +46,7 @@ RECIPE_CASES = [
         "recipes/templates/finetune_sleep2vec2_ppg_cox_val_only.yaml",
         2,
         "NEEDS_USER_INPUT",
-        {"data_input"},
+        {"data_input", "survival_sidecars"},
     ),
     _recipe_case(
         "recipes/templates/hparam_tune_ppg_ahi.yaml",

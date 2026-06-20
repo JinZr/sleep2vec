@@ -541,6 +541,22 @@ def _finetune_task_issues(
                     {"config": data},
                 )
             )
+    finetune = config_summary.get("finetune", {}) if config_summary else {}
+    survival = finetune.get("survival", {}) if isinstance(finetune.get("survival"), dict) else {}
+    survival_issues = survival.get("issues") if isinstance(survival, dict) else None
+    if survival_issues:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "survival_sidecars",
+                "Survival sidecar files are missing or inconsistent.",
+                (
+                    "Please provide valid disease_columns_index, event_time_index, is_event_index, and "
+                    "has_label_index files, and keep output_dim equal to the disease column count."
+                ),
+                {"survival": survival},
+            )
+        )
     if evaluation.get("external_test_locked") is True and evaluation.get("test_after_fit") is True:
         issues.append(
             DecisionIssue(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_tool_test_helpers import config_payload, write_yaml
+from agent_tool_test_helpers import config_payload, survival_config_payload, write_survival_sidecars, write_yaml
 
 from agent_tools.configs import config_summary
 
@@ -39,3 +39,56 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     assert summary["model"]["model_averaging"]["present"] is True
     assert summary["finetune"]["task"]["monitor"] == "val_ahi_pearson"
     assert summary["preset_build"]["required_channels"] == ["ppg", "ahi", "stage5"]
+
+
+def test_config_summary_validates_survival_sidecars(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")
+    config = write_yaml(
+        tmp_path / "survival.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+
+    summary = config_summary(config)
+    survival = summary["finetune"]["survival"]
+
+    assert survival["valid"] is True
+    assert survival["key_column"] == "eid"
+    assert survival["disease_count"] == 2
+    assert survival["sidecar_key_count"] == 2
+    assert survival["issues"] == []
+
+
+def test_config_summary_reports_placeholder_survival_paths(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")
+    payload = survival_config_payload(
+        index,
+        {
+            "disease_columns_index": "/path/to/disease_columns.txt",
+            "event_time_index": "/path/to/event_time.csv",
+            "is_event_index": "/path/to/is_event.csv",
+            "has_label_index": "/path/to/has_label.csv",
+        },
+    )
+    config = write_yaml(tmp_path / "survival_placeholder.yaml", payload)
+
+    survival = config_summary(config)["finetune"]["survival"]
+
+    assert survival["valid"] is False
+    assert len(survival["issues"]) == 4
+    assert any("disease_columns_index" in issue for issue in survival["issues"])
+
+
+def test_config_summary_reports_survival_output_dim_mismatch(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")
+    config = write_yaml(
+        tmp_path / "survival_bad_dim.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path), output_dim=3),
+    )
+
+    survival = config_summary(config)["finetune"]["survival"]
+
+    assert survival["valid"] is False
+    assert any("output_dim" in issue for issue in survival["issues"])

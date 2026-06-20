@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
@@ -54,6 +55,64 @@ def _looks_like_placeholder_path(value: str | Path | None) -> bool:
         or text.startswith("<")
         or "ASK_USER" in text
     )
+
+
+def _survival_summary(finetune: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
+    if task.get("type") != "survival":
+        return None
+
+    raw = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
+    path_fields = ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index")
+    summary: dict[str, Any] = {
+        "key_column": raw.get("key_column"),
+        "disease_columns_index": raw.get("disease_columns_index"),
+        "event_time_index": raw.get("event_time_index"),
+        "is_event_index": raw.get("is_event_index"),
+        "has_label_index": raw.get("has_label_index"),
+        "output_dim": task.get("output_dim"),
+        "valid": False,
+        "disease_count": None,
+        "sidecar_key_count": None,
+        "issues": [],
+    }
+
+    issues = summary["issues"]
+    if not isinstance(finetune.get("survival"), dict):
+        issues.append("finetune.survival must be a mapping for survival tasks.")
+        return summary
+    if not isinstance(raw.get("key_column"), str) or not raw.get("key_column"):
+        issues.append("finetune.survival.key_column must be a non-empty string.")
+    resolved_paths: dict[str, str] = {}
+    for field in path_fields:
+        value = raw.get(field)
+        if not isinstance(value, str) or _looks_like_placeholder_path(value):
+            issues.append(f"finetune.survival.{field} must point to a real local file.")
+            continue
+        resolved = resolve_repo_path(value)
+        if resolved is None or not resolved.exists():
+            issues.append(f"finetune.survival.{field} does not exist: {value}")
+        else:
+            resolved_paths[field] = str(resolved)
+
+    if issues:
+        return summary
+
+    try:
+        from data.survival import load_survival_label_table
+
+        labels = load_survival_label_table(
+            SimpleNamespace(key_column=raw["key_column"], **resolved_paths),
+            task.get("output_dim"),
+        )
+    except Exception as exc:
+        issues.append(str(exc))
+        return summary
+
+    if labels is not None:
+        summary["valid"] = True
+        summary["disease_count"] = len(labels.label_names)
+        summary["sidecar_key_count"] = len(labels.event_time)
+    return summary
 
 
 def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
@@ -166,6 +225,7 @@ def config_summary(config_path: str | Path) -> dict[str, Any]:
     data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
     finetune = data.get("finetune") if isinstance(data.get("finetune"), dict) else {}
     task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
+    survival = _survival_summary(finetune, task)
     preset_build = data.get("preset_build") if isinstance(data.get("preset_build"), dict) else {}
     head = model.get("head") if isinstance(model.get("head"), dict) else {}
     temporal_agg = head.get("temporal_agg") if isinstance(head.get("temporal_agg"), dict) else {}
@@ -196,6 +256,20 @@ def config_summary(config_path: str | Path) -> dict[str, Any]:
         warnings.append("finetune.task is missing; custom label semantics may be ambiguous.")
     if model_channel_names == ["ppg"] and finetune and "required_channels" not in preset_build:
         warnings.append("single-channel PPG finetune config has no preset_build.required_channels.")
+
+    finetune_summary = {
+        "task": {
+            "type": task.get("type"),
+            "output_dim": task.get("output_dim"),
+            "is_seq": task.get("is_seq"),
+            "monitor": task.get("monitor"),
+            "monitor_mod": task.get("monitor_mod"),
+        },
+        "lora": lora,
+        "loss": finetune.get("loss") if isinstance(finetune.get("loss"), dict) else {},
+    }
+    if survival is not None:
+        finetune_summary["survival"] = survival
 
     summary = {
         "config_path": repo_relative(resolved),
@@ -259,17 +333,7 @@ def config_summary(config_path: str | Path) -> dict[str, Any]:
             "kaldi_data_root": data_block.get("kaldi_data_root"),
             "kaldi_manifest": data_block.get("kaldi_manifest"),
         },
-        "finetune": {
-            "task": {
-                "type": task.get("type"),
-                "output_dim": task.get("output_dim"),
-                "is_seq": task.get("is_seq"),
-                "monitor": task.get("monitor"),
-                "monitor_mod": task.get("monitor_mod"),
-            },
-            "lora": lora,
-            "loss": finetune.get("loss") if isinstance(finetune.get("loss"), dict) else {},
-        },
+        "finetune": finetune_summary,
         "preset_build": {
             "required_channels": preset_build.get("required_channels"),
             "min_channels": preset_build.get("min_channels"),

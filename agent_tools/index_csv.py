@@ -20,7 +20,12 @@ def index_summary(
     resolved_paths = [resolve_repo_path(path) for path in index_paths]
     paths = [path for path in resolved_paths if path is not None]
     missing_inputs = [str(path) for path in paths if not path.exists()]
-    frames = [pd.read_csv(path, low_memory=False) for path in paths if path.exists()]
+    cfg = config_summary(config) if config else None
+    survival_key_column = _survival_key_column(cfg)
+    read_csv_kwargs: dict[str, Any] = {"low_memory": False}
+    if survival_key_column:
+        read_csv_kwargs["converters"] = {survival_key_column: str}
+    frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     required_columns = {name: name in df.columns for name in ("path", "split", "duration")}
     duration = {}
@@ -49,8 +54,7 @@ def index_summary(
                 "false_count": int((values != 1).sum()),
             }
     channel_coverage = {}
-    if config:
-        cfg = config_summary(config)
+    if cfg:
         for channel in cfg["data"]["data_channel_names"]:
             if channel == "stage5":
                 mask_column = "stage_mask"
@@ -103,6 +107,11 @@ def index_summary(
     for column, exists in required_columns.items():
         if not exists:
             blocking_issues.append(f"Index CSV missing required column: {column}")
+    survival_key = _survival_key_summary(df, survival_key_column)
+    if survival_key_column and not survival_key["exists"]:
+        blocking_issues.append(f"Index CSV missing required survival key column: {survival_key_column}")
+    if survival_key_column and survival_key["missing_rows"]:
+        blocking_issues.append(f"Index CSV contains empty survival key values in column: {survival_key_column}")
     if sample_npz_check:
         warnings.append("--sample-npz-check is accepted but only path existence is checked by this lightweight tool.")
 
@@ -121,12 +130,48 @@ def index_summary(
         "label_presence": label_presence,
         "mask_columns": mask_columns,
         "channel_coverage_from_config": channel_coverage,
+        "survival_key": survival_key,
         "split_source_label_counts": split_source_label_counts,
         "channel_mask_coverage_by_split_source": channel_mask_coverage_by_split_source,
         "numeric_shift_metrics": numeric_shift_metrics,
         "sample_path_check": path_check,
         "warnings": warnings,
         "blocking_issues": blocking_issues,
+    }
+
+
+def _survival_key_column(cfg: dict[str, Any] | None) -> str | None:
+    if not cfg:
+        return None
+    task = (cfg.get("finetune") or {}).get("task") or {}
+    survival = (cfg.get("finetune") or {}).get("survival") or {}
+    key_column = survival.get("key_column")
+    if task.get("type") != "survival" or key_column in (None, ""):
+        return None
+    return str(key_column)
+
+
+def _survival_key_summary(df: pd.DataFrame, key_column: str | None) -> dict[str, Any] | None:
+    if not key_column:
+        return None
+    if key_column not in df.columns:
+        return {
+            "key_column": key_column,
+            "exists": False,
+            "non_null_rows": 0,
+            "missing_rows": int(len(df)),
+            "unique_keys": 0,
+        }
+
+    keys = df[key_column]
+    missing = keys.isna() | keys.astype(str).str.strip().eq("")
+    valid_keys = keys[~missing].astype(str)
+    return {
+        "key_column": key_column,
+        "exists": True,
+        "non_null_rows": int((~missing).sum()),
+        "missing_rows": int(missing.sum()),
+        "unique_keys": int(valid_keys.nunique()),
     }
 
 
