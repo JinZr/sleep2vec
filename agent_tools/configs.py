@@ -57,7 +57,12 @@ def _looks_like_placeholder_path(value: str | Path | None) -> bool:
     )
 
 
-def _survival_summary(finetune: dict[str, Any], task: dict[str, Any]) -> dict[str, Any] | None:
+def _survival_summary(
+    finetune: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    validate_local_paths: bool = True,
+) -> dict[str, Any] | None:
     if task.get("type") != "survival":
         return None
 
@@ -86,7 +91,9 @@ def _survival_summary(finetune: dict[str, Any], task: dict[str, Any]) -> dict[st
     for field in path_fields:
         value = raw.get(field)
         if not isinstance(value, str) or _looks_like_placeholder_path(value):
-            issues.append(f"finetune.survival.{field} must point to a real local file.")
+            issues.append(f"finetune.survival.{field} must point to a real file.")
+            continue
+        if not validate_local_paths:
             continue
         resolved = resolve_repo_path(value)
         if resolved is None or not resolved.exists():
@@ -94,7 +101,7 @@ def _survival_summary(finetune: dict[str, Any], task: dict[str, Any]) -> dict[st
         else:
             resolved_paths[field] = str(resolved)
 
-    if issues:
+    if issues or not validate_local_paths:
         return summary
 
     try:
@@ -214,7 +221,7 @@ def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
     }
 
 
-def config_summary(config_path: str | Path) -> dict[str, Any]:
+def config_summary(config_path: str | Path, *, validate_survival_local_paths: bool = True) -> dict[str, Any]:
     resolved = resolve_repo_path(config_path)
     if resolved is None:
         raise FileNotFoundError("Config path is required.")
@@ -225,7 +232,7 @@ def config_summary(config_path: str | Path) -> dict[str, Any]:
     data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
     finetune = data.get("finetune") if isinstance(data.get("finetune"), dict) else {}
     task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
-    survival = _survival_summary(finetune, task)
+    survival = _survival_summary(finetune, task, validate_local_paths=validate_survival_local_paths)
     preset_build = data.get("preset_build") if isinstance(data.get("preset_build"), dict) else {}
     head = model.get("head") if isinstance(model.get("head"), dict) else {}
     temporal_agg = head.get("temporal_agg") if isinstance(head.get("temporal_agg"), dict) else {}

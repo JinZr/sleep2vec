@@ -269,7 +269,7 @@ def _load_config_summary_for_recipe(recipe: dict) -> dict | None:
     resolved = resolve_repo_path(config)
     if resolved is None or not resolved.exists():
         return None
-    return config_summary(config)
+    return config_summary(config, validate_survival_local_paths=not _defers_remote_path_validation(recipe))
 
 
 def _variant_module(recipe: dict, entrypoint: str) -> str:
@@ -416,6 +416,11 @@ def _list_value(value: Any) -> list[Any]:
     if isinstance(value, (list, tuple)):
         return list(value)
     return [value]
+
+
+def _defers_remote_path_validation(recipe: dict) -> bool:
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    return execution.get("path_context") == "remote" and execution.get("path_validation", "defer") == "defer"
 
 
 def _preset_cli_args(preset: dict[str, Any]) -> list[Any]:
@@ -655,6 +660,8 @@ def _apply_index_summary_gate(
     *,
     index_payload: dict | None = None,
 ) -> DecisionReport:
+    if _defers_remote_path_validation(recipe):
+        return report
     index_payload = _context_index_summary(recipe, cfg) if index_payload is None else index_payload
     blocking = (index_payload or {}).get("blocking_issues") or []
     if not blocking:
