@@ -647,6 +647,20 @@ def test_load_finetune_config_rejects_invalid_eval_visualizations(
         load_finetune_config(config_path)
 
 
+def test_load_finetune_config_accepts_lstm_temporal_aggregator(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["model"]["head"]["temporal_agg"] = {
+        "name": "lstm",
+        "kwargs": {"bidirectional": True, "num_layers": 1, "dropout": 0.0},
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.model.head.temporal_agg.name == "lstm"
+    assert validate_model_config(bundle.model) == 8
+
+
 def test_validate_model_config_accepts_valid_config():
     model_cfg = _valid_model_config()
     feature_dim = validate_model_config(model_cfg)
@@ -677,12 +691,23 @@ def test_validate_model_config_requires_cls_embedding_for_cls_downstream():
         validate_model_config(model_cfg)
 
 
+def test_validate_model_config_accepts_lstm_temporal_aggregator():
+    model_cfg = _valid_model_config()
+    model_cfg.head = deepcopy(model_cfg.head)
+    model_cfg.head.temporal_agg = TemporalAggConfig(
+        name="lstm",
+        kwargs={"bidirectional": True, "num_layers": 1, "dropout": 0.0},
+    )
+
+    assert validate_model_config(model_cfg) == 8
+
+
 def test_validate_model_config_rejects_invalid_temporal_aggregator():
     model_cfg = _valid_model_config()
     model_cfg.head = deepcopy(model_cfg.head)
     model_cfg.head.temporal_agg.name = "invalid"
 
-    with pytest.raises(ValueError, match="temporal_agg.name must be 'mean' or 'attn'"):
+    with pytest.raises(ValueError, match="temporal_agg.name must be 'mean', 'attn', or 'lstm'"):
         validate_model_config(model_cfg)
 
 

@@ -104,7 +104,7 @@ class HeadConfig:
 
 @dataclass
 class TemporalAggConfig:
-    name: str = "mean"  # "mean" or "attn"
+    name: str = "mean"  # "mean", "attn", or "lstm"
     kwargs: dict[str, t.Any] = field(default_factory=dict)
 
 
@@ -332,7 +332,7 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     temporal_block = head_raw.pop("temporal_agg", None)
     channel_block = head_raw.pop("channel_agg", None)
     if temporal_block is None:
-        raise ValueError("model.head.temporal_agg is required; specify name: mean|attn.")
+        raise ValueError("model.head.temporal_agg is required; specify name: mean|attn|lstm.")
     if channel_block is None:
         raise ValueError("model.head.channel_agg is required; specify name: mean|concat|gated_scalar.")
 
@@ -751,8 +751,8 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
             raise ValueError("model.cls.embedding_type must be set when model.cls.downstream is 'cls'.")
 
     if model_cfg.head is not None:
-        if model_cfg.head.temporal_agg.name not in {"mean", "attn"}:
-            raise ValueError("model.head.temporal_agg.name must be 'mean' or 'attn'.")
+        if model_cfg.head.temporal_agg.name not in {"mean", "attn", "lstm"}:
+            raise ValueError("model.head.temporal_agg.name must be 'mean', 'attn', or 'lstm'.")
         if model_cfg.head.channel_agg.name not in {"mean", "concat", "gated_scalar"}:
             raise ValueError("model.head.channel_agg.name must be 'mean', 'concat', or 'gated_scalar'.")
     return next(iter(out_dims))
