@@ -65,6 +65,45 @@ def roc_auc_from_two_logits(gts, preds) -> float:
         return np.nan
 
 
+def _as_numpy_array(value) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def compute_survival_c_index(pred, event_time, is_event, has_label) -> float:
+    pred = _as_numpy_array(pred).astype(float)
+    event_time = _as_numpy_array(event_time).astype(float)
+    is_event = _as_numpy_array(is_event).astype(float)
+    has_label = _as_numpy_array(has_label).astype(float)
+    if pred.ndim != 2:
+        raise ValueError(f"survival predictions must be 2D [N, L], got {pred.shape}")
+    if event_time.shape != pred.shape or is_event.shape != pred.shape or has_label.shape != pred.shape:
+        raise ValueError("survival pred/event_time/is_event/has_label shapes must match.")
+
+    from sksurv.metrics import concordance_index_censored
+
+    values = []
+    for disease_idx in range(pred.shape[1]):
+        valid = has_label[:, disease_idx] > 0.5
+        if int(valid.sum()) < 2:
+            continue
+        events = is_event[valid, disease_idx] > 0.5
+        if not events.any():
+            continue
+        try:
+            c_index = concordance_index_censored(
+                events,
+                event_time[valid, disease_idx],
+                pred[valid, disease_idx],
+            )[0]
+        except ValueError:
+            continue
+        if np.isfinite(c_index):
+            values.append(float(c_index))
+    return float(np.mean(values)) if values else float("nan")
+
+
 def macro_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """逐类计算 specificity 并宏平均。"""
     y_true = y_true.astype(int)

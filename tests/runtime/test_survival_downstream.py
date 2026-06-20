@@ -308,6 +308,53 @@ def _capture_logged_metrics(module):
 
 
 @pytest.mark.parametrize(
+    "metrics_module",
+    [
+        "sleep2vec.metrics",
+        "sleep2vec2.metrics",
+        "sleep2expert.metrics",
+    ],
+)
+def test_survival_c_index_uses_raw_log_risk(metrics_module: str):
+    module = __import__(metrics_module, fromlist=["compute_survival_c_index"])
+    event_time = torch.tensor([[1.0], [2.0], [3.0]])
+    is_event = torch.tensor([[1.0], [1.0], [0.0]])
+    has_label = torch.ones(3, 1)
+
+    assert module.compute_survival_c_index(
+        torch.tensor([[3.0], [2.0], [1.0]]),
+        event_time,
+        is_event,
+        has_label,
+    ) == pytest.approx(1.0)
+    assert module.compute_survival_c_index(
+        torch.tensor([[1.0], [2.0], [3.0]]),
+        event_time,
+        is_event,
+        has_label,
+    ) == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    "metrics_module",
+    [
+        "sleep2vec.metrics",
+        "sleep2vec2.metrics",
+        "sleep2expert.metrics",
+    ],
+)
+def test_survival_c_index_skips_unlabeled_and_invalid_diseases(metrics_module: str):
+    module = __import__(metrics_module, fromlist=["compute_survival_c_index"])
+    pred = np.array([[3.0, 0.0], [2.0, 1.0], [1.0, 2.0]], dtype=np.float32)
+    event_time = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=np.float32)
+    is_event = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 0.0]], dtype=np.float32)
+    has_label = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+
+    assert module.compute_survival_c_index(pred, event_time, is_event, has_label) == pytest.approx(1.0)
+    assert np.isnan(module.compute_survival_c_index(pred, event_time, np.zeros_like(is_event), has_label))
+
+
+@pytest.mark.parametrize(
     ("module_name", "loss_module_name"),
     [
         ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
@@ -430,6 +477,8 @@ def test_survival_eval_loss_uses_epoch_risk_set_for_singleton_batches(module_nam
     )
     assert logged[0][0] == "val_loss"
     assert logged[0][1] == pytest.approx(float(expected))
+    assert logged[1][0] == "val_c_index"
+    assert logged[1][1] == pytest.approx(0.0)
     assert module._stage_outputs["val"] == []
 
 
@@ -478,6 +527,41 @@ def test_survival_eval_loss_aggregates_multiple_nights_by_subject(module_name: s
     assert logged[0][0] == "val_loss"
     assert logged[0][1] == pytest.approx(float(expected))
     assert logged[0][1] != pytest.approx(float(raw_window_loss))
+    assert module._stage_outputs["val"] == []
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_c_index_aggregates_multiple_nights_by_subject(module_name: str, loss_module_name: str):
+    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    logged = _capture_logged_metrics(module)
+    batch = {
+        "metadata": {
+            "path": ["eid_a_night1.npz", "eid_a_night2.npz", "eid_b_night1.npz"],
+            "eid": ["a", "a", "b"],
+            "event_time": torch.tensor([[1.0], [1.0], [2.0]]),
+            "is_event": torch.tensor([[1.0], [1.0], [0.0]]),
+            "has_label": torch.ones(3, 1),
+        },
+        "token_start": torch.tensor([0, 0, 0]),
+    }
+
+    finetuning_cls._shared_step(
+        module,
+        batch,
+        stage="val",
+        model=_StaticLogitModel(torch.tensor([[0.0], [4.0], [1.0]])),
+    )
+    finetuning_cls._finalize_epoch(module, "val")
+
+    assert logged[1][0] == "val_c_index"
+    assert logged[1][1] == pytest.approx(1.0)
     assert module._stage_outputs["val"] == []
 
 
