@@ -38,6 +38,8 @@ class LSTMAggregator(TemporalAggregator):
     def forward(self, hidden: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask = mask.to(torch.bool)
         lengths = mask.sum(dim=1).to(torch.long)
+        if (lengths == 0).any():
+            raise ValueError("LSTM temporal aggregator requires at least one valid token per sample.")
         packed = nn.utils.rnn.pack_padded_sequence(hidden, lengths.cpu(), batch_first=True, enforce_sorted=False)
         packed_out, _ = self.lstm(packed)
         output, _ = nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True, total_length=hidden.size(1))

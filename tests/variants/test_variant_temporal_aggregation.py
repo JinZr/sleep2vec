@@ -30,6 +30,22 @@ def test_variant_lstm_temporal_aggregator_rejects_non_boolean_bidirectional(name
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])
+def test_variant_lstm_temporal_aggregator_rejects_zero_length_sequences(namespace: str):
+    temporal_module = importlib.import_module(f"{namespace}.downstreams.temporal_aggregation")
+    aggregator = temporal_module.build_temporal_aggregator("lstm", hidden_size=8)
+    hidden = torch.randn(2, 3, 8)
+    mask = torch.tensor(
+        [
+            [True, True, False],
+            [False, False, False],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="at least one valid token"):
+        aggregator(hidden, mask)
+
+
+@pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])
 def test_variant_config_accepts_lstm_temporal_aggregator(namespace: str):
     config_module = importlib.import_module(f"{namespace}.config")
     model_cfg = config_module.ModelConfig(

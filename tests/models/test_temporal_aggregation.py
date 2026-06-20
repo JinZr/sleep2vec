@@ -46,6 +46,20 @@ def test_lstm_aggregator_rejects_non_boolean_bidirectional():
         build_temporal_aggregator("lstm", hidden_size=8, bidirectional="false")
 
 
+def test_lstm_aggregator_rejects_zero_length_sequences():
+    aggregator = build_temporal_aggregator("lstm", hidden_size=8)
+    hidden = torch.randn(2, 3, 8)
+    mask = torch.tensor(
+        [
+            [True, True, False],
+            [False, False, False],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="at least one valid token"):
+        aggregator(hidden, mask)
+
+
 def test_lstm_aggregator_forces_single_layer_recurrent_dropout_to_zero():
     aggregator = build_temporal_aggregator("lstm", hidden_size=8, num_layers=1, dropout=0.9)
 
