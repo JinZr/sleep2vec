@@ -6,7 +6,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import torch
 
 SURVIVAL_METADATA_KEYS = ("event_time", "is_event", "has_label")
 
@@ -68,6 +67,8 @@ def stack_survival_metadata(
     expected_output_dim: int | None = None,
     key_column: str | None = None,
 ) -> dict[str, Any]:
+    import torch
+
     expected_length = None if expected_output_dim is None else int(expected_output_dim)
     stacked: dict[str, Any] = {}
     for key in SURVIVAL_METADATA_KEYS:

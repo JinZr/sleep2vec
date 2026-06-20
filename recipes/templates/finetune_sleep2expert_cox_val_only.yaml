@@ -21,8 +21,8 @@ artifacts:
   results_csv_path: results/sleep2expert_cox_agent_example.csv
 
 evaluation_policy:
-  selection_metric: val_c_index
-  selection_mode: max
+  selection_metric: val_loss
+  selection_mode: min
   selection_split: val
   final_eval_split: test
   external_test_locked: true
