@@ -110,8 +110,8 @@ finetune:
     type: survival
     output_dim: 177
     is_seq: false
-    monitor: val_loss
-    monitor_mod: min
+    monitor: val_c_index
+    monitor_mod: max
   survival:
     key_column: eid
     disease_columns_index: /path/to/disease_columns.txt

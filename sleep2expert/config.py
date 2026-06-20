@@ -734,8 +734,9 @@ def _build_task_config(raw: t.Any) -> TaskConfig | None:
     if task_type == "survival":
         if is_seq:
             raise ValueError("finetune.task.is_seq must be false for survival tasks.")
-        if monitor != "val_loss" or monitor_mod != "min":
-            raise ValueError("survival tasks must monitor val_loss with monitor_mod min.")
+        allowed_monitors = {"val_loss": "min", "val_c_index": "max"}
+        if allowed_monitors.get(monitor) != monitor_mod:
+            raise ValueError("survival tasks must monitor val_loss/min or val_c_index/max.")
 
     return TaskConfig(
         type=task_type,

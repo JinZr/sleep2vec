@@ -1127,17 +1127,31 @@ def test_survival_config_templates_load_for_all_variants(module_name: str, confi
 
     assert bundle.finetune.task.type == "survival"
     assert bundle.finetune.task.output_dim == 177
-    assert bundle.finetune.task.monitor == "val_loss"
+    assert bundle.finetune.task.monitor == "val_c_index"
+    assert bundle.finetune.task.monitor_mod == "max"
     assert bundle.finetune.survival.key_column == "eid"
     assert bundle.finetune.survival.disease_columns_index == "/path/to/disease_columns.txt"
+
+
+def test_survival_config_still_accepts_val_loss_monitor(tmp_path: Path):
+    payload_path = tmp_path / "val_loss.yaml"
+    payload = Path("configs/ppg_cox_finetune_large.yaml").read_text()
+    payload_path.write_text(
+        payload.replace("monitor: val_c_index\n    monitor_mod: max", "monitor: val_loss\n    monitor_mod: min")
+    )
+
+    bundle = load_finetune_config(payload_path)
+
+    assert bundle.finetune.task.monitor == "val_loss"
+    assert bundle.finetune.task.monitor_mod == "min"
 
 
 def test_survival_config_rejects_invalid_task_contract(tmp_path: Path):
     payload_path = tmp_path / "invalid.yaml"
     payload = Path("configs/ppg_cox_finetune_large.yaml").read_text()
-    payload_path.write_text(payload.replace("monitor_mod: min", "monitor_mod: max"))
+    payload_path.write_text(payload.replace("monitor_mod: max", "monitor_mod: min"))
 
-    with pytest.raises(ValueError, match="monitor val_loss"):
+    with pytest.raises(ValueError, match="val_loss/min or val_c_index/max"):
         load_finetune_config(payload_path)
 
 
