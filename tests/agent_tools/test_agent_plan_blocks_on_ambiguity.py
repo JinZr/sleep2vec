@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import survival_config_payload, write_finetune_recipe, write_survival_sidecars, write_yaml
 import yaml
 
 from agent_tools.models import REPO_ROOT
@@ -61,6 +61,43 @@ def _hparam_recipe(
     )
 
 
+def _survival_recipe_with_missing_sidecar_key(tmp_path: Path) -> tuple[Path, Path]:
+    index = tmp_path / "survival_index.csv"
+    index.write_text("path,split,duration,eid,ppg_mask\na.npz,train,60,001,1\nb.npz,val,60,003,1\n")
+    config = write_yaml(
+        tmp_path / "survival_config.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+    recipe = {
+        "name": "unit_survival_missing_sidecar_key",
+        "task": "finetune",
+        "variant": "sleep2vec",
+        "inputs": {"config": str(config), "label_name": "incident_cox", "pretrained_backbone_path": None},
+        "runtime": {"devices": [0]},
+        "artifacts": {"results_csv_path": str(tmp_path / "results.csv"), "version_name": "unit"},
+        "evaluation_policy": {
+            "selection_metric": "val_loss",
+            "selection_mode": "min",
+            "selection_split": "val",
+            "final_eval_split": "test",
+            "external_test_locked": True,
+            "test_after_fit": False,
+        },
+        "decisions": {
+            "task": {"value": "finetune", "source": "explicit_recipe"},
+            "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
+            "pretrained_backbone_path": {
+                "value": None,
+                "source": "explicit_recipe",
+                "meaning": "train from scratch",
+            },
+            "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+        },
+    }
+    return write_yaml(tmp_path / "survival_recipe.yaml", recipe), config
+
+
 def test_plan_does_not_create_run_all_when_consultation_required(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     output_dir = tmp_path / "plan"
@@ -72,6 +109,53 @@ def test_plan_does_not_create_run_all_when_consultation_required(tmp_path: Path)
     assert "label_name" in result.stdout
     assert (output_dir / "plan.blocked.md").exists()
     assert not (output_dir / "run_all.sh").exists()
+
+
+def test_doctor_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
+    recipe, _config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
+
+    assert result.returncode == 1
+    assert "Status: FAIL" in result.stdout
+    assert "survival key values missing from sidecars" in result.stdout
+
+
+def test_plan_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
+    recipe, _config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "survival key values missing from sidecars" in result.stdout
+    assert (output_dir / "plan.blocked.md").exists()
+    assert not (output_dir / "run.sh").exists()
+
+
+def test_context_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
+    _recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    output_dir = tmp_path / "context"
+
+    result = _run(
+        "context",
+        "--task",
+        "finetune",
+        "--variant",
+        "sleep2vec",
+        "--label-name",
+        "incident_cox",
+        "--config",
+        str(config),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode in {1, 2}
+    assert (output_dir / "commands.blocked.sh").exists()
+    assert not (output_dir / "commands.sh").exists()
+    context = json.loads((output_dir / "context.json").read_text())
+    assert any("survival key values missing from sidecars" in issue for issue in context["blocking_issues"])
 
 
 def test_context_writes_questions_and_blocked_script(tmp_path: Path):

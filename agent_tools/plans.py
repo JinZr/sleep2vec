@@ -44,6 +44,7 @@ def evaluate_recipe(
         policy,
         defaults,
     )
+    report = _apply_index_summary_gate(report, recipe, cfg)
     return recipe, cfg, report
 
 
@@ -93,6 +94,8 @@ def build_context(
         defaults,
     )
     out = Path(output_dir)
+    index_payload = _context_index_summary(recipe, cfg)
+    report = _apply_index_summary_gate(report, recipe, cfg, index_payload=index_payload)
     commands = _commands_for_recipe(recipe, cfg, report.decisions) if report.exit_code == 0 else []
     if report.exit_code == 0 and not commands:
         report = _unsupported_command_report(report, task)
@@ -116,7 +119,7 @@ def build_context(
         "relevant_docs": relevant_docs,
         "inputs": recipe["inputs"],
         "config_summary": cfg,
-        "index_summary": _context_index_summary(recipe, cfg),
+        "index_summary": index_payload,
         "preset_summary": _context_preset_summary(recipe, cfg),
         "expected_artifacts": _expected_context_artifacts(recipe, cfg, out, report),
         "recommended_commands": commands if report.exit_code == 0 else [],
@@ -643,6 +646,32 @@ def _context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
         return index_summary(paths, config=config)
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
+
+
+def _apply_index_summary_gate(
+    report: DecisionReport,
+    recipe: dict,
+    cfg: dict | None,
+    *,
+    index_payload: dict | None = None,
+) -> DecisionReport:
+    index_payload = _context_index_summary(recipe, cfg) if index_payload is None else index_payload
+    blocking = (index_payload or {}).get("blocking_issues") or []
+    if not blocking:
+        return report
+    return _append_issues(
+        report,
+        [
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "data_input",
+                issue,
+                None,
+                {"index_summary": index_payload},
+            )
+            for issue in blocking
+        ],
+    )
 
 
 def _context_preset_summary(recipe: dict, cfg: dict | None) -> dict | None:
