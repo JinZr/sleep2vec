@@ -82,7 +82,7 @@ def test_remote_deferred_survival_sidecars_do_not_require_local_files(tmp_path: 
                 "external_test_locked": True,
                 "test_after_fit": False,
             },
-            "execution": {"target": "ssh", "host": "baichuan3", "path_context": "remote", "path_validation": "defer"},
+            "execution": {"target": "ssh", "host": "baichuan3"},
             "decisions": {
                 "task": {"value": "finetune", "source": "explicit_recipe"},
                 "label_name": {"value": "incident_cox", "source": "explicit_recipe"},

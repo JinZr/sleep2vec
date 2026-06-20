@@ -133,6 +133,22 @@ def test_plan_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
     assert not (output_dir / "run.sh").exists()
 
 
+def test_plan_skips_survival_index_gate_when_finetune_preset_is_configured(tmp_path: Path):
+    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(b"preset")
+    payload = yaml.safe_load(config.read_text())
+    payload["data"]["finetune_preset_path"] = str(preset)
+    write_yaml(config, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    assert "survival key values missing from sidecars" not in result.stdout
+    assert (output_dir / "run.sh").exists()
+
+
 def test_context_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
     _recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
     output_dir = tmp_path / "context"

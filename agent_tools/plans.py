@@ -14,6 +14,8 @@ from .decisions import (
     DecisionIssue,
     DecisionReport,
     DecisionStatus,
+    _path_context,
+    _path_validation,
     _validate_input_path,
     evaluate_consultation_gates,
     merge_status,
@@ -269,7 +271,17 @@ def _load_config_summary_for_recipe(recipe: dict) -> dict | None:
     resolved = resolve_repo_path(config)
     if resolved is None or not resolved.exists():
         return None
-    return config_summary(config, validate_survival_local_paths=not _defers_remote_path_validation(recipe))
+    try:
+        config_data = load_yaml(config)
+    except Exception:
+        config_data = {}
+    return config_summary(
+        config,
+        validate_survival_local_paths=not _defers_remote_path_validation(
+            recipe,
+            _survival_validation_paths(config_data),
+        ),
+    )
 
 
 def _variant_module(recipe: dict, entrypoint: str) -> str:
@@ -418,9 +430,26 @@ def _list_value(value: Any) -> list[Any]:
     return [value]
 
 
-def _defers_remote_path_validation(recipe: dict) -> bool:
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    return execution.get("path_context") == "remote" and execution.get("path_validation", "defer") == "defer"
+def _defers_remote_path_validation(recipe: dict, raw_paths: list[Any] | None = None) -> bool:
+    for raw_path in raw_paths or [""]:
+        context = _path_context(recipe, raw_path)
+        if context == "remote" and _path_validation(recipe, context) == "defer":
+            return True
+    return False
+
+
+def _survival_validation_paths(config_data: dict | None) -> list[Any]:
+    if not isinstance(config_data, dict):
+        return []
+    data = config_data.get("data") if isinstance(config_data.get("data"), dict) else {}
+    finetune = config_data.get("finetune") if isinstance(config_data.get("finetune"), dict) else {}
+    survival = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
+    paths = [data.get("finetune_data_index")]
+    paths.extend(
+        survival.get(field)
+        for field in ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index")
+    )
+    return [path for path in paths if path not in (None, "")]
 
 
 def _preset_cli_args(preset: dict[str, Any]) -> list[Any]:
@@ -660,7 +689,9 @@ def _apply_index_summary_gate(
     *,
     index_payload: dict | None = None,
 ) -> DecisionReport:
-    if _defers_remote_path_validation(recipe):
+    if _effective_preset_path(recipe, cfg) not in (None, ""):
+        return report
+    if _defers_remote_path_validation(recipe, _survival_validation_paths(cfg)):
         return report
     index_payload = _context_index_summary(recipe, cfg) if index_payload is None else index_payload
     blocking = (index_payload or {}).get("blocking_issues") or []
@@ -682,16 +713,21 @@ def _apply_index_summary_gate(
 
 
 def _context_preset_summary(recipe: dict, cfg: dict | None) -> dict | None:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    preset_path = inputs.get("preset_path") or inputs.get("inference_preset_path")
-    if preset_path in (None, "") and cfg:
-        preset_path = (cfg.get("data") or {}).get("finetune_preset_path")
+    preset_path = _effective_preset_path(recipe, cfg)
     if preset_path in (None, ""):
         return None
     try:
         return preset_summary(preset_path)
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize preset: {exc}"]}
+
+
+def _effective_preset_path(recipe: dict, cfg: dict | None) -> Any:
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    preset_path = inputs.get("preset_path") or inputs.get("inference_preset_path")
+    if preset_path in (None, "") and cfg:
+        preset_path = (cfg.get("data") or {}).get("finetune_preset_path")
+    return preset_path
 
 
 def _expected_context_artifacts(
