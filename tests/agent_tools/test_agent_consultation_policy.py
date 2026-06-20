@@ -105,6 +105,59 @@ def test_remote_deferred_survival_sidecars_do_not_require_local_files(tmp_path: 
     assert "path validation deferred for remote path" in result.stdout
 
 
+def test_survival_preset_does_not_require_sidecar_files(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid,ppg_mask\nx.npz,train,60,001,1\n")
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(b"preset")
+    config_payload_data = survival_config_payload(
+        index,
+        {
+            "disease_columns_index": "/path/to/disease_columns.txt",
+            "event_time_index": "/path/to/event_time.csv",
+            "is_event_index": "/path/to/is_event.csv",
+            "has_label_index": "/path/to/has_label.csv",
+        },
+    )
+    config_payload_data["data"]["finetune_preset_path"] = str(preset)
+    config = write_yaml(tmp_path / "survival_preset.yaml", config_payload_data)
+    recipe = write_yaml(
+        tmp_path / "survival_preset_recipe.yaml",
+        {
+            "name": "survival_preset",
+            "task": "finetune",
+            "variant": "sleep2vec",
+            "inputs": {"config": str(config), "label_name": "incident_cox", "pretrained_backbone_path": None},
+            "runtime": {"devices": [0]},
+            "artifacts": {"results_csv_path": str(tmp_path / "results.csv"), "version_name": "preset"},
+            "evaluation_policy": {
+                "selection_metric": "val_loss",
+                "selection_mode": "min",
+                "selection_split": "val",
+                "final_eval_split": "test",
+                "external_test_locked": True,
+                "test_after_fit": False,
+            },
+            "decisions": {
+                "task": {"value": "finetune", "source": "explicit_recipe"},
+                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
+                "pretrained_backbone_path": {
+                    "value": None,
+                    "source": "explicit_recipe",
+                    "meaning": "train from scratch",
+                },
+                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
+
+    assert result.returncode == 0
+    assert "survival_sidecars" not in result.stdout
+
+
 def test_local_missing_config_path_still_fails(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())

@@ -544,7 +544,7 @@ def _finetune_task_issues(
     finetune = config_summary.get("finetune", {}) if config_summary else {}
     survival = finetune.get("survival", {}) if isinstance(finetune.get("survival"), dict) else {}
     survival_issues = survival.get("issues") if isinstance(survival, dict) else None
-    if survival_issues:
+    if survival_issues and not data.get("finetune_preset_path"):
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
