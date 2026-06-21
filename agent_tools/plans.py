@@ -689,10 +689,11 @@ def _apply_index_summary_gate(
     *,
     index_payload: dict | None = None,
 ) -> DecisionReport:
-    if _effective_preset_path(recipe, cfg) not in (None, ""):
-        return report
-    if _skips_local_path_validation(recipe, _survival_validation_paths(cfg)):
-        return report
+    if recipe.get("task") in {"finetune", "infer", "evaluate"}:
+        if _effective_preset_path(recipe, cfg) not in (None, ""):
+            return report
+        if _skips_local_path_validation(recipe, _survival_validation_paths(cfg)):
+            return report
     index_payload = _context_index_summary(recipe, cfg) if index_payload is None else index_payload
     blocking = (index_payload or {}).get("blocking_issues") or []
     if not blocking:

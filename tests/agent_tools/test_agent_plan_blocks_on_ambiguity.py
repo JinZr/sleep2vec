@@ -661,6 +661,42 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     assert "--no-write-sidecar-manifest" in script
 
 
+def test_preset_plan_checks_inputs_index_even_when_config_has_finetune_preset(tmp_path: Path):
+    base = write_finetune_recipe(tmp_path)
+    config = Path(yaml.safe_load(base.read_text())["inputs"]["config"])
+    payload = yaml.safe_load(config.read_text())
+    preset = tmp_path / "existing_preset.pkl"
+    preset.write_bytes(b"preset")
+    payload["data"]["finetune_preset_path"] = str(preset)
+    write_yaml(config, payload)
+    bad_index = tmp_path / "bad_preset_index.csv"
+    bad_index.write_text("eid\n001\n")
+    recipe = write_yaml(
+        tmp_path / "preset_bad_index.yaml",
+        {
+            "name": "unit_preset_bad_index",
+            "task": "preset_prepare",
+            "variant": "sleep2vec",
+            "inputs": {"config": str(config), "index": [str(bad_index)], "dataset_name": "unit"},
+            "preset": {"n_tokens": 128, "split": ["train"]},
+            "decisions": {
+                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
+                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
+                "min_channels": {"value": 1, "source": "explicit_recipe"},
+            },
+        },
+    )
+    output_dir = tmp_path / "plan_bad_index"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "Index CSV missing required column: path" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
 def test_finetune_plan_includes_explicit_input_and_runtime_args(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     pretrained = tmp_path / "pretrained model.ckpt"
