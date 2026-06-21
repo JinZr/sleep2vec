@@ -132,7 +132,7 @@
 - Reuse guidance: use this hook when adding non-AHI prediction export behavior rather than saving logits directly from trainer steps.
 - Duplication risk notes: task-shape-specific masking of `-1` labels belongs here.
 
-Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survival_prediction_rows` because they use survival sidecar vectors plus raw log-risk lists rather than ordinary `label_name` targets.
+Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survival_prediction_rows` because they use survival sidecar vectors, survival keys, disease names, and raw log-risk lists rather than ordinary `label_name` targets.
 
 ## `sleep2vec.sleep2vec_inference.build_prediction_rows`
 
@@ -214,8 +214,8 @@ Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survi
 ## `sleep2vec.results.save_training_run_manifest`
 
 - File: `sleep2vec/results.py`
-- Signature: `save_training_run_manifest(args, *, manifest_path, status, monitor=None, monitor_mode=None, best_model_path=None, best_model_score=None, last_checkpoint_path=None, results_csv_path=None, metrics=None) -> None`
-- Purpose and contract: write a lightweight finetune training `run_manifest.json` with status, config/CLI paths, label, monitor, checkpoint identity, test-after-fit policy, result path, metrics, and git metadata.
+- Signature: `save_training_run_manifest(args, *, manifest_path, status, monitor=None, monitor_mode=None, best_model_path=None, best_model_score=None, last_checkpoint_path=None, results_csv_path=None, survival_per_disease_metrics_csv_path=None, metrics=None) -> None`
+- Purpose and contract: write a lightweight finetune training `run_manifest.json` with status, config/CLI paths, label, monitor, checkpoint identity, test-after-fit policy, result paths, metrics, and git metadata.
 - Important inputs/outputs: normalized finetune args plus manifest fields in; JSON manifest out.
 - Side effects: rank-zero-gated atomic JSON write.
 - Key callers/callees: caller is `sleep2vec.finetune.supervised`; callees include `_write_json_atomic`, `_json_safe`, and `_git_manifest`.
@@ -226,8 +226,8 @@ Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survi
 
 - File: `sleep2vec/results.py`
 - Signature: `prepare_inference_result_paths(args: Any, *, namespace: str = PACKAGE_NAMESPACE, root: str | Path = DEFAULT_INFERENCE_RESULTS_ROOT, checkpoint_paths: Sequence[str | Path] | None = None, timestamp: str | None = None) -> None`
-- Purpose and contract: attach inference output paths and checkpoint metadata to the runtime args namespace before writing metrics, predictions, overview rows, or manifest files.
-- Important inputs/outputs: args plus namespace/root/checkpoint inputs in; mutates `args.prediction_run_id`, `run_dir`, `inference_*_csv_path`, `manifest_path`, checkpoint tags, task family, and timestamp fields.
+- Purpose and contract: attach inference output paths and checkpoint metadata to the runtime args namespace before writing metrics, predictions, survival per-disease metrics, overview rows, or manifest files.
+- Important inputs/outputs: args plus namespace/root/checkpoint inputs in; mutates `args.prediction_run_id`, `run_dir`, `inference_*_csv_path`, `inference_survival_per_disease_metrics_csv_path`, `manifest_path`, checkpoint tags, task family, and timestamp fields.
 - Side effects: namespace mutation only.
 - Key callers/callees: caller is `infer.run_inference`; callees include `make_prediction_run_id` and `_resolve_checkpoint_info`.
 - Reuse guidance: call this before every automatic inference export path across root and package-local variants.
@@ -264,6 +264,14 @@ Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survi
 - Side effects: rank-zero-gated atomic JSON write.
 - Key callers/callees: caller is `infer.run_inference`; callees include `_json_safe` and `_write_json_atomic`.
 - Reuse guidance: use with `prepare_inference_result_paths` so manifests stay aligned with metrics and prediction CSV paths.
+
+## `sleep2vec.results.save_survival_per_disease_metrics_csv`
+
+- File: `sleep2vec/results.py`
+- Signature: `save_survival_per_disease_metrics_csv(rows: Sequence[Mapping[str, Any]], csv_path: str, args: Any | None = None) -> None`
+- Purpose and contract: write or append survival per-disease metric rows with inference/finetune metadata, rank-zero gating, schema expansion, and lockfile protection.
+- Important inputs/outputs: rows with `stage`, `disease_idx`, `disease`, `n_labeled`, `n_events`, and `c_index`; CSV file out when rows are non-empty.
+- Key callers/callees: callers are `infer.run_inference` and `finetune.supervised`; callees include `_add_inference_run_metadata`, `_ordered_survival_per_disease_columns`, `_result_csv_lock`, and `_write_result_csv`.
 - Duplication risk notes: manifest schema should stay here rather than in namespace-specific inference entrypoints.
 
 ## `sleep2expert.routing_analysis.run_routing_analysis`
@@ -305,12 +313,19 @@ Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survi
 
 - File: `sleep2vec/metrics.py`
 - Signature: `compute_survival_c_index(pred, event_time, is_event, has_label) -> float`
-- Purpose and contract: compute the mean finite disease-wise concordance index for Cox survival predictions, skipping diseases without enough labeled/event rows.
+- Purpose and contract: compute the mean finite disease-wise concordance index for Cox survival predictions from `compute_survival_c_index_by_disease` rows.
 - Important inputs/outputs: `[N, L]` raw log-risk predictions plus same-shaped event time, event indicator, and label mask arrays/tensors in; scalar float out or `nan` when no disease is computable.
 - Side effects: imports `sksurv.metrics.concordance_index_censored`.
-- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_survival_epoch`.
+- Key callers/callees: caller is compatibility code; survival epoch finalization calls `compute_survival_c_index_by_disease` directly.
 - Reuse guidance: use this metric reducer for survival validation/test monitoring instead of invoking sksurv directly from trainers.
 - Duplication risk notes: shape checks and disease-skip policy belong here.
+
+## `sleep2vec.metrics.compute_survival_c_index_by_disease`
+
+- File: `sleep2vec/metrics.py`
+- Signature: `compute_survival_c_index_by_disease(pred, event_time, is_event, has_label, disease_names=None) -> list[dict[str, Any]]`
+- Purpose and contract: compute one row per survival disease with disease index/name, labeled count, event count, and finite or `nan` c-index.
+- Important inputs/outputs: `[N, L]` raw log-risk predictions plus same-shaped sidecar arrays/tensors and optional `L` disease names in; metric row list out.
 
 ## `utils.check_configs.check_config_file`
 

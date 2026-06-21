@@ -38,14 +38,15 @@ This page answers the practical question: when you need to add or change behavio
 | Missing-channel homogeneous eval/train fallback | `AvailableChannelsBucketBatchSampler` | Canonical bucketed sampler when pair-first is not active | New bucket logic in entrypoints |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
 | Generic downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Single metric reducer for classification recall/specificity, regression, multilabel AHI pointwise, and stage remap outputs | Per-stage custom metric calculations |
-| Survival Cox reduction | `Sleep2vecFinetuning._aggregate_survival_records`, `CoxPHLossVectorized`, and `compute_survival_c_index` | Aggregates repeated windows to one subject-level risk row and computes validation/test Cox loss plus mean disease c-index | Cox loss or c-index code inside loaders or result writers |
+| Survival Cox reduction | `Sleep2vecFinetuning._aggregate_survival_records`, `CoxPHLossVectorized`, and `compute_survival_c_index_by_disease` | Aggregates repeated windows to one subject-level risk row and computes validation/test Cox loss plus mean and per-disease c-index rows | Cox loss or c-index code inside loaders or result writers |
 | AHI threshold search and event metrics | `sleep2vec.metrics.compute_ahi_event_metrics`, `select_best_ahi_threshold`, and the prepared-record helpers | Single contract for validation threshold search, record merging, and event/summary metrics | New AHI evaluation branches in trainers or scripts |
 | Result CSV output | `sleep2vec.results.save_result_csv` | Preserves rank-zero gating, lockfile semantics, schema expansion, and standard metadata columns | One-off CSV writers or the removed `metrics.save_result_csv` path |
 | Inference output paths and manifest | `sleep2vec.results.prepare_inference_result_paths`, `make_prediction_run_id`, and `save_inference_manifest` | Centralizes `results/inference/<namespace>/<label>/<prediction_run_id>/`, checkpoint tags, overview paths, and manifest schema | Rebuilding inference output folders in `infer.py` or trainers |
-| Inference W&B artifacts | `sleep2vec.infer._log_inference_outputs_to_wandb` | Logs metrics plus `prediction_row_count` and uploads the metrics, predictions, manifest, and overview files together | W&B upload logic in result writers or variant-specific one-offs |
+| Inference W&B artifacts | `sleep2vec.infer._log_inference_outputs_to_wandb` | Logs metrics plus prediction and survival per-disease row counts, and uploads the metrics, predictions, optional survival metrics, manifest, and overview files together | W&B upload logic in result writers or variant-specific one-offs |
 | Inference prediction rows | `sleep2vec.sleep2vec_inference.extract_prediction_records`, `build_prediction_rows`, and `build_ahi_prediction_rows` | Converts model outputs into path-level rows for classification, regression, multilabel, and AHI tasks while deduplicating `(path, token_start)` windows | Saving raw batch logits directly from trainer loops |
 | Token embedding extraction | `sleep2vec.extract_embeddings.run_extraction` plus package-local variant mirrors | Loads pretrain or finetune backbone checkpoints strictly, reuses runtime loaders, preserves configured finetune adapters, and writes selected-layer token states to NPZ or Kaldi manifests | Ad hoc scripts that duplicate tokenizer/CLS/layer-selection or checkpoint-prefix handling |
 | Prediction CSV output | `sleep2vec.results.save_prediction_csv` | Preserves rank-zero gating, lockfile semantics, empty-header output, list serialization, and metadata parity with metrics CSVs | Ad hoc per-path CSV writers |
+| Survival per-disease CSV output | `sleep2vec.results.save_survival_per_disease_metrics_csv` | Preserves rank-zero gating, lockfile semantics, schema expansion, and inference/finetune metadata for disease-level Cox metrics | Ad hoc disease-metric CSV writers |
 | Downstream eval plotting | `sleep2vec.visualization.downstream_eval.DownstreamEvalVisualizer` | Centralizes confusion matrix, ROC, regression scatter, and AHI summary scatter logging | WandB logging logic inside trainer steps |
 | Preset generation | `preprocess/save_dataset_presets.py` | Canonical CLI path that exercises `PSGPretrainDataset` and YAML-driven `preset_build` side effects | External scripts that pickle `SampleIndex` lists directly |
 | Kaldi conversion | `preprocess/convert_npz_to_kaldi.py` plus package-local mirrors | Canonical NPZ-to-Kaldi root writer with split manifests, sorted scps, sharding, and semantic compression policy | One-off ark/scp writers |
@@ -112,7 +113,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Reuse `data.survival` for sidecar loading and metadata stacking.
 - Keep survival task schema in `sleep2vec.config.SurvivalConfig` and `finetune.survival`.
-- Keep Cox loss, subject-level duplicate aggregation, c-index logging, and survival prediction rows in `Sleep2vecFinetuning` / `sleep2vec.metrics`.
+- Keep Cox loss, subject-level duplicate aggregation, c-index logging, per-disease metric rows, and survival prediction rows in `Sleep2vecFinetuning` / `sleep2vec.metrics`.
 - Mirror root changes into `sleep2vec2` and `sleep2expert` when the contract is shared.
 
 ### If you are changing runtime orchestration
@@ -179,11 +180,11 @@ This page answers the practical question: when you need to add or change behavio
 9. Kaldi support reuses the same `DefaultDataset` batch contract through storage hooks. Avoid adding a second collate path.
 10. `sleep2vec2` and `sleep2expert` are package-local mirrors; cross-namespace imports are regressions unless a test explicitly permits them.
 11. MoE routing aux is transient in `last_moe_aux`; persistent analysis should go through `sleep2expert.routing_analysis`.
-12. Inference metrics, overview rows, predictions, manifests, and W&B artifacts share one `prediction_run_id`; update `sleep2vec.results`, `sleep2vec.sleep2vec_inference`, and inference W&B logging together instead of adding a parallel export path.
+12. Inference metrics, overview rows, predictions, survival per-disease metrics, manifests, and W&B artifacts share one `prediction_run_id`; update `sleep2vec.results`, `sleep2vec.sleep2vec_inference`, and inference W&B logging together instead of adding a parallel export path.
 13. Binary `specificity` and stage alias `spec` intentionally have different averaging semantics for two-class stage collapses; use `compute_downstream_metrics` instead of recalculating them outside `metrics.py`.
 14. sleep2stat model-hour, recording-hour, and sleep-hour respiratory denominators have distinct meanings; keep field names explicit and do not collapse them into one AHI column.
 15. sleep2stat YASA and SpO2 analyzers are NPZ/raw-signal analyzers; only `sleep2vec_downstream` currently supports Kaldi-backed records.
-16. Survival labels are subject-level sidecar metadata; aggregate duplicate windows by survival key before Cox loss/c-index, but keep prediction export per path/window.
+16. Survival labels are subject-level sidecar metadata; aggregate duplicate windows by survival key before Cox loss/c-index, but keep prediction export per path/window with disease names and survival key provenance.
 17. LSTM temporal aggregation requires at least one valid token per sample; do not mask it away silently or pool zero-length rows.
 18. sleep2expert compact export rewrites both config and checkpoint layout; do not mix compact checkpoints with the original expert id mapping.
 

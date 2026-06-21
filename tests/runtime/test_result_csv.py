@@ -163,6 +163,10 @@ def test_prepare_inference_result_paths_builds_run_directory(tmp_path):
     assert args.run_dir == tmp_path / "results" / "inference" / "sleep2vec" / "ahi" / args.prediction_run_id
     assert args.inference_metrics_csv_path.name == "metrics__ahi__test__epoch07_step1234.csv"
     assert args.inference_prediction_csv_path.name == "predictions__ahi__test__epoch07_step1234.csv"
+    assert (
+        args.inference_survival_per_disease_metrics_csv_path.name
+        == "survival_per_disease_metrics__ahi__test__epoch07_step1234.csv"
+    )
     assert args.inference_overview_csv_path == tmp_path / "results" / "inference" / "overview.csv"
     assert args.ckpt_epoch == 7
     assert args.ckpt_step == 1234
@@ -259,6 +263,48 @@ def test_save_prediction_csv_appends_rows_and_serializes_lists(tmp_path, monkeyp
     assert json.loads(df.loc[0, "groundtruth"]) == [1, 2]
     assert json.loads(df.loc[0, "token_starts"]) == [0]
     assert df.loc[1, "path"] == "b.npz"
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_save_survival_per_disease_metrics_csv_appends_rows_with_metadata(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    args = _infer_args()
+    results_mod.prepare_inference_result_paths(
+        args,
+        namespace=package_name,
+        root=tmp_path / "results" / "inference",
+        timestamp="20260524T000000Z",
+    )
+
+    results_mod.save_survival_per_disease_metrics_csv(
+        [{"stage": "test", "disease_idx": 0, "disease": "d1", "n_labeled": 3, "n_events": 2, "c_index": 0.75}],
+        str(args.inference_survival_per_disease_metrics_csv_path),
+        args,
+    )
+    results_mod.save_survival_per_disease_metrics_csv(
+        [
+            {
+                "stage": "test",
+                "disease_idx": 1,
+                "disease": "d2",
+                "n_labeled": 1,
+                "n_events": 0,
+                "c_index": float("nan"),
+                "extra_stat": 4.0,
+            }
+        ],
+        str(args.inference_survival_per_disease_metrics_csv_path),
+        args,
+    )
+
+    df = pd.read_csv(args.inference_survival_per_disease_metrics_csv_path)
+    assert len(df) == 2
+    assert df["prediction_run_id"].tolist() == [args.prediction_run_id, args.prediction_run_id]
+    assert df["disease"].tolist() == ["d1", "d2"]
+    assert df["n_events"].tolist() == [2, 0]
+    assert "extra_stat" in df.columns
 
 
 def test_prediction_run_id_matches_results_and_predictions(tmp_path, monkeypatch):
@@ -436,6 +482,10 @@ def test_automatic_inference_paths_across_namespaces(tmp_path, package_name: str
     assert args.run_dir == (tmp_path / "results" / "inference" / package_name / "stage5" / args.prediction_run_id)
     assert args.inference_metrics_csv_path.name == "metrics__stage5__val__epoch09_step42.csv"
     assert args.inference_prediction_csv_path.name == "predictions__stage5__val__epoch09_step42.csv"
+    assert (
+        args.inference_survival_per_disease_metrics_csv_path.name
+        == "survival_per_disease_metrics__stage5__val__epoch09_step42.csv"
+    )
 
 
 @pytest.mark.parametrize("package_name", RESULT_PACKAGES)
@@ -481,11 +531,17 @@ def test_prediction_csv_append_overview_and_manifest_across_namespaces(tmp_path,
         str(args.inference_prediction_csv_path),
         args,
     )
+    results_mod.save_survival_per_disease_metrics_csv(
+        [{"stage": "test", "disease_idx": 0, "disease": "d1", "n_labeled": 3, "n_events": 2, "c_index": 0.75}],
+        str(args.inference_survival_per_disease_metrics_csv_path),
+        args,
+    )
     results_mod.save_inference_manifest(args, {"test_loss": 0.1}, prediction_row_count=2)
 
     result_df = pd.read_csv(args.inference_metrics_csv_path)
     overview_df = pd.read_csv(args.inference_overview_csv_path)
     prediction_df = pd.read_csv(args.inference_prediction_csv_path)
+    survival_df = pd.read_csv(args.inference_survival_per_disease_metrics_csv_path)
     manifest = json.loads(Path(args.manifest_path).read_text())
 
     assert len(prediction_df) == 2
@@ -493,9 +549,13 @@ def test_prediction_csv_append_overview_and_manifest_across_namespaces(tmp_path,
     assert overview_df.loc[0, "prediction_run_id"] == args.prediction_run_id
     assert prediction_df["prediction_run_id"].tolist() == [args.prediction_run_id, args.prediction_run_id]
     assert json.loads(prediction_df.loc[0, "groundtruth"]) == [1, 2]
+    assert survival_df.loc[0, "disease"] == "d1"
     assert manifest["prediction_run_id"] == args.prediction_run_id
     assert manifest["prediction_row_count"] == 2
     assert manifest["paths"]["prediction_csv_path"] == str(args.inference_prediction_csv_path)
+    assert manifest["paths"]["survival_per_disease_metrics_csv_path"] == str(
+        args.inference_survival_per_disease_metrics_csv_path
+    )
 
 
 @pytest.mark.parametrize("package_name", RESULT_PACKAGES)
@@ -554,6 +614,22 @@ def test_prediction_csv_rank_zero_only_across_namespaces(tmp_path, monkeypatch, 
                 "token_starts": [0],
             }
         ],
+        str(csv_path),
+        _infer_args(),
+    )
+
+    assert not csv_path.exists()
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_survival_per_disease_metrics_csv_rank_zero_only(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.setenv("RANK", "2")
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    csv_path = tmp_path / "survival_per_disease_metrics.csv"
+
+    results_mod.save_survival_per_disease_metrics_csv(
+        [{"stage": "test", "disease_idx": 0, "disease": "d1", "n_labeled": 3, "n_events": 2, "c_index": 0.75}],
         str(csv_path),
         _infer_args(),
     )

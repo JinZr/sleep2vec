@@ -320,6 +320,7 @@ def test_run_inference_logs_metrics_and_files_to_wandb(
         "test_loss": 0.5,
         "test_recall": 0.75,
         "prediction_row_count": 1,
+        "survival_per_disease_metric_count": 0,
     }
     run_id_hash = args.prediction_run_id.rsplit("__", 1)[-1]
     assert captured["artifact_name"] == f"inference-{args.timestamp_utc}__{package_name}__{run_id_hash}"
@@ -504,7 +505,11 @@ def test_sleep2expert_wandb_artifact_records_route_filter_metadata(monkeypatch: 
 
     infer_mod._log_inference_outputs_to_wandb(args, {"test_loss": 0.5}, prediction_row_count=2)
 
-    assert captured["wandb_log"] == {"test_loss": 0.5, "prediction_row_count": 2}
+    assert captured["wandb_log"] == {
+        "test_loss": 0.5,
+        "prediction_row_count": 2,
+        "survival_per_disease_metric_count": 0,
+    }
     assert captured["artifact_metadata"] == {
         "route_filter": {
             "active": True,

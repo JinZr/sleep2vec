@@ -24,7 +24,7 @@ def load_survival_label_table(config: Any | None, expected_output_dim: int | Non
         return None
 
     key_column = config.key_column
-    disease_columns = _load_disease_columns(config.disease_columns_index)
+    disease_columns = load_survival_disease_columns(config.disease_columns_index)
     event_time = _load_sidecar(config.event_time_index, key_column, disease_columns, "event_time_index")
     is_event = _load_sidecar(config.is_event_index, key_column, disease_columns, "is_event_index")
     has_label = _load_sidecar(config.has_label_index, key_column, disease_columns, "has_label_index")
@@ -109,7 +109,7 @@ def normalize_survival_key(value: Any, key_column: str) -> str:
     return key
 
 
-def _load_disease_columns(path: str | Path) -> list[str]:
+def load_survival_disease_columns(path: str | Path) -> list[str]:
     columns: list[str] = []
     seen: set[str] = set()
     for line_number, raw_line in enumerate(Path(path).read_text().splitlines(), start=1):
