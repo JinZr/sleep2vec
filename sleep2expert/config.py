@@ -434,6 +434,8 @@ class SurvivalConfig:
     event_time_index: str
     is_event_index: str
     has_label_index: str
+    covariates: t.List[str] = field(default_factory=list)
+    covariate_embedding_dim: int = 16
 
 
 @dataclass
@@ -812,10 +814,11 @@ def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalC
         raise ValueError("finetune.survival must be a mapping when provided.")
 
     required = {"key_column", "disease_columns_index", "event_time_index", "is_event_index", "has_label_index"}
+    optional = {"covariates", "covariate_embedding_dim"}
     missing = sorted(required - set(raw.keys()))
     if missing:
         raise ValueError(f"finetune.survival missing required fields: {missing}")
-    extra = sorted(set(raw.keys()) - required)
+    extra = sorted(set(raw.keys()) - required - optional)
     if extra:
         raise ValueError(f"finetune.survival has unsupported fields: {extra}")
     for field_name in required:
@@ -823,7 +826,25 @@ def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalC
         if not isinstance(value, str) or not value:
             raise ValueError(f"finetune.survival.{field_name} must be a non-empty string.")
 
-    return SurvivalConfig(**raw)
+    covariates = raw.get("covariates", [])
+    if not isinstance(covariates, list) or not all(isinstance(item, str) and item for item in covariates):
+        raise ValueError("finetune.survival.covariates must be a list of non-empty strings.")
+    if len(set(covariates)) != len(covariates):
+        raise ValueError("finetune.survival.covariates must not contain duplicates.")
+    unsupported = sorted(set(covariates) - {"age", "sex"})
+    if unsupported:
+        raise ValueError(f"finetune.survival.covariates only supports ['age', 'sex'], got {unsupported}.")
+
+    covariate_embedding_dim = raw.get("covariate_embedding_dim", 16)
+    if not isinstance(covariate_embedding_dim, int) or isinstance(covariate_embedding_dim, bool):
+        raise ValueError("finetune.survival.covariate_embedding_dim must be a positive integer.")
+    if covariate_embedding_dim < 1:
+        raise ValueError("finetune.survival.covariate_embedding_dim must be a positive integer.")
+
+    values = {field_name: raw[field_name] for field_name in required}
+    values["covariates"] = list(covariates)
+    values["covariate_embedding_dim"] = covariate_embedding_dim
+    return SurvivalConfig(**values)
 
 
 _FINETUNE_MOE_TUNING_MODES = {

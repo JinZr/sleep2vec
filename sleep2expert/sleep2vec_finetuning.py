@@ -65,6 +65,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
             model_config=model_config,
             layer_mix_cfg=getattr(finetune_config, "layer_mix", None) if finetune_config else None,
             head_config=model_config.head,
+            survival_covariates=(
+                getattr(getattr(finetune_config, "survival", None), "covariates", None)
+                if finetune_config is not None
+                else None
+            ),
+            survival_covariate_embedding_dim=(
+                getattr(getattr(finetune_config, "survival", None), "covariate_embedding_dim", 16)
+                if finetune_config is not None
+                else 16
+            ),
         ).to(args.device)
 
         if args.pretrained_backbone_path:
