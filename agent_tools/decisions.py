@@ -691,18 +691,21 @@ def _hparam_tune_issues(
     if not has_external_lock:
         issues.append(_needs("external_test_locked", "external_test_locked must be explicit.", high_impact))
     test_after_fit_decision = decisions.get("test_after_fit")
-    test_after_fit = evaluation.get(
-        "test_after_fit",
-        test_after_fit_decision.value if test_after_fit_decision else None,
+    test_after_fit = (
+        test_after_fit_decision.value
+        if test_after_fit_decision is not None and test_after_fit_decision.value not in (None, "")
+        else evaluation.get("test_after_fit")
     )
     final_eval_unlock = decisions.get("final_eval_unlock")
-    final_test_unlocked = evaluation.get(
-        "final_test_unlocked",
-        final_eval_unlock.value if final_eval_unlock else None,
+    final_test_unlocked = (
+        final_eval_unlock.value
+        if final_eval_unlock is not None and final_eval_unlock.value not in (None, "")
+        else evaluation.get("final_test_unlocked")
     )
-    external_test_locked = evaluation.get(
-        "external_test_locked",
-        user_external_lock.value if user_external_lock else None,
+    external_test_locked = (
+        user_external_lock.value
+        if user_external_lock is not None and user_external_lock.value not in (None, "")
+        else evaluation.get("external_test_locked")
     )
     if test_after_fit is True and not (external_test_locked is False and final_test_unlocked is True):
         issues.append(

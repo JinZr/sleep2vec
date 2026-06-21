@@ -812,6 +812,29 @@ def test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked(tmp_path: Pa
     assert "Trial commands evaluate the configured test split" in (output_dir / "plan.md").read_text()
 
 
+def test_hparam_plan_blocks_user_test_after_fit_when_lock_stays_resolved(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"test_after_fit": {"value": True, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 2
+    assert "test_after_fit" in (output_dir / "questions.md").read_text()
+    assert not (output_dir / "trial_000.sh").exists()
+
+
 def test_pretrain_and_adapt_tasks_fail_instead_of_generating_empty_scripts(tmp_path: Path):
     pretrained = tmp_path / "pretrained.ckpt"
     pretrained.write_text("checkpoint")
