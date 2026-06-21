@@ -1072,10 +1072,10 @@ def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
 def _effective_preset_path(task: str, recipe: dict, config_summary: dict | None) -> tuple[str, Any]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     if task in {"infer", "evaluate"}:
-        for field in ("inference_preset_path", "preset_path"):
-            value = inputs.get(field)
+        for preset_field in ("inference_preset_path", "preset_path"):
+            value = inputs.get(preset_field)
             if value not in (None, "", "ASK_USER"):
-                return field, value
+                return preset_field, value
     value = _config_data(config_summary).get("finetune_preset_path")
     if task in {"finetune", "hparam_tune", "infer", "evaluate"} and value not in (None, "", "ASK_USER"):
         return "finetune_preset_path", value
@@ -1163,15 +1163,15 @@ def _path_issues(
         if ckpt_path not in (None, "", "ASK_USER"):
             required_paths.append(("ckpt_path", ckpt_path))
     if task == "finetune":
-        for field in ("pretrained_backbone_path", "ckpt_path"):
-            decision = decisions.get(field)
+        for input_field in ("pretrained_backbone_path", "ckpt_path"):
+            decision = decisions.get(input_field)
             value = (
                 decision.value
                 if decision is not None and decision.value not in (None, "", "ASK_USER")
-                else inputs.get(field)
+                else inputs.get(input_field)
             )
             if value not in (None, "", "ASK_USER"):
-                required_paths.append((field, value))
+                required_paths.append((input_field, value))
 
     for path_field, raw_path in required_paths:
         issue = _validate_input_path(recipe, path_field, raw_path, configured=False)

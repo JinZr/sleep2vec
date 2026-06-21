@@ -121,6 +121,7 @@ def _write_infer_recipe(
     config: Path,
     *,
     inference_preset_path: Path | None = None,
+    eval_split: str = "test",
 ) -> Path:
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("checkpoint")
@@ -128,7 +129,7 @@ def _write_infer_recipe(
         "config": str(config),
         "label_name": "incident_cox",
         "ckpt_path": str(ckpt),
-        "eval_split": "test",
+        "eval_split": eval_split,
     }
     if inference_preset_path is not None:
         inputs["inference_preset_path"] = str(inference_preset_path)
@@ -639,6 +640,23 @@ def test_infer_survival_allows_invalid_sidecars_with_preset(tmp_path: Path):
     assert (output_dir / "run.sh").exists()
 
 
+def test_infer_checks_survival_sidecar_keys_only_for_eval_split(tmp_path: Path):
+    index = tmp_path / "survival_infer_index.csv"
+    index.write_text("path,split,duration,eid,ppg_mask\n" "val.npz,val,60,001,1\n" "test.npz,test,60,003,1\n")
+    config = write_yaml(
+        tmp_path / "survival_infer_config.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+    recipe = _write_infer_recipe(tmp_path, config, eval_split="val")
+    output_dir = tmp_path / "plan_infer_val"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    assert "survival key values missing from sidecars" not in result.stdout
+    assert (output_dir / "run.sh").exists()
+
+
 def test_unlock_final_test_with_yaml_search_requires_explicit_final_config(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
@@ -969,6 +987,39 @@ def test_preset_plan_blocks_survival_config_with_invalid_sidecars(tmp_path: Path
     assert result.returncode == 2
     assert "survival_sidecars" in result.stdout
     assert not (output_dir / "run.sh").exists()
+
+
+def test_preset_plan_checks_survival_sidecar_keys_only_for_requested_split(tmp_path: Path):
+    index = tmp_path / "preset_survival_index.csv"
+    index.write_text("path,split,duration,eid,ppg_mask\n" "train.npz,train,60,001,1\n" "test.npz,test,60,003,1\n")
+    config = write_yaml(
+        tmp_path / "survival_config.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+    recipe = write_yaml(
+        tmp_path / "preset_survival_train.yaml",
+        {
+            "name": "unit_preset_survival_train",
+            "task": "preset_prepare",
+            "variant": "sleep2vec",
+            "inputs": {"config": str(config), "index": [str(index)], "dataset_name": "unit"},
+            "preset": {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False},
+            "decisions": {
+                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
+                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
+                "min_channels": {"value": 1, "source": "explicit_recipe"},
+            },
+        },
+    )
+    output_dir = tmp_path / "plan_survival_train"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    assert "survival key values missing from sidecars" not in result.stdout
+    assert (output_dir / "run.sh").exists()
 
 
 def test_preset_plan_skips_local_index_summary_for_remote_deferred_index(tmp_path: Path):

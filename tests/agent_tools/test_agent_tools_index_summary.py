@@ -133,6 +133,27 @@ def test_index_summary_blocks_survival_keys_missing_from_sidecars(tmp_path: Path
     )
 
 
+def test_index_summary_checks_survival_sidecar_keys_only_for_requested_splits(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "eid": "001", "ppg_mask": 1},
+            {"path": "b.npz", "split": "test", "duration": 60, "eid": "003", "ppg_mask": 1},
+        ]
+    ).to_csv(index, index=False)
+    config = write_yaml(
+        tmp_path / "survival.yaml",
+        survival_config_payload(index, write_survival_sidecars(tmp_path)),
+    )
+
+    summary = index_summary([index], config=config, split_values=["train"])
+
+    assert summary["rows"] == 1
+    assert summary["split_counts"] == {"train": 1}
+    assert summary["survival_key"]["missing_from_sidecars"] == 0
+    assert not summary["blocking_issues"]
+
+
 def test_index_summary_blocks_empty_survival_keys(tmp_path: Path):
     index = tmp_path / "index.csv"
     index.write_text("path,split,duration,eid,ppg_mask\na.npz,train,60,001,1\nb.npz,val,60,,1\n")

@@ -14,6 +14,7 @@ def index_summary(
     *,
     config: str | Path | None = None,
     label_name: str | None = None,
+    split_values: list[str] | None = None,
     sample_path_check: int = 0,
     sample_npz_check: int = 0,
 ) -> dict[str, Any]:
@@ -28,6 +29,7 @@ def index_summary(
         read_csv_kwargs["converters"] = {survival_key_column: str}
     frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
+    df = _filter_splits(df, split_values)
     required_columns = {name: name in df.columns for name in ("path", "split", "duration")}
     duration = {}
     if "duration" in df.columns and not df.empty:
@@ -173,6 +175,13 @@ def _survival_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
 
     frame = pd.read_csv(event_time_path, converters={str(key_column): str})
     return {normalize_survival_key(value, str(key_column)) for value in frame[str(key_column)]}
+
+
+def _filter_splits(df: pd.DataFrame, split_values: list[str] | None) -> pd.DataFrame:
+    splits = [str(value) for value in split_values or [] if value not in (None, "", "ASK_USER")]
+    if not splits or "split" not in df.columns:
+        return df
+    return df[df["split"].astype(str).isin(splits)].copy()
 
 
 def _survival_key_summary(
