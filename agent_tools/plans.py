@@ -933,6 +933,10 @@ def _planned_plan_paths(
 ) -> list[Path]:
     if report.exit_code != 0:
         paths = [out / "questions.json", out / "questions.md", out / "plan.blocked.md"]
+        if recipe.get("task") == "hparam_tune":
+            evaluation = recipe.get("evaluation_policy") or {}
+            if _hparam_final_test_unlocked(evaluation, report.decisions, unlock_final_test):
+                paths.append(out / "final_external_test.sh")
         if allow_unresolved and report.exit_code == 2:
             paths.append(out / "plan.draft.json")
         return paths
@@ -946,13 +950,20 @@ def _planned_plan_paths(
     for idx, _combo in enumerate(_hparam_combos(recipe)):
         paths.extend([out / f"trial_{idx:03d}.sh", generated_dir / f"trial_{idx:03d}.yaml"])
     evaluation = recipe.get("evaluation_policy") or {}
-    if _hparam_final_script_allowed(recipe, report, evaluation, unlock_final_test) and report.exit_code == 0:
+    if _hparam_final_test_unlocked(evaluation, report.decisions, unlock_final_test) and report.exit_code == 0:
         paths.append(out / "final_external_test.sh")
     return paths
 
 
-def _hparam_final_test_unlocked(evaluation: dict) -> bool:
-    return evaluation.get("external_test_locked") is False and evaluation.get("final_test_unlocked") is True
+def _hparam_final_test_unlocked(
+    evaluation: dict,
+    decisions: dict | None = None,
+    unlock_final_test: bool = False,
+) -> bool:
+    return unlock_final_test or (
+        _decision_value(decisions, "external_test_locked", evaluation.get("external_test_locked")) is False
+        and _decision_value(decisions, "final_eval_unlock", evaluation.get("final_test_unlocked")) is True
+    )
 
 
 def _has_resolved_ckpt_path(recipe: dict, report: DecisionReport) -> bool:
@@ -966,7 +977,9 @@ def _hparam_final_script_allowed(
     evaluation: dict,
     unlock_final_test: bool,
 ) -> bool:
-    return unlock_final_test or (_hparam_final_test_unlocked(evaluation) and _has_resolved_ckpt_path(recipe, report))
+    return unlock_final_test or (
+        _hparam_final_test_unlocked(evaluation, report.decisions) and _has_resolved_ckpt_path(recipe, report)
+    )
 
 
 def _apply_final_test_checkpoint_gate(
@@ -1186,7 +1199,11 @@ def _write_hparam_plan(
             _runtime_env_vars(runtime),
         )
         script_name = f"{trial_id}.sh"
-        write_text(out / script_name, "\n".join(_hparam_script_lines([command])) + "\n", executable=True)
+        write_text(
+            out / script_name,
+            "\n".join(_hparam_script_lines([command], test_after_fit=test_after_fit is True)) + "\n",
+            executable=True,
+        )
         scripts.append(script_name)
         trials.append(
             {
@@ -1210,7 +1227,8 @@ def _write_hparam_plan(
                 [
                     'cd "$(dirname "${BASH_SOURCE[0]}")"',
                     *[_render_command(["bash", script]) for script in scripts],
-                ]
+                ],
+                test_after_fit=test_after_fit is True,
             )
         )
         + "\n",
@@ -1222,6 +1240,7 @@ def _write_hparam_plan(
         executable=True,
     )
     write_json(out / "plan.json", {"status": "PASS", "trials": trials, "recipe": recipe})
+    final_unlocked = _hparam_final_test_unlocked(evaluation, report.decisions, unlock_final_test)
     final_allowed = _hparam_final_script_allowed(recipe, report, evaluation, unlock_final_test)
     test_after_fit_message = (
         "Trial commands evaluate the configured test split because test_after_fit is explicitly unlocked."
@@ -1257,16 +1276,32 @@ def _write_hparam_plan(
         )
         write_text(
             out / "final_external_test.sh",
-            "\n".join(_hparam_script_lines([final_command])) + "\n",
+            "\n".join(_hparam_script_lines([final_command], final_external_test=True)) + "\n",
             executable=True,
         )
         plan_lines.append("Final external-test script generated because final test was explicitly unlocked.")
+    elif final_unlocked:
+        plan_lines.append("Final external-test script not generated; explicit checkpoint path is required.")
     else:
         plan_lines.append("Final external-test script not generated; explicit unlock is required.")
     write_text(out / "plan.md", "\n".join(plan_lines) + "\n")
 
 
-def _hparam_script_lines(commands: list[str]) -> list[str]:
+def _hparam_script_lines(
+    commands: list[str],
+    *,
+    test_after_fit: bool = False,
+    final_external_test: bool = False,
+) -> list[str]:
+    external_test_policy = "# - This script evaluates the configured final test split."
+    final_test_policy = "# - Final test evaluation was explicitly unlocked."
+    if not final_external_test:
+        external_test_policy = (
+            "# - Trial commands evaluate the configured test split after fit."
+            if test_after_fit
+            else "# - Trial commands do not evaluate the external test split."
+        )
+        final_test_policy = "# - Final test evaluation requires explicit unlock."
     return [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -1278,9 +1313,9 @@ def _hparam_script_lines(commands: list[str]) -> list[str]:
         "# This script was generated only after consultation gates passed.",
         "# High-impact decisions were resolved by explicit recipe/config/user inputs.",
         "# External test policy:",
-        "# - Trial commands do not evaluate the external test split.",
+        external_test_policy,
         "# - Model selection is based on validation metrics only.",
-        "# - Final test evaluation requires explicit unlock.",
+        final_test_policy,
         "",
         *commands,
     ]
