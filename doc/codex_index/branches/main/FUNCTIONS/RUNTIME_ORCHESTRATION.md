@@ -132,7 +132,7 @@
 - Reuse guidance: use this hook when adding non-AHI prediction export behavior rather than saving logits directly from trainer steps.
 - Duplication risk notes: task-shape-specific masking of `-1` labels belongs here.
 
-Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survival_prediction_rows` because they use survival sidecar vectors, survival keys, disease names, and raw log-risk lists rather than ordinary `label_name` targets.
+Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survival_prediction_rows` because they use survival sidecar vectors, survival keys, optional disease names, and raw log-risk lists rather than ordinary `label_name` targets.
 
 ## `sleep2vec.sleep2vec_inference.build_prediction_rows`
 

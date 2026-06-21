@@ -51,7 +51,7 @@ These are the stable cross-file boundaries that matter before editing:
 - `Sleep2vecPretrainModel` -> `builders.py` -> registries/backbone/tokenizer/projection/CLS
 - `Sleep2vecDownstreamModel` -> `Sleep2vecPretrainModel` + `downstreams/` + optional `peft`
 - `Sleep2vecFinetuning` -> `metrics.py` + `results.py` + `visualization/downstream_eval.py`
-- `Sleep2vecFinetuning` survival path -> `data.survival` metadata vectors and disease names + `sleep2vec.losses.cox.CoxPHLossVectorized` + `metrics.compute_survival_c_index_by_disease`
+- `Sleep2vecFinetuning` survival path -> `data.survival` metadata vectors and optional disease names + `sleep2vec.losses.cox.CoxPHLossVectorized` + `metrics.compute_survival_c_index_by_disease`
 - `DefaultDataset.dataloader` -> `DefaultDataset._select_batch_channels` + `data.utils` + `data.metadata` + `data.samplers`
 - `save_dataset_presets.py` -> `split_index_by_dataset.normalize_mask_frame` + `PSGPretrainDataset` -> `DefaultDataset`
 - `convert_npz_to_kaldi.py` -> `PSGPretrainDataset` channel registry + `data.utils.window` + Kaldi ark/scp writers

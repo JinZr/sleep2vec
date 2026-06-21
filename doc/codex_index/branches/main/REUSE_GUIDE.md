@@ -184,7 +184,7 @@ This page answers the practical question: when you need to add or change behavio
 13. Binary `specificity` and stage alias `spec` intentionally have different averaging semantics for two-class stage collapses; use `compute_downstream_metrics` instead of recalculating them outside `metrics.py`.
 14. sleep2stat model-hour, recording-hour, and sleep-hour respiratory denominators have distinct meanings; keep field names explicit and do not collapse them into one AHI column.
 15. sleep2stat YASA and SpO2 analyzers are NPZ/raw-signal analyzers; only `sleep2vec_downstream` currently supports Kaldi-backed records.
-16. Survival labels are subject-level sidecar metadata; aggregate duplicate windows by survival key before Cox loss/c-index, but keep prediction export per path/window with disease names and survival key provenance.
+16. Survival labels are subject-level sidecar metadata; aggregate duplicate windows by survival key before Cox loss/c-index, but keep prediction export per path/window with survival key provenance and disease names when available.
 17. LSTM temporal aggregation requires at least one valid token per sample; do not mask it away silently or pool zero-length rows.
 18. sleep2expert compact export rewrites both config and checkpoint layout; do not mix compact checkpoints with the original expert id mapping.
 

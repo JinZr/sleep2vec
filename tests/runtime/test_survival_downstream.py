@@ -287,6 +287,9 @@ def _new_survival_finetuning_module(
     *,
     prediction_export: bool = False,
     disease_names: list[str] | None = None,
+    disease_columns_index: str | None = None,
+    finetune_preset_path: str | Path | None = None,
+    inference_preset_path: str | Path | None = None,
 ):
     finetuning_cls = _import_finetuning_class(module_name)
     loss_cls = __import__(loss_module_name, fromlist=["CoxPHLossVectorized"]).CoxPHLossVectorized
@@ -301,9 +304,11 @@ def _new_survival_finetuning_module(
             is_survival=True,
             survival=SimpleNamespace(
                 key_column="eid",
-                disease_columns_index=_write_test_disease_columns(disease_names),
+                disease_columns_index=disease_columns_index or _write_test_disease_columns(disease_names),
             ),
             inference_prediction_csv_path=prediction_csv_path,
+            finetune_preset_path=finetune_preset_path,
+            inference_preset_path=inference_preset_path,
         ),
     )
     object.__setattr__(module, "_survival_loss", loss_cls())
@@ -687,6 +692,80 @@ def test_survival_test_prediction_export_preserves_raw_log_risk(module_name: str
     assert module.survival_per_disease_metric_rows[0]["disease"] == "d1"
     assert module.survival_per_disease_metric_rows[1]["disease"] == "d2"
     assert module._stage_outputs["test"] == []
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_preset_backed_epoch_does_not_require_disease_columns_sidecar(
+    module_name: str, loss_module_name: str, tmp_path: Path
+):
+    missing_disease_columns = tmp_path / "missing_disease_columns.txt"
+    finetuning_cls, module = _new_survival_finetuning_module(
+        module_name,
+        loss_module_name,
+        prediction_export=True,
+        disease_columns_index=str(missing_disease_columns),
+        finetune_preset_path=tmp_path / "preset.pkl",
+    )
+    _capture_logged_metrics(module)
+    batch = {
+        "metadata": {
+            "path": ["event.npz", "censored.npz"],
+            "eid": ["event", "censored"],
+            "event_time": torch.tensor([[1.0], [2.0]]),
+            "is_event": torch.tensor([[1.0], [0.0]]),
+            "has_label": torch.ones(2, 1),
+        },
+        "token_start": torch.tensor([0, 0]),
+    }
+
+    finetuning_cls._shared_step(module, batch, stage="test", model=_StaticLogitModel(torch.tensor([[2.0], [1.0]])))
+    finetuning_cls._finalize_epoch(module, "test")
+
+    assert len(module.prediction_rows) == 2
+    assert module.prediction_rows[0]["disease_names"] == []
+    assert module.survival_per_disease_metric_rows[0]["disease"] == ""
+    assert module.survival_per_disease_metric_rows[0]["n_labeled"] == 2
+    assert module.survival_per_disease_metric_rows[0]["n_events"] == 1
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_non_preset_epoch_requires_disease_columns_sidecar(
+    module_name: str, loss_module_name: str, tmp_path: Path
+):
+    missing_disease_columns = tmp_path / "missing_disease_columns.txt"
+    finetuning_cls, module = _new_survival_finetuning_module(
+        module_name,
+        loss_module_name,
+        disease_columns_index=str(missing_disease_columns),
+    )
+    batch = {
+        "metadata": {
+            "path": ["event.npz", "censored.npz"],
+            "eid": ["event", "censored"],
+            "event_time": torch.tensor([[1.0], [2.0]]),
+            "is_event": torch.tensor([[1.0], [0.0]]),
+            "has_label": torch.ones(2, 1),
+        },
+        "token_start": torch.tensor([0, 0]),
+    }
+
+    finetuning_cls._shared_step(module, batch, stage="val", model=_StaticLogitModel(torch.tensor([[2.0], [1.0]])))
+    with pytest.raises(FileNotFoundError):
+        finetuning_cls._finalize_epoch(module, "val")
 
 
 @pytest.mark.parametrize(

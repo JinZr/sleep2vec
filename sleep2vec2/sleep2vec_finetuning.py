@@ -498,22 +498,33 @@ class Sleep2vecFinetuning(pl.LightningModule):
             "has_label": torch.stack(has_labels, dim=0),
         }
 
-    def _survival_disease_names(self) -> list[str]:
+    def _survival_disease_names(self) -> list[str] | None:
         survival = getattr(self.args, "survival", None)
         disease_columns_index = getattr(survival, "disease_columns_index", None)
+        has_preset = any(
+            getattr(self.args, attr_name, None) not in (None, "")
+            for attr_name in ("finetune_preset_path", "inference_preset_path")
+        )
         if disease_columns_index in (None, ""):
+            if has_preset:
+                return None
             raise ValueError("Survival task requires finetune.survival.disease_columns_index.")
-        return load_survival_disease_columns(disease_columns_index)
+        try:
+            return load_survival_disease_columns(disease_columns_index)
+        except OSError:
+            if has_preset:
+                return None
+            raise
 
     def _build_survival_per_disease_metric_rows(
-        self, stage: str, pred, event_time, is_event, has_label, disease_names: list[str]
+        self, stage: str, pred, event_time, is_event, has_label, disease_names: list[str] | None
     ) -> list[dict[str, object]]:
         rows = compute_survival_c_index_by_disease(pred, event_time, is_event, has_label, disease_names)
         for row in rows:
             row["stage"] = stage
         return rows
 
-    def _build_survival_prediction_rows(self, records, disease_names: list[str]) -> list[dict[str, object]]:
+    def _build_survival_prediction_rows(self, records, disease_names: list[str] | None) -> list[dict[str, object]]:
         grouped: dict[str, list[dict[str, object]]] = {}
         seen: set[tuple[str, int]] = set()
         for record in records:
@@ -543,7 +554,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             items.sort(key=lambda item: int(item["token_start"]))
             token_starts = [int(item["token_start"]) for item in items]
             log_risk = np.stack([np.asarray(item["pred"], dtype=np.float32) for item in items], axis=0).mean(axis=0)
-            if len(disease_names) != int(log_risk.size):
+            if disease_names is not None and len(disease_names) != int(log_risk.size):
                 raise ValueError("disease_names length must match survival prediction width.")
             # Survival labels are sidecar metadata, so all windows for one path share the same vectors.
             event_time = np.asarray(items[0]["event_time"], dtype=np.float32)
@@ -559,7 +570,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     "path": path,
                     "survival_key": str(items[0]["survival_key"]),
                     "kind": "survival",
-                    "disease_names": list(disease_names),
+                    "disease_names": list(disease_names) if disease_names is not None else [],
                     "groundtruth": groundtruth,
                     "prediction": log_risk.tolist(),
                     "log_risk": log_risk.tolist(),

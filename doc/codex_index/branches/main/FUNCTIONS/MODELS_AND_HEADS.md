@@ -270,7 +270,7 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `_finalize_survival_epoch(self, stage: str, outputs) -> None`
-- Purpose and contract: gather distributed survival records, load disease names, optionally build test prediction rows, aggregate to subject-level risk rows, retain per-disease metric rows, log validation/test Cox loss, and log mean disease c-index when finite.
+- Purpose and contract: gather distributed survival records, load disease names when sidecar access is required/available, optionally build test prediction rows, aggregate to subject-level risk rows, retain per-disease metric rows, log validation/test Cox loss, and log mean disease c-index when finite.
 - Important inputs/outputs: stage name and cached survival records in; Lightning metrics, optional prediction rows, and latest per-stage survival metric rows out.
 - Side effects: logs metrics, mutates `self.prediction_rows` on test prediction export, and updates `self.survival_per_disease_metric_rows`.
 - Key callers/callees: caller is `_finalize_epoch`; callees include `_gather_survival_eval_records`, `_aggregate_survival_records`, `_build_survival_prediction_rows`, `CoxPHLossVectorized`, and `compute_survival_c_index_by_disease`.
