@@ -5,8 +5,8 @@ This directory is the branch-scoped engineering manual for `main`. Use it before
 ## Branch Scope
 
 - Branch: `main`
-- Last refresh commit: `eb548b9f8899f2b47f40ed9044e82fe7d94856ce`
-- Last refresh at: `2026-06-14T16:46:58Z`
+- Last refresh commit: `d95c9d45d63479b0fc28b011e138002691921104`
+- Last refresh at: `2026-06-21T04:32:55Z`
 - Mode: `refresh`
 
 ## Purpose
@@ -34,25 +34,25 @@ For small, localized fixes or routine updates, it is enough to read this page pl
 
 Tracked files indexed from this branch:
 
-- `sleep2vec/`: 83 tracked files
-- `data/`: 8 tracked files
+- `sleep2vec/`: 87 tracked files
+- `data/`: 9 tracked files
 - `preprocess/`: 7 tracked files
-- `sleep2vec2/`: 105 tracked files
-- `sleep2expert/`: 109 tracked files
-- `sleep2stat/`: 29 tracked files
+- `sleep2vec2/`: 110 tracked files
+- `sleep2expert/`: 115 tracked files
+- `sleep2stat/`: 30 tracked files
 - `sleep2vec_moe/`: 0 tracked files
 - `sleep2vec_hires/`: 0 tracked files
-- `configs/`: 114 tracked files
-- `tests/`: 74 tracked files
+- `configs/`: 103 tracked files
+- `tests/`: 98 tracked files
 - `utils/`: 8 tracked files
 - `agent_tools/`: 18 tracked files
 - `skills/`: 37 tracked files
-- `recipes/`: 22 tracked files
+- `recipes/`: 25 tracked files
 - `agent_policies/` and `doc/agent_contracts/`: 9 tracked files
 
 ## Coverage Boundaries
 
-- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, dataset/sampler contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, `sleep2stat` analysis bundles, agent tooling and consultation gates, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing and export surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
+- Indexed in detail: config loaders and task semantics, runtime entrypoints, checkpoint helpers, result and prediction writing, inference W&B artifact logging, adaptation orchestration, backbone/downstream contracts, Cox survival finetuning, LSTM temporal aggregation, dataset/sampler/survival-sidecar contracts, Kaldi data-backend routing, preprocessing CLIs, standalone data utilities, `sleep2stat` analysis bundles, agent tooling and consultation gates, example config validation, standalone `sleep2vec2`/`sleep2expert` variant contracts, `sleep2expert` MoE routing/export/subnetwork surfaces, downstream evaluation metrics/visualizations, and the tests that pin those contracts.
 - Indexed at module or workflow level only: `preprocess/preprocess_pipeline.ipynb`, package-local variant preprocessing notebooks, and tracked visualization font binaries under `*/visualization/assets/fonts/`.
 - Outside this index scope: tracked example data scaffolding under `egs/`.
 - Not indexed as source of truth: `__pycache__/`, `.DS_Store`, ignored local artifacts, and untracked experiment folders such as `index/` and `new_index/`.
@@ -65,9 +65,9 @@ Tracked files indexed from this branch:
 
 - If you are changing YAML semantics, built-in task behavior, or config validation, start with [FUNCTIONS/CONFIG_AND_REGISTRIES.md](./FUNCTIONS/CONFIG_AND_REGISTRIES.md).
 - If you are changing pretrain, adapt, finetune, inference, checkpoint, result-export, or prediction-export orchestration, start with [FUNCTIONS/RUNTIME_ORCHESTRATION.md](./FUNCTIONS/RUNTIME_ORCHESTRATION.md) and the relevant workflow.
-- If you are changing backbone forward behavior, adaptation freeze policy, downstream heads, AHI epoch reduction, or layer mix, start with [FUNCTIONS/MODELS_AND_HEADS.md](./FUNCTIONS/MODELS_AND_HEADS.md).
-- If you are changing dataset loading, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
-- If you are changing CSV splitting, preset generation, preset-build strictness, missing-mask statistics, WatchPAT conversion, Kaldi index repair, UKB annotation parsing, UKB demographic extraction, or case-control matching utilities, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
+- If you are changing backbone forward behavior, adaptation freeze policy, downstream heads, Cox survival reduction, AHI epoch reduction, LSTM temporal aggregation, or layer mix, start with [FUNCTIONS/MODELS_AND_HEADS.md](./FUNCTIONS/MODELS_AND_HEADS.md).
+- If you are changing dataset loading, survival sidecar attachment, built-in AHI sample validation, missing-channel behavior, or samplers, start with [FUNCTIONS/DATASETS_AND_SAMPLERS.md](./FUNCTIONS/DATASETS_AND_SAMPLERS.md).
+- If you are changing CSV splitting, preset generation, survival preset sidecars, preset-build strictness, missing-mask statistics, WatchPAT conversion, Kaldi index repair, UKB annotation parsing, UKB demographic extraction, or case-control matching utilities, start with [FUNCTIONS/PREPROCESSING_AND_CONVERSION.md](./FUNCTIONS/PREPROCESSING_AND_CONVERSION.md).
 - If you are changing evaluation plots, pair-accuracy logging, or diagnostics, start with [FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md](./FUNCTIONS/VISUALIZATION_AND_DIAGNOSTICS.md).
 - If you are changing `sleep2stat` config parsing, records, analyzers, reducers, writers, plotting, or agent recipe routing, start with [FUNCTIONS/SLEEP2STAT.md](./FUNCTIONS/SLEEP2STAT.md) and [WORKFLOWS/SLEEP2STAT.md](./WORKFLOWS/SLEEP2STAT.md).
 - If you are changing agent-facing recipes, consultation gates, command plans, hparam orchestration, experiment monitoring, or progress files, start with [FUNCTIONS/AGENT_TOOLING.md](./FUNCTIONS/AGENT_TOOLING.md) and [WORKFLOWS/AGENT_TOOLING.md](./WORKFLOWS/AGENT_TOOLING.md).

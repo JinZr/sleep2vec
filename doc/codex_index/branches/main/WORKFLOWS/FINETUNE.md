@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Attach a downstream head to the shared backbone, optionally load pretrained weights, optionally insert LoRA, then train and evaluate on train/val/test splits.
+Attach a downstream head to the shared backbone, optionally load pretrained weights, optionally insert LoRA, then train and evaluate classification, regression, AHI, or Cox survival tasks on train/val/test splits.
 
 ## Entry Command
 
@@ -22,7 +22,7 @@ Primary code path:
 
 1. Load and bind finetune YAML.
    - Parse typed config bundle with `load_finetune_config`.
-   - Copy channels, data paths, data-backend settings, task semantics, imbalance loss/sampler settings, LoRA flags and hyperparameters, and eval-visualization config into `args`.
+   - Copy channels, data paths, data-backend settings, task semantics, survival sidecars, imbalance loss/sampler settings, LoRA flags and hyperparameters, and eval-visualization config into `args`.
    - Reject mismatched `data.data_channel_names`.
 2. Resolve version name.
    - Prefer `--version-name`.
@@ -37,6 +37,7 @@ Primary code path:
    - Built-in sequence tasks append runtime label channels to `dataset_channel_names`.
    - `stage3` and `stage4` still pull raw labels from `stage5`.
    - `ahi` adds `ahi` as the primary token label source and `stage5` as an auxiliary label source.
+   - Survival tasks attach `event_time`, `is_event`, `has_label`, and the configured key column from sidecar CSVs; Kaldi and NPZ paths share the same metadata contract.
    - `finetune.sampler.weighted_random` only affects the train loader for binary non-sequence classification labels and uses a distributed-aware weighted sampler under DDP.
 5. Instantiate `Sleep2vecFinetuning`.
    - Creates `Sleep2vecPretrainModel` backbone.
@@ -45,6 +46,7 @@ Primary code path:
    - Optionally freezes backbone and inserts LoRA or DoRA adapters with YAML-configured rank, alpha, dropout, and target modules.
    - Optionally freezes tokenizers.
    - Applies `finetune.loss.class_weights` to single-label classification and `finetune.loss.pos_weight` to multilabel/AHI BCE loss.
+   - Applies Cox PH loss for survival tasks and aggregates repeated windows to one subject-level risk row.
    - Optionally attaches a model averager.
    - Optionally enables downstream evaluation visualizations.
 6. Fit.
@@ -67,7 +69,7 @@ Built-in labels:
 
 Stage/AHI-only presets may omit `age` and `sex`, but built-in `age` and `sex` runs reject loaded presets/indexes that lack valid labels after split/source filtering.
 
-Custom labels require `finetune.task` in YAML.
+Custom labels require `finetune.task` in YAML. Survival labels require `finetune.task.type: survival`, `is_seq: false`, a positive `output_dim`, monitor `val_loss/min` or `val_c_index/max`, and `finetune.survival` sidecars whose columns exactly match `[key_column] + disease_columns_index`.
 
 ## Important Runtime Decisions
 
@@ -76,6 +78,7 @@ Custom labels require `finetune.task` in YAML.
 - CLS vs token downstream behavior is defined by `model.cls`, not by folder naming in `configs/`.
 - Layer mix is applied inside `Sleep2vecDownstreamModel`, not in the trainer.
 - AHI validation fits and stores an `ahi_eval_threshold` inside the checkpoint; test and inference require that threshold.
+- Survival validation/test aggregates by survival key before Cox loss and c-index, while prediction export keeps path/window provenance.
 - Confusion matrices, ROC curves, and regression scatter plots are logged from `Sleep2vecFinetuning`, not from entrypoints.
 
 ## Outputs
@@ -89,5 +92,6 @@ Custom labels require `finetune.task` in YAML.
 
 - Change task semantics: `sleep2vec/common.py`, `sleep2vec/config.py`
 - Change head/layer-mix/LoRA behavior: `sleep2vec/downstream_model.py`, `sleep2vec/downstreams/`
-- Change per-stage loss/metrics aggregation or AHI threshold behavior: `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`
+- Change per-stage loss/metrics aggregation, survival Cox/c-index behavior, or AHI threshold behavior: `sleep2vec/sleep2vec_finetuning.py`, `sleep2vec/metrics.py`
 - Change finetune data loader, data-backend routing, or built-in label-channel wiring: `sleep2vec/common.py`, `sleep2vec/utils.py`, `data/default_dataset.py`, `data/utils.py`, `data/kaldi_psg_dataset.py`
+- Change survival sidecar loading: `data/survival.py`, `data/psg_pretrain_dataset.py`, `data/kaldi_psg_dataset.py`, and package-local variant mirrors

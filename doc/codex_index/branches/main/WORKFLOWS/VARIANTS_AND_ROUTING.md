@@ -6,8 +6,8 @@ Work safely in the active standalone variants and export sleep2expert MoE routin
 
 ## Active Variant Namespaces
 
-- `sleep2vec2/`: dense standalone mirror with package-local runtime, data, preprocessing, visualization, LoRA/DoRA adapter support, and standalone RoFormer code.
-- `sleep2expert/`: standalone mirror with MoE RoFormer, MoE regularization, MoE finetune tuning, LoRA/DoRA adapter support, checkpoint expansion, and routing export.
+- `sleep2vec2/`: dense standalone mirror with package-local runtime, data, preprocessing, visualization, survival/LSTM support, LoRA/DoRA adapter support, and standalone RoFormer code.
+- `sleep2expert/`: standalone mirror with MoE RoFormer, MoE regularization, MoE finetune tuning, survival/LSTM support, LoRA/DoRA adapter support, checkpoint expansion, runtime route filtering, routing export, and compact subnetwork export.
 
 ## Package-Local Rule
 
@@ -34,6 +34,16 @@ Primary namespace guards:
 5. During finetuning, set `finetune.moe_tuning` for trainability groups, LR scales, and the supported downstream MoE regularization subset.
 6. If LoRA is enabled, use attention target modules by default or opt into expert targets with `dense_in` / `dense_out`; router LoRA targets are unsupported.
 7. Use `sleep2expert.checkpoints.load_pretrain_init_weights` for checkpoint initialization; it handles compatible dense-to-MoE expansion and rejects legacy standalone-incompatible RoFormer keys.
+
+## Compact Subnetwork Export
+
+Canonical entrypoint:
+
+`python -m sleep2expert.export_subnetwork --config <yaml> --ckpt-path <ckpt> --output-dir <dir> --route-expert-groups <group> [<group> ...]`
+
+This command rewrites a MoE config and checkpoint into a compact artifact containing only selected expert groups. It remaps expert ids into a dense `0..N-1` range, slices learned router weights, removes invalid optimizer/scheduler resume state, writes `config.yaml`, `model.ckpt`, `expert_id_map.csv`, and `manifest.json`, and rejects non-empty output directories before loading the checkpoint.
+
+Use route filtering during inference when the model artifact should remain unchanged; use `export_subnetwork` when downstream work needs a smaller standalone config/checkpoint pair.
 
 ## Routing Export
 
@@ -79,3 +89,4 @@ Important options:
 - Change MoE auxiliary losses or metrics: `sleep2expert/losses/moe_regularization.py`.
 - Change MoE finetune trainability or optimizer grouping, including the `lora` group: `sleep2expert/sleep2vec_finetuning.py`.
 - Change routing export row schema or heatmaps: `sleep2expert/routing_analysis.py`, `sleep2expert/visualization/routing_heatmap.py`.
+- Change compact subnetwork export: `sleep2expert/export_subnetwork.py` and `tests/variants/test_sleep2expert_subnetwork_export.py`.

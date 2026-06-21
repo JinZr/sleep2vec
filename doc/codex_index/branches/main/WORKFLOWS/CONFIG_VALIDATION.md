@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Validate repository YAML configs against the actual runtime loaders and the branch-specific preset-build policy.
+Validate repository YAML configs against the actual runtime loaders, survival/task semantics, temporal-aggregator rules, and the branch-specific preset-build policy.
 
 ## Entry Command
 
@@ -32,6 +32,8 @@ Primary code path:
    - Finetune configs must load via the selected package's `load_finetune_config`.
    - Pretrain configs must load via the selected package's `load_pretrain_config`.
    - Both paths also pass through `validate_model_config`.
+   - `model.head.temporal_agg.name` must be one of `mean`, `attn`, or `lstm`.
+   - Survival configs must use `finetune.task.type: survival`, `is_seq: false`, monitor `val_loss/min` or `val_c_index/max`, and provide `finetune.survival`.
 4. Validate `preset_build` when present.
    - Both `required_channels` and `min_channels` must be present together.
    - Validation channels are resolved through the same helpers used by `save_dataset_presets.py`.
@@ -40,6 +42,7 @@ Primary code path:
    - Sequence staging configs must require `[ppg, stage5]` and `min_channels=2`.
    - PPG AHI configs must require `[ppg, ahi, stage5]` and `min_channels=3`.
    - Non-sequence single-channel PPG configs must require `[ppg]` and `min_channels=1`.
+   - PPG Cox configs must load through the selected package loader and keep survival sidecars explicit.
 
 ## Important Runtime Decisions
 
@@ -59,4 +62,5 @@ Primary code path:
 - Change schema validation: `sleep2vec/config.py`
 - Change standalone variant schema validation: `sleep2vec2/config.py` or `sleep2expert/config.py`
 - Change built-in task semantics or finetune normalization: `sleep2vec/common.py`
+- Change survival sidecar schema: root and package-local `config.py` plus `data/survival.py`
 - Change preset-build policy: `preprocess/save_dataset_presets.py`, `utils/check_configs.py`

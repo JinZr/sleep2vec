@@ -132,6 +132,8 @@
 - Reuse guidance: use this hook when adding non-AHI prediction export behavior rather than saving logits directly from trainer steps.
 - Duplication risk notes: task-shape-specific masking of `-1` labels belongs here.
 
+Survival prediction rows are built directly by `Sleep2vecFinetuning._build_survival_prediction_rows` because they use survival sidecar vectors plus raw log-risk lists rather than ordinary `label_name` targets.
+
 ## `sleep2vec.sleep2vec_inference.build_prediction_rows`
 
 - File: `sleep2vec/sleep2vec_inference.py`
@@ -298,6 +300,17 @@
 - Key callers/callees: caller is `Sleep2vecFinetuning._finalize_epoch`; callees include `compute_binary_label_metrics`, `compute_ahi_pointwise_metrics`, and `roc_auc_from_two_logits`.
 - Reuse guidance: use this as the generic downstream metric reducer.
 - Duplication risk notes: do not implement alternative epoch metric logic in trainers unless the contract truly changes.
+
+## `sleep2vec.metrics.compute_survival_c_index`
+
+- File: `sleep2vec/metrics.py`
+- Signature: `compute_survival_c_index(pred, event_time, is_event, has_label) -> float`
+- Purpose and contract: compute the mean finite disease-wise concordance index for Cox survival predictions, skipping diseases without enough labeled/event rows.
+- Important inputs/outputs: `[N, L]` raw log-risk predictions plus same-shaped event time, event indicator, and label mask arrays/tensors in; scalar float out or `nan` when no disease is computable.
+- Side effects: imports `sksurv.metrics.concordance_index_censored`.
+- Key callers/callees: caller is `Sleep2vecFinetuning._finalize_survival_epoch`.
+- Reuse guidance: use this metric reducer for survival validation/test monitoring instead of invoking sksurv directly from trainers.
+- Duplication risk notes: shape checks and disease-skip policy belong here.
 
 ## `utils.check_configs.check_config_file`
 

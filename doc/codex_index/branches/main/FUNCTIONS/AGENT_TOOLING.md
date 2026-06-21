@@ -17,10 +17,10 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/decisions.py`
 - Signature: `evaluate_consultation_gates(task: str | None, recipe: dict | None, config_summary: dict | None, cli_args: dict | None, policy: dict, approved_defaults: dict) -> DecisionReport`
-- Purpose and contract: enforce stop-and-consult policy for high-impact recipe and runtime decisions, including variantless `sleep2stat` gates.
+- Purpose and contract: enforce stop-and-consult policy for high-impact recipe and runtime decisions, including variantless `sleep2stat` gates, survival sidecar gates, and final-test unlock/checkpoint gates.
 - Important inputs/outputs: task, recipe, config summary, CLI/user decisions, policy, and defaults in; `DecisionReport` with resolved decisions, issues, status, and exit-code semantics out.
 - Side effects: none.
-- Key callers/callees: called by `agent_tools.plans.evaluate_recipe` and `build_context`; delegates task-specific gates to same-file private helpers and uses path checks.
+- Key callers/callees: called by `agent_tools.plans.evaluate_recipe` and `build_context`; delegates task-specific gates to same-file private helpers such as `_survival_sidecar_issue`, `_apply_final_test_checkpoint_gate`, and path checks.
 - Reuse guidance: use this before generating runnable preset, finetune, inference, evaluation, hparam, or sleep2stat commands.
 - Duplication-risk notes: do not reimplement high-impact decision checks in recipe templates or shell generation; add task-specific gates through the private helpers in `agent_tools.decisions`, while sleep2stat structural validation remains in `sleep2stat.config.load_config()`.
 
@@ -41,8 +41,8 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Signature: `build_plan(*, recipe_path: str | Path, output_dir: str | Path, user_decisions_path: str | Path | None = None, allow_unresolved: bool = False, unlock_final_test: bool = False) -> DecisionReport`
 - Purpose and contract: evaluate a task recipe and write a runnable or blocked command plan.
 - Important inputs/outputs: recipe path, output directory, optional decisions, draft allowance, and final-test unlock in; `DecisionReport` out.
-- Side effects: writes `plan.json`, `plan.md`, `run.sh`, hparam trial scripts/configs, or blocked plan/questions; hparam trial scripts omit `--no-test-after-fit` only when resolved decisions explicitly unlock test-after-fit.
-- Key callers/callees: called by `agent_tools plan` and adaptive init/step; uses consultation gates, output overwrite guards, sleep2stat run-dir guards, final-test gates, and hparam plan writers.
+- Side effects: writes `plan.json`, `plan.md`, `run.sh`, hparam trial scripts/configs, final external-test script only when explicitly unlocked and fully resolved, or blocked plan/questions; hparam trial scripts omit `--no-test-after-fit` only when resolved decisions explicitly unlock test-after-fit.
+- Key callers/callees: called by `agent_tools plan` and adaptive init/step; uses consultation gates, output overwrite guards, sleep2stat run-dir guards, survival sidecar gates, final-test gates, and hparam plan writers.
 - Reuse guidance: use for all recipe-backed command generation.
 - Duplication-risk notes: do not emit executable training or sleep2stat scripts outside this path unless a recipe has already passed the same gates.
 
@@ -83,11 +83,11 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/configs.py`
 - Signature: `config_summary(config_path: str | Path) -> dict[str, Any]`
-- Purpose and contract: summarize YAML task, channels, backend, preset/index inputs, variant guess, or sleep2stat run/data/analyzer/output fields without importing Torch/Lightning.
+- Purpose and contract: summarize YAML task, channels, backend, preset/index inputs, survival sidecars, variant guess, or sleep2stat run/data/analyzer/output fields without importing Torch/Lightning.
 - Important inputs/outputs: config path in; JSON-ready summary out.
 - Side effects: reads the YAML file.
 - Key callers/callees: called by `plans`, `doctor`, and CLI summary commands.
-- Reuse guidance: use for agent policy checks that need config facts without loading models. For sleep2stat-shaped YAML, this calls `sleep2stat.config.load_config()` and returns blocking issues instead of raising through plan generation.
+- Reuse guidance: use for agent policy checks that need config facts without loading models. For survival configs, this validates local sidecars when path context allows it. For sleep2stat-shaped YAML, this calls `sleep2stat.config.load_config()` and returns blocking issues instead of raising through plan generation.
 - Duplication-risk notes: do not infer task semantics from path names when this summary can read YAML fields.
 
 ## `agent_tools.configs.sleep2stat_config_summary`
@@ -104,13 +104,13 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 ## `agent_tools.index_csv.index_summary`
 
 - File: `agent_tools/index_csv.py`
-- Signature: `index_summary(index_paths: list[str | Path], *, config: str | Path | None = None, label_name: str | None = None, sample_path_check: int = 0, sample_npz_check: int = 0) -> dict[str, Any]`
-- Purpose and contract: summarize index CSV row counts, columns, labels, source/split fields, numeric shifts, and optional sample path/NPZ checks.
-- Important inputs/outputs: one or more CSV paths plus optional config/label/check counts in; JSON-ready summary out.
+- Signature: `index_summary(index_paths: list[str | Path], *, config: str | Path | None = None, label_name: str | None = None, split_values: list[str] | None = None, sample_path_check: int = 0, sample_npz_check: int = 0) -> dict[str, Any]`
+- Purpose and contract: summarize index CSV row counts, columns, labels, source/split fields, numeric shifts, split-filtered subsets, survival key coverage, and optional sample path/NPZ checks.
+- Important inputs/outputs: one or more CSV paths plus optional config/label/split/check counts in; JSON-ready summary out.
 - Side effects: reads CSV files and optionally probes sample paths/NPZ files.
 - Key callers/callees: called by `agent_tools index-summary` and context bundles.
-- Reuse guidance: use before preset/finetune planning when index contents are part of the decision surface.
-- Duplication-risk notes: keep deeper sample filtering in `data.utils` and preprocessing CLIs, not here.
+- Reuse guidance: use before preset/finetune planning when index contents or survival key coverage are part of the decision surface.
+- Duplication-risk notes: keep deeper sample filtering in `data.utils` and preprocessing CLIs, not here; this is a lightweight planning summary.
 
 ## `agent_tools.presets.preset_summary`
 
