@@ -9,6 +9,7 @@ import yaml
 
 from agent_tools.configs import config_summary
 from agent_tools.decisions import DecisionStatus, evaluate_consultation_gates
+from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_policy_files
 
 
@@ -207,6 +208,73 @@ def test_remote_ssh_path_validation_uses_short_test_command(tmp_path: Path, monk
 
     assert report.exit_code == 0
     assert calls == [["ssh", "baichuan3", "test -e /wujidata/example/config.yaml"]]
+
+
+def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path: Path, monkeypatch):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid,ppg_mask\nx.npz,train,60,001,1\n")
+    config_payload_data = survival_config_payload(
+        index,
+        {
+            "disease_columns_index": "/wujidata/survival/disease_columns.txt",
+            "event_time_index": "/wujidata/survival/event_time.csv",
+            "is_event_index": "/wujidata/survival/is_event.csv",
+            "has_label_index": "/wujidata/survival/has_label.csv",
+        },
+    )
+    config_payload_data["data"]["finetune_data_index"] = "/wujidata/survival/index.csv"
+    config = write_yaml(tmp_path / "survival_ssh.yaml", config_payload_data)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fake_run)
+
+    for validation in ("ssh", "remote"):
+        recipe = write_yaml(
+            tmp_path / f"recipe_{validation}.yaml",
+            {
+                "name": f"remote_survival_{validation}",
+                "task": "finetune",
+                "variant": "sleep2vec",
+                "inputs": {"config": str(config), "label_name": "incident_cox", "pretrained_backbone_path": None},
+                "runtime": {"devices": [0]},
+                "artifacts": {"results_csv_path": str(tmp_path / f"{validation}.csv"), "version_name": validation},
+                "evaluation_policy": {
+                    "selection_metric": "val_loss",
+                    "selection_mode": "min",
+                    "selection_split": "val",
+                    "final_eval_split": "test",
+                    "external_test_locked": True,
+                    "test_after_fit": False,
+                },
+                "execution": {
+                    "target": "ssh",
+                    "host": "baichuan3",
+                    "path_context": "remote",
+                    "path_validation": validation,
+                },
+                "decisions": {
+                    "task": {"value": "finetune", "source": "explicit_recipe"},
+                    "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
+                    "pretrained_backbone_path": {
+                        "value": None,
+                        "source": "explicit_recipe",
+                        "meaning": "train from scratch",
+                    },
+                    "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                    "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                },
+            },
+        )
+
+        _recipe, _cfg, report = evaluate_recipe(recipe)
+
+        assert report.exit_code == 0
+
+    assert calls
 
 
 def test_high_impact_decision_with_unresolved_source_blocks(tmp_path: Path):

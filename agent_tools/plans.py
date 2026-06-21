@@ -277,7 +277,7 @@ def _load_config_summary_for_recipe(recipe: dict) -> dict | None:
         config_data = {}
     return config_summary(
         config,
-        validate_survival_local_paths=not _defers_remote_path_validation(
+        validate_survival_local_paths=not _skips_local_path_validation(
             recipe,
             _survival_validation_paths(config_data),
         ),
@@ -430,10 +430,10 @@ def _list_value(value: Any) -> list[Any]:
     return [value]
 
 
-def _defers_remote_path_validation(recipe: dict, raw_paths: list[Any] | None = None) -> bool:
+def _skips_local_path_validation(recipe: dict, raw_paths: list[Any] | None = None) -> bool:
     for raw_path in raw_paths or [""]:
         context = _path_context(recipe, raw_path)
-        if context == "remote" and _path_validation(recipe, context) == "defer":
+        if context == "remote" and _path_validation(recipe, context) in {"defer", "ssh", "remote"}:
             return True
     return False
 
@@ -691,7 +691,7 @@ def _apply_index_summary_gate(
 ) -> DecisionReport:
     if _effective_preset_path(recipe, cfg) not in (None, ""):
         return report
-    if _defers_remote_path_validation(recipe, _survival_validation_paths(cfg)):
+    if _skips_local_path_validation(recipe, _survival_validation_paths(cfg)):
         return report
     index_payload = _context_index_summary(recipe, cfg) if index_payload is None else index_payload
     blocking = (index_payload or {}).get("blocking_issues") or []
