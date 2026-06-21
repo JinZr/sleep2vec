@@ -368,13 +368,13 @@ def _task_specific_issues(
     if task == "sleep2stat":
         return _sleep2stat_issues(recipe, config_summary, decisions, high_impact)
     if task == "preset_prepare":
-        return _preset_prepare_issues(recipe, high_impact)
+        return _preset_prepare_issues(recipe, config_summary, high_impact)
     if task == "finetune":
         return _finetune_task_issues(recipe, config_summary, decisions, high_impact)
     if task == "hparam_tune":
         return _hparam_tune_issues(recipe, config_summary, decisions, high_impact)
     if task in {"infer", "evaluate"}:
-        return _infer_evaluate_issues(recipe, decisions, high_impact)
+        return _infer_evaluate_issues(recipe, config_summary, decisions, high_impact)
     return []
 
 
@@ -475,7 +475,9 @@ def _sleep2stat_issues(
     return issues
 
 
-def _preset_prepare_issues(recipe: dict, high_impact: dict[str, dict[str, Any]]) -> list[DecisionIssue]:
+def _preset_prepare_issues(
+    recipe: dict, config_summary: dict | None, high_impact: dict[str, dict[str, Any]]
+) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
@@ -500,6 +502,9 @@ def _preset_prepare_issues(recipe: dict, high_impact: dict[str, dict[str, Any]])
         issues.append(
             _needs("min_channels", "min_channels is required when missing channels are allowed.", high_impact)
         )
+    survival_issue = _survival_sidecar_issue("preset_prepare", recipe, config_summary)
+    if survival_issue is not None:
+        issues.append(survival_issue)
     return issues
 
 
@@ -541,6 +546,9 @@ def _finetune_task_issues(
                     {"config": data},
                 )
             )
+    survival_issue = _survival_sidecar_issue("finetune", recipe, config_summary)
+    if survival_issue is not None:
+        issues.append(survival_issue)
     if evaluation.get("external_test_locked") is True and evaluation.get("test_after_fit") is True:
         issues.append(
             DecisionIssue(
@@ -727,6 +735,7 @@ def _hparam_tune_issues(
 
 def _infer_evaluate_issues(
     recipe: dict,
+    config_summary: dict | None,
     decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
@@ -751,6 +760,9 @@ def _infer_evaluate_issues(
                 {"inputs": inputs},
             )
         )
+    survival_issue = _survival_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
+    if survival_issue is not None:
+        issues.append(survival_issue)
     return issues
 
 
@@ -917,6 +929,8 @@ def _base_finetune_issues(
     base_gate["task"] = "finetune"
     if recipe.get("variant") and not base_gate.get("variant"):
         base_gate["variant"] = recipe.get("variant")
+    if recipe.get("execution") and not base_gate.get("execution"):
+        base_gate["execution"] = recipe.get("execution")
 
     local_evaluation = (
         local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
@@ -1045,6 +1059,85 @@ def _hparam_search_parameter_issues(parameters: Any) -> list[DecisionIssue]:
     return issues
 
 
+def _config_data(config_summary: dict | None) -> dict[str, Any]:
+    data = config_summary.get("data") if isinstance(config_summary, dict) else {}
+    return data if isinstance(data, dict) else {}
+
+
+def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
+    finetune = config_summary.get("finetune") if isinstance(config_summary, dict) else {}
+    return finetune if isinstance(finetune, dict) else {}
+
+
+def _effective_preset_path(task: str, recipe: dict, config_summary: dict | None) -> tuple[str, Any]:
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    if task in {"infer", "evaluate"}:
+        value = inputs.get("inference_preset_path")
+        if value not in (None, "", "ASK_USER"):
+            return "inference_preset_path", value
+    value = _config_data(config_summary).get("finetune_preset_path")
+    if task in {"finetune", "hparam_tune", "infer", "evaluate"} and value not in (None, "", "ASK_USER"):
+        return "finetune_preset_path", value
+    return "", None
+
+
+def _survival_sidecar_issue(
+    task: str,
+    recipe: dict,
+    config_summary: dict | None,
+) -> DecisionIssue | None:
+    if not _requires_survival_sidecars(task, recipe, config_summary):
+        return None
+    survival = _config_finetune(config_summary).get("survival")
+    if not isinstance(survival, dict) or not survival.get("issues"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.NEEDS_USER_INPUT,
+        "survival_sidecars",
+        "Survival sidecar files are missing or inconsistent.",
+        (
+            "Please provide valid disease_columns_index, event_time_index, is_event_index, and "
+            "has_label_index files, and keep output_dim equal to the disease column count."
+        ),
+        {"survival": survival},
+    )
+
+
+def _requires_survival_sidecars(task: str, recipe: dict, config_summary: dict | None) -> bool:
+    task_cfg = _config_finetune(config_summary).get("task")
+    if not isinstance(task_cfg, dict) or task_cfg.get("type") != "survival":
+        return False
+    if task == "preset_prepare":
+        return True
+    if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
+        _field, preset_path = _effective_preset_path(task, recipe, config_summary)
+        return preset_path in (None, "")
+    return False
+
+
+def _append_remote_survival_sidecar_issues(
+    issues: list[DecisionIssue],
+    task: str,
+    recipe: dict,
+    config_summary: dict | None,
+) -> None:
+    if not _requires_survival_sidecars(task, recipe, config_summary):
+        return
+    survival = _config_finetune(config_summary).get("survival")
+    if not isinstance(survival, dict):
+        return
+    for data_field in ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index"):
+        value = survival.get(data_field)
+        if not value:
+            continue
+        context = _path_context(recipe, value)
+        validation = _path_validation(recipe, context)
+        if context == "remote" and validation in {"ssh", "remote"}:
+            issue = _validate_input_path(recipe, f"finetune.survival.{data_field}", value, configured=True)
+            if issue is not None:
+                issues.append(issue)
+
+
 def _path_issues(
     task: str,
     recipe: dict,
@@ -1068,20 +1161,38 @@ def _path_issues(
         )
         if ckpt_path not in (None, "", "ASK_USER"):
             required_paths.append(("ckpt_path", ckpt_path))
+    if task == "finetune":
+        for input_field in ("pretrained_backbone_path", "ckpt_path"):
+            decision = decisions.get(input_field)
+            value = (
+                decision.value
+                if decision is not None and decision.value not in (None, "", "ASK_USER")
+                else inputs.get(input_field)
+            )
+            if value not in (None, "", "ASK_USER"):
+                required_paths.append((input_field, value))
 
     for path_field, raw_path in required_paths:
         issue = _validate_input_path(recipe, path_field, raw_path, configured=False)
         if issue is not None:
             issues.append(issue)
 
-    if task in {"finetune", "hparam_tune"} and config_summary and config_summary.get("data_backend") == "npz":
-        data = config_summary.get("data", {})
-        for data_field in ("finetune_preset_path", "finetune_data_index"):
-            value = data.get(data_field)
+    if task in {"finetune", "infer", "evaluate"} and config_summary and config_summary.get("data_backend") == "npz":
+        data = _config_data(config_summary)
+        preset_field, preset_path = _effective_preset_path(task, recipe, config_summary)
+        if preset_path not in (None, ""):
+            issue = _validate_input_path(
+                recipe, preset_field, preset_path, configured=preset_field == "finetune_preset_path"
+            )
+            if issue is not None:
+                issues.append(issue)
+        else:
+            value = data.get("finetune_data_index")
             if value:
-                issue = _validate_input_path(recipe, data_field, value, configured=True)
+                issue = _validate_input_path(recipe, "finetune_data_index", value, configured=True)
                 if issue is not None:
                     issues.append(issue)
+    _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary)
     if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
         sleep2stat = config_summary.get("sleep2stat") or {}
         data = sleep2stat.get("data") or {}

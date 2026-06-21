@@ -20,6 +20,7 @@ from sleep2vec.metrics import (
     _compute_ahi_event_metrics_from_prepared,
     _prepare_ahi_records,
     compute_downstream_metrics,
+    compute_survival_c_index,
     extract_ahi_summary_scatter_arrays,
 )
 from sleep2vec.schedulers import build_warmup_cosine_scheduler
@@ -424,6 +425,17 @@ class Sleep2vecFinetuning(pl.LightningModule):
             on_step=False,
             on_epoch=True,
         )
+        c_index = compute_survival_c_index(pred, event_time, is_event, has_label)
+        if np.isfinite(c_index):
+            self.log(
+                f"{stage}_c_index",
+                c_index,
+                prog_bar=True,
+                logger=True,
+                sync_dist=False,
+                on_step=False,
+                on_epoch=True,
+            )
 
     def _aggregate_survival_records(self, records) -> dict[str, torch.Tensor]:
         # Keep one Cox row per survival key. Multiple nights/windows contribute a mean raw log-risk,

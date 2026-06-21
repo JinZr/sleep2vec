@@ -9,6 +9,7 @@ tzdata==2026.2
 scipy==1.15.3
 neurokit2==0.2.13
 scikit-learn==1.7.2
+scikit-survival==0.25.0
 statsmodels==0.14.6
 patsy==1.0.1
 matplotlib==3.10.9
