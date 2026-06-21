@@ -664,22 +664,35 @@ def _skill_context(task: str) -> tuple[dict[str, Any], list[str]]:
 
 
 def _context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    paths = _list_value(inputs.get("index"))
-    config = inputs.get("config")
-    if cfg and cfg.get("is_sleep2stat"):
-        data = (cfg.get("sleep2stat") or {}).get("data") or {}
-        paths = _list_value(data.get("index"))
-        config = None
-    if not paths and cfg:
-        data = cfg.get("data") or {}
-        paths = _list_value(data.get("finetune_data_index"))
-    if not paths:
+    paths, config = _index_summary_inputs(recipe, cfg)
+    if not paths or _skips_local_path_validation(recipe, paths):
         return None
     try:
         return index_summary(paths, config=config)
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
+
+
+def _index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any]:
+    task = recipe.get("task")
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    config = inputs.get("config")
+    if cfg and cfg.get("is_sleep2stat"):
+        data = (cfg.get("sleep2stat") or {}).get("data") or {}
+        return _list_value(data.get("index")), None
+    if task == "preset_prepare":
+        return _list_value(inputs.get("index")), config
+    if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
+        if _effective_preset_path(recipe, cfg) not in (None, ""):
+            return [], config
+        data = (cfg or {}).get("data") or {}
+        return _list_value(data.get("finetune_data_index")), config
+
+    paths = _list_value(inputs.get("index"))
+    if not paths and cfg:
+        data = cfg.get("data") or {}
+        paths = _list_value(data.get("finetune_data_index"))
+    return paths, config
 
 
 def _apply_index_summary_gate(
@@ -689,11 +702,6 @@ def _apply_index_summary_gate(
     *,
     index_payload: dict | None = None,
 ) -> DecisionReport:
-    if recipe.get("task") in {"finetune", "infer", "evaluate"}:
-        if _effective_preset_path(recipe, cfg) not in (None, ""):
-            return report
-        if _skips_local_path_validation(recipe, _survival_validation_paths(cfg)):
-            return report
     index_payload = _context_index_summary(recipe, cfg) if index_payload is None else index_payload
     blocking = (index_payload or {}).get("blocking_issues") or []
     if not blocking:
@@ -724,11 +732,18 @@ def _context_preset_summary(recipe: dict, cfg: dict | None) -> dict | None:
 
 
 def _effective_preset_path(recipe: dict, cfg: dict | None) -> Any:
+    task = recipe.get("task")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    preset_path = inputs.get("preset_path") or inputs.get("inference_preset_path")
-    if preset_path in (None, "") and cfg:
+    if task in {"infer", "evaluate"}:
+        for field in ("inference_preset_path", "preset_path"):
+            preset_path = inputs.get(field)
+            if preset_path not in (None, "", "ASK_USER"):
+                return preset_path
+    if task in {"finetune", "hparam_tune", "infer", "evaluate"} and cfg:
         preset_path = (cfg.get("data") or {}).get("finetune_preset_path")
-    return preset_path
+        if preset_path not in (None, "", "ASK_USER"):
+            return preset_path
+    return None
 
 
 def _expected_context_artifacts(
