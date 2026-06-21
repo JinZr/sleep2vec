@@ -707,10 +707,10 @@ def _launch_command(
             str(execution["conda_env"]),
             *run,
         ]
-    env_prefix = " ".join(f"{key}={_sh(value)}" for key, value in sorted(env.items()))
     run_command = " ".join(_sh(part) for part in run)
-    if env_prefix:
-        run_command = f"{env_prefix} {run_command}"
+    if env:
+        env_prefix = " ".join(f"{key}={_sh(value)}" for key, value in sorted(env.items()))
+        run_command = f"env {env_prefix} {run_command}"
     workdir = execution.get("workdir") or str(script.parent)
     if execution.get("target", "local") == "ssh":
         mkdir = f"mkdir -p {_sh(_parent_path(log_path))} {_sh(_parent_path(pid_path))}"

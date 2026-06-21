@@ -96,7 +96,7 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
     assert rows[0]["gpus"] == "6,7"
     assert "ssh baichuan3" in rows[0]["command"]
     assert "mkdir -p" in rows[0]["command"]
-    assert "(nohup" in rows[0]["command"]
+    assert "(nohup env " in rows[0]["command"]
     assert "conda run --no-capture-output -n ywx" in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=6,7" in rows[0]["command"]
     assert "WANDB_PROJECT=sleep2vec-unit-hparam" in rows[0]["command"]
@@ -121,6 +121,7 @@ def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert rows[0]["gpus"] == "2"
+    assert "(nohup env " in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=2" in rows[0]["command"]
 
 
