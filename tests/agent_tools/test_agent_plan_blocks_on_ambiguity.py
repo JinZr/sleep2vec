@@ -441,6 +441,8 @@ def test_unlock_final_test_with_explicit_ckpt_generates_final_script(tmp_path: P
     script = (output_dir / "final_external_test.sh").read_text()
     assert "python -m sleep2vec.infer" in script
     assert shlex_quote(str(ckpt)) in script
+    assert "This script evaluates the configured final test split." in script
+    assert "Trial commands do not evaluate the external test split." not in script
 
 
 def test_plan_uses_user_decision_label_name_in_command(tmp_path: Path):
@@ -474,6 +476,21 @@ def test_plan_uses_user_decision_test_after_fit_in_command(tmp_path: Path):
 
     assert result.returncode == 0
     assert "--no-test-after-fit" in (output_dir / "run.sh").read_text()
+
+
+def test_plan_blocks_user_decision_test_after_fit_when_finetune_lock_stays_resolved(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"test_after_fit": {"value": True, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "test_after_fit=true would evaluate test" in result.stdout
+    assert not (output_dir / "run.sh").exists()
 
 
 def test_plan_normalizes_scalar_runtime_devices(tmp_path: Path):
@@ -779,6 +796,132 @@ def test_sleep2expert_variant_controls_generated_hparam_module(tmp_path: Path):
     assert "python -m sleep2expert.finetune" in script
     assert "--no-test-after-fit" in script
     assert f"--results-csv-path {shlex_quote(str(tmp_path / 'results.csv'))}" in script
+
+
+def test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "external_test_locked": False,
+            "test_after_fit": True,
+            "final_test_unlocked": True,
+            "require_manual_unlock_for_final_test": False,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_user"},
+            "test_after_fit": {"value": True, "source": "explicit_user"},
+            "final_eval_unlock": {"value": True, "source": "explicit_user"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    script = (output_dir / "trial_000.sh").read_text()
+    assert "python -m sleep2vec2.finetune" in script
+    assert "--no-test-after-fit" not in script
+    assert "Trial commands evaluate the configured test split after fit." in script
+    assert "Trial commands do not evaluate the external test split." not in script
+    assert "Trial commands evaluate the configured test split after fit." in (output_dir / "run_all.sh").read_text()
+    assert not (output_dir / "final_external_test.sh").exists()
+    plan = (output_dir / "plan.md").read_text()
+    assert "Trial commands evaluate the configured test split" in plan
+    assert "explicit checkpoint path is required" in plan
+    assert "explicit unlock is required" not in plan
+
+
+def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "external_test_locked": False,
+            "test_after_fit": True,
+            "final_test_unlocked": True,
+            "require_manual_unlock_for_final_test": False,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_user"},
+            "test_after_fit": {"value": True, "source": "explicit_user"},
+            "final_eval_unlock": {"value": True, "source": "explicit_user"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+    output_dir.mkdir()
+    stale_final_script = output_dir / "final_external_test.sh"
+    stale_final_script.write_text("# stale final test script\n")
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "Output artifacts already exist" in result.stdout
+    assert str(stale_final_script) in result.stdout
+    assert not (output_dir / "plan.md").exists()
+
+
+def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_ckpt(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "external_test_locked": False,
+            "test_after_fit": True,
+            "final_test_unlocked": True,
+            "require_manual_unlock_for_final_test": False,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_user"},
+            "test_after_fit": {"value": True, "source": "explicit_user"},
+            "final_eval_unlock": {"value": True, "source": "explicit_user"},
+            "overwrite_policy": {"value": True, "source": "explicit_user"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+    output_dir.mkdir()
+    stale_final_script = output_dir / "final_external_test.sh"
+    stale_final_script.write_text("# stale final test script\n")
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    assert not stale_final_script.exists()
+    plan = (output_dir / "plan.md").read_text()
+    assert "explicit checkpoint path is required" in plan
+    assert "Final external-test script generated" not in plan
+
+
+def test_hparam_plan_blocks_user_test_after_fit_when_lock_stays_resolved(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"test_after_fit": {"value": True, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 2
+    assert "test_after_fit" in (output_dir / "questions.md").read_text()
+    assert not (output_dir / "trial_000.sh").exists()
 
 
 def test_pretrain_and_adapt_tasks_fail_instead_of_generating_empty_scripts(tmp_path: Path):

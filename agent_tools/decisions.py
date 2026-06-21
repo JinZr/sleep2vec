@@ -549,14 +549,26 @@ def _finetune_task_issues(
     survival_issue = _survival_sidecar_issue("finetune", recipe, config_summary)
     if survival_issue is not None:
         issues.append(survival_issue)
-    if evaluation.get("external_test_locked") is True and evaluation.get("test_after_fit") is True:
+    external_test_decision = decisions.get("external_test_locked")
+    external_test_locked = (
+        external_test_decision.value
+        if external_test_decision is not None and external_test_decision.value not in (None, "")
+        else evaluation.get("external_test_locked")
+    )
+    test_after_fit_decision = decisions.get("test_after_fit")
+    test_after_fit = (
+        test_after_fit_decision.value
+        if test_after_fit_decision is not None and test_after_fit_decision.value not in (None, "")
+        else evaluation.get("test_after_fit")
+    )
+    if external_test_locked is True and test_after_fit is True:
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
                 "test_after_fit=true would evaluate test while external_test_locked=true.",
                 "Should test evaluation be disabled during model selection?",
-                {"evaluation_policy": evaluation},
+                {"evaluation_policy": evaluation, "external_test_locked": external_test_locked},
             )
         )
     return issues
@@ -691,17 +703,29 @@ def _hparam_tune_issues(
     if not has_external_lock:
         issues.append(_needs("external_test_locked", "external_test_locked must be explicit.", high_impact))
     test_after_fit_decision = decisions.get("test_after_fit")
-    test_after_fit = evaluation.get(
-        "test_after_fit",
-        test_after_fit_decision.value if test_after_fit_decision else None,
+    test_after_fit = (
+        test_after_fit_decision.value
+        if test_after_fit_decision is not None and test_after_fit_decision.value not in (None, "")
+        else evaluation.get("test_after_fit")
     )
-    if test_after_fit is True:
+    final_eval_unlock = decisions.get("final_eval_unlock")
+    final_test_unlocked = (
+        final_eval_unlock.value
+        if final_eval_unlock is not None and final_eval_unlock.value not in (None, "")
+        else evaluation.get("final_test_unlocked")
+    )
+    external_test_locked = (
+        user_external_lock.value
+        if user_external_lock is not None and user_external_lock.value not in (None, "")
+        else evaluation.get("external_test_locked")
+    )
+    if test_after_fit is True and not (external_test_locked is False and final_test_unlocked is True):
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
-                "Trial commands would evaluate test data.",
-                "Should test_after_fit be false during hyper-parameter tuning?",
+                "Trial commands would evaluate test data without an explicit test unlock.",
+                "Should test_after_fit be false, or should external_test_locked=false and final_test_unlocked=true?",
                 {"evaluation_policy": evaluation},
             )
         )
