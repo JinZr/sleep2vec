@@ -702,15 +702,16 @@ def test_survival_test_prediction_export_preserves_raw_log_risk(module_name: str
         ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
     ],
 )
-def test_survival_preset_backed_epoch_does_not_require_disease_columns_sidecar(
+def test_survival_preset_backed_epoch_ignores_disease_columns_sidecar(
     module_name: str, loss_module_name: str, tmp_path: Path
 ):
-    missing_disease_columns = tmp_path / "missing_disease_columns.txt"
+    stale_disease_columns = tmp_path / "stale_disease_columns.txt"
+    stale_disease_columns.write_text("stale_a\n\nstale_b\n")
     finetuning_cls, module = _new_survival_finetuning_module(
         module_name,
         loss_module_name,
         prediction_export=True,
-        disease_columns_index=str(missing_disease_columns),
+        disease_columns_index=str(stale_disease_columns),
         finetune_preset_path=tmp_path / "preset.pkl",
     )
     _capture_logged_metrics(module)

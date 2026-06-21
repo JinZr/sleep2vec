@@ -505,16 +505,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
             getattr(self.args, attr_name, None) not in (None, "")
             for attr_name in ("finetune_preset_path", "inference_preset_path")
         )
+        if has_preset:
+            return None
         if disease_columns_index in (None, ""):
-            if has_preset:
-                return None
             raise ValueError("Survival task requires finetune.survival.disease_columns_index.")
-        try:
-            return load_survival_disease_columns(disease_columns_index)
-        except OSError:
-            if has_preset:
-                return None
-            raise
+        return load_survival_disease_columns(disease_columns_index)
 
     def _build_survival_per_disease_metric_rows(
         self, stage: str, pred, event_time, is_event, has_label, disease_names: list[str] | None
