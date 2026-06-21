@@ -867,6 +867,40 @@ def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_pa
     assert not (output_dir / "plan.md").exists()
 
 
+def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_ckpt(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "external_test_locked": False,
+            "test_after_fit": True,
+            "final_test_unlocked": True,
+            "require_manual_unlock_for_final_test": False,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_user"},
+            "test_after_fit": {"value": True, "source": "explicit_user"},
+            "final_eval_unlock": {"value": True, "source": "explicit_user"},
+            "overwrite_policy": {"value": True, "source": "explicit_user"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+    output_dir.mkdir()
+    stale_final_script = output_dir / "final_external_test.sh"
+    stale_final_script.write_text("# stale final test script\n")
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    assert not stale_final_script.exists()
+    plan = (output_dir / "plan.md").read_text()
+    assert "explicit checkpoint path is required" in plan
+    assert "Final external-test script generated" not in plan
+
+
 def test_hparam_plan_blocks_user_test_after_fit_when_lock_stays_resolved(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
     decisions = write_yaml(

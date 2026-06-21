@@ -950,8 +950,7 @@ def _planned_plan_paths(
     for idx, _combo in enumerate(_hparam_combos(recipe)):
         paths.extend([out / f"trial_{idx:03d}.sh", generated_dir / f"trial_{idx:03d}.yaml"])
     evaluation = recipe.get("evaluation_policy") or {}
-    if _hparam_final_test_unlocked(evaluation, report.decisions, unlock_final_test) and report.exit_code == 0:
-        paths.append(out / "final_external_test.sh")
+    paths.append(out / "final_external_test.sh")
     return paths
 
 
@@ -1240,6 +1239,7 @@ def _write_hparam_plan(
         executable=True,
     )
     write_json(out / "plan.json", {"status": "PASS", "trials": trials, "recipe": recipe})
+    final_script_path = out / "final_external_test.sh"
     final_unlocked = _hparam_final_test_unlocked(evaluation, report.decisions, unlock_final_test)
     final_allowed = _hparam_final_script_allowed(recipe, report, evaluation, unlock_final_test)
     test_after_fit_message = (
@@ -1275,15 +1275,18 @@ def _write_hparam_plan(
             ]
         )
         write_text(
-            out / "final_external_test.sh",
+            final_script_path,
             "\n".join(_hparam_script_lines([final_command], final_external_test=True)) + "\n",
             executable=True,
         )
         plan_lines.append("Final external-test script generated because final test was explicitly unlocked.")
-    elif final_unlocked:
-        plan_lines.append("Final external-test script not generated; explicit checkpoint path is required.")
     else:
-        plan_lines.append("Final external-test script not generated; explicit unlock is required.")
+        if final_script_path.exists():
+            final_script_path.unlink()
+        if final_unlocked:
+            plan_lines.append("Final external-test script not generated; explicit checkpoint path is required.")
+        else:
+            plan_lines.append("Final external-test script not generated; explicit unlock is required.")
     write_text(out / "plan.md", "\n".join(plan_lines) + "\n")
 
 
