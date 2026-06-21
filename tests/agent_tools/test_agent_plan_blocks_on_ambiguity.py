@@ -640,6 +640,23 @@ def test_infer_survival_allows_invalid_sidecars_with_preset(tmp_path: Path):
     assert (output_dir / "run.sh").exists()
 
 
+def test_infer_preset_path_does_not_skip_survival_sidecar_checks(tmp_path: Path):
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(b"preset")
+    config = _write_survival_config_with_bad_sidecars(tmp_path)
+    recipe = _write_infer_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["preset_path"] = str(preset)
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "survival_sidecars" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
 def test_infer_checks_survival_sidecar_keys_only_for_eval_split(tmp_path: Path):
     index = tmp_path / "survival_infer_index.csv"
     index.write_text("path,split,duration,eid,ppg_mask\n" "val.npz,val,60,001,1\n" "test.npz,test,60,003,1\n")

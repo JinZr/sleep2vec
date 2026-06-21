@@ -1072,10 +1072,9 @@ def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
 def _effective_preset_path(task: str, recipe: dict, config_summary: dict | None) -> tuple[str, Any]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     if task in {"infer", "evaluate"}:
-        for preset_field in ("inference_preset_path", "preset_path"):
-            value = inputs.get(preset_field)
-            if value not in (None, "", "ASK_USER"):
-                return preset_field, value
+        value = inputs.get("inference_preset_path")
+        if value not in (None, "", "ASK_USER"):
+            return "inference_preset_path", value
     value = _config_data(config_summary).get("finetune_preset_path")
     if task in {"finetune", "hparam_tune", "infer", "evaluate"} and value not in (None, "", "ASK_USER"):
         return "finetune_preset_path", value

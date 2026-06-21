@@ -741,10 +741,9 @@ def _effective_preset_path(recipe: dict, cfg: dict | None) -> Any:
     task = recipe.get("task")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     if task in {"infer", "evaluate"}:
-        for field in ("inference_preset_path", "preset_path"):
-            preset_path = inputs.get(field)
-            if preset_path not in (None, "", "ASK_USER"):
-                return preset_path
+        preset_path = inputs.get("inference_preset_path")
+        if preset_path not in (None, "", "ASK_USER"):
+            return preset_path
     if task in {"finetune", "hparam_tune", "infer", "evaluate"} and cfg:
         preset_path = (cfg.get("data") or {}).get("finetune_preset_path")
         if preset_path not in (None, "", "ASK_USER"):
