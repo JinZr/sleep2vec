@@ -149,12 +149,23 @@
 
 - File: `sleep2vec/downstreams/temporal_aggregation/__init__.py`
 - Signature: `build_temporal_aggregator(name: str | None, hidden_size: int, **kwargs: Any) -> TemporalAggregator`
-- Purpose and contract: resolve the named temporal aggregator, defaulting to mean pooling and only using `hidden_size` for attention pooling.
+- Purpose and contract: resolve the named temporal aggregator, defaulting to mean pooling and passing `hidden_size` to attention and LSTM pooling.
 - Important inputs/outputs: aggregator name plus hidden size in; aggregator module out.
 - Side effects: module instantiation only.
 - Key callers/callees: caller is `Sleep2vecDownstreamModel.__init__`.
 - Reuse guidance: all temporal pooling construction should flow through this helper.
 - Duplication risk notes: it is the canonical name-to-module map for temporal aggregation.
+
+## `sleep2vec.downstreams.temporal_aggregation.LSTMAggregator`
+
+- File: `sleep2vec/downstreams/temporal_aggregation/lstm.py`
+- Signature: `LSTMAggregator(hidden_size: int, num_layers: int = 1, dropout: float = 0.0, bidirectional: bool = True)`
+- Purpose and contract: run a packed LSTM over valid tokens, restore padded layout, mask invalid positions, and mean-pool the recurrent outputs.
+- Important inputs/outputs: hidden states and boolean mask in; one `[batch, hidden_size]` pooled feature per sample out. Bidirectional mode requires an even hidden size and each sample must contain at least one valid token.
+- Side effects: module instantiation only; forward pass raises on zero-valid-token rows.
+- Key callers/callees: built by `build_temporal_aggregator`; callee is `torch.nn.utils.rnn.pack_padded_sequence`.
+- Reuse guidance: use this registered aggregator for recurrent temporal pooling rather than adding LSTM logic inside downstream heads.
+- Duplication risk notes: zero-length handling and bidirectional hidden-size constraints belong here.
 
 ## `sleep2vec.downstreams.channel_aggregation.build_channel_aggregator`
 
@@ -232,6 +243,50 @@
 - Key callers/callees: caller is `_shared_step`.
 - Reuse guidance: this is the canonical downstream loss application logic.
 - Duplication risk notes: ignore-index and valid-label filtering must stay aligned with `_extract_valid_predictions`.
+
+## `Sleep2vecFinetuning._compute_survival_loss`
+
+- File: `sleep2vec/sleep2vec_finetuning.py`
+- Signature: `_compute_survival_loss(self, logits, batch)`
+- Purpose and contract: compute Cox proportional-hazards loss for survival tasks after validating that head logits match `event_time`, `is_event`, and `has_label` metadata shapes.
+- Important inputs/outputs: raw log-risk logits plus survival batch metadata in; `(loss, event_count)` out or `None` when no labeled values exist.
+- Side effects: none.
+- Key callers/callees: caller is `_compute_loss`; callees include `_aggregate_survival_records` and `CoxPHLossVectorized`.
+- Reuse guidance: keep survival training loss here so batch-level duplicate subjects are aggregated the same way as validation/test.
+- Duplication risk notes: survival tasks do not use `label_name` targets from `batch["tokens"]`.
+
+## `Sleep2vecFinetuning._aggregate_survival_records`
+
+- File: `sleep2vec/sleep2vec_finetuning.py`
+- Signature: `_aggregate_survival_records(self, records) -> dict[str, torch.Tensor]`
+- Purpose and contract: deduplicate repeated `(survival_key, path, token_start)` rows, verify subject-level label vectors match across windows, average raw log-risk predictions per survival key, and return one Cox risk-set row per key.
+- Important inputs/outputs: list of survival record dicts in; stacked `pred`, `event_time`, `is_event`, and `has_label` tensors out.
+- Side effects: none.
+- Key callers/callees: callers are `_compute_survival_loss` and `_finalize_survival_epoch`.
+- Reuse guidance: reuse this aggregation whenever Cox loss or c-index needs subject-level risk rows.
+- Duplication risk notes: prediction export stays path-level, but Cox metrics must aggregate by survival key.
+
+## `Sleep2vecFinetuning._finalize_survival_epoch`
+
+- File: `sleep2vec/sleep2vec_finetuning.py`
+- Signature: `_finalize_survival_epoch(self, stage: str, outputs) -> None`
+- Purpose and contract: gather distributed survival records, optionally build test prediction rows, aggregate to subject-level risk rows, log validation/test Cox loss, and log mean disease c-index when finite.
+- Important inputs/outputs: stage name and cached survival records in; Lightning metrics and optional prediction rows out.
+- Side effects: logs metrics and mutates `self.prediction_rows` on test prediction export.
+- Key callers/callees: caller is `_finalize_epoch`; callees include `_gather_survival_eval_records`, `_aggregate_survival_records`, `_build_survival_prediction_rows`, `CoxPHLossVectorized`, and `compute_survival_c_index`.
+- Reuse guidance: extend this path for survival metric changes rather than adding another epoch finalizer.
+- Duplication risk notes: DDP gathering and event-count gating belong here.
+
+## `sleep2vec.losses.cox.CoxPHLossVectorized`
+
+- File: `sleep2vec/losses/cox.py`
+- Signature: `CoxPHLossVectorized.forward(pred, has_label, event_time, is_event)`
+- Purpose and contract: compute vectorized negative partial log-likelihood for multilabel Cox survival predictions using valid label masks.
+- Important inputs/outputs: raw log-risk predictions plus same-shaped label masks, event times, and event indicators in; scalar loss out.
+- Side effects: none.
+- Key callers/callees: caller is `Sleep2vecFinetuning._compute_survival_loss` and `_finalize_survival_epoch`.
+- Reuse guidance: use this loss for survival finetuning instead of implementing Cox likelihood in trainer code.
+- Duplication risk notes: keep label-mask semantics aligned with `data.survival`.
 
 ## `Sleep2vecFinetuning._extract_ahi_event_records`
 

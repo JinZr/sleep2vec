@@ -19,6 +19,7 @@ This page answers the practical question: when you need to add or change behavio
 | Backbone encode path | `Sleep2vecPretrainModel._token_embeddings_to_hidden` | Single place that projects tokens, adds CLS, builds masks, runs the encoder, and optionally exposes hidden states | Re-creating encoder + CLS plumbing in downstream code |
 | Adaptation freeze policy | `Sleep2vecPretrainModel.apply_adaptation_freeze_policy` and `get_adaptation_param_groups` | Encodes stage1/stage2 trainability boundaries for encoder, projection, legacy channels, and new channels | New per-phase freeze helpers outside the backbone |
 | Downstream feature path | `Sleep2vecDownstreamModel.forward` | Central path for per-modality encoding, temporal aggregation, channel fusion, layer mix, and head invocation | Parallel forward paths in trainer code |
+| Recurrent temporal pooling | `sleep2vec.downstreams.temporal_aggregation.build_temporal_aggregator` with `LSTMAggregator` | Single resolver for `mean`, `attn`, and `lstm` pooling across root and variant mirrors | Ad hoc LSTM pooling inside heads or trainer code |
 | Pretrained backbone loading | `Sleep2vecDownstreamModel.load_pretrained_backbone` | Encodes prefix handling, EMA fallback, and CLS mismatch warnings | Custom checkpoint slicing logic |
 | Pretrain init loading for adapt/resume | `sleep2vec.checkpoints.load_pretrain_init_weights` | Shared loader for `model.` vs averaged-model prefixes with explicit load reporting | Custom state-dict prefix stripping |
 | LoRA insertion | `Sleep2vecDownstreamModel.freeze_backbone_and_insert_lora` and package-local variant mirrors | Centralizes freeze policy, LoRA/DoRA hyperparameters, adapter insertion, and separate-adapter trainability | Direct `peft` calls in trainer code |
@@ -27,6 +28,7 @@ This page answers the practical question: when you need to add or change behavio
 | Dataset backend dispatch | `sleep2vec.utils._dataset_class_for_args` | Chooses `PSGPretrainDataset` or `KaldiPSGDataset` from normalized `args.data_backend` | Entry-point-specific dataset class branching |
 | Sample validation | `data.utils.filter_valid_sample_indices` | Produces `payload["available_channels"]`, validates built-in AHI samples, and drops broken samples early | Custom preset-building loops |
 | Built-in AHI metadata loading | `data.utils.load_builtin_ahi_metadata` | Single contract for `ah_event`, scalar `ahi`, and scalar `tst` | Custom scalar parsing in dataset or metrics code |
+| Survival sidecar loading | `data.survival.load_survival_label_table`, `attach_survival_metadata`, and `stack_survival_metadata` | Single contract for disease columns, event-time/is-event/has-label sidecars, key normalization, and batch metadata stacking | Inline CSV joins in trainers, metrics, or preprocessing scripts |
 | Runtime batch assembly | `DefaultDataset.dataloader` | Single source for collate-time NPZ reads, tokenization, metadata packing, `token_start`, `w/h`, and sampler choice | New collate functions outside `data/default_dataset.py` |
 | Batch channel/source selection | `DefaultDataset._select_batch_channels` | Owns missing-channel filtering, pair-first validation, random/generative channel choice, and best-pair fallback for one resolved batch | Channel narrowing branches inside loaders, storage backends, or entrypoints |
 | Runtime token storage hooks | `DefaultDataset._get_available_channels_for_src` and `_load_tokens_for_src` | Extension points that let `KaldiPSGDataset` reuse collate semantics without NPZ reads | Separate Kaldi collate functions |
@@ -36,6 +38,7 @@ This page answers the practical question: when you need to add or change behavio
 | Missing-channel homogeneous eval/train fallback | `AvailableChannelsBucketBatchSampler` | Canonical bucketed sampler when pair-first is not active | New bucket logic in entrypoints |
 | Checkpoint averaging | `sleep2vec.checkpoints.select_checkpoints` and `average_checkpoints` | Encodes epoch-first selection plus fallback to mtime | Local checkpoint averaging scripts |
 | Generic downstream metric reduction | `sleep2vec.metrics.compute_downstream_metrics` | Single metric reducer for classification recall/specificity, regression, multilabel AHI pointwise, and stage remap outputs | Per-stage custom metric calculations |
+| Survival Cox reduction | `Sleep2vecFinetuning._aggregate_survival_records`, `CoxPHLossVectorized`, and `compute_survival_c_index` | Aggregates repeated windows to one subject-level risk row and computes validation/test Cox loss plus mean disease c-index | Cox loss or c-index code inside loaders or result writers |
 | AHI threshold search and event metrics | `sleep2vec.metrics.compute_ahi_event_metrics`, `select_best_ahi_threshold`, and the prepared-record helpers | Single contract for validation threshold search, record merging, and event/summary metrics | New AHI evaluation branches in trainers or scripts |
 | Result CSV output | `sleep2vec.results.save_result_csv` | Preserves rank-zero gating, lockfile semantics, schema expansion, and standard metadata columns | One-off CSV writers or the removed `metrics.save_result_csv` path |
 | Inference output paths and manifest | `sleep2vec.results.prepare_inference_result_paths`, `make_prediction_run_id`, and `save_inference_manifest` | Centralizes `results/inference/<namespace>/<label>/<prediction_run_id>/`, checkpoint tags, overview paths, and manifest schema | Rebuilding inference output folders in `infer.py` or trainers |
@@ -61,6 +64,7 @@ This page answers the practical question: when you need to add or change behavio
 | sleep2stat bundle writing | `sleep2stat.io.writers.AnalysisBundleWriter` | Owns single-use per-record sidecars, global shards, cumulative summaries, progress, and manifest schema | Writing bundle files directly from analyzers or CLI code |
 | sleep2stat plotting | `sleep2stat.plot.plot_record` and `plot_cohort` | Reads completed bundle contracts and canonical cohort metric fields for record/cohort visualizations | Plot scripts that inspect analyzer internals directly or reintroduce legacy field fallbacks |
 | Agent workflow support | `agent_tools.plans`, `agent_tools.recipes`, `agent_tools.decisions`, `agent_tools.hparam`, `agent_tools.experiments`, `agent_tools.adaptive_hparam`, and `agent_tools.progress` | Centralizes context bundles, recipe loading, plan generation, stop-and-consult gates, hparam orchestration, experiment monitoring, and machine-readable progress | A second training entrypoint or natural-language-only policy |
+| Agent index and survival summaries | `agent_tools.index_csv.index_summary` plus `agent_tools.configs.config_summary` | Keeps split-filtered index summaries, survival key checks, and sidecar existence checks in lightweight agent code | Rechecking survival CSVs in shell templates |
 | WatchPAT conversion | `preprocess.watchpat_zzp_to_edf.convert_zzp_to_edf` | Single entrypoint for `.zzp` decoding and EDF writing | Parallel conversion scripts |
 | UKB asleep night cutting | `utils/cut_ukb_sleep_with_asleep.py` | Standalone utility that mirrors UKB `.cwa` input trees and saves longest sleep block per asleep noon-to-noon interval | New sleep2vec-dependent cutting scripts |
 | UKB annotation parsing | `utils/parse_ukb_annotations_by_person.py` | Converts UKB export bundles into derived dataset metadata, codings, withdrawals, manifest, and per-participant JSON files | One-off parsers that lose UDI/feature-name provenance |
@@ -73,6 +77,7 @@ This page answers the practical question: when you need to add or change behavio
 | MoE regularization | `sleep2expert.losses.moe_regularization.compute_moe_regularization` and `compute_downstream_moe_regularization` | Centralizes load balance, modality balance, route consistency, router z-loss, entropy, and downstream-supported subset | Trainer-local MoE loss calculations |
 | MoE checkpoint expansion | `sleep2expert.checkpoints.initialize_moe_from_dense_if_possible` | Clones compatible dense FFN weights into MoE experts and rejects incomplete or shape-incompatible states | Ad hoc state-dict rewrites before load |
 | Routing export | `sleep2expert.routing_analysis.run_routing_analysis` | Loads a finetune or pretrained MoE model, reads `last_moe_aux`, writes CSV rows, and optionally renders heatmaps | Separate scripts that inspect router tensors manually |
+| Compact MoE subnetwork export | `sleep2expert.export_subnetwork.export_subnetwork` | Rewrites MoE config/checkpoint state for selected expert groups, compacts expert ids, slices learned routers, and drops invalid resume state | Manual checkpoint surgery or routing-only filters when a compact artifact is needed |
 
 ## Reuse Rules By Change Type
 
@@ -103,6 +108,13 @@ This page answers the practical question: when you need to add or change behavio
 - Keep threshold fitting and record merging in `sleep2vec.metrics` and `Sleep2vecFinetuning`.
 - Do not create a second results/threshold path in entrypoints.
 
+### If you are changing survival behavior
+
+- Reuse `data.survival` for sidecar loading and metadata stacking.
+- Keep survival task schema in `sleep2vec.config.SurvivalConfig` and `finetune.survival`.
+- Keep Cox loss, subject-level duplicate aggregation, c-index logging, and survival prediction rows in `Sleep2vecFinetuning` / `sleep2vec.metrics`.
+- Mirror root changes into `sleep2vec2` and `sleep2expert` when the contract is shared.
+
 ### If you are changing runtime orchestration
 
 - Keep trainer, callback, wandb, checkpoint, and phase-transition behavior in `pretrain.py`, `adapt.py`, `finetune.py`, `infer.py`, or the Lightning modules.
@@ -127,6 +139,7 @@ This page answers the practical question: when you need to add or change behavio
 
 - Reuse `agent_tools.plans.build_context`, `agent_tools.plans.build_plan`, `agent_tools.recipes`, and `agent_tools.decisions.evaluate_consultation_gates` for context, plan, recipe, and stop-and-consult behavior.
 - Reuse `agent_tools.hparam`, `agent_tools.experiments`, `agent_tools.adaptive_hparam`, and `agent_tools.progress` for launch/monitor/rank/export, W&B/checkpoint collection, adaptive tuning, and progress reporting.
+- Reuse `agent_tools.index_csv.index_summary` for split-filtered CSV and survival key summaries before planning preset or finetune commands.
 - Do not create a second training entrypoint.
 - Do not parse W&B logs when run manifests are available.
 - Keep context gathering lightweight and free of Torch/Lightning imports.
@@ -151,6 +164,7 @@ This page answers the practical question: when you need to add or change behavio
 - Keep LoRA/DoRA config and downstream insertion behavior aligned with root; for `sleep2expert`, use `finetune.moe_tuning.lr_scales.lora` for adapter optimizer grouping.
 - Use variant-specific tests such as `tests/variants/test_sleep2vec2_namespace.py`, `tests/variants/test_sleep2expert_namespace.py`, `tests/variants/test_variant_data_protocol.py`, and the Kaldi backend parity tests to guard namespace drift.
 - For `sleep2expert` MoE behavior, route schema changes through `sleep2expert.config`, routing changes through `sleep2expert.backbones.roformer.moe`, and export changes through `sleep2expert.routing_analysis`.
+- For compact MoE artifacts, use `sleep2expert.export_subnetwork`; route-filtered inference metadata is not a checkpoint compaction substitute.
 
 ## Major Duplication Risks
 
@@ -169,6 +183,9 @@ This page answers the practical question: when you need to add or change behavio
 13. Binary `specificity` and stage alias `spec` intentionally have different averaging semantics for two-class stage collapses; use `compute_downstream_metrics` instead of recalculating them outside `metrics.py`.
 14. sleep2stat model-hour, recording-hour, and sleep-hour respiratory denominators have distinct meanings; keep field names explicit and do not collapse them into one AHI column.
 15. sleep2stat YASA and SpO2 analyzers are NPZ/raw-signal analyzers; only `sleep2vec_downstream` currently supports Kaldi-backed records.
+16. Survival labels are subject-level sidecar metadata; aggregate duplicate windows by survival key before Cox loss/c-index, but keep prediction export per path/window.
+17. LSTM temporal aggregation requires at least one valid token per sample; do not mask it away silently or pool zero-length rows.
+18. sleep2expert compact export rewrites both config and checkpoint layout; do not mix compact checkpoints with the original expert id mapping.
 
 ## Known Non-Reuse Zones
 

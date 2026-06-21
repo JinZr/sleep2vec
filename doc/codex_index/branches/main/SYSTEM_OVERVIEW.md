@@ -11,7 +11,7 @@ The repository is a config-driven multimodal sleep modeling system with six oper
 5. Analysis bundles and derived statistics: `sleep2stat/`
 6. Runtime support and tooling: `sleep2vec/checkpoints.py`, `sleep2vec/results.py`, `sleep2vec/sleep2vec_inference.py`, `sleep2vec/distributed.py`, `sleep2vec/visualization/`, `utils/check_configs.py`, `agent_tools/`, and standalone utilities under `utils/`
 
-`sleep2vec2/` and `sleep2expert/` are tracked standalone namespaces on this branch. They mirror the root runtime surface with package-local `data/` and `preprocess/` modules instead of importing root `data` or `preprocess`. `sleep2expert/` also owns the MoE RoFormer, MoE regularization, finetune tuning policy, and routing-analysis export path.
+`sleep2vec2/` and `sleep2expert/` are tracked standalone namespaces on this branch. They mirror the root runtime surface with package-local `data/` and `preprocess/` modules instead of importing root `data` or `preprocess`. `sleep2expert/` also owns the MoE RoFormer, MoE regularization, finetune tuning policy, routing-analysis export path, and compact MoE subnetwork export path.
 
 `sleep2stat/` is a tracked analysis-bundle package. It reads NPZ or Kaldi record manifests, runs configured analyzers and reducers, and writes per-record sidecars plus optional global tables. Its model analyzer reuses the existing finetune model/data paths; raw YASA and SpO2 analyzers operate directly on NPZ signals.
 
@@ -24,6 +24,7 @@ Top-level behavior is not encoded in YAML alone. YAML defines model, loss, task,
 - `python -m sleep2vec.finetune`
 - `python -m sleep2vec.infer`
 - `python -m sleep2expert.routing_analysis`
+- `python -m sleep2expert.export_subnetwork`
 - `python -m sleep2stat validate-config`
 - `python -m sleep2stat run`
 - `python -m sleep2stat summarize`
@@ -104,11 +105,12 @@ Stage transitions are strict: `--ckpt-path` resumes within the same phase only, 
    - optional LoRA/DoRA insertion with YAML-configured rank, alpha, dropout, target modules, and separate adapters
    - optional model averaging
    - optional downstream evaluation visualization hooks
+   - Cox survival loss and subject-level survival risk aggregation when `finetune.task.type=survival`
 6. Run `trainer.fit(...)`.
 7. Test the best checkpoint or requested checkpoint with `trainer.test(...)`.
 8. Append evaluation metrics to a CSV via `sleep2vec.results.save_result_csv`.
 
-Built-in task semantics now include `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`.
+Built-in task semantics include `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`. Custom YAML tasks may also declare `finetune.task.type=survival`, which requires `finetune.survival` sidecars and monitors either `val_loss/min` or `val_c_index/max`.
 
 ### Inference
 
@@ -156,6 +158,7 @@ The runtime assumes a batch dictionary with these keys:
 - Built-in `ahi` requires NPZ key `ah_event` plus scalar NPZ keys `ahi` and `tst`; evaluation also expects `stage5` tokens as an auxiliary label source.
 - Stage/AHI-only indexes do not need `age` or `sex` columns, but built-in `age` and `sex` runs fail fast if the loaded preset/index lacks valid labels after split/source filtering.
 - Non-sequence metadata classification remains binary-only.
+- Survival finetuning uses sidecar metadata vectors named `event_time`, `is_event`, and `has_label`, plus the configured survival key column.
 - Pair-first missing-channel pretraining requires `payload["available_channels"]` on every retained sample.
 - Weighted InfoNCE requires both `w` and `h` in the batch.
 
@@ -172,7 +175,7 @@ The canonical creation path is:
    - model averager registry
 4. Build the encoder factory, tokenizer mapping, and projection head via `builders.py`.
 5. Build CLS behavior via `build_cls_embedding`.
-6. Build downstream temporal/channel/head composition through `sleep2vec/downstreams/`.
+6. Build downstream temporal/channel/head composition through `sleep2vec/downstreams/`; temporal aggregation supports `mean`, `attn`, and `lstm`.
 
 ## Preprocessing And Config Validation
 
@@ -183,6 +186,7 @@ The preprocessing surface is split between reusable CLIs, standalone data utilit
 - `save_dataset_presets.py`: build preset pickles through `PSGPretrainDataset`, including YAML-driven `preset_build` validation
 - `merge_dataset_presets.py`: concatenate multiple preset pickles
 - `convert_npz_to_kaldi.py`: convert CSV-indexed NPZ windows into split-specific Kaldi ark/scp roots plus `manifest.json` format v2
+- `configs/hypnodata/`: example configuration and notes for the external `hypnodata` raw-PSG normalization layer, which can feed NPZ, Kaldi conversion, preset generation, and sleep2stat record manifests
 - `watchpat_zzp_to_edf.py`: convert WatchPAT `.zzp` archives to EDF and optional JSON summary
 - `utils/cut_ukb_sleep_with_asleep.py`: cut UKB `.cwa` nights with the standalone `asleep` package
 - `utils/parse_ukb_annotations_by_person.py`: parse UKB annotation bundles into dataset metadata and per-participant JSON
@@ -219,6 +223,7 @@ The canonical Kaldi path is:
 - Per-run CLI snapshot: `cli_args.yaml`, plus phase-specific adaptation snapshots
 - Downstream results table: caller-specified CSV via `sleep2vec.results.save_result_csv`
 - Inference outputs: run-local `metrics__*.csv`, `predictions__*.csv`, `run_manifest.json`, shared `results/inference/overview.csv`, and optional W&B inference artifacts
+- Survival inference prediction rows include raw log-risk vectors and sidecar label vectors when prediction export is enabled.
 - Visualization side effects:
   - pair-accuracy heatmaps
   - layer-mix heatmaps and tables
@@ -243,4 +248,4 @@ The canonical Kaldi path is:
 
 ## Variant State On This Branch
 
-`sleep2vec2/` is an active tracked standalone mirror of the root recipe with a package-local RoFormer implementation and LoRA/DoRA adapter support aligned with root downstream behavior. `sleep2expert/` is an active tracked standalone variant that adds MoE configuration, sparse RoFormer FFN routing, MoE pretrain/finetune regularization, MoE-aware LoRA optimizer grouping, MoE checkpoint initialization, and routing export/visualization.
+`sleep2vec2/` is an active tracked standalone mirror of the root recipe with a package-local RoFormer implementation and LoRA/DoRA adapter support aligned with root downstream behavior. `sleep2expert/` is an active tracked standalone variant that adds MoE configuration, sparse RoFormer FFN routing, MoE pretrain/finetune regularization, MoE-aware LoRA optimizer grouping, MoE checkpoint initialization, runtime route filtering, routing export/visualization, and compact subnetwork export.

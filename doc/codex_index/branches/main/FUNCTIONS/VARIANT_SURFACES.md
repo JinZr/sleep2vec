@@ -2,16 +2,16 @@
 
 ## Branch State
 
-On commit `dbe6a5e4cf40811138a35870b011a2a6d1bf8b83`, tracked variant coverage is:
+On commit `d95c9d45d63479b0fc28b011e138002691921104`, tracked variant coverage is:
 
-- `sleep2vec2/`: active standalone dense mirror with 105 tracked files
-- `sleep2expert/`: active standalone MoE-capable mirror with 109 tracked files
+- `sleep2vec2/`: active standalone dense mirror with 110 tracked files
+- `sleep2expert/`: active standalone MoE-capable mirror with 115 tracked files
 
 ## `sleep2vec2` Standalone Mirror
 
 - Files: `sleep2vec2/`, `configs/sleep2vec2/`, `tests/variants/test_sleep2vec2_namespace.py`, `tests/variants/test_sleep2vec2_roformer_parity.py`, `tests/variants/test_sleep2vec2_kaldi_backend.py`
 - Purpose and contract: keep a package-local dense recipe mirror whose runtime, data, preprocessing, visualization, LoRA/DoRA adapter behavior, and config imports stay under `sleep2vec2`.
-- Important inputs/outputs: same pretrain/adapt/finetune/infer contracts as root `sleep2vec`, including package-local finetune imbalance loss/sampler schema, LoRA rank/alpha/dropout/target/use_dora settings, distributed-aware weighted metadata sampler, automatic inference prediction export, inference W&B artifacts, downstream specificity metrics, plus package-local Kaldi conversion and dataset routing.
+- Important inputs/outputs: same pretrain/adapt/finetune/infer contracts as root `sleep2vec`, including package-local finetune imbalance loss/sampler schema, survival sidecars, LSTM temporal aggregation, LoRA rank/alpha/dropout/target/use_dora settings, distributed-aware weighted metadata sampler, automatic inference prediction export, inference W&B artifacts, downstream specificity metrics, plus package-local Kaldi conversion and dataset routing.
 - Side effects: runtime side effects mirror root entrypoints, including inference artifact writes and optional W&B artifact logging, but W&B projects use `sleep2vec2-*` names.
 - Reuse guidance: edit the package-local implementation directly when working in `sleep2vec2`; do not shortcut through root `sleep2vec`, `data`, or `preprocess`.
 - Duplication-risk notes: behavior parity is intentional duplication. Namespace-crossing imports and silent legacy RoFormer checkpoint compatibility are regressions.
@@ -19,11 +19,11 @@ On commit `dbe6a5e4cf40811138a35870b011a2a6d1bf8b83`, tracked variant coverage i
 ## `sleep2expert` Standalone MoE Mirror
 
 - Files: `sleep2expert/`, `configs/sleep2expert/`, `tests/variants/test_sleep2expert_namespace.py`, `tests/variants/test_sleep2expert_roformer_parity.py`, `tests/variants/test_sleep2expert_moe_*.py`, `tests/variants/test_sleep2expert_routing_analysis.py`
-- Purpose and contract: keep a package-local mirror that adds MoE RoFormer layers, routing aux capture, pretrain MoE regularization, finetune MoE tuning, LoRA/DoRA adapter behavior, dense-to-MoE checkpoint expansion, and routing export.
-- Important inputs/outputs: same dense runtime inputs as root for non-MoE recipes, including package-local finetune imbalance loss/sampler schema, LoRA rank/alpha/dropout/target/use_dora settings, distributed-aware weighted metadata sampler, automatic inference prediction export, inference W&B artifacts, downstream specificity metrics, and standalone RoFormer `model.backbone.attention_backend`; MoE recipes add `model.backbone.moe`, optional `finetune.moe_tuning` blocks, and optional expert LoRA targets `dense_in` / `dense_out`.
-- Side effects: runtime side effects mirror root entrypoints, W&B projects use `sleep2expert-*` names, and routing analysis writes CSV/PNG artifacts.
-- Reuse guidance: route schema changes through `sleep2expert.config`, sparse routing through `sleep2expert.backbones.roformer.moe`, MoE loss through `sleep2expert.losses.moe_regularization`, MoE LoRA optimizer grouping through `sleep2expert.sleep2vec_finetuning`, and persistent routing inspection through `sleep2expert.routing_analysis`.
-- Duplication-risk notes: `last_moe_aux` is in-memory state only; use routing export for persistent analysis. Do not implement parallel router metrics inside trainers or ad hoc scripts. Router LoRA remains unsupported.
+- Purpose and contract: keep a package-local mirror that adds MoE RoFormer layers, routing aux capture, pretrain MoE regularization, finetune MoE tuning, LoRA/DoRA adapter behavior, dense-to-MoE checkpoint expansion, runtime route filtering, routing export, and compact subnetwork export.
+- Important inputs/outputs: same dense runtime inputs as root for non-MoE recipes, including package-local finetune imbalance loss/sampler schema, survival sidecars, LSTM temporal aggregation, LoRA rank/alpha/dropout/target/use_dora settings, distributed-aware weighted metadata sampler, automatic inference prediction export, inference W&B artifacts, downstream specificity metrics, and standalone RoFormer `model.backbone.attention_backend`; MoE recipes add `model.backbone.moe`, optional `finetune.moe_tuning` blocks, optional expert LoRA targets `dense_in` / `dense_out`, optional inference route filters, and optional compact export group selection.
+- Side effects: runtime side effects mirror root entrypoints, W&B projects use `sleep2expert-*` names, routing analysis writes CSV/PNG artifacts, and compact export writes a rewritten config/checkpoint/manifest bundle.
+- Reuse guidance: route schema changes through `sleep2expert.config`, sparse routing through `sleep2expert.backbones.roformer.moe`, MoE loss through `sleep2expert.losses.moe_regularization`, MoE LoRA optimizer grouping through `sleep2expert.sleep2vec_finetuning`, persistent routing inspection through `sleep2expert.routing_analysis`, and compact expert-group artifacts through `sleep2expert.export_subnetwork`.
+- Duplication-risk notes: `last_moe_aux` is in-memory state only; use routing export for persistent analysis. Use compact subnetwork export when checkpoint/config layout must shrink. Do not implement parallel router metrics or checkpoint surgery inside trainers or ad hoc scripts. Router LoRA remains unsupported.
 
 ## Package-Local Data And Preprocess Mirrors
 
@@ -47,18 +47,21 @@ Important variant-specific functions and classes:
 - `sleep2expert.config.MoeConfig` and `_validate_moe_config`: MoE backbone schema and strict validation.
 - `sleep2expert.config._build_finetune_moe_tuning_config`: MoE finetune mode, LR-scale including `lora`, and regularization parser.
 - `sleep2vec2.sleep2vec_inference.*` and `sleep2expert.sleep2vec_inference.*`: package-local mirrors of root inference prediction extraction.
+- `sleep2vec2.data.survival.*` and `sleep2expert.data.survival.*`: package-local mirrors of root survival sidecar loading and stacking.
+- `sleep2vec2.downstreams.temporal_aggregation.LSTMAggregator` and `sleep2expert.downstreams.temporal_aggregation.LSTMAggregator`: package-local mirrors of root LSTM temporal pooling.
 - `sleep2expert.backbones.roformer.moe.TopKRouter`: learned/random/hard router implementation.
 - `sleep2expert.backbones.roformer.moe.SparseMoEFFN`: sparse expert FFN execution.
 - `sleep2expert.losses.moe_regularization.compute_moe_regularization`: pretrain MoE auxiliary loss.
 - `sleep2expert.losses.moe_regularization.compute_downstream_moe_regularization`: supported downstream MoE auxiliary loss subset.
 - `sleep2expert.checkpoints.initialize_moe_from_dense_if_possible`: dense FFN to MoE expert checkpoint expansion.
 - `sleep2expert.routing_analysis.run_routing_analysis`: persistent routing CSV and heatmap export.
+- `sleep2expert.export_subnetwork.export_subnetwork`: compact MoE expert-group config/checkpoint export with expert-id remapping and learned-router slicing.
 - `sleep2expert.model_stats.*`: parameter, active-parameter, FFN FLOP, and expert-usage summaries.
 
 ## Ownership Notes
 
 - `sleep2vec2/` is a dense standalone variant boundary. Keep it package-local and parity-tested, including LoRA/DoRA adapter parity.
-- `sleep2expert/` is the active MoE standalone variant boundary. Keep MoE schema, routing, regularization, tuning, LoRA grouping, and export changes inside this namespace unless deliberately changing root contracts.
+- `sleep2expert/` is the active MoE standalone variant boundary. Keep MoE schema, routing, regularization, tuning, LoRA grouping, route filtering, subnetwork export, and routing export changes inside this namespace unless deliberately changing root contracts.
 
 ## Unknowns
 

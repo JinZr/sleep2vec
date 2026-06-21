@@ -62,11 +62,11 @@ High-impact decisions must come from explicit user decisions, explicit CLI argum
 
 `agent_tools context` writes `context.json` and `context.md` for every run. If any blocking issue exists, it writes `questions.json`, `questions.md`, and `commands.blocked.sh` instead of runnable `commands.sh`; `consultation_required` is true when any issue needs user input, even if another issue makes the overall status `FAIL`.
 
-Context bundles include skill metadata, owners, relevant index docs, expected agent artifacts, and best-effort index or preset summaries when the config points to `data.finetune_data_index` or `data.finetune_preset_path`. For `task=sleep2stat`, NPZ index summaries use `sleep2stat.data.index`.
+Context bundles include skill metadata, owners, relevant index docs, expected agent artifacts, and best-effort index or preset summaries when the config points to `data.finetune_data_index` or `data.finetune_preset_path`. For survival configs, index summaries include survival key coverage and sidecar-key checks. For `task=sleep2stat`, NPZ index summaries use `sleep2stat.data.index`.
 
 ## Plan Generation
 
-`agent_tools plan` runs consultation gates before writing scripts. Blocked plans write `plan.blocked.md` and questions only. Hyper-parameter trial scripts use validation-only selection and `--no-test-after-fit` by default; they may run test-after-fit only when `external_test_locked=false`, `final_test_unlocked=true`, and `test_after_fit=true` are explicit. Final external-test scripts require explicit final-test unlock and an explicit existing checkpoint path.
+`agent_tools plan` runs consultation gates before writing scripts. Blocked plans write `plan.blocked.md` and questions only. Hyper-parameter trial scripts use validation-only selection and `--no-test-after-fit` by default; they may run test-after-fit only when `external_test_locked=false`, `final_test_unlocked=true`, and `test_after_fit=true` are explicit. Final external-test scripts require explicit final-test unlock plus an explicit existing checkpoint path, and YAML-overridden hparam searches also require an explicit selected final-eval config path.
 
 Recipe `variant` controls the generated module namespace for model tasks. Supported values are `sleep2vec`, `sleep2vec2`, and `sleep2expert`; missing or unsupported variants block model command generation. `task=sleep2stat` is variantless, so any non-null variant, including `sleep2stat`, blocks command generation.
 
@@ -74,7 +74,7 @@ Sleep2stat plans call only existing `sleep2stat` CLI commands: `python -m sleep2
 
 Recipe `base_recipe` paths are resolved relative to the local recipe file first, then by the repository root fallback used by checked-in examples.
 
-Generated finetune, hparam trial, infer, final-test, and sleep2stat commands should propagate explicit supported runtime/input fields from the recipe or user decisions. Do not drop explicit checkpoint, pretrained-backbone, eval split, test-after-fit, device, batch-size, precision, split, dry-run, limit-records, or scheduler/checkpoint cadence fields when rendering scripts.
+Generated finetune, hparam trial, infer, final-test, and sleep2stat commands should propagate explicit supported runtime/input fields from the recipe or user decisions. Do not drop explicit checkpoint, pretrained-backbone, eval split, test-after-fit, device, batch-size, precision, split, dry-run, limit-records, survival sidecar, or scheduler/checkpoint cadence fields when rendering scripts.
 
 Hyper-parameter search uses `runtime.<name>` keys for supported CLI knobs and `yaml:/json/pointer/path` keys for generated config overrides. Bare search keys are invalid, and `search.max_trials` must be a positive integer. Hparam recipes also inherit base finetune consultation gates; a base config with no usable preset/index or missing high-impact finetune decision blocks tuning. Generated `run_all.sh` scripts are written so they can find sibling `trial_*.sh` files when invoked from outside the plan directory.
 

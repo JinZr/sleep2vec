@@ -55,6 +55,7 @@ Primary code path:
    - `predictions__<label>__<split>__<ckpt_tag>.csv`: one row per path, with list values serialized for CSV.
    - `overview.csv`: append-only cross-run summary.
    - `run_manifest.json`: machine-readable run metadata, paths, checkpoint identity, runtime settings, metrics, and prediction-row count.
+   - Survival prediction rows include raw log-risk lists plus sidecar `event_time`, `is_event`, and `has_label` vectors.
 9. If W&B is enabled, log the metrics plus `prediction_row_count` and upload the metrics, predictions, manifest, and overview files as one `inference-<prediction_run_id>` artifact.
 
 ## Checkpoint Selection Policy
@@ -79,6 +80,7 @@ Primary code path:
 - Prediction row extraction is split out to `sleep2vec/sleep2vec_inference.py`; CSV writing and run metadata stay in `sleep2vec/results.py`.
 - Non-AHI prediction export deduplicates repeated `(path, token_start)` records before building per-path rows.
 - AHI inference requires `ahi_eval_threshold` to be present in the checkpoint state.
+- Survival inference reuses finetune epoch reduction for Cox metrics, but writes prediction rows from survival records because survival targets are metadata sidecars rather than ordinary `label_name` tensors.
 
 ## Edit Hotspots
 

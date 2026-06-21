@@ -15,10 +15,10 @@
 
 - File: `preprocess/save_dataset_presets.py`
 - Signature: `main() -> None`
-- Purpose and contract: canonical preset-generation CLI. It resolves channels from YAML, applies optional `preset_build` policy, plans output paths, optionally prefilters the source CSV by required masks, then instantiates `PSGPretrainDataset` so validation and writing happen through the dataset layer.
+- Purpose and contract: canonical preset-generation CLI. It resolves channels from YAML, applies optional `preset_build` policy, loads survival preset-build sidecars when `finetune.task.type=survival`, plans output paths, optionally prefilters the source CSV by required masks, then instantiates `PSGPretrainDataset` so validation and writing happen through the dataset layer.
 - Important inputs/outputs: CLI args in; preset pickle files out.
 - Side effects: creates parent directories, may write temporary filtered CSVs, and writes preset files unless `--dry-run` is set.
-- Key callers/callees: called from `__main__`; callees include `_load_model_channels`, `_load_preset_build_block`, `_resolve_validation_channels`, `_resolve_effective_min_channels`, `_build_preset_job`, and `PSGPretrainDataset`.
+- Key callers/callees: called from `__main__`; callees include `_load_model_channels`, `_load_preset_build_block`, `_load_survival_build_config`, `_resolve_validation_channels`, `_resolve_effective_min_channels`, `_build_preset_job`, and `PSGPretrainDataset`.
 - Reuse guidance: use this CLI path to generate preset pickles.
 - Duplication risk notes: do not pickle `SampleIndex` lists directly in one-off scripts unless the preset schema is intentionally changing.
 
@@ -32,6 +32,17 @@
 - Key callers/callees: callers are `main`, `_resolve_channels_and_dims`, and `utils/check_configs.py`.
 - Reuse guidance: use this helper rather than reading `preset_build` ad hoc in new tooling.
 - Duplication risk notes: field validation belongs here.
+
+## `preprocess.save_dataset_presets._load_survival_build_config`
+
+- File: `preprocess/save_dataset_presets.py`; package-local mirrors: `sleep2vec2/preprocess/save_dataset_presets.py`, `sleep2expert/preprocess/save_dataset_presets.py`
+- Signature: `_load_survival_build_config(config_data: dict[str, Any]) -> tuple[Any | None, int | None]`
+- Purpose and contract: derive the survival sidecar config and output dimension for preset generation from YAML, requiring `finetune.survival` only when `finetune.task.type=survival`.
+- Important inputs/outputs: raw config mapping in; typed survival config plus output dim, or `(None, None)` for non-survival configs.
+- Side effects: none.
+- Key callers/callees: caller is `main`; consumers pass the result into `_build_preset_job` and `PSGPretrainDataset`.
+- Reuse guidance: use this helper when preset generation or config checks need survival sidecar awareness.
+- Duplication risk notes: do not silently accept `finetune.survival` on non-survival tasks.
 
 ## `preprocess.save_dataset_presets._resolve_validation_channels`
 
@@ -69,9 +80,9 @@
 ## `preprocess.save_dataset_presets._build_preset_job`
 
 - File: `preprocess/save_dataset_presets.py`
-- Signature: `_build_preset_job(*, output_path: Path, index_paths: list[str], channel_names: list[str], channel_input_dims: dict[str, int], split: str, meta_data_name: str | None, n_tokens: int, stride_tokens: int, mask_rate: float, allow_missing_channels: bool, min_channels: int, batch_size: int, shuffle: bool, filter_max_workers: int | None) -> tuple[Path, int]`
+- Signature: `_build_preset_job(*, output_path: Path, index_paths: list[str], channel_names: list[str], channel_input_dims: dict[str, int], split: str, meta_data_name: str | None, n_tokens: int, stride_tokens: int, mask_rate: float, allow_missing_channels: bool, min_channels: int, batch_size: int, shuffle: bool, filter_max_workers: int | None, survival_label_config: Any | None = None, survival_output_dim: int | None = None) -> tuple[Path, int]`
 - Purpose and contract: execute one preset-build unit, including optional strict CSV prefiltering and post-build restoration of the original `source` field.
-- Important inputs/outputs: preset-build job inputs in, `(output_path, dataset_len)` out.
+- Important inputs/outputs: preset-build job inputs plus optional survival sidecar config/output dim in, `(output_path, dataset_len)` out.
 - Side effects: may write a temporary CSV, instantiates `PSGPretrainDataset`, and writes a preset pickle.
 - Key callers/callees: caller is `main`; callees include `_filter_index_df_for_required_channels`, `_restore_preset_source`, and `PSGPretrainDataset`.
 - Reuse guidance: use this helper for parallel preset-build orchestration.
@@ -160,8 +171,8 @@
 
 - File: `preprocess/convert_npz_to_kaldi.py`; package-local mirrors: `sleep2vec2/preprocess/convert_npz_to_kaldi.py`, `sleep2expert/preprocess/convert_npz_to_kaldi.py`
 - Signature: `convert(args: argparse.Namespace) -> Path`
-- Purpose and contract: convert CSV-indexed NPZ token windows into split-specific Kaldi ark/scp files plus `manifest.json` format v2. Before opening writers, it preflights index-derived sample keys after split filtering, per-split overlap stride selection, and mask-based availability filtering, rejecting duplicate keys before partial ark/scp output is created. When overlapping windows are requested, `val`/`test` rows are retained but use non-overlapping stride unless `--include-overlap-eval-splits` is passed. The converter defaults to `--compress-ark`, compressing non-built-in signal channels in the `train` split with Kaldi `CompressedMatrixWriter` and `CompressionMethod.kTwoByteAuto`, while built-in `stage5` and `ahi` plus non-train splits stay uncompressed `FloatMatrix` entries. `--no-compress-ark` forces all channel ark files to `FloatMatrix`.
-- Important inputs/outputs: index CSV(s), config YAML, output directory, optional split filter, selected channels, windowing settings, missing-channel policy, shard count, worker count, path-prefix maps, and compression switch in; Kaldi data root with split manifests, channel scps, ark files, and manifest channel `ark_storage` metadata out.
+- Purpose and contract: convert CSV-indexed NPZ token windows into split-specific Kaldi ark/scp files plus `manifest.json` format v2. Before opening writers, it preflights index-derived sample keys after split filtering, per-split overlap stride selection, survival key preservation, and mask-based availability filtering, rejecting duplicate keys before partial ark/scp output is created. When overlapping windows are requested, `val`/`test` rows are retained but use non-overlapping stride unless `--include-overlap-eval-splits` is passed. The converter defaults to `--compress-ark`, compressing non-built-in signal channels in the `train` split with Kaldi `CompressedMatrixWriter` and `CompressionMethod.kTwoByteAuto`, while built-in `stage5` and `ahi` plus non-train splits stay uncompressed `FloatMatrix` entries. `--no-compress-ark` forces all channel ark files to `FloatMatrix`.
+- Important inputs/outputs: index CSV(s), config YAML, output directory, optional split filter, selected channels, windowing settings, missing-channel policy, shard count, worker count, path-prefix maps, survival key column, and compression switch in; Kaldi data root with split manifests, channel scps, ark files, and manifest channel `ark_storage` metadata out.
 - Side effects: reads NPZ files and writes sorted split-specific Kaldi ark/scp files or shard files plus aggregate scps and streamed split manifests; imports optional `kaldi_native_io` only after index preflight passes.
 - Key callers/callees: called from `__main__`; callees include `_resolve_channels`, `_validate_unique_sample_keys`, `_convert_record`, `kaldi_native_io.FloatMatrixWriter`, and `kaldi_native_io.CompressedMatrixWriter`.
 - Reuse guidance: use this CLI to build Kaldi roots for pretrain, finetune, and inference instead of creating ad hoc ark/scp writers. Standalone variants should keep their package-local mirrors behaviorally aligned.

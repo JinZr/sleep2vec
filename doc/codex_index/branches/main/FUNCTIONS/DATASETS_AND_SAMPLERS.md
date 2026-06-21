@@ -16,11 +16,35 @@
 - File: `data/psg_pretrain_dataset.py`
 - Signature: `PSGPretrainDataset.__init__(channel_names, save_preset_path, load_preset_path, index, split, max_tokens, *, channel_input_dims, token_sec=30, stride_tokens=0, mask_rate=0.15, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, randomly_select_channels=True, min_channels=2, allow_missing_channels=False, bucket_by_available_channels=False, train_pair_probs=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, filter_max_workers=None, **kwargs)`
 - Purpose and contract: canonical PSG dataset constructor. It either loads a preset or reads CSV indexes, windows each row into `SampleIndex` records, copies optional `age`/`sex` metadata only when present, builds the channel registry, and delegates the rest to `DefaultDataset`.
-- Important inputs/outputs: channel list, YAML-driven channel widths, preset/index source, split, token windowing, and batching flags in; dataset instance out.
-- Side effects: when building from CSV, stamps `metadata["source"]` from the CSV path, preserves optional metadata fields, and expands each row into one or more `SampleIndex` windows.
+- Important inputs/outputs: channel list, YAML-driven channel widths, optional survival label config/output dim, preset/index source, split, token windowing, and batching flags in; dataset instance out.
+- Side effects: when building from CSV, stamps `metadata["source"]` from the CSV path, preserves optional metadata fields, attaches survival sidecar vectors when configured, and expands each row into one or more `SampleIndex` windows.
 - Key callers/callees: callers are `sleep2vec.utils` and `preprocess/save_dataset_presets.py`; callees are `window`, `_build_channel_registry`, and `DefaultDataset.__init__`.
 - Reuse guidance: use this class for PSG-style NPZ/preset loading instead of building `SampleIndex` lists manually.
-- Duplication risk notes: the built-in label-channel registry lives here and should not be replicated in caller code.
+- Duplication risk notes: the built-in label-channel registry and CSV-to-`SampleIndex` survival sidecar attachment live here and should not be replicated in caller code.
+
+## `data.survival.load_survival_label_table`
+
+- File: `data/survival.py`
+- Signature: `load_survival_label_table(config: Any | None, expected_output_dim: int | None = None) -> SurvivalLabelTable | None`
+- Purpose and contract: load Cox survival disease-column and sidecar CSVs, require exact `[key_column] + disease_columns_index` columns, validate output-dim parity, matching key sets, and labeled rows with non-missing event fields.
+- Important inputs/outputs: typed survival config plus optional expected output dim in; immutable `SurvivalLabelTable` out, or `None` when no config is supplied.
+- Side effects: reads sidecar files from disk.
+- Key callers/callees: callers are `PSGPretrainDataset.__init__`, `KaldiPSGDataset.__init__`, and `agent_tools.configs._survival_summary`; callees include `_load_disease_columns`, `_load_sidecar`, and `normalize_survival_key`.
+- Reuse guidance: use this function for every survival sidecar read.
+- Duplication risk notes: disease-list and sidecar shape validation must stay centralized here.
+
+## `data.survival.attach_survival_metadata` and `stack_survival_metadata`
+
+- File: `data/survival.py`
+- Signatures:
+  - `attach_survival_metadata(metadata: dict[str, Any], key_value: Any, labels: SurvivalLabelTable) -> None`
+  - `stack_survival_metadata(samples: list[Any], expected_output_dim: int | None = None, key_column: str | None = None) -> dict[str, Any]`
+- Purpose and contract: attach per-key `event_time`, `is_event`, and `has_label` vectors to sample metadata, then stack those vectors into batch tensors while preserving survival keys when requested.
+- Important inputs/outputs: row key or sample list in; metadata mutation or tensor/list batch fields out.
+- Side effects: `attach_survival_metadata` mutates the sample metadata dict.
+- Key callers/callees: callers are root and variant PSG/Kaldi datasets plus `DefaultDataset.dataloader`; callee is `normalize_survival_key`.
+- Reuse guidance: use these helpers instead of hand-stacking survival metadata in dataset or trainer code.
+- Duplication risk notes: presets built without survival metadata must fail fast here rather than silently producing ordinary metadata batches.
 
 ## `data.kaldi_io.KaldiReaderPool`
 
@@ -37,9 +61,9 @@
 
 - File: `data/kaldi_psg_dataset.py`
 - Signature: `KaldiPSGDataset(channel_names, kaldi_data_root, manifest, split, max_tokens, *, channel_input_dims, mask_rate=0.15, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, randomly_select_channels=True, min_channels=2, allow_missing_channels=False, bucket_by_available_channels=False, train_pair_probs=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, **kwargs)`
-- Purpose and contract: build the same runtime batch contract as `PSGPretrainDataset` from a Kaldi `manifest.json` format v2 root rather than NPZ/preset inputs.
-- Important inputs/outputs: configured channels, Kaldi root, split manifest, and split name in; dataset instance out.
-- Side effects: reads `manifest.json`, selects the requested split, builds channel specs, reads the split CSV, creates `SampleIndex` records with `payload["available_channels"]`, and opens Kaldi readers lazily.
+- Purpose and contract: build the same runtime batch contract as `PSGPretrainDataset` from a Kaldi `manifest.json` format v2 root rather than NPZ/preset inputs, including survival sidecar attachment when configured.
+- Important inputs/outputs: configured channels, optional survival label config/output dim, Kaldi root, split manifest, and split name in; dataset instance out.
+- Side effects: reads `manifest.json`, selects the requested split, builds channel specs, reads the split CSV, creates `SampleIndex` records with `payload["available_channels"]` and optional survival metadata, and opens Kaldi readers lazily.
 - Key callers/callees: callers are `sleep2vec.utils.get_pretrain_dataloader` and `_build_finetune_loader` when `data_backend="kaldi"`; callees include `_load_manifest_json`, `_load_channel_specs`, `_load_manifest_samples`, `DefaultDataset.__init__`, and `KaldiReaderPool`.
 - Reuse guidance: use this class for Kaldi-backed pretrain, finetune, and inference. It intentionally reuses `DefaultDataset.dataloader` instead of introducing a separate collate path.
 - Duplication risk notes: split CSV column requirements, `available_channels` parsing, manifest input-dim checks, and token-length validation should stay here.
@@ -127,10 +151,10 @@
 
 - File: `data/default_dataset.py`
 - Signature: `DefaultDataset.dataloader(self, device: str = "cpu") -> DataLoader`
-- Purpose and contract: canonical runtime collate path. It delegates batch channel/source selection to `_select_batch_channels`, reads NPZ slices, tokenizes, builds masks, pads sequences, constructs `token_start`, metadata tensors, `w/h`, and selects the correct sampler, including optional binary-label weighted random sampling for train-only downstream imbalance runs.
+- Purpose and contract: canonical runtime collate path. It delegates batch channel/source selection to `_select_batch_channels`, reads NPZ slices or storage-hook tokens, tokenizes, builds masks, pads sequences, constructs `token_start`, stacks ordinary and survival metadata tensors, builds `w/h`, and selects the correct sampler, including optional binary-label weighted random sampling for train-only downstream imbalance runs.
 - Important inputs/outputs: dataset state in; fully configured `DataLoader` out.
 - Side effects: nested `collate_fn` performs NPZ I/O on every batch, may select channels dynamically, and backfills built-in AHI metadata into sample-level metadata.
-- Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `_select_batch_channels`, `load_npz`, `load_builtin_ahi_metadata`, `process_metadata`, `build_w_h_age_sex_center`, `extract_binary_labels`, `make_weighted_sampler_from_labels`, `WeightedRandomDistributedSampler`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
+- Key callers/callees: callers are `sleep2vec.utils` and preprocessing preset generation; callees include `_select_batch_channels`, `load_npz`, `load_builtin_ahi_metadata`, `process_metadata`, `stack_survival_metadata`, `build_w_h_age_sex_center`, `extract_binary_labels`, `make_weighted_sampler_from_labels`, `WeightedRandomDistributedSampler`, `PairFirstBatchSampler`, and `AvailableChannelsBucketBatchSampler`.
 - Reuse guidance: this is the canonical place to change batch structure.
 - Duplication risk notes: avoid adding parallel collate implementations elsewhere in the repo.
 

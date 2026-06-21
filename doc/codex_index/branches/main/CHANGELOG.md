@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-06-21
+
+- Refreshed the `main` branch index for commit `d95c9d45d63479b0fc28b011e138002691921104`.
+- Updated README/MANIFEST metadata and tracked-file coverage counts for `sleep2vec/`, `data/`, `sleep2vec2/`, `sleep2expert/`, `sleep2stat/`, `configs/`, `tests/`, and `recipes/`.
+- Added or refreshed guidance for Cox survival finetuning, survival sidecar label loading, subject-level Cox risk aggregation, survival c-index monitoring, and survival prediction rows.
+- Added LSTM temporal aggregation guidance and marked `build_temporal_aggregator` as the canonical resolver for `mean`, `attn`, and `lstm`.
+- Added sleep2expert compact subnetwork export guidance and refreshed variant notes for MoE route filtering and package-local survival/LSTM mirrors.
+- Updated agent-tooling guidance for survival sidecar/index summaries, split-filtered index summaries, hparam final-test unlock gates, and explicit checkpoint/config requirements for generated final external-test scripts.
+- Updated preprocessing/config guidance for survival sidecar preservation in preset and Kaldi conversion paths, new hypnodata config examples, and removed stale sleep2expert dense configs.
+- Stale entries removed or corrected:
+  - old manifest/README commit and timestamp from `eb548b9f8899f2b47f40ed9044e82fe7d94856ce`
+  - old coverage counts for configs, tests, recipes, and variant namespaces
+  - stale variant branch-state commit and counts in `FUNCTIONS/VARIANT_SURFACES.md`
+  - stale temporal aggregation wording that only mentioned mean/attention pooling
+
 ## 2026-06-18
 
 - Updated the `Sleep2vecPretrainModel` constructor guidance to reflect config-only construction and removal of the legacy manual channel/dimension path.

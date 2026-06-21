@@ -51,6 +51,12 @@ Prepare CSV splits, inspect channel-mask coverage, generate preset pickles, opti
 2. config loaders in `sleep2vec/config.py`
 3. preset-build helpers reused from `preprocess/save_dataset_presets.py`
 
+### hypnodata Normalization Path
+
+1. external `hypnodata run` or `hypnodata validate`
+2. output NPZ records plus `record_manifest.csv`
+3. optional `preprocess/convert_npz_to_kaldi.py`, `preprocess/save_dataset_presets.py`, or `sleep2stat` consumption
+
 ## Split Generation
 
 `split_index_by_dataset.py`:
@@ -85,11 +91,14 @@ This is the canonical split policy before preset generation.
 2. loads channels and input dimensions from YAML `model.channels`
 3. optionally reads YAML `preset_build.required_channels` and `preset_build.min_channels`
 4. auto-injects `stage5` when built-in `ahi` is part of the validation-channel set
-5. optionally prefilters the CSV by required mask columns when `allow_missing_channels=False`
-6. instantiates `PSGPretrainDataset` for each `(metadata, split)` pair
-7. relies on `DefaultDataset` side effects to validate samples and write the preset pickle
+5. loads survival sidecar config when `finetune.task.type=survival`
+6. optionally prefilters the CSV by required mask columns when `allow_missing_channels=False`
+7. instantiates `PSGPretrainDataset` for each `(metadata, split)` pair
+8. relies on `DefaultDataset` side effects to validate samples and write the preset pickle
 
 Stage/AHI-only test indexes may omit `age` and `sex`. Those fields are copied into presets only when present, while explicitly requested metadata such as `--meta-data-names age` or `--meta-data-names sex` still requires the matching CSV column.
+
+Survival preset generation preserves the configured key column as string and attaches `event_time`, `is_event`, and `has_label` vectors from sidecars. Regenerate presets when survival sidecars change.
 
 The preset schema is still implicitly a pickled `list[SampleIndex]`, but the branch now treats `preset_build` as part of the contract for reproducible preset generation.
 
@@ -106,6 +115,7 @@ The preset schema is still implicitly a pickled `list[SampleIndex]`, but the bra
 - defaults to compressed matrix ark storage for non-built-in signal channels in the `train` split
 - keeps built-in `stage5`/`ahi` channels and non-train splits as float matrices
 - supports shard count, worker count, split filtering, and path-prefix mapping
+- preserves configured survival key columns as strings when survival configs are converted to Kaldi manifests
 
 The package-local mirrors under `sleep2vec2/preprocess/convert_npz_to_kaldi.py` and `sleep2expert/preprocess/convert_npz_to_kaldi.py` should stay behaviorally aligned with the root converter.
 
@@ -198,8 +208,13 @@ This is a cohort-construction utility. It should feed later split/preset/Kaldi p
 - enforces shared tokenizer-dimension parity through `validate_model_config`
 - validates `preset_build` completeness and semantics
 - enforces repo-specific policy for `ppg_*finetune*.yaml` recipes
+- validates survival task shape, monitor policy, and sidecar config through the selected package loader
 
 Use this tool when config changes alter loader behavior, built-in task semantics, or preset-build contracts.
+
+## hypnodata Examples
+
+`configs/hypnodata/README.md` and `configs/hypnodata/toy_edf_npz.yaml` document the external raw-PSG normalization contract. The repo treats hypnodata outputs as upstream artifacts that can feed NPZ runtime indexes, Kaldi conversion, preset generation, and sleep2stat record manifests; core sleep2vec preprocessing does not parse hypnodata configs directly.
 
 ## Notebook Status
 
@@ -209,6 +224,7 @@ Use this tool when config changes alter loader behavior, built-in task semantics
 
 - Change split policy: `preprocess/split_index_by_dataset.py`
 - Change preset schema or generation behavior: `preprocess/save_dataset_presets.py` plus `data/psg_pretrain_dataset.py`
+- Change survival preset sidecars: `data/survival.py`, `preprocess/save_dataset_presets.py`, package-local variant preset mirrors, and survival runtime tests
 - Change Kaldi conversion behavior: `preprocess/convert_npz_to_kaldi.py`, `data/kaldi_psg_dataset.py`, and package-local variant mirrors when parity is required
 - Change mask semantics: keep `split_index_by_dataset.py` and `mask_missing_stats.py` aligned
 - Change config-policy checks: `utils/check_configs.py`
