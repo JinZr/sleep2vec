@@ -1098,6 +1098,20 @@ def _path_issues(
                 issue = _validate_input_path(recipe, data_field, value, configured=True)
                 if issue is not None:
                     issues.append(issue)
+        finetune = config_summary.get("finetune", {}) if isinstance(config_summary.get("finetune"), dict) else {}
+        task_cfg = finetune.get("task", {}) if isinstance(finetune.get("task"), dict) else {}
+        survival = finetune.get("survival", {}) if isinstance(finetune.get("survival"), dict) else {}
+        if task_cfg.get("type") == "survival" and not data.get("finetune_preset_path"):
+            for data_field in ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index"):
+                value = survival.get(data_field)
+                if not value:
+                    continue
+                context = _path_context(recipe, value)
+                validation = _path_validation(recipe, context)
+                if context == "remote" and validation in {"ssh", "remote"}:
+                    issue = _validate_input_path(recipe, f"finetune.survival.{data_field}", value, configured=True)
+                    if issue is not None:
+                        issues.append(issue)
     if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
         sleep2stat = config_summary.get("sleep2stat") or {}
         data = sleep2stat.get("data") or {}

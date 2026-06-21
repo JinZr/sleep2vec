@@ -275,6 +275,64 @@ def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path
         assert report.exit_code == 0
 
     assert calls
+    call_scripts = [command[2] for command in calls]
+    for path in (
+        "/wujidata/survival/index.csv",
+        "/wujidata/survival/disease_columns.txt",
+        "/wujidata/survival/event_time.csv",
+        "/wujidata/survival/is_event.csv",
+        "/wujidata/survival/has_label.csv",
+    ):
+        assert any(path in script for script in call_scripts)
+
+    calls.clear()
+
+    def fail_event_time(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, int("event_time.csv" in command[2]), "", "")
+
+    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fail_event_time)
+    missing_recipe = write_yaml(
+        tmp_path / "recipe_missing_event_time.yaml",
+        {
+            "name": "remote_survival_missing_event_time",
+            "task": "finetune",
+            "variant": "sleep2vec",
+            "inputs": {"config": str(config), "label_name": "incident_cox", "pretrained_backbone_path": None},
+            "runtime": {"devices": [0]},
+            "artifacts": {"results_csv_path": str(tmp_path / "missing.csv"), "version_name": "missing"},
+            "evaluation_policy": {
+                "selection_metric": "val_loss",
+                "selection_mode": "min",
+                "selection_split": "val",
+                "final_eval_split": "test",
+                "external_test_locked": True,
+                "test_after_fit": False,
+            },
+            "execution": {
+                "target": "ssh",
+                "host": "baichuan3",
+                "path_context": "remote",
+                "path_validation": "ssh",
+            },
+            "decisions": {
+                "task": {"value": "finetune", "source": "explicit_recipe"},
+                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
+                "pretrained_backbone_path": {
+                    "value": None,
+                    "source": "explicit_recipe",
+                    "meaning": "train from scratch",
+                },
+                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    _recipe, _cfg, report = evaluate_recipe(missing_recipe)
+
+    assert report.exit_code == 1
+    assert any(issue.field == "finetune.survival.event_time_index" for issue in report.issues)
 
 
 def test_high_impact_decision_with_unresolved_source_blocks(tmp_path: Path):
