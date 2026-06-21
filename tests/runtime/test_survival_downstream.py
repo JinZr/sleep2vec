@@ -139,6 +139,84 @@ def _write_survival_preset(
     return preset_path
 
 
+def _survival_covariate_loader_args(index_path: Path, survival_config: SurvivalConfig):
+    survival_config.covariates = ["age", "sex"]
+    return SimpleNamespace(
+        data_backend="npz",
+        label_name="risk",
+        data_channel_names=["ppg"],
+        channel_input_dims={"ppg": 1},
+        finetune_preset_path=None,
+        finetune_data_index=index_path,
+        max_tokens=2,
+        batch_size=2,
+        num_workers=0,
+        device="cpu",
+        is_classification=False,
+        output_dim=1,
+        is_survival=True,
+        survival=survival_config,
+        weighted_random_sampler=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "utils_module_name",
+    [
+        "sleep2vec.utils",
+        "sleep2vec2.utils",
+        "sleep2expert.utils",
+    ],
+)
+def test_survival_finetune_loader_filters_requested_covariates_before_batch(
+    tmp_path: Path,
+    utils_module_name: str,
+):
+    good_npz = tmp_path / "good.npz"
+    missing_age_npz = tmp_path / "missing_age.npz"
+    np.savez(good_npz, ppg=np.asarray([0.0, 1.0], dtype=np.float32))
+    np.savez(missing_age_npz, ppg=np.asarray([2.0, 3.0], dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    index_path.write_text(
+        "path,split,duration,eid,age,sex\n" f"{good_npz},train,60,1,50,1\n" f"{missing_age_npz},train,60,2,,0\n"
+    )
+    survival_config = _write_sidecars(tmp_path, disease_lines=["d1"], sidecar_columns=["d1"])
+    args = _survival_covariate_loader_args(index_path, survival_config)
+    utils_module = __import__(utils_module_name, fromlist=["_build_finetune_loader"])
+
+    loader = utils_module._build_finetune_loader(
+        args,
+        split=["train"],
+        sources=[],
+        shuffle=False,
+        is_train_set=False,
+    )
+    batch = next(iter(loader))
+
+    assert batch["metadata"]["age"].tolist() == [50.0]
+    assert batch["metadata"]["sex"].tolist() == [1]
+    assert batch["metadata"]["eid"] == ["1"]
+
+
+def test_survival_finetune_loader_fails_when_covariate_filter_removes_all_rows(tmp_path: Path):
+    npz_path = tmp_path / "missing_age.npz"
+    np.savez(npz_path, ppg=np.asarray([0.0, 1.0], dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    index_path.write_text("path,split,duration,eid,age,sex\n" f"{npz_path},train,60,1,,1\n")
+    survival_config = _write_sidecars(tmp_path, disease_lines=["d1"], sidecar_columns=["d1"])
+    args = _survival_covariate_loader_args(index_path, survival_config)
+    utils_module = __import__("sleep2vec.utils", fromlist=["_build_finetune_loader"])
+
+    with pytest.raises(ValueError, match="required metadata filtering"):
+        utils_module._build_finetune_loader(
+            args,
+            split=["train"],
+            sources=[],
+            shuffle=False,
+            is_train_set=False,
+        )
+
+
 def _load_dataset_from_survival_preset(
     tmp_path: Path,
     dataset_module: str,

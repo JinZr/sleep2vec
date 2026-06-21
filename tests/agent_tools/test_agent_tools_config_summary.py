@@ -55,9 +55,24 @@ def test_config_summary_validates_survival_sidecars(tmp_path: Path):
 
     assert survival["valid"] is True
     assert survival["key_column"] == "eid"
+    assert survival["covariates"] == []
+    assert survival["covariate_embedding_dim"] == 16
     assert survival["disease_count"] == 2
     assert survival["sidecar_key_count"] == 2
     assert survival["issues"] == []
+
+
+def test_config_summary_reports_survival_covariates(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")
+    payload = survival_config_payload(index, write_survival_sidecars(tmp_path))
+    payload["finetune"]["survival"].update({"covariates": ["age", "sex"], "covariate_embedding_dim": 8})
+    config = write_yaml(tmp_path / "survival_covariates.yaml", payload)
+
+    survival = config_summary(config)["finetune"]["survival"]
+
+    assert survival["covariates"] == ["age", "sex"]
+    assert survival["covariate_embedding_dim"] == 8
 
 
 def test_config_summary_validates_survival_sidecars_without_torch(tmp_path: Path, monkeypatch):

@@ -11,10 +11,12 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from sleep2vec2.data.metadata import (
+    _encode_binary_label,
     build_w_h_age_sex_center,
     extract_binary_labels,
     make_weighted_sampler_from_labels,
     process_metadata,
+    safe_cast,
 )
 from sleep2vec2.data.survival import stack_survival_metadata
 from sleep2vec2.data.utils import filter_valid_sample_indices, load_builtin_ahi_metadata, load_npz
@@ -63,6 +65,7 @@ class DefaultDataset(BaseDataset):
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names=None,  # ← 新增参数
         meta_data_regression_names: t.Optional[t.List[str]] = None,
+        required_metadata_names: t.Optional[t.Sequence[str]] = None,
         sources=None,  # ← 新增参数
         pair_selector: t.Any | None = None,
         weighted_random_sampler: bool = False,
@@ -85,6 +88,7 @@ class DefaultDataset(BaseDataset):
         self.seed = seed
         self.meta_data_names = meta_data_names or []
         self.meta_data_regression_names = meta_data_regression_names or []
+        self.required_metadata_names = list(required_metadata_names or [])
         self.sources = sources or []
         self.few_shot = few_shot
         self.extractors = extractors
@@ -136,6 +140,10 @@ class DefaultDataset(BaseDataset):
 
         # 根据需要的 metadata 筛选数据
         self.filter_with_metadata()
+        if self.required_metadata_names and not self.data:
+            raise ValueError(
+                "No samples remain after required metadata filtering: " f"{sorted(self.required_metadata_names)}."
+            )
         if "ahi" in getattr(self, "channel_names", []) and not self.data:
             raise ValueError(
                 "No valid samples remain for the Built-in AHI contract. "
@@ -212,7 +220,7 @@ class DefaultDataset(BaseDataset):
 
         for d in self.data:
             keep = True
-            for meta_data_name in self.meta_data_names:
+            for meta_data_name in itertools.chain(self.meta_data_names, self.required_metadata_names):
                 if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
                     continue
                 value = d.metadata.get(meta_data_name, None)
@@ -221,6 +229,13 @@ class DefaultDataset(BaseDataset):
                 if value is None or (isinstance(value, float) and math.isnan(value)):
                     keep = False
                     break
+                if meta_data_name in self.required_metadata_names:
+                    if meta_data_name == "age" and safe_cast(value, -1) < 0:
+                        keep = False
+                        break
+                    if meta_data_name == "sex" and _encode_binary_label(value) not in {0, 1}:
+                        keep = False
+                        break
 
             if self.sources:
                 source_path = d.metadata.get("source", None)

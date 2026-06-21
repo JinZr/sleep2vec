@@ -93,7 +93,67 @@ def test_index_summary_reports_survival_key_column(tmp_path: Path):
         "missing_from_sidecars": 0,
         "missing_from_sidecars_examples": [],
     }
+    assert summary["survival_covariates"] == {}
     assert "Index CSV contains empty survival key values in column: eid" not in summary["blocking_issues"]
+
+
+def test_index_summary_reports_survival_covariates(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "eid": "001", "age": 50, "sex": 1},
+            {"path": "b.npz", "split": "val", "duration": 60, "eid": "002", "age": 60, "sex": 0},
+        ]
+    ).to_csv(index, index=False)
+    payload = survival_config_payload(index, write_survival_sidecars(tmp_path))
+    payload["finetune"]["survival"].update({"covariates": ["age", "sex"]})
+    config = write_yaml(tmp_path / "survival_covariates.yaml", payload)
+
+    summary = index_summary([index], config=config)
+
+    assert summary["survival_covariates"] == {
+        "age": {"exists": True, "non_null_rows": 2, "missing_rows": 0},
+        "sex": {"exists": True, "non_null_rows": 2, "missing_rows": 0},
+    }
+    assert not any("survival covariate" in issue for issue in summary["blocking_issues"])
+
+
+def test_index_summary_blocks_missing_survival_covariate_columns(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "eid": "001", "age": 50},
+            {"path": "b.npz", "split": "val", "duration": 60, "eid": "002", "age": 60},
+        ]
+    ).to_csv(index, index=False)
+    payload = survival_config_payload(index, write_survival_sidecars(tmp_path))
+    payload["finetune"]["survival"].update({"covariates": ["age", "sex"]})
+    config = write_yaml(tmp_path / "survival_missing_covariates.yaml", payload)
+
+    summary = index_summary([index], config=config)
+
+    assert summary["survival_covariates"]["sex"] == {"exists": False, "non_null_rows": 0, "missing_rows": 2}
+    assert "Index CSV missing required survival covariate column: sex" in summary["blocking_issues"]
+
+
+def test_index_summary_blocks_empty_survival_covariate_values(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {"path": "a.npz", "split": "train", "duration": 60, "eid": "001", "age": None, "sex": 1},
+            {"path": "b.npz", "split": "val", "duration": 60, "eid": "002", "age": 60, "sex": None},
+        ]
+    ).to_csv(index, index=False)
+    payload = survival_config_payload(index, write_survival_sidecars(tmp_path))
+    payload["finetune"]["survival"].update({"covariates": ["age", "sex"]})
+    config = write_yaml(tmp_path / "survival_empty_covariates.yaml", payload)
+
+    summary = index_summary([index], config=config)
+
+    assert summary["survival_covariates"]["age"]["missing_rows"] == 1
+    assert summary["survival_covariates"]["sex"]["missing_rows"] == 1
+    assert "Index CSV contains empty survival covariate values in column: age" in summary["blocking_issues"]
+    assert "Index CSV contains empty survival covariate values in column: sex" in summary["blocking_issues"]
 
 
 def test_index_summary_blocks_missing_survival_key_column(tmp_path: Path):

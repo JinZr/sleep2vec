@@ -64,6 +64,8 @@ finetune:
     event_time_index: /path/to/event_time.csv
     is_event_index: /path/to/is_event.csv
     has_label_index: /path/to/has_label.csv
+    covariates: [age, sex]
+    covariate_embedding_dim: 16
   eval_visualizations:
     enabled: false
     stages: [val, test]

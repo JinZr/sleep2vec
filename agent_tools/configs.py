@@ -67,6 +67,9 @@ def _survival_summary(
         return None
 
     raw = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
+    covariates = raw.get("covariates", [])
+    if isinstance(covariates, list):
+        covariates = list(covariates)
     path_fields = ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index")
     summary: dict[str, Any] = {
         "key_column": raw.get("key_column"),
@@ -74,6 +77,8 @@ def _survival_summary(
         "event_time_index": raw.get("event_time_index"),
         "is_event_index": raw.get("is_event_index"),
         "has_label_index": raw.get("has_label_index"),
+        "covariates": covariates,
+        "covariate_embedding_dim": raw.get("covariate_embedding_dim", 16),
         "output_dim": task.get("output_dim"),
         "valid": False,
         "disease_count": None,

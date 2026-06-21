@@ -76,6 +76,7 @@ class PSGPretrainDataset(DefaultDataset):
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names: t.Optional[t.List[str]] = None,  # ← 新增参数
         meta_data_regression_names: t.Optional[t.List[str]] = None,
+        required_metadata_names: t.Optional[t.Sequence[str]] = None,
         sources: t.Optional[t.List[str]] = None,  # ← 新增参数
         pair_selector: t.Any | None = None,
         randomly_select_channels: bool = True,
@@ -227,6 +228,7 @@ class PSGPretrainDataset(DefaultDataset):
             few_shot=few_shot,
             meta_data_names=meta_data_names,
             meta_data_regression_names=meta_data_regression_names,
+            required_metadata_names=required_metadata_names,
             sources=sources,
             pair_selector=pair_selector,
             weighted_random_sampler=weighted_random_sampler,

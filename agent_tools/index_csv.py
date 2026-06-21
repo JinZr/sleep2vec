@@ -24,6 +24,7 @@ def index_summary(
     cfg = config_summary(config) if config else None
     survival_key_column = _survival_key_column(cfg)
     survival_sidecar_keys = _survival_sidecar_keys(cfg)
+    survival_covariate_names = _survival_covariates(cfg)
     read_csv_kwargs: dict[str, Any] = {"low_memory": False}
     if survival_key_column:
         read_csv_kwargs["converters"] = {survival_key_column: str}
@@ -121,6 +122,12 @@ def index_summary(
             f"Index CSV contains survival key values missing from sidecars in column {survival_key_column}: "
             f"{survival_key['missing_from_sidecars']} missing (examples: {examples})"
         )
+    survival_covariates = _survival_covariate_summary(df, survival_covariate_names)
+    for covariate, details in survival_covariates.items():
+        if not details["exists"]:
+            blocking_issues.append(f"Index CSV missing required survival covariate column: {covariate}")
+        elif details["missing_rows"]:
+            blocking_issues.append(f"Index CSV contains empty survival covariate values in column: {covariate}")
     if sample_npz_check:
         warnings.append("--sample-npz-check is accepted but only path existence is checked by this lightweight tool.")
 
@@ -140,6 +147,7 @@ def index_summary(
         "mask_columns": mask_columns,
         "channel_coverage_from_config": channel_coverage,
         "survival_key": survival_key,
+        "survival_covariates": survival_covariates,
         "split_source_label_counts": split_source_label_counts,
         "channel_mask_coverage_by_split_source": channel_mask_coverage_by_split_source,
         "numeric_shift_metrics": numeric_shift_metrics,
@@ -158,6 +166,17 @@ def _survival_key_column(cfg: dict[str, Any] | None) -> str | None:
     if task.get("type") != "survival" or key_column in (None, ""):
         return None
     return str(key_column)
+
+
+def _survival_covariates(cfg: dict[str, Any] | None) -> list[str]:
+    if not cfg:
+        return []
+    task = (cfg.get("finetune") or {}).get("task") or {}
+    survival = (cfg.get("finetune") or {}).get("survival") or {}
+    covariates = survival.get("covariates")
+    if task.get("type") != "survival" or not isinstance(covariates, list):
+        return []
+    return [item for item in covariates if isinstance(item, str) and item]
 
 
 def _survival_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
@@ -182,6 +201,25 @@ def _filter_splits(df: pd.DataFrame, split_values: list[str] | None) -> pd.DataF
     if not splits or "split" not in df.columns:
         return df
     return df[df["split"].astype(str).isin(splits)].copy()
+
+
+def _survival_covariate_summary(df: pd.DataFrame, covariates: list[str]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for covariate in covariates:
+        if covariate not in df.columns:
+            summary[covariate] = {
+                "exists": False,
+                "non_null_rows": 0,
+                "missing_rows": int(len(df)),
+            }
+            continue
+        missing = df[covariate].isna() | df[covariate].astype(str).str.strip().eq("")
+        summary[covariate] = {
+            "exists": True,
+            "non_null_rows": int((~missing).sum()),
+            "missing_rows": int(missing.sum()),
+        }
+    return summary
 
 
 def _survival_key_summary(
