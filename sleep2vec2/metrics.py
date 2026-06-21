@@ -71,7 +71,9 @@ def _as_numpy_array(value) -> np.ndarray:
     return np.asarray(value)
 
 
-def compute_survival_c_index(pred, event_time, is_event, has_label) -> float:
+def compute_survival_c_index_by_disease(
+    pred, event_time, is_event, has_label, disease_names=None
+) -> list[dict[str, Any]]:
     pred = _as_numpy_array(pred).astype(float)
     event_time = _as_numpy_array(event_time).astype(float)
     is_event = _as_numpy_array(is_event).astype(float)
@@ -80,27 +82,42 @@ def compute_survival_c_index(pred, event_time, is_event, has_label) -> float:
         raise ValueError(f"survival predictions must be 2D [N, L], got {pred.shape}")
     if event_time.shape != pred.shape or is_event.shape != pred.shape or has_label.shape != pred.shape:
         raise ValueError("survival pred/event_time/is_event/has_label shapes must match.")
+    if disease_names is not None and len(disease_names) != pred.shape[1]:
+        raise ValueError("disease_names length must match survival prediction width.")
 
     from sksurv.metrics import concordance_index_censored
 
-    values = []
+    rows = []
     for disease_idx in range(pred.shape[1]):
         valid = has_label[:, disease_idx] > 0.5
-        if int(valid.sum()) < 2:
-            continue
-        events = is_event[valid, disease_idx] > 0.5
-        if not events.any():
-            continue
-        try:
-            c_index = concordance_index_censored(
-                events,
-                event_time[valid, disease_idx],
-                pred[valid, disease_idx],
-            )[0]
-        except ValueError:
-            continue
-        if np.isfinite(c_index):
-            values.append(float(c_index))
+        n_labeled = int(valid.sum())
+        events = is_event[valid, disease_idx] > 0.5 if n_labeled else np.asarray([], dtype=bool)
+        n_events = int(events.sum())
+        c_index = float("nan")
+        if n_labeled >= 2 and n_events > 0:
+            try:
+                c_index = concordance_index_censored(
+                    events,
+                    event_time[valid, disease_idx],
+                    pred[valid, disease_idx],
+                )[0]
+            except ValueError:
+                c_index = float("nan")
+        rows.append(
+            {
+                "disease_idx": disease_idx,
+                "disease": disease_names[disease_idx] if disease_names is not None else "",
+                "n_labeled": n_labeled,
+                "n_events": n_events,
+                "c_index": float(c_index),
+            }
+        )
+    return rows
+
+
+def compute_survival_c_index(pred, event_time, is_event, has_label) -> float:
+    values = [row["c_index"] for row in compute_survival_c_index_by_disease(pred, event_time, is_event, has_label)]
+    values = [float(value) for value in values if np.isfinite(value)]
     return float(np.mean(values)) if values else float("nan")
 
 

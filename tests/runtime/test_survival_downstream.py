@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import pickle
+import tempfile
 from types import SimpleNamespace
 
 import numpy as np
@@ -274,24 +275,46 @@ class _StaticLogitModel:
         return self.logits
 
 
-def _new_survival_finetuning_module(module_name: str, loss_module_name: str, *, prediction_export: bool = False):
+def _write_test_disease_columns(disease_names: list[str]) -> str:
+    path = Path(tempfile.mkdtemp(prefix="sleep2vec_survival_test_")) / "disease_columns.txt"
+    path.write_text("\n".join(disease_names) + "\n")
+    return str(path)
+
+
+def _new_survival_finetuning_module(
+    module_name: str,
+    loss_module_name: str,
+    *,
+    prediction_export: bool = False,
+    disease_names: list[str] | None = None,
+    disease_columns_index: str | None = None,
+    finetune_preset_path: str | Path | None = None,
+    inference_preset_path: str | Path | None = None,
+):
     finetuning_cls = _import_finetuning_class(module_name)
     loss_cls = __import__(loss_module_name, fromlist=["CoxPHLossVectorized"]).CoxPHLossVectorized
     module = finetuning_cls.__new__(finetuning_cls)
     prediction_csv_path = "predictions.csv" if prediction_export else None
+    disease_names = disease_names or ["d1", "d2"]
     object.__setattr__(
         module,
         "args",
         SimpleNamespace(
             device=torch.device("cpu"),
             is_survival=True,
-            survival=SimpleNamespace(key_column="eid"),
+            survival=SimpleNamespace(
+                key_column="eid",
+                disease_columns_index=disease_columns_index or _write_test_disease_columns(disease_names),
+            ),
             inference_prediction_csv_path=prediction_csv_path,
+            finetune_preset_path=finetune_preset_path,
+            inference_preset_path=inference_preset_path,
         ),
     )
     object.__setattr__(module, "_survival_loss", loss_cls())
     object.__setattr__(module, "_stage_outputs", {"train": [], "val": [], "test": []})
     object.__setattr__(module, "prediction_rows", [])
+    object.__setattr__(module, "survival_per_disease_metric_rows", [])
     return finetuning_cls, module
 
 
@@ -352,6 +375,19 @@ def test_survival_c_index_skips_unlabeled_and_invalid_diseases(metrics_module: s
 
     assert module.compute_survival_c_index(pred, event_time, is_event, has_label) == pytest.approx(1.0)
     assert np.isnan(module.compute_survival_c_index(pred, event_time, np.zeros_like(is_event), has_label))
+    rows = module.compute_survival_c_index_by_disease(
+        pred,
+        event_time,
+        is_event,
+        has_label,
+        disease_names=["incident_a", "incident_b"],
+    )
+    assert rows[0] == {"disease_idx": 0, "disease": "incident_a", "n_labeled": 3, "n_events": 2, "c_index": 1.0}
+    assert rows[1]["disease_idx"] == 1
+    assert rows[1]["disease"] == "incident_b"
+    assert rows[1]["n_labeled"] == 0
+    assert rows[1]["n_events"] == 0
+    assert np.isnan(rows[1]["c_index"])
 
 
 @pytest.mark.parametrize(
@@ -391,7 +427,7 @@ def test_survival_loss_reports_zero_events_for_all_censored_batches(module_name:
     ],
 )
 def test_survival_train_loss_aggregates_duplicate_subjects_within_batch(module_name: str, loss_module_name: str):
-    _, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    _, module = _new_survival_finetuning_module(module_name, loss_module_name, disease_names=["d1"])
     logits = torch.tensor([[0.0], [2.0], [3.0]], requires_grad=True)
     batch = {
         "metadata": {
@@ -434,7 +470,7 @@ def test_survival_train_loss_aggregates_duplicate_subjects_within_batch(module_n
     ],
 )
 def test_survival_eval_loss_uses_epoch_risk_set_for_singleton_batches(module_name: str, loss_module_name: str):
-    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name, disease_names=["d1"])
     logged = _capture_logged_metrics(module)
     event_batch = {
         "metadata": {
@@ -491,7 +527,7 @@ def test_survival_eval_loss_uses_epoch_risk_set_for_singleton_batches(module_nam
     ],
 )
 def test_survival_eval_loss_aggregates_multiple_nights_by_subject(module_name: str, loss_module_name: str):
-    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name, disease_names=["d1"])
     logged = _capture_logged_metrics(module)
     batch = {
         "metadata": {
@@ -539,7 +575,7 @@ def test_survival_eval_loss_aggregates_multiple_nights_by_subject(module_name: s
     ],
 )
 def test_survival_c_index_aggregates_multiple_nights_by_subject(module_name: str, loss_module_name: str):
-    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name, disease_names=["d1"])
     logged = _capture_logged_metrics(module)
     batch = {
         "metadata": {
@@ -574,7 +610,7 @@ def test_survival_c_index_aggregates_multiple_nights_by_subject(module_name: str
     ],
 )
 def test_survival_eval_epoch_without_events_does_not_log_loss(module_name: str, loss_module_name: str):
-    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name)
+    finetuning_cls, module = _new_survival_finetuning_module(module_name, loss_module_name, disease_names=["d1"])
     logged = _capture_logged_metrics(module)
     batch = {
         "metadata": {
@@ -636,7 +672,9 @@ def test_survival_test_prediction_export_preserves_raw_log_risk(module_name: str
     assert len(module.prediction_rows) == 1
     row = module.prediction_rows[0]
     assert row["path"] == "same_path.npz"
+    assert row["survival_key"] == "same"
     assert row["kind"] == "survival"
+    assert row["disease_names"] == ["d1", "d2"]
     assert row["prediction"] == pytest.approx([1.0, 3.0])
     assert row["log_risk"] == pytest.approx([1.0, 3.0])
     assert row["event_time"] == pytest.approx([10.0, 20.0])
@@ -650,7 +688,85 @@ def test_survival_test_prediction_export_preserves_raw_log_risk(module_name: str
     assert row["n_predictions"] == 2
     assert row["n_windows"] == 2
     assert row["token_starts"] == [0, 10]
+    assert module.survival_per_disease_metric_rows[0]["stage"] == "test"
+    assert module.survival_per_disease_metric_rows[0]["disease"] == "d1"
+    assert module.survival_per_disease_metric_rows[1]["disease"] == "d2"
     assert module._stage_outputs["test"] == []
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_preset_backed_epoch_ignores_disease_columns_sidecar(
+    module_name: str, loss_module_name: str, tmp_path: Path
+):
+    stale_disease_columns = tmp_path / "stale_disease_columns.txt"
+    stale_disease_columns.write_text("stale_a\n\nstale_b\n")
+    finetuning_cls, module = _new_survival_finetuning_module(
+        module_name,
+        loss_module_name,
+        prediction_export=True,
+        disease_columns_index=str(stale_disease_columns),
+        finetune_preset_path=tmp_path / "preset.pkl",
+    )
+    _capture_logged_metrics(module)
+    batch = {
+        "metadata": {
+            "path": ["event.npz", "censored.npz"],
+            "eid": ["event", "censored"],
+            "event_time": torch.tensor([[1.0], [2.0]]),
+            "is_event": torch.tensor([[1.0], [0.0]]),
+            "has_label": torch.ones(2, 1),
+        },
+        "token_start": torch.tensor([0, 0]),
+    }
+
+    finetuning_cls._shared_step(module, batch, stage="test", model=_StaticLogitModel(torch.tensor([[2.0], [1.0]])))
+    finetuning_cls._finalize_epoch(module, "test")
+
+    assert len(module.prediction_rows) == 2
+    assert module.prediction_rows[0]["disease_names"] == []
+    assert module.survival_per_disease_metric_rows[0]["disease"] == ""
+    assert module.survival_per_disease_metric_rows[0]["n_labeled"] == 2
+    assert module.survival_per_disease_metric_rows[0]["n_events"] == 1
+
+
+@pytest.mark.parametrize(
+    ("module_name", "loss_module_name"),
+    [
+        ("sleep2vec.sleep2vec_finetuning", "sleep2vec.losses.cox"),
+        ("sleep2vec2.sleep2vec_finetuning", "sleep2vec2.losses.cox"),
+        ("sleep2expert.sleep2vec_finetuning", "sleep2expert.losses.cox"),
+    ],
+)
+def test_survival_non_preset_epoch_requires_disease_columns_sidecar(
+    module_name: str, loss_module_name: str, tmp_path: Path
+):
+    missing_disease_columns = tmp_path / "missing_disease_columns.txt"
+    finetuning_cls, module = _new_survival_finetuning_module(
+        module_name,
+        loss_module_name,
+        disease_columns_index=str(missing_disease_columns),
+    )
+    batch = {
+        "metadata": {
+            "path": ["event.npz", "censored.npz"],
+            "eid": ["event", "censored"],
+            "event_time": torch.tensor([[1.0], [2.0]]),
+            "is_event": torch.tensor([[1.0], [0.0]]),
+            "has_label": torch.ones(2, 1),
+        },
+        "token_start": torch.tensor([0, 0]),
+    }
+
+    finetuning_cls._shared_step(module, batch, stage="val", model=_StaticLogitModel(torch.tensor([[2.0], [1.0]])))
+    with pytest.raises(FileNotFoundError):
+        finetuning_cls._finalize_epoch(module, "val")
 
 
 @pytest.mark.parametrize(
@@ -682,6 +798,9 @@ def test_survival_all_censored_test_epoch_exports_predictions_without_loss(modul
     assert len(module.prediction_rows) == 1
     assert module.prediction_rows[0]["path"] == "all_censored.npz"
     assert module.prediction_rows[0]["prediction"] == pytest.approx([0.5, -0.5])
+    assert [row["n_labeled"] for row in module.survival_per_disease_metric_rows] == [1, 1]
+    assert [row["n_events"] for row in module.survival_per_disease_metric_rows] == [0, 0]
+    assert all(np.isnan(row["c_index"]) for row in module.survival_per_disease_metric_rows)
     assert module._stage_outputs["test"] == []
 
 
@@ -715,6 +834,9 @@ def test_survival_test_prediction_export_keeps_unlabeled_batches(module_name: st
     assert module.prediction_rows[0]["path"] == "unlabeled.npz"
     assert module.prediction_rows[0]["prediction"] == pytest.approx([1.5, -1.5])
     assert module.prediction_rows[0]["has_label"] == [0, 0]
+    assert [row["n_labeled"] for row in module.survival_per_disease_metric_rows] == [0, 0]
+    assert [row["n_events"] for row in module.survival_per_disease_metric_rows] == [0, 0]
+    assert all(np.isnan(row["c_index"]) for row in module.survival_per_disease_metric_rows)
     assert module._stage_outputs["test"] == []
 
 

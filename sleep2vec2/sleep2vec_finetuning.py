@@ -12,6 +12,7 @@ import yaml
 from sleep2vec2 import diagnostics
 from sleep2vec2.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec2.common import remap_stage_labels
+from sleep2vec2.data.survival import load_survival_disease_columns
 from sleep2vec2.distributed import get_rank_world_size, is_torch_distributed_ready
 from sleep2vec2.losses.cox import CoxPHLossVectorized
 from sleep2vec2.metrics import (
@@ -20,7 +21,7 @@ from sleep2vec2.metrics import (
     _compute_ahi_event_metrics_from_prepared,
     _prepare_ahi_records,
     compute_downstream_metrics,
-    compute_survival_c_index,
+    compute_survival_c_index_by_disease,
     extract_ahi_summary_scatter_arrays,
 )
 from sleep2vec2.schedulers import build_warmup_cosine_scheduler
@@ -89,6 +90,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._prediction_records = {"test": []}
         self.prediction_rows = []
+        self.survival_per_disease_metric_rows = []
         class_weights = getattr(args, "class_weights", None)
         class_weight_tensor = None
         if class_weights is not None:
@@ -400,9 +402,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if not records:
             return
 
+        disease_names = self._survival_disease_names()
+
         # Export before the event-count check so all-censored inference still writes risk scores.
         if stage == "test" and prediction_export_enabled(self.args):
-            self.prediction_rows = self._build_survival_prediction_rows(records)
+            self.prediction_rows = self._build_survival_prediction_rows(records, disease_names)
 
         # Loss aggregation is subject-level; prediction export above intentionally remains per path.
         tensors = self._aggregate_survival_records(records)
@@ -411,6 +415,13 @@ class Sleep2vecFinetuning(pl.LightningModule):
         event_time = tensors["event_time"].to(device)
         is_event = tensors["is_event"].to(device)
         has_label = tensors["has_label"].to(device)
+        metric_rows = self._build_survival_per_disease_metric_rows(
+            stage, pred, event_time, is_event, has_label, disease_names
+        )
+        self.survival_per_disease_metric_rows = [
+            row for row in self.survival_per_disease_metric_rows if row.get("stage") != stage
+        ]
+        self.survival_per_disease_metric_rows.extend(metric_rows)
         event_count = int(((is_event > 0.5) & (has_label > 0.5)).sum().item())
         if event_count == 0:
             return
@@ -425,7 +436,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
             on_step=False,
             on_epoch=True,
         )
-        c_index = compute_survival_c_index(pred, event_time, is_event, has_label)
+        c_index_values = [row["c_index"] for row in metric_rows if np.isfinite(row["c_index"])]
+        c_index = float(np.mean(c_index_values)) if c_index_values else float("nan")
         if np.isfinite(c_index):
             self.log(
                 f"{stage}_c_index",
@@ -486,7 +498,28 @@ class Sleep2vecFinetuning(pl.LightningModule):
             "has_label": torch.stack(has_labels, dim=0),
         }
 
-    def _build_survival_prediction_rows(self, records) -> list[dict[str, object]]:
+    def _survival_disease_names(self) -> list[str] | None:
+        survival = getattr(self.args, "survival", None)
+        disease_columns_index = getattr(survival, "disease_columns_index", None)
+        has_preset = any(
+            getattr(self.args, attr_name, None) not in (None, "")
+            for attr_name in ("finetune_preset_path", "inference_preset_path")
+        )
+        if has_preset:
+            return None
+        if disease_columns_index in (None, ""):
+            raise ValueError("Survival task requires finetune.survival.disease_columns_index.")
+        return load_survival_disease_columns(disease_columns_index)
+
+    def _build_survival_per_disease_metric_rows(
+        self, stage: str, pred, event_time, is_event, has_label, disease_names: list[str] | None
+    ) -> list[dict[str, object]]:
+        rows = compute_survival_c_index_by_disease(pred, event_time, is_event, has_label, disease_names)
+        for row in rows:
+            row["stage"] = stage
+        return rows
+
+    def _build_survival_prediction_rows(self, records, disease_names: list[str] | None) -> list[dict[str, object]]:
         grouped: dict[str, list[dict[str, object]]] = {}
         seen: set[tuple[str, int]] = set()
         for record in records:
@@ -507,6 +540,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                         "event_time": event_time[idx],
                         "is_event": is_event[idx],
                         "has_label": has_label[idx],
+                        "survival_key": str(record["survival_key"][idx]),
                     }
                 )
 
@@ -515,6 +549,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
             items.sort(key=lambda item: int(item["token_start"]))
             token_starts = [int(item["token_start"]) for item in items]
             log_risk = np.stack([np.asarray(item["pred"], dtype=np.float32) for item in items], axis=0).mean(axis=0)
+            if disease_names is not None and len(disease_names) != int(log_risk.size):
+                raise ValueError("disease_names length must match survival prediction width.")
             # Survival labels are sidecar metadata, so all windows for one path share the same vectors.
             event_time = np.asarray(items[0]["event_time"], dtype=np.float32)
             is_event = (np.asarray(items[0]["is_event"], dtype=np.float32) > 0.5).astype(np.int64)
@@ -527,7 +563,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
             rows.append(
                 {
                     "path": path,
+                    "survival_key": str(items[0]["survival_key"]),
                     "kind": "survival",
+                    "disease_names": list(disease_names) if disease_names is not None else [],
                     "groundtruth": groundtruth,
                     "prediction": log_risk.tolist(),
                     "log_risk": log_risk.tolist(),

@@ -26,6 +26,7 @@ from sleep2expert.results import (
     save_inference_manifest,
     save_prediction_csv,
     save_result_csv,
+    save_survival_per_disease_metrics_csv,
     set_route_filter_metadata,
 )
 from sleep2expert.sleep2vec_finetuning import Sleep2vecFinetuning
@@ -88,8 +89,14 @@ def _init_wandb(args):
     return wandb.init(**init_kwargs)
 
 
-def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count):
-    wandb.log({**metrics, "prediction_row_count": prediction_row_count})
+def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count, survival_per_disease_metric_count=0):
+    wandb.log(
+        {
+            **metrics,
+            "prediction_row_count": prediction_row_count,
+            "survival_per_disease_metric_count": survival_per_disease_metric_count,
+        }
+    )
 
     # W&B caps artifact names at 128 chars; CSVs and the manifest keep the full prediction_run_id.
     run_id_hash = args.prediction_run_id.rsplit("__", 1)[-1]
@@ -100,6 +107,11 @@ def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count):
     )
     artifact.add_file(str(args.inference_metrics_csv_path), name="metrics.csv")
     artifact.add_file(str(args.inference_prediction_csv_path), name="predictions.csv")
+    if survival_per_disease_metric_count:
+        artifact.add_file(
+            str(args.inference_survival_per_disease_metrics_csv_path),
+            name="survival_per_disease_metrics.csv",
+        )
     artifact.add_file(str(args.manifest_path), name="run_manifest.json")
     artifact.add_file(str(args.inference_overview_csv_path), name="overview.csv")
     wandb.log_artifact(artifact)
@@ -187,12 +199,24 @@ def run_inference(args):
 
         prediction_rows = getattr(model, "prediction_rows", [])
         prediction_row_count = len(prediction_rows)
+        survival_per_disease_metric_rows = getattr(model, "survival_per_disease_metric_rows", [])
+        survival_per_disease_metric_count = len(survival_per_disease_metric_rows)
         save_result_csv(metrics, str(args.inference_metrics_csv_path), args)
         save_result_csv(metrics, str(args.inference_overview_csv_path), args)
         save_prediction_csv(prediction_rows, str(args.inference_prediction_csv_path), args)
+        save_survival_per_disease_metrics_csv(
+            survival_per_disease_metric_rows,
+            str(args.inference_survival_per_disease_metrics_csv_path),
+            args,
+        )
         save_inference_manifest(args, metrics, prediction_row_count=prediction_row_count)
         if wandb_run is not None:
-            _log_inference_outputs_to_wandb(args, metrics, prediction_row_count)
+            _log_inference_outputs_to_wandb(
+                args,
+                metrics,
+                prediction_row_count,
+                survival_per_disease_metric_count,
+            )
     finally:
         if wandb_run is not None:
             primary_exc_active = sys.exc_info()[0] is not None

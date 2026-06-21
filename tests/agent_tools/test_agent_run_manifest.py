@@ -41,6 +41,7 @@ def test_training_run_manifest_writer_serializes_checkpoint_and_score(tmp_path: 
         best_model_path=tmp_path / "best.ckpt",
         best_model_score=0.5,
         last_checkpoint_path=tmp_path / "last.ckpt",
+        survival_per_disease_metrics_csv_path=tmp_path / "survival_per_disease_metrics.csv",
     )
 
     manifest = json.loads(manifest_path.read_text())
@@ -48,6 +49,7 @@ def test_training_run_manifest_writer_serializes_checkpoint_and_score(tmp_path: 
     assert manifest["best_model_path"].endswith("best.ckpt")
     assert manifest["best_model_score"] == 0.5
     assert manifest["test_after_fit"] is False
+    assert manifest["survival_per_disease_metrics_csv_path"].endswith("survival_per_disease_metrics.csv")
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec", "sleep2vec2", "sleep2expert"])

@@ -29,7 +29,7 @@
 - Purpose and contract: load Cox survival disease-column and sidecar CSVs, require exact `[key_column] + disease_columns_index` columns, validate output-dim parity, matching key sets, and labeled rows with non-missing event fields.
 - Important inputs/outputs: typed survival config plus optional expected output dim in; immutable `SurvivalLabelTable` out, or `None` when no config is supplied.
 - Side effects: reads sidecar files from disk.
-- Key callers/callees: callers are `PSGPretrainDataset.__init__`, `KaldiPSGDataset.__init__`, and `agent_tools.configs._survival_summary`; callees include `_load_disease_columns`, `_load_sidecar`, and `normalize_survival_key`.
+- Key callers/callees: callers are `PSGPretrainDataset.__init__`, `KaldiPSGDataset.__init__`, and `agent_tools.configs._survival_summary`; callees include `load_survival_disease_columns`, `_load_sidecar`, and `normalize_survival_key`.
 - Reuse guidance: use this function for every survival sidecar read.
 - Duplication risk notes: disease-list and sidecar shape validation must stay centralized here.
 
