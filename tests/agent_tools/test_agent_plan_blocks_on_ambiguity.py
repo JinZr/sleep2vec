@@ -781,6 +781,37 @@ def test_sleep2expert_variant_controls_generated_hparam_module(tmp_path: Path):
     assert f"--results-csv-path {shlex_quote(str(tmp_path / 'results.csv'))}" in script
 
 
+def test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "external_test_locked": False,
+            "test_after_fit": True,
+            "final_test_unlocked": True,
+            "require_manual_unlock_for_final_test": False,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_user"},
+            "test_after_fit": {"value": True, "source": "explicit_user"},
+            "final_eval_unlock": {"value": True, "source": "explicit_user"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0
+    script = (output_dir / "trial_000.sh").read_text()
+    assert "python -m sleep2vec2.finetune" in script
+    assert "--no-test-after-fit" not in script
+    assert not (output_dir / "final_external_test.sh").exists()
+    assert "Trial commands evaluate the configured test split" in (output_dir / "plan.md").read_text()
+
+
 def test_pretrain_and_adapt_tasks_fail_instead_of_generating_empty_scripts(tmp_path: Path):
     pretrained = tmp_path / "pretrained.ckpt"
     pretrained.write_text("checkpoint")

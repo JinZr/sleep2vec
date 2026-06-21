@@ -41,7 +41,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Signature: `build_plan(*, recipe_path: str | Path, output_dir: str | Path, user_decisions_path: str | Path | None = None, allow_unresolved: bool = False, unlock_final_test: bool = False) -> DecisionReport`
 - Purpose and contract: evaluate a task recipe and write a runnable or blocked command plan.
 - Important inputs/outputs: recipe path, output directory, optional decisions, draft allowance, and final-test unlock in; `DecisionReport` out.
-- Side effects: writes `plan.json`, `plan.md`, `run.sh`, hparam trial scripts/configs, or blocked plan/questions.
+- Side effects: writes `plan.json`, `plan.md`, `run.sh`, hparam trial scripts/configs, or blocked plan/questions; hparam trial scripts omit `--no-test-after-fit` only when test-after-fit is explicitly unlocked in the recipe.
 - Key callers/callees: called by `agent_tools plan` and adaptive init/step; uses consultation gates, output overwrite guards, sleep2stat run-dir guards, final-test gates, and hparam plan writers.
 - Reuse guidance: use for all recipe-backed command generation.
 - Duplication-risk notes: do not emit executable training or sleep2stat scripts outside this path unless a recipe has already passed the same gates.

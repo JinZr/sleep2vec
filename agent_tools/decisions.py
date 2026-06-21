@@ -695,13 +695,22 @@ def _hparam_tune_issues(
         "test_after_fit",
         test_after_fit_decision.value if test_after_fit_decision else None,
     )
-    if test_after_fit is True:
+    final_eval_unlock = decisions.get("final_eval_unlock")
+    final_test_unlocked = evaluation.get(
+        "final_test_unlocked",
+        final_eval_unlock.value if final_eval_unlock else None,
+    )
+    external_test_locked = evaluation.get(
+        "external_test_locked",
+        user_external_lock.value if user_external_lock else None,
+    )
+    if test_after_fit is True and not (external_test_locked is False and final_test_unlocked is True):
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
-                "Trial commands would evaluate test data.",
-                "Should test_after_fit be false during hyper-parameter tuning?",
+                "Trial commands would evaluate test data without an explicit test unlock.",
+                "Should test_after_fit be false, or should external_test_locked=false and final_test_unlocked=true?",
                 {"evaluation_policy": evaluation},
             )
         )

@@ -946,12 +946,27 @@ def _planned_plan_paths(
     for idx, _combo in enumerate(_hparam_combos(recipe)):
         paths.extend([out / f"trial_{idx:03d}.sh", generated_dir / f"trial_{idx:03d}.yaml"])
     evaluation = recipe.get("evaluation_policy") or {}
-    final_allowed = unlock_final_test or (
-        evaluation.get("external_test_locked") is False and evaluation.get("final_test_unlocked") is True
-    )
-    if final_allowed and report.exit_code == 0:
+    if _hparam_final_script_allowed(recipe, report, evaluation, unlock_final_test) and report.exit_code == 0:
         paths.append(out / "final_external_test.sh")
     return paths
+
+
+def _hparam_final_test_unlocked(evaluation: dict) -> bool:
+    return evaluation.get("external_test_locked") is False and evaluation.get("final_test_unlocked") is True
+
+
+def _has_resolved_ckpt_path(recipe: dict, report: DecisionReport) -> bool:
+    ckpt_path = _resolved_ckpt_path(recipe, report)
+    return ckpt_path not in (None, "", "ASK_USER") and not str(ckpt_path).startswith("<")
+
+
+def _hparam_final_script_allowed(
+    recipe: dict,
+    report: DecisionReport,
+    evaluation: dict,
+    unlock_final_test: bool,
+) -> bool:
+    return unlock_final_test or (_hparam_final_test_unlocked(evaluation) and _has_resolved_ckpt_path(recipe, report))
 
 
 def _apply_final_test_checkpoint_gate(
@@ -961,10 +976,7 @@ def _apply_final_test_checkpoint_gate(
     unlock_final_test: bool,
 ) -> DecisionReport:
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    final_allowed = unlock_final_test or (
-        evaluation.get("external_test_locked") is False and evaluation.get("final_test_unlocked") is True
-    )
-    if not final_allowed:
+    if not unlock_final_test and not _hparam_final_script_allowed(recipe, report, evaluation, unlock_final_test):
         return report
     ckpt_path = _resolved_ckpt_path(recipe, report)
     if ckpt_path in (None, "", "ASK_USER") or str(ckpt_path).startswith("<"):
@@ -1142,6 +1154,7 @@ def _write_hparam_plan(
     base_runtime = base_recipe.get("runtime") or {}
     base_artifacts = base_recipe.get("artifacts") or {}
     evaluation = recipe.get("evaluation_policy") or {}
+    test_after_fit = _decision_value(report.decisions, "test_after_fit", evaluation.get("test_after_fit"))
     for idx, combo in enumerate(combos):
         trial_id = f"trial_{idx:03d}"
         cfg_copy = generated_dir / f"{trial_id}.yaml"
@@ -1151,25 +1164,25 @@ def _write_hparam_plan(
             yaml.safe_dump(trial_config, file_obj)
         version = f"{recipe_name(recipe)}-{trial_id}"
         runtime = {**base_runtime, **runtime_overrides}
+        command_parts = [
+            "python",
+            "-m",
+            _variant_module(recipe, "finetune"),
+            "--config",
+            cfg_copy,
+            "--label-name",
+            _decision_value(report.decisions, "label_name", base_inputs.get("label_name")),
+            "--version-name",
+            version,
+            "--results-csv-path",
+            _plan_output_path(out, base_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
+            *_runtime_cli_args(runtime),
+            *_finetune_input_cli_args(base_inputs, report.decisions, ckpt_from_decisions=False),
+        ]
+        if test_after_fit is not True:
+            command_parts.append("--no-test-after-fit")
         command = _with_env(
-            _render_command(
-                [
-                    "python",
-                    "-m",
-                    _variant_module(recipe, "finetune"),
-                    "--config",
-                    cfg_copy,
-                    "--label-name",
-                    _decision_value(report.decisions, "label_name", base_inputs.get("label_name")),
-                    "--version-name",
-                    version,
-                    "--results-csv-path",
-                    _plan_output_path(out, base_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
-                    *_runtime_cli_args(runtime),
-                    *_finetune_input_cli_args(base_inputs, report.decisions, ckpt_from_decisions=False),
-                    "--no-test-after-fit",
-                ]
-            ),
+            _render_command(command_parts),
             _runtime_env_vars(runtime),
         )
         script_name = f"{trial_id}.sh"
@@ -1209,15 +1222,18 @@ def _write_hparam_plan(
         executable=True,
     )
     write_json(out / "plan.json", {"status": "PASS", "trials": trials, "recipe": recipe})
-    final_allowed = unlock_final_test or (
-        evaluation.get("external_test_locked") is False and evaluation.get("final_test_unlocked") is True
+    final_allowed = _hparam_final_script_allowed(recipe, report, evaluation, unlock_final_test)
+    test_after_fit_message = (
+        "Trial commands evaluate the configured test split because test_after_fit is explicitly unlocked."
+        if test_after_fit is True
+        else "Trial commands do not evaluate the external test split."
     )
     plan_lines = [
         "# Hyper-Parameter Plan",
         "",
         "Status: PASS",
         "",
-        "Trial commands do not evaluate the external test split.",
+        test_after_fit_message,
     ]
     if final_allowed:
         ckpt_path = _resolved_ckpt_path(recipe, report)

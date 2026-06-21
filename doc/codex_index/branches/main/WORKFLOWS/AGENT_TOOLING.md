@@ -66,7 +66,7 @@ Context bundles include skill metadata, owners, relevant index docs, expected ag
 
 ## Plan Generation
 
-`agent_tools plan` runs consultation gates before writing scripts. Blocked plans write `plan.blocked.md` and questions only. Hyper-parameter trial scripts use validation-only selection and `--no-test-after-fit`; final external-test scripts require explicit final-test unlock and an explicit existing checkpoint path.
+`agent_tools plan` runs consultation gates before writing scripts. Blocked plans write `plan.blocked.md` and questions only. Hyper-parameter trial scripts use validation-only selection and `--no-test-after-fit` by default; they may run test-after-fit only when `external_test_locked=false`, `final_test_unlocked=true`, and `test_after_fit=true` are explicit. Final external-test scripts require explicit final-test unlock and an explicit existing checkpoint path.
 
 Recipe `variant` controls the generated module namespace for model tasks. Supported values are `sleep2vec`, `sleep2vec2`, and `sleep2expert`; missing or unsupported variants block model command generation. `task=sleep2stat` is variantless, so any non-null variant, including `sleep2stat`, blocks command generation.
 
