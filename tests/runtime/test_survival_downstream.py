@@ -178,9 +178,7 @@ def test_survival_finetune_loader_filters_requested_covariates_before_batch(
     np.savez(missing_age_npz, ppg=np.asarray([2.0, 3.0], dtype=np.float32))
     index_path = tmp_path / "index.csv"
     index_path.write_text(
-        "path,split,duration,eid,age,sex\n"
-        f"{good_npz},train,60,1,50,1\n"
-        f"{missing_age_npz},train,60,2,,0\n"
+        "path,split,duration,eid,age,sex\n" f"{good_npz},train,60,1,50,1\n" f"{missing_age_npz},train,60,2,,0\n"
     )
     survival_config = _write_sidecars(tmp_path, disease_lines=["d1"], sidecar_columns=["d1"])
     args = _survival_covariate_loader_args(index_path, survival_config)

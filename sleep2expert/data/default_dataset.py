@@ -142,8 +142,7 @@ class DefaultDataset(BaseDataset):
         self.filter_with_metadata()
         if self.required_metadata_names and not self.data:
             raise ValueError(
-                "No samples remain after required metadata filtering: "
-                f"{sorted(self.required_metadata_names)}."
+                "No samples remain after required metadata filtering: " f"{sorted(self.required_metadata_names)}."
             )
         if "ahi" in getattr(self, "channel_names", []) and not self.data:
             raise ValueError(
