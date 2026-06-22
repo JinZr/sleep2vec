@@ -204,6 +204,26 @@ def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path
     assert "--inference-preset-path" not in script
 
 
+def test_sex_age_baseline_finetune_blocks_pretrained_backbone_path(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    recipe = _finetune_recipe(tmp_path, config)
+    pretrained = tmp_path / "pretrained.ckpt"
+    pretrained.write_text("checkpoint")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["pretrained_backbone_path"] = str(pretrained)
+    payload["decisions"]["pretrained_backbone_path"] = {
+        "value": str(pretrained),
+        "source": "explicit_recipe",
+    }
+    _write_yaml(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-pretrained")
+
+    assert report.exit_code == 1
+    assert any(issue.field == "pretrained_backbone_path" for issue in report.issues)
+    assert not (tmp_path / "plan-pretrained" / "run.sh").exists()
+
+
 def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: Path, monkeypatch):
     config = _write_multilabel_config(
         tmp_path,
@@ -326,6 +346,54 @@ def test_sex_age_baseline_hparam_blocks_local_multilabel_sidecar_issues(tmp_path
     assert any(issue.field == "multilabel_sidecars" for issue in report.issues)
 
 
+def test_sex_age_baseline_hparam_blocks_base_pretrained_backbone_path(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    base = _finetune_recipe(tmp_path, config)
+    pretrained = tmp_path / "pretrained.ckpt"
+    pretrained.write_text("checkpoint")
+    base_payload = yaml.safe_load(base.read_text())
+    base_payload["inputs"]["pretrained_backbone_path"] = str(pretrained)
+    base_payload["decisions"]["pretrained_backbone_path"] = {
+        "value": str(pretrained),
+        "source": "explicit_recipe",
+    }
+    _write_yaml(base, base_payload)
+    recipe = _write_yaml(
+        tmp_path / "hparam_pretrained.yaml",
+        {
+            "name": "unit_sex_age_hparam_pretrained",
+            "task": "hparam_tune",
+            "variant": "sex_age_baseline",
+            "base_recipe": str(base),
+            "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-3]}},
+            "evaluation_policy": {
+                "selection_metric": "val_c_index",
+                "selection_mode": "max",
+                "selection_split": "val",
+                "external_test_locked": True,
+                "test_after_fit": False,
+                "final_eval_split": "validation",
+                "final_test_unlocked": False,
+                "require_manual_unlock_for_final_test": True,
+            },
+            "decisions": {
+                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
+                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-hparam-pretrained")
+
+    assert report.exit_code == 1
+    assert any(issue.field == "base_finetune.pretrained_backbone_path" for issue in report.issues)
+    assert not (tmp_path / "plan-hparam-pretrained" / "trial_000.sh").exists()
+
+
 def test_sex_age_baseline_finetune_preset_keeps_survival_sidecar_checks(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     config_payload = yaml.safe_load(config.read_text())
@@ -394,6 +462,40 @@ def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: 
     script = (tmp_path / "plan-infer-preset" / "run.sh").read_text()
     assert "python -m sex_age_baseline.infer" in script
     assert "--inference-preset-path" in script
+
+
+def test_sex_age_baseline_infer_blocks_pretrained_backbone_path(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    pretrained = tmp_path / "pretrained.ckpt"
+    pretrained.write_text("checkpoint")
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["pretrained_backbone_path"] = str(pretrained)
+    _write_yaml(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-pretrained")
+
+    assert report.exit_code == 1
+    assert any(issue.field == "pretrained_backbone_path" for issue in report.issues)
+    assert not (tmp_path / "plan-infer-pretrained" / "run.sh").exists()
+
+
+def test_sex_age_baseline_infer_blocks_override_dataset_names(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["override_dataset_names"] = ["ukb"]
+    _write_yaml(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-override-datasets")
+
+    assert report.exit_code == 1
+    assert any(issue.field == "override_dataset_names" for issue in report.issues)
+    assert not (tmp_path / "plan-infer-override-datasets" / "run.sh").exists()
 
 
 def test_sex_age_baseline_infer_plan_renders_standalone_module(tmp_path: Path):

@@ -561,6 +561,9 @@ def _finetune_task_issues(
                     {"config": data},
                 )
             )
+    pretrained_issue = _sex_age_pretrained_backbone_issue("finetune", recipe, decisions)
+    if pretrained_issue is not None:
+        issues.append(pretrained_issue)
     survival_issue = _survival_sidecar_issue("finetune", recipe, config_summary)
     if survival_issue is not None:
         issues.append(survival_issue)
@@ -805,6 +808,12 @@ def _infer_evaluate_issues(
                 {"inputs": inputs},
             )
         )
+    pretrained_issue = _sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe, decisions)
+    if pretrained_issue is not None:
+        issues.append(pretrained_issue)
+    override_issue = _sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
+    if override_issue is not None:
+        issues.append(override_issue)
     survival_issue = _survival_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
     if survival_issue is not None:
         issues.append(survival_issue)
@@ -1194,6 +1203,47 @@ def _requires_multilabel_sidecars(task: str, recipe: dict, config_summary: dict 
     return task in {"finetune", "hparam_tune", "infer", "evaluate"}
 
 
+def _sex_age_pretrained_backbone_issue(
+    task: str,
+    recipe: dict,
+    decisions: dict[str, ResolvedDecision],
+) -> DecisionIssue | None:
+    if recipe.get("variant") != "sex_age_baseline" or task not in {"finetune", "infer", "evaluate"}:
+        return None
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    decision = decisions.get("pretrained_backbone_path")
+    value = (
+        decision.value
+        if decision is not None and decision.value not in (None, "", "ASK_USER")
+        else inputs.get("pretrained_backbone_path")
+    )
+    if value in (None, "", "ASK_USER"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "pretrained_backbone_path",
+        "sex_age_baseline does not support pretrained_backbone_path.",
+        None,
+        {"variant": "sex_age_baseline", "pretrained_backbone_path": value},
+    )
+
+
+def _sex_age_override_dataset_names_issue(task: str, recipe: dict) -> DecisionIssue | None:
+    if recipe.get("variant") != "sex_age_baseline" or task not in {"infer", "evaluate"}:
+        return None
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    value = inputs.get("override_dataset_names")
+    if value in (None, "", "ASK_USER"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "override_dataset_names",
+        "sex_age_baseline does not support override_dataset_names.",
+        None,
+        {"variant": "sex_age_baseline", "override_dataset_names": value},
+    )
+
+
 def _append_remote_survival_sidecar_issues(
     issues: list[DecisionIssue],
     task: str,
@@ -1265,6 +1315,8 @@ def _path_issues(
             required_paths.append(("ckpt_path", ckpt_path))
     if task == "finetune":
         for input_field in ("pretrained_backbone_path", "ckpt_path"):
+            if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
+                continue
             decision = decisions.get(input_field)
             value = (
                 decision.value
