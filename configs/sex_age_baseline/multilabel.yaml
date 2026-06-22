@@ -14,7 +14,11 @@ model:
     activation: elu
 
 data:
-  index: /path/to/index.csv
+  backend: npz
+  finetune_data_index: /path/to/index.csv
+  finetune_preset_path: null
+  kaldi_data_root: null
+  kaldi_manifest: null
   split_column: split
   key_column: eid
   deduplicate_by_key: true

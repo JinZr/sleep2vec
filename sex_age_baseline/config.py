@@ -38,7 +38,11 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class DataConfig:
-    index: str
+    backend: str
+    finetune_data_index: str | None
+    finetune_preset_path: str | None
+    kaldi_data_root: str | None
+    kaldi_manifest: str | None
     split_column: str
     key_column: str
     deduplicate_by_key: bool
@@ -182,11 +186,33 @@ def _build_head(raw: dict[str, Any]) -> HeadConfig:
 
 
 def _build_data(raw: dict[str, Any]) -> DataConfig:
+    backend = _string(raw, "backend")
+    if backend not in {"npz", "kaldi"}:
+        raise ValueError("data.backend must be 'npz' or 'kaldi'.")
+    finetune_data_index = _optional_string(raw, "finetune_data_index")
+    finetune_preset_path = _optional_string(raw, "finetune_preset_path")
+    kaldi_data_root = _optional_string(raw, "kaldi_data_root")
+    kaldi_manifest = _optional_string(raw, "kaldi_manifest")
+    if backend == "npz":
+        sources = [value for value in (finetune_data_index, finetune_preset_path) if value]
+        if len(sources) != 1:
+            raise ValueError("data.backend=npz requires exactly one of finetune_data_index or finetune_preset_path.")
+        if kaldi_data_root or kaldi_manifest:
+            raise ValueError("data.backend=npz must not set kaldi_data_root or kaldi_manifest.")
+    if backend == "kaldi":
+        if finetune_data_index or finetune_preset_path:
+            raise ValueError("data.backend=kaldi must not set finetune_data_index or finetune_preset_path.")
+        if not kaldi_data_root or not kaldi_manifest:
+            raise ValueError("data.backend=kaldi requires kaldi_data_root and kaldi_manifest.")
     deduplicate_by_key = _bool(raw, "deduplicate_by_key")
     if not deduplicate_by_key:
         raise ValueError("sex_age_baseline v1 requires data.deduplicate_by_key=true.")
     return DataConfig(
-        index=_string(raw, "index"),
+        backend=backend,
+        finetune_data_index=finetune_data_index,
+        finetune_preset_path=finetune_preset_path,
+        kaldi_data_root=kaldi_data_root,
+        kaldi_manifest=kaldi_manifest,
         split_column=_string(raw, "split_column"),
         key_column=_string(raw, "key_column"),
         deduplicate_by_key=deduplicate_by_key,
@@ -269,6 +295,15 @@ def _string(raw: dict[str, Any], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} must be a non-empty string.")
+    return value
+
+
+def _optional_string(raw: dict[str, Any], key: str) -> str | None:
+    value = raw.get(key)
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string or null.")
     return value
 
 

@@ -31,7 +31,7 @@ def index_summary(
     frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     df = _filter_splits(df, split_values)
-    if cfg and cfg.get("data_backend") == "sex_age_baseline":
+    if cfg and cfg.get("variant_guess") == "sex_age_baseline":
         baseline_data = cfg.get("data") or {}
         required_names = (
             baseline_data.get("key_column") or "eid",

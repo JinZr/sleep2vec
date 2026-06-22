@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 import random
@@ -50,8 +50,9 @@ def configure_result_args(args: Namespace, cfg: BaselineConfig) -> None:
     args.is_multilabel = cfg.finetune.task.type == "multilabel_classification"
     args.is_classification = False
     args.channel_names = []
-    args.finetune_preset_path = None
-    args.inference_preset_path = None
+    args.finetune_preset_path = cfg.data.finetune_preset_path
+    if not hasattr(args, "inference_preset_path"):
+        args.inference_preset_path = None
     args.survival = cfg.finetune.survival
     args.multilabel = cfg.finetune.multilabel
     args.task_family = cfg.finetune.task.type
@@ -127,9 +128,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         monitor = cfg.finetune.task.monitor
         if monitor not in epoch_metrics:
             available_metrics = ", ".join(sorted(epoch_metrics))
-            raise ValueError(
-                f"Configured monitor {monitor!r} was not emitted. Available metrics: {available_metrics}"
-            )
+            raise ValueError(f"Configured monitor {monitor!r} was not emitted. Available metrics: {available_metrics}")
         monitor_value = epoch_metrics[monitor]
         if _is_better(monitor_value, best_score, cfg.finetune.task.monitor_mod):
             best_score = float(monitor_value)
@@ -210,6 +209,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
 
 def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
+    cfg = _config_with_inference_preset(args, cfg)
     configure_result_args(args, cfg)
     _seed_everything(getattr(args, "seed", 4523))
     device = torch.device(args.device)
@@ -245,6 +245,16 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             args,
         )
     save_inference_manifest(args, result.metrics, prediction_row_count=len(result.prediction_rows))
+
+
+def _config_with_inference_preset(args: Namespace, cfg: BaselineConfig) -> BaselineConfig:
+    preset_path = getattr(args, "inference_preset_path", None)
+    if preset_path in (None, ""):
+        return cfg
+    if cfg.data.backend != "npz":
+        raise ValueError("--inference-preset-path is only supported for data.backend=npz.")
+    data = replace(cfg.data, finetune_data_index=None, finetune_preset_path=str(preset_path))
+    return replace(cfg, data=data)
 
 
 def evaluate_model(

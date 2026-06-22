@@ -13,6 +13,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True, help="Sex/age baseline YAML config.")
     parser.add_argument("--ckpt-path", type=str, required=True, help="Sex/age baseline checkpoint path.")
     parser.add_argument("--label-name", type=str, required=True, help="Downstream label namespace for result files.")
+    parser.add_argument("--inference-preset-path", type=Path, default=None, help="NPZ preset metadata for inference.")
     parser.add_argument(
         "--eval-split", type=str, default="test", choices=["train", "val", "test"], help="Split to evaluate."
     )

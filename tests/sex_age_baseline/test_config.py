@@ -24,7 +24,11 @@ def _cox_payload(tmp_path: Path) -> dict:
             "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
         },
         "data": {
-            "index": str(tmp_path / "index.csv"),
+            "backend": "npz",
+            "finetune_data_index": str(tmp_path / "index.csv"),
+            "finetune_preset_path": None,
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
             "split_column": "split",
             "key_column": "eid",
             "deduplicate_by_key": True,
@@ -99,6 +103,7 @@ def test_checked_in_configs_load(path: str):
 
     assert cfg.model.features == ["age", "sex"]
     assert cfg.data.key_column == "eid"
+    assert cfg.data.backend == "npz"
 
 
 def test_validates_sidecar_output_dim(tmp_path: Path):
@@ -143,3 +148,69 @@ def test_multilabel_config_validates_sidecars(tmp_path: Path):
     cfg = load_config(config, validate_sidecars=True)
 
     assert cfg.finetune.multilabel.label_index.endswith("disease_label.csv")
+
+
+def test_npz_preset_config_loads(tmp_path: Path):
+    payload = _cox_payload(tmp_path)
+    payload["data"]["finetune_data_index"] = None
+    payload["data"]["finetune_preset_path"] = str(tmp_path / "preset.pkl")
+    config = _write_yaml(tmp_path / "preset.yaml", payload)
+
+    cfg = load_config(config)
+
+    assert cfg.data.backend == "npz"
+    assert cfg.data.finetune_preset_path.endswith("preset.pkl")
+
+
+def test_kaldi_config_loads(tmp_path: Path):
+    payload = _cox_payload(tmp_path)
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(tmp_path / "kaldi"),
+            "kaldi_manifest": str(tmp_path / "kaldi" / "manifest.json"),
+        }
+    )
+    config = _write_yaml(tmp_path / "kaldi.yaml", payload)
+
+    cfg = load_config(config)
+
+    assert cfg.data.backend == "kaldi"
+    assert cfg.data.kaldi_manifest.endswith("manifest.json")
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (lambda payload: payload["data"].update({"finetune_preset_path": "preset.pkl"}), "exactly one"),
+        (lambda payload: payload["data"].update({"finetune_data_index": None}), "exactly one"),
+        (lambda payload: payload["data"].update({"backend": "bad"}), "data.backend"),
+        (
+            lambda payload: payload["data"].update(
+                {"backend": "kaldi", "finetune_data_index": None, "kaldi_data_root": None}
+            ),
+            "kaldi_data_root",
+        ),
+        (
+            lambda payload: payload["data"].update(
+                {
+                    "backend": "kaldi",
+                    "finetune_data_index": None,
+                    "finetune_preset_path": "preset.pkl",
+                    "kaldi_data_root": "/kaldi",
+                    "kaldi_manifest": "/kaldi/manifest.json",
+                }
+            ),
+            "must not set",
+        ),
+    ],
+)
+def test_backend_input_validation_fails(tmp_path: Path, mutate, match: str):
+    payload = _cox_payload(tmp_path)
+    mutate(payload)
+    config = _write_yaml(tmp_path / "bad_backend.yaml", payload)
+
+    with pytest.raises(ValueError, match=match):
+        load_config(config)

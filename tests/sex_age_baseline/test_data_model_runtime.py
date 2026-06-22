@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import json
 from pathlib import Path
+import pickle
 
 import pytest
 import torch
 import yaml
 
+from data.default_dataset import SampleIndex
 from sex_age_baseline.config import load_config
 from sex_age_baseline.data import load_split_dataset, make_dataloader
 from sex_age_baseline.model import SexAgeMLP
@@ -96,7 +99,11 @@ def _base_payload(index: Path, sidecars: dict[str, str], task_type: str) -> dict
             "head": {"hidden_dim": 8, "dropout": 0.0, "activation": "elu"},
         },
         "data": {
-            "index": str(index),
+            "backend": "npz",
+            "finetune_data_index": str(index),
+            "finetune_preset_path": None,
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
             "split_column": "split",
             "key_column": "eid",
             "deduplicate_by_key": True,
@@ -115,6 +122,56 @@ def _write_config(tmp_path: Path, rows: list[str], task_type: str = "survival") 
         else _write_multilabel_sidecars(tmp_path, sorted(set(keys)))
     )
     return _write_yaml(tmp_path / f"{task_type}.yaml", _base_payload(index, sidecars, task_type))
+
+
+def _parse_metadata_rows(rows: list[str]) -> list[dict[str, str]]:
+    parsed = []
+    for row in rows:
+        eid, split, age, sex = row.split(",")
+        parsed.append({"eid": eid, "split": split, "age": age, "sex": sex})
+    return parsed
+
+
+def _write_preset(path: Path, rows: list[str]) -> Path:
+    samples = [
+        SampleIndex(id=row["eid"], path="ignored.npz", start=0, end=1, metadata=row)
+        for row in _parse_metadata_rows(rows)
+    ]
+    with path.open("wb") as file_obj:
+        pickle.dump(samples, file_obj)
+    return path
+
+
+def _write_kaldi_root(root: Path, rows: list[str]) -> tuple[Path, Path]:
+    root.mkdir()
+    manifest = {"splits": {}}
+    by_split: dict[str, list[dict[str, str]]] = {}
+    for row in _parse_metadata_rows(rows):
+        by_split.setdefault(row["split"], []).append(row)
+    for split, split_rows in by_split.items():
+        split_csv = root / f"{split}.csv"
+        split_csv.write_text(
+            "eid,split,age,sex\n"
+            + "\n".join(",".join([row["eid"], row["split"], row["age"], row["sex"]]) for row in split_rows)
+            + "\n"
+        )
+        manifest["splits"][split] = {"manifest": split_csv.name}
+    manifest_path = root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    return root, manifest_path
+
+
+def _write_config_for_data(tmp_path: Path, rows: list[str], data: dict, task_type: str = "survival") -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    keys = [row.split(",", 1)[0] for row in rows]
+    sidecars = (
+        _write_survival_sidecars(tmp_path, sorted(set(keys)))
+        if task_type == "survival"
+        else _write_multilabel_sidecars(tmp_path, sorted(set(keys)))
+    )
+    payload = _base_payload(tmp_path / "unused-index.csv", sidecars, task_type)
+    payload["data"].update(data)
+    return _write_yaml(tmp_path / f"{task_type}-{data['backend']}.yaml", payload)
 
 
 def _runtime_args(config: Path, tmp_path: Path, *, version_name: str, epochs: int = 1, test_after_fit: bool = False):
@@ -159,11 +216,123 @@ def test_split_filtering_and_deduplication(tmp_path: Path):
     assert len(val) == 1
 
 
+def test_metadata_backends_produce_identical_subject_records(tmp_path: Path):
+    rows = ["001,train,50,0", "001,train,50,0", "002,val,60,1", "003,test,55,0"]
+    index = _write_index(tmp_path / "index.csv", rows)
+    preset = _write_preset(tmp_path / "preset.pkl", rows)
+    kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
+    configs = [
+        _write_config_for_data(
+            tmp_path / "npz-index",
+            rows,
+            {
+                "backend": "npz",
+                "finetune_data_index": str(index),
+                "finetune_preset_path": None,
+                "kaldi_data_root": None,
+                "kaldi_manifest": None,
+            },
+        ),
+        _write_config_for_data(
+            tmp_path / "npz-preset",
+            rows,
+            {
+                "backend": "npz",
+                "finetune_data_index": None,
+                "finetune_preset_path": str(preset),
+                "kaldi_data_root": None,
+                "kaldi_manifest": None,
+            },
+        ),
+        _write_config_for_data(
+            tmp_path / "kaldi-config",
+            rows,
+            {
+                "backend": "kaldi",
+                "finetune_data_index": None,
+                "finetune_preset_path": None,
+                "kaldi_data_root": str(kaldi_root),
+                "kaldi_manifest": str(kaldi_manifest),
+            },
+        ),
+    ]
+
+    records = []
+    for config in configs:
+        cfg = load_config(config, validate_sidecars=True)
+        records.append([(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "train")])
+
+    assert records == [[("001", 50.0, 0)], [("001", 50.0, 0)], [("001", 50.0, 0)]]
+
+
 def test_conflicting_duplicate_metadata_fails(tmp_path: Path):
     config = _write_config(tmp_path, ["001,train,50,female", "001,val,50,female"])
     cfg = load_config(config, validate_sidecars=True)
 
     with pytest.raises(ValueError, match="conflicting split"):
+        load_split_dataset(cfg, "train")
+
+
+@pytest.mark.parametrize("backend", ["npz_preset", "kaldi"])
+def test_conflicting_duplicate_metadata_fails_for_non_index_backends(tmp_path: Path, backend: str):
+    rows = ["001,train,50,0", "001,val,50,0"]
+    if backend == "npz_preset":
+        preset = _write_preset(tmp_path / "preset.pkl", rows)
+        data = {
+            "backend": "npz",
+            "finetune_data_index": None,
+            "finetune_preset_path": str(preset),
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
+        }
+    else:
+        kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
+        data = {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(kaldi_manifest),
+        }
+    config = _write_config_for_data(tmp_path, rows, data)
+    cfg = load_config(config, validate_sidecars=True)
+
+    with pytest.raises(ValueError, match="conflicting split"):
+        load_split_dataset(cfg, "train")
+
+
+@pytest.mark.parametrize("backend", ["npz_preset", "kaldi"])
+def test_missing_metadata_columns_fail_for_non_index_backends(tmp_path: Path, backend: str):
+    rows = ["001,train,50,0"]
+    if backend == "npz_preset":
+        sample = SampleIndex(id="001", path="ignored.npz", start=0, end=1, metadata={"eid": "001", "split": "train"})
+        preset = tmp_path / "preset.pkl"
+        with preset.open("wb") as file_obj:
+            pickle.dump([sample], file_obj)
+        data = {
+            "backend": "npz",
+            "finetune_data_index": None,
+            "finetune_preset_path": str(preset),
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
+        }
+    else:
+        kaldi_root = tmp_path / "kaldi"
+        kaldi_root.mkdir()
+        (kaldi_root / "train.csv").write_text("eid,split\n001,train\n")
+        kaldi_manifest = kaldi_root / "manifest.json"
+        kaldi_manifest.write_text(json.dumps({"splits": {"train": {"manifest": "train.csv"}}}))
+        data = {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(kaldi_manifest),
+        }
+    config = _write_config_for_data(tmp_path, rows, data)
+    cfg = load_config(config, validate_sidecars=True)
+
+    with pytest.raises(ValueError, match="missing|required"):
         load_split_dataset(cfg, "train")
 
 

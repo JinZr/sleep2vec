@@ -217,7 +217,7 @@ def sex_age_baseline_config_summary(
             "variant_guess": "sex_age_baseline",
             "is_finetune": True,
             "is_pretrain": False,
-            "data_backend": "sex_age_baseline",
+            "data_backend": None,
             "model": {"name": "sex_age_mlp", "features": []},
             "data": {},
             "finetune": {},
@@ -239,8 +239,10 @@ def sex_age_baseline_config_summary(
         raw_task,
         validate_local_paths=validate_survival_local_paths,
     )
-    index_value = cfg.data.index
-    resolved_index = None if _looks_like_placeholder_path(index_value) else index_value
+    finetune_data_index = cfg.data.finetune_data_index
+    finetune_preset_path = cfg.data.finetune_preset_path
+    kaldi_data_root = cfg.data.kaldi_data_root
+    kaldi_manifest = cfg.data.kaldi_manifest
     finetune_summary = {
         "task": {
             "type": cfg.finetune.task.type,
@@ -260,7 +262,7 @@ def sex_age_baseline_config_summary(
         "variant_guess": "sex_age_baseline",
         "is_finetune": True,
         "is_pretrain": False,
-        "data_backend": "sex_age_baseline",
+        "data_backend": cfg.data.backend,
         "model": {
             "name": cfg.model.name,
             "features": list(cfg.model.features),
@@ -271,9 +273,13 @@ def sex_age_baseline_config_summary(
             },
         },
         "data": {
-            "index": index_value,
-            "finetune_data_index": resolved_index,
-            "finetune_preset_path": None,
+            "backend": cfg.data.backend,
+            "finetune_data_index": None if _looks_like_placeholder_path(finetune_data_index) else finetune_data_index,
+            "finetune_preset_path": (
+                None if _looks_like_placeholder_path(finetune_preset_path) else finetune_preset_path
+            ),
+            "kaldi_data_root": None if _looks_like_placeholder_path(kaldi_data_root) else kaldi_data_root,
+            "kaldi_manifest": None if _looks_like_placeholder_path(kaldi_manifest) else kaldi_manifest,
             "split_column": cfg.data.split_column,
             "key_column": cfg.data.key_column,
             "deduplicate_by_key": cfg.data.deduplicate_by_key,

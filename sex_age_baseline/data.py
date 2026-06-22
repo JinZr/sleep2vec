@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 from pathlib import Path
+import pickle
 from typing import Any, Callable
 
 import numpy as np
@@ -42,7 +44,7 @@ class SexAgeDataset(Dataset):
 
 
 def load_split_dataset(cfg: BaselineConfig, split: str) -> SexAgeDataset:
-    frame = _load_index_frame(cfg)
+    frame = _load_metadata_frame(cfg)
     selected = frame[frame["_baseline_split"] == str(split)]
 
     if cfg.finetune.task.type == "survival":
@@ -92,13 +94,21 @@ def make_dataloader(
     )
 
 
-def _load_index_frame(cfg: BaselineConfig) -> pd.DataFrame:
-    index_path = Path(cfg.data.index)
-    frame = pd.read_csv(index_path, dtype={cfg.data.key_column: "string"})
+def _load_metadata_frame(cfg: BaselineConfig) -> pd.DataFrame:
+    if cfg.data.backend == "npz":
+        if cfg.data.finetune_preset_path:
+            frame = _load_rows_from_npz_preset(cfg)
+        else:
+            frame = _load_rows_from_npz_index(cfg)
+    elif cfg.data.backend == "kaldi":
+        frame = _load_rows_from_kaldi_manifest(cfg)
+    else:
+        raise ValueError(f"Unsupported sex_age_baseline data backend: {cfg.data.backend}")
+
     required_columns = {cfg.data.key_column, cfg.data.split_column, "age", "sex"}
     missing = sorted(required_columns - set(frame.columns))
     if missing:
-        raise ValueError(f"Sex/age baseline index is missing required columns: {missing}")
+        raise ValueError(f"Sex/age baseline metadata is missing required columns: {missing}")
     normalize_key = _key_normalizer(cfg)
 
     frame = frame.copy()
@@ -108,6 +118,47 @@ def _load_index_frame(cfg: BaselineConfig) -> pd.DataFrame:
     frame["_baseline_sex"] = [_parse_sex(value) for value in frame["sex"]]
     _validate_duplicate_metadata(frame)
     return frame.drop_duplicates("_baseline_key", keep="first")
+
+
+def _load_rows_from_npz_index(cfg: BaselineConfig) -> pd.DataFrame:
+    return pd.read_csv(Path(cfg.data.finetune_data_index), dtype={cfg.data.key_column: "string"})
+
+
+def _load_rows_from_npz_preset(cfg: BaselineConfig) -> pd.DataFrame:
+    with Path(cfg.data.finetune_preset_path).open("rb") as file_obj:
+        samples = pickle.load(file_obj)
+    rows = []
+    for sample in samples:
+        metadata = getattr(sample, "metadata", None)
+        if not isinstance(metadata, dict):
+            raise ValueError("Sex/age baseline preset entries must expose a metadata mapping.")
+        rows.append(
+            {
+                cfg.data.key_column: metadata.get(cfg.data.key_column),
+                cfg.data.split_column: metadata.get(cfg.data.split_column),
+                "age": metadata.get("age"),
+                "sex": metadata.get("sex"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _load_rows_from_kaldi_manifest(cfg: BaselineConfig) -> pd.DataFrame:
+    root = Path(cfg.data.kaldi_data_root)
+    manifest_path = Path(cfg.data.kaldi_manifest)
+    with manifest_path.open() as file_obj:
+        manifest = json.load(file_obj)
+    splits = manifest.get("splits")
+    if not isinstance(splits, dict) or not splits:
+        raise ValueError("Kaldi manifest must contain a non-empty 'splits' mapping.")
+
+    frames = []
+    for split_name, split_spec in splits.items():
+        if not isinstance(split_spec, dict) or not split_spec.get("manifest"):
+            raise ValueError(f"Kaldi manifest split {split_name!r} must define a manifest CSV.")
+        split_manifest = root / Path(str(split_spec["manifest"]))
+        frames.append(pd.read_csv(split_manifest, dtype={cfg.data.key_column: "string"}))
+    return pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
 
 
 def _key_normalizer(cfg: BaselineConfig) -> Callable[[Any, str], str]:

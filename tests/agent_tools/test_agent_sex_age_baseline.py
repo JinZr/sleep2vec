@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pickle
 
 import yaml
 
+from agent_tools.configs import config_summary
 from agent_tools.plans import build_plan
+from data.default_dataset import SampleIndex
 
 
 def _write_yaml(path: Path, payload: dict) -> Path:
@@ -35,7 +38,11 @@ def _write_survival_config(tmp_path: Path) -> Path:
                 "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
             },
             "data": {
-                "index": str(index),
+                "backend": "npz",
+                "finetune_data_index": str(index),
+                "finetune_preset_path": None,
+                "kaldi_data_root": None,
+                "kaldi_manifest": None,
                 "split_column": "split",
                 "key_column": "eid",
                 "deduplicate_by_key": True,
@@ -115,6 +122,16 @@ def _infer_recipe(tmp_path: Path, config: Path, ckpt: Path) -> Path:
     )
 
 
+def test_sex_age_baseline_config_summary_reports_backend_and_variant(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+
+    summary = config_summary(config)
+
+    assert summary["variant_guess"] == "sex_age_baseline"
+    assert summary["data_backend"] == "npz"
+    assert summary["data"]["finetune_data_index"]
+
+
 def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _finetune_recipe(tmp_path, config)
@@ -126,6 +143,37 @@ def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path
     assert "python -m sex_age_baseline.finetune" in script
     assert "--pretrained-backbone-path" not in script
     assert "--inference-preset-path" not in script
+
+
+def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    preset = tmp_path / "preset.pkl"
+    with preset.open("wb") as file_obj:
+        pickle.dump(
+            [
+                SampleIndex(
+                    id="002",
+                    path="ignored.npz",
+                    start=0,
+                    end=1,
+                    metadata={"eid": "002", "split": "val", "age": 60, "sex": 1},
+                )
+            ],
+            file_obj,
+        )
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["inference_preset_path"] = str(preset)
+    _write_yaml(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-preset")
+
+    assert report.exit_code == 0
+    script = (tmp_path / "plan-infer-preset" / "run.sh").read_text()
+    assert "python -m sex_age_baseline.infer" in script
+    assert "--inference-preset-path" in script
 
 
 def test_sex_age_baseline_infer_plan_renders_standalone_module(tmp_path: Path):

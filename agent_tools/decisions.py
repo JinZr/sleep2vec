@@ -546,14 +546,18 @@ def _finetune_task_issues(
                     {"config": data},
                 )
             )
-    if config_summary and config_summary.get("data_backend") == "sex_age_baseline":
-        if not data.get("finetune_data_index"):
+    if (
+        config_summary
+        and config_summary.get("variant_guess") == "sex_age_baseline"
+        and config_summary.get("data_backend") == "kaldi"
+    ):
+        if not data.get("kaldi_data_root") or not data.get("kaldi_manifest"):
             issues.append(
                 DecisionIssue(
                     DecisionStatus.NEEDS_USER_INPUT,
                     "data_input",
-                    "sex_age_baseline finetune requires a concrete data.index CSV path.",
-                    "Which subject index CSV should this sex/age baseline use?",
+                    "Kaldi-backed sex_age_baseline finetune requires kaldi_data_root and kaldi_manifest.",
+                    "Which Kaldi data root and manifest should this sex/age baseline use?",
                     {"config": data},
                 )
             )
@@ -1265,13 +1269,16 @@ def _path_issues(
     if (
         task in {"finetune", "infer", "evaluate"}
         and config_summary
-        and config_summary.get("data_backend") == "sex_age_baseline"
+        and config_summary.get("variant_guess") == "sex_age_baseline"
+        and config_summary.get("data_backend") == "kaldi"
     ):
-        value = _config_data(config_summary).get("finetune_data_index")
-        if value:
-            issue = _validate_input_path(recipe, "data.index", value, configured=True)
-            if issue is not None:
-                issues.append(issue)
+        data = _config_data(config_summary)
+        for data_field in ("kaldi_data_root", "kaldi_manifest"):
+            value = data.get(data_field)
+            if value:
+                issue = _validate_input_path(recipe, data_field, value, configured=True)
+                if issue is not None:
+                    issues.append(issue)
     _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary)
     if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
         sleep2stat = config_summary.get("sleep2stat") or {}
