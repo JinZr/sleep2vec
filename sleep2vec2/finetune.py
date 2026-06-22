@@ -22,7 +22,12 @@ if str(REPO_ROOT) not in sys.path:
 from sleep2vec2.callbacks import build_distributed_ahi_progress_bar
 from sleep2vec2.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2vec2.common import apply_finetune_config, persist_run_config_and_args
-from sleep2vec2.results import save_result_csv, save_survival_per_disease_metrics_csv, save_training_run_manifest
+from sleep2vec2.results import (
+    save_multilabel_per_disease_metrics_csv,
+    save_result_csv,
+    save_survival_per_disease_metrics_csv,
+    save_training_run_manifest,
+)
 from sleep2vec2.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec2.utils import get_finetune_dataloaders
 
@@ -212,6 +217,17 @@ def supervised(args, config_bundle):
                 str(survival_per_disease_metrics_csv_path),
                 args,
             )
+        multilabel_per_disease_metric_rows = [
+            row for row in getattr(model, "multilabel_per_disease_metric_rows", []) if row.get("stage") == "test"
+        ]
+        multilabel_per_disease_metrics_csv_path = None
+        if multilabel_per_disease_metric_rows:
+            multilabel_per_disease_metrics_csv_path = exp_root / "multilabel_per_disease_metrics.csv"
+            save_multilabel_per_disease_metrics_csv(
+                multilabel_per_disease_metric_rows,
+                str(multilabel_per_disease_metrics_csv_path),
+                args,
+            )
         save_training_run_manifest(
             args,
             manifest_path=manifest_path,
@@ -223,6 +239,7 @@ def supervised(args, config_bundle):
             last_checkpoint_path=getattr(checkpoint_callback, "last_model_path", None),
             results_csv_path=args.results_csv_path,
             survival_per_disease_metrics_csv_path=survival_per_disease_metrics_csv_path,
+            multilabel_per_disease_metrics_csv_path=multilabel_per_disease_metrics_csv_path,
             metrics=pretrain_result,
         )
     except BaseException:

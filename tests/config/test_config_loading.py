@@ -142,6 +142,24 @@ def _survival_finetune_payload() -> dict:
     return payload
 
 
+def _multilabel_finetune_payload() -> dict:
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "multilabel_classification",
+        "output_dim": 2,
+        "is_seq": False,
+        "monitor": "val_macro_auroc",
+        "monitor_mod": "max",
+    }
+    payload["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": "disease_columns.txt",
+        "label_index": "label.csv",
+        "has_label_index": "has_label.csv",
+    }
+    return payload
+
+
 def _valid_model_config() -> ModelConfig:
     channels = [
         ChannelConfig(
@@ -386,6 +404,108 @@ def test_load_finetune_config_defaults_survival_covariates(tmp_path: Path):
     assert bundle.finetune.survival is not None
     assert bundle.finetune.survival.covariates == []
     assert bundle.finetune.survival.covariate_embedding_dim == 16
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_finetune_config_parses_multilabel_task_across_namespaces(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update({"covariates": ["age", "sex"], "covariate_embedding_dim": 8})
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_multilabel.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.task.type == "multilabel_classification"
+    assert bundle.finetune.task.is_seq is False
+    assert bundle.finetune.task.monitor == "val_macro_auroc"
+    assert bundle.finetune.multilabel is not None
+    assert bundle.finetune.multilabel.key_column == "eid"
+    assert bundle.finetune.multilabel.covariates == ["age", "sex"]
+    assert bundle.finetune.multilabel.covariate_embedding_dim == 8
+
+
+def test_load_finetune_config_defaults_multilabel_covariates(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _multilabel_finetune_payload())
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.multilabel is not None
+    assert bundle.finetune.multilabel.covariates == []
+    assert bundle.finetune.multilabel.covariate_embedding_dim == 16
+
+
+@pytest.mark.parametrize(
+    ("multilabel_patch", "pattern"),
+    [
+        ({"covariates": ["age", "age"]}, "must not contain duplicates"),
+        ({"covariates": ["bmi"]}, "only supports"),
+        ({"covariates": "age"}, "must be a list"),
+        ({"covariate_embedding_dim": 0}, "must be a positive integer"),
+        ({"covariate_embedding_dim": True}, "must be a positive integer"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_multilabel_covariates(
+    tmp_path: Path, multilabel_patch: dict, pattern: str
+):
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update(multilabel_patch)
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_sequence_multilabel_task(tmp_path: Path):
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["task"]["is_seq"] = True
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="is_seq must be false for multilabel_classification"):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_requires_multilabel_block_for_multilabel_task(tmp_path: Path):
+    payload = _multilabel_finetune_payload()
+    del payload["finetune"]["multilabel"]
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="finetune.multilabel is required"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("patch", "pattern"),
+    [
+        ({"label_index": None}, "missing required fields"),
+        ({"extra_field": "x"}, "unsupported fields"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_multilabel_fields(tmp_path: Path, patch: dict, pattern: str):
+    payload = _multilabel_finetune_payload()
+    if "label_index" in patch and patch["label_index"] is None:
+        del payload["finetune"]["multilabel"]["label_index"]
+    else:
+        payload["finetune"]["multilabel"].update(patch)
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_multilabel_block_for_other_tasks(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["multilabel"] = _multilabel_finetune_payload()["finetune"]["multilabel"]
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="only supported when finetune.task.type is multilabel_classification"):
+        load_finetune_config(config_path)
 
 
 @pytest.mark.parametrize(
@@ -640,7 +760,7 @@ def test_load_finetune_config_rejects_task_extra_fields(tmp_path: Path):
 @pytest.mark.parametrize(
     ("task_patch", "pattern"),
     [
-        ({"type": "invalid"}, "must be 'classification', 'regression', or 'survival'"),
+        ({"type": "invalid"}, "must be 'classification', 'regression', 'survival', or 'multilabel_classification'"),
         ({"output_dim": 0}, "must be a positive integer"),
         ({"is_seq": "yes"}, "must be a boolean"),
         ({"monitor_mod": "up"}, "must be 'min' or 'max'"),

@@ -167,6 +167,10 @@ def test_prepare_inference_result_paths_builds_run_directory(tmp_path):
         args.inference_survival_per_disease_metrics_csv_path.name
         == "survival_per_disease_metrics__ahi__test__epoch07_step1234.csv"
     )
+    assert (
+        args.inference_multilabel_per_disease_metrics_csv_path.name
+        == "multilabel_per_disease_metrics__ahi__test__epoch07_step1234.csv"
+    )
     assert args.inference_overview_csv_path == tmp_path / "results" / "inference" / "overview.csv"
     assert args.ckpt_epoch == 7
     assert args.ckpt_step == 1234
@@ -304,6 +308,61 @@ def test_save_survival_per_disease_metrics_csv_appends_rows_with_metadata(tmp_pa
     assert df["prediction_run_id"].tolist() == [args.prediction_run_id, args.prediction_run_id]
     assert df["disease"].tolist() == ["d1", "d2"]
     assert df["n_events"].tolist() == [2, 0]
+    assert "extra_stat" in df.columns
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_save_multilabel_per_disease_metrics_csv_appends_rows_with_metadata(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    args = _infer_args()
+    results_mod.prepare_inference_result_paths(
+        args,
+        namespace=package_name,
+        root=tmp_path / "results" / "inference",
+        timestamp="20260524T000000Z",
+    )
+
+    results_mod.save_multilabel_per_disease_metrics_csv(
+        [
+            {
+                "stage": "test",
+                "disease_idx": 0,
+                "disease": "d1",
+                "n_positive": 2,
+                "n_negative": 3,
+                "prevalence": 0.4,
+                "auroc": 0.75,
+                "auprc": 0.7,
+            }
+        ],
+        str(args.inference_multilabel_per_disease_metrics_csv_path),
+        args,
+    )
+    results_mod.save_multilabel_per_disease_metrics_csv(
+        [
+            {
+                "stage": "test",
+                "disease_idx": 1,
+                "disease": "d2",
+                "n_positive": 1,
+                "n_negative": 4,
+                "prevalence": 0.2,
+                "auroc": 0.5,
+                "auprc": 0.3,
+                "extra_stat": 4.0,
+            }
+        ],
+        str(args.inference_multilabel_per_disease_metrics_csv_path),
+        args,
+    )
+
+    df = pd.read_csv(args.inference_multilabel_per_disease_metrics_csv_path)
+    assert len(df) == 2
+    assert df["prediction_run_id"].tolist() == [args.prediction_run_id, args.prediction_run_id]
+    assert df["disease"].tolist() == ["d1", "d2"]
+    assert df["n_positive"].tolist() == [2, 1]
     assert "extra_stat" in df.columns
 
 
@@ -536,12 +595,29 @@ def test_prediction_csv_append_overview_and_manifest_across_namespaces(tmp_path,
         str(args.inference_survival_per_disease_metrics_csv_path),
         args,
     )
+    results_mod.save_multilabel_per_disease_metrics_csv(
+        [
+            {
+                "stage": "test",
+                "disease_idx": 0,
+                "disease": "d1",
+                "n_positive": 2,
+                "n_negative": 1,
+                "prevalence": 2 / 3,
+                "auroc": 0.75,
+                "auprc": 0.7,
+            }
+        ],
+        str(args.inference_multilabel_per_disease_metrics_csv_path),
+        args,
+    )
     results_mod.save_inference_manifest(args, {"test_loss": 0.1}, prediction_row_count=2)
 
     result_df = pd.read_csv(args.inference_metrics_csv_path)
     overview_df = pd.read_csv(args.inference_overview_csv_path)
     prediction_df = pd.read_csv(args.inference_prediction_csv_path)
     survival_df = pd.read_csv(args.inference_survival_per_disease_metrics_csv_path)
+    multilabel_df = pd.read_csv(args.inference_multilabel_per_disease_metrics_csv_path)
     manifest = json.loads(Path(args.manifest_path).read_text())
 
     assert len(prediction_df) == 2
@@ -550,11 +626,15 @@ def test_prediction_csv_append_overview_and_manifest_across_namespaces(tmp_path,
     assert prediction_df["prediction_run_id"].tolist() == [args.prediction_run_id, args.prediction_run_id]
     assert json.loads(prediction_df.loc[0, "groundtruth"]) == [1, 2]
     assert survival_df.loc[0, "disease"] == "d1"
+    assert multilabel_df.loc[0, "disease"] == "d1"
     assert manifest["prediction_run_id"] == args.prediction_run_id
     assert manifest["prediction_row_count"] == 2
     assert manifest["paths"]["prediction_csv_path"] == str(args.inference_prediction_csv_path)
     assert manifest["paths"]["survival_per_disease_metrics_csv_path"] == str(
         args.inference_survival_per_disease_metrics_csv_path
+    )
+    assert manifest["paths"]["multilabel_per_disease_metrics_csv_path"] == str(
+        args.inference_multilabel_per_disease_metrics_csv_path
     )
 
 

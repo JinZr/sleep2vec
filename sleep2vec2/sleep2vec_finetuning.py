@@ -12,6 +12,7 @@ import yaml
 from sleep2vec2 import diagnostics
 from sleep2vec2.averagings.base import BaseModelAverager, build_model_averager
 from sleep2vec2.common import remap_stage_labels
+from sleep2vec2.data.multilabel import load_multilabel_disease_columns
 from sleep2vec2.data.survival import load_survival_disease_columns
 from sleep2vec2.distributed import get_rank_world_size, is_torch_distributed_ready
 from sleep2vec2.losses.cox import CoxPHLossVectorized
@@ -21,6 +22,8 @@ from sleep2vec2.metrics import (
     _compute_ahi_event_metrics_from_prepared,
     _prepare_ahi_records,
     compute_downstream_metrics,
+    compute_multilabel_classification_metrics,
+    compute_multilabel_metrics_by_disease,
     compute_survival_c_index_by_disease,
     extract_ahi_summary_scatter_arrays,
 )
@@ -52,6 +55,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         ).to(args.device)
 
         head_kwargs = getattr(args, "head_kwargs", None)
+        covariate_cfg = None
+        if finetune_config is not None:
+            covariate_cfg = getattr(finetune_config, "survival", None) or getattr(finetune_config, "multilabel", None)
         self.model = Sleep2vecDownstreamModel(
             args.label_name,
             self.backbone,
@@ -64,16 +70,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
             model_config=model_config,
             layer_mix_cfg=getattr(finetune_config, "layer_mix", None) if finetune_config else None,
             head_config=model_config.head,
-            survival_covariates=(
-                getattr(getattr(finetune_config, "survival", None), "covariates", None)
-                if finetune_config is not None
-                else None
-            ),
-            survival_covariate_embedding_dim=(
-                getattr(getattr(finetune_config, "survival", None), "covariate_embedding_dim", 16)
-                if finetune_config is not None
-                else 16
-            ),
+            survival_covariates=getattr(covariate_cfg, "covariates", None),
+            survival_covariate_embedding_dim=(getattr(covariate_cfg, "covariate_embedding_dim", 16)),
         ).to(args.device)
 
         if args.pretrained_backbone_path:
@@ -100,6 +98,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._prediction_records = {"test": []}
         self.prediction_rows = []
+        self.multilabel_per_disease_metric_rows = []
         self.survival_per_disease_metric_rows = []
         class_weights = getattr(args, "class_weights", None)
         class_weight_tensor = None
@@ -254,6 +253,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if self._is_survival_task():
             return loss if stage == "train" else None
 
+        if self._is_multilabel_classification_task():
+            if stage in {"val", "test"}:
+                self._collect_multilabel_eval_batch(stage, logits, batch)
+            return loss if stage == "train" else None
+
         if self._is_ahi_task() and stage == "train":
             self._accumulate_ahi_train_pointwise_counts(batch, logits)
         elif self._is_ahi_task() and stage in {"val", "test"}:
@@ -273,6 +277,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _compute_loss(self, logits, batch):
         if self._is_survival_task():
             return self._compute_survival_loss(logits, batch)
+
+        if self._is_multilabel_classification_task():
+            return self._compute_multilabel_loss(logits, batch)
 
         targets = self._get_targets(batch)
 
@@ -345,6 +352,22 @@ class Sleep2vecFinetuning(pl.LightningModule):
         loss = self._survival_loss(logits, has_label, event_time, is_event)
         event_count = int(((is_event > 0.5) & valid_mask).sum().item())
         return loss, event_count
+
+    def _compute_multilabel_loss(self, logits, batch):
+        metadata = batch["metadata"]
+        labels = metadata["disease_label"].to(self.args.device)
+        has_label = metadata["has_label"].to(self.args.device)
+
+        if logits.shape != labels.shape:
+            raise ValueError(
+                f"Multilabel head output shape {tuple(logits.shape)} does not match labels {tuple(labels.shape)}."
+            )
+
+        valid_mask = has_label > 0.5
+        if not valid_mask.any():
+            return None
+        loss = self._multilabel_loss(logits, labels.float())[valid_mask].mean()
+        return loss, int(valid_mask.sum().item())
 
     def _collect_survival_eval_batch(self, stage: str, logits, batch) -> None:
         metadata = batch["metadata"]
@@ -589,6 +612,208 @@ class Sleep2vecFinetuning(pl.LightningModule):
             )
         return rows
 
+    def _collect_multilabel_eval_batch(self, stage: str, logits, batch) -> None:
+        metadata = batch["metadata"]
+        labels = metadata["disease_label"]
+        has_label = metadata["has_label"]
+        key_column = self._multilabel_key_column()
+
+        if logits.shape != labels.shape:
+            raise ValueError(
+                f"Multilabel head output shape {tuple(logits.shape)} does not match labels {tuple(labels.shape)}."
+            )
+        export_predictions = stage == "test" and prediction_export_enabled(self.args)
+        if not (has_label > 0.5).any() and not export_predictions:
+            return
+
+        token_start = batch["token_start"].to(torch.long).detach().cpu()
+        if key_column not in metadata:
+            raise ValueError(
+                f"Multilabel batch metadata is missing key column {key_column!r}; "
+                "regenerate presets with multilabel sidecars."
+            )
+        self._stage_outputs[stage].append(
+            {
+                "pred": logits.detach().to(device="cpu", dtype=torch.float32),
+                "disease_label": labels.detach().to(device="cpu", dtype=torch.float32),
+                "has_label": has_label.detach().to(device="cpu", dtype=torch.float32),
+                "multilabel_key": [str(key) for key in metadata[key_column]],
+                "path": [str(path) for path in metadata["path"]],
+                "token_start": [int(value) for value in token_start.tolist()],
+            }
+        )
+
+    def _multilabel_key_column(self) -> str:
+        multilabel = getattr(self.args, "multilabel", None)
+        key_column = getattr(multilabel, "key_column", None)
+        if key_column in (None, ""):
+            raise ValueError("Multilabel classification requires finetune.multilabel.key_column.")
+        return str(key_column)
+
+    def _multilabel_disease_names(self) -> list[str]:
+        multilabel = getattr(self.args, "multilabel", None)
+        disease_columns_index = getattr(multilabel, "disease_columns_index", None)
+        if disease_columns_index in (None, ""):
+            raise ValueError("Multilabel classification requires finetune.multilabel.disease_columns_index.")
+        return load_multilabel_disease_columns(disease_columns_index)
+
+    def _finalize_multilabel_epoch(self, stage: str, outputs) -> None:
+        records = list(outputs)
+        outputs.clear()
+        if stage == "train":
+            return
+
+        if stage in getattr(self, "_eval_loss_sums", {}):
+            self._log_eval_loss(stage)
+
+        records = self._gather_survival_eval_records(records)
+        if not records:
+            return
+
+        disease_names = self._multilabel_disease_names()
+        tensors = self._aggregate_multilabel_records(records)
+        logits = tensors["pred"].to(torch.float32)
+        labels = tensors["disease_label"].to(torch.float32)
+        has_label = tensors["has_label"].to(torch.float32)
+        if not (has_label > 0.5).any():
+            if stage == "test" and prediction_export_enabled(self.args):
+                self.prediction_rows = self._build_multilabel_prediction_rows(records, disease_names)
+            return
+
+        probs = torch.sigmoid(logits).detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
+        has_label_np = has_label.detach().cpu().numpy()
+
+        metric_rows = self._build_multilabel_per_disease_metric_rows(
+            stage, labels_np, probs, has_label_np, disease_names
+        )
+        self.multilabel_per_disease_metric_rows = [
+            row for row in self.multilabel_per_disease_metric_rows if row.get("stage") != stage
+        ]
+        self.multilabel_per_disease_metric_rows.extend(metric_rows)
+
+        metrics = compute_multilabel_classification_metrics(labels_np, probs, has_label_np)
+        for key, value in metrics.items():
+            self.log(
+                f"{stage}_{key}",
+                value,
+                prog_bar=(stage != "train"),
+                logger=True,
+                sync_dist=False,
+                on_epoch=True,
+            )
+
+        if stage == "test" and prediction_export_enabled(self.args):
+            self.prediction_rows = self._build_multilabel_prediction_rows(records, disease_names)
+
+    def _aggregate_multilabel_records(self, records) -> dict[str, torch.Tensor]:
+        grouped: dict[str, dict[str, object]] = {}
+        seen: set[tuple[str, str, int]] = set()
+        for record in records:
+            pred = record["pred"]
+            labels = record["disease_label"]
+            has_label = record["has_label"]
+            for idx, key in enumerate(record["multilabel_key"]):
+                path = str(record["path"][idx])
+                token_start = int(record["token_start"][idx])
+                dedupe_key = (str(key), path, token_start)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+
+                item = grouped.get(str(key))
+                current_labels = {
+                    "disease_label": labels[idx],
+                    "has_label": has_label[idx],
+                }
+                if item is None:
+                    grouped[str(key)] = {**current_labels, "preds": [pred[idx]]}
+                    continue
+
+                for label_name, label_value in current_labels.items():
+                    if not torch.allclose(item[label_name], label_value, equal_nan=True):
+                        raise ValueError(f"Multilabel labels differ across records for key {key!r}.")
+                item["preds"].append(pred[idx])
+
+        rows = []
+        labels = []
+        has_labels = []
+        for item in grouped.values():
+            rows.append(torch.stack(item["preds"], dim=0).mean(dim=0))
+            labels.append(item["disease_label"])
+            has_labels.append(item["has_label"])
+        return {
+            "pred": torch.stack(rows, dim=0),
+            "disease_label": torch.stack(labels, dim=0),
+            "has_label": torch.stack(has_labels, dim=0),
+        }
+
+    def _build_multilabel_per_disease_metric_rows(
+        self, stage: str, labels, probs, has_label, disease_names: list[str]
+    ) -> list[dict[str, object]]:
+        rows = compute_multilabel_metrics_by_disease(labels, probs, has_label, disease_names)
+        for disease_idx, row in enumerate(rows):
+            row["stage"] = stage
+            row["disease_idx"] = disease_idx
+        return rows
+
+    def _build_multilabel_prediction_rows(self, records, disease_names: list[str]) -> list[dict[str, object]]:
+        grouped: dict[str, list[dict[str, object]]] = {}
+        seen: set[tuple[str, str, int]] = set()
+        for record in records:
+            pred = record["pred"].numpy()
+            labels = record["disease_label"].numpy()
+            has_label = record["has_label"].numpy()
+            for idx, key in enumerate(record["multilabel_key"]):
+                path = str(record["path"][idx])
+                token_start = int(record["token_start"][idx])
+                dedupe_key = (str(key), path, token_start)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                grouped.setdefault(str(key), []).append(
+                    {
+                        "path": path,
+                        "token_start": token_start,
+                        "pred": pred[idx],
+                        "disease_label": labels[idx],
+                        "has_label": has_label[idx],
+                    }
+                )
+
+        rows: list[dict[str, object]] = []
+        for key, items in grouped.items():
+            items.sort(key=lambda item: (str(item["path"]), int(item["token_start"])))
+            logit = np.stack([np.asarray(item["pred"], dtype=np.float32) for item in items], axis=0).mean(axis=0)
+            if len(disease_names) != int(logit.size):
+                raise ValueError("disease_names length must match multilabel prediction width.")
+            labels = np.asarray(items[0]["disease_label"], dtype=np.float32)
+            has_label = (np.asarray(items[0]["has_label"], dtype=np.float32) > 0.5).astype(np.int64)
+            for item in items[1:]:
+                if not np.allclose(labels, np.asarray(item["disease_label"], dtype=np.float32), equal_nan=True):
+                    raise ValueError(f"Multilabel labels differ across records for key {key!r}.")
+                if not np.allclose(has_label, np.asarray(item["has_label"], dtype=np.float32) > 0.5):
+                    raise ValueError(f"Multilabel has_label differs across records for key {key!r}.")
+            probability = 1.0 / (1.0 + np.exp(-logit))
+            rows.append(
+                {
+                    "path": str(items[0]["path"]),
+                    "paths": [str(item["path"]) for item in items],
+                    "multilabel_key": key,
+                    "kind": "multilabel_classification",
+                    "disease_names": list(disease_names),
+                    "groundtruth": labels.tolist(),
+                    "prediction": (probability >= 0.5).astype(np.int64).tolist(),
+                    "probability": probability.tolist(),
+                    "logit": logit.tolist(),
+                    "has_label": has_label.tolist(),
+                    "n_predictions": int(logit.size),
+                    "n_windows": len(items),
+                    "token_starts": [int(item["token_start"]) for item in items],
+                }
+            )
+        return rows
+
     def _extract_valid_predictions(self, batch, logits):
         labels = self._get_targets(batch)
 
@@ -666,6 +891,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _get_targets(self, batch):
         if self._is_survival_task():
             raise ValueError("Survival tasks use event_time/is_event/has_label metadata, not label_name targets.")
+        if self._is_multilabel_classification_task():
+            metadata = batch["metadata"]
+            labels = metadata["disease_label"].to(self.args.device)
+            has_label = metadata["has_label"].to(self.args.device)
+            return torch.where(has_label > 0.5, labels, torch.full_like(labels, -1.0))
         if not self.args.is_seq:
             return batch["metadata"][self.args.label_name].to(self.args.device)
 
@@ -680,6 +910,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _is_survival_task(self) -> bool:
         return bool(getattr(self.args, "is_survival", False))
+
+    def _is_multilabel_classification_task(self) -> bool:
+        return getattr(self.args, "multilabel", None) is not None
 
     def _accumulate_ahi_train_pointwise_counts(self, batch, logits) -> None:
         labels = self._get_targets(batch)
@@ -982,6 +1215,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self.prediction_rows = []
         if self._is_survival_task():
             self._finalize_survival_epoch(stage, outputs)
+            return None
+
+        if self._is_multilabel_classification_task():
+            self._finalize_multilabel_epoch(stage, outputs)
             return None
 
         if stage in getattr(self, "_eval_loss_sums", {}):

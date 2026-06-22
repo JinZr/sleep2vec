@@ -106,11 +106,12 @@ Stage transitions are strict: `--ckpt-path` resumes within the same phase only, 
    - optional model averaging
    - optional downstream evaluation visualization hooks
    - Cox survival loss and subject-level survival risk aggregation when `finetune.task.type=survival`
+   - Subject-level multilabel disease detection with masked BCE and duplicate-window logit aggregation when `finetune.task.type=multilabel_classification`
 6. Run `trainer.fit(...)`.
 7. Test the best checkpoint or requested checkpoint with `trainer.test(...)`.
 8. Append evaluation metrics to a CSV via `sleep2vec.results.save_result_csv`.
 
-Built-in task semantics include `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`. Custom YAML tasks may also declare `finetune.task.type=survival`, which requires `finetune.survival` sidecars and monitors either `val_loss/min` or `val_c_index/max`.
+Built-in task semantics include `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`. Custom YAML tasks may also declare `finetune.task.type=survival`, which requires `finetune.survival` sidecars and monitors either `val_loss/min` or `val_c_index/max`, or `finetune.task.type=multilabel_classification`, which requires `finetune.multilabel` label/mask sidecars and is non-sequence only.
 
 ### Inference
 
@@ -144,7 +145,7 @@ The runtime assumes a batch dictionary with these keys:
 | `token_start` | `DefaultDataset.dataloader` | AHI event aggregation | Preserves window offset for later record merging |
 | `tokens` | `DefaultDataset.dataloader` | backbone, finetune loss, AHI eval | Channel-name keyed padded token tensors |
 | `mlm_mask` | `DefaultDataset.dataloader` | pretrain backbone | Channel-name keyed boolean mask tensors |
-| `metadata` | `DefaultDataset.dataloader` | finetune loss, metrics, negative weighting | Always includes `source` and `path`; includes `age`/`sex` only when present in the index or preset; built-in AHI also backfills `ahi` and `tst` |
+| `metadata` | `DefaultDataset.dataloader` | finetune loss, metrics, negative weighting | Always includes `source` and `path`; includes `age`/`sex` only when present in the index or preset; built-in AHI backfills `ahi` and `tst`; survival/multilabel tasks add subject-keyed sidecar vectors |
 | `w` | `DefaultDataset.dataloader` | `WeightedInfoNCELoss` | Negative-sample weight matrix |
 | `h` | `DefaultDataset.dataloader` | `WeightedInfoNCELoss` | Same-path hardness mask |
 | `pair` | `DefaultDataset.dataloader` | callbacks/logging | Present for pair-first or sequential pair-eval batches |
@@ -222,8 +223,9 @@ The canonical Kaldi path is:
 - Per-run copied configs: `config.yaml`, plus phase-specific `config.stage1.yaml` / `config.stage2.yaml` for adaptation
 - Per-run CLI snapshot: `cli_args.yaml`, plus phase-specific adaptation snapshots
 - Downstream results table: caller-specified CSV via `sleep2vec.results.save_result_csv`
-- Inference outputs: run-local `metrics__*.csv`, `predictions__*.csv`, `run_manifest.json`, shared `results/inference/overview.csv`, and optional W&B inference artifacts
+- Inference outputs: run-local `metrics__*.csv`, `predictions__*.csv`, survival/multilabel per-disease metrics CSVs when present, `run_manifest.json`, shared `results/inference/overview.csv`, and optional W&B inference artifacts
 - Survival inference prediction rows include raw log-risk vectors and sidecar label vectors when prediction export is enabled.
+- Multilabel disease prediction rows include disease names, raw logits, probabilities, groundtruth vectors, and `has_label` masks when prediction export is enabled.
 - Visualization side effects:
   - pair-accuracy heatmaps
   - layer-mix heatmaps and tables

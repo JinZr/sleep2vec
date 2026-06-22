@@ -6,7 +6,7 @@
 - Dataclasses:
   - `ModelConfig`, `ChannelConfig`, `TokenizerConfig`, `BackboneConfig`, `ProjectionConfig`, `ClsConfig`
   - `HeadConfig`, `TemporalAggConfig`, `ChannelAggConfig`, `LayerMixConfig`
-  - `TaskConfig`, `FinetuneConfig`, `SurvivalConfig`, `LoraConfig`, `FinetuneLossConfig`, `FinetuneSamplerConfig`, `FinetuneDataConfig`, `EvalVisualizationsConfig`
+  - `TaskConfig`, `FinetuneConfig`, `SurvivalConfig`, `MultilabelConfig`, `LoraConfig`, `FinetuneLossConfig`, `FinetuneSamplerConfig`, `FinetuneDataConfig`, `EvalVisualizationsConfig`
   - `AdaptConfig`, `AdaptStage1Config`, `AdaptStage2Config`, `AdaptLrScalesConfig`, `AdaptPairSchedulePoint`
   - `PretrainDataConfig` with `backend`, `kaldi_data_root`, and `kaldi_manifest`
   - `PretrainConfigBundle`, `FinetuneConfigBundle`
@@ -57,14 +57,25 @@
 - Reuse guidance: add survival label-source fields here before changing loaders or trainers.
 - Duplication risk notes: do not add parallel disease-column lists or alternate sidecar spellings.
 
+## `sleep2vec.config.MultilabelConfig`
+
+- File: `sleep2vec/config.py`
+- Signature: dataclass with `key_column`, `disease_columns_index`, `label_index`, `has_label_index`, `covariates`, and `covariate_embedding_dim`.
+- Purpose and contract: carry subject-level multilabel disease-detection sidecar paths from YAML into runtime and preset generation. The task is non-sequence only and uses one disease-column list shared by label and label-mask CSVs.
+- Important inputs/outputs: YAML `finetune.multilabel` mapping in; typed config consumed by `apply_finetune_config`, dataset constructors, and preset generation.
+- Side effects: none.
+- Key callers/callees: built by `load_finetune_config`; consumed by `sleep2vec.common.apply_finetune_config`, `data.multilabel.load_multilabel_label_table`, and preprocessing helpers.
+- Reuse guidance: add multilabel label-source fields here before changing loaders or trainers.
+- Duplication risk notes: do not store disease labels as ordinary wide metadata columns or introduce alternate disease-column sidecar names.
+
 ## `sleep2vec.config.load_finetune_config`
 
 - File: `sleep2vec/config.py`
 - Signature: `load_finetune_config(path: str | Path) -> FinetuneConfigBundle`
-- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, survival sidecars, layer-mix, LoRA/DoRA settings, imbalance loss/sampler, data backend, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
+- Purpose and contract: parse finetune YAML, require `finetune` plus model `backbone/projection/cls/head`, validate task, survival sidecars, multilabel sidecars, layer-mix, LoRA/DoRA settings, imbalance loss/sampler, data backend, and evaluation-visualization semantics, and return the typed bundle used by finetune and inference.
 - Important inputs/outputs: YAML path in, `FinetuneConfigBundle` out.
 - Side effects: reads YAML from disk only.
-- Key callers/callees: caller is `sleep2vec.common.apply_finetune_config`; callees include `_build_layer_mix_config`, `_build_finetune_loss_config`, `_build_finetune_sampler_config`, `_build_task_config`, `_build_eval_visualizations_config`, `_validate_layer_mix_config`, `_build_model_averaging_config`, and `SurvivalConfig`.
+- Key callers/callees: caller is `sleep2vec.common.apply_finetune_config`; callees include `_build_layer_mix_config`, `_build_finetune_loss_config`, `_build_finetune_sampler_config`, `_build_task_config`, `_build_eval_visualizations_config`, `_validate_layer_mix_config`, `_build_model_averaging_config`, `SurvivalConfig`, and `MultilabelConfig`.
 - Reuse guidance: this is the canonical finetune schema boundary.
 - Duplication risk notes: do not reimplement task/head/visualization parsing in trainers or CLI code.
 
@@ -94,7 +105,7 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None`
-- Purpose and contract: populate `args.output_dim`, `args.is_classification`, `args.is_survival`, `args.is_seq`, `args.monitor`, `args.monitor_mod`, and built-in label metadata from either built-in task semantics or explicit `finetune.task`; built-in classification recipes may monitor `val_accuracy`, `val_f1_macro`, `val_f1_weighted`, `val_cohen_kappa`, and binary `val_roc_auc`, while survival tasks may monitor `val_loss/min` or `val_c_index/max`.
+- Purpose and contract: populate `args.output_dim`, `args.is_classification`, `args.is_multilabel`, `args.is_survival`, `args.is_seq`, `args.monitor`, `args.monitor_mod`, and built-in label metadata from either built-in task semantics or explicit `finetune.task`; built-in classification recipes may monitor `val_accuracy`, `val_f1_macro`, `val_f1_weighted`, `val_cohen_kappa`, and binary `val_roc_auc`, while survival tasks may monitor `val_loss/min` or `val_c_index/max`.
 - Important inputs/outputs: mutates `argparse.Namespace` in place.
 - Side effects: namespace mutation only.
 - Key callers/callees: caller is `apply_finetune_config`; callees are `_validate_builtin_task_cfg`, `_validate_metadata_label_support`, and the built-in task helpers such as `get_task_label_source_name`, `get_task_label_merge_map`, and `get_task_auxiliary_label_source_names`.
@@ -105,7 +116,7 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_finetune_config(args) -> tuple[Any, Any]`
-- Purpose and contract: load finetune YAML, copy data/model/task/survival/imbalance/LoRA/DoRA/eval-visualization settings into the CLI namespace, apply data-backend settings, and enforce dataloader/model channel parity.
+- Purpose and contract: load finetune YAML, copy data/model/task/survival/multilabel/imbalance/LoRA/DoRA/eval-visualization settings into the CLI namespace, apply data-backend settings, and enforce dataloader/model channel parity.
 - Important inputs/outputs: mutates `args`, including `args.lora_r`, `args.lora_alpha`, `args.lora_dropout`, `args.lora_target_modules`, and `args.lora_use_dora`; returns `(config_bundle, model_cfg)` for convenience.
 - Side effects: converts configured data paths into `Path` objects and mutates many runtime flags.
 - Key callers/callees: callers are `sleep2vec.finetune` and `sleep2vec.infer`; callees are `load_finetune_config`, `apply_task_flags`, and `_validate_and_apply_imbalance_config`.

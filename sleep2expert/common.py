@@ -190,6 +190,7 @@ def _validate_metadata_label_support(args) -> None:
     if (
         getattr(args, "is_classification", False)
         and int(getattr(args, "output_dim", 0)) > 2
+        and not getattr(args, "is_multilabel", False)
         and not is_builtin_seq_task(getattr(args, "label_name", None))
     ):
         raise ValueError(
@@ -282,8 +283,9 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
         else:
             _apply_custom_task_attrs(args)
         args.output_dim = task_cfg.output_dim
-        args.is_classification = task_cfg.type == "classification"
+        args.is_classification = task_cfg.type in {"classification", "multilabel_classification"}
         args.is_survival = task_cfg.type == "survival"
+        args.is_multilabel = task_cfg.type == "multilabel_classification" or getattr(args, "is_multilabel", False)
         args.is_seq = task_cfg.is_seq
         args.monitor = task_cfg.monitor
         args.monitor_mod = task_cfg.monitor_mod
@@ -390,6 +392,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
     args.eval_visualizations = finetune_cfg.eval_visualizations
     args.survival = finetune_cfg.survival
+    args.multilabel = finetune_cfg.multilabel
     args.head_kwargs = {}
 
     # Fail fast if requested dataloader channels differ from model/backbone channels.
