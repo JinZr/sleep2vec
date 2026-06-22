@@ -190,7 +190,8 @@ class PSGPretrainDataset(DefaultDataset):
                 if multilabel_labels is not None:
                     if multilabel_labels.key_column not in row.index:
                         raise ValueError(
-                            f"Required multilabel key column '{multilabel_labels.key_column}' is missing from index CSV."
+                            f"Required multilabel key column '{multilabel_labels.key_column}' "
+                            "is missing from index CSV."
                         )
                     attach_multilabel_metadata(metadata, row[multilabel_labels.key_column], multilabel_labels)
 
