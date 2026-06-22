@@ -247,23 +247,31 @@ def test_psg_dataset_requires_multilabel_key_column(dataset_module: str, tmp_pat
 )
 def test_multilabel_masked_bce_ignores_invalid_cells(module_name: str, tmp_path: Path):
     finetuning_cls, module = _new_multilabel_finetuning_module(module_name, tmp_path)
-    logits = torch.tensor([[0.0, 2.0], [4.0, -2.0]])
+    logits = torch.tensor([[0.0, 2.0], [4.0, -2.0]], requires_grad=True)
     batch = {
         "metadata": {
-            "disease_label": torch.tensor([[1.0, 1.0], [0.0, 1.0]]),
+            "disease_label": torch.tensor([[1.0, float("nan")], [0.0, 1.0]]),
             "has_label": torch.tensor([[1.0, 0.0], [1.0, 1.0]]),
         }
     }
 
     loss, valid_count = finetuning_cls._compute_multilabel_loss(module, logits, batch)
 
+    safe_labels = torch.where(
+        batch["metadata"]["has_label"] > 0.5,
+        batch["metadata"]["disease_label"],
+        torch.zeros_like(batch["metadata"]["disease_label"]),
+    )
     expected = torch.nn.functional.binary_cross_entropy_with_logits(
         logits,
-        batch["metadata"]["disease_label"],
+        safe_labels,
         reduction="none",
     )[batch["metadata"]["has_label"] > 0.5].mean()
     assert valid_count == 3
     assert loss.item() == pytest.approx(expected.item())
+    loss.backward()
+    assert torch.isfinite(logits.grad).all()
+    assert logits.grad[0, 1].item() == pytest.approx(0.0)
 
 
 @pytest.mark.parametrize(

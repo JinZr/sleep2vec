@@ -355,7 +355,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _compute_multilabel_loss(self, logits, batch):
         metadata = batch["metadata"]
-        labels = metadata["disease_label"].to(self.args.device)
+        labels = metadata["disease_label"].to(self.args.device).float()
         has_label = metadata["has_label"].to(self.args.device)
 
         if logits.shape != labels.shape:
@@ -366,7 +366,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         valid_mask = has_label > 0.5
         if not valid_mask.any():
             return None
-        loss = self._multilabel_loss(logits, labels.float())[valid_mask].mean()
+        safe_labels = torch.where(valid_mask, labels, torch.zeros_like(labels))
+        loss = self._multilabel_loss(logits, safe_labels)[valid_mask].mean()
         return loss, int(valid_mask.sum().item())
 
     def _collect_survival_eval_batch(self, stage: str, logits, batch) -> None:
