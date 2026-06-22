@@ -68,6 +68,9 @@ def build_version_name(args: Namespace, cfg: BaselineConfig) -> str:
 def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     configure_result_args(args, cfg)
     args.version = build_version_name(args, cfg)
+    epochs = int(args.epochs)
+    if epochs == 0 and not args.ckpt_path:
+        raise ValueError("--epochs 0 requires --ckpt-path for sex_age_baseline evaluation.")
     _seed_everything(getattr(args, "seed", 4523))
 
     device = torch.device(args.device)
@@ -109,7 +112,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     stale_epochs = 0
     global_step = 0
 
-    for epoch in range(int(args.epochs)):
+    for epoch in range(epochs):
         train_loss, steps = _train_one_epoch(model, train_loader, cfg, optimizer, device, args)
         global_step += steps
         val_result = evaluate_model(model, val_loader, cfg, device=device, stage="val")
@@ -140,9 +143,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         if patience > 0 and stale_epochs >= patience:
             break
 
-    if args.epochs == 0 and args.ckpt_path:
+    if epochs == 0 and args.ckpt_path:
         best_path = Path(args.ckpt_path)
-    elif int(args.epochs) > 0 and not best_path.exists():
+    elif epochs > 0 and not best_path.exists():
         raise ValueError(
             f"No finite best checkpoint was selected for monitor {cfg.finetune.task.monitor!r}. "
             "Check validation labels and monitor configuration."

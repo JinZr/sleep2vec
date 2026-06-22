@@ -76,7 +76,7 @@ class MultilabelConfig:
 
 @dataclass(frozen=True)
 class FinetuneLossConfig:
-    pos_weight: Any | None = None
+    pos_weight: float | list[float] | None = None
 
 
 @dataclass(frozen=True)
@@ -230,7 +230,7 @@ def _build_finetune(raw: dict[str, Any], data: DataConfig) -> FinetuneConfig:
         multilabel = _build_multilabel(_mapping(raw, "multilabel"))
         if multilabel.key_column != data.key_column:
             raise ValueError("finetune.multilabel.key_column must match data.key_column.")
-        loss = _build_loss(_mapping(raw, "loss")) if "loss" in raw else FinetuneLossConfig()
+        loss = _build_loss(_mapping(raw, "loss"), task.output_dim) if "loss" in raw else FinetuneLossConfig()
         return FinetuneConfig(task=task, multilabel=multilabel, loss=loss)
     raise ValueError(f"Unsupported sex_age_baseline task type: {task.type}")
 
@@ -273,8 +273,27 @@ def _build_multilabel(raw: dict[str, Any]) -> MultilabelConfig:
     )
 
 
-def _build_loss(raw: dict[str, Any]) -> FinetuneLossConfig:
-    return FinetuneLossConfig(pos_weight=raw.get("pos_weight"))
+def _build_loss(raw: dict[str, Any], output_dim: int) -> FinetuneLossConfig:
+    extra = sorted(set(raw) - {"pos_weight"})
+    if extra:
+        raise ValueError(f"finetune.loss has unsupported fields: {extra}")
+    pos_weight = raw.get("pos_weight")
+    if pos_weight is None:
+        return FinetuneLossConfig()
+    if isinstance(pos_weight, (int, float)) and not isinstance(pos_weight, bool):
+        if pos_weight <= 0:
+            raise ValueError("finetune.loss.pos_weight must contain only positive numbers.")
+        return FinetuneLossConfig(pos_weight=float(pos_weight))
+    if isinstance(pos_weight, list):
+        if len(pos_weight) != output_dim:
+            raise ValueError(
+                "finetune.loss.pos_weight length must match finetune.task.output_dim "
+                f"({output_dim}); got {len(pos_weight)}."
+            )
+        if not all(isinstance(item, (int, float)) and not isinstance(item, bool) and item > 0 for item in pos_weight):
+            raise ValueError("finetune.loss.pos_weight must contain only positive numbers.")
+        return FinetuneLossConfig(pos_weight=[float(item) for item in pos_weight])
+    raise ValueError("finetune.loss.pos_weight must be a positive number or list of positive numbers.")
 
 
 def _build_outputs(raw: dict[str, Any]) -> OutputsConfig:

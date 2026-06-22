@@ -115,6 +115,52 @@ def test_validates_sidecar_output_dim(tmp_path: Path):
     assert cfg.finetune.task.output_dim == 2
 
 
+@pytest.mark.parametrize("field", ["class_weights", "pos_weigth"])
+def test_multilabel_loss_rejects_unsupported_fields(tmp_path: Path, field: str):
+    payload = _multilabel_payload(tmp_path)
+    payload["finetune"]["loss"] = {field: [1.0, 2.0]}
+    config = _write_yaml(tmp_path / "bad-loss.yaml", payload)
+
+    with pytest.raises(ValueError, match="finetune.loss has unsupported fields"):
+        load_config(config)
+
+
+@pytest.mark.parametrize("pos_weight", [0.0, -1.0, [1.0, 0.0]])
+def test_multilabel_loss_rejects_non_positive_pos_weight(tmp_path: Path, pos_weight):
+    payload = _multilabel_payload(tmp_path)
+    payload["finetune"]["loss"] = {"pos_weight": pos_weight}
+    config = _write_yaml(tmp_path / "bad-pos-weight.yaml", payload)
+
+    with pytest.raises(ValueError, match="pos_weight must contain only positive numbers"):
+        load_config(config)
+
+
+def test_multilabel_loss_rejects_pos_weight_length_mismatch(tmp_path: Path):
+    payload = _multilabel_payload(tmp_path)
+    payload["finetune"]["loss"] = {"pos_weight": [1.0]}
+    config = _write_yaml(tmp_path / "bad-pos-weight-length.yaml", payload)
+
+    with pytest.raises(ValueError, match="pos_weight length must match"):
+        load_config(config)
+
+
+@pytest.mark.parametrize(
+    ("pos_weight", "expected"),
+    [
+        (2, 2.0),
+        ([1, 2.5], [1.0, 2.5]),
+    ],
+)
+def test_multilabel_loss_accepts_valid_pos_weight(tmp_path: Path, pos_weight, expected):
+    payload = _multilabel_payload(tmp_path)
+    payload["finetune"]["loss"] = {"pos_weight": pos_weight}
+    config = _write_yaml(tmp_path / "good-pos-weight.yaml", payload)
+
+    cfg = load_config(config)
+
+    assert cfg.finetune.loss.pos_weight == expected
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

@@ -479,6 +479,32 @@ def test_train_fails_without_finite_best_checkpoint(tmp_path: Path, monkeypatch)
     assert not (tmp_path / "log-finetune" / "no-finite-best" / "checkpoints" / "best.ckpt").exists()
 
 
+@pytest.mark.parametrize("test_after_fit", [True, False])
+def test_zero_epoch_train_requires_checkpoint(tmp_path: Path, monkeypatch, test_after_fit: bool):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,val,60,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    version_name = f"zero-epoch-no-ckpt-{test_after_fit}"
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="--epochs 0 requires --ckpt-path"):
+        baseline_runtime.train_and_save(
+            _runtime_args(
+                config,
+                tmp_path,
+                version_name=version_name,
+                epochs=0,
+                test_after_fit=test_after_fit,
+            ),
+            cfg,
+        )
+
+    assert not (tmp_path / "log-finetune" / version_name).exists()
+
+
 def test_test_after_fit_writers_receive_test_eval_split(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,
