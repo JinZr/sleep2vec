@@ -307,6 +307,32 @@ def _load_survival_build_config(config_data: dict[str, t.Any]) -> tuple[t.Any | 
     return SurvivalConfig(**survival_block), output_dim
 
 
+def _load_multilabel_build_config(config_data: dict[str, t.Any]) -> tuple[t.Any | None, int | None]:
+    finetune_block = config_data.get("finetune")
+    if not isinstance(finetune_block, dict):
+        return None, None
+
+    task_block = finetune_block.get("task")
+    if not isinstance(task_block, dict) or task_block.get("type") != "multilabel_classification":
+        if finetune_block.get("multilabel") is not None:
+            raise ValueError(
+                "finetune.multilabel is only supported when finetune.task.type is multilabel_classification."
+            )
+        return None, None
+
+    output_dim = task_block.get("output_dim")
+    if not isinstance(output_dim, int) or output_dim < 1:
+        raise ValueError("finetune.task.output_dim must be a positive integer for multilabel preset generation.")
+
+    multilabel_block = finetune_block.get("multilabel")
+    if not isinstance(multilabel_block, dict):
+        raise ValueError("finetune.multilabel is required for multilabel preset generation.")
+
+    from sleep2vec.config import MultilabelConfig
+
+    return MultilabelConfig(**multilabel_block), output_dim
+
+
 def _resolve_validation_channels(
     *,
     model_channels: list[str],
@@ -390,9 +416,14 @@ def _resolve_single_index_path(index_paths: list[str]) -> Path:
     return Path(index_paths[0]).expanduser()
 
 
-def _load_index_df(index_paths: list[str], survival_key_column: str | None = None) -> pd.DataFrame:
+def _load_index_df(
+    index_paths: list[str],
+    survival_key_column: str | None = None,
+    multilabel_key_column: str | None = None,
+) -> pd.DataFrame:
     path = _resolve_single_index_path(index_paths)
-    key_column = None if survival_key_column in (None, "") else str(survival_key_column)
+    raw_key_column = survival_key_column if survival_key_column not in (None, "") else multilabel_key_column
+    key_column = None if raw_key_column in (None, "") else str(raw_key_column)
     read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
     if key_column is not None:
         read_csv_kwargs["converters"] = {key_column: str}
@@ -446,6 +477,8 @@ def _build_preset_job(
     shuffle: bool,
     survival_label_config: t.Any | None = None,
     survival_output_dim: int | None = None,
+    multilabel_label_config: t.Any | None = None,
+    multilabel_output_dim: int | None = None,
     filter_max_workers: int | None,
 ) -> tuple[Path, int]:
     from data.psg_pretrain_dataset import PSGPretrainDataset
@@ -454,8 +487,14 @@ def _build_preset_job(
     filtered_index_path: str | None = None
     if not allow_missing_channels:
         survival_key_column = getattr(survival_label_config, "key_column", None)
+        multilabel_key_column = getattr(multilabel_label_config, "key_column", None)
         filtered_index = _filter_index_df_for_required_channels(
-            _load_index_df(index_paths, survival_key_column=survival_key_column), channel_names
+            _load_index_df(
+                index_paths,
+                survival_key_column=survival_key_column,
+                multilabel_key_column=multilabel_key_column,
+            ),
+            channel_names,
         )
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -484,6 +523,8 @@ def _build_preset_job(
             min_channels=min_channels,
             survival_label_config=survival_label_config,
             survival_output_dim=survival_output_dim,
+            multilabel_label_config=multilabel_label_config,
+            multilabel_output_dim=multilabel_output_dim,
             batch_size=batch_size,
             shuffle=shuffle,
             filter_max_workers=filter_max_workers,
@@ -577,6 +618,7 @@ def main() -> None:
     model_channels, model_channel_input_dims = _load_model_channels(config_data)
     preset_required_channels, preset_min_channels = _load_preset_build_block(config_data)
     survival_label_config, survival_output_dim = _load_survival_build_config(config_data)
+    multilabel_label_config, multilabel_output_dim = _load_multilabel_build_config(config_data)
     channel_names, channel_input_dims = _resolve_validation_channels(
         model_channels=model_channels,
         channel_input_dims=model_channel_input_dims,
@@ -666,6 +708,8 @@ def main() -> None:
                     "shuffle": args.shuffle,
                     "survival_label_config": survival_label_config,
                     "survival_output_dim": survival_output_dim,
+                    "multilabel_label_config": multilabel_label_config,
+                    "multilabel_output_dim": multilabel_output_dim,
                     "dataset_name": dataset_name,
                     "config_path": args.config,
                 }

@@ -226,10 +226,10 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `Sleep2vecFinetuning._shared_step(batch, stage: str, model=None)`
-- Purpose and contract: run forward, compute loss if valid labels exist, add sleep2expert downstream MoE regularization/metrics when configured in that namespace, log stage loss or accumulate eval loss, and cache either generic predictions or AHI event records for epoch-end metrics.
+- Purpose and contract: run forward, compute loss if valid labels exist, add sleep2expert downstream MoE regularization/metrics when configured in that namespace, log stage loss or accumulate eval loss, and cache generic predictions, AHI event records, survival records, or subject-level multilabel disease records for epoch-end metrics.
 - Important inputs/outputs: batch and stage name in; returns training loss for `train`, otherwise `None`.
 - Side effects: logs Lightning metrics and mutates `_stage_outputs`.
-- Key callers/callees: callers are `training_step`, `validation_step`, and `test_step`; callees are `self.model(...)`, `_compute_loss`, `_extract_valid_predictions`, and `_extract_ahi_event_records`.
+- Key callers/callees: callers are `training_step`, `validation_step`, and `test_step`; callees are `self.model(...)`, `_compute_loss`, `_extract_valid_predictions`, `_extract_ahi_event_records`, `_collect_survival_eval_batch`, and `_collect_multilabel_eval_batch`.
 - Reuse guidance: all downstream stage logic should continue to funnel through this helper.
 - Duplication risk notes: stage branching should not leak into entrypoints.
 
@@ -237,7 +237,7 @@
 
 - File: `sleep2vec/sleep2vec_finetuning.py`
 - Signature: `Sleep2vecFinetuning._compute_loss(logits, batch)`
-- Purpose and contract: compute classification, regression, or multilabel loss, ignoring invalid labels and returning `None` when the batch contains no valid targets; configured `class_weights` affect CrossEntropyLoss and configured `pos_weight` affects BCEWithLogitsLoss for multilabel/AHI.
+- Purpose and contract: compute classification, regression, survival, or multilabel loss, ignoring invalid labels and returning `None` when the batch contains no valid targets. Disease-level `multilabel_classification` uses `metadata["disease_label"]` and masks invalid cells with `metadata["has_label"]`; configured `class_weights` affect CrossEntropyLoss and configured `pos_weight` affects BCEWithLogitsLoss for multilabel/AHI.
 - Important inputs/outputs: logits and batch in; returns `(loss, valid_count)` or `None`.
 - Side effects: none.
 - Key callers/callees: caller is `_shared_step`.

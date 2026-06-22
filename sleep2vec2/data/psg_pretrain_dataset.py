@@ -5,6 +5,7 @@ import typing as t
 import pandas as pd
 
 from sleep2vec2.data.default_dataset import DefaultDataset, SampleIndex
+from sleep2vec2.data.multilabel import attach_multilabel_metadata, load_multilabel_label_table
 from sleep2vec2.data.survival import attach_survival_metadata, load_survival_label_table
 from sleep2vec2.data.utils import default_extractor, default_mlm_mask_generator, default_tokenizer, window
 
@@ -89,6 +90,8 @@ class PSGPretrainDataset(DefaultDataset):
         weighted_random_sampler_target: str | None = None,
         survival_label_config: t.Any | None = None,
         survival_output_dim: int | None = None,
+        multilabel_label_config: t.Any | None = None,
+        multilabel_output_dim: int | None = None,
         generative: bool = False,
         is_train_set: bool = True,
         filter_max_workers: int | None = None,
@@ -110,17 +113,27 @@ class PSGPretrainDataset(DefaultDataset):
         built_in_ahi_runtime_metadata = "ahi" in channel_names
         sources = sources or []
         survival_labels = None
+        multilabel_labels = None
 
         split_list = [split] if isinstance(split, str) else list(split or [])
         survival_key_column = getattr(survival_label_config, "key_column", None)
+        multilabel_key_column = getattr(multilabel_label_config, "key_column", None)
 
         if not load_preset_path:
             survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
             if survival_labels is not None:
                 survival_key_column = survival_labels.key_column
+            multilabel_labels = load_multilabel_label_table(multilabel_label_config, multilabel_output_dim)
+            if multilabel_labels is not None:
+                multilabel_key_column = multilabel_labels.key_column
             read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+            key_converters = {}
             if survival_key_column is not None:
-                read_csv_kwargs["converters"] = {str(survival_key_column): str}
+                key_converters[str(survival_key_column)] = str
+            if multilabel_key_column is not None:
+                key_converters[str(multilabel_key_column)] = str
+            if key_converters:
+                read_csv_kwargs["converters"] = key_converters
 
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
@@ -174,6 +187,13 @@ class PSGPretrainDataset(DefaultDataset):
                             f"Required survival key column '{survival_labels.key_column}' is missing from index CSV."
                         )
                     attach_survival_metadata(metadata, row[survival_labels.key_column], survival_labels)
+                if multilabel_labels is not None:
+                    if multilabel_labels.key_column not in row.index:
+                        raise ValueError(
+                            f"Required multilabel key column '{multilabel_labels.key_column}' "
+                            "is missing from index CSV."
+                        )
+                    attach_multilabel_metadata(metadata, row[multilabel_labels.key_column], multilabel_labels)
 
                 for meta_data_name in meta_data_names:
                     # Built-in AHI summary scalars come from NPZ backfill, not CSV columns.
@@ -206,6 +226,9 @@ class PSGPretrainDataset(DefaultDataset):
         effective_survival_output_dim = survival_output_dim if load_preset_path else None
         if survival_labels is not None:
             effective_survival_output_dim = len(survival_labels.label_names)
+        effective_multilabel_output_dim = multilabel_output_dim if load_preset_path else None
+        if multilabel_labels is not None:
+            effective_multilabel_output_dim = len(multilabel_labels.label_names)
 
         registry = _build_channel_registry(
             channel_names=channel_names,
@@ -235,6 +258,8 @@ class PSGPretrainDataset(DefaultDataset):
             weighted_random_sampler_target=weighted_random_sampler_target,
             survival_output_dim=effective_survival_output_dim,
             survival_key_column=survival_key_column,
+            multilabel_output_dim=effective_multilabel_output_dim,
+            multilabel_key_column=multilabel_key_column,
             dataloader_config=kwargs,
             filter_max_workers=filter_max_workers,
         )

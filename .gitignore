@@ -258,3 +258,4 @@ plans/generated/
 
 # VSCode settings folder
 .vscode/
+/.codex-tmp

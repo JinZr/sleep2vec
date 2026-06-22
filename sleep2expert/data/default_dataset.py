@@ -18,6 +18,7 @@ from sleep2expert.data.metadata import (
     process_metadata,
     safe_cast,
 )
+from sleep2expert.data.multilabel import stack_multilabel_metadata
 from sleep2expert.data.survival import stack_survival_metadata
 from sleep2expert.data.utils import filter_valid_sample_indices, load_builtin_ahi_metadata, load_npz
 
@@ -72,6 +73,8 @@ class DefaultDataset(BaseDataset):
         weighted_random_sampler_target: str | None = None,
         survival_output_dim: int | None = None,
         survival_key_column: str | None = None,
+        multilabel_output_dim: int | None = None,
+        multilabel_key_column: str | None = None,
         seed: int = 42,
         filter_max_workers: int | None = None,
     ) -> None:
@@ -99,6 +102,8 @@ class DefaultDataset(BaseDataset):
         self.weighted_random_sampler_target = weighted_random_sampler_target
         self.survival_output_dim = survival_output_dim
         self.survival_key_column = survival_key_column
+        self.multilabel_output_dim = multilabel_output_dim
+        self.multilabel_key_column = multilabel_key_column
         # self.collators = collators
         self.dataloader_config = dataloader_config
 
@@ -477,6 +482,14 @@ class DefaultDataset(BaseDataset):
                         samples,
                         expected_output_dim=self.survival_output_dim,
                         key_column=self.survival_key_column,
+                    )
+                )
+            if self.multilabel_output_dim is not None:
+                metadata_batch.update(
+                    stack_multilabel_metadata(
+                        samples,
+                        expected_output_dim=self.multilabel_output_dim,
+                        key_column=self.multilabel_key_column,
                     )
                 )
 

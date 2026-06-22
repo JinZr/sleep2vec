@@ -24,6 +24,7 @@ from sleep2expert.results import (
     _route_filter_payload,
     prepare_inference_result_paths,
     save_inference_manifest,
+    save_multilabel_per_disease_metrics_csv,
     save_prediction_csv,
     save_result_csv,
     save_survival_per_disease_metrics_csv,
@@ -89,12 +90,19 @@ def _init_wandb(args):
     return wandb.init(**init_kwargs)
 
 
-def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count, survival_per_disease_metric_count=0):
+def _log_inference_outputs_to_wandb(
+    args,
+    metrics,
+    prediction_row_count,
+    survival_per_disease_metric_count=0,
+    multilabel_per_disease_metric_count=0,
+):
     wandb.log(
         {
             **metrics,
             "prediction_row_count": prediction_row_count,
             "survival_per_disease_metric_count": survival_per_disease_metric_count,
+            "multilabel_per_disease_metric_count": multilabel_per_disease_metric_count,
         }
     )
 
@@ -111,6 +119,11 @@ def _log_inference_outputs_to_wandb(args, metrics, prediction_row_count, surviva
         artifact.add_file(
             str(args.inference_survival_per_disease_metrics_csv_path),
             name="survival_per_disease_metrics.csv",
+        )
+    if multilabel_per_disease_metric_count:
+        artifact.add_file(
+            str(args.inference_multilabel_per_disease_metrics_csv_path),
+            name="multilabel_per_disease_metrics.csv",
         )
     artifact.add_file(str(args.manifest_path), name="run_manifest.json")
     artifact.add_file(str(args.inference_overview_csv_path), name="overview.csv")
@@ -201,12 +214,19 @@ def run_inference(args):
         prediction_row_count = len(prediction_rows)
         survival_per_disease_metric_rows = getattr(model, "survival_per_disease_metric_rows", [])
         survival_per_disease_metric_count = len(survival_per_disease_metric_rows)
+        multilabel_per_disease_metric_rows = getattr(model, "multilabel_per_disease_metric_rows", [])
+        multilabel_per_disease_metric_count = len(multilabel_per_disease_metric_rows)
         save_result_csv(metrics, str(args.inference_metrics_csv_path), args)
         save_result_csv(metrics, str(args.inference_overview_csv_path), args)
         save_prediction_csv(prediction_rows, str(args.inference_prediction_csv_path), args)
         save_survival_per_disease_metrics_csv(
             survival_per_disease_metric_rows,
             str(args.inference_survival_per_disease_metrics_csv_path),
+            args,
+        )
+        save_multilabel_per_disease_metrics_csv(
+            multilabel_per_disease_metric_rows,
+            str(args.inference_multilabel_per_disease_metrics_csv_path),
             args,
         )
         save_inference_manifest(args, metrics, prediction_row_count=prediction_row_count)
@@ -216,6 +236,7 @@ def run_inference(args):
                 metrics,
                 prediction_row_count,
                 survival_per_disease_metric_count,
+                multilabel_per_disease_metric_count,
             )
     finally:
         if wandb_run is not None:

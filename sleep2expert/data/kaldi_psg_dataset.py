@@ -9,6 +9,7 @@ import torch
 
 from sleep2expert.data.default_dataset import DefaultDataset, SampleIndex
 from sleep2expert.data.kaldi_io import KaldiChannelSpec, KaldiReaderPool
+from sleep2expert.data.multilabel import attach_multilabel_metadata, load_multilabel_label_table
 from sleep2expert.data.psg_pretrain_dataset import _build_channel_registry, _normalize_channel_input_dims
 from sleep2expert.data.survival import attach_survival_metadata, load_survival_label_table
 
@@ -53,6 +54,8 @@ class KaldiPSGDataset(DefaultDataset):
         weighted_random_sampler_target: str | None = None,
         survival_label_config: t.Any | None = None,
         survival_output_dim: int | None = None,
+        multilabel_label_config: t.Any | None = None,
+        multilabel_output_dim: int | None = None,
         generative: bool = False,
         is_train_set: bool = True,
         **dataloader_kwargs: t.Any,
@@ -77,6 +80,7 @@ class KaldiPSGDataset(DefaultDataset):
 
         manifest_data = self._load_manifest_json()
         survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
+        multilabel_labels = load_multilabel_label_table(multilabel_label_config, multilabel_output_dim)
         split_name = str(split_list[0])
         raw_splits = manifest_data.get("splits")
         if not isinstance(raw_splits, dict) or split_name not in raw_splits:
@@ -89,7 +93,7 @@ class KaldiPSGDataset(DefaultDataset):
         channel_specs = self._load_channel_specs(channel_input_dims, split_spec)
         self.reader_pool = KaldiReaderPool(self.kaldi_data_root, channel_specs)
 
-        data = self._load_manifest_samples(split_list, max_tokens, survival_labels)
+        data = self._load_manifest_samples(split_list, max_tokens, survival_labels, multilabel_labels)
         if not data:
             raise ValueError("No Kaldi manifest rows remain after split/channel filtering.")
 
@@ -118,6 +122,8 @@ class KaldiPSGDataset(DefaultDataset):
             weighted_random_sampler_target=weighted_random_sampler_target,
             survival_output_dim=None if survival_labels is None else len(survival_labels.label_names),
             survival_key_column=None if survival_labels is None else survival_labels.key_column,
+            multilabel_output_dim=None if multilabel_labels is None else len(multilabel_labels.label_names),
+            multilabel_key_column=None if multilabel_labels is None else multilabel_labels.key_column,
             dataloader_config=dataloader_kwargs,
         )
 
@@ -169,14 +175,19 @@ class KaldiPSGDataset(DefaultDataset):
         return specs
 
     def _load_manifest_samples(
-        self, split: list[str], max_tokens: int, survival_labels: t.Any | None
+        self, split: list[str], max_tokens: int, survival_labels: t.Any | None, multilabel_labels: t.Any | None
     ) -> list[SampleIndex]:
         if not self.manifest.exists():
             raise FileNotFoundError(f"Kaldi split manifest CSV not found: {self.manifest}")
 
         read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+        key_converters = {}
         if survival_labels is not None:
-            read_csv_kwargs["converters"] = {str(survival_labels.key_column): str}
+            key_converters[str(survival_labels.key_column)] = str
+        if multilabel_labels is not None:
+            key_converters[str(multilabel_labels.key_column)] = str
+        if key_converters:
+            read_csv_kwargs["converters"] = key_converters
         df = pd.read_csv(self.manifest, **read_csv_kwargs)
         required = {"sample_key", "path", "split", "token_start", "token_end", "available_channels"}
         missing = sorted(required - set(df.columns))
@@ -237,6 +248,13 @@ class KaldiPSGDataset(DefaultDataset):
                         f"Required survival key column '{survival_labels.key_column}' is missing from Kaldi manifest."
                     )
                 attach_survival_metadata(metadata, row[survival_labels.key_column], survival_labels)
+            if multilabel_labels is not None:
+                if multilabel_labels.key_column not in row.index:
+                    raise ValueError(
+                        f"Required multilabel key column '{multilabel_labels.key_column}' "
+                        "is missing from Kaldi manifest."
+                    )
+                attach_multilabel_metadata(metadata, row[multilabel_labels.key_column], multilabel_labels)
             if "ahi" in requested and (
                 "ahi" not in selected
                 or "tst" not in row.index

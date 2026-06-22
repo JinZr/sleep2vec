@@ -93,6 +93,24 @@ def _finetune_payload() -> dict:
     }
 
 
+def _multilabel_payload() -> dict:
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "multilabel_classification",
+        "output_dim": 3,
+        "is_seq": False,
+        "monitor": "val_macro_auroc",
+        "monitor_mod": "max",
+    }
+    payload["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": "disease_columns.txt",
+        "label_index": "label.csv",
+        "has_label_index": "has_label.csv",
+    }
+    return payload
+
+
 @pytest.mark.parametrize(
     ("label_name", "expected"),
     [
@@ -197,6 +215,27 @@ def test_apply_task_flags_unknown_label_requires_task_config():
 
     with pytest.raises(ValueError, match="Unknown label_name 'custom_target'"):
         apply_task_flags(args)
+
+
+def test_apply_task_flags_sets_multilabel_classification_task_attrs():
+    args = argparse.Namespace(label_name="disease_detection")
+    task_cfg = TaskConfig(
+        type="multilabel_classification",
+        output_dim=3,
+        is_seq=False,
+        monitor="val_macro_auroc",
+        monitor_mod="max",
+    )
+
+    apply_task_flags(args, task_cfg)
+
+    assert args.output_dim == 3
+    assert args.is_classification is True
+    assert args.is_multilabel is True
+    assert args.is_survival is False
+    assert args.is_seq is False
+    assert args.monitor == "val_macro_auroc"
+    assert args.monitor_mod == "max"
 
 
 def test_apply_task_flags_rejects_builtin_conflict_from_yaml_task():
@@ -419,6 +458,30 @@ def test_apply_finetune_config_expands_scalar_ahi_pos_weight(tmp_path: Path):
     assert args.class_weights is None
     assert args.pos_weight == [2.5] * 30
     assert args.weighted_random_sampler is False
+
+
+def test_apply_finetune_config_expands_scalar_multilabel_pos_weight(tmp_path: Path):
+    payload = _multilabel_payload()
+    payload["finetune"]["loss"] = {"class_weights": None, "pos_weight": 2.5}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="disease_detection")
+
+    apply_finetune_config(args)
+
+    assert args.class_weights is None
+    assert args.pos_weight == [2.5, 2.5, 2.5]
+    assert args.multilabel.key_column == "eid"
+
+
+def test_apply_finetune_config_accepts_multilabel_pos_weight_list(tmp_path: Path):
+    payload = _multilabel_payload()
+    payload["finetune"]["loss"] = {"class_weights": None, "pos_weight": [1.0, 2.0, 3.0]}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="disease_detection")
+
+    apply_finetune_config(args)
+
+    assert args.pos_weight == [1.0, 2.0, 3.0]
 
 
 def test_apply_finetune_config_rejects_class_weights_for_regression(tmp_path: Path):

@@ -190,7 +190,12 @@ def _build_finetune_loader(
     is_survival_task = bool(getattr(args, "is_survival", False))
     survival_config = getattr(args, "survival", None) if is_survival_task else None
     survival_covariates = list(getattr(survival_config, "covariates", []) or [])
+    multilabel_config = getattr(args, "multilabel", None) if getattr(args, "is_multilabel", False) else None
+    multilabel_covariates = list(getattr(multilabel_config, "covariates", []) or [])
     if is_survival_task:
+        meta_data_names = []
+        meta_data_regression_names = []
+    elif multilabel_config is not None:
         meta_data_names = []
         meta_data_regression_names = []
     elif args.label_name == "ahi":
@@ -225,7 +230,7 @@ def _build_finetune_loader(
         mask_rate=0.0,
         meta_data_names=meta_data_names,
         meta_data_regression_names=meta_data_regression_names,
-        required_metadata_names=survival_covariates,
+        required_metadata_names=survival_covariates or multilabel_covariates,
         sources=sources,
         randomly_select_channels=False,
         allow_missing_channels=False,
@@ -234,6 +239,8 @@ def _build_finetune_loader(
         weighted_random_sampler_target=args.label_name if use_weighted_random_sampler else None,
         survival_label_config=survival_config,
         survival_output_dim=args.output_dim if is_survival_task else None,
+        multilabel_label_config=multilabel_config,
+        multilabel_output_dim=args.output_dim if multilabel_config is not None else None,
         is_train_set=is_train_set,
         batch_size=args.batch_size,
         shuffle=shuffle,

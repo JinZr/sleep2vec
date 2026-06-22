@@ -304,6 +304,79 @@ def compute_binary_label_metrics(gts, preds) -> dict[str, float]:
     return result
 
 
+def compute_multilabel_classification_metrics(labels, probs, has_label) -> dict[str, float]:
+    y_true = np.asarray(labels, dtype=np.float32)
+    y_score = np.asarray(probs, dtype=np.float32)
+    valid = np.asarray(has_label, dtype=np.float32) > 0.5
+    valid_true = y_true[valid].astype(np.int64)
+    valid_score = y_score[valid]
+    if valid_true.size == 0:
+        return {
+            "micro_accuracy": np.nan,
+            "micro_precision": np.nan,
+            "micro_recall": np.nan,
+            "micro_f1": np.nan,
+            "micro_auroc": np.nan,
+            "micro_auprc": np.nan,
+            "macro_auroc": np.nan,
+            "macro_auprc": np.nan,
+        }
+    y_pred = (valid_score >= 0.5).astype(np.int64)
+
+    result = {
+        "micro_accuracy": float(accuracy_score(valid_true, y_pred)),
+        "micro_precision": float(precision_score(valid_true, y_pred, zero_division=0)),
+        "micro_recall": float(recall_score(valid_true, y_pred, zero_division=0)),
+        "micro_f1": float(f1_score(valid_true, y_pred, zero_division=0)),
+    }
+    if np.unique(valid_true).size < 2:
+        result["micro_auroc"] = np.nan
+        result["micro_auprc"] = np.nan
+    else:
+        result["micro_auroc"] = float(roc_auc_score(valid_true, valid_score))
+        result["micro_auprc"] = float(average_precision_score(valid_true, valid_score))
+
+    rows = compute_multilabel_metrics_by_disease(labels, probs, has_label)
+    aurocs = [row["auroc"] for row in rows if np.isfinite(row["auroc"])]
+    auprcs = [row["auprc"] for row in rows if np.isfinite(row["auprc"])]
+    result["macro_auroc"] = float(np.mean(aurocs)) if aurocs else np.nan
+    result["macro_auprc"] = float(np.mean(auprcs)) if auprcs else np.nan
+    return result
+
+
+def compute_multilabel_metrics_by_disease(labels, probs, has_label, disease_names: list[str] | None = None):
+    y_true = np.asarray(labels, dtype=np.float32)
+    y_score = np.asarray(probs, dtype=np.float32)
+    valid = np.asarray(has_label, dtype=np.float32) > 0.5
+    if y_true.shape != y_score.shape or y_true.shape != valid.shape:
+        raise ValueError("Multilabel labels, probabilities, and has_label arrays must have the same shape.")
+
+    rows = []
+    if disease_names is not None and len(disease_names) != y_true.shape[1]:
+        raise ValueError("disease_names length must match multilabel label width.")
+    for disease_idx in range(y_true.shape[1]):
+        disease_valid = valid[:, disease_idx]
+        labels_d = y_true[disease_valid, disease_idx].astype(np.int64)
+        scores_d = y_score[disease_valid, disease_idx]
+        n_positive = int((labels_d == 1).sum())
+        n_negative = int((labels_d == 0).sum())
+        n_labeled = n_positive + n_negative
+        if n_positive == 0 or n_negative == 0:
+            continue
+        rows.append(
+            {
+                "disease_idx": disease_idx,
+                "disease": "" if disease_names is None else str(disease_names[disease_idx]),
+                "n_positive": n_positive,
+                "n_negative": n_negative,
+                "prevalence": float(n_positive / n_labeled) if n_labeled else np.nan,
+                "auroc": float(roc_auc_score(labels_d, scores_d)),
+                "auprc": float(average_precision_score(labels_d, scores_d)),
+            }
+        )
+    return rows
+
+
 def compute_ahi_pointwise_metrics(gts, preds) -> dict[str, float]:
     return {f"ahi_pointwise_{key}": value for key, value in compute_binary_label_metrics(gts, preds).items()}
 
