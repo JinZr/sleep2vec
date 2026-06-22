@@ -7,10 +7,10 @@ import pytest
 import torch
 import yaml
 
-import sex_age_baseline.runtime as baseline_runtime
 from sex_age_baseline.config import load_config
 from sex_age_baseline.data import load_split_dataset, make_dataloader
 from sex_age_baseline.model import SexAgeMLP
+import sex_age_baseline.runtime as baseline_runtime
 from sex_age_baseline.runtime import evaluate_model, masked_multilabel_bce
 
 
