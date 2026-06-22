@@ -510,3 +510,50 @@ def test_test_after_fit_writers_receive_test_eval_split(tmp_path: Path, monkeypa
 
     assert seen_splits
     assert set(seen_splits) == {"test"}
+
+
+def test_infer_run_inference_callable_validates_and_delegates(tmp_path: Path, monkeypatch):
+    import sex_age_baseline.infer as infer_mod
+
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    config = tmp_path / "config.yaml"
+    config.write_text("model: {}\n")
+    cfg = object()
+    calls = []
+
+    def fake_load_config(path, *, validate_sidecars):
+        calls.append(("load_config", path, validate_sidecars))
+        return cfg
+
+    def fake_run_inference_and_save(args, loaded_cfg):
+        calls.append(("run", args.ckpt_path, args.device, loaded_cfg))
+
+    monkeypatch.setattr(infer_mod, "load_config", fake_load_config)
+    monkeypatch.setattr(infer_mod, "run_inference_and_save", fake_run_inference_and_save)
+    args = Namespace(
+        config=config,
+        ckpt_path=str(ckpt),
+        label_name="unit",
+        inference_preset_path=None,
+        eval_split="val",
+        batch_size=2,
+        num_workers=0,
+        devices=[0],
+        accelerator="cpu",
+        device="cuda",
+        precision="bf16-mixed",
+        lr=1e-6,
+        weight_decay=1e-5,
+        avg_ckpts=1,
+        avg_ckpt_dir=None,
+        seed=4523,
+        wandb_mode=None,
+    )
+
+    infer_mod.run_inference(args)
+
+    assert calls == [
+        ("load_config", config, True),
+        ("run", str(ckpt), "cpu", cfg),
+    ]

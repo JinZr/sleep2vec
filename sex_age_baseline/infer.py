@@ -42,9 +42,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    args = parse_args()
+def run_inference(args: argparse.Namespace) -> None:
     if args.avg_ckpts != 1:
         raise ValueError("sex_age_baseline inference does not support checkpoint averaging.")
     if args.accelerator == "cpu" and args.device == "cuda":
@@ -55,6 +53,11 @@ def main() -> None:
     args.ckpt_path = str(ckpt_path)
     cfg = load_config(args.config, validate_sidecars=True)
     run_inference_and_save(args, cfg)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    run_inference(parse_args())
 
 
 if __name__ == "__main__":

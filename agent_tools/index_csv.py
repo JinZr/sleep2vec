@@ -27,18 +27,19 @@ def index_summary(
     survival_covariate_names = _survival_covariates(cfg)
     multilabel_key_column = _multilabel_key_column(cfg)
     multilabel_sidecar_keys = _multilabel_sidecar_keys(cfg)
+    data_summary = (cfg or {}).get("data") or {}
+    split_column = str(data_summary.get("split_column") or "split")
     read_csv_kwargs: dict[str, Any] = {"low_memory": False}
     converters = {key_column: str for key_column in (survival_key_column, multilabel_key_column) if key_column}
     if converters:
         read_csv_kwargs["converters"] = converters
     frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
-    df = _filter_splits(df, split_values)
+    df = _filter_splits(df, split_values, split_column=split_column)
     if cfg and cfg.get("variant_guess") == "sex_age_baseline":
-        baseline_data = cfg.get("data") or {}
         required_names = (
-            baseline_data.get("key_column") or "eid",
-            baseline_data.get("split_column") or "split",
+            data_summary.get("key_column") or "eid",
+            split_column,
             "age",
             "sex",
         )
@@ -84,10 +85,10 @@ def index_summary(
     source_col = _first_existing(df, ["source", "dataset", "sample_source", "original_dataset"])
     label_cols = _label_columns(df, label_name=label_name)
     split_source_label_counts = {}
-    if "split" in df.columns and source_col:
+    if split_column in df.columns and source_col:
         for label in label_cols:
             counts = (
-                df.groupby(["split", source_col, label], dropna=False)
+                df.groupby([split_column, source_col, label], dropna=False)
                 .size()
                 .reset_index(name="rows")
                 .to_dict(orient="records")
@@ -95,13 +96,13 @@ def index_summary(
             split_source_label_counts[label] = counts
 
     channel_mask_coverage_by_split_source = {}
-    if "split" in df.columns and source_col:
+    if split_column in df.columns and source_col:
         for column in mask_columns:
             values = pd.to_numeric(df[column], errors="coerce")
-            tmp = df[["split", source_col]].copy()
+            tmp = df[[split_column, source_col]].copy()
             tmp["available_fraction"] = (values == 1).astype(float)
             channel_mask_coverage_by_split_source[column] = (
-                tmp.groupby(["split", source_col], dropna=False)["available_fraction"]
+                tmp.groupby([split_column, source_col], dropna=False)["available_fraction"]
                 .agg(["count", "mean"])
                 .reset_index()
                 .rename(columns={"count": "rows"})
@@ -160,7 +161,7 @@ def index_summary(
         "rows": int(len(df)),
         "columns": list(df.columns),
         "required_columns": required_columns,
-        "split_counts": df["split"].value_counts(dropna=False).to_dict() if "split" in df.columns else {},
+        "split_counts": df[split_column].value_counts(dropna=False).to_dict() if split_column in df.columns else {},
         "source_counts": (
             df["source"].value_counts(dropna=False).to_dict()
             if "source" in df.columns
@@ -249,11 +250,11 @@ def _multilabel_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
     return {normalize_multilabel_key(value, str(key_column)) for value in frame[str(key_column)]}
 
 
-def _filter_splits(df: pd.DataFrame, split_values: list[str] | None) -> pd.DataFrame:
+def _filter_splits(df: pd.DataFrame, split_values: list[str] | None, *, split_column: str) -> pd.DataFrame:
     splits = [str(value) for value in split_values or [] if value not in (None, "", "ASK_USER")]
-    if not splits or "split" not in df.columns:
+    if not splits or split_column not in df.columns:
         return df
-    return df[df["split"].astype(str).isin(splits)].copy()
+    return df[df[split_column].astype(str).isin(splits)].copy()
 
 
 def _survival_covariate_summary(df: pd.DataFrame, covariates: list[str]) -> dict[str, dict[str, Any]]:
