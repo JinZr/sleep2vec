@@ -1310,13 +1310,7 @@ def _path_issues(
         for data_field in ("index", "kaldi_data_root", "kaldi_manifest"):
             value = data.get(data_field)
             if value:
-                check_value = value
-                if data_field == "kaldi_manifest":
-                    root = data.get("kaldi_data_root")
-                    manifest_path = Path(str(value)).expanduser()
-                    if root and not manifest_path.is_absolute():
-                        check_value = Path(str(root)).expanduser() / manifest_path
-                issue = _validate_input_path(recipe, f"sleep2stat.data.{data_field}", check_value, configured=True)
+                issue = _validate_input_path(recipe, f"sleep2stat.data.{data_field}", value, configured=True)
                 if issue is not None:
                     issues.append(issue)
         for analyzer in sleep2stat.get("analyzers", []):

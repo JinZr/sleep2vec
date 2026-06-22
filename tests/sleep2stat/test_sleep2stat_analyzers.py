@@ -1443,6 +1443,29 @@ def test_load_records_reads_kaldi_manifest(tmp_path: Path):
     assert records[0].metadata["sample_key"] == "sample_a"
 
 
+def test_load_records_does_not_resolve_kaldi_manifest_under_root(tmp_path: Path, monkeypatch):
+    root = _write_tiny_kaldi_manifest(tmp_path)
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    with pytest.raises(FileNotFoundError):
+        load_records(
+            DataConfig(
+                backend="kaldi",
+                index=None,
+                split=["test"],
+                path_column="path",
+                duration_column="duration",
+                split_column="split",
+                token_sec=30,
+                max_tokens=2,
+                kaldi_data_root=root,
+                kaldi_manifest=Path("manifest.json"),
+            )
+        )
+
+
 @pytest.mark.parametrize("sample_key", ["site/sample_a", "site\\sample_a", ".", ".."])
 def test_load_records_rejects_unsafe_kaldi_sample_key_record_ids(tmp_path: Path, sample_key: str):
     root = _write_tiny_kaldi_manifest(tmp_path)

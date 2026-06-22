@@ -6,7 +6,7 @@ run:
 data:
   backend: kaldi
   kaldi_data_root: index/kaldi_shhs
-  kaldi_manifest: manifest.json
+  kaldi_manifest: index/kaldi_shhs/manifest.json
   split: [test]
   path_column: path
   duration_column: duration

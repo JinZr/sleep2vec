@@ -98,8 +98,6 @@ def _load_kaldi_records(
         raise ValueError("data.backend=kaldi requires data.kaldi_data_root and data.kaldi_manifest.")
     root = data_cfg.kaldi_data_root.expanduser()
     manifest_path = data_cfg.kaldi_manifest.expanduser()
-    if not manifest_path.is_absolute():
-        manifest_path = root / manifest_path
     manifest = json.loads(manifest_path.read_text())
     raw_splits = manifest.get("splits")
     if not isinstance(raw_splits, dict):

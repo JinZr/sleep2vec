@@ -62,7 +62,7 @@ NPZ records:
 
 Kaldi records:
 
-- read `data.kaldi_manifest` under `data.kaldi_data_root` when relative
+- read `data.kaldi_manifest` exactly as configured; write the full relative or absolute manifest path
 - iterate requested split manifests
 - use `sample_key` as the default record id unless `record_id_columns` is configured
 - preserve row metadata, including `sample_key`, for model analyzer filtering
