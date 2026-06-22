@@ -1179,6 +1179,8 @@ def _requires_survival_sidecars(task: str, recipe: dict, config_summary: dict | 
         return False
     if task == "preset_prepare":
         return True
+    if config_summary and config_summary.get("variant_guess") == "sex_age_baseline":
+        return task in {"finetune", "hparam_tune", "infer", "evaluate"}
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
         _field, preset_path = _effective_preset_path(task, recipe, config_summary)
         return preset_path in (None, "")

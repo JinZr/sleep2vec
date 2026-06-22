@@ -125,6 +125,27 @@ def test_survival_config_rejects_loss_block(tmp_path: Path, loss: dict):
         load_config(config)
 
 
+@pytest.mark.parametrize(
+    ("payload_factory", "inactive_block", "message"),
+    [
+        (_cox_payload, "multilabel", "finetune.multilabel is only supported"),
+        (_multilabel_payload, "survival", "finetune.survival is only supported"),
+    ],
+)
+def test_config_rejects_inactive_task_label_blocks(
+    tmp_path: Path,
+    payload_factory,
+    inactive_block: str,
+    message: str,
+):
+    payload = payload_factory(tmp_path)
+    payload["finetune"][inactive_block] = {}
+    config = _write_yaml(tmp_path / "mixed-task-labels.yaml", payload)
+
+    with pytest.raises(ValueError, match=message):
+        load_config(config)
+
+
 @pytest.mark.parametrize("field", ["class_weights", "pos_weigth"])
 def test_multilabel_loss_rejects_unsupported_fields(tmp_path: Path, field: str):
     payload = _multilabel_payload(tmp_path)
