@@ -25,9 +25,12 @@ def index_summary(
     survival_key_column = _survival_key_column(cfg)
     survival_sidecar_keys = _survival_sidecar_keys(cfg)
     survival_covariate_names = _survival_covariates(cfg)
+    multilabel_key_column = _multilabel_key_column(cfg)
+    multilabel_sidecar_keys = _multilabel_sidecar_keys(cfg)
     read_csv_kwargs: dict[str, Any] = {"low_memory": False}
-    if survival_key_column:
-        read_csv_kwargs["converters"] = {survival_key_column: str}
+    converters = {key_column: str for key_column in (survival_key_column, multilabel_key_column) if key_column}
+    if converters:
+        read_csv_kwargs["converters"] = converters
     frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     df = _filter_splits(df, split_values)
@@ -121,7 +124,7 @@ def index_summary(
     for column, exists in required_columns.items():
         if not exists:
             blocking_issues.append(f"Index CSV missing required column: {column}")
-    survival_key = _survival_key_summary(df, survival_key_column, sidecar_keys=survival_sidecar_keys)
+    survival_key = _key_summary(df, survival_key_column, sidecar_keys=survival_sidecar_keys)
     if survival_key_column and not survival_key["exists"]:
         blocking_issues.append(f"Index CSV missing required survival key column: {survival_key_column}")
     if survival_key_column and survival_key["missing_rows"]:
@@ -131,6 +134,17 @@ def index_summary(
         blocking_issues.append(
             f"Index CSV contains survival key values missing from sidecars in column {survival_key_column}: "
             f"{survival_key['missing_from_sidecars']} missing (examples: {examples})"
+        )
+    multilabel_key = _key_summary(df, multilabel_key_column, sidecar_keys=multilabel_sidecar_keys)
+    if multilabel_key_column and not multilabel_key["exists"]:
+        blocking_issues.append(f"Index CSV missing required multilabel key column: {multilabel_key_column}")
+    if multilabel_key_column and multilabel_key["missing_rows"]:
+        blocking_issues.append(f"Index CSV contains empty multilabel key values in column: {multilabel_key_column}")
+    if multilabel_key_column and multilabel_key["missing_from_sidecars"]:
+        examples = ", ".join(multilabel_key["missing_from_sidecars_examples"])
+        blocking_issues.append(
+            f"Index CSV contains multilabel key values missing from sidecars in column {multilabel_key_column}: "
+            f"{multilabel_key['missing_from_sidecars']} missing (examples: {examples})"
         )
     survival_covariates = _survival_covariate_summary(df, survival_covariate_names)
     for covariate, details in survival_covariates.items():
@@ -157,6 +171,7 @@ def index_summary(
         "mask_columns": mask_columns,
         "channel_coverage_from_config": channel_coverage,
         "survival_key": survival_key,
+        "multilabel_key": multilabel_key,
         "survival_covariates": survival_covariates,
         "split_source_label_counts": split_source_label_counts,
         "channel_mask_coverage_by_split_source": channel_mask_coverage_by_split_source,
@@ -189,6 +204,17 @@ def _survival_covariates(cfg: dict[str, Any] | None) -> list[str]:
     return [item for item in covariates if isinstance(item, str) and item]
 
 
+def _multilabel_key_column(cfg: dict[str, Any] | None) -> str | None:
+    if not cfg:
+        return None
+    task = (cfg.get("finetune") or {}).get("task") or {}
+    multilabel = (cfg.get("finetune") or {}).get("multilabel") or {}
+    key_column = multilabel.get("key_column")
+    if task.get("type") != "multilabel_classification" or key_column in (None, ""):
+        return None
+    return str(key_column)
+
+
 def _survival_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
     if not cfg:
         return None
@@ -204,6 +230,23 @@ def _survival_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
 
     frame = pd.read_csv(event_time_path, converters={str(key_column): str})
     return {normalize_survival_key(value, str(key_column)) for value in frame[str(key_column)]}
+
+
+def _multilabel_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
+    if not cfg:
+        return None
+    multilabel = (cfg.get("finetune") or {}).get("multilabel") or {}
+    if not multilabel.get("valid"):
+        return None
+    key_column = multilabel.get("key_column")
+    label_path = resolve_repo_path(multilabel.get("label_index"))
+    if not key_column or label_path is None:
+        return None
+
+    from data.multilabel import normalize_multilabel_key
+
+    frame = pd.read_csv(label_path, converters={str(key_column): str})
+    return {normalize_multilabel_key(value, str(key_column)) for value in frame[str(key_column)]}
 
 
 def _filter_splits(df: pd.DataFrame, split_values: list[str] | None) -> pd.DataFrame:
@@ -232,7 +275,7 @@ def _survival_covariate_summary(df: pd.DataFrame, covariates: list[str]) -> dict
     return summary
 
 
-def _survival_key_summary(
+def _key_summary(
     df: pd.DataFrame,
     key_column: str | None,
     *,

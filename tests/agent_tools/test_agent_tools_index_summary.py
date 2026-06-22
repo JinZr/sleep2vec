@@ -227,3 +227,62 @@ def test_index_summary_blocks_empty_survival_keys(tmp_path: Path):
     assert summary["survival_key"]["exists"] is True
     assert summary["survival_key"]["missing_rows"] == 1
     assert "Index CSV contains empty survival key values in column: eid" in summary["blocking_issues"]
+
+
+def test_index_summary_blocks_sex_age_multilabel_keys_missing_from_sidecars(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("eid,split,age,sex\n001,train,50,0\n003,val,60,1\n")
+    disease_columns = tmp_path / "disease_columns.txt"
+    label = tmp_path / "label.csv"
+    has_label = tmp_path / "has_label.csv"
+    disease_columns.write_text("d1\nd2\n")
+    label.write_text("eid,d1,d2\n001,1,0\n002,0,1\n")
+    has_label.write_text("eid,d1,d2\n001,1,1\n002,1,1\n")
+    config = write_yaml(
+        tmp_path / "sex_age_multilabel.yaml",
+        {
+            "model": {
+                "name": "sex_age_mlp",
+                "features": ["age", "sex"],
+                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4},
+                "sex": {"encoding": "binary", "embedding_dim": 4},
+                "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
+            },
+            "data": {
+                "backend": "npz",
+                "finetune_data_index": str(index),
+                "finetune_preset_path": None,
+                "kaldi_data_root": None,
+                "kaldi_manifest": None,
+                "split_column": "split",
+                "key_column": "eid",
+                "deduplicate_by_key": True,
+            },
+            "finetune": {
+                "task": {
+                    "type": "multilabel_classification",
+                    "output_dim": 2,
+                    "is_seq": False,
+                    "monitor": "val_loss",
+                    "monitor_mod": "min",
+                },
+                "multilabel": {
+                    "key_column": "eid",
+                    "disease_columns_index": str(disease_columns),
+                    "label_index": str(label),
+                    "has_label_index": str(has_label),
+                },
+            },
+            "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
+        },
+    )
+
+    summary = index_summary([index], config=config)
+
+    assert summary["required_columns"] == {"eid": True, "split": True, "age": True, "sex": True}
+    assert summary["multilabel_key"]["missing_from_sidecars"] == 1
+    assert summary["multilabel_key"]["missing_from_sidecars_examples"] == ["003"]
+    assert (
+        "Index CSV contains multilabel key values missing from sidecars in column eid: 1 missing (examples: 003)"
+        in summary["blocking_issues"]
+    )

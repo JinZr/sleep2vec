@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import pickle
+import subprocess
 
 import yaml
 
 from agent_tools.configs import config_summary
-from agent_tools.plans import build_plan
+from agent_tools.plans import build_plan, evaluate_recipe
 from data.default_dataset import SampleIndex
 
 
@@ -62,6 +63,64 @@ def _write_survival_config(tmp_path: Path) -> Path:
                     "is_event_index": str(is_event),
                     "has_label_index": str(has_label),
                 },
+            },
+            "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
+        },
+    )
+
+
+def _write_multilabel_config(
+    tmp_path: Path,
+    *,
+    index_path: str | Path | None = None,
+    sidecars: dict[str, str] | None = None,
+) -> Path:
+    index = tmp_path / "index.csv"
+    disease_columns = tmp_path / "disease_columns.txt"
+    label = tmp_path / "label.csv"
+    has_label = tmp_path / "has_label.csv"
+    if index_path is None:
+        index.write_text("eid,split,age,sex\n" "001,train,50,0\n" "002,val,60,1\n" "003,test,55,0\n")
+        index_path = index
+    if sidecars is None:
+        disease_columns.write_text("d1\nd2\n")
+        header = "eid,d1,d2\n"
+        label.write_text(header + "001,1,0\n002,0,1\n003,1,1\n")
+        has_label.write_text(header + "001,1,1\n002,1,1\n003,1,1\n")
+        sidecars = {
+            "disease_columns_index": str(disease_columns),
+            "label_index": str(label),
+            "has_label_index": str(has_label),
+        }
+    return _write_yaml(
+        tmp_path / "multilabel.yaml",
+        {
+            "model": {
+                "name": "sex_age_mlp",
+                "features": ["age", "sex"],
+                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4},
+                "sex": {"encoding": "binary", "embedding_dim": 4},
+                "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
+            },
+            "data": {
+                "backend": "npz",
+                "finetune_data_index": str(index_path),
+                "finetune_preset_path": None,
+                "kaldi_data_root": None,
+                "kaldi_manifest": None,
+                "split_column": "split",
+                "key_column": "eid",
+                "deduplicate_by_key": True,
+            },
+            "finetune": {
+                "task": {
+                    "type": "multilabel_classification",
+                    "output_dim": 2,
+                    "is_seq": False,
+                    "monitor": "val_loss",
+                    "monitor_mod": "min",
+                },
+                "multilabel": {"key_column": "eid", **sidecars},
             },
             "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
         },
@@ -143,6 +202,81 @@ def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path
     assert "python -m sex_age_baseline.finetune" in script
     assert "--pretrained-backbone-path" not in script
     assert "--inference-preset-path" not in script
+
+
+def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: Path, monkeypatch):
+    config = _write_multilabel_config(
+        tmp_path,
+        index_path="/wujidata/multilabel/index.csv",
+        sidecars={
+            "disease_columns_index": "/wujidata/multilabel/disease_columns.txt",
+            "label_index": "/wujidata/multilabel/label.csv",
+            "has_label_index": "/wujidata/multilabel/has_label.csv",
+        },
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fake_run)
+
+    for validation in ("ssh", "remote"):
+        recipe = _finetune_recipe(tmp_path, config)
+        payload = yaml.safe_load(recipe.read_text())
+        payload["name"] = f"unit_sex_age_multilabel_{validation}"
+        payload["inputs"]["label_name"] = "diagnosis"
+        payload["decisions"]["label_name"] = {"value": "diagnosis", "source": "explicit_recipe"}
+        payload["evaluation_policy"].update({"selection_metric": "val_loss", "selection_mode": "min"})
+        payload["artifacts"]["results_csv_path"] = str(tmp_path / f"{validation}.csv")
+        payload["artifacts"]["version_name"] = validation
+        payload["execution"] = {
+            "target": "ssh",
+            "host": "baichuan3",
+            "path_context": "remote",
+            "path_validation": validation,
+        }
+        _write_yaml(recipe, payload)
+
+        _recipe, _cfg, report = evaluate_recipe(recipe)
+
+        assert report.exit_code == 0
+
+    call_scripts = [command[2] for command in calls]
+    for path in (
+        "/wujidata/multilabel/index.csv",
+        "/wujidata/multilabel/disease_columns.txt",
+        "/wujidata/multilabel/label.csv",
+        "/wujidata/multilabel/has_label.csv",
+    ):
+        assert any(path in script for script in call_scripts)
+
+    calls.clear()
+
+    def fail_label(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, int("label.csv" in command[2]), "", "")
+
+    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fail_label)
+    missing_recipe = _finetune_recipe(tmp_path, config)
+    missing_payload = yaml.safe_load(missing_recipe.read_text())
+    missing_payload["name"] = "unit_sex_age_multilabel_missing_label"
+    missing_payload["inputs"]["label_name"] = "diagnosis"
+    missing_payload["decisions"]["label_name"] = {"value": "diagnosis", "source": "explicit_recipe"}
+    missing_payload["evaluation_policy"].update({"selection_metric": "val_loss", "selection_mode": "min"})
+    missing_payload["execution"] = {
+        "target": "ssh",
+        "host": "baichuan3",
+        "path_context": "remote",
+        "path_validation": "ssh",
+    }
+    _write_yaml(missing_recipe, missing_payload)
+
+    _recipe, _cfg, report = evaluate_recipe(missing_recipe)
+
+    assert report.exit_code == 1
+    assert any(issue.field == "finetune.multilabel.label_index" for issue in report.issues)
 
 
 def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: Path):

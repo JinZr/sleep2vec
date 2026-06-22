@@ -1212,6 +1212,29 @@ def _append_remote_survival_sidecar_issues(
                 issues.append(issue)
 
 
+def _append_remote_multilabel_sidecar_issues(
+    issues: list[DecisionIssue],
+    task: str,
+    recipe: dict,
+    config_summary: dict | None,
+) -> None:
+    if not _requires_multilabel_sidecars(task, recipe, config_summary):
+        return
+    multilabel = _config_finetune(config_summary).get("multilabel")
+    if not isinstance(multilabel, dict):
+        return
+    for data_field in ("disease_columns_index", "label_index", "has_label_index"):
+        value = multilabel.get(data_field)
+        if not value:
+            continue
+        context = _path_context(recipe, value)
+        validation = _path_validation(recipe, context)
+        if context == "remote" and validation in {"ssh", "remote"}:
+            issue = _validate_input_path(recipe, f"finetune.multilabel.{data_field}", value, configured=True)
+            if issue is not None:
+                issues.append(issue)
+
+
 def _path_issues(
     task: str,
     recipe: dict,
@@ -1280,6 +1303,7 @@ def _path_issues(
                 if issue is not None:
                     issues.append(issue)
     _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary)
+    _append_remote_multilabel_sidecar_issues(issues, task, recipe, config_summary)
     if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
         sleep2stat = config_summary.get("sleep2stat") or {}
         data = sleep2stat.get("data") or {}

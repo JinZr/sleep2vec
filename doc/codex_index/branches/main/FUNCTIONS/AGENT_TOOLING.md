@@ -105,11 +105,11 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/index_csv.py`
 - Signature: `index_summary(index_paths: list[str | Path], *, config: str | Path | None = None, label_name: str | None = None, split_values: list[str] | None = None, sample_path_check: int = 0, sample_npz_check: int = 0) -> dict[str, Any]`
-- Purpose and contract: summarize index CSV row counts, columns, labels, source/split fields, numeric shifts, split-filtered subsets, survival key coverage, and optional sample path/NPZ checks.
+- Purpose and contract: summarize index CSV row counts, columns, labels, source/split fields, numeric shifts, split-filtered subsets, survival and multilabel sidecar key coverage, and optional sample path/NPZ checks.
 - Important inputs/outputs: one or more CSV paths plus optional config/label/split/check counts in; JSON-ready summary out.
 - Side effects: reads CSV files and optionally probes sample paths/NPZ files.
 - Key callers/callees: called by `agent_tools index-summary` and context bundles.
-- Reuse guidance: use before preset/finetune planning when index contents or survival key coverage are part of the decision surface.
+- Reuse guidance: use before preset/finetune planning when index contents or subject-level sidecar key coverage are part of the decision surface.
 - Duplication-risk notes: keep deeper sample filtering in `data.utils` and preprocessing CLIs, not here; this is a lightweight planning summary.
 
 ## `agent_tools.presets.preset_summary`
