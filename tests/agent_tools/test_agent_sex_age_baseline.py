@@ -279,6 +279,53 @@ def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: P
     assert any(issue.field == "finetune.multilabel.label_index" for issue in report.issues)
 
 
+def test_sex_age_baseline_hparam_blocks_local_multilabel_sidecar_issues(tmp_path: Path):
+    config = _write_multilabel_config(tmp_path)
+    config_payload = yaml.safe_load(config.read_text())
+    config_payload["finetune"]["multilabel"]["label_index"] = str(tmp_path / "missing_label.csv")
+    _write_yaml(config, config_payload)
+    base = _finetune_recipe(tmp_path, config)
+    base_payload = yaml.safe_load(base.read_text())
+    base_payload["inputs"]["label_name"] = "diagnosis"
+    base_payload["decisions"]["label_name"] = {"value": "diagnosis", "source": "explicit_recipe"}
+    base_payload["evaluation_policy"].update({"selection_metric": "val_loss", "selection_mode": "min"})
+    base_payload["artifacts"]["version_name"] = "unit-sex-age-multilabel"
+    _write_yaml(base, base_payload)
+    recipe = _write_yaml(
+        tmp_path / "hparam_multilabel.yaml",
+        {
+            "name": "unit_sex_age_multilabel_hparam",
+            "task": "hparam_tune",
+            "variant": "sex_age_baseline",
+            "base_recipe": str(base),
+            "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-3]}},
+            "evaluation_policy": {
+                "selection_metric": "val_loss",
+                "selection_mode": "min",
+                "selection_split": "val",
+                "external_test_locked": True,
+                "test_after_fit": False,
+                "final_eval_split": "validation",
+                "final_test_unlocked": False,
+                "require_manual_unlock_for_final_test": True,
+            },
+            "decisions": {
+                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+                "label_name": {"value": "diagnosis", "source": "explicit_recipe"},
+                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 2
+    assert any(issue.field == "multilabel_sidecars" for issue in report.issues)
+
+
 def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"

@@ -638,6 +638,9 @@ def _hparam_tune_issues(
                     {"config": base_config},
                 )
             )
+    multilabel_issue = _multilabel_sidecar_issue("hparam_tune", recipe, config_summary)
+    if multilabel_issue is not None:
+        issues.append(multilabel_issue)
     local_field_map = {
         "selection_metric": ("evaluation_policy.selection_metric", "selection_metric"),
         "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),

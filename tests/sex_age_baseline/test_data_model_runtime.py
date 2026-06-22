@@ -505,6 +505,31 @@ def test_zero_epoch_train_requires_checkpoint(tmp_path: Path, monkeypatch, test_
     assert not (tmp_path / "log-finetune" / version_name).exists()
 
 
+def test_zero_epoch_checkpoint_eval_skips_train_val_splits(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,test,50,0",
+            "002,test,60,1",
+            "003,test,55,0",
+            "004,test,65,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    ckpt = tmp_path / "model.ckpt"
+    baseline_runtime.save_checkpoint(ckpt, SexAgeMLP(cfg), cfg, epoch=0, global_step=0, metrics={})
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name="zero-epoch-test-only", epochs=0, test_after_fit=True)
+    args.ckpt_path = str(ckpt)
+
+    baseline_runtime.train_and_save(args, cfg)
+
+    manifest = json.loads((tmp_path / "log-finetune" / "zero-epoch-test-only" / "run_manifest.json").read_text())
+    assert manifest["status"] == "completed"
+    assert manifest["best_model_path"] == str(ckpt)
+
+
 def test_test_after_fit_writers_receive_test_eval_split(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,

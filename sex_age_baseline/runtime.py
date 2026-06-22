@@ -84,25 +84,25 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     persist_run_config_and_args(args, run_dir)
 
-    train_set = _required_dataset(cfg, "train")
-    val_set = _required_dataset(cfg, "val")
-    train_loader = make_dataloader(
-        train_set,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        shuffle=True,
-    )
-    val_loader = make_dataloader(
-        val_set,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        shuffle=False,
-    )
-
     model = SexAgeMLP(cfg).to(device)
     if args.ckpt_path:
         load_checkpoint(model, args.ckpt_path, device=device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    if epochs > 0:
+        train_set = _required_dataset(cfg, "train")
+        val_set = _required_dataset(cfg, "val")
+        train_loader = make_dataloader(
+            train_set,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            shuffle=True,
+        )
+        val_loader = make_dataloader(
+            val_set,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            shuffle=False,
+        )
 
     best_path = checkpoint_dir / "best.ckpt"
     last_path = checkpoint_dir / "last.ckpt"
