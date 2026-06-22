@@ -334,5 +334,34 @@ def test_multilabel_per_disease_metrics_skip_single_class_diseases(metrics_modul
     rows = module.compute_multilabel_metrics_by_disease(labels, probs, has_label, ["all_positive", "valid"])
 
     assert [row["disease"] for row in rows] == ["valid"]
+    assert rows[0]["disease_idx"] == 1
     assert rows[0]["n_positive"] == 1
     assert rows[0]["n_negative"] == 1
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.sleep2vec_finetuning",
+        "sleep2vec2.sleep2vec_finetuning",
+        "sleep2expert.sleep2vec_finetuning",
+    ],
+)
+def test_multilabel_per_disease_rows_preserve_source_indices(module_name: str, tmp_path: Path):
+    finetuning_cls, module = _new_multilabel_finetuning_module(module_name, tmp_path)
+    labels = np.asarray([[1.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+    probs = np.asarray([[0.8, 0.9], [0.7, 0.2]], dtype=np.float32)
+    has_label = np.ones_like(labels)
+
+    rows = finetuning_cls._build_multilabel_per_disease_metric_rows(
+        module,
+        "val",
+        labels,
+        probs,
+        has_label,
+        ["all_positive", "valid"],
+    )
+
+    assert rows[0]["stage"] == "val"
+    assert rows[0]["disease"] == "valid"
+    assert rows[0]["disease_idx"] == 1

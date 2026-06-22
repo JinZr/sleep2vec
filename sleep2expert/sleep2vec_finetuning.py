@@ -1062,9 +1062,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self, stage: str, labels, probs, has_label, disease_names: list[str]
     ) -> list[dict[str, object]]:
         rows = compute_multilabel_metrics_by_disease(labels, probs, has_label, disease_names)
-        for disease_idx, row in enumerate(rows):
+        for row in rows:
             row["stage"] = stage
-            row["disease_idx"] = disease_idx
         return rows
 
     def _build_multilabel_prediction_rows(self, records, disease_names: list[str]) -> list[dict[str, object]]:

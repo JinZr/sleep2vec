@@ -98,8 +98,8 @@ class Sleep2vecDownstreamModel(nn.Module):
             raise ValueError("head_config must be provided for downstream model construction.")
 
         inferred_head = head_config.name
-        if self.survival_covariates and inferred_head != "regression":
-            raise ValueError("survival covariates require the regression head.")
+        if self.survival_covariates and inferred_head not in {"classification", "regression"}:
+            raise ValueError("covariates require the classification or regression head.")
         if head_config.act:
             head_kwargs.setdefault("act", _resolve_act(head_config.act))
         channel_cfg = head_config.channel_agg

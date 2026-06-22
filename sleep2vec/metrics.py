@@ -365,6 +365,7 @@ def compute_multilabel_metrics_by_disease(labels, probs, has_label, disease_name
             continue
         rows.append(
             {
+                "disease_idx": disease_idx,
                 "disease": "" if disease_names is None else str(disease_names[disease_idx]),
                 "n_positive": n_positive,
                 "n_negative": n_negative,
