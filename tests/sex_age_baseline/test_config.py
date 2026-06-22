@@ -115,6 +115,16 @@ def test_validates_sidecar_output_dim(tmp_path: Path):
     assert cfg.finetune.task.output_dim == 2
 
 
+@pytest.mark.parametrize("loss", [{"pos_weight": 2.0}, {"pos_weigth": 2.0}])
+def test_survival_config_rejects_loss_block(tmp_path: Path, loss: dict):
+    payload = _cox_payload(tmp_path)
+    payload["finetune"]["loss"] = loss
+    config = _write_yaml(tmp_path / "cox-with-loss.yaml", payload)
+
+    with pytest.raises(ValueError, match="finetune.loss is only supported"):
+        load_config(config)
+
+
 @pytest.mark.parametrize("field", ["class_weights", "pos_weigth"])
 def test_multilabel_loss_rejects_unsupported_fields(tmp_path: Path, field: str):
     payload = _multilabel_payload(tmp_path)

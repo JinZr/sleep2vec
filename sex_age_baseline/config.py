@@ -222,6 +222,8 @@ def _build_data(raw: dict[str, Any]) -> DataConfig:
 def _build_finetune(raw: dict[str, Any], data: DataConfig) -> FinetuneConfig:
     task = _build_task(_mapping(raw, "task"))
     if task.type == "survival":
+        if "loss" in raw:
+            raise ValueError("finetune.loss is only supported for multilabel_classification tasks.")
         survival = _build_survival(_mapping(raw, "survival"))
         if survival.key_column != data.key_column:
             raise ValueError("finetune.survival.key_column must match data.key_column.")
