@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 import torch
 import yaml
 
+import sex_age_baseline.runtime as baseline_runtime
 from sex_age_baseline.config import load_config
 from sex_age_baseline.data import load_split_dataset, make_dataloader
 from sex_age_baseline.model import SexAgeMLP
@@ -115,6 +117,28 @@ def _write_config(tmp_path: Path, rows: list[str], task_type: str = "survival") 
     return _write_yaml(tmp_path / f"{task_type}.yaml", _base_payload(index, sidecars, task_type))
 
 
+def _runtime_args(config: Path, tmp_path: Path, *, version_name: str, epochs: int = 1, test_after_fit: bool = False):
+    return Namespace(
+        config=config,
+        label_name="unit",
+        epochs=epochs,
+        lr=1e-3,
+        weight_decay=0.0,
+        batch_size=2,
+        num_workers=0,
+        patience=100,
+        gradient_clip_val=1.0,
+        accumulate_grad_batches=1,
+        device="cpu",
+        ckpt_path=None,
+        version_name=version_name,
+        results_csv_path=tmp_path / "results.csv",
+        seed=4523,
+        test_after_fit=test_after_fit,
+        ckpt_every_n_epochs=1,
+    )
+
+
 def test_split_filtering_and_deduplication(tmp_path: Path):
     config = _write_config(
         tmp_path,
@@ -211,3 +235,79 @@ def test_multilabel_eval_reports_macro_and_micro_metrics(tmp_path: Path):
     assert "val_macro_auroc" in result.metrics
     assert "val_micro_auroc" in result.metrics
     assert result.multilabel_per_disease_rows
+
+
+def test_train_rejects_non_empty_run_dir_before_loading_data(tmp_path: Path, monkeypatch):
+    config = _write_config(tmp_path, ["001,train,50,0"], task_type="multilabel_classification")
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    run_dir = tmp_path / "log-finetune" / "reused"
+    run_dir.mkdir(parents=True)
+    (run_dir / "marker.txt").write_text("old run\n")
+
+    with pytest.raises(FileExistsError, match="Use a new --version-name"):
+        baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="reused"), cfg)
+
+
+def test_train_fails_when_configured_monitor_is_missing(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
+        task_type="multilabel_classification",
+    )
+    payload = yaml.safe_load(config.read_text())
+    payload["finetune"]["task"]["monitor"] = "val_missing_metric"
+    _write_yaml(config, payload)
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="val_missing_metric.*Available metrics"):
+        baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="missing-monitor"), cfg)
+
+
+def test_train_fails_without_finite_best_checkpoint(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,val,60,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="No finite best checkpoint"):
+        baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="no-finite-best"), cfg)
+
+    assert not (tmp_path / "log-finetune" / "no-finite-best" / "checkpoints" / "best.ckpt").exists()
+
+
+def test_test_after_fit_writers_receive_test_eval_split(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    seen_splits = []
+
+    def capture_split(*args):
+        seen_splits.append(args[-1].eval_split)
+
+    monkeypatch.setattr(baseline_runtime, "save_result_csv", capture_split)
+    monkeypatch.setattr(baseline_runtime, "save_prediction_csv", capture_split)
+    monkeypatch.setattr(baseline_runtime, "save_multilabel_per_disease_metrics_csv", capture_split)
+
+    baseline_runtime.train_and_save(
+        _runtime_args(config, tmp_path, version_name="test-after-fit", test_after_fit=True),
+        cfg,
+    )
+
+    assert seen_splits
+    assert set(seen_splits) == {"test"}

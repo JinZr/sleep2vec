@@ -5,7 +5,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import random
-import shutil
 from typing import Any, Mapping
 
 import numpy as np
@@ -72,6 +71,11 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     device = torch.device(args.device)
     run_dir = Path("log-finetune") / args.version
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise FileExistsError(
+            f"sex_age_baseline run directory already exists and is not empty: {run_dir}. "
+            "Use a new --version-name or manually clear the existing directory."
+        )
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     persist_run_config_and_args(args, run_dir)
@@ -120,7 +124,13 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
                 metrics=epoch_metrics,
             )
 
-        monitor_value = epoch_metrics.get(cfg.finetune.task.monitor)
+        monitor = cfg.finetune.task.monitor
+        if monitor not in epoch_metrics:
+            available_metrics = ", ".join(sorted(epoch_metrics))
+            raise ValueError(
+                f"Configured monitor {monitor!r} was not emitted. Available metrics: {available_metrics}"
+            )
+        monitor_value = epoch_metrics[monitor]
         if _is_better(monitor_value, best_score, cfg.finetune.task.monitor_mod):
             best_score = float(monitor_value)
             best_metrics = dict(epoch_metrics)
@@ -133,9 +143,11 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     if args.epochs == 0 and args.ckpt_path:
         best_path = Path(args.ckpt_path)
-    elif not best_path.exists() and last_path.exists():
-        shutil.copy2(last_path, best_path)
-        best_score = None
+    elif int(args.epochs) > 0 and not best_path.exists():
+        raise ValueError(
+            f"No finite best checkpoint was selected for monitor {cfg.finetune.task.monitor!r}. "
+            "Check validation labels and monitor configuration."
+        )
 
     manifest_path = run_dir / "run_manifest.json"
     if not args.test_after_fit:
@@ -159,6 +171,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     test_set = _required_dataset(cfg, "test")
     test_loader = make_dataloader(test_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+    args.eval_split = "test"
     test_result = evaluate_model(
         model,
         test_loader,
