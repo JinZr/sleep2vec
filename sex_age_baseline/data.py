@@ -157,7 +157,10 @@ def _load_rows_from_kaldi_manifest(cfg: BaselineConfig) -> pd.DataFrame:
         if not isinstance(split_spec, dict) or not split_spec.get("manifest"):
             raise ValueError(f"Kaldi manifest split {split_name!r} must define a manifest CSV.")
         split_manifest = root / Path(str(split_spec["manifest"]))
-        frames.append(pd.read_csv(split_manifest, dtype={cfg.data.key_column: "string"}))
+        frame = pd.read_csv(split_manifest, dtype={cfg.data.key_column: "string"})
+        if cfg.data.split_column not in frame.columns:
+            frame[cfg.data.split_column] = split_name
+        frames.append(frame)
     return pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
 
 

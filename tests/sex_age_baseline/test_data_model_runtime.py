@@ -265,6 +265,36 @@ def test_metadata_backends_produce_identical_subject_records(tmp_path: Path):
     assert records == [[("001", 50.0, 0)], [("001", 50.0, 0)], [("001", 50.0, 0)]]
 
 
+def test_kaldi_manifest_split_key_fills_missing_split_column(tmp_path: Path):
+    rows = ["001,train,50,0", "002,val,60,1"]
+    kaldi_root = tmp_path / "kaldi"
+    kaldi_root.mkdir()
+    (kaldi_root / "train.csv").write_text("eid,age,sex\n001,50,0\n")
+    (kaldi_root / "val.csv").write_text("eid,age,sex\n002,60,1\n")
+    kaldi_manifest = kaldi_root / "manifest.json"
+    kaldi_manifest.write_text(
+        json.dumps({"splits": {"train": {"manifest": "train.csv"}, "val": {"manifest": "val.csv"}}})
+    )
+    config = _write_config_for_data(
+        tmp_path,
+        rows,
+        {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(kaldi_manifest),
+        },
+    )
+    cfg = load_config(config, validate_sidecars=True)
+
+    train = load_split_dataset(cfg, "train")
+    val = load_split_dataset(cfg, "val")
+
+    assert [(record.key, record.age, record.sex) for record in train] == [("001", 50.0, 0)]
+    assert [(record.key, record.age, record.sex) for record in val] == [("002", 60.0, 1)]
+
+
 def test_conflicting_duplicate_metadata_fails(tmp_path: Path):
     config = _write_config(tmp_path, ["001,train,50,female", "001,val,50,female"])
     cfg = load_config(config, validate_sidecars=True)
