@@ -104,7 +104,7 @@ Common top-level fields:
 
 - `name`: stable recipe name.
 - `task`: one of `preset_prepare`, `pretrain`, `adapt`, `finetune`, `infer`, `evaluate`, `hparam_tune`, `sleep2stat`.
-- `variant`: one of `sleep2vec`, `sleep2vec2`, or `sleep2expert` for model tasks; omit it or set it to `null` for `task: sleep2stat`.
+- `variant`: one of `sleep2vec`, `sleep2vec2`, `sleep2expert`, or `sex_age_baseline` for model tasks; omit it or set it to `null` for `task: sleep2stat`.
 - `inputs`: paths and task-specific inputs.
 - `inputs.eval_split`: explicit split for inference/evaluation; use `ASK_USER` only when the agent must stop.
 - `inputs.final_eval_config_path`: selected config for unlocked final external-test evaluation when hparam search uses `yaml:/...` config overrides.

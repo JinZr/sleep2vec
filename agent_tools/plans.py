@@ -444,7 +444,7 @@ def _survival_validation_paths(config_data: dict | None) -> list[Any]:
     data = config_data.get("data") if isinstance(config_data.get("data"), dict) else {}
     finetune = config_data.get("finetune") if isinstance(config_data.get("finetune"), dict) else {}
     survival = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
-    paths = [data.get("finetune_data_index")]
+    paths = [data.get("finetune_data_index"), data.get("index")]
     paths.extend(
         survival.get(field)
         for field in ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index")

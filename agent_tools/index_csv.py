@@ -31,7 +31,17 @@ def index_summary(
     frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     df = _filter_splits(df, split_values)
-    required_columns = {name: name in df.columns for name in ("path", "split", "duration")}
+    if cfg and cfg.get("data_backend") == "sex_age_baseline":
+        baseline_data = cfg.get("data") or {}
+        required_names = (
+            baseline_data.get("key_column") or "eid",
+            baseline_data.get("split_column") or "split",
+            "age",
+            "sex",
+        )
+    else:
+        required_names = ("path", "split", "duration")
+    required_columns = {name: name in df.columns for name in required_names}
     duration = {}
     if "duration" in df.columns and not df.empty:
         duration_series = pd.to_numeric(df["duration"], errors="coerce").dropna()
@@ -59,7 +69,7 @@ def index_summary(
             }
     channel_coverage = {}
     if cfg:
-        for channel in cfg["data"]["data_channel_names"]:
+        for channel in (cfg.get("data") or {}).get("data_channel_names", []):
             if channel == "stage5":
                 mask_column = "stage_mask"
             elif channel == "ahi":

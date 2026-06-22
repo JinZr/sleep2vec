@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SUPPORTED_VARIANTS = ("sleep2vec", "sleep2vec2", "sleep2expert")
+SUPPORTED_VARIANTS = ("sleep2vec", "sleep2vec2", "sleep2expert", "sex_age_baseline")
 VARIANTLESS_TASKS = {"sleep2stat"}
 
 

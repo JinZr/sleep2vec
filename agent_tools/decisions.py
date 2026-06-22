@@ -114,7 +114,7 @@ def evaluate_consultation_gates(
                     DecisionStatus.NEEDS_USER_INPUT,
                     "variant",
                     "Recipe variant is missing or unsupported.",
-                    "Which variant should this task use: sleep2vec, sleep2vec2, or sleep2expert?",
+                    "Which variant should this task use: sleep2vec, sleep2vec2, sleep2expert, or sex_age_baseline?",
                     {"variant": variant, "allowed_values": list(SUPPORTED_VARIANTS)},
                 )
             )
@@ -546,9 +546,23 @@ def _finetune_task_issues(
                     {"config": data},
                 )
             )
+    if config_summary and config_summary.get("data_backend") == "sex_age_baseline":
+        if not data.get("finetune_data_index"):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "data_input",
+                    "sex_age_baseline finetune requires a concrete data.index CSV path.",
+                    "Which subject index CSV should this sex/age baseline use?",
+                    {"config": data},
+                )
+            )
     survival_issue = _survival_sidecar_issue("finetune", recipe, config_summary)
     if survival_issue is not None:
         issues.append(survival_issue)
+    multilabel_issue = _multilabel_sidecar_issue("finetune", recipe, config_summary)
+    if multilabel_issue is not None:
+        issues.append(multilabel_issue)
     external_test_decision = decisions.get("external_test_locked")
     external_test_locked = (
         external_test_decision.value
@@ -787,6 +801,9 @@ def _infer_evaluate_issues(
     survival_issue = _survival_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
     if survival_issue is not None:
         issues.append(survival_issue)
+    multilabel_issue = _multilabel_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
+    if multilabel_issue is not None:
+        issues.append(multilabel_issue)
     return issues
 
 
@@ -1127,6 +1144,28 @@ def _survival_sidecar_issue(
     )
 
 
+def _multilabel_sidecar_issue(
+    task: str,
+    recipe: dict,
+    config_summary: dict | None,
+) -> DecisionIssue | None:
+    if not _requires_multilabel_sidecars(task, recipe, config_summary):
+        return None
+    multilabel = _config_finetune(config_summary).get("multilabel")
+    if not isinstance(multilabel, dict) or not multilabel.get("issues"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.NEEDS_USER_INPUT,
+        "multilabel_sidecars",
+        "Multilabel sidecar files are missing or inconsistent.",
+        (
+            "Please provide valid disease_columns_index, label_index, and has_label_index files, "
+            "and keep output_dim equal to the disease column count."
+        ),
+        {"multilabel": multilabel},
+    )
+
+
 def _requires_survival_sidecars(task: str, recipe: dict, config_summary: dict | None) -> bool:
     task_cfg = _config_finetune(config_summary).get("task")
     if not isinstance(task_cfg, dict) or task_cfg.get("type") != "survival":
@@ -1137,6 +1176,13 @@ def _requires_survival_sidecars(task: str, recipe: dict, config_summary: dict | 
         _field, preset_path = _effective_preset_path(task, recipe, config_summary)
         return preset_path in (None, "")
     return False
+
+
+def _requires_multilabel_sidecars(task: str, recipe: dict, config_summary: dict | None) -> bool:
+    task_cfg = _config_finetune(config_summary).get("task")
+    if not isinstance(task_cfg, dict) or task_cfg.get("type") != "multilabel_classification":
+        return False
+    return task in {"finetune", "hparam_tune", "infer", "evaluate"}
 
 
 def _append_remote_survival_sidecar_issues(
@@ -1216,6 +1262,16 @@ def _path_issues(
                 issue = _validate_input_path(recipe, "finetune_data_index", value, configured=True)
                 if issue is not None:
                     issues.append(issue)
+    if (
+        task in {"finetune", "infer", "evaluate"}
+        and config_summary
+        and config_summary.get("data_backend") == "sex_age_baseline"
+    ):
+        value = _config_data(config_summary).get("finetune_data_index")
+        if value:
+            issue = _validate_input_path(recipe, "data.index", value, configured=True)
+            if issue is not None:
+                issues.append(issue)
     _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary)
     if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
         sleep2stat = config_summary.get("sleep2stat") or {}

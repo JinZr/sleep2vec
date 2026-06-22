@@ -1,0 +1,39 @@
+model:
+  name: sex_age_mlp
+  features: [age, sex]
+  age:
+    transform: divide
+    scale: 100.0
+    embedding_dim: 16
+  sex:
+    encoding: binary
+    embedding_dim: 16
+  head:
+    hidden_dim: 32
+    dropout: 0.1
+    activation: elu
+
+data:
+  index: /path/to/index.csv
+  split_column: split
+  key_column: eid
+  deduplicate_by_key: true
+
+finetune:
+  task:
+    type: multilabel_classification
+    output_dim: 1086
+    is_seq: false
+    monitor: val_macro_auroc
+    monitor_mod: max
+  multilabel:
+    key_column: eid
+    disease_columns_index: /path/to/disease_columns.txt
+    label_index: /path/to/disease_label.csv
+    has_label_index: /path/to/has_label.csv
+  loss:
+    pos_weight: null
+
+outputs:
+  prediction_csv: true
+  per_disease_metrics_csv: true

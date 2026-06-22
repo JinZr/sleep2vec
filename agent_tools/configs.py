@@ -23,6 +23,8 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
 def guess_variant(config_path: str | Path) -> str:
     parts = Path(config_path).parts
+    if "sex_age_baseline" in parts:
+        return "sex_age_baseline"
     if "sleep2expert" in parts:
         return "sleep2expert"
     if "sleep2vec2" in parts:
@@ -42,6 +44,11 @@ def _channel_summary(item: dict[str, Any]) -> dict[str, Any]:
 
 def _looks_like_sleep2stat_config_data(data: dict[str, Any]) -> bool:
     return {"run", "data", "signals", "analyzers", "reducers", "outputs"}.issubset(set(data))
+
+
+def _looks_like_sex_age_baseline_config_data(data: dict[str, Any]) -> bool:
+    model = data.get("model") if isinstance(data.get("model"), dict) else {}
+    return model.get("name") == "sex_age_mlp"
 
 
 def _looks_like_placeholder_path(value: str | Path | None) -> bool:
@@ -125,6 +132,158 @@ def _survival_summary(
         summary["disease_count"] = len(labels.label_names)
         summary["sidecar_key_count"] = len(labels.event_time)
     return summary
+
+
+def _multilabel_summary(
+    finetune: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    validate_local_paths: bool = True,
+) -> dict[str, Any] | None:
+    if task.get("type") != "multilabel_classification":
+        return None
+
+    raw = finetune.get("multilabel") if isinstance(finetune.get("multilabel"), dict) else {}
+    path_fields = ("disease_columns_index", "label_index", "has_label_index")
+    summary: dict[str, Any] = {
+        "key_column": raw.get("key_column"),
+        "disease_columns_index": raw.get("disease_columns_index"),
+        "label_index": raw.get("label_index"),
+        "has_label_index": raw.get("has_label_index"),
+        "output_dim": task.get("output_dim"),
+        "valid": False,
+        "disease_count": None,
+        "sidecar_key_count": None,
+        "issues": [],
+    }
+
+    issues = summary["issues"]
+    if not isinstance(finetune.get("multilabel"), dict):
+        issues.append("finetune.multilabel must be a mapping for multilabel tasks.")
+        return summary
+    if not isinstance(raw.get("key_column"), str) or not raw.get("key_column"):
+        issues.append("finetune.multilabel.key_column must be a non-empty string.")
+    resolved_paths: dict[str, str] = {}
+    for field in path_fields:
+        value = raw.get(field)
+        if not isinstance(value, str) or _looks_like_placeholder_path(value):
+            issues.append(f"finetune.multilabel.{field} must point to a real file.")
+            continue
+        if not validate_local_paths:
+            continue
+        resolved = resolve_repo_path(value)
+        if resolved is None or not resolved.exists():
+            issues.append(f"finetune.multilabel.{field} does not exist: {value}")
+        else:
+            resolved_paths[field] = str(resolved)
+
+    if issues or not validate_local_paths:
+        return summary
+
+    try:
+        from data.multilabel import load_multilabel_label_table
+
+        labels = load_multilabel_label_table(
+            SimpleNamespace(key_column=raw["key_column"], **resolved_paths),
+            task.get("output_dim"),
+        )
+    except Exception as exc:
+        issues.append(str(exc))
+        return summary
+
+    if labels is not None:
+        summary["valid"] = True
+        summary["disease_count"] = len(labels.label_names)
+        summary["sidecar_key_count"] = len(labels.disease_label)
+    return summary
+
+
+def sex_age_baseline_config_summary(
+    config_path: str | Path,
+    *,
+    validate_survival_local_paths: bool = True,
+) -> dict[str, Any]:
+    resolved = resolve_repo_path(config_path)
+    if resolved is None:
+        raise FileNotFoundError("Config path is required.")
+    data = load_yaml(resolved)
+    try:
+        from sex_age_baseline.config import load_config
+
+        cfg = load_config(resolved)
+    except Exception as exc:
+        return {
+            "config_path": repo_relative(resolved),
+            "variant_guess": "sex_age_baseline",
+            "is_finetune": True,
+            "is_pretrain": False,
+            "data_backend": "sex_age_baseline",
+            "model": {"name": "sex_age_mlp", "features": []},
+            "data": {},
+            "finetune": {},
+            "preset_build": {},
+            "plausible_labels": [],
+            "warnings": [],
+            "blocking_issues": [str(exc)],
+        }
+
+    raw_finetune = data.get("finetune") if isinstance(data.get("finetune"), dict) else {}
+    raw_task = raw_finetune.get("task") if isinstance(raw_finetune.get("task"), dict) else {}
+    survival = _survival_summary(
+        raw_finetune,
+        raw_task,
+        validate_local_paths=validate_survival_local_paths,
+    )
+    multilabel = _multilabel_summary(
+        raw_finetune,
+        raw_task,
+        validate_local_paths=validate_survival_local_paths,
+    )
+    index_value = cfg.data.index
+    resolved_index = None if _looks_like_placeholder_path(index_value) else index_value
+    finetune_summary = {
+        "task": {
+            "type": cfg.finetune.task.type,
+            "output_dim": cfg.finetune.task.output_dim,
+            "is_seq": cfg.finetune.task.is_seq,
+            "monitor": cfg.finetune.task.monitor,
+            "monitor_mod": cfg.finetune.task.monitor_mod,
+        },
+        "loss": raw_finetune.get("loss") if isinstance(raw_finetune.get("loss"), dict) else {},
+    }
+    if survival is not None:
+        finetune_summary["survival"] = survival
+    if multilabel is not None:
+        finetune_summary["multilabel"] = multilabel
+    return {
+        "config_path": repo_relative(resolved),
+        "variant_guess": "sex_age_baseline",
+        "is_finetune": True,
+        "is_pretrain": False,
+        "data_backend": "sex_age_baseline",
+        "model": {
+            "name": cfg.model.name,
+            "features": list(cfg.model.features),
+            "head_details": {
+                "hidden_dim": cfg.model.head.hidden_dim,
+                "dropout": cfg.model.head.dropout,
+                "activation": cfg.model.head.activation,
+            },
+        },
+        "data": {
+            "index": index_value,
+            "finetune_data_index": resolved_index,
+            "finetune_preset_path": None,
+            "split_column": cfg.data.split_column,
+            "key_column": cfg.data.key_column,
+            "deduplicate_by_key": cfg.data.deduplicate_by_key,
+        },
+        "finetune": finetune_summary,
+        "preset_build": {},
+        "plausible_labels": [],
+        "warnings": [],
+        "blocking_issues": [],
+    }
 
 
 def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
@@ -233,6 +392,11 @@ def config_summary(config_path: str | Path, *, validate_survival_local_paths: bo
     data = load_yaml(resolved)
     if _looks_like_sleep2stat_config_data(data):
         return sleep2stat_config_summary(resolved)
+    if _looks_like_sex_age_baseline_config_data(data):
+        return sex_age_baseline_config_summary(
+            resolved,
+            validate_survival_local_paths=validate_survival_local_paths,
+        )
     model = data.get("model") if isinstance(data.get("model"), dict) else {}
     data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
     finetune = data.get("finetune") if isinstance(data.get("finetune"), dict) else {}
