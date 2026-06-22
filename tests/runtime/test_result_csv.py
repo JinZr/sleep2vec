@@ -430,14 +430,31 @@ def test_sleep2expert_inference_outputs_record_route_filter_metadata(tmp_path, m
         str(args.inference_prediction_csv_path),
         args,
     )
+    results_mod.save_multilabel_per_disease_metrics_csv(
+        [
+            {
+                "stage": "test",
+                "disease_idx": 0,
+                "disease": "d1",
+                "n_positive": 2,
+                "n_negative": 3,
+                "prevalence": 0.4,
+                "auroc": 0.75,
+                "auprc": 0.7,
+            }
+        ],
+        str(args.inference_multilabel_per_disease_metrics_csv_path),
+        args,
+    )
     results_mod.save_inference_manifest(args, {"test_loss": 0.1}, prediction_row_count=1)
 
     result_df = pd.read_csv(args.inference_metrics_csv_path)
     overview_df = pd.read_csv(args.inference_overview_csv_path)
     prediction_df = pd.read_csv(args.inference_prediction_csv_path)
+    multilabel_df = pd.read_csv(args.inference_multilabel_per_disease_metrics_csv_path)
     manifest = json.loads(Path(args.manifest_path).read_text())
 
-    for frame in (result_df, overview_df):
+    for frame in (result_df, overview_df, multilabel_df):
         assert bool(frame.loc[0, "route_filter_active"]) is True
         assert frame.loc[0, "route_filter_groups"] == "shared,cardiac"
         assert frame.loc[0, "route_filter_expert_ids"] == "0,3,4"

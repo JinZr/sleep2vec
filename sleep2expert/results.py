@@ -130,6 +130,9 @@ MULTILABEL_PER_DISEASE_METADATA_COLUMNS = (
     "ckpt_tag",
     "task_family",
     "timestamp_utc",
+    "route_filter_active",
+    "route_filter_groups",
+    "route_filter_expert_ids",
     "stage",
     "disease_idx",
     "disease",
@@ -414,6 +417,7 @@ def save_multilabel_per_disease_metrics_csv(
         new_row["eval_split"] = getattr(args, "eval_split", None) if args is not None else None
         new_row["ckpt_path"] = getattr(args, "ckpt_path", None) if args is not None else None
         _add_inference_run_metadata(new_row, args)
+        _add_route_filter_result_metadata(new_row, args)
         metric_rows.append(new_row)
 
     df_new = pd.DataFrame(metric_rows)
