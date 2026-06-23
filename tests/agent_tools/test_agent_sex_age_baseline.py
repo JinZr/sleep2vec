@@ -273,6 +273,113 @@ def test_sex_age_baseline_kaldi_finetune_blocks_survival_keys_missing_from_sidec
     assert not (tmp_path / "plan-kaldi-missing-sidecar-key" / "run.sh").exists()
 
 
+def test_sex_age_baseline_finetune_val_only_ignores_unloaded_test_sidecar_keys(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    for field in ("event_time_index", "is_event_index", "has_label_index"):
+        Path(payload["finetune"]["survival"][field]).write_text("eid,d1,d2\n001,10,20\n002,30,40\n")
+    recipe = _finetune_recipe(tmp_path, config)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-val-only-missing-test-labels")
+
+    assert report.exit_code == 0
+    assert (tmp_path / "plan-val-only-missing-test-labels" / "run.sh").exists()
+
+
+def test_sex_age_baseline_finetune_test_after_fit_checks_test_sidecar_keys(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    for field in ("event_time_index", "is_event_index", "has_label_index"):
+        Path(payload["finetune"]["survival"][field]).write_text("eid,d1,d2\n001,10,20\n002,30,40\n")
+    recipe = _finetune_recipe(tmp_path, config)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    recipe_payload["evaluation_policy"]["external_test_locked"] = False
+    recipe_payload["evaluation_policy"]["test_after_fit"] = True
+    _write_yaml(recipe, recipe_payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-test-after-fit-missing-test-labels")
+
+    assert report.exit_code == 1
+    assert any(
+        issue.field == "data_input" and "survival key values missing from sidecars" in issue.message
+        for issue in report.issues
+    )
+    assert not (tmp_path / "plan-test-after-fit-missing-test-labels" / "run.sh").exists()
+
+
+def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    for field in ("event_time_index", "is_event_index", "has_label_index"):
+        Path(payload["finetune"]["survival"][field]).write_text("eid,d1,d2\n001,10,20\n002,30,40\n")
+    base = _finetune_recipe(tmp_path, config)
+    recipe = _write_yaml(
+        tmp_path / "hparam_val_only.yaml",
+        {
+            "name": "unit_sex_age_hparam_val_only",
+            "task": "hparam_tune",
+            "variant": "sex_age_baseline",
+            "base_recipe": str(base),
+            "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-3]}},
+            "evaluation_policy": {
+                "selection_metric": "val_c_index",
+                "selection_mode": "max",
+                "selection_split": "val",
+                "external_test_locked": True,
+                "test_after_fit": False,
+                "final_eval_split": "validation",
+                "final_test_unlocked": False,
+                "require_manual_unlock_for_final_test": True,
+            },
+            "decisions": {
+                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
+                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-hparam-val-only")
+
+    assert report.exit_code == 0
+    assert (tmp_path / "plan-hparam-val-only" / "trial_000.sh").exists()
+
+
+def test_sex_age_baseline_finetune_blocks_invalid_metadata_values(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    Path(payload["data"]["finetune_data_index"]).write_text(
+        "eid,split,age,sex\n001,train,,0\n002,val,60,unknown\n003,test,55,0\n"
+    )
+    recipe = _finetune_recipe(tmp_path, config)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-invalid-metadata")
+
+    assert report.exit_code == 1
+    messages = [issue.message for issue in report.issues if issue.field == "data_input"]
+    assert any("empty sex-age age values" in message for message in messages)
+    assert any("invalid sex-age sex values" in message for message in messages)
+    assert not (tmp_path / "plan-invalid-metadata" / "run.sh").exists()
+
+
+def test_sex_age_baseline_finetune_blocks_missing_loaded_split_rows(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    Path(payload["data"]["finetune_data_index"]).write_text("eid,split,age,sex\n001,train,50,0\n003,test,55,0\n")
+    recipe = _finetune_recipe(tmp_path, config)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-missing-val-split")
+
+    assert report.exit_code == 1
+    assert any(
+        issue.field == "data_input" and "no rows for sex-age split 'val'" in issue.message for issue in report.issues
+    )
+    assert not (tmp_path / "plan-missing-val-split" / "run.sh").exists()
+
+
 def test_sex_age_baseline_kaldi_infer_accepts_manifest_split_without_split_column(tmp_path: Path):
     config = _write_kaldi_survival_config(tmp_path, split_key="003")
     ckpt = tmp_path / "model.ckpt"
@@ -575,6 +682,26 @@ def test_sex_age_baseline_infer_preset_checks_only_eval_split_keys(tmp_path: Pat
 
     assert report.exit_code == 0
     assert (tmp_path / "plan-infer-preset-split-filter" / "run.sh").exists()
+
+
+def test_sex_age_baseline_infer_preset_blocks_invalid_metadata_values(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    preset = _write_metadata_preset(
+        tmp_path / "preset_invalid_metadata.pkl",
+        [{"eid": "002", "split": "val", "age": "not-a-number", "sex": 1}],
+    )
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["inference_preset_path"] = str(preset)
+    _write_yaml(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-preset-invalid-metadata")
+
+    assert report.exit_code == 1
+    assert any(issue.field == "data_input" and "invalid sex-age age values" in issue.message for issue in report.issues)
+    assert not (tmp_path / "plan-infer-preset-invalid-metadata" / "run.sh").exists()
 
 
 def test_sex_age_baseline_infer_blocks_pretrained_backbone_path(tmp_path: Path):

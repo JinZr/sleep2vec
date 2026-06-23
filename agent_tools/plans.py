@@ -726,7 +726,10 @@ def _index_summary_inputs(
         preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
         return _list_value(inputs.get("index")), config, _list_value(preset.get("split"))
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
-        split_values = _list_value(_decision_value(decisions, "eval_split", inputs.get("eval_split")))
+        if task in {"infer", "evaluate"}:
+            split_values = _list_value(_decision_value(decisions, "eval_split", inputs.get("eval_split")))
+        else:
+            split_values = _finetune_loaded_split_values(recipe, decisions)
         if _effective_preset_path(recipe, cfg) not in (None, ""):
             return [], config, split_values
         data = (cfg or {}).get("data") or {}
@@ -737,6 +740,37 @@ def _index_summary_inputs(
         data = cfg.get("data") or {}
         paths = _list_value(data.get("finetune_data_index"))
     return paths, config, []
+
+
+def _finetune_loaded_split_values(recipe: dict, decisions: dict | None) -> list[str]:
+    task = recipe.get("task")
+    base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
+    train_recipe = base_recipe if task == "hparam_tune" and base_recipe else recipe
+    runtime = train_recipe.get("runtime") if isinstance(train_recipe.get("runtime"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    if task == "finetune":
+        evaluation = (
+            train_recipe.get("evaluation_policy") if isinstance(train_recipe.get("evaluation_policy"), dict) else {}
+        )
+
+    splits: list[str] = []
+    if _loads_train_val(runtime.get("epochs", 30)):
+        splits.extend(["train", "val"])
+
+    test_after_fit = _decision_value(decisions, "test_after_fit", evaluation.get("test_after_fit"))
+    if task == "hparam_tune":
+        if test_after_fit is True:
+            splits.append("test")
+    elif test_after_fit is not False:
+        splits.append("test")
+    return splits
+
+
+def _loads_train_val(epochs: Any) -> bool:
+    try:
+        return int(epochs) > 0
+    except (TypeError, ValueError):
+        return True
 
 
 def _apply_index_summary_gate(

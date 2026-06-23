@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import pickle
 from typing import Any
 
 import pandas as pd
+
+from data.metadata import _encode_binary_label
 
 from .configs import config_summary
 from .models import repo_relative, resolve_repo_path
@@ -139,6 +142,15 @@ def index_summary(
     for column, exists in required_columns.items():
         if not exists:
             blocking_issues.append(f"Index CSV missing required column: {column}")
+    if cfg and cfg.get("variant_guess") == "sex_age_baseline":
+        blocking_issues.extend(
+            _sex_age_metadata_value_issues(
+                df,
+                key_column=str(data_summary.get("key_column") or "eid"),
+                split_column=split_column,
+            )
+        )
+        blocking_issues.extend(_sex_age_requested_split_issues(df, split_values, split_column=split_column))
     survival_key = _key_summary(df, survival_key_column, sidecar_keys=survival_sidecar_keys)
     if survival_key_column and not survival_key["exists"]:
         blocking_issues.append(f"Index CSV missing required survival key column: {survival_key_column}")
@@ -254,6 +266,55 @@ def _sex_age_preset_frames(
             }
         )
     return [pd.DataFrame(rows)], [resolved], [], []
+
+
+def _sex_age_metadata_value_issues(df: pd.DataFrame, *, key_column: str, split_column: str) -> list[str]:
+    issues: list[str] = []
+    for column, label in ((key_column, "key"), (split_column, "split")):
+        if column not in df.columns:
+            continue
+        missing = _blank_values(df[column])
+        if missing.any():
+            issues.append(
+                f"Index CSV contains empty sex-age {label} values in column {column}: {int(missing.sum())} rows"
+            )
+
+    if "age" in df.columns:
+        missing = _blank_values(df["age"])
+        age = pd.to_numeric(df["age"], errors="coerce")
+        invalid = (~missing) & (~age.map(math.isfinite) | (age < 0))
+        if missing.any():
+            issues.append(f"Index CSV contains empty sex-age age values in column age: {int(missing.sum())} rows")
+        if invalid.any():
+            issues.append(f"Index CSV contains invalid sex-age age values in column age: {int(invalid.sum())} rows")
+
+    if "sex" in df.columns:
+        missing = _blank_values(df["sex"])
+        invalid = (~missing) & df["sex"].map(lambda value: _encode_binary_label(value) not in (0, 1))
+        if missing.any():
+            issues.append(f"Index CSV contains empty sex-age sex values in column sex: {int(missing.sum())} rows")
+        if invalid.any():
+            issues.append(f"Index CSV contains invalid sex-age sex values in column sex: {int(invalid.sum())} rows")
+    return issues
+
+
+def _sex_age_requested_split_issues(
+    df: pd.DataFrame,
+    split_values: list[str] | None,
+    *,
+    split_column: str,
+) -> list[str]:
+    if split_column not in df.columns:
+        return []
+    requested = list(dict.fromkeys(str(value) for value in split_values or [] if value not in (None, "", "ASK_USER")))
+    if not requested:
+        return []
+    present = set(df[split_column].dropna().astype(str))
+    return [f"Index CSV contains no rows for sex-age split {split!r}." for split in requested if split not in present]
+
+
+def _blank_values(values: pd.Series) -> pd.Series:
+    return values.isna() | values.astype(str).str.strip().eq("")
 
 
 def _kaldi_manifest_frames(
