@@ -114,7 +114,7 @@ def evaluate_consultation_gates(
                     DecisionStatus.NEEDS_USER_INPUT,
                     "variant",
                     "Recipe variant is missing or unsupported.",
-                    "Which variant should this task use: sleep2vec, sleep2vec2, or sleep2expert?",
+                    "Which variant should this task use: sleep2vec, sleep2vec2, sleep2expert, or sex_age_baseline?",
                     {"variant": variant, "allowed_values": list(SUPPORTED_VARIANTS)},
                 )
             )
@@ -126,6 +126,16 @@ def evaluate_consultation_gates(
                 "task=sleep2stat must omit variant or set it to null; sleep2stat is not a model variant.",
                 None,
                 {"variant": variant},
+            )
+        )
+    if task_value == "preset_prepare" and variant == "sex_age_baseline":
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "variant",
+                "sex_age_baseline does not support preset_prepare.",
+                None,
+                {"variant": variant, "task": task_value},
             )
         )
 
@@ -520,6 +530,17 @@ def _finetune_task_issues(
 
     if not inputs.get("config"):
         issues.append(_needs("config", "Config path is required for finetune.", high_impact))
+    if config_summary:
+        for issue in config_summary.get("blocking_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "config",
+                    issue,
+                    "Please fix the config before the agent generates commands.",
+                    {"config_path": config_summary.get("config_path")},
+                )
+            )
     if "test_after_fit" not in evaluation and not _has_explicit_decision(decisions, "test_after_fit"):
         issues.append(
             DecisionIssue(
@@ -546,9 +567,30 @@ def _finetune_task_issues(
                     {"config": data},
                 )
             )
+    if (
+        config_summary
+        and config_summary.get("variant_guess") == "sex_age_baseline"
+        and config_summary.get("data_backend") == "kaldi"
+    ):
+        if not data.get("kaldi_data_root") or not data.get("kaldi_manifest"):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "data_input",
+                    "Kaldi-backed sex_age_baseline finetune requires kaldi_data_root and kaldi_manifest.",
+                    "Which Kaldi data root and manifest should this sex/age baseline use?",
+                    {"config": data},
+                )
+            )
+    pretrained_issue = _sex_age_pretrained_backbone_issue("finetune", recipe, decisions)
+    if pretrained_issue is not None:
+        issues.append(pretrained_issue)
     survival_issue = _survival_sidecar_issue("finetune", recipe, config_summary)
     if survival_issue is not None:
         issues.append(survival_issue)
+    multilabel_issue = _multilabel_sidecar_issue("finetune", recipe, config_summary)
+    if multilabel_issue is not None:
+        issues.append(multilabel_issue)
     external_test_decision = decisions.get("external_test_locked")
     external_test_locked = (
         external_test_decision.value
@@ -620,6 +662,9 @@ def _hparam_tune_issues(
                     {"config": base_config},
                 )
             )
+    multilabel_issue = _multilabel_sidecar_issue("hparam_tune", recipe, config_summary)
+    if multilabel_issue is not None:
+        issues.append(multilabel_issue)
     local_field_map = {
         "selection_metric": ("evaluation_policy.selection_metric", "selection_metric"),
         "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),
@@ -767,6 +812,17 @@ def _infer_evaluate_issues(
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
 
+    if config_summary:
+        for issue in config_summary.get("blocking_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "config",
+                    issue,
+                    "Please fix the config before the agent generates commands.",
+                    {"config_path": config_summary.get("config_path")},
+                )
+            )
     if inputs.get("eval_split") == "test":
         final_eval_unlock = decisions.get("final_eval_unlock")
         unlocked = evaluation.get("final_test_unlocked") is True or (
@@ -784,9 +840,18 @@ def _infer_evaluate_issues(
                 {"inputs": inputs},
             )
         )
+    pretrained_issue = _sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe, decisions)
+    if pretrained_issue is not None:
+        issues.append(pretrained_issue)
+    override_issue = _sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
+    if override_issue is not None:
+        issues.append(override_issue)
     survival_issue = _survival_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
     if survival_issue is not None:
         issues.append(survival_issue)
+    multilabel_issue = _multilabel_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
+    if multilabel_issue is not None:
+        issues.append(multilabel_issue)
     return issues
 
 
@@ -1127,16 +1192,88 @@ def _survival_sidecar_issue(
     )
 
 
+def _multilabel_sidecar_issue(
+    task: str,
+    recipe: dict,
+    config_summary: dict | None,
+) -> DecisionIssue | None:
+    if not _requires_multilabel_sidecars(task, recipe, config_summary):
+        return None
+    multilabel = _config_finetune(config_summary).get("multilabel")
+    if not isinstance(multilabel, dict) or not multilabel.get("issues"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.NEEDS_USER_INPUT,
+        "multilabel_sidecars",
+        "Multilabel sidecar files are missing or inconsistent.",
+        (
+            "Please provide valid disease_columns_index, label_index, and has_label_index files, "
+            "and keep output_dim equal to the disease column count."
+        ),
+        {"multilabel": multilabel},
+    )
+
+
 def _requires_survival_sidecars(task: str, recipe: dict, config_summary: dict | None) -> bool:
     task_cfg = _config_finetune(config_summary).get("task")
     if not isinstance(task_cfg, dict) or task_cfg.get("type") != "survival":
         return False
     if task == "preset_prepare":
         return True
+    if config_summary and config_summary.get("variant_guess") == "sex_age_baseline":
+        return task in {"finetune", "hparam_tune", "infer", "evaluate"}
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
         _field, preset_path = _effective_preset_path(task, recipe, config_summary)
         return preset_path in (None, "")
     return False
+
+
+def _requires_multilabel_sidecars(task: str, recipe: dict, config_summary: dict | None) -> bool:
+    task_cfg = _config_finetune(config_summary).get("task")
+    if not isinstance(task_cfg, dict) or task_cfg.get("type") != "multilabel_classification":
+        return False
+    return task in {"finetune", "hparam_tune", "infer", "evaluate"}
+
+
+def _sex_age_pretrained_backbone_issue(
+    task: str,
+    recipe: dict,
+    decisions: dict[str, ResolvedDecision],
+) -> DecisionIssue | None:
+    if recipe.get("variant") != "sex_age_baseline" or task not in {"finetune", "infer", "evaluate"}:
+        return None
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    decision = decisions.get("pretrained_backbone_path")
+    value = (
+        decision.value
+        if decision is not None and decision.value not in (None, "", "ASK_USER")
+        else inputs.get("pretrained_backbone_path")
+    )
+    if value in (None, "", "ASK_USER"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "pretrained_backbone_path",
+        "sex_age_baseline does not support pretrained_backbone_path.",
+        None,
+        {"variant": "sex_age_baseline", "pretrained_backbone_path": value},
+    )
+
+
+def _sex_age_override_dataset_names_issue(task: str, recipe: dict) -> DecisionIssue | None:
+    if recipe.get("variant") != "sex_age_baseline" or task not in {"infer", "evaluate"}:
+        return None
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    value = inputs.get("override_dataset_names")
+    if value in (None, "", "ASK_USER"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "override_dataset_names",
+        "sex_age_baseline does not support override_dataset_names.",
+        None,
+        {"variant": "sex_age_baseline", "override_dataset_names": value},
+    )
 
 
 def _append_remote_survival_sidecar_issues(
@@ -1158,6 +1295,29 @@ def _append_remote_survival_sidecar_issues(
         validation = _path_validation(recipe, context)
         if context == "remote" and validation in {"ssh", "remote"}:
             issue = _validate_input_path(recipe, f"finetune.survival.{data_field}", value, configured=True)
+            if issue is not None:
+                issues.append(issue)
+
+
+def _append_remote_multilabel_sidecar_issues(
+    issues: list[DecisionIssue],
+    task: str,
+    recipe: dict,
+    config_summary: dict | None,
+) -> None:
+    if not _requires_multilabel_sidecars(task, recipe, config_summary):
+        return
+    multilabel = _config_finetune(config_summary).get("multilabel")
+    if not isinstance(multilabel, dict):
+        return
+    for data_field in ("disease_columns_index", "label_index", "has_label_index"):
+        value = multilabel.get(data_field)
+        if not value:
+            continue
+        context = _path_context(recipe, value)
+        validation = _path_validation(recipe, context)
+        if context == "remote" and validation in {"ssh", "remote"}:
+            issue = _validate_input_path(recipe, f"finetune.multilabel.{data_field}", value, configured=True)
             if issue is not None:
                 issues.append(issue)
 
@@ -1187,6 +1347,8 @@ def _path_issues(
             required_paths.append(("ckpt_path", ckpt_path))
     if task == "finetune":
         for input_field in ("pretrained_backbone_path", "ckpt_path"):
+            if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
+                continue
             decision = decisions.get(input_field)
             value = (
                 decision.value
@@ -1216,20 +1378,28 @@ def _path_issues(
                 issue = _validate_input_path(recipe, "finetune_data_index", value, configured=True)
                 if issue is not None:
                     issues.append(issue)
+    if (
+        task in {"finetune", "infer", "evaluate"}
+        and config_summary
+        and config_summary.get("variant_guess") == "sex_age_baseline"
+        and config_summary.get("data_backend") == "kaldi"
+    ):
+        data = _config_data(config_summary)
+        for data_field in ("kaldi_data_root", "kaldi_manifest"):
+            value = data.get(data_field)
+            if value:
+                issue = _validate_input_path(recipe, data_field, value, configured=True)
+                if issue is not None:
+                    issues.append(issue)
     _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary)
+    _append_remote_multilabel_sidecar_issues(issues, task, recipe, config_summary)
     if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
         sleep2stat = config_summary.get("sleep2stat") or {}
         data = sleep2stat.get("data") or {}
         for data_field in ("index", "kaldi_data_root", "kaldi_manifest"):
             value = data.get(data_field)
             if value:
-                check_value = value
-                if data_field == "kaldi_manifest":
-                    root = data.get("kaldi_data_root")
-                    manifest_path = Path(str(value)).expanduser()
-                    if root and not manifest_path.is_absolute():
-                        check_value = Path(str(root)).expanduser() / manifest_path
-                issue = _validate_input_path(recipe, f"sleep2stat.data.{data_field}", check_value, configured=True)
+                issue = _validate_input_path(recipe, f"sleep2stat.data.{data_field}", value, configured=True)
                 if issue is not None:
                     issues.append(issue)
         for analyzer in sleep2stat.get("analyzers", []):

@@ -62,7 +62,7 @@ High-impact decisions must come from explicit user decisions, explicit CLI argum
 
 `agent_tools context` writes `context.json` and `context.md` for every run. If any blocking issue exists, it writes `questions.json`, `questions.md`, and `commands.blocked.sh` instead of runnable `commands.sh`; `consultation_required` is true when any issue needs user input, even if another issue makes the overall status `FAIL`.
 
-Context bundles include skill metadata, owners, relevant index docs, expected agent artifacts, and best-effort index or preset summaries when the config points to `data.finetune_data_index` or `data.finetune_preset_path`. For survival configs, index summaries include survival key coverage and sidecar-key checks. For `task=sleep2stat`, NPZ index summaries use `sleep2stat.data.index`.
+Context bundles include skill metadata, owners, relevant index docs, expected agent artifacts, and best-effort index or preset summaries when the config points to `data.finetune_data_index` or `data.finetune_preset_path`. For survival and multilabel configs, index summaries include subject key coverage and sidecar-key checks. For `task=sleep2stat`, NPZ index summaries use `sleep2stat.data.index`.
 
 ## Plan Generation
 

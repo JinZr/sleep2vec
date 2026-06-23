@@ -321,7 +321,7 @@ def test_sleep2stat_config_summary_omits_removed_run_controls():
     assert "skip_existing" not in summary["sleep2stat"]["run"]
 
 
-def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: Path):
+def test_sleep2stat_kaldi_relative_manifest_is_not_resolved_under_data_root(tmp_path: Path):
     kaldi_root = tmp_path / "kaldi"
     kaldi_root.mkdir()
     (kaldi_root / "manifest.json").write_text('{"splits": {"test": {"manifest": "test.csv"}}}')
@@ -397,8 +397,8 @@ def test_sleep2stat_kaldi_relative_manifest_resolves_under_data_root(tmp_path: P
 
     _recipe, _cfg, report = evaluate_recipe(recipe)
 
-    assert report.exit_code == 0
-    assert not any(issue.field == "sleep2stat.data.kaldi_manifest" for issue in report.issues)
+    assert report.exit_code == 1
+    assert any(issue.field == "sleep2stat.data.kaldi_manifest" for issue in report.issues)
 
 
 def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: Path):

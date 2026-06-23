@@ -84,7 +84,7 @@ def build_context(
         "evaluation_policy": {},
         "artifacts": {"output_dir": str(output_dir)},
     }
-    cfg = config_summary(config) if config else None
+    cfg = config_summary(config, variant=variant) if config else None
     policy, defaults = load_policy_files()
     user_decisions = load_user_decisions(user_decisions_path)
     report = evaluate_consultation_gates(
@@ -277,6 +277,7 @@ def _load_config_summary_for_recipe(recipe: dict) -> dict | None:
         config_data = {}
     return config_summary(
         config,
+        variant=recipe.get("variant"),
         validate_survival_local_paths=not _skips_local_path_validation(
             recipe,
             _survival_validation_paths(config_data),
@@ -395,13 +396,15 @@ def _finetune_input_cli_args(
     decisions: dict | None,
     *,
     ckpt_from_decisions: bool,
+    variant: str | None = None,
 ) -> list[Any]:
     args: list[Any] = []
-    _append_option(
-        args,
-        "--pretrained-backbone-path",
-        _decision_value(decisions, "pretrained_backbone_path", inputs.get("pretrained_backbone_path")),
-    )
+    if variant != "sex_age_baseline":
+        _append_option(
+            args,
+            "--pretrained-backbone-path",
+            _decision_value(decisions, "pretrained_backbone_path", inputs.get("pretrained_backbone_path")),
+        )
     if ckpt_from_decisions:
         ckpt_path = _decision_value(decisions, "ckpt_path", inputs.get("ckpt_path"))
     else:
@@ -410,15 +413,17 @@ def _finetune_input_cli_args(
     return args
 
 
-def _infer_input_cli_args(inputs: dict[str, Any], decisions: dict | None) -> list[Any]:
+def _infer_input_cli_args(inputs: dict[str, Any], decisions: dict | None, *, variant: str | None = None) -> list[Any]:
     args: list[Any] = []
-    _append_option(
-        args,
-        "--pretrained-backbone-path",
-        _decision_value(decisions, "pretrained_backbone_path", inputs.get("pretrained_backbone_path")),
-    )
+    if variant != "sex_age_baseline":
+        _append_option(
+            args,
+            "--pretrained-backbone-path",
+            _decision_value(decisions, "pretrained_backbone_path", inputs.get("pretrained_backbone_path")),
+        )
     _append_option(args, "--inference-preset-path", inputs.get("inference_preset_path"))
-    _append_list_option(args, "--override-dataset-names", inputs.get("override_dataset_names"))
+    if variant != "sex_age_baseline":
+        _append_list_option(args, "--override-dataset-names", inputs.get("override_dataset_names"))
     return args
 
 
@@ -444,11 +449,14 @@ def _survival_validation_paths(config_data: dict | None) -> list[Any]:
     data = config_data.get("data") if isinstance(config_data.get("data"), dict) else {}
     finetune = config_data.get("finetune") if isinstance(config_data.get("finetune"), dict) else {}
     survival = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
-    paths = [data.get("finetune_data_index")]
+    multilabel = finetune.get("multilabel") if isinstance(finetune.get("multilabel"), dict) else {}
+    paths = [data.get("finetune_data_index"), data.get("finetune_preset_path")]
+    paths.extend(data.get(field) for field in ("kaldi_data_root", "kaldi_manifest"))
     paths.extend(
         survival.get(field)
         for field in ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index")
     )
+    paths.extend(multilabel.get(field) for field in ("disease_columns_index", "label_index", "has_label_index"))
     return [path for path in paths if path not in (None, "")]
 
 
@@ -587,7 +595,12 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
             "--results-csv-path",
             artifacts.get("results_csv_path", "results/agent_results.csv"),
             *_runtime_cli_args(runtime),
-            *_finetune_input_cli_args(inputs, decisions, ckpt_from_decisions=True),
+            *_finetune_input_cli_args(
+                inputs,
+                decisions,
+                ckpt_from_decisions=True,
+                variant=str(recipe.get("variant")),
+            ),
         ]
         if test_after_fit is False:
             pieces.append("--no-test-after-fit")
@@ -608,7 +621,7 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
                     "--eval-split",
                     _decision_value(decisions, "eval_split", inputs.get("eval_split")),
                     *_infer_runtime_cli_args(runtime),
-                    *_infer_input_cli_args(inputs, decisions),
+                    *_infer_input_cli_args(inputs, decisions, variant=str(recipe.get("variant"))),
                 ]
             )
         ]
@@ -665,10 +678,37 @@ def _skill_context(task: str) -> tuple[dict[str, Any], list[str]]:
 
 def _context_index_summary(recipe: dict, cfg: dict | None, decisions: dict | None = None) -> dict | None:
     paths, config, split_values = _index_summary_inputs(recipe, cfg, decisions=decisions)
-    if not paths or _skips_local_path_validation(recipe, paths):
+    data = (cfg or {}).get("data") or {}
+    uses_kaldi_manifest = bool(
+        cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi"
+    )
+    preset_path = _effective_preset_path(recipe, cfg)
+    finetune = (cfg or {}).get("finetune") or {}
+    task_type = (finetune.get("task") or {}).get("type")
+    label_sidecars_valid = False
+    if task_type == "survival":
+        label_sidecars_valid = (finetune.get("survival") or {}).get("valid") is True
+    elif task_type == "multilabel_classification":
+        label_sidecars_valid = (finetune.get("multilabel") or {}).get("valid") is True
+    uses_sex_age_preset = bool(
+        cfg
+        and cfg.get("variant_guess") == "sex_age_baseline"
+        and data.get("backend") == "npz"
+        and preset_path not in (None, "", "ASK_USER")
+        and label_sidecars_valid
+    )
+    if not paths:
+        if not uses_kaldi_manifest and not uses_sex_age_preset:
+            return None
+        path_values = (
+            [data.get("kaldi_data_root"), data.get("kaldi_manifest")] if uses_kaldi_manifest else [preset_path]
+        )
+        if _skips_local_path_validation(recipe, path_values):
+            return None
+    elif _skips_local_path_validation(recipe, paths):
         return None
     try:
-        return index_summary(paths, config=config, split_values=split_values)
+        return index_summary(paths, config=config, split_values=split_values, preset_path=preset_path)
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
 
@@ -686,10 +726,13 @@ def _index_summary_inputs(
         preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
         return _list_value(inputs.get("index")), config, _list_value(preset.get("split"))
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
+        if task in {"infer", "evaluate"}:
+            split_values = _list_value(_decision_value(decisions, "eval_split", inputs.get("eval_split")))
+        else:
+            split_values = _finetune_loaded_split_values(recipe, decisions)
         if _effective_preset_path(recipe, cfg) not in (None, ""):
-            return [], config, []
+            return [], config, split_values
         data = (cfg or {}).get("data") or {}
-        split_values = _list_value(_decision_value(decisions, "eval_split", inputs.get("eval_split")))
         return _list_value(data.get("finetune_data_index")), config, split_values
 
     paths = _list_value(inputs.get("index"))
@@ -697,6 +740,37 @@ def _index_summary_inputs(
         data = cfg.get("data") or {}
         paths = _list_value(data.get("finetune_data_index"))
     return paths, config, []
+
+
+def _finetune_loaded_split_values(recipe: dict, decisions: dict | None) -> list[str]:
+    task = recipe.get("task")
+    base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
+    train_recipe = base_recipe if task == "hparam_tune" and base_recipe else recipe
+    runtime = train_recipe.get("runtime") if isinstance(train_recipe.get("runtime"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    if task == "finetune":
+        evaluation = (
+            train_recipe.get("evaluation_policy") if isinstance(train_recipe.get("evaluation_policy"), dict) else {}
+        )
+
+    splits: list[str] = []
+    if _loads_train_val(runtime.get("epochs", 30)):
+        splits.extend(["train", "val"])
+
+    test_after_fit = _decision_value(decisions, "test_after_fit", evaluation.get("test_after_fit"))
+    if task == "hparam_tune":
+        if test_after_fit is True:
+            splits.append("test")
+    elif test_after_fit is not False:
+        splits.append("test")
+    return splits
+
+
+def _loads_train_val(epochs: Any) -> bool:
+    try:
+        return int(epochs) > 0
+    except (TypeError, ValueError):
+        return True
 
 
 def _apply_index_summary_gate(
@@ -1189,7 +1263,12 @@ def _write_hparam_plan(
             "--results-csv-path",
             _plan_output_path(out, base_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
             *_runtime_cli_args(runtime),
-            *_finetune_input_cli_args(base_inputs, report.decisions, ckpt_from_decisions=False),
+            *_finetune_input_cli_args(
+                base_inputs,
+                report.decisions,
+                ckpt_from_decisions=False,
+                variant=str(recipe.get("variant")),
+            ),
         ]
         if test_after_fit is not True:
             command_parts.append("--no-test-after-fit")
@@ -1271,7 +1350,7 @@ def _write_hparam_plan(
                 "--eval-split",
                 "test",
                 *_infer_runtime_cli_args(base_runtime),
-                *_infer_input_cli_args(base_inputs, report.decisions),
+                *_infer_input_cli_args(base_inputs, report.decisions, variant=str(recipe.get("variant"))),
             ]
         )
         write_text(

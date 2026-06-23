@@ -39,6 +39,7 @@ CONFIG_VARIANTS = {
     "sleep2vec2": ConfigVariant("sleep2vec2.config", "sleep2vec2.preprocess.save_dataset_presets"),
 }
 SLEEP2STAT_CONFIG_DIR = "sleep2stat"
+SEX_AGE_BASELINE_CONFIG_DIR = "sex_age_baseline"
 
 
 def parse_args() -> argparse.Namespace:
@@ -120,6 +121,17 @@ def _is_sleep2stat_config(path: Path, config_data: dict[str, t.Any]) -> bool:
     if rel_path is not None and rel_path.parts and rel_path.parts[0] == SLEEP2STAT_CONFIG_DIR:
         return True
     return set(config_data) >= {"run", "data", "signals", "analyzers", "reducers", "outputs"}
+
+
+def _is_sex_age_baseline_config(path: Path, config_data: dict[str, t.Any]) -> bool:
+    try:
+        rel_path = path.resolve().relative_to(CONFIG_ROOT.resolve())
+    except ValueError:
+        rel_path = None
+    if rel_path is not None and rel_path.parts and rel_path.parts[0] == SEX_AGE_BASELINE_CONFIG_DIR:
+        return True
+    model_block = config_data.get("model") if isinstance(config_data.get("model"), dict) else {}
+    return model_block.get("name") == "sex_age_mlp"
 
 
 def _load_config_tools(path: Path, config_data: dict[str, t.Any]) -> ConfigTools:
@@ -225,6 +237,12 @@ def check_config_file(path: Path) -> None:
         from sleep2stat.config import load_config
 
         load_config(path)
+        return
+    if _is_sex_age_baseline_config(path, config_data):
+        from sex_age_baseline.config import load_finetune_config, validate_model_config
+
+        bundle = load_finetune_config(path)
+        validate_model_config(bundle.model)
         return
     tools = _load_config_tools(path, config_data)
     _validate_runtime_loader_contract(path, config_data, tools)

@@ -138,9 +138,7 @@ def _build_kaldi_datasets(
     data_cfg = context.config.data
     if data_cfg.kaldi_data_root is None or data_cfg.kaldi_manifest is None:
         raise ValueError("data.backend=kaldi requires data.kaldi_data_root and data.kaldi_manifest.")
-    manifest_path = data_cfg.kaldi_manifest
-    if not manifest_path.is_absolute():
-        manifest_path = data_cfg.kaldi_data_root / manifest_path
+    manifest_path = data_cfg.kaldi_manifest.expanduser()
     _reject_embedding_export_manifest(manifest_path)
     channel_names = list(channel_specs)
     # Kaldi manifests describe exported embedding widths; sleep2stat channel specs describe raw signal widths.

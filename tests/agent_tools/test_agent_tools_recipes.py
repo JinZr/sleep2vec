@@ -25,6 +25,18 @@ RECIPE_CASES = [
         {"data_input", "survival_sidecars"},
     ),
     _recipe_case(
+        "recipes/templates/finetune_sex_age_cox_val_only.yaml",
+        2,
+        "NEEDS_USER_INPUT",
+        {"data_input", "survival_sidecars"},
+    ),
+    _recipe_case(
+        "recipes/templates/finetune_sex_age_multilabel_val_only.yaml",
+        2,
+        "NEEDS_USER_INPUT",
+        {"data_input", "multilabel_sidecars"},
+    ),
+    _recipe_case(
         "recipes/templates/finetune_sleep2expert_ahi_val_only.yaml",
         2,
         "NEEDS_USER_INPUT",
