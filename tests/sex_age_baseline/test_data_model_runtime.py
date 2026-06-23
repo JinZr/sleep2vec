@@ -593,6 +593,32 @@ def test_zero_epoch_train_requires_checkpoint(tmp_path: Path, monkeypatch, test_
     assert not (tmp_path / "log-finetune" / version_name).exists()
 
 
+@pytest.mark.parametrize("test_after_fit", [True, False])
+def test_negative_epochs_fail_before_run_directory(tmp_path: Path, monkeypatch, test_after_fit: bool):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,val,60,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    version_name = f"negative-epochs-{test_after_fit}"
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="--epochs must be non-negative"):
+        baseline_runtime.train_and_save(
+            _runtime_args(
+                config,
+                tmp_path,
+                version_name=version_name,
+                epochs=-1,
+                test_after_fit=test_after_fit,
+            ),
+            cfg,
+        )
+
+    assert not (tmp_path / "log-finetune" / version_name).exists()
+
+
 def test_zero_epoch_checkpoint_eval_skips_train_val_splits(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,
@@ -643,6 +669,23 @@ def test_checkpoint_rejects_incompatible_label_order(tmp_path: Path):
     baseline_runtime.save_checkpoint(ckpt, SexAgeMLP(saved_cfg), saved_cfg, epoch=0, global_step=0, metrics={})
 
     with pytest.raises(ValueError, match="label contract"):
+        baseline_runtime.load_checkpoint(SexAgeMLP(current_cfg), ckpt, device=torch.device("cpu"), cfg=current_cfg)
+
+
+def test_checkpoint_rejects_incompatible_model_contract(tmp_path: Path):
+    rows = ["001,test,50,0", "002,test,60,1"]
+    index = _write_index(tmp_path / "index.csv", rows)
+    sidecars = _write_survival_sidecars(tmp_path / "sidecars", ["001", "002"])
+    saved_config = _write_yaml(tmp_path / "saved.yaml", _base_payload(index, sidecars, "survival"))
+    current_payload = _base_payload(index, sidecars, "survival")
+    current_payload["model"]["age"]["scale"] = 10.0
+    current_config = _write_yaml(tmp_path / "current.yaml", current_payload)
+    saved_cfg = load_config(saved_config, validate_sidecars=True)
+    current_cfg = load_config(current_config, validate_sidecars=True)
+    ckpt = tmp_path / "model.ckpt"
+    baseline_runtime.save_checkpoint(ckpt, SexAgeMLP(saved_cfg), saved_cfg, epoch=0, global_step=0, metrics={})
+
+    with pytest.raises(ValueError, match="model contract"):
         baseline_runtime.load_checkpoint(SexAgeMLP(current_cfg), ckpt, device=torch.device("cpu"), cfg=current_cfg)
 
 

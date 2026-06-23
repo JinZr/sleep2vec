@@ -70,6 +70,8 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     configure_result_args(args, cfg)
     args.version = build_version_name(args, cfg)
     epochs = int(args.epochs)
+    if epochs < 0:
+        raise ValueError("--epochs must be non-negative for sex_age_baseline.")
     if epochs == 0 and not args.ckpt_path:
         raise ValueError("--epochs 0 requires --ckpt-path for sex_age_baseline evaluation.")
     _seed_everything(getattr(args, "seed", 4523))
@@ -337,6 +339,7 @@ def save_checkpoint(
             "state_dict": model.state_dict(),
             "config": asdict(cfg),
             "label_contract": _label_contract(cfg),
+            "model_contract": _model_contract(cfg),
             "epoch": int(epoch),
             "global_step": int(global_step),
             "metrics": dict(metrics),
@@ -354,7 +357,7 @@ def load_checkpoint(
 ) -> dict[str, Any]:
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     if cfg is not None:
-        _validate_checkpoint_label_contract(checkpoint, cfg, path)
+        _validate_checkpoint_contracts(checkpoint, cfg, path)
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
     elif isinstance(checkpoint, dict) and "model" in checkpoint:
@@ -367,12 +370,12 @@ def load_checkpoint(
     return checkpoint if isinstance(checkpoint, dict) else {}
 
 
-def _validate_checkpoint_label_contract(checkpoint: Any, cfg: BaselineConfig, path: str | Path) -> None:
+def _validate_checkpoint_contracts(checkpoint: Any, cfg: BaselineConfig, path: str | Path) -> None:
     if not isinstance(checkpoint, Mapping):
         raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline label contract: {path}")
+    saved_config = checkpoint.get("config")
     saved_contract = checkpoint.get("label_contract")
     if not isinstance(saved_contract, Mapping):
-        saved_config = checkpoint.get("config")
         if not isinstance(saved_config, Mapping):
             raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline config: {path}")
         saved_contract = _label_contract(saved_config)
@@ -382,6 +385,39 @@ def _validate_checkpoint_label_contract(checkpoint: Any, cfg: BaselineConfig, pa
             "Checkpoint label contract does not match current sex_age_baseline config: "
             f"checkpoint={dict(saved_contract)}, current={current_contract}."
         )
+    saved_model_contract = checkpoint.get("model_contract")
+    if not isinstance(saved_model_contract, Mapping):
+        if not isinstance(saved_config, Mapping):
+            raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline config: {path}")
+        saved_model_contract = _model_contract(saved_config)
+    current_model_contract = _model_contract(cfg)
+    if dict(saved_model_contract) != current_model_contract:
+        raise ValueError(
+            "Checkpoint model contract does not match current sex_age_baseline config: "
+            f"checkpoint={dict(saved_model_contract)}, current={current_model_contract}."
+        )
+
+
+def _model_contract(cfg: BaselineConfig | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(cfg, BaselineConfig):
+        return {
+            "name": cfg.model.name,
+            "features": list(cfg.model.features),
+            "age": asdict(cfg.model.age),
+            "sex": asdict(cfg.model.sex),
+            "head": asdict(cfg.model.head),
+        }
+    model = cfg.get("model") if isinstance(cfg.get("model"), Mapping) else {}
+    age = model.get("age") if isinstance(model.get("age"), Mapping) else {}
+    sex = model.get("sex") if isinstance(model.get("sex"), Mapping) else {}
+    head = model.get("head") if isinstance(model.get("head"), Mapping) else {}
+    return {
+        "name": model.get("name"),
+        "features": list(model.get("features") or []),
+        "age": dict(age),
+        "sex": dict(sex),
+        "head": dict(head),
+    }
 
 
 def _label_contract(cfg: BaselineConfig | Mapping[str, Any]) -> dict[str, Any]:
