@@ -44,8 +44,7 @@ class SexAgeDataset(Dataset):
 
 
 def load_split_dataset(cfg: BaselineConfig, split: str) -> SexAgeDataset:
-    frame = _load_metadata_frame(cfg)
-    selected = frame[frame["_baseline_split"] == str(split)]
+    frame = _load_metadata_frame(cfg, split=split)
 
     if cfg.finetune.task.type == "survival":
         labels = load_survival_label_table(cfg.finetune.survival, expected_output_dim=cfg.finetune.task.output_dim)
@@ -59,7 +58,7 @@ def load_split_dataset(cfg: BaselineConfig, split: str) -> SexAgeDataset:
                 is_event=labels.is_event[row["_baseline_key"]],
                 has_label=labels.has_label[row["_baseline_key"]],
             )
-            for _, row in selected.iterrows()
+            for _, row in frame.iterrows()
         ]
         return SexAgeDataset(records, task_type=cfg.finetune.task.type, label_names=labels.label_names)
 
@@ -73,7 +72,7 @@ def load_split_dataset(cfg: BaselineConfig, split: str) -> SexAgeDataset:
             disease_label=labels.disease_label[_require_label_key(row["_baseline_key"], labels.disease_label, split)],
             has_label=labels.has_label[row["_baseline_key"]],
         )
-        for _, row in selected.iterrows()
+        for _, row in frame.iterrows()
     ]
     return SexAgeDataset(records, task_type=cfg.finetune.task.type, label_names=labels.label_names)
 
@@ -94,7 +93,7 @@ def make_dataloader(
     )
 
 
-def _load_metadata_frame(cfg: BaselineConfig) -> pd.DataFrame:
+def _load_metadata_frame(cfg: BaselineConfig, *, split: str) -> pd.DataFrame:
     if cfg.data.backend == "npz":
         if cfg.data.finetune_preset_path:
             frame = _load_rows_from_npz_preset(cfg)
@@ -111,7 +110,10 @@ def _load_metadata_frame(cfg: BaselineConfig) -> pd.DataFrame:
         raise ValueError(f"Sex/age baseline metadata is missing required columns: {missing}")
     normalize_key = _key_normalizer(cfg)
 
-    frame = frame.copy()
+    requested_split = str(split).strip()
+    split_values = frame[cfg.data.split_column].map(lambda value: "" if pd.isna(value) else str(value).strip())
+    frame = frame[split_values == requested_split].copy()
+
     frame["_baseline_key"] = [normalize_key(value, cfg.data.key_column) for value in frame[cfg.data.key_column]]
     frame["_baseline_split"] = [_parse_split(value, cfg.data.split_column) for value in frame[cfg.data.split_column]]
     frame["_baseline_age"] = [_parse_age(value) for value in frame["age"]]

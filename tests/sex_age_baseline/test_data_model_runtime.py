@@ -296,16 +296,16 @@ def test_kaldi_manifest_split_key_fills_missing_split_column(tmp_path: Path):
 
 
 def test_conflicting_duplicate_metadata_fails(tmp_path: Path):
-    config = _write_config(tmp_path, ["001,train,50,female", "001,val,50,female"])
+    config = _write_config(tmp_path, ["001,train,50,female", "001,train,51,female"])
     cfg = load_config(config, validate_sidecars=True)
 
-    with pytest.raises(ValueError, match="conflicting split"):
+    with pytest.raises(ValueError, match="conflicting age"):
         load_split_dataset(cfg, "train")
 
 
 @pytest.mark.parametrize("backend", ["npz_preset", "kaldi"])
 def test_conflicting_duplicate_metadata_fails_for_non_index_backends(tmp_path: Path, backend: str):
-    rows = ["001,train,50,0", "001,val,50,0"]
+    rows = ["001,train,50,0", "001,train,51,0"]
     if backend == "npz_preset":
         preset = _write_preset(tmp_path / "preset.pkl", rows)
         data = {
@@ -327,7 +327,7 @@ def test_conflicting_duplicate_metadata_fails_for_non_index_backends(tmp_path: P
     config = _write_config_for_data(tmp_path, rows, data)
     cfg = load_config(config, validate_sidecars=True)
 
-    with pytest.raises(ValueError, match="conflicting split"):
+    with pytest.raises(ValueError, match="conflicting age"):
         load_split_dataset(cfg, "train")
 
 
@@ -372,6 +372,54 @@ def test_invalid_sex_fails(tmp_path: Path):
 
     with pytest.raises(ValueError, match="sex value"):
         load_split_dataset(cfg, "train")
+
+
+@pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
+def test_unused_split_metadata_values_do_not_block_selected_split(tmp_path: Path, backend: str):
+    rows = ["001,train,50,0", "002,val,60,1", "003,test,,unknown"]
+    if backend == "npz_index":
+        index = _write_index(tmp_path / "index.csv", rows)
+        data = {
+            "backend": "npz",
+            "finetune_data_index": str(index),
+            "finetune_preset_path": None,
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
+        }
+    elif backend == "npz_preset":
+        preset = _write_preset(tmp_path / "preset.pkl", rows)
+        data = {
+            "backend": "npz",
+            "finetune_data_index": None,
+            "finetune_preset_path": str(preset),
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
+        }
+    else:
+        kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
+        data = {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(kaldi_manifest),
+        }
+    config = _write_config_for_data(tmp_path, rows, data)
+    cfg = load_config(config, validate_sidecars=True)
+
+    assert [(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "train")] == [("001", 50.0, 0)]
+    assert [(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "val")] == [("002", 60.0, 1)]
+
+    with pytest.raises(ValueError, match="age"):
+        load_split_dataset(cfg, "test")
+
+
+def test_unused_split_duplicate_metadata_does_not_block_selected_split(tmp_path: Path):
+    config = _write_config(tmp_path, ["001,train,50,0", "002,val,60,1", "001,test,55,1"])
+    cfg = load_config(config, validate_sidecars=True)
+
+    assert [(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "train")] == [("001", 50.0, 0)]
+    assert [(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "val")] == [("002", 60.0, 1)]
 
 
 @pytest.mark.parametrize("task_type", ["survival", "multilabel_classification"])
