@@ -90,6 +90,24 @@ def _write_kaldi_survival_config(tmp_path: Path, *, split_key: str = "003") -> P
     return _write_yaml(config, payload)
 
 
+def _write_metadata_preset(path: Path, rows: list[dict]) -> Path:
+    with path.open("wb") as file_obj:
+        pickle.dump(
+            [
+                SampleIndex(
+                    id=str(row["eid"]),
+                    path="ignored.npz",
+                    start=0,
+                    end=1,
+                    metadata=row,
+                )
+                for row in rows
+            ],
+            file_obj,
+        )
+    return path
+
+
 def _write_multilabel_config(
     tmp_path: Path,
     *,
@@ -223,6 +241,22 @@ def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path
     assert "python -m sex_age_baseline.finetune" in script
     assert "--pretrained-backbone-path" not in script
     assert "--inference-preset-path" not in script
+
+
+def test_sex_age_baseline_variant_routes_invalid_config_to_strict_loader(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["model"]["name"] = "sex_age_mlp_typo"
+    _write_yaml(config, payload)
+    recipe = _finetune_recipe(tmp_path, config)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-invalid-config")
+
+    assert report.exit_code == 2
+    assert any(
+        issue.field == "config" and "model.name must be 'sex_age_mlp'" in issue.message for issue in report.issues
+    )
+    assert not (tmp_path / "plan-invalid-config" / "run.sh").exists()
 
 
 def test_sex_age_baseline_kaldi_finetune_blocks_survival_keys_missing_from_sidecars(tmp_path: Path):
@@ -460,6 +494,28 @@ def test_sex_age_baseline_finetune_preset_keeps_survival_sidecar_checks(tmp_path
     assert not (tmp_path / "plan-finetune-preset-bad-sidecars" / "run.sh").exists()
 
 
+def test_sex_age_baseline_finetune_preset_blocks_survival_keys_missing_from_sidecars(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    config_payload = yaml.safe_load(config.read_text())
+    preset = _write_metadata_preset(
+        tmp_path / "preset_missing_sidecar_key.pkl",
+        [{"eid": "004", "split": "val", "age": 55, "sex": 0}],
+    )
+    config_payload["data"]["finetune_data_index"] = None
+    config_payload["data"]["finetune_preset_path"] = str(preset)
+    _write_yaml(config, config_payload)
+    recipe = _finetune_recipe(tmp_path, config)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-preset-missing-sidecar-key")
+
+    assert report.exit_code == 1
+    assert any(
+        issue.field == "data_input" and "survival key values missing from sidecars" in issue.message
+        for issue in report.issues
+    )
+    assert not (tmp_path / "plan-preset-missing-sidecar-key" / "run.sh").exists()
+
+
 def test_sex_age_baseline_inference_preset_keeps_survival_sidecar_checks(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     config_payload = yaml.safe_load(config.read_text())
@@ -485,20 +541,7 @@ def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: 
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("placeholder")
-    preset = tmp_path / "preset.pkl"
-    with preset.open("wb") as file_obj:
-        pickle.dump(
-            [
-                SampleIndex(
-                    id="002",
-                    path="ignored.npz",
-                    start=0,
-                    end=1,
-                    metadata={"eid": "002", "split": "val", "age": 60, "sex": 1},
-                )
-            ],
-            file_obj,
-        )
+    preset = _write_metadata_preset(tmp_path / "preset.pkl", [{"eid": "002", "split": "val", "age": 60, "sex": 1}])
     recipe = _infer_recipe(tmp_path, config, ckpt)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["inference_preset_path"] = str(preset)
@@ -510,6 +553,28 @@ def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: 
     script = (tmp_path / "plan-infer-preset" / "run.sh").read_text()
     assert "python -m sex_age_baseline.infer" in script
     assert "--inference-preset-path" in script
+
+
+def test_sex_age_baseline_infer_preset_checks_only_eval_split_keys(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    preset = _write_metadata_preset(
+        tmp_path / "preset_split_filter.pkl",
+        [
+            {"eid": "002", "split": "val", "age": 60, "sex": 1},
+            {"eid": "004", "split": "test", "age": 55, "sex": 0},
+        ],
+    )
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["inference_preset_path"] = str(preset)
+    _write_yaml(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-preset-split-filter")
+
+    assert report.exit_code == 0
+    assert (tmp_path / "plan-infer-preset-split-filter" / "run.sh").exists()
 
 
 def test_sex_age_baseline_infer_blocks_pretrained_backbone_path(tmp_path: Path):

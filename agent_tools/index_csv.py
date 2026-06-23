@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pickle
 from typing import Any
 
 import pandas as pd
@@ -16,6 +17,7 @@ def index_summary(
     config: str | Path | None = None,
     label_name: str | None = None,
     split_values: list[str] | None = None,
+    preset_path: str | Path | None = None,
     sample_path_check: int = 0,
     sample_npz_check: int = 0,
 ) -> dict[str, Any]:
@@ -34,7 +36,9 @@ def index_summary(
     if converters:
         read_csv_kwargs["converters"] = converters
     source_issues: list[str] = []
-    if not paths and _uses_sex_age_kaldi_manifest(cfg):
+    if not paths and _uses_sex_age_preset_metadata(cfg, preset_path):
+        frames, paths, missing_inputs, source_issues = _sex_age_preset_frames(cfg, preset_path)
+    elif not paths and _uses_sex_age_kaldi_manifest(cfg):
         frames, paths, missing_inputs, source_issues = _kaldi_manifest_frames(
             cfg,
             split_column=split_column,
@@ -207,6 +211,49 @@ def _survival_key_column(cfg: dict[str, Any] | None) -> str | None:
 def _uses_sex_age_kaldi_manifest(cfg: dict[str, Any] | None) -> bool:
     data = (cfg or {}).get("data") or {}
     return bool(cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi")
+
+
+def _uses_sex_age_preset_metadata(cfg: dict[str, Any] | None, preset_path: str | Path | None) -> bool:
+    data = (cfg or {}).get("data") or {}
+    return bool(
+        cfg
+        and cfg.get("variant_guess") == "sex_age_baseline"
+        and data.get("backend") == "npz"
+        and preset_path not in (None, "", "ASK_USER")
+    )
+
+
+def _sex_age_preset_frames(
+    cfg: dict[str, Any] | None,
+    preset_path: str | Path | None,
+) -> tuple[list[pd.DataFrame], list[Path], list[str], list[str]]:
+    resolved = resolve_repo_path(preset_path)
+    if resolved is None or not resolved.exists():
+        return [], [], [], [f"Preset not found: {preset_path}"]
+
+    try:
+        with resolved.open("rb") as file_obj:
+            samples = pickle.load(file_obj)
+    except Exception as exc:
+        return [], [resolved], [], [f"Failed to read preset: {exc}"]
+
+    data = (cfg or {}).get("data") or {}
+    key_column = str(data.get("key_column") or "eid")
+    split_column = str(data.get("split_column") or "split")
+    rows = []
+    for sample in samples:
+        metadata = getattr(sample, "metadata", None)
+        if not isinstance(metadata, dict):
+            return [], [resolved], [], ["Sex/age baseline preset entries must expose a metadata mapping."]
+        rows.append(
+            {
+                key_column: metadata.get(key_column),
+                split_column: metadata.get(split_column),
+                "age": metadata.get("age"),
+                "sex": metadata.get("sex"),
+            }
+        )
+    return [pd.DataFrame(rows)], [resolved], [], []
 
 
 def _kaldi_manifest_frames(

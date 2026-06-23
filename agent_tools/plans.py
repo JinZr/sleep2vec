@@ -84,7 +84,7 @@ def build_context(
         "evaluation_policy": {},
         "artifacts": {"output_dir": str(output_dir)},
     }
-    cfg = config_summary(config) if config else None
+    cfg = config_summary(config, variant=variant) if config else None
     policy, defaults = load_policy_files()
     user_decisions = load_user_decisions(user_decisions_path)
     report = evaluate_consultation_gates(
@@ -277,6 +277,7 @@ def _load_config_summary_for_recipe(recipe: dict) -> dict | None:
         config_data = {}
     return config_summary(
         config,
+        variant=recipe.get("variant"),
         validate_survival_local_paths=not _skips_local_path_validation(
             recipe,
             _survival_validation_paths(config_data),
@@ -681,15 +682,33 @@ def _context_index_summary(recipe: dict, cfg: dict | None, decisions: dict | Non
     uses_kaldi_manifest = bool(
         cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi"
     )
+    preset_path = _effective_preset_path(recipe, cfg)
+    finetune = (cfg or {}).get("finetune") or {}
+    task_type = (finetune.get("task") or {}).get("type")
+    label_sidecars_valid = False
+    if task_type == "survival":
+        label_sidecars_valid = (finetune.get("survival") or {}).get("valid") is True
+    elif task_type == "multilabel_classification":
+        label_sidecars_valid = (finetune.get("multilabel") or {}).get("valid") is True
+    uses_sex_age_preset = bool(
+        cfg
+        and cfg.get("variant_guess") == "sex_age_baseline"
+        and data.get("backend") == "npz"
+        and preset_path not in (None, "", "ASK_USER")
+        and label_sidecars_valid
+    )
     if not paths:
-        if not uses_kaldi_manifest:
+        if not uses_kaldi_manifest and not uses_sex_age_preset:
             return None
-        if _skips_local_path_validation(recipe, [data.get("kaldi_data_root"), data.get("kaldi_manifest")]):
+        path_values = (
+            [data.get("kaldi_data_root"), data.get("kaldi_manifest")] if uses_kaldi_manifest else [preset_path]
+        )
+        if _skips_local_path_validation(recipe, path_values):
             return None
     elif _skips_local_path_validation(recipe, paths):
         return None
     try:
-        return index_summary(paths, config=config, split_values=split_values)
+        return index_summary(paths, config=config, split_values=split_values, preset_path=preset_path)
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
 
@@ -707,10 +726,10 @@ def _index_summary_inputs(
         preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
         return _list_value(inputs.get("index")), config, _list_value(preset.get("split"))
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
-        if _effective_preset_path(recipe, cfg) not in (None, ""):
-            return [], config, []
-        data = (cfg or {}).get("data") or {}
         split_values = _list_value(_decision_value(decisions, "eval_split", inputs.get("eval_split")))
+        if _effective_preset_path(recipe, cfg) not in (None, ""):
+            return [], config, split_values
+        data = (cfg or {}).get("data") or {}
         return _list_value(data.get("finetune_data_index")), config, split_values
 
     paths = _list_value(inputs.get("index"))

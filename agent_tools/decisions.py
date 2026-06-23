@@ -520,6 +520,17 @@ def _finetune_task_issues(
 
     if not inputs.get("config"):
         issues.append(_needs("config", "Config path is required for finetune.", high_impact))
+    if config_summary:
+        for issue in config_summary.get("blocking_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "config",
+                    issue,
+                    "Please fix the config before the agent generates commands.",
+                    {"config_path": config_summary.get("config_path")},
+                )
+            )
     if "test_after_fit" not in evaluation and not _has_explicit_decision(decisions, "test_after_fit"):
         issues.append(
             DecisionIssue(
@@ -791,6 +802,17 @@ def _infer_evaluate_issues(
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
 
+    if config_summary:
+        for issue in config_summary.get("blocking_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "config",
+                    issue,
+                    "Please fix the config before the agent generates commands.",
+                    {"config_path": config_summary.get("config_path")},
+                )
+            )
     if inputs.get("eval_split") == "test":
         final_eval_unlock = decisions.get("final_eval_unlock")
         unlocked = evaluation.get("final_test_unlocked") is True or (

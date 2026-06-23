@@ -391,14 +391,19 @@ def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
     }
 
 
-def config_summary(config_path: str | Path, *, validate_survival_local_paths: bool = True) -> dict[str, Any]:
+def config_summary(
+    config_path: str | Path,
+    *,
+    variant: str | None = None,
+    validate_survival_local_paths: bool = True,
+) -> dict[str, Any]:
     resolved = resolve_repo_path(config_path)
     if resolved is None:
         raise FileNotFoundError("Config path is required.")
     data = load_yaml(resolved)
     if _looks_like_sleep2stat_config_data(data):
         return sleep2stat_config_summary(resolved)
-    if _looks_like_sex_age_baseline_config_data(data):
+    if variant == "sex_age_baseline" or _looks_like_sex_age_baseline_config_data(data):
         return sex_age_baseline_config_summary(
             resolved,
             validate_survival_local_paths=validate_survival_local_paths,
