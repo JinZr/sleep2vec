@@ -430,10 +430,21 @@ def _multilabel_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
 
 
 def _filter_splits(df: pd.DataFrame, split_values: list[str] | None, *, split_column: str) -> pd.DataFrame:
-    splits = [str(value) for value in split_values or [] if value not in (None, "", "ASK_USER")]
+    splits = [
+        _normalized_split_value(value)
+        for value in split_values or []
+        if _normalized_split_value(value) not in ("", "ASK_USER")
+    ]
     if not splits or split_column not in df.columns:
         return df
-    return df[df[split_column].astype(str).isin(splits)].copy()
+    normalized = df[split_column].map(_normalized_split_value)
+    filtered = df[normalized.isin(splits)].copy()
+    filtered[split_column] = filtered[split_column].map(_normalized_split_value)
+    return filtered
+
+
+def _normalized_split_value(value: Any) -> str:
+    return "" if pd.isna(value) else str(value).strip()
 
 
 def _survival_covariate_summary(df: pd.DataFrame, covariates: list[str]) -> dict[str, dict[str, Any]]:

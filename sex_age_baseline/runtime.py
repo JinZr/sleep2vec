@@ -74,6 +74,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         raise ValueError("--epochs must be non-negative for sex_age_baseline.")
     if epochs == 0 and not args.ckpt_path:
         raise ValueError("--epochs 0 requires --ckpt-path for sex_age_baseline evaluation.")
+    ckpt_every_n_epochs = int(getattr(args, "ckpt_every_n_epochs", 1))
+    if ckpt_every_n_epochs <= 0:
+        raise ValueError("--ckpt-every-n-epochs must be positive for sex_age_baseline.")
     _seed_everything(getattr(args, "seed", 4523))
 
     device = torch.device(args.device)
@@ -124,7 +127,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         val_result = evaluate_model(model, val_loader, cfg, device=device, stage="val")
         epoch_metrics = {"train_loss": train_loss, **val_result.metrics}
         save_checkpoint(last_path, model, cfg, epoch=epoch, global_step=global_step, metrics=epoch_metrics)
-        if (epoch + 1) % int(getattr(args, "ckpt_every_n_epochs", 1)) == 0:
+        if (epoch + 1) % ckpt_every_n_epochs == 0:
             save_checkpoint(
                 checkpoint_dir / f"epoch={epoch:02d}.ckpt",
                 model,

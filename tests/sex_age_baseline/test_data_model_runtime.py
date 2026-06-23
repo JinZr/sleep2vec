@@ -619,6 +619,29 @@ def test_negative_epochs_fail_before_run_directory(tmp_path: Path, monkeypatch, 
     assert not (tmp_path / "log-finetune" / version_name).exists()
 
 
+@pytest.mark.parametrize("ckpt_every_n_epochs", [0, -1])
+def test_nonpositive_checkpoint_interval_fails_before_run_directory(
+    tmp_path: Path,
+    monkeypatch,
+    ckpt_every_n_epochs: int,
+):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,val,60,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    version_name = f"bad-ckpt-interval-{ckpt_every_n_epochs}"
+    args = _runtime_args(config, tmp_path, version_name=version_name)
+    args.ckpt_every_n_epochs = ckpt_every_n_epochs
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="--ckpt-every-n-epochs must be positive"):
+        baseline_runtime.train_and_save(args, cfg)
+
+    assert not (tmp_path / "log-finetune" / version_name).exists()
+
+
 def test_zero_epoch_checkpoint_eval_skips_train_val_splits(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,

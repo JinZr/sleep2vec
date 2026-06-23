@@ -290,7 +290,7 @@ def test_index_summary_blocks_sex_age_multilabel_keys_missing_from_sidecars(tmp_
 
 def test_index_summary_uses_sex_age_configured_split_column_for_filtering(tmp_path: Path):
     index = tmp_path / "index.csv"
-    index.write_text("eid,fold,age,sex\n001,train,50,0\n003,test,60,1\n")
+    index.write_text("eid,fold,age,sex\n001, train ,50,0\n003,test,60,1\n")
     disease_columns = tmp_path / "disease_columns.txt"
     event_time = tmp_path / "event_time.csv"
     is_event = tmp_path / "is_event.csv"
