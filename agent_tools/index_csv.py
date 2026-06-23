@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+from numbers import Integral, Real
 from pathlib import Path
 import pickle
 from typing import Any
 
 import pandas as pd
-
-from data.metadata import _encode_binary_label
 
 from .configs import config_summary
 from .models import repo_relative, resolve_repo_path
@@ -290,12 +289,25 @@ def _sex_age_metadata_value_issues(df: pd.DataFrame, *, key_column: str, split_c
 
     if "sex" in df.columns:
         missing = _blank_values(df["sex"])
-        invalid = (~missing) & df["sex"].map(lambda value: _encode_binary_label(value) not in (0, 1))
+        invalid = (~missing) & df["sex"].map(lambda value: not _is_valid_sex_value(value))
         if missing.any():
             issues.append(f"Index CSV contains empty sex-age sex values in column sex: {int(missing.sum())} rows")
         if invalid.any():
             issues.append(f"Index CSV contains invalid sex-age sex values in column sex: {int(invalid.sum())} rows")
     return issues
+
+
+def _is_valid_sex_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"male", "1", "1.0", "x", "female", "0", "0.0"}
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, Integral):
+        return int(value) in {0, 1}
+    if isinstance(value, Real):
+        numeric = float(value)
+        return math.isfinite(numeric) and numeric in {0.0, 1.0}
+    return False
 
 
 def _sex_age_requested_split_issues(
