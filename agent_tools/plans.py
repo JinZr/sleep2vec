@@ -677,7 +677,16 @@ def _skill_context(task: str) -> tuple[dict[str, Any], list[str]]:
 
 def _context_index_summary(recipe: dict, cfg: dict | None, decisions: dict | None = None) -> dict | None:
     paths, config, split_values = _index_summary_inputs(recipe, cfg, decisions=decisions)
-    if not paths or _skips_local_path_validation(recipe, paths):
+    data = (cfg or {}).get("data") or {}
+    uses_kaldi_manifest = bool(
+        cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi"
+    )
+    if not paths:
+        if not uses_kaldi_manifest:
+            return None
+        if _skips_local_path_validation(recipe, [data.get("kaldi_data_root"), data.get("kaldi_manifest")]):
+            return None
+    elif _skips_local_path_validation(recipe, paths):
         return None
     try:
         return index_summary(paths, config=config, split_values=split_values)

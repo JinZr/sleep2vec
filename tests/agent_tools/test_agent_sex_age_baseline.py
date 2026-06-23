@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import pickle
 import subprocess
@@ -67,6 +68,26 @@ def _write_survival_config(tmp_path: Path) -> Path:
             "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
         },
     )
+
+
+def _write_kaldi_survival_config(tmp_path: Path, *, split_key: str = "003") -> Path:
+    config = _write_survival_config(tmp_path)
+    kaldi_root = tmp_path / "kaldi"
+    kaldi_root.mkdir()
+    (kaldi_root / "val.csv").write_text(f"eid,age,sex\n{split_key},55,0\n")
+    manifest = tmp_path / "kaldi_manifest.json"
+    manifest.write_text(json.dumps({"splits": {"val": {"manifest": "val.csv"}}}))
+    payload = yaml.safe_load(config.read_text())
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(manifest),
+        }
+    )
+    return _write_yaml(config, payload)
 
 
 def _write_multilabel_config(
@@ -202,6 +223,33 @@ def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path
     assert "python -m sex_age_baseline.finetune" in script
     assert "--pretrained-backbone-path" not in script
     assert "--inference-preset-path" not in script
+
+
+def test_sex_age_baseline_kaldi_finetune_blocks_survival_keys_missing_from_sidecars(tmp_path: Path):
+    config = _write_kaldi_survival_config(tmp_path, split_key="004")
+    recipe = _finetune_recipe(tmp_path, config)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-kaldi-missing-sidecar-key")
+
+    assert report.exit_code == 1
+    assert any(
+        issue.field == "data_input" and "survival key values missing from sidecars" in issue.message
+        for issue in report.issues
+    )
+    assert not (tmp_path / "plan-kaldi-missing-sidecar-key" / "run.sh").exists()
+
+
+def test_sex_age_baseline_kaldi_infer_accepts_manifest_split_without_split_column(tmp_path: Path):
+    config = _write_kaldi_survival_config(tmp_path, split_key="003")
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-kaldi-valid")
+
+    assert report.exit_code == 0
+    script = (tmp_path / "plan-kaldi-valid" / "run.sh").read_text()
+    assert "python -m sex_age_baseline.infer" in script
 
 
 def test_sex_age_baseline_finetune_blocks_pretrained_backbone_path(tmp_path: Path):

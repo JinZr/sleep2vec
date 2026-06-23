@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,6 @@ def index_summary(
 ) -> dict[str, Any]:
     resolved_paths = [resolve_repo_path(path) for path in index_paths]
     paths = [path for path in resolved_paths if path is not None]
-    missing_inputs = [str(path) for path in paths if not path.exists()]
     cfg = config_summary(config) if config else None
     survival_key_column = _survival_key_column(cfg)
     survival_sidecar_keys = _survival_sidecar_keys(cfg)
@@ -33,7 +33,16 @@ def index_summary(
     converters = {key_column: str for key_column in (survival_key_column, multilabel_key_column) if key_column}
     if converters:
         read_csv_kwargs["converters"] = converters
-    frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
+    source_issues: list[str] = []
+    if not paths and _uses_sex_age_kaldi_manifest(cfg):
+        frames, paths, missing_inputs, source_issues = _kaldi_manifest_frames(
+            cfg,
+            split_column=split_column,
+            read_csv_kwargs=read_csv_kwargs,
+        )
+    else:
+        missing_inputs = [str(path) for path in paths if not path.exists()]
+        frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     df = _filter_splits(df, split_values, split_column=split_column)
     if cfg and cfg.get("variant_guess") == "sex_age_baseline":
@@ -122,6 +131,7 @@ def index_summary(
 
     warnings: list[str] = []
     blocking_issues = [f"Index CSV not found: {path}" for path in missing_inputs]
+    blocking_issues.extend(source_issues)
     for column, exists in required_columns.items():
         if not exists:
             blocking_issues.append(f"Index CSV missing required column: {column}")
@@ -192,6 +202,55 @@ def _survival_key_column(cfg: dict[str, Any] | None) -> str | None:
     if task.get("type") != "survival" or key_column in (None, ""):
         return None
     return str(key_column)
+
+
+def _uses_sex_age_kaldi_manifest(cfg: dict[str, Any] | None) -> bool:
+    data = (cfg or {}).get("data") or {}
+    return bool(cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi")
+
+
+def _kaldi_manifest_frames(
+    cfg: dict[str, Any] | None,
+    *,
+    split_column: str,
+    read_csv_kwargs: dict[str, Any],
+) -> tuple[list[pd.DataFrame], list[Path], list[str], list[str]]:
+    data = (cfg or {}).get("data") or {}
+    root = resolve_repo_path(data.get("kaldi_data_root"))
+    manifest_path = resolve_repo_path(data.get("kaldi_manifest"))
+    issues: list[str] = []
+    if root is None or not root.exists():
+        issues.append(f"Kaldi data root not found: {data.get('kaldi_data_root')}")
+    if manifest_path is None or not manifest_path.exists():
+        issues.append(f"Kaldi manifest not found: {data.get('kaldi_manifest')}")
+    if issues:
+        return [], [], [], issues
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except Exception as exc:
+        return [], [manifest_path], [], [f"Failed to read Kaldi manifest: {exc}"]
+    splits = manifest.get("splits")
+    if not isinstance(splits, dict) or not splits:
+        return [], [manifest_path], [], ["Kaldi manifest must contain a non-empty 'splits' mapping."]
+
+    frames: list[pd.DataFrame] = []
+    paths: list[Path] = []
+    missing_inputs: list[str] = []
+    for split_name, split_spec in splits.items():
+        if not isinstance(split_spec, dict) or not split_spec.get("manifest"):
+            issues.append(f"Kaldi manifest split {split_name!r} must define a manifest CSV.")
+            continue
+        split_path = root / Path(str(split_spec["manifest"]))
+        paths.append(split_path)
+        if not split_path.exists():
+            missing_inputs.append(str(split_path))
+            continue
+        frame = pd.read_csv(split_path, **read_csv_kwargs)
+        if split_column not in frame.columns:
+            frame[split_column] = str(split_name)
+        frames.append(frame)
+    return frames, paths, missing_inputs, issues
 
 
 def _survival_covariates(cfg: dict[str, Any] | None) -> list[str]:
