@@ -43,8 +43,13 @@ class SexAgeDataset(Dataset):
         return self.records[index]
 
 
-def load_split_dataset(cfg: BaselineConfig, split: str) -> SexAgeDataset:
-    frame = _load_metadata_frame(cfg, split=split)
+def load_split_dataset(
+    cfg: BaselineConfig,
+    split: str,
+    *,
+    loaded_splits: list[str] | None = None,
+) -> SexAgeDataset:
+    frame = _load_metadata_frame(cfg, split=split, loaded_splits=loaded_splits)
 
     if cfg.finetune.task.type == "survival":
         labels = load_survival_label_table(cfg.finetune.survival, expected_output_dim=cfg.finetune.task.output_dim)
@@ -93,7 +98,12 @@ def make_dataloader(
     )
 
 
-def _load_metadata_frame(cfg: BaselineConfig, *, split: str) -> pd.DataFrame:
+def _load_metadata_frame(
+    cfg: BaselineConfig,
+    *,
+    split: str,
+    loaded_splits: list[str] | None = None,
+) -> pd.DataFrame:
     if cfg.data.backend == "npz":
         if cfg.data.finetune_preset_path:
             frame = _load_rows_from_npz_preset(cfg)
@@ -110,8 +120,11 @@ def _load_metadata_frame(cfg: BaselineConfig, *, split: str) -> pd.DataFrame:
         raise ValueError(f"Sex/age baseline metadata is missing required columns: {missing}")
     normalize_key = _key_normalizer(cfg)
 
+    if loaded_splits:
+        _validate_loaded_split_key_uniqueness(frame, cfg, normalize_key, loaded_splits)
+
     requested_split = str(split).strip()
-    split_values = frame[cfg.data.split_column].map(lambda value: "" if pd.isna(value) else str(value).strip())
+    split_values = frame[cfg.data.split_column].map(_raw_split_value)
     frame = frame[split_values == requested_split].copy()
 
     frame["_baseline_key"] = [normalize_key(value, cfg.data.key_column) for value in frame[cfg.data.key_column]]
@@ -170,6 +183,31 @@ def _key_normalizer(cfg: BaselineConfig) -> Callable[[Any, str], str]:
     if cfg.finetune.task.type == "survival":
         return normalize_survival_key
     return normalize_multilabel_key
+
+
+def _raw_split_value(value: Any) -> str:
+    return "" if pd.isna(value) else str(value).strip()
+
+
+def _validate_loaded_split_key_uniqueness(
+    frame: pd.DataFrame,
+    cfg: BaselineConfig,
+    normalize_key: Callable[[Any, str], str],
+    loaded_splits: list[str],
+) -> None:
+    loaded = {str(split).strip() for split in loaded_splits}
+    key_splits: dict[str, set[str]] = {}
+    for _, row in frame.iterrows():
+        split = _raw_split_value(row[cfg.data.split_column])
+        if split not in loaded:
+            continue
+        key = normalize_key(row[cfg.data.key_column], cfg.data.key_column)
+        key_splits.setdefault(key, set()).add(split)
+
+    for key, splits in key_splits.items():
+        if len(splits) > 1:
+            split_list = ", ".join(sorted(splits))
+            raise ValueError(f"Sex/age baseline key {key!r} appears in multiple loaded splits: {split_list}.")
 
 
 def _parse_split(value: Any, column: str) -> str:

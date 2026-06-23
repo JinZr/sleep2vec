@@ -88,9 +88,12 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     if args.ckpt_path:
         load_checkpoint(model, args.ckpt_path, device=device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    loaded_splits = ["train", "val"] if epochs > 0 else []
+    if args.test_after_fit:
+        loaded_splits.append("test")
     if epochs > 0:
-        train_set = _required_dataset(cfg, "train")
-        val_set = _required_dataset(cfg, "val")
+        train_set = _required_dataset(cfg, "train", loaded_splits=loaded_splits)
+        val_set = _required_dataset(cfg, "val", loaded_splits=loaded_splits)
         train_loader = make_dataloader(
             train_set,
             batch_size=args.batch_size,
@@ -171,7 +174,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         args.ckpt_path = str(best_path)
         args.ckpt_resolved_path = str(best_path)
 
-    test_set = _required_dataset(cfg, "test")
+    test_set = _required_dataset(cfg, "test", loaded_splits=loaded_splits)
     test_loader = make_dataloader(test_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
     args.eval_split = "test"
     test_result = evaluate_model(
@@ -222,7 +225,7 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     prepare_inference_result_paths(args, namespace="sex_age_baseline")
     args.task_family = cfg.finetune.task.type
 
-    dataset = _required_dataset(cfg, args.eval_split)
+    dataset = _required_dataset(cfg, args.eval_split, loaded_splits=[args.eval_split])
     loader = make_dataloader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
     result = evaluate_model(
         model,
@@ -536,8 +539,8 @@ def _multilabel_disease_names(cfg: BaselineConfig) -> list[str]:
     return load_multilabel_disease_columns(cfg.finetune.multilabel.disease_columns_index)
 
 
-def _required_dataset(cfg: BaselineConfig, split: str) -> SexAgeDataset:
-    dataset = load_split_dataset(cfg, split)
+def _required_dataset(cfg: BaselineConfig, split: str, *, loaded_splits: list[str] | None = None) -> SexAgeDataset:
+    dataset = load_split_dataset(cfg, split, loaded_splits=loaded_splits)
     if len(dataset) == 0:
         raise ValueError(f"Sex/age baseline split {split!r} has no rows.")
     return dataset

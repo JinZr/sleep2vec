@@ -418,8 +418,63 @@ def test_unused_split_duplicate_metadata_does_not_block_selected_split(tmp_path:
     config = _write_config(tmp_path, ["001,train,50,0", "002,val,60,1", "001,test,55,1"])
     cfg = load_config(config, validate_sidecars=True)
 
-    assert [(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "train")] == [("001", 50.0, 0)]
-    assert [(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "val")] == [("002", 60.0, 1)]
+    assert [
+        (record.key, record.age, record.sex)
+        for record in load_split_dataset(cfg, "train", loaded_splits=["train", "val"])
+    ] == [("001", 50.0, 0)]
+    assert [
+        (record.key, record.age, record.sex)
+        for record in load_split_dataset(cfg, "val", loaded_splits=["train", "val"])
+    ] == [("002", 60.0, 1)]
+
+    with pytest.raises(ValueError, match="multiple loaded splits"):
+        load_split_dataset(cfg, "train", loaded_splits=["train", "val", "test"])
+
+
+@pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
+def test_loaded_split_key_reuse_fails_before_metadata_parsing(tmp_path: Path, backend: str):
+    rows = ["001,train,50,0", "001,val,bad,unknown", "002,test,,unknown"]
+    if backend == "npz_index":
+        index = _write_index(tmp_path / "index.csv", rows)
+        data = {
+            "backend": "npz",
+            "finetune_data_index": str(index),
+            "finetune_preset_path": None,
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
+        }
+    elif backend == "npz_preset":
+        preset = _write_preset(tmp_path / "preset.pkl", rows)
+        data = {
+            "backend": "npz",
+            "finetune_data_index": None,
+            "finetune_preset_path": str(preset),
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
+        }
+    else:
+        kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
+        data = {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(kaldi_manifest),
+        }
+    config = _write_config_for_data(tmp_path, rows, data)
+    cfg = load_config(config, validate_sidecars=True)
+
+    with pytest.raises(ValueError, match="multiple loaded splits"):
+        load_split_dataset(cfg, "train", loaded_splits=["train", "val"])
+
+
+def test_train_rejects_key_reused_across_train_val(tmp_path: Path, monkeypatch):
+    config = _write_config(tmp_path, ["001,train,50,0", "001,val,50,0"])
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="multiple loaded splits"):
+        baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="split-leak"), cfg)
 
 
 @pytest.mark.parametrize("task_type", ["survival", "multilabel_classification"])
