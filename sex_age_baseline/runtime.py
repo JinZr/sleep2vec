@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 import random
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import torch
@@ -86,7 +87,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     model = SexAgeMLP(cfg).to(device)
     if args.ckpt_path:
-        load_checkpoint(model, args.ckpt_path, device=device)
+        load_checkpoint(model, args.ckpt_path, device=device, cfg=cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     loaded_splits = ["train", "val"] if epochs > 0 else []
     if args.test_after_fit:
@@ -170,7 +171,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         return
 
     if best_path.exists():
-        load_checkpoint(model, best_path, device=device)
+        load_checkpoint(model, best_path, device=device, cfg=cfg)
         args.ckpt_path = str(best_path)
         args.ckpt_resolved_path = str(best_path)
 
@@ -220,7 +221,7 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     _seed_everything(getattr(args, "seed", 4523))
     device = torch.device(args.device)
     model = SexAgeMLP(cfg).to(device)
-    load_checkpoint(model, args.ckpt_path, device=device)
+    load_checkpoint(model, args.ckpt_path, device=device, cfg=cfg)
     args.ckpt_resolved_path = str(args.ckpt_path)
     prepare_inference_result_paths(args, namespace="sex_age_baseline")
     args.task_family = cfg.finetune.task.type
@@ -335,6 +336,7 @@ def save_checkpoint(
         {
             "state_dict": model.state_dict(),
             "config": asdict(cfg),
+            "label_contract": _label_contract(cfg),
             "epoch": int(epoch),
             "global_step": int(global_step),
             "metrics": dict(metrics),
@@ -343,8 +345,16 @@ def save_checkpoint(
     )
 
 
-def load_checkpoint(model: SexAgeMLP, path: str | Path, *, device: torch.device) -> dict[str, Any]:
+def load_checkpoint(
+    model: SexAgeMLP,
+    path: str | Path,
+    *,
+    device: torch.device,
+    cfg: BaselineConfig | None = None,
+) -> dict[str, Any]:
     checkpoint = torch.load(path, map_location=device, weights_only=False)
+    if cfg is not None:
+        _validate_checkpoint_label_contract(checkpoint, cfg, path)
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
     elif isinstance(checkpoint, dict) and "model" in checkpoint:
@@ -355,6 +365,65 @@ def load_checkpoint(model: SexAgeMLP, path: str | Path, *, device: torch.device)
         raise ValueError(f"Unsupported checkpoint format: {path}")
     model.load_state_dict(state_dict, strict=True)
     return checkpoint if isinstance(checkpoint, dict) else {}
+
+
+def _validate_checkpoint_label_contract(checkpoint: Any, cfg: BaselineConfig, path: str | Path) -> None:
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline label contract: {path}")
+    saved_contract = checkpoint.get("label_contract")
+    if not isinstance(saved_contract, Mapping):
+        saved_config = checkpoint.get("config")
+        if not isinstance(saved_config, Mapping):
+            raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline config: {path}")
+        saved_contract = _label_contract(saved_config)
+    current_contract = _label_contract(cfg)
+    if dict(saved_contract) != current_contract:
+        raise ValueError(
+            "Checkpoint label contract does not match current sex_age_baseline config: "
+            f"checkpoint={dict(saved_contract)}, current={current_contract}."
+        )
+
+
+def _label_contract(cfg: BaselineConfig | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(cfg, BaselineConfig):
+        task_type = cfg.finetune.task.type
+        output_dim = cfg.finetune.task.output_dim
+        if task_type == "survival":
+            disease_columns_index = cfg.finetune.survival.disease_columns_index
+        else:
+            disease_columns_index = cfg.finetune.multilabel.disease_columns_index
+    else:
+        finetune = cfg.get("finetune") if isinstance(cfg.get("finetune"), Mapping) else {}
+        task = finetune.get("task") if isinstance(finetune.get("task"), Mapping) else {}
+        task_type = task.get("type")
+        output_dim = task.get("output_dim")
+        if task_type == "survival":
+            label_cfg = finetune.get("survival")
+        elif task_type == "multilabel_classification":
+            label_cfg = finetune.get("multilabel")
+        else:
+            label_cfg = None
+        if not isinstance(label_cfg, Mapping):
+            raise ValueError("Checkpoint config is missing task label configuration.")
+        disease_columns_index = label_cfg.get("disease_columns_index")
+
+    return {
+        "task_type": str(task_type),
+        "output_dim": int(output_dim),
+        "label_names": _label_names(task_type, disease_columns_index),
+    }
+
+
+def _label_names(task_type: Any, disease_columns_index: Any) -> list[str]:
+    if task_type == "survival":
+        from data.survival import load_survival_disease_columns
+
+        return load_survival_disease_columns(disease_columns_index)
+    if task_type == "multilabel_classification":
+        from data.multilabel import load_multilabel_disease_columns
+
+        return load_multilabel_disease_columns(disease_columns_index)
+    raise ValueError(f"Unsupported sex_age_baseline checkpoint task type: {task_type}")
 
 
 def _train_one_epoch(

@@ -27,8 +27,14 @@ def _write_index(path: Path, rows: list[str]) -> Path:
     return path
 
 
-def _write_survival_sidecars(tmp_path: Path, keys: list[str], disease_count: int = 2) -> dict[str, str]:
-    diseases = [f"d{i + 1}" for i in range(disease_count)]
+def _write_survival_sidecars(
+    tmp_path: Path,
+    keys: list[str],
+    disease_count: int = 2,
+    diseases: list[str] | None = None,
+) -> dict[str, str]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    diseases = diseases or [f"d{i + 1}" for i in range(disease_count)]
     disease_columns = tmp_path / "disease_columns.txt"
     event_time = tmp_path / "event_time.csv"
     is_event = tmp_path / "is_event.csv"
@@ -172,6 +178,37 @@ def _write_config_for_data(tmp_path: Path, rows: list[str], data: dict, task_typ
     payload = _base_payload(tmp_path / "unused-index.csv", sidecars, task_type)
     payload["data"].update(data)
     return _write_yaml(tmp_path / f"{task_type}-{data['backend']}.yaml", payload)
+
+
+def _backend_data_config(tmp_path: Path, rows: list[str], backend: str) -> dict:
+    if backend == "npz_index":
+        index = _write_index(tmp_path / "index.csv", rows)
+        return {
+            "backend": "npz",
+            "finetune_data_index": str(index),
+            "finetune_preset_path": None,
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
+        }
+    if backend == "npz_preset":
+        preset = _write_preset(tmp_path / "preset.pkl", rows)
+        return {
+            "backend": "npz",
+            "finetune_data_index": None,
+            "finetune_preset_path": str(preset),
+            "kaldi_data_root": None,
+            "kaldi_manifest": None,
+        }
+    if backend == "kaldi":
+        kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
+        return {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(kaldi_manifest),
+        }
+    raise ValueError(f"Unsupported test backend: {backend}")
 
 
 def _runtime_args(config: Path, tmp_path: Path, *, version_name: str, epochs: int = 1, test_after_fit: bool = False):
@@ -377,33 +414,7 @@ def test_invalid_sex_fails(tmp_path: Path):
 @pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
 def test_unused_split_metadata_values_do_not_block_selected_split(tmp_path: Path, backend: str):
     rows = ["001,train,50,0", "002,val,60,1", "003,test,,unknown"]
-    if backend == "npz_index":
-        index = _write_index(tmp_path / "index.csv", rows)
-        data = {
-            "backend": "npz",
-            "finetune_data_index": str(index),
-            "finetune_preset_path": None,
-            "kaldi_data_root": None,
-            "kaldi_manifest": None,
-        }
-    elif backend == "npz_preset":
-        preset = _write_preset(tmp_path / "preset.pkl", rows)
-        data = {
-            "backend": "npz",
-            "finetune_data_index": None,
-            "finetune_preset_path": str(preset),
-            "kaldi_data_root": None,
-            "kaldi_manifest": None,
-        }
-    else:
-        kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
-        data = {
-            "backend": "kaldi",
-            "finetune_data_index": None,
-            "finetune_preset_path": None,
-            "kaldi_data_root": str(kaldi_root),
-            "kaldi_manifest": str(kaldi_manifest),
-        }
+    data = _backend_data_config(tmp_path, rows, backend)
     config = _write_config_for_data(tmp_path, rows, data)
     cfg = load_config(config, validate_sidecars=True)
 
@@ -434,33 +445,7 @@ def test_unused_split_duplicate_metadata_does_not_block_selected_split(tmp_path:
 @pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
 def test_loaded_split_key_reuse_fails_before_metadata_parsing(tmp_path: Path, backend: str):
     rows = ["001,train,50,0", "001,val,bad,unknown", "002,test,,unknown"]
-    if backend == "npz_index":
-        index = _write_index(tmp_path / "index.csv", rows)
-        data = {
-            "backend": "npz",
-            "finetune_data_index": str(index),
-            "finetune_preset_path": None,
-            "kaldi_data_root": None,
-            "kaldi_manifest": None,
-        }
-    elif backend == "npz_preset":
-        preset = _write_preset(tmp_path / "preset.pkl", rows)
-        data = {
-            "backend": "npz",
-            "finetune_data_index": None,
-            "finetune_preset_path": str(preset),
-            "kaldi_data_root": None,
-            "kaldi_manifest": None,
-        }
-    else:
-        kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
-        data = {
-            "backend": "kaldi",
-            "finetune_data_index": None,
-            "finetune_preset_path": None,
-            "kaldi_data_root": str(kaldi_root),
-            "kaldi_manifest": str(kaldi_manifest),
-        }
+    data = _backend_data_config(tmp_path, rows, backend)
     config = _write_config_for_data(tmp_path, rows, data)
     cfg = load_config(config, validate_sidecars=True)
 
@@ -631,6 +616,34 @@ def test_zero_epoch_checkpoint_eval_skips_train_val_splits(tmp_path: Path, monke
     manifest = json.loads((tmp_path / "log-finetune" / "zero-epoch-test-only" / "run_manifest.json").read_text())
     assert manifest["status"] == "completed"
     assert manifest["best_model_path"] == str(ckpt)
+
+
+def test_checkpoint_rejects_incompatible_label_order(tmp_path: Path):
+    rows = ["001,test,50,0", "002,test,60,1"]
+    index = _write_index(tmp_path / "index.csv", rows)
+    saved_config = _write_yaml(
+        tmp_path / "saved.yaml",
+        _base_payload(
+            index,
+            _write_survival_sidecars(tmp_path / "saved-sidecars", ["001", "002"], diseases=["d1", "d2"]),
+            "survival",
+        ),
+    )
+    current_config = _write_yaml(
+        tmp_path / "current.yaml",
+        _base_payload(
+            index,
+            _write_survival_sidecars(tmp_path / "current-sidecars", ["001", "002"], diseases=["d2", "d1"]),
+            "survival",
+        ),
+    )
+    saved_cfg = load_config(saved_config, validate_sidecars=True)
+    current_cfg = load_config(current_config, validate_sidecars=True)
+    ckpt = tmp_path / "model.ckpt"
+    baseline_runtime.save_checkpoint(ckpt, SexAgeMLP(saved_cfg), saved_cfg, epoch=0, global_step=0, metrics={})
+
+    with pytest.raises(ValueError, match="label contract"):
+        baseline_runtime.load_checkpoint(SexAgeMLP(current_cfg), ckpt, device=torch.device("cpu"), cfg=current_cfg)
 
 
 def test_test_after_fit_writers_receive_test_eval_split(tmp_path: Path, monkeypatch):

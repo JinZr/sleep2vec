@@ -243,6 +243,36 @@ def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path
     assert "--inference-preset-path" not in script
 
 
+def test_sex_age_baseline_preset_prepare_is_rejected(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    index = tmp_path / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask\nunit.npz,train,60,1\n")
+    recipe = _write_yaml(
+        tmp_path / "preset_prepare.yaml",
+        {
+            "name": "unit_sex_age_preset_prepare",
+            "task": "preset_prepare",
+            "variant": "sex_age_baseline",
+            "inputs": {"config": str(config), "index": [str(index)], "dataset_name": "unit"},
+            "preset": {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False},
+            "decisions": {
+                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
+                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-preset-prepare")
+
+    assert report.exit_code == 1
+    assert any(
+        issue.field == "variant" and "does not support preset_prepare" in issue.message for issue in report.issues
+    )
+    assert not (tmp_path / "plan-preset-prepare" / "run.sh").exists()
+
+
 def test_sex_age_baseline_variant_routes_invalid_config_to_strict_loader(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     payload = yaml.safe_load(config.read_text())

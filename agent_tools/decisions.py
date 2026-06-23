@@ -128,6 +128,16 @@ def evaluate_consultation_gates(
                 {"variant": variant},
             )
         )
+    if task_value == "preset_prepare" and variant == "sex_age_baseline":
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "variant",
+                "sex_age_baseline does not support preset_prepare.",
+                None,
+                {"variant": variant, "task": task_value},
+            )
+        )
 
     for decision_field, rule in high_impact.items():
         if task_value not in rule.get("required_for_tasks", []):
