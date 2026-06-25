@@ -149,6 +149,7 @@ def test_sleep2expert_moe_forward_preserves_shape_and_hidden_states():
     assert [aux.layer_idx for aux in output.moe_aux] == [1, 3]
     for aux in output.moe_aux:
         assert aux.modality_name == "eeg"
+        assert aux.required_expert_ids == ()
         assert aux.router_logits.shape == (2, 5, 4)
         assert aux.topk_indices.shape == (2, 5, 2)
         assert aux.topk_probs.shape == (2, 5, 2)
@@ -218,6 +219,7 @@ def test_sleep2expert_moe_required_expert_fixed_weight(router_type: str):
 
     assert output.moe_aux is not None
     for aux in output.moe_aux:
+        assert aux.required_expert_ids == (0,)
         assert aux.topk_indices.shape[-1] == 3
         assert (aux.topk_indices[..., 0] == 0).all()
         assert torch.allclose(aux.topk_probs[..., 0], torch.full((2, 4), 1 / 3))
@@ -250,6 +252,7 @@ def test_sleep2expert_moe_required_expert_fixed_weight_normalizes_from_routed_lo
 
     assert output.moe_aux is not None
     for aux in output.moe_aux:
+        assert aux.required_expert_ids == (0,)
         assert (aux.topk_indices[..., 0] == 0).all()
         assert torch.allclose(aux.topk_probs[..., 0].float(), torch.full((2, 4), 1 / 3), atol=1e-3)
         assert torch.allclose(aux.topk_probs.sum(dim=-1).float(), torch.ones(2, 4), atol=1e-3)
@@ -277,6 +280,7 @@ def test_sleep2expert_moe_required_expert_router_weight_uses_router_probability(
 
     assert output.moe_aux is not None
     for aux in output.moe_aux:
+        assert aux.required_expert_ids == (0,)
         assert (aux.topk_indices[..., 0] == 0).all()
         assert (aux.topk_probs[..., 0] < 0.1).all()
         assert not torch.allclose(aux.topk_probs[..., 0], torch.full((2, 4), 1 / 3))

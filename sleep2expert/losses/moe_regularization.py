@@ -205,8 +205,9 @@ def _normalize_records(moe_aux) -> list[dict[str, t.Any]]:
 def _load_balance_loss(routing_stats: list[dict[str, t.Any]], zero: torch.Tensor) -> torch.Tensor:
     losses = []
     for stat in routing_stats:
-        load = _normalize_vector(stat["load"])
-        importance = _normalize_vector(stat["importance"])
+        load, importance = _balance_vectors(stat)
+        load = _normalize_vector(load)
+        importance = _normalize_vector(importance)
         losses.append(load.numel() * torch.sum(load * importance))
     return _mean_scalars(losses, zero)
 
@@ -231,12 +232,7 @@ def _modality_balance_loss(
                     for expert_id in moe_cfg.expert_groups[group_name]
                 }
             )
-        load = stat["load"]
-        importance = stat["importance"]
-        if allowed_experts is not None:
-            index = torch.tensor(allowed_experts, device=load.device, dtype=torch.long)
-            load = load.index_select(0, index)
-            importance = importance.index_select(0, index.to(device=importance.device))
+        load, importance = _balance_vectors(stat, allowed_experts=allowed_experts)
         load = _normalize_vector(load)
         importance = _normalize_vector(importance)
         losses.append(load.numel() * torch.sum(load * importance))
@@ -313,7 +309,7 @@ def _router_probs_and_mask(record: dict[str, t.Any], aux, batch) -> tuple[torch.
     return probs, mask
 
 
-def _routing_stats(record: dict[str, t.Any], aux, batch) -> dict[str, torch.Tensor]:
+def _routing_stats(record: dict[str, t.Any], aux, batch) -> dict[str, t.Any]:
     probs, mask = _router_probs_and_mask(record, aux, batch)
     logits = _strip_cls_if_present(aux.router_logits, batch)
     expert_mask = _strip_cls_if_present(aux.expert_mask, batch)
@@ -322,14 +318,32 @@ def _routing_stats(record: dict[str, t.Any], aux, batch) -> dict[str, torch.Tens
 
     token_weight = mask.to(device=probs.device, dtype=probs.dtype)
     token_weight_expanded = token_weight.unsqueeze(-1)
-    load = (expert_mask.to(dtype=probs.dtype) * token_weight_expanded).sum(dim=(0, 1))
+    expert_load_mask = expert_mask.to(dtype=probs.dtype)
+    load = (expert_load_mask * token_weight_expanded).sum(dim=(0, 1))
     importance = (probs * token_weight_expanded).sum(dim=(0, 1))
     valid_tokens = token_weight.sum().clamp_min(torch.finfo(probs.dtype).eps)
+    required_expert_ids = tuple(int(expert_id) for expert_id in (getattr(aux, "required_expert_ids", ()) or ()))
+    if required_expert_ids:
+        required_index = torch.tensor(required_expert_ids, device=probs.device, dtype=torch.long)
+        balance_expert_mask = expert_load_mask.clone()
+        balance_logits = logits.clone()
+        balance_expert_mask.index_fill_(-1, required_index, 0.0)
+        balance_logits.index_fill_(-1, required_index, torch.finfo(balance_logits.dtype).min)
+        balance_probs = torch.softmax(balance_logits, dim=-1)
+    else:
+        balance_expert_mask = expert_load_mask
+        balance_probs = probs
+    balance_load = (balance_expert_mask * token_weight_expanded).sum(dim=(0, 1))
+    balance_importance = (balance_probs * token_weight_expanded).sum(dim=(0, 1))
     z_loss_per_token = torch.logsumexp(logits, dim=-1).pow(2)
     entropy_per_token = -(probs * probs.clamp_min(torch.finfo(probs.dtype).eps).log()).sum(dim=-1)
     return {
         "load": load,
         "importance": importance,
+        "balance_load": balance_load,
+        "balance_importance": balance_importance,
+        "valid_tokens": valid_tokens,
+        "required_expert_ids": required_expert_ids,
         "z_loss": (z_loss_per_token * token_weight).sum() / valid_tokens,
         "entropy": (entropy_per_token * token_weight).sum() / valid_tokens,
     }
@@ -402,7 +416,8 @@ def _allowed_expert_set(record: dict[str, t.Any], moe_cfg, num_experts: int) -> 
 def _expert_usage_entropy(routing_stats: list[dict[str, t.Any]], zero: torch.Tensor) -> torch.Tensor:
     entropies = []
     for stat in routing_stats:
-        usage = _normalize_vector(stat["load"])
+        load, _ = _balance_vectors(stat)
+        usage = _normalize_vector(load)
         entropies.append(-(usage * usage.clamp_min(torch.finfo(usage.dtype).eps).log()).sum())
     return _mean_scalars(entropies, zero)
 
@@ -410,10 +425,29 @@ def _expert_usage_entropy(routing_stats: list[dict[str, t.Any]], zero: torch.Ten
 def _active_experts_per_token(routing_stats: list[dict[str, t.Any]], zero: torch.Tensor) -> torch.Tensor:
     values = []
     for stat in routing_stats:
-        load = stat["load"].to(dtype=zero.dtype)
-        importance = stat["importance"].to(dtype=zero.dtype)
-        values.append(load.sum() / importance.sum().clamp_min(torch.finfo(importance.dtype).eps))
+        load = stat["balance_load"].to(dtype=zero.dtype)
+        valid_tokens = stat["valid_tokens"].to(dtype=zero.dtype)
+        values.append(load.sum() / valid_tokens.clamp_min(torch.finfo(valid_tokens.dtype).eps))
     return _mean_scalars(values, zero)
+
+
+def _balance_vectors(
+    stat: dict[str, t.Any],
+    *,
+    allowed_experts: list[int] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    load = stat["balance_load"]
+    importance = stat["balance_importance"]
+    required_expert_ids = set(stat["required_expert_ids"])
+    if allowed_experts is None and not required_expert_ids:
+        return load, importance
+
+    if allowed_experts is None:
+        expert_ids = [expert_id for expert_id in range(load.numel()) if expert_id not in required_expert_ids]
+    else:
+        expert_ids = [int(expert_id) for expert_id in allowed_experts if int(expert_id) not in required_expert_ids]
+    index = torch.tensor(expert_ids, device=load.device, dtype=torch.long)
+    return load.index_select(0, index), importance.index_select(0, index.to(device=importance.device))
 
 
 def _normalize_vector(values: torch.Tensor) -> torch.Tensor:

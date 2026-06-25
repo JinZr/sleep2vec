@@ -23,6 +23,7 @@ class MoERoutingOutput:
     entropy: torch.Tensor
     modality_name: str | None
     layer_idx: int
+    required_expert_ids: tuple[int, ...] = ()
 
 
 class TopKRouter(nn.Module):
@@ -303,6 +304,7 @@ class TopKRouter(nn.Module):
             entropy=entropy,
             modality_name=modality_name,
             layer_idx=self.layer_idx,
+            required_expert_ids=self.required_expert_ids,
         )
 
 
