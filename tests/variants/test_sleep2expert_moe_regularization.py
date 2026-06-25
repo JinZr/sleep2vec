@@ -85,8 +85,24 @@ def _routing_aux(
     modality_name: str = "eeg",
     attention_mask: torch.Tensor | None = None,
     z_loss: float = 0.25,
+    top_k: int = 2,
+    required_expert_ids: tuple[int, ...] = (),
 ) -> MoERoutingOutput:
-    topk_probs, topk_indices = torch.topk(router_probs, k=2, dim=-1)
+    if required_expert_ids:
+        required = torch.tensor(required_expert_ids, dtype=torch.long, device=router_probs.device)
+        batch_shape = router_probs.shape[:-1]
+        required_indices = required.view(*([1] * len(batch_shape)), required.numel()).expand(
+            *batch_shape,
+            required.numel(),
+        )
+        routed_slots = top_k - required.numel()
+        routed_scores = router_probs.clone()
+        routed_scores.index_fill_(-1, required, -1.0)
+        _, routed_indices = torch.topk(routed_scores, k=routed_slots, dim=-1)
+        topk_indices = torch.cat((required_indices, routed_indices), dim=-1)
+        topk_probs = router_probs.gather(-1, topk_indices)
+    else:
+        topk_probs, topk_indices = torch.topk(router_probs, k=top_k, dim=-1)
     topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(router_probs.dtype).eps)
     expert_mask = torch.zeros_like(router_probs, dtype=torch.bool)
     expert_mask.scatter_(-1, topk_indices, True)
@@ -113,6 +129,7 @@ def _routing_aux(
         entropy=(entropy_per_token * valid_mask.to(dtype=router_probs.dtype)).sum() / token_count,
         modality_name=modality_name,
         layer_idx=layer_idx,
+        required_expert_ids=required_expert_ids,
     )
 
 
@@ -233,6 +250,86 @@ def test_sleep2expert_moe_modality_balance_uses_each_modality_allowed_experts():
     )
 
     assert out.metrics["moe_modality_balance_loss"].item() == pytest.approx(1.0)
+
+
+def test_sleep2expert_moe_required_expert_balance_and_usage_are_routed_only():
+    high_required_probs = torch.tensor([[[0.70, 0.12, 0.11, 0.07], [0.70, 0.12, 0.11, 0.07]]])
+    low_required_probs = torch.tensor([[[0.10, 0.36, 0.33, 0.21], [0.10, 0.36, 0.33, 0.21]]])
+    cfg = _shared_support_moe_config(
+        top_k=3,
+        required_expert_ids=[0],
+        load_balance_coef=1.0,
+        modality_balance_coef=1.0,
+        router_z_loss_coef=0.0,
+        route_consistency_coef=0.0,
+    )
+    batch = _batch(batch_size=1, seq_len=2)
+    high_required = [
+        {
+            "modality": "eeg",
+            "aux": (_routing_aux(high_required_probs, top_k=3, required_expert_ids=(0,)),),
+            "attention_mask": None,
+        }
+    ]
+    low_required = [
+        {
+            "modality": "eeg",
+            "aux": (_routing_aux(low_required_probs, top_k=3, required_expert_ids=(0,)),),
+            "attention_mask": None,
+        }
+    ]
+
+    high_out = compute_moe_regularization(high_required, cfg, batch)
+    low_out = compute_moe_regularization(low_required, cfg, batch)
+
+    assert high_out.metrics["moe_active_experts_per_token"].item() == pytest.approx(2.0)
+    assert high_out.metrics["moe_expert_usage_entropy"].item() == pytest.approx(torch.log(torch.tensor(2.0)).item())
+    assert high_out.metrics["moe_load_balance_loss"].item() == pytest.approx(
+        low_out.metrics["moe_load_balance_loss"].item()
+    )
+    assert high_out.metrics["moe_modality_balance_loss"].item() == pytest.approx(
+        low_out.metrics["moe_modality_balance_loss"].item()
+    )
+
+
+def test_sleep2expert_moe_required_expert_balance_importance_uses_routed_logits():
+    router_logits = torch.tensor([[[100.0, 0.0, -1.0, -2.0], [100.0, 0.0, -1.0, -2.0]]])
+    router_probs = torch.tensor([[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]])
+    topk_indices = torch.tensor([[[0, 1, 2], [0, 1, 2]]])
+    topk_probs = torch.full((1, 2, 3), 1 / 3)
+    expert_mask = torch.zeros_like(router_probs, dtype=torch.bool)
+    expert_mask.scatter_(-1, topk_indices, True)
+    aux = MoERoutingOutput(
+        router_logits=router_logits,
+        router_probs=router_probs,
+        topk_indices=topk_indices,
+        topk_probs=topk_probs,
+        expert_mask=expert_mask,
+        load=expert_mask.float().sum(dim=(0, 1)),
+        importance=router_probs.sum(dim=(0, 1)),
+        z_loss=torch.tensor(0.0),
+        entropy=torch.tensor(0.0),
+        modality_name="eeg",
+        layer_idx=3,
+        required_expert_ids=(0,),
+    )
+    cfg = _shared_support_moe_config(
+        top_k=3,
+        required_expert_ids=[0],
+        load_balance_coef=1.0,
+        modality_balance_coef=0.0,
+        router_z_loss_coef=0.0,
+        route_consistency_coef=0.0,
+    )
+
+    out = compute_moe_regularization(
+        [{"modality": "eeg", "aux": (aux,), "attention_mask": None}],
+        cfg,
+        _batch(batch_size=1, seq_len=2),
+    )
+
+    assert out.metrics["moe_load_balance_loss"].item() > 0
+    assert out.metrics["moe_active_experts_per_token"].item() == pytest.approx(2.0)
 
 
 def test_sleep2expert_moe_route_consistency_loss_is_finite_for_two_views():
