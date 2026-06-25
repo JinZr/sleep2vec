@@ -221,6 +221,43 @@ def test_sleep2expert_export_subnetwork_rejects_missing_required_expert(tmp_path
         )
 
 
+def test_sleep2expert_export_subnetwork_rejects_modality_missing_required_expert(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    ckpt_path = tmp_path / "source.ckpt"
+    output_dir = tmp_path / "exported"
+    _write_config(
+        config_path,
+        finetune=False,
+        required_expert_ids=[0],
+        required_expert_weight_mode="fixed",
+        required_expert_weight=0.25,
+    )
+    payload = yaml.safe_load(config_path.read_text())
+    moe = payload["model"]["backbone"]["moe"]
+    moe["expert_groups"] = {
+        "shared": [0],
+        "cardiac": [2, 4],
+        "breath_required": [0],
+        "respiratory": [1, 3],
+    }
+    moe["modality_to_groups"] = {
+        "heartbeat": ["shared", "cardiac"],
+        "breath": ["breath_required", "respiratory"],
+    }
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    _write_checkpoint(ckpt_path)
+
+    with pytest.raises(ValueError, match="leave modality/channel 'breath' without required_expert_ids"):
+        export_subnetwork(
+            argparse.Namespace(
+                config=config_path,
+                ckpt_path=ckpt_path,
+                route_expert_groups=["shared", "cardiac", "respiratory"],
+                output_dir=output_dir,
+            )
+        )
+
+
 def test_sleep2expert_export_subnetwork_rejects_unknown_group(tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     ckpt_path = tmp_path / "source.ckpt"

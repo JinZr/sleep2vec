@@ -97,6 +97,7 @@ def _rewrite_config(
     exported = copy.deepcopy(raw_config)
     moe_block = exported["model"]["backbone"]["moe"]
     selected_groups = set(group_names)
+    required_expert_ids = tuple(int(expert_id) for expert_id in (getattr(moe_cfg, "required_expert_ids", None) or ()))
     if len(selected_expert_ids) < int(moe_cfg.top_k):
         raise ValueError(
             f"Route expert groups {list(group_names)} select {len(selected_expert_ids)} experts, "
@@ -123,6 +124,12 @@ def _rewrite_config(
             for expert_id in moe_cfg.expert_groups[group_name]
             if int(expert_id) in old_to_new
         }
+        missing_required = sorted(set(required_expert_ids) - allowed_experts)
+        if missing_required:
+            raise ValueError(
+                f"Route expert groups {list(group_names)} leave modality/channel '{modality_name}' without "
+                f"required_expert_ids {missing_required}."
+            )
         if len(allowed_experts) < int(moe_cfg.top_k):
             raise ValueError(
                 f"Route expert groups {list(group_names)} leave modality/channel '{modality_name}' with "
@@ -133,8 +140,8 @@ def _rewrite_config(
     moe_block["num_experts"] = len(selected_expert_ids)
     moe_block["expert_groups"] = expert_groups
     moe_block["modality_to_groups"] = modality_to_groups
-    if getattr(moe_cfg, "required_expert_ids", None):
-        moe_block["required_expert_ids"] = [old_to_new[int(expert_id)] for expert_id in moe_cfg.required_expert_ids]
+    if required_expert_ids:
+        moe_block["required_expert_ids"] = [old_to_new[expert_id] for expert_id in required_expert_ids]
     return exported
 
 
