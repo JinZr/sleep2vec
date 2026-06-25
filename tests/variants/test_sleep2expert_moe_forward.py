@@ -224,6 +224,38 @@ def test_sleep2expert_moe_required_expert_fixed_weight(router_type: str):
         assert torch.allclose(aux.topk_probs.sum(dim=-1), torch.ones(2, 4))
 
 
+def test_sleep2expert_moe_required_expert_fixed_weight_normalizes_from_routed_logits():
+    torch.manual_seed(0)
+    model = (
+        _model(
+            _moe_config(
+                router_type="learned",
+                top_k=3,
+                required_expert_ids=[0],
+                required_expert_weight_mode="fixed",
+                required_expert_weight=1 / 3,
+            )
+        )
+        .eval()
+        .half()
+    )
+    for module in model.modules():
+        if isinstance(module, TopKRouter):
+            module.router.weight.data.zero_()
+            module.router.bias.data.copy_(torch.tensor([100.0, 0.0, -1.0, -2.0], dtype=torch.float16))
+    inputs = torch.randn(2, 4, 16).half()
+
+    with torch.no_grad():
+        output = model(inputs_embeds=inputs, modality_name="ppg", collect_moe_aux=True)
+
+    assert output.moe_aux is not None
+    for aux in output.moe_aux:
+        assert (aux.topk_indices[..., 0] == 0).all()
+        assert torch.allclose(aux.topk_probs[..., 0].float(), torch.full((2, 4), 1 / 3), atol=1e-3)
+        assert torch.allclose(aux.topk_probs.sum(dim=-1).float(), torch.ones(2, 4), atol=1e-3)
+        assert (aux.topk_probs[..., 1:].sum(dim=-1) > 0).all()
+
+
 def test_sleep2expert_moe_required_expert_router_weight_uses_router_probability():
     torch.manual_seed(0)
     model = _model(

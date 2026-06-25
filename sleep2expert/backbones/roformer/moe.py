@@ -176,8 +176,8 @@ class TopKRouter(nn.Module):
         required_indices = self._expand_required_indices(required_experts, batch_shape)
         routed_slots = self.top_k - required_experts.numel()
         if routed_slots > 0:
-            routed_logits = self._mask_logits(router_logits, routed_allowed_experts)
-            _, routed_indices = torch.topk(routed_logits, k=routed_slots, dim=-1)
+            masked_routed_logits = self._mask_logits(router_logits, routed_allowed_experts)
+            _, routed_indices = torch.topk(masked_routed_logits, k=routed_slots, dim=-1)
         else:
             routed_indices = required_indices.new_empty(*batch_shape, 0)
 
@@ -186,10 +186,10 @@ class TopKRouter(nn.Module):
             required_weight = float(self.moe.required_expert_weight)
             required_probs = router_probs.new_full(required_indices.shape, required_weight)
             if routed_slots > 0:
-                routed_raw_probs = router_probs.gather(-1, routed_indices)
-                routed_probs = routed_raw_probs / routed_raw_probs.sum(dim=-1, keepdim=True).clamp_min(
-                    torch.finfo(router_probs.dtype).eps
-                )
+                # Re-softmax selected routed logits locally; full-distribution softmax can underflow these
+                # probabilities when fixed required experts have much larger logits under fp16/AMP.
+                selected_routed_logits = router_logits.gather(-1, routed_indices)
+                routed_probs = torch.softmax(selected_routed_logits, dim=-1)
                 routed_probs = routed_probs * (1.0 - required_weight * required_experts.numel())
             else:
                 routed_probs = router_probs.new_empty(*batch_shape, 0)
