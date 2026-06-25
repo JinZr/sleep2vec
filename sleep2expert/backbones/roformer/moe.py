@@ -33,6 +33,7 @@ class TopKRouter(nn.Module):
         self.num_experts = self.moe.num_experts
         self.top_k = self.moe.top_k
         self.router_type = self.moe.router_type
+        self.required_expert_ids = tuple(int(expert_id) for expert_id in (self.moe.required_expert_ids or ()))
         # Runtime-only restriction; keep checkpoint/state_dict keys unchanged.
         self.route_filter_expert_ids: tuple[int, ...] | None = None
         if self.router_type == "learned":
@@ -57,8 +58,25 @@ class TopKRouter(nn.Module):
                 f"group filtering, but top_k={self.top_k}."
             )
 
+        required_experts = self._required_experts(hidden_states.device, allowed_experts, modality_name)
+        routed_allowed_experts = self._routed_allowed_experts(allowed_experts, required_experts)
+        routed_slots = self.top_k - required_experts.numel()
+        if routed_allowed_experts.numel() < routed_slots:
+            raise ValueError(
+                f"MoE modality '{modality_name}' exposes {routed_allowed_experts.numel()} non-required experts "
+                f"after route expert group filtering, but top_k={self.top_k} and "
+                f"required_expert_ids={list(self.required_expert_ids)}."
+            )
+
         if self.router_type in {"hard_modality", "hard_group"}:
-            return self._hard_route(hidden_states, allowed_experts, modality_name, token_mask)
+            return self._hard_route(
+                hidden_states,
+                allowed_experts,
+                required_experts,
+                routed_allowed_experts,
+                modality_name,
+                token_mask,
+            )
 
         if self.router_type == "random":
             router_logits = torch.randn(
@@ -75,8 +93,16 @@ class TopKRouter(nn.Module):
 
         router_logits = self._mask_logits(router_logits, allowed_experts)
         router_probs = torch.softmax(router_logits, dim=-1)
-        topk_probs, topk_indices = torch.topk(router_probs, k=self.top_k, dim=-1)
-        topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(topk_probs.dtype).eps)
+        if required_experts.numel() == 0:
+            topk_probs, topk_indices = torch.topk(router_probs, k=self.top_k, dim=-1)
+            topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(topk_probs.dtype).eps)
+        else:
+            topk_indices, topk_probs = self._select_required_router_topk(
+                router_logits,
+                router_probs,
+                required_experts,
+                routed_allowed_experts,
+            )
         return self._build_output(router_logits, router_probs, topk_indices, topk_probs, modality_name, token_mask)
 
     def _allowed_experts(self, device: torch.device, modality_name: str | None) -> torch.Tensor:
@@ -103,24 +129,104 @@ class TopKRouter(nn.Module):
         fill_value = torch.finfo(router_logits.dtype).min
         return router_logits.masked_fill(~mask.view(*([1] * (router_logits.dim() - 1)), -1), fill_value)
 
+    def _required_experts(
+        self,
+        device: torch.device,
+        allowed_experts: torch.Tensor,
+        modality_name: str | None,
+    ) -> torch.Tensor:
+        if not self.required_expert_ids:
+            return torch.empty(0, device=device, dtype=torch.long)
+        allowed_ids = {int(expert_id) for expert_id in allowed_experts.tolist()}
+        missing_required = [expert_id for expert_id in self.required_expert_ids if expert_id not in allowed_ids]
+        if missing_required:
+            raise ValueError(
+                f"MoE modality '{modality_name}' does not expose required_expert_ids {missing_required} "
+                "after route expert group filtering."
+            )
+        return torch.tensor(self.required_expert_ids, device=device, dtype=torch.long)
+
+    def _routed_allowed_experts(
+        self,
+        allowed_experts: torch.Tensor,
+        required_experts: torch.Tensor,
+    ) -> torch.Tensor:
+        if required_experts.numel() == 0:
+            return allowed_experts
+        required_ids = {int(expert_id) for expert_id in required_experts.tolist()}
+        routed_ids = [int(expert_id) for expert_id in allowed_experts.tolist() if int(expert_id) not in required_ids]
+        return torch.tensor(routed_ids, device=allowed_experts.device, dtype=torch.long)
+
+    def _expand_required_indices(
+        self,
+        required_experts: torch.Tensor,
+        batch_shape: torch.Size,
+    ) -> torch.Tensor:
+        view_shape = [1] * len(batch_shape) + [required_experts.numel()]
+        return required_experts.view(*view_shape).expand(*batch_shape, required_experts.numel())
+
+    def _select_required_router_topk(
+        self,
+        router_logits: torch.Tensor,
+        router_probs: torch.Tensor,
+        required_experts: torch.Tensor,
+        routed_allowed_experts: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_shape = router_probs.shape[:-1]
+        required_indices = self._expand_required_indices(required_experts, batch_shape)
+        routed_slots = self.top_k - required_experts.numel()
+        if routed_slots > 0:
+            masked_routed_logits = self._mask_logits(router_logits, routed_allowed_experts)
+            _, routed_indices = torch.topk(masked_routed_logits, k=routed_slots, dim=-1)
+        else:
+            routed_indices = required_indices.new_empty(*batch_shape, 0)
+
+        topk_indices = torch.cat((required_indices, routed_indices), dim=-1)
+        if self.moe.required_expert_weight_mode == "fixed":
+            required_weight = float(self.moe.required_expert_weight)
+            required_probs = router_probs.new_full(required_indices.shape, required_weight)
+            if routed_slots > 0:
+                # Re-softmax selected routed logits locally; full-distribution softmax can underflow these
+                # probabilities when fixed required experts have much larger logits under fp16/AMP.
+                selected_routed_logits = router_logits.gather(-1, routed_indices)
+                routed_probs = torch.softmax(selected_routed_logits, dim=-1)
+                routed_probs = routed_probs * (1.0 - required_weight * required_experts.numel())
+            else:
+                routed_probs = router_probs.new_empty(*batch_shape, 0)
+            topk_probs = torch.cat((required_probs, routed_probs), dim=-1)
+        else:
+            topk_probs = router_probs.gather(-1, topk_indices)
+            topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(topk_probs.dtype).eps)
+        return topk_indices, topk_probs
+
     def _hard_route(
         self,
         hidden_states: torch.Tensor,
         allowed_experts: torch.Tensor,
+        required_experts: torch.Tensor,
+        routed_allowed_experts: torch.Tensor,
         modality_name: str | None,
         token_mask: torch.Tensor | None,
     ) -> MoERoutingOutput:
         batch_size, seq_len = hidden_states.shape[:2]
         flat_count = batch_size * seq_len
-        offset = self._hard_route_offset(modality_name, allowed_experts.numel())
-        slots = torch.arange(flat_count * self.top_k, device=hidden_states.device).view(flat_count, self.top_k)
-        topk_indices = allowed_experts[(slots + offset) % allowed_experts.numel()].view(batch_size, seq_len, self.top_k)
-        topk_probs = torch.full(
-            (batch_size, seq_len, self.top_k),
-            1.0 / self.top_k,
-            device=hidden_states.device,
-            dtype=hidden_states.dtype,
-        )
+        routed_slots = self.top_k - required_experts.numel()
+        if routed_slots > 0:
+            offset = self._hard_route_offset(modality_name, routed_allowed_experts.numel())
+            slots = torch.arange(flat_count * routed_slots, device=hidden_states.device).view(flat_count, routed_slots)
+            routed_indices = routed_allowed_experts[(slots + offset) % routed_allowed_experts.numel()].view(
+                batch_size,
+                seq_len,
+                routed_slots,
+            )
+        else:
+            routed_indices = torch.empty(batch_size, seq_len, 0, device=hidden_states.device, dtype=torch.long)
+        if required_experts.numel() > 0:
+            required_indices = self._expand_required_indices(required_experts, torch.Size((batch_size, seq_len)))
+            topk_indices = torch.cat((required_indices, routed_indices), dim=-1)
+        else:
+            topk_indices = routed_indices
+        topk_probs = self._hard_topk_probs(hidden_states, topk_indices, required_experts)
 
         router_logits = hidden_states.new_full(
             (batch_size, seq_len, self.num_experts),
@@ -130,6 +236,23 @@ class TopKRouter(nn.Module):
         router_probs.scatter_add_(-1, topk_indices, topk_probs)
         router_logits = router_logits.masked_fill(router_probs > 0, 0.0)
         return self._build_output(router_logits, router_probs, topk_indices, topk_probs, modality_name, token_mask)
+
+    def _hard_topk_probs(
+        self,
+        hidden_states: torch.Tensor,
+        topk_indices: torch.Tensor,
+        required_experts: torch.Tensor,
+    ) -> torch.Tensor:
+        topk_probs = torch.full_like(topk_indices, 1.0 / self.top_k, dtype=hidden_states.dtype)
+        required_count = required_experts.numel()
+        if required_count > 0 and self.moe.required_expert_weight_mode == "fixed":
+            required_weight = float(self.moe.required_expert_weight)
+            topk_probs[..., :required_count] = required_weight
+            routed_slots = self.top_k - required_count
+            if routed_slots > 0:
+                routed_weight = (1.0 - required_weight * required_count) / routed_slots
+                topk_probs[..., required_count:] = routed_weight
+        return topk_probs
 
     def _hard_route_offset(self, modality_name: str | None, allowed_count: int) -> int:
         if modality_name is None:
@@ -272,6 +395,10 @@ def resolve_route_expert_ids(moe_cfg, group_names: t.Sequence[str] | None) -> tu
     expert_ids: set[int] = set()
     for group_name in group_names:
         expert_ids.update(int(expert_id) for expert_id in expert_groups[group_name])
+    required_expert_ids = set(getattr(moe_cfg, "required_expert_ids", None) or ())
+    missing_required = sorted(required_expert_ids - expert_ids)
+    if missing_required:
+        raise ValueError(f"Route expert groups {list(group_names)} exclude required_expert_ids {missing_required}.")
     return tuple(sorted(expert_ids))
 
 

@@ -5,7 +5,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from sleep2expert.backbones.roformer import RoFormerConfig, RoFormerEncoderModel
-from sleep2expert.backbones.roformer.moe import apply_route_expert_filter, resolve_route_expert_ids
+from sleep2expert.backbones.roformer.moe import TopKRouter, apply_route_expert_filter, resolve_route_expert_ids
 from sleep2expert.config import (
     BackboneConfig,
     ChannelAggConfig,
@@ -18,9 +18,14 @@ from sleep2expert.config import (
     TemporalAggConfig,
     TokenizerConfig,
 )
-from sleep2expert.downstream_model import Sleep2vecDownstreamModel
 import sleep2expert.downstreams.heads  # noqa: F401
 from sleep2expert.pretrain_model import Sleep2vecPretrainModel
+
+
+def _downstream_model_cls():
+    from sleep2expert.downstream_model import Sleep2vecDownstreamModel
+
+    return Sleep2vecDownstreamModel
 
 
 def _moe_config(
@@ -28,6 +33,9 @@ def _moe_config(
     router_type: str = "learned",
     top_k: int = 2,
     use_modality_group_mask: bool = True,
+    required_expert_ids: list[int] | None = None,
+    required_expert_weight_mode: str | None = None,
+    required_expert_weight: float | None = None,
 ) -> MoeConfig:
     return MoeConfig(
         enabled=True,
@@ -37,6 +45,9 @@ def _moe_config(
         expert_hidden_size=16,
         router_type=router_type,
         use_modality_group_mask=use_modality_group_mask,
+        required_expert_ids=required_expert_ids,
+        required_expert_weight_mode=required_expert_weight_mode,
+        required_expert_weight=required_expert_weight,
         expert_groups={
             "shared": [0],
             "neuro": [2, 3],
@@ -188,6 +199,90 @@ def test_sleep2expert_moe_router_types_forward(router_type: str, top_k: int):
         assert router_params == []
 
 
+@pytest.mark.parametrize("router_type", ["learned", "random", "hard_modality", "hard_group"])
+def test_sleep2expert_moe_required_expert_fixed_weight(router_type: str):
+    torch.manual_seed(0)
+    model = _model(
+        _moe_config(
+            router_type=router_type,
+            top_k=3,
+            required_expert_ids=[0],
+            required_expert_weight_mode="fixed",
+            required_expert_weight=1 / 3,
+        )
+    ).eval()
+    inputs = torch.randn(2, 4, 16)
+
+    with torch.no_grad():
+        output = model(inputs_embeds=inputs, modality_name="ppg", collect_moe_aux=True)
+
+    assert output.moe_aux is not None
+    for aux in output.moe_aux:
+        assert aux.topk_indices.shape[-1] == 3
+        assert (aux.topk_indices[..., 0] == 0).all()
+        assert torch.allclose(aux.topk_probs[..., 0], torch.full((2, 4), 1 / 3))
+        assert torch.allclose(aux.topk_probs.sum(dim=-1), torch.ones(2, 4))
+
+
+def test_sleep2expert_moe_required_expert_fixed_weight_normalizes_from_routed_logits():
+    torch.manual_seed(0)
+    model = (
+        _model(
+            _moe_config(
+                router_type="learned",
+                top_k=3,
+                required_expert_ids=[0],
+                required_expert_weight_mode="fixed",
+                required_expert_weight=1 / 3,
+            )
+        )
+        .eval()
+        .half()
+    )
+    for module in model.modules():
+        if isinstance(module, TopKRouter):
+            module.router.weight.data.zero_()
+            module.router.bias.data.copy_(torch.tensor([100.0, 0.0, -1.0, -2.0], dtype=torch.float16))
+    inputs = torch.randn(2, 4, 16).half()
+
+    with torch.no_grad():
+        output = model(inputs_embeds=inputs, modality_name="ppg", collect_moe_aux=True)
+
+    assert output.moe_aux is not None
+    for aux in output.moe_aux:
+        assert (aux.topk_indices[..., 0] == 0).all()
+        assert torch.allclose(aux.topk_probs[..., 0].float(), torch.full((2, 4), 1 / 3), atol=1e-3)
+        assert torch.allclose(aux.topk_probs.sum(dim=-1).float(), torch.ones(2, 4), atol=1e-3)
+        assert (aux.topk_probs[..., 1:].sum(dim=-1) > 0).all()
+
+
+def test_sleep2expert_moe_required_expert_router_weight_uses_router_probability():
+    torch.manual_seed(0)
+    model = _model(
+        _moe_config(
+            router_type="learned",
+            top_k=3,
+            required_expert_ids=[0],
+            required_expert_weight_mode="router",
+        )
+    ).eval()
+    for module in model.modules():
+        if isinstance(module, TopKRouter):
+            module.router.weight.data.zero_()
+            module.router.bias.data.copy_(torch.tensor([-2.0, 0.0, -10.0, 2.0]))
+    inputs = torch.randn(2, 4, 16)
+
+    with torch.no_grad():
+        output = model(inputs_embeds=inputs, modality_name="ppg", collect_moe_aux=True)
+
+    assert output.moe_aux is not None
+    for aux in output.moe_aux:
+        assert (aux.topk_indices[..., 0] == 0).all()
+        assert (aux.topk_probs[..., 0] < 0.1).all()
+        assert not torch.allclose(aux.topk_probs[..., 0], torch.full((2, 4), 1 / 3))
+        assert torch.allclose(aux.topk_probs.sum(dim=-1), torch.ones(2, 4))
+
+
 def test_sleep2expert_moe_group_mask_excludes_disallowed_experts():
     torch.manual_seed(0)
     model = _model(_moe_config(router_type="learned")).eval()
@@ -247,6 +342,19 @@ def test_sleep2expert_route_expert_filter_requires_enough_candidates():
 
     with pytest.raises(ValueError, match="after route expert group filtering"):
         model(inputs_embeds=inputs, modality_name="eeg", collect_moe_aux=True)
+
+
+def test_sleep2expert_route_expert_filter_rejects_missing_required_expert():
+    moe_cfg = _moe_config(
+        router_type="learned",
+        top_k=2,
+        required_expert_ids=[0],
+        required_expert_weight_mode="fixed",
+        required_expert_weight=0.5,
+    )
+
+    with pytest.raises(ValueError, match="exclude required_expert_ids"):
+        resolve_route_expert_ids(moe_cfg, ["cardiac"])
 
 
 def test_sleep2expert_moe_entropy_uses_full_router_distribution():
@@ -344,6 +452,7 @@ def test_sleep2expert_dense_pretrain_forward_does_not_collect_moe_aux():
 
 def test_sleep2expert_downstream_eval_records_moe_aux_without_changing_output():
     torch.manual_seed(0)
+    Sleep2vecDownstreamModel = _downstream_model_cls()
     model_config = _sleep2expert_model_config(moe=_moe_config(), with_head=True)
     backbone = Sleep2vecPretrainModel(model_config=model_config, device="cpu")
     downstream = Sleep2vecDownstreamModel(
@@ -372,6 +481,7 @@ def test_sleep2expert_downstream_eval_records_moe_aux_without_changing_output():
 
 def test_sleep2expert_downstream_train_passes_modality_but_does_not_collect_moe_aux():
     torch.manual_seed(0)
+    Sleep2vecDownstreamModel = _downstream_model_cls()
     model_config = _sleep2expert_model_config(moe=_moe_config(), with_head=True)
     backbone = Sleep2vecPretrainModel(model_config=model_config, device="cpu")
     downstream = Sleep2vecDownstreamModel(
@@ -395,6 +505,7 @@ def test_sleep2expert_downstream_train_passes_modality_but_does_not_collect_moe_
 
 def test_sleep2expert_downstream_train_collects_moe_aux_when_enabled():
     torch.manual_seed(0)
+    Sleep2vecDownstreamModel = _downstream_model_cls()
     model_config = _sleep2expert_model_config(moe=_moe_config(), with_head=True)
     backbone = Sleep2vecPretrainModel(model_config=model_config, device="cpu")
     downstream = Sleep2vecDownstreamModel(
@@ -424,6 +535,7 @@ def test_sleep2expert_downstream_train_collects_moe_aux_when_enabled():
 def test_sleep2expert_expert_lora_real_peft_forward_backward_smoke():
     pytest.importorskip("peft")
     torch.manual_seed(0)
+    Sleep2vecDownstreamModel = _downstream_model_cls()
     model_config = _sleep2expert_model_config(moe=_moe_config(), with_head=True)
     backbone = Sleep2vecPretrainModel(model_config=model_config, device="cpu")
     downstream = Sleep2vecDownstreamModel(
