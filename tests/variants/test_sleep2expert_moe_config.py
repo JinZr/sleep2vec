@@ -103,8 +103,8 @@ def test_sleep2expert_required_shared_expert_pretrain_yaml_has_moe_config():
     assert isinstance(moe_cfg, MoeConfig)
     assert moe_cfg.top_k == 3
     assert moe_cfg.required_expert_ids == [0]
-    assert moe_cfg.required_expert_weight_mode == "fixed"
-    assert moe_cfg.required_expert_weight == pytest.approx(0.3333333333)
+    assert moe_cfg.required_expert_weight_mode == "router"
+    assert moe_cfg.required_expert_weight is None
     assert moe_cfg.expert_groups["shared"] == [0]
     assert moe_cfg.expert_groups["cardiac"] == [1, 6, 7, 8]
     assert moe_cfg.expert_groups["respiratory"] == [1, 9, 10, 11]
