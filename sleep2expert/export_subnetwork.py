@@ -133,6 +133,8 @@ def _rewrite_config(
     moe_block["num_experts"] = len(selected_expert_ids)
     moe_block["expert_groups"] = expert_groups
     moe_block["modality_to_groups"] = modality_to_groups
+    if getattr(moe_cfg, "required_expert_ids", None):
+        moe_block["required_expert_ids"] = [old_to_new[int(expert_id)] for expert_id in moe_cfg.required_expert_ids]
     return exported
 
 

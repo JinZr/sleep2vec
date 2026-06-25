@@ -94,6 +94,22 @@ def test_sleep2expert_checked_pretrain_yaml_has_moe_config():
     assert moe_cfg.enabled is True
 
 
+def test_sleep2expert_required_shared_expert_pretrain_yaml_has_moe_config():
+    path = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "sleep2expert_phase_moe_pretrain_with_shared_expert.yaml"
+
+    bundle = load_pretrain_config(path)
+
+    moe_cfg = bundle.model.backbone.moe
+    assert isinstance(moe_cfg, MoeConfig)
+    assert moe_cfg.top_k == 3
+    assert moe_cfg.required_expert_ids == [0]
+    assert moe_cfg.required_expert_weight_mode == "fixed"
+    assert moe_cfg.required_expert_weight == pytest.approx(0.3333333333)
+    assert moe_cfg.expert_groups["shared"] == [0]
+    assert moe_cfg.expert_groups["cardiac"] == [1, 6, 7, 8]
+    assert moe_cfg.expert_groups["respiratory"] == [1, 9, 10, 11]
+
+
 def test_sleep2expert_moe_yaml_parses_into_moe_config(tmp_path: Path):
     path = _write_config(tmp_path, _valid_moe_payload())
 
@@ -138,6 +154,98 @@ def test_sleep2expert_moe_config_rejects_non_roformer_backbone(tmp_path: Path):
         ({"num_experts": True}, "num_experts must be an integer"),
         ({"top_k": True}, "top_k must be an integer"),
         ({"top_k": 5}, "top_k must be <= backbone.moe.num_experts"),
+        ({"required_expert_ids": [0, 0]}, "required_expert_ids must not contain duplicates"),
+        ({"required_expert_ids": [True]}, "required_expert_ids must contain only integers"),
+        (
+            {
+                "required_expert_ids": [4],
+                "required_expert_weight_mode": "fixed",
+                "required_expert_weight": 0.2,
+            },
+            "required_expert_ids values must be within",
+        ),
+        (
+            {
+                "required_expert_ids": [0, 1, 2],
+                "required_expert_weight_mode": "fixed",
+                "required_expert_weight": 0.2,
+            },
+            "required_expert_ids must not contain more experts than",
+        ),
+        ({"required_expert_weight_mode": "fixed"}, "required_expert_weight_mode requires"),
+        ({"required_expert_weight": 0.2}, "required_expert_weight requires"),
+        ({"required_expert_ids": [0]}, "required_expert_weight_mode must be one of"),
+        (
+            {
+                "required_expert_ids": [0],
+                "required_expert_weight_mode": "bad",
+            },
+            "required_expert_weight_mode must be one of",
+        ),
+        (
+            {
+                "required_expert_ids": [0],
+                "required_expert_weight_mode": "fixed",
+            },
+            "required_expert_weight must be a number",
+        ),
+        (
+            {
+                "required_expert_ids": [0],
+                "required_expert_weight_mode": "fixed",
+                "required_expert_weight": "bad",
+            },
+            "required_expert_weight must be a number",
+        ),
+        (
+            {
+                "required_expert_ids": [0],
+                "required_expert_weight_mode": "fixed",
+                "required_expert_weight": 0.0,
+            },
+            "required_expert_weight must be > 0 and < 1",
+        ),
+        (
+            {
+                "required_expert_ids": [0, 1],
+                "required_expert_weight_mode": "fixed",
+                "required_expert_weight": 0.6,
+            },
+            "fixed weighting must leave a routed expert slot",
+        ),
+        (
+            {
+                "top_k": 3,
+                "required_expert_ids": [0, 1],
+                "required_expert_weight_mode": "fixed",
+                "required_expert_weight": 0.5,
+            },
+            r"required_expert_weight \* len",
+        ),
+        (
+            {
+                "required_expert_ids": [0],
+                "required_expert_weight_mode": "router",
+                "required_expert_weight": 0.2,
+            },
+            "required_expert_weight must not be set",
+        ),
+        (
+            {
+                "router_type": "hard_group",
+                "required_expert_ids": [0],
+                "required_expert_weight_mode": "router",
+            },
+            "required_expert_weight_mode=router requires router_type='learned'",
+        ),
+        (
+            {
+                "router_type": "random",
+                "required_expert_ids": [0],
+                "required_expert_weight_mode": "router",
+            },
+            "required_expert_weight_mode=router requires router_type='learned'",
+        ),
         ({"expert_hidden_size": True}, "expert_hidden_size must be an integer"),
         ({"router_noise": "bad"}, "router_noise must be a number"),
         ({"router_noise": float("nan")}, "router_noise must be finite"),
@@ -180,6 +288,25 @@ def test_sleep2expert_moe_config_rejects_invalid_settings(
     path = _write_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match=message):
+        load_pretrain_config(path)
+
+
+def test_sleep2expert_moe_config_rejects_required_expert_outside_modality_groups(tmp_path: Path):
+    payload = _valid_moe_payload()
+    payload["model"]["backbone"]["moe"].update(
+        {
+            "required_expert_ids": [0],
+            "required_expert_weight_mode": "fixed",
+            "required_expert_weight": 0.25,
+            "expert_groups": {
+                "shared": [1],
+                "neuro": [2, 3],
+            },
+        }
+    )
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="must expose required_expert_ids"):
         load_pretrain_config(path)
 
 

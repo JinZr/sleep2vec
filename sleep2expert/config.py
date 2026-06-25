@@ -49,6 +49,9 @@ class MoeConfig:
     use_modality_group_mask: bool = True
     expert_groups: dict[str, list[int]] = field(default_factory=dict)
     modality_to_groups: dict[str, list[str]] = field(default_factory=dict)
+    required_expert_ids: list[int] | None = None
+    required_expert_weight_mode: str | None = None
+    required_expert_weight: float | None = None
     route_consistency_layers: list[int] | None = None
 
 
@@ -113,6 +116,43 @@ def _validate_moe_config(
         raise ValueError("backbone.moe.top_k must be >= 1.")
     if moe_cfg.top_k > moe_cfg.num_experts:
         raise ValueError("backbone.moe.top_k must be <= backbone.moe.num_experts.")
+
+    required_expert_ids = _validate_moe_int_list(moe_cfg.required_expert_ids, "required_expert_ids")
+    if required_expert_ids is None:
+        if moe_cfg.required_expert_weight_mode is not None:
+            raise ValueError("backbone.moe.required_expert_weight_mode requires backbone.moe.required_expert_ids.")
+        if moe_cfg.required_expert_weight is not None:
+            raise ValueError("backbone.moe.required_expert_weight requires backbone.moe.required_expert_ids.")
+    else:
+        if any(expert_id < 0 or expert_id >= moe_cfg.num_experts for expert_id in required_expert_ids):
+            raise ValueError(
+                "backbone.moe.required_expert_ids values must be within [0, backbone.moe.num_experts - 1]."
+            )
+        if len(required_expert_ids) > moe_cfg.top_k:
+            raise ValueError("backbone.moe.required_expert_ids must not contain more experts than backbone.moe.top_k.")
+        if type(moe_cfg.required_expert_weight_mode) is not str or moe_cfg.required_expert_weight_mode not in {
+            "fixed",
+            "router",
+        }:
+            raise ValueError("backbone.moe.required_expert_weight_mode must be one of fixed, router.")
+        if moe_cfg.required_expert_weight_mode == "fixed":
+            if len(required_expert_ids) >= moe_cfg.top_k:
+                raise ValueError(
+                    "backbone.moe.required_expert_ids with fixed weighting must leave a routed expert slot."
+                )
+            if type(moe_cfg.required_expert_weight) not in {int, float}:
+                raise ValueError("backbone.moe.required_expert_weight must be a number when fixed weighting is used.")
+            if not math.isfinite(float(moe_cfg.required_expert_weight)):
+                raise ValueError("backbone.moe.required_expert_weight must be finite.")
+            if not 0 < float(moe_cfg.required_expert_weight) < 1:
+                raise ValueError("backbone.moe.required_expert_weight must be > 0 and < 1.")
+            if float(moe_cfg.required_expert_weight) * len(required_expert_ids) >= 1:
+                raise ValueError("backbone.moe.required_expert_weight * len(required_expert_ids) must be < 1.")
+        elif moe_cfg.required_expert_weight is not None:
+            raise ValueError("backbone.moe.required_expert_weight must not be set when weight mode is router.")
+        if moe_cfg.required_expert_weight_mode == "router" and moe_cfg.router_type != "learned":
+            raise ValueError("backbone.moe.required_expert_weight_mode=router requires router_type='learned'.")
+
     if moe_cfg.expert_hidden_size is not None:
         if type(moe_cfg.expert_hidden_size) is not int:
             raise ValueError("backbone.moe.expert_hidden_size must be an integer when provided.")
@@ -189,6 +229,13 @@ def _validate_moe_config(
                 f"backbone.moe.modality_to_groups.{modality_name} references unknown groups: {missing_groups}."
             )
         allowed_experts = {expert_id for group_name in group_names for expert_id in moe_cfg.expert_groups[group_name]}
+        if required_expert_ids is not None:
+            missing_required = sorted(set(required_expert_ids) - allowed_experts)
+            if missing_required:
+                raise ValueError(
+                    f"backbone.moe.modality_to_groups.{modality_name} must expose required_expert_ids "
+                    f"{missing_required}."
+                )
         if len(allowed_experts) < moe_cfg.top_k:
             raise ValueError(f"backbone.moe.modality_to_groups.{modality_name} must expose at least top_k experts.")
 

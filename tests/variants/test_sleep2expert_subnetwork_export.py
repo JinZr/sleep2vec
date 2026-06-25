@@ -19,7 +19,34 @@ def _write_config(
     num_hidden_layers: int = 1,
     moe_layer_indices: list[int] | None = None,
     router_type: str = "learned",
+    required_expert_ids: list[int] | None = None,
+    required_expert_weight_mode: str | None = None,
+    required_expert_weight: float | None = None,
 ) -> None:
+    moe = {
+        "enabled": True,
+        "layer_indices": moe_layer_indices or [1],
+        "num_experts": 6,
+        "top_k": 2,
+        "expert_hidden_size": 8,
+        "router_type": router_type,
+        "use_modality_group_mask": True,
+        "expert_groups": {
+            "shared": [0, 5],
+            "cardiac": [2, 4],
+            "respiratory": [1, 3],
+        },
+        "modality_to_groups": {
+            "heartbeat": ["shared", "cardiac"],
+            "breath": ["shared", "respiratory"],
+        },
+    }
+    if required_expert_ids is not None:
+        moe["required_expert_ids"] = required_expert_ids
+    if required_expert_weight_mode is not None:
+        moe["required_expert_weight_mode"] = required_expert_weight_mode
+    if required_expert_weight is not None:
+        moe["required_expert_weight"] = required_expert_weight
     payload = {
         "model": {
             "backbone": {
@@ -28,24 +55,7 @@ def _write_config(
                 "num_hidden_layers": num_hidden_layers,
                 "num_attention_heads": 1,
                 "vocab_size": 1,
-                "moe": {
-                    "enabled": True,
-                    "layer_indices": moe_layer_indices or [1],
-                    "num_experts": 6,
-                    "top_k": 2,
-                    "expert_hidden_size": 8,
-                    "router_type": router_type,
-                    "use_modality_group_mask": True,
-                    "expert_groups": {
-                        "shared": [0, 5],
-                        "cardiac": [2, 4],
-                        "respiratory": [1, 3],
-                    },
-                    "modality_to_groups": {
-                        "heartbeat": ["shared", "cardiac"],
-                        "breath": ["shared", "respiratory"],
-                    },
-                },
+                "moe": moe,
             },
             "projection": {"name": "simclr", "enabled": True, "hidden_dim": 4, "out_dim": 2},
             "cls": {"embedding_type": None, "downstream": "tokens"},
@@ -156,6 +166,59 @@ def test_sleep2expert_export_subnetwork_rewrites_config_and_checkpoint(tmp_path:
         {"old_expert_id": "4", "new_expert_id": "2"},
         {"old_expert_id": "5", "new_expert_id": "3"},
     ]
+
+
+def test_sleep2expert_export_subnetwork_remaps_required_expert_ids(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    ckpt_path = tmp_path / "source.ckpt"
+    output_dir = tmp_path / "exported"
+    _write_config(
+        config_path,
+        finetune=False,
+        required_expert_ids=[5],
+        required_expert_weight_mode="fixed",
+        required_expert_weight=0.25,
+    )
+    _write_checkpoint(ckpt_path)
+
+    export_subnetwork(
+        argparse.Namespace(
+            config=config_path,
+            ckpt_path=ckpt_path,
+            route_expert_groups=["shared", "cardiac"],
+            output_dir=output_dir,
+        )
+    )
+
+    exported_config = yaml.safe_load((output_dir / "config.yaml").read_text())
+    moe = exported_config["model"]["backbone"]["moe"]
+    assert moe["required_expert_ids"] == [3]
+    assert moe["required_expert_weight_mode"] == "fixed"
+    assert moe["required_expert_weight"] == 0.25
+
+
+def test_sleep2expert_export_subnetwork_rejects_missing_required_expert(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    ckpt_path = tmp_path / "source.ckpt"
+    output_dir = tmp_path / "exported"
+    _write_config(
+        config_path,
+        finetune=False,
+        required_expert_ids=[0],
+        required_expert_weight_mode="fixed",
+        required_expert_weight=0.25,
+    )
+    _write_checkpoint(ckpt_path)
+
+    with pytest.raises(ValueError, match="exclude required_expert_ids"):
+        export_subnetwork(
+            argparse.Namespace(
+                config=config_path,
+                ckpt_path=ckpt_path,
+                route_expert_groups=["cardiac"],
+                output_dir=output_dir,
+            )
+        )
 
 
 def test_sleep2expert_export_subnetwork_rejects_unknown_group(tmp_path: Path):
