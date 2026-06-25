@@ -23,8 +23,7 @@ model:
       expert_dropout_prob: 0.0
       use_modality_group_mask: true
       required_expert_ids: [0]
-      required_expert_weight_mode: fixed
-      required_expert_weight: 0.3333333333
+      required_expert_weight_mode: router
       expert_groups:
         shared: [0]
         neuro: [2, 3, 4, 5]
