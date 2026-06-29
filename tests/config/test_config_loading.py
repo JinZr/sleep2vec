@@ -406,6 +406,36 @@ def test_load_finetune_config_defaults_survival_covariates(tmp_path: Path):
     assert bundle.finetune.survival.covariate_embedding_dim == 16
 
 
+def test_sleep2vec2_load_finetune_config_parses_survival_covariate_fusion(tmp_path: Path):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _survival_finetune_payload()
+    payload["finetune"]["survival"].update({"covariates": ["age", "sex"], "covariate_fusion": "risk"})
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_survival_risk_fusion.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.survival.covariate_fusion == "risk"
+
+
+@pytest.mark.parametrize(
+    ("survival_patch", "pattern"),
+    [
+        ({"covariates": ["age"], "covariate_fusion": "late_concat"}, "covariate_fusion"),
+        ({"covariate_fusion": "risk"}, "requires finetune.survival.covariates"),
+    ],
+)
+def test_sleep2vec2_load_finetune_config_rejects_invalid_survival_covariate_fusion(
+    tmp_path: Path, survival_patch: dict, pattern: str
+):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _survival_finetune_payload()
+    payload["finetune"]["survival"].update(survival_patch)
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_survival_invalid_fusion.yaml")
+
+    with pytest.raises(ValueError, match=pattern):
+        loader(config_path)
+
+
 @pytest.mark.parametrize(
     "module_name",
     [
