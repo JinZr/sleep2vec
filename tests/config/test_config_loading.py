@@ -417,6 +417,17 @@ def test_sleep2vec2_load_finetune_config_parses_survival_covariate_fusion(tmp_pa
     assert bundle.finetune.survival.covariate_fusion == "risk"
 
 
+def test_sleep2vec2_load_finetune_config_parses_multilabel_token_concat(tmp_path: Path):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update({"covariates": ["age", "sex"], "covariate_fusion": "token_concat"})
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_multilabel_token_concat.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.multilabel.covariate_fusion == "token_concat"
+
+
 @pytest.mark.parametrize(
     ("survival_patch", "pattern"),
     [
@@ -431,6 +442,25 @@ def test_sleep2vec2_load_finetune_config_rejects_invalid_survival_covariate_fusi
     payload = _survival_finetune_payload()
     payload["finetune"]["survival"].update(survival_patch)
     config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_survival_invalid_fusion.yaml")
+
+    with pytest.raises(ValueError, match=pattern):
+        loader(config_path)
+
+
+@pytest.mark.parametrize(
+    ("multilabel_patch", "pattern"),
+    [
+        ({"covariates": ["age"], "covariate_fusion": "risk"}, "covariate_fusion"),
+        ({"covariate_fusion": "token_concat"}, "requires finetune.multilabel.covariates"),
+    ],
+)
+def test_sleep2vec2_load_finetune_config_rejects_invalid_multilabel_covariate_fusion(
+    tmp_path: Path, multilabel_patch: dict, pattern: str
+):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update(multilabel_patch)
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_multilabel_invalid_fusion.yaml")
 
     with pytest.raises(ValueError, match=pattern):
         loader(config_path)
