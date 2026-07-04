@@ -642,6 +642,37 @@ def _aggregate_prepared_ahi_records(
     }
 
 
+def _aggregate_prepared_ahi_summary_records(
+    prepared_records: list[PreparedAHIRecord],
+    *,
+    threshold: float,
+) -> dict[str, Any]:
+    pred_ahi: list[float] = []
+    true_ahi: list[float] = []
+
+    for record in prepared_records:
+        if not record.summary_enabled:
+            continue
+        active = np.asarray(record.score > threshold, dtype=np.int8).reshape(-1)
+        padded = np.concatenate(([0], active, [0]))
+        diff = np.diff(padded)
+        starts = np.where(diff == 1)[0]
+        ends = np.where(diff == -1)[0] - 1
+        if starts.size == 0:
+            pred_ahi.append(0.0)
+        else:
+            mask = np.asarray(record.sleep_mask > 0, dtype=np.int64).reshape(-1)
+            prefix = np.concatenate(([0], np.cumsum(mask)))
+            overlaps = prefix[ends + 1] - prefix[starts]
+            pred_ahi.append(float(np.count_nonzero(overlaps > 0) / record.tst_hours))
+        true_ahi.append(record.true_ahi)
+
+    return {
+        "pred_ahi": np.asarray(pred_ahi, dtype=np.float32),
+        "true_ahi": np.asarray(true_ahi, dtype=np.float32),
+    }
+
+
 def extract_ahi_summary_scatter_arrays(
     records: list[Mapping[str, np.ndarray]],
     *,
@@ -661,7 +692,6 @@ def _select_best_ahi_threshold_from_prepared(
     best_threshold: float | None = None
     best_pearson = float("-inf")
     best_mae = float("inf")
-    best_aggregate: dict[str, Any] | None = None
     mode = _resolve_ahi_search_mode(thresholds)
     recording_count = len(prepared_records)
     eligible_count = sum(1 for record in prepared_records if record.summary_enabled)
@@ -682,7 +712,7 @@ def _select_best_ahi_threshold_from_prepared(
                 len(thresholds),
                 threshold,
             )
-        aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=threshold)
+        aggregate = _aggregate_prepared_ahi_summary_records(prepared_records, threshold=threshold)
         pred_ahi = aggregate["pred_ahi"]
         true_ahi = aggregate["true_ahi"]
         if pred_ahi.size == 0 or true_ahi.size == 0:
@@ -698,13 +728,13 @@ def _select_best_ahi_threshold_from_prepared(
             best_threshold = float(threshold)
             best_pearson = float(pearson)
             best_mae = float(mae)
-            best_aggregate = aggregate
 
-    if best_threshold is None or best_aggregate is None:
+    if best_threshold is None:
         raise ValueError(
             "Unable to fit an AHI event threshold from validation records. "
             "Need at least 1 non-skipped sample with TST >= 2h."
         )
+    best_aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=best_threshold)
     logging.info(
         "AHI threshold search done: best=%.2f elapsed=%.2fs",
         best_threshold,

@@ -105,6 +105,8 @@ def _log_inference_outputs_to_wandb(
             "multilabel_per_disease_metric_count": multilabel_per_disease_metric_count,
         }
     )
+    if not getattr(args, "wandb_artifact", True):
+        return
 
     # W&B caps artifact names at 128 chars; CSVs and the manifest keep the full prediction_run_id.
     run_id_hash = args.prediction_run_id.rsplit("__", 1)[-1]
@@ -366,6 +368,13 @@ def parse_args():
         default=None,
         choices=["online", "offline", "disabled"],
         help="W&B mode override (online/offline/disabled).",
+    )
+    parser.add_argument(
+        "--no-wandb-artifact",
+        dest="wandb_artifact",
+        action="store_false",
+        default=True,
+        help="Log inference metrics to W&B without uploading CSV artifacts.",
     )
     return parser.parse_args()
 

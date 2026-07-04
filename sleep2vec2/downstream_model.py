@@ -321,7 +321,9 @@ class Sleep2vecDownstreamModel(nn.Module):
             return token_hidden
         covariates = self._build_survival_covariate_embeddings(batch, token_hidden)
         token_covariates = covariates[:, None, :].expand(-1, token_hidden.size(1), -1)
-        return torch.cat([token_hidden, token_covariates.to(device=token_hidden.device, dtype=token_hidden.dtype)], dim=-1)
+        return torch.cat(
+            [token_hidden, token_covariates.to(device=token_hidden.device, dtype=token_hidden.dtype)], dim=-1
+        )
 
     def _build_survival_covariate_values(self, batch, reference: torch.Tensor) -> torch.Tensor | None:
         if not self.survival_covariates:

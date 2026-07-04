@@ -706,11 +706,11 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
         raise ValueError("finetune.multilabel.covariate_embedding_dim must be a positive integer.")
 
     covariate_fusion = raw.get("covariate_fusion", "feature_concat")
-    if covariate_fusion not in {"feature_concat", "token_concat"}:
-        raise ValueError("finetune.multilabel.covariate_fusion must be 'feature_concat' or 'token_concat'.")
-    if covariate_fusion == "token_concat" and not covariates:
+    if covariate_fusion not in {"feature_concat", "risk", "token_concat"}:
+        raise ValueError("finetune.multilabel.covariate_fusion must be 'feature_concat', 'risk', or 'token_concat'.")
+    if covariate_fusion in {"risk", "token_concat"} and not covariates:
         raise ValueError(
-            "finetune.multilabel.covariate_fusion='token_concat' requires finetune.multilabel.covariates."
+            f"finetune.multilabel.covariate_fusion='{covariate_fusion}' requires finetune.multilabel.covariates."
         )
 
     values = {field_name: raw[field_name] for field_name in required}
