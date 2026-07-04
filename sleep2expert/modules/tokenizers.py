@@ -174,8 +174,8 @@ class SundialTokenizer2(BaseTokenizer):
         # same normalized input
         res = self.residual_layer(x_norm)
 
-        # Residual mixing with explicit scale on FFN branch
-        out = res + self.residual_scale * y
+        # Residual mixing with explicit scale on residual branch
+        out = self.residual_scale * res + y
 
         # Post-norm as before, then apply a per-modality scale
         out = self.norm(out)
