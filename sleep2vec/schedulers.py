@@ -30,7 +30,7 @@ def build_warmup_cosine_scheduler(
             return float(step) / float(max(1, warmup))
         progress = (step - warmup) / float(max(1, total_steps - warmup))
         if decay_shape == "linear":
-            decay = 1.0 - progress
+            decay = max(0.0, 1.0 - progress)
         else:
             decay = 0.5 * (1 + math.cos(math.pi * progress))
         return floor + (1.0 - floor) * decay

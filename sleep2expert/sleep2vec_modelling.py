@@ -214,6 +214,8 @@ class Sleep2vecPretraining(pl.LightningModule):
             optimizer,
             total_steps=self.trainer.estimated_stepping_batches,
             warmup_steps=getattr(self.args, "warmup_steps", None),
+            decay_floor=getattr(self.args, "lr_decay_floor", 0.1),
+            decay_shape=getattr(self.args, "lr_decay_shape", "cosine"),
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 

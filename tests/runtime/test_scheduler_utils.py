@@ -66,15 +66,30 @@ def test_warmup_is_clamped_to_total_steps(module_name: str):
     assert lr_lambda(100) == pytest.approx(1.0)
 
 
-def test_root_scheduler_uses_configured_decay_floor():
-    lr_lambda = _lr_lambda("sleep2vec.schedulers", total_steps=100, warmup_steps=10, decay_floor=0.25)
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+def test_scheduler_uses_configured_decay_floor(module_name: str):
+    lr_lambda = _lr_lambda(module_name, total_steps=100, warmup_steps=10, decay_floor=0.25)
 
     assert lr_lambda(10) == pytest.approx(1.0)
     assert lr_lambda(100) == pytest.approx(0.25)
 
 
-def test_root_scheduler_supports_linear_decay_shape():
-    lr_lambda = _lr_lambda("sleep2vec.schedulers", total_steps=100, warmup_steps=0, decay_shape="linear")
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+def test_scheduler_supports_linear_decay_shape(module_name: str):
+    lr_lambda = _lr_lambda(module_name, total_steps=100, warmup_steps=0, decay_shape="linear")
 
     assert lr_lambda(25) == pytest.approx(0.775)
     assert lr_lambda(100) == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+def test_linear_decay_stays_at_floor_after_total_steps(module_name: str):
+    lr_lambda = _lr_lambda(
+        module_name,
+        total_steps=100,
+        warmup_steps=0,
+        decay_floor=0.25,
+        decay_shape="linear",
+    )
+
+    assert lr_lambda(150) == pytest.approx(0.25)
