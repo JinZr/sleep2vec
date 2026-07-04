@@ -6,10 +6,9 @@ torch = pytest.importorskip("torch")
 import torch.nn as nn
 
 from sleep2expert.modules.tokenizers import SundialTokenizer2 as ExpertSundialTokenizer2
-from sleep2vec.modules.tokenizers import SundialTokenizer2 as RootSundialTokenizer2
 from sleep2vec2.config import ChannelConfig, TokenizerConfig
-from sleep2vec2.modules.tokenizers import build_tokenizer_from_channel
-from sleep2vec2.modules.tokenizers import SundialTokenizer2 as VariantSundialTokenizer2
+from sleep2vec2.modules.tokenizers import SundialTokenizer2 as VariantSundialTokenizer2, build_tokenizer_from_channel
+from sleep2vec.modules.tokenizers import SundialTokenizer2 as RootSundialTokenizer2
 
 
 def test_sundial2_tokenizer_accepts_deeper_kwargs():
