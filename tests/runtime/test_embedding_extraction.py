@@ -128,6 +128,42 @@ def test_load_backbone_checkpoint_reports_missing_cls_weights(tmp_path: Path):
         extract_embeddings._load_backbone_checkpoint(_TinyClsBackbone(), ckpt_path, "cpu")
 
 
+def test_build_extraction_loader_reads_yaml_channel_alias(tmp_path: Path):
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, psg_breath=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "test",
+                "duration": 60,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+    args = argparse.Namespace(
+        channel_names=["breath"],
+        channel_input_dims={"breath": 4},
+        channel_aliases={"breath": "psg_breath"},
+        max_tokens=2,
+        eval_split="test",
+        override_dataset_names=[],
+        data_backend="npz",
+        kaldi_data_root=None,
+        kaldi_manifest=None,
+        preset_path=None,
+        data_index=[index_path],
+        batch_size=1,
+        num_workers=0,
+        device="cpu",
+    )
+
+    loader = extract_embeddings._build_extraction_loader(args, SimpleNamespace(), "pretrain")
+    batch = next(iter(loader))
+
+    assert batch["tokens"]["breath"].tolist() == [[[0.0, 1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0]]]
+
+
 def test_select_layer_state_supports_projected_input_positive_and_final():
     states = (
         torch.full((1, 2, 1), 0.0),

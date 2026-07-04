@@ -19,14 +19,14 @@ model:
     kwargs: {}
   channels:
     - name: heartbeat
-      aliases: [psg_heartbeat]
+      alias: psg_heartbeat
       input_dim: 120
       tokenizer:
         name: sundial
         out_dim: 128
         kwargs: {}
     - name: breath
-      aliases: [psg_breath]
+      alias: psg_breath
       input_dim: 120
       tokenizer:
         name: sundial

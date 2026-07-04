@@ -405,13 +405,13 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
 
 def test_apply_finetune_config_populates_channel_aliases(tmp_path: Path):
     payload = _finetune_payload()
-    payload["model"]["channels"][0]["aliases"] = ["psg_eeg", "bcg_eeg"]
+    payload["model"]["channels"][0]["alias"] = "psg_eeg"
     config_path = _write_yaml(tmp_path, payload)
     args = argparse.Namespace(config=config_path, label_name="custom_target")
 
     apply_finetune_config(args)
 
-    assert args.channel_aliases == {"eeg": ["psg_eeg", "bcg_eeg"]}
+    assert args.channel_aliases == {"eeg": "psg_eeg"}
 
 
 @pytest.mark.parametrize(

@@ -27,6 +27,7 @@ from sleep2expert.data.psg_pretrain_dataset import _build_channel_registry
 from sleep2expert.data.utils import load_builtin_ahi_metadata, load_npz, window
 from sleep2expert.preprocess.save_dataset_presets import (
     _load_config_mapping,
+    _load_model_channel_aliases,
     _load_model_channels,
     _load_preset_build_block,
     _mask_column_for_channel,
@@ -185,9 +186,10 @@ def _resolve_channels(args: argparse.Namespace) -> tuple[list[str], dict[str, in
         preset_required_channels=None,
         selected_channels=selected_channels,
     )
+    cli_min_channels = args.min_channels if args.allow_missing_channels else min(args.min_channels, len(channel_names))
     effective_min_channels = _resolve_effective_min_channels(
         channel_names=channel_names,
-        cli_min_channels=args.min_channels,
+        cli_min_channels=cli_min_channels,
         preset_min_channels=preset_min_channels,
     )
     return channel_names, channel_input_dims, effective_min_channels
@@ -511,15 +513,18 @@ def convert(args: argparse.Namespace) -> Path:
         raise FileNotFoundError(f"Index CSV not found: {missing_indexes}")
 
     channel_names, channel_input_dims, effective_min_channels = _resolve_channels(args)
+    config_data = _load_config_mapping(args.config)
+    model_channel_aliases = _load_model_channel_aliases(config_data)
+    channel_aliases = {name: alias for name, alias in model_channel_aliases.items() if name in channel_names}
     registry = _build_channel_registry(
         channel_names=channel_names,
         channel_input_dims=channel_input_dims,
+        channel_aliases=channel_aliases,
         mask_rate=0.0,
     )
     extractors = {name: registry[name][0] for name in channel_names}
     tokenizers = {name: registry[name][1] for name in channel_names}
 
-    config_data = _load_config_mapping(args.config)
     finetune_block = config_data.get("finetune", {})
     survival_block = finetune_block.get("survival", {}) if isinstance(finetune_block, dict) else {}
     survival_key_column = survival_block.get("key_column") if isinstance(survival_block, dict) else None

@@ -235,7 +235,7 @@ def _load_model_channels(
     return all_channels, all_channel_input_dims
 
 
-def _load_model_channel_aliases(config_data: dict[str, t.Any]) -> dict[str, list[str]]:
+def _load_model_channel_aliases(config_data: dict[str, t.Any]) -> dict[str, str]:
     model_block = config_data.get("model")
     if not isinstance(model_block, dict):
         raise ValueError("Config YAML must contain a top-level model.channels list.")
@@ -244,18 +244,20 @@ def _load_model_channel_aliases(config_data: dict[str, t.Any]) -> dict[str, list
     if not isinstance(channels_raw, list) or not channels_raw:
         raise ValueError("Config YAML must contain a non-empty model.channels list.")
 
-    aliases_by_channel: dict[str, list[str]] = {}
+    aliases_by_channel: dict[str, str] = {}
     for item in channels_raw:
         if not isinstance(item, dict):
             raise ValueError("Each model.channels entry must be a mapping.")
         name = item.get("name")
         if not isinstance(name, str) or not name:
             raise ValueError("Each model.channels entry must define a non-empty string 'name'.")
-        aliases = item.get("aliases", [])
-        if not isinstance(aliases, list) or not all(isinstance(alias, str) and alias for alias in aliases):
-            raise ValueError(f"Channel '{name}' aliases must be a list of non-empty strings.")
-        if aliases:
-            aliases_by_channel[name] = list(aliases)
+        if "aliases" in item:
+            raise ValueError(f"Channel '{name}' uses unsupported field 'aliases'; use 'alias'.")
+        alias = item.get("alias")
+        if alias is not None:
+            if not isinstance(alias, str) or not alias:
+                raise ValueError(f"Channel '{name}' alias must be a non-empty string.")
+            aliases_by_channel[name] = alias
     return aliases_by_channel
 
 
@@ -487,7 +489,7 @@ def _build_preset_job(
     survival_output_dim: int | None = None,
     multilabel_label_config: t.Any | None = None,
     multilabel_output_dim: int | None = None,
-    channel_aliases: t.Mapping[str, t.Sequence[str]] | None = None,
+    channel_aliases: t.Mapping[str, str] | None = None,
     filter_max_workers: int | None,
 ) -> tuple[Path, int]:
     from sleep2vec2.data.psg_pretrain_dataset import PSGPretrainDataset
@@ -573,7 +575,7 @@ def main() -> None:
         preset_required_channels=preset_required_channels,
         selected_channels=args.channels,
     )
-    channel_aliases = {name: aliases for name, aliases in model_channel_aliases.items() if name in channel_names}
+    channel_aliases = {name: alias for name, alias in model_channel_aliases.items() if name in channel_names}
     if args.allow_missing_channels:
         effective_min_channels = _resolve_effective_min_channels(
             channel_names=channel_names,

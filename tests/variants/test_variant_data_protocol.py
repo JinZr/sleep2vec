@@ -131,7 +131,7 @@ def test_variant_psg_dataset_reads_npz_channel_alias_as_configured_name(tmp_path
     dataset = dataset_module.PSGPretrainDataset(
         channel_names=["breath"],
         channel_input_dims={"breath": 4},
-        channel_aliases={"breath": ["psg_breath"]},
+        channel_aliases={"breath": "psg_breath"},
         save_preset_path=None,
         load_preset_path=None,
         index=str(index_path),

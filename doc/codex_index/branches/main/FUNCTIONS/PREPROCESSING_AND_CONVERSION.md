@@ -15,7 +15,7 @@
 
 - File: `preprocess/save_dataset_presets.py`
 - Signature: `main() -> None`
-- Purpose and contract: canonical preset-generation CLI. It resolves channels and optional NPZ-key aliases from YAML, applies optional `preset_build` policy, loads survival preset-build sidecars when `finetune.task.type=survival`, plans output paths, optionally prefilters the source CSV by required masks, then instantiates `PSGPretrainDataset` so validation and writing happen through the dataset layer.
+- Purpose and contract: canonical preset-generation CLI. It resolves channels and optional single NPZ-key aliases from YAML, applies optional `preset_build` policy, loads survival preset-build sidecars when `finetune.task.type=survival`, plans output paths, optionally prefilters the source CSV by required masks, then instantiates `PSGPretrainDataset` so validation and writing happen through the dataset layer.
 - Important inputs/outputs: CLI args in; preset pickle files out.
 - Side effects: creates parent directories, may write temporary filtered CSVs, and writes preset files unless `--dry-run` is set.
 - Key callers/callees: called from `__main__`; callees include `_load_model_channels`, `_load_model_channel_aliases`, `_load_preset_build_block`, `_load_survival_build_config`, `_resolve_validation_channels`, `_resolve_effective_min_channels`, `_build_preset_job`, and `PSGPretrainDataset`.
@@ -36,8 +36,8 @@
 ## `preprocess.save_dataset_presets._load_model_channel_aliases`
 
 - File: `preprocess/save_dataset_presets.py`; package-local mirrors: `sleep2vec2/preprocess/save_dataset_presets.py`, `sleep2expert/preprocess/save_dataset_presets.py`
-- Signature: `_load_model_channel_aliases(config_data: dict[str, Any]) -> dict[str, list[str]]`
-- Purpose and contract: parse optional YAML `model.channels[*].aliases` as NPZ input-key fallbacks for preset raw validation only.
+- Signature: `_load_model_channel_aliases(config_data: dict[str, Any]) -> dict[str, str]`
+- Purpose and contract: parse optional YAML `model.channels[*].alias` as the single NPZ input-key fallback for raw NPZ readers.
 - Important inputs/outputs: raw config mapping in; mapping of configured channel name to alias NPZ keys out.
 - Side effects: none.
 - Key callers/callees: caller is `main`; consumers pass the result into `_build_preset_job` and `PSGPretrainDataset`.
@@ -91,7 +91,7 @@
 ## `preprocess.save_dataset_presets._build_preset_job`
 
 - File: `preprocess/save_dataset_presets.py`
-- Signature: `_build_preset_job(*, output_path: Path, index_paths: list[str], channel_names: list[str], channel_input_dims: dict[str, int], split: str, meta_data_name: str | None, n_tokens: int, stride_tokens: int, mask_rate: float, allow_missing_channels: bool, min_channels: int, batch_size: int, shuffle: bool, filter_max_workers: int | None, survival_label_config: Any | None = None, survival_output_dim: int | None = None, channel_aliases: Mapping[str, Sequence[str]] | None = None) -> tuple[Path, int]`
+- Signature: `_build_preset_job(*, output_path: Path, index_paths: list[str], channel_names: list[str], channel_input_dims: dict[str, int], split: str, meta_data_name: str | None, n_tokens: int, stride_tokens: int, mask_rate: float, allow_missing_channels: bool, min_channels: int, batch_size: int, shuffle: bool, filter_max_workers: int | None, survival_label_config: Any | None = None, survival_output_dim: int | None = None, channel_aliases: Mapping[str, str] | None = None) -> tuple[Path, int]`
 - Purpose and contract: execute one preset-build unit, including optional strict CSV prefiltering and post-build restoration of the original `source` field.
 - Important inputs/outputs: preset-build job inputs plus optional survival sidecar config/output dim in, `(output_path, dataset_len)` out.
 - Side effects: may write a temporary CSV, instantiates `PSGPretrainDataset`, and writes a preset pickle.

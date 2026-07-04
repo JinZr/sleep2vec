@@ -10,7 +10,7 @@
   - `AdaptConfig`, `AdaptStage1Config`, `AdaptStage2Config`, `AdaptLrScalesConfig`, `AdaptPairSchedulePoint`
   - `PretrainDataConfig` with `backend`, `kaldi_data_root`, and `kaldi_manifest`
   - `PretrainConfigBundle`, `FinetuneConfigBundle`
-- Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing; `ChannelConfig.aliases` carries optional YAML-declared NPZ input-key fallbacks.
+- Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing; `ChannelConfig.alias` carries one optional YAML-declared NPZ input-key fallback.
 - Reuse guidance: extend these dataclasses before adding new ad hoc dict plumbing in entrypoints or Lightning modules.
 
 ## `sleep2vec.config.LoraConfig` and package-local variant mirrors

@@ -213,16 +213,16 @@ def test_load_pretrain_config_parses_valid_yaml(tmp_path: Path):
         "sleep2expert.config",
     ],
 )
-def test_load_pretrain_config_parses_channel_aliases_across_namespaces(tmp_path: Path, module_name: str):
+def test_load_pretrain_config_parses_channel_alias_across_namespaces(tmp_path: Path, module_name: str):
     loader = importlib.import_module(module_name).load_pretrain_config
     payload = _pretrain_payload()
-    payload["model"]["channels"][0]["aliases"] = ["psg_eeg", "bcg_eeg"]
-    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_aliases.yaml")
+    payload["model"]["channels"][0]["alias"] = "psg_eeg"
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_alias.yaml")
 
     bundle = loader(config_path)
 
-    assert bundle.model.channels[0].aliases == ["psg_eeg", "bcg_eeg"]
-    assert bundle.model.channels[1].aliases == []
+    assert bundle.model.channels[0].alias == "psg_eeg"
+    assert bundle.model.channels[1].alias is None
 
 
 @pytest.mark.parametrize(
@@ -233,18 +233,36 @@ def test_load_pretrain_config_parses_channel_aliases_across_namespaces(tmp_path:
         "sleep2expert.config",
     ],
 )
-@pytest.mark.parametrize("aliases", [None, "psg_eeg", [""], [123]])
-def test_load_pretrain_config_rejects_invalid_channel_aliases(
+@pytest.mark.parametrize("alias", ["", 123, ["psg_eeg", "bcg_eeg"]])
+def test_load_pretrain_config_rejects_invalid_channel_alias(
     tmp_path: Path,
     module_name: str,
-    aliases: object,
+    alias: object,
 ):
     loader = importlib.import_module(module_name).load_pretrain_config
     payload = _pretrain_payload()
-    payload["model"]["channels"][0]["aliases"] = aliases
-    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_invalid_aliases.yaml")
+    payload["model"]["channels"][0]["alias"] = alias
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_invalid_alias.yaml")
 
-    with pytest.raises(ValueError, match="aliases must be a list of non-empty strings"):
+    with pytest.raises(ValueError, match="alias must be a non-empty string"):
+        loader(config_path)
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_pretrain_config_rejects_legacy_channel_aliases(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    payload = _pretrain_payload()
+    payload["model"]["channels"][0]["aliases"] = ["psg_eeg"]
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_legacy_aliases.yaml")
+
+    with pytest.raises(ValueError, match="unsupported field 'aliases'"):
         loader(config_path)
 
 

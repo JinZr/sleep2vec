@@ -3,9 +3,9 @@
 ## `data.psg_pretrain_dataset._build_channel_registry`
 
 - File: `data/psg_pretrain_dataset.py`
-- Signature: `_build_channel_registry(*, channel_names: Sequence[str], channel_input_dims: Mapping[str, int], channel_aliases: Mapping[str, Sequence[str]] | None = None, mask_rate: float) -> dict[str, tuple[Callable, Callable, Callable]]`
-- Purpose and contract: build the extractor/tokenizer/mask-generator registry for requested channels, including built-in `stage5` and `ahi` behavior. Default extractors can read YAML-declared alias NPZ keys when the exact key is absent.
-- Important inputs/outputs: requested channels, YAML-driven input dims, and optional YAML channel aliases in; per-channel registry out.
+- Signature: `_build_channel_registry(*, channel_names: Sequence[str], channel_input_dims: Mapping[str, int], channel_aliases: Mapping[str, str] | None = None, mask_rate: float) -> dict[str, tuple[Callable, Callable, Callable]]`
+- Purpose and contract: build the extractor/tokenizer/mask-generator registry for requested channels, including built-in `stage5` and `ahi` behavior. Default extractors can read one YAML-declared alias NPZ key when the exact key is absent.
+- Important inputs/outputs: requested channels, YAML-driven input dims, and optional YAML channel alias map in; per-channel registry out.
 - Side effects: none.
 - Key callers/callees: caller is `PSGPretrainDataset.__init__`; callees include `default_extractor`, `default_tokenizer`, and `default_mlm_mask_generator`.
 - Reuse guidance: use this registry path instead of constructing per-channel extractors ad hoc.
@@ -107,7 +107,7 @@
 
 - File: `data/utils.py`
 - Signature: `filter_valid_sample_indices(data, extractors, tokenizers, *, allow_missing_channels, channel_names=None, min_channels=2, tolerance=1, max_workers=None, channel_aliases=None) -> list`
-- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, validating built-in AHI metadata when needed, and recording configured `payload["available_channels"]` for every retained sample. Raw NPZ validation accepts YAML-declared alias keys for configured channels.
+- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, validating built-in AHI metadata when needed, and recording configured `payload["available_channels"]` for every retained sample. Raw NPZ validation accepts the YAML-declared alias key for a configured channel.
 - Important inputs/outputs: raw `SampleIndex` list in; filtered `SampleIndex` list out.
 - Side effects: mutates `sample_index.payload["available_channels"]` for retained samples; may backfill `sample_index.metadata["ahi"]` and `["tst"]`.
 - Key callers/callees: caller is `DefaultDataset.__init__`; callees are `load_npz`, `load_builtin_ahi_metadata`, extractors, and tokenizers.

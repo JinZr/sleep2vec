@@ -81,8 +81,8 @@ def test_filter_valid_sample_indices_records_configured_channels_for_alias_keys(
 
     data = [SampleIndex(id=0, path="same.npz", start=0, end=2)]
     extractors = {
-        "breath": default_extractor("breath", 4, source_names=["psg_breath"]),
-        "heartbeat": default_extractor("heartbeat", 4, source_names=["bcg_heartbeat"]),
+        "breath": default_extractor("breath", 4, source_alias="psg_breath"),
+        "heartbeat": default_extractor("heartbeat", 4, source_alias="bcg_heartbeat"),
     }
     tokenizers = {
         "breath": default_tokenizer(4),
@@ -97,7 +97,7 @@ def test_filter_valid_sample_indices_records_configured_channels_for_alias_keys(
         channel_names=["breath", "heartbeat"],
         min_channels=2,
         max_workers=1,
-        channel_aliases={"breath": ["psg_breath"], "heartbeat": ["bcg_heartbeat"]},
+        channel_aliases={"breath": "psg_breath", "heartbeat": "bcg_heartbeat"},
     )
 
     assert filtered == data
@@ -107,7 +107,7 @@ def test_filter_valid_sample_indices_records_configured_channels_for_alias_keys(
 def test_default_extractor_falls_back_to_channel_alias():
     npz = _FakeNpz({"psg_breath": np.ones(8, dtype=np.float32)})
 
-    extracted = default_extractor("breath", 4, source_names=["psg_breath"])(npz, 0, 2)
+    extracted = default_extractor("breath", 4, source_alias="psg_breath")(npz, 0, 2)
 
     assert extracted.tolist() == [1.0] * 8
 
@@ -127,7 +127,7 @@ def test_default_extractor_prefers_canonical_key_before_alias():
         }
     )
 
-    extracted = default_extractor("breath", 4, source_names=["psg_breath"])(npz, 0, 2)
+    extracted = default_extractor("breath", 4, source_alias="psg_breath")(npz, 0, 2)
 
     assert extracted.tolist() == [0.0] * 8
 
@@ -138,8 +138,8 @@ def test_variant_default_extractors_fall_back_to_channel_alias():
 
     npz = _FakeNpz({"bcg_heartbeat": np.ones(8, dtype=np.float32)})
 
-    assert sleep2vec2_default_extractor("heartbeat", 4, source_names=["bcg_heartbeat"])(npz, 0, 2).tolist() == [1.0] * 8
-    assert expert_default_extractor("heartbeat", 4, source_names=["bcg_heartbeat"])(npz, 0, 2).tolist() == [1.0] * 8
+    assert sleep2vec2_default_extractor("heartbeat", 4, source_alias="bcg_heartbeat")(npz, 0, 2).tolist() == [1.0] * 8
+    assert expert_default_extractor("heartbeat", 4, source_alias="bcg_heartbeat")(npz, 0, 2).tolist() == [1.0] * 8
 
 
 def test_filter_valid_sample_indices_drops_builtin_ahi_samples_without_any_valid_labels(monkeypatch):

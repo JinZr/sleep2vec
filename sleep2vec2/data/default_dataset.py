@@ -75,7 +75,7 @@ class DefaultDataset(BaseDataset):
         survival_key_column: str | None = None,
         multilabel_output_dim: int | None = None,
         multilabel_key_column: str | None = None,
-        channel_aliases: t.Mapping[str, t.Sequence[str]] | None = None,
+        channel_aliases: t.Mapping[str, str] | None = None,
         seed: int = 42,
         filter_max_workers: int | None = None,
     ) -> None:
@@ -105,9 +105,7 @@ class DefaultDataset(BaseDataset):
         self.survival_key_column = survival_key_column
         self.multilabel_output_dim = multilabel_output_dim
         self.multilabel_key_column = multilabel_key_column
-        self.channel_aliases = {
-            str(name): tuple(str(alias) for alias in aliases) for name, aliases in (channel_aliases or {}).items()
-        }
+        self.channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
         # self.collators = collators
         self.dataloader_config = dataloader_config
 

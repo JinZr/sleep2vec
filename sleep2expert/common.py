@@ -145,7 +145,7 @@ def channel_input_dims_from_model_config(model_cfg: ModelConfig) -> dict[str, in
 def apply_model_config_args(args, model_cfg: ModelConfig, *, set_backbone_arch: bool = False) -> None:
     args.channel_names = [c.name for c in model_cfg.channels]
     args.channel_input_dims = channel_input_dims_from_model_config(model_cfg)
-    args.channel_aliases = {c.name: list(c.aliases) for c in model_cfg.channels if c.aliases}
+    args.channel_aliases = {c.name: c.alias for c in model_cfg.channels if c.alias}
     if set_backbone_arch:
         args.backbone_arch = model_cfg.backbone.name
 

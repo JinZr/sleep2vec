@@ -15,7 +15,7 @@ model:
     downstream: cls         # "tokens" or "cls" (required)
   channels:
     - name: heartbeat
-      aliases: [psg_heartbeat]
+      alias: psg_heartbeat
       input_dim: 120
       tokenizer:
         name: sundial2
@@ -28,7 +28,7 @@ model:
           clamp_value: null
           modality_scale: 1.0
     - name: breath
-      aliases: [psg_breath]
+      alias: psg_breath
       input_dim: 120
       tokenizer:
         name: sundial2
