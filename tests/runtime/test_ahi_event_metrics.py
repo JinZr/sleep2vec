@@ -215,6 +215,33 @@ def test_evaluate_single_ahi_record_uses_scalar_ground_truth_ahi_for_summary():
     assert true_ahi == 7.5
 
 
+def test_summary_only_ahi_aggregate_matches_full_summary_outputs():
+    records = [
+        _ahi_record(
+            num_stage_tokens=240,
+            truth_segments=[(40, 55)],
+            score_segments=[(40, 48, 0.9), (80, 93, 0.9)],
+            true_ahi=0.25,
+            tst_hours=4.0,
+        ),
+        _ahi_record(
+            num_stage_tokens=120,
+            truth_segments=[(10, 25)],
+            score_segments=[(10, 25, 0.9)],
+            true_ahi=8.0,
+            tst_hours=1.5,
+        ),
+    ]
+    records[0]["stage5"] = np.array([0] + [2] * 239, dtype=np.int64)
+    prepared = metrics_mod._prepare_ahi_records(records)
+
+    full = metrics_mod._aggregate_prepared_ahi_records(prepared, threshold=0.5)
+    summary = metrics_mod._aggregate_prepared_ahi_summary_records(prepared, threshold=0.5)
+
+    np.testing.assert_array_equal(summary["pred_ahi"], full["pred_ahi"])
+    np.testing.assert_array_equal(summary["true_ahi"], full["true_ahi"])
+
+
 def test_compute_ahi_event_metrics_reports_perfect_event_and_ahi_scores():
     records = [
         _ahi_record(
@@ -555,6 +582,7 @@ def test_select_best_ahi_threshold_uses_pearson_then_mae_tiebreak(monkeypatch: p
         }
 
     monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_summary_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
@@ -578,6 +606,7 @@ def test_select_best_ahi_threshold_allows_single_sample_mae_tiebreak(monkeypatch
         }
 
     monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_summary_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
@@ -597,6 +626,7 @@ def test_select_best_ahi_threshold_prefers_higher_threshold_on_exact_metric_tie(
         }
 
     monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_summary_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
@@ -616,7 +646,7 @@ def test_select_best_ahi_threshold_rejects_all_skipped_samples(monkeypatch: pyte
         }
 
     monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record(summary_enabled=False)])
-    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_summary_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
     with pytest.raises(ValueError, match="Need at least 1 non-skipped sample"):
@@ -624,11 +654,18 @@ def test_select_best_ahi_threshold_rejects_all_skipped_samples(monkeypatch: pyte
 
 
 def test_select_best_ahi_threshold_prepares_records_once(monkeypatch: pytest.MonkeyPatch):
-    calls = {"prepare": 0, "aggregate": 0}
+    calls = {"prepare": 0, "summary": 0, "aggregate": 0}
 
     def fake_prepare(records):
         calls["prepare"] += 1
         return [_prepared_record()]
+
+    def fake_summary_aggregate(prepared_records, *, threshold):
+        calls["summary"] += 1
+        return {
+            "pred_ahi": np.array([threshold], dtype=np.float32),
+            "true_ahi": np.array([0.2], dtype=np.float32),
+        }
 
     def fake_aggregate(prepared_records, *, threshold):
         calls["aggregate"] += 1
@@ -641,13 +678,15 @@ def test_select_best_ahi_threshold_prepares_records_once(monkeypatch: pytest.Mon
         }
 
     monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", fake_prepare)
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_summary_records", fake_summary_aggregate)
     monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod.logging, "info", lambda *args, **kwargs: None)
 
     select_best_ahi_threshold([{}], search_thresholds=(0.1, 0.2, 0.3))
 
     assert calls["prepare"] == 1
-    assert calls["aggregate"] == 3
+    assert calls["summary"] == 3
+    assert calls["aggregate"] == 1
 
 
 def test_compute_ahi_event_metrics_fixed_threshold_prepares_records_once(monkeypatch: pytest.MonkeyPatch):
@@ -695,6 +734,7 @@ def test_select_best_ahi_threshold_logs_coarse_progress(monkeypatch: pytest.Monk
         }
 
     monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_summary_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod.logging, "info", fake_info)
 
@@ -723,6 +763,7 @@ def test_select_best_ahi_threshold_logs_sparse_fine_progress(monkeypatch: pytest
         }
 
     monkeypatch.setattr(metrics_mod, "_prepare_ahi_records", lambda records: [_prepared_record()])
+    monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_summary_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod, "_aggregate_prepared_ahi_records", fake_aggregate)
     monkeypatch.setattr(metrics_mod.logging, "info", fake_info)
 
@@ -841,6 +882,7 @@ def test_ahi_test_epoch_ignores_legacy_test_search_thresholds(monkeypatch: pytes
     )
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02, 0.03))
     module._ahi_eval_threshold = 0.37
     module._stage_outputs = {
@@ -850,8 +892,7 @@ def test_ahi_test_epoch_ignores_legacy_test_search_thresholds(monkeypatch: pytes
     }
     module.log = lambda *args, **kwargs: None
     module._gather_ahi_event_records = lambda records: records
-    module.trainer = argparse.Namespace(is_global_zero=False)
-    module.current_epoch = 0
+    module.__dict__["_trainer"] = argparse.Namespace(is_global_zero=False, current_epoch=0)
 
     module._finalize_epoch("test")
 
@@ -1479,6 +1520,7 @@ def test_ahi_test_epoch_uses_saved_threshold_without_fallback_search(monkeypatch
     )
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02))
     module._ahi_eval_threshold = 0.37
     module._stage_outputs = {
@@ -1488,33 +1530,24 @@ def test_ahi_test_epoch_uses_saved_threshold_without_fallback_search(monkeypatch
     }
     module.log = lambda *args, **kwargs: None
     module._gather_ahi_event_records = lambda records: records
-    module.trainer = argparse.Namespace(is_global_zero=False)
-    module.current_epoch = 0
+    module.__dict__["_trainer"] = argparse.Namespace(is_global_zero=False, current_epoch=0)
 
     module._finalize_epoch("test")
 
     assert calls == [(0.37, None)]
 
 
-def test_ahi_test_epoch_uses_broadcast_payload_on_nonzero_rank(monkeypatch: pytest.MonkeyPatch):
-    def fake_broadcast(payload, src=0):
-        payload[0] = {
-            "metrics": {"ahi_pearson": 0.7},
-            "eval_threshold": 0.33,
-            "error_type": None,
-            "error_message": None,
-        }
-
+def test_ahi_test_epoch_computes_metrics_on_nonzero_rank_without_broadcast(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_available", lambda: True)
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.broadcast_object_list", fake_broadcast)
     monkeypatch.setattr(
-        "sleep2vec.sleep2vec_finetuning._compute_ahi_metrics_for_stage",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("non-zero rank must not compute AHI search")),
+        "sleep2vec.sleep2vec_finetuning.dist.broadcast_object_list",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("AHI metrics must not use broadcast")),
     )
 
     logged: list[tuple[str, float]] = []
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02))
     module._ahi_eval_threshold = None
     module._stage_outputs = {
@@ -1524,8 +1557,8 @@ def test_ahi_test_epoch_uses_broadcast_payload_on_nonzero_rank(monkeypatch: pyte
     }
     module.log = lambda name, value, **kwargs: logged.append((name, value))
     module._gather_ahi_event_records = lambda records: records
-    module.trainer = argparse.Namespace(is_global_zero=False)
-    module.current_epoch = 0
+    module._compute_ahi_metrics_for_stage = lambda stage, records: ({"ahi_pearson": 0.7}, 0.33, None)
+    module.__dict__["_trainer"] = argparse.Namespace(is_global_zero=False, current_epoch=0)
 
     module._finalize_epoch("test")
 
@@ -1560,15 +1593,6 @@ def test_extract_ahi_summary_scatter_arrays_returns_scalar_pairs():
 
 
 def test_ahi_val_epoch_logs_summary_scatter(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        "sleep2vec.sleep2vec_finetuning._compute_ahi_metrics_for_stage",
-        lambda stage, records: (
-            {"ahi_pearson": 0.7},
-            0.37,
-            (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
-        ),
-    )
-
     captured: dict[str, object] = {}
 
     class _DummyVisualizer:
@@ -1576,6 +1600,7 @@ def test_ahi_val_epoch_logs_summary_scatter(monkeypatch: pytest.MonkeyPatch):
             captured.update(kwargs)
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi")
     module._ahi_eval_threshold = None
     module._stage_outputs = {
@@ -1585,9 +1610,18 @@ def test_ahi_val_epoch_logs_summary_scatter(monkeypatch: pytest.MonkeyPatch):
     }
     module.log = lambda *args, **kwargs: None
     module._gather_ahi_event_records = lambda records: records
+
+    def fake_compute(stage, records):
+        module._ahi_eval_threshold = 0.37
+        return (
+            {"ahi_pearson": 0.7},
+            0.37,
+            (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
+        )
+
+    module._compute_ahi_metrics_for_stage = fake_compute
     module._eval_visualizer = _DummyVisualizer()
-    module.trainer = argparse.Namespace(is_global_zero=True)
-    module.current_epoch = 3
+    module.__dict__["_trainer"] = argparse.Namespace(is_global_zero=True, current_epoch=3)
 
     module._finalize_epoch("val")
 
@@ -1624,6 +1658,7 @@ def test_ahi_val_epoch_uses_default_fine_search_grid(monkeypatch: pytest.MonkeyP
             return None
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi")
     module._ahi_eval_threshold = None
     module._stage_outputs = {
@@ -1634,8 +1669,7 @@ def test_ahi_val_epoch_uses_default_fine_search_grid(monkeypatch: pytest.MonkeyP
     module.log = lambda *args, **kwargs: None
     module._gather_ahi_event_records = lambda records: records
     module._eval_visualizer = _DummyVisualizer()
-    module.trainer = argparse.Namespace(is_global_zero=True)
-    module.current_epoch = 0
+    module.__dict__["_trainer"] = argparse.Namespace(is_global_zero=True, current_epoch=0)
 
     module._finalize_epoch("val")
 
@@ -1677,7 +1711,7 @@ def test_ahi_train_shared_step_accumulates_confusion_counts_without_storing_epoc
 
     module._shared_step({}, stage="train")
 
-    assert module._ahi_train_pointwise_counts == {"tp": 1, "fp": 1, "tn": 0, "fn": 0}
+    assert module._ahi_train_pointwise_counts == {"tp": 1, "fp": 0, "tn": 1, "fn": 0}
     assert module._stage_outputs["train"] == []
 
 
@@ -1692,6 +1726,7 @@ def test_ahi_train_epoch_logs_reduced_pointwise_metrics(monkeypatch: pytest.Monk
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max", device="cpu")
     module._stage_outputs = {"train": [], "val": [], "test": []}
     module._eval_loss_sums = {"val": 0.0, "test": 0.0}
@@ -1699,8 +1734,11 @@ def test_ahi_train_epoch_logs_reduced_pointwise_metrics(monkeypatch: pytest.Monk
     module._ahi_train_pointwise_counts = {"tp": 1, "fp": 2, "tn": 3, "fn": 4}
     logged: list[tuple[str, float, bool]] = []
     module.log = lambda name, value, **kwargs: logged.append((name, float(value), bool(kwargs.get("sync_dist"))))
-    module.trainer = argparse.Namespace(is_global_zero=True, strategy=argparse.Namespace(reduce=fake_reduce))
-    module.current_epoch = 0
+    module.__dict__["_trainer"] = argparse.Namespace(
+        is_global_zero=True,
+        current_epoch=0,
+        strategy=argparse.Namespace(reduce=fake_reduce, barrier=lambda name: None),
+    )
 
     module._finalize_epoch("train")
 
@@ -1721,6 +1759,7 @@ def test_ahi_train_epoch_nonzero_rank_still_logs_reduced_metrics(monkeypatch: py
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max", device="cpu")
     module._stage_outputs = {"train": [], "val": [], "test": []}
     module._eval_loss_sums = {"val": 0.0, "test": 0.0}
@@ -1728,8 +1767,11 @@ def test_ahi_train_epoch_nonzero_rank_still_logs_reduced_metrics(monkeypatch: py
     module._ahi_train_pointwise_counts = {"tp": 1, "fp": 2, "tn": 3, "fn": 4}
     logged: list[str] = []
     module.log = lambda name, value, **kwargs: logged.append(name)
-    module.trainer = argparse.Namespace(is_global_zero=False, strategy=argparse.Namespace(reduce=fake_reduce))
-    module.current_epoch = 0
+    module.__dict__["_trainer"] = argparse.Namespace(
+        is_global_zero=False,
+        current_epoch=0,
+        strategy=argparse.Namespace(reduce=fake_reduce, barrier=lambda name: None),
+    )
 
     module._finalize_epoch("train")
 
@@ -1746,6 +1788,7 @@ def test_ahi_train_epoch_omits_roc_auc_from_reduced_metric_set(monkeypatch: pyte
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max", device="cpu")
     module._stage_outputs = {"train": [], "val": [], "test": []}
     module._eval_loss_sums = {"val": 0.0, "test": 0.0}
@@ -1753,8 +1796,11 @@ def test_ahi_train_epoch_omits_roc_auc_from_reduced_metric_set(monkeypatch: pyte
     module._ahi_train_pointwise_counts = {"tp": 1, "fp": 0, "tn": 1, "fn": 0}
     logged: list[str] = []
     module.log = lambda name, value, **kwargs: logged.append(name)
-    module.trainer = argparse.Namespace(is_global_zero=True, strategy=argparse.Namespace(reduce=fake_reduce))
-    module.current_epoch = 0
+    module.__dict__["_trainer"] = argparse.Namespace(
+        is_global_zero=True,
+        current_epoch=0,
+        strategy=argparse.Namespace(reduce=fake_reduce),
+    )
 
     module._finalize_epoch("train")
 
@@ -1778,6 +1824,7 @@ def test_ahi_val_epoch_logs_reduced_eval_loss_before_event_metrics(monkeypatch: 
             captured.update(kwargs)
 
     module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
+    pl.LightningModule.__init__(module)
     module.args = argparse.Namespace(label_name="ahi", monitor="val_ahi_pearson", monitor_mod="max", device="cpu")
     module._ahi_eval_threshold = None
     module._stage_outputs = {
@@ -1788,7 +1835,7 @@ def test_ahi_val_epoch_logs_reduced_eval_loss_before_event_metrics(monkeypatch: 
     module._eval_loss_sums = {"val": 6.0, "test": 0.0}
     module._eval_loss_counts = {"val": 2, "test": 0}
     module._gather_ahi_event_records = lambda records: records
-    module._compute_or_broadcast_ahi_metrics = lambda stage, records: (
+    module._compute_ahi_metrics_for_stage = lambda stage, records: (
         {"ahi_pearson": 0.7},
         0.37,
         (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32)),
@@ -1796,8 +1843,11 @@ def test_ahi_val_epoch_logs_reduced_eval_loss_before_event_metrics(monkeypatch: 
     module._eval_visualizer = _DummyVisualizer()
     logged: list[tuple[str, float, bool]] = []
     module.log = lambda name, value, **kwargs: logged.append((name, float(value), bool(kwargs.get("sync_dist"))))
-    module.trainer = argparse.Namespace(is_global_zero=True, strategy=argparse.Namespace(reduce=fake_reduce))
-    module.current_epoch = 0
+    module.__dict__["_trainer"] = argparse.Namespace(
+        is_global_zero=True,
+        current_epoch=0,
+        strategy=argparse.Namespace(reduce=fake_reduce, barrier=lambda name: None),
+    )
 
     module._finalize_epoch("val")
 

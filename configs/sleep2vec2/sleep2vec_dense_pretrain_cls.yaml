@@ -10,7 +10,7 @@ model:
     name: simclr
     enabled: true
     hidden_dim: 768
-    out_dim: 128
+    out_dim: 256
   cls:
     embedding_type: bert    # null -> no CLS, "bert" -> prepend learnable CLS token
     downstream: tokens      # "tokens" or "cls" (required)
@@ -21,132 +21,143 @@ model:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: breath
       input_dim: 120
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: eeg_original
       input_dim: 3840
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: ecg_original
       input_dim: 3840
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: eog_original
       input_dim: 3840
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: emg_original
       input_dim: 3840
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: spo2
       input_dim: 120
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: resp_original
       input_dim: 120
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: resp_nasal_original
       input_dim: 120
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: ppg
       input_dim: 3000
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: actigraphy
       input_dim: 960
       tokenizer:
         name: sundial2
         out_dim: 768
         kwargs:
-          norm_layer: true
+          norm_layer: false
           pre_norm: true
           residual_scale: 0.5
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
 loss:
   name: weighted_info_nce
   temperature: 0.2

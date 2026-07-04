@@ -72,6 +72,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             head_config=model_config.head,
             survival_covariates=getattr(covariate_cfg, "covariates", None),
             survival_covariate_embedding_dim=(getattr(covariate_cfg, "covariate_embedding_dim", 16)),
+            survival_covariate_fusion=getattr(covariate_cfg, "covariate_fusion", "feature_concat"),
         ).to(args.device)
 
         if args.pretrained_backbone_path:
@@ -966,10 +967,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return None
         return tuple(float(value) for value in thresholds)
 
-    @staticmethod
-    def _can_broadcast_ahi_metrics() -> bool:
-        return is_torch_distributed_ready() and hasattr(dist, "broadcast_object_list")
-
     def _compute_ahi_metrics_for_stage(
         self,
         stage: str,
@@ -997,48 +994,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
         metrics, _ = _compute_ahi_event_metrics_from_prepared(prepared_records, threshold=eval_threshold)
         aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=eval_threshold)
         return metrics, eval_threshold, (aggregate["true_ahi"], aggregate["pred_ahi"])
-
-    def _compute_or_broadcast_ahi_metrics(
-        self,
-        stage: str,
-        records: list[dict[str, np.ndarray]],
-    ) -> tuple[dict[str, float], float, tuple[np.ndarray, np.ndarray] | None]:
-        trainer = getattr(self, "trainer", None)
-        if trainer is None or not self._can_broadcast_ahi_metrics():
-            return self._compute_ahi_metrics_for_stage(stage, records)
-
-        payload: list[dict[str, object] | None] = [None]
-        scatter_arrays: tuple[np.ndarray, np.ndarray] | None = None
-        if trainer.is_global_zero:
-            try:
-                metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
-                payload[0] = {
-                    "metrics": metrics,
-                    "eval_threshold": float(eval_threshold),
-                    "error_type": None,
-                    "error_message": None,
-                }
-            except Exception as exc:  # pragma: no cover - distributed error fan-out
-                payload[0] = {
-                    "metrics": None,
-                    "eval_threshold": None,
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
-                }
-
-        dist.broadcast_object_list(payload, src=0)
-        result = payload[0] or {}
-        error_message = result.get("error_message")
-        if error_message is not None:
-            if result.get("error_type") == "ValueError":
-                raise ValueError(str(error_message))
-            raise RuntimeError(str(error_message))
-
-        metrics = result["metrics"]
-        eval_threshold = float(result["eval_threshold"])
-        if stage == "val":
-            self._ahi_eval_threshold = eval_threshold
-        return metrics, eval_threshold, scatter_arrays
 
     @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):
@@ -1244,7 +1199,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             if not records:
                 return None
 
-            metrics, eval_threshold, scatter_arrays = self._compute_or_broadcast_ahi_metrics(stage, records)
+            metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
 
             for k, v in metrics.items():
                 self.log(
@@ -1369,5 +1324,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             optimizer,
             total_steps=self.trainer.estimated_stepping_batches,
             warmup_steps=getattr(self.args, "warmup_steps", None),
+            decay_floor=getattr(self.args, "lr_decay_floor", 0.1),
+            decay_shape=getattr(self.args, "lr_decay_shape", "cosine"),
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]

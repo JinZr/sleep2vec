@@ -208,6 +208,18 @@ if __name__ == "__main__":
         default=None,
         help="Override warmup steps for LR schedule (default: 3%% of total steps).",
     )
+    parser.add_argument(
+        "--lr-decay-floor",
+        type=float,
+        default=0.1,
+        help="Final LR ratio for the post-warmup decay schedule.",
+    )
+    parser.add_argument(
+        "--lr-decay-shape",
+        choices=["cosine", "linear"],
+        default="cosine",
+        help="Post-warmup LR decay shape.",
+    )
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
     parser.add_argument("--batch-size", type=int, default=320, help="batch size")
     parser.add_argument("--num-workers", type=int, default=16, help="Training dataloader workers.")

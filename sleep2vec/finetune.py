@@ -332,6 +332,18 @@ if __name__ == "__main__":
         help="Override warmup steps for LR schedule (default: 3%% of total steps).",
     )
     parser.add_argument(
+        "--lr-decay-floor",
+        type=float,
+        default=0.1,
+        help="Final LR ratio for the post-warmup decay schedule.",
+    )
+    parser.add_argument(
+        "--lr-decay-shape",
+        choices=["cosine", "linear"],
+        default="cosine",
+        help="Post-warmup LR decay shape.",
+    )
+    parser.add_argument(
         "--weight-decay",
         dest="weight_decay",
         type=float,

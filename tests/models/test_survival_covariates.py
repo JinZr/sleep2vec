@@ -53,9 +53,13 @@ def _downstream_model(
     is_seq: bool = False,
     head_name: str = "regression",
     is_classification: bool = False,
+    survival_covariate_fusion: str = "feature_concat",
 ):
     module = _import_downstream_module(package_name, monkeypatch)
     model_config = _model_config(package_name, head_name=head_name)
+    kwargs = {}
+    if package_name == "sleep2vec2":
+        kwargs["survival_covariate_fusion"] = survival_covariate_fusion
     return module.Sleep2vecDownstreamModel(
         target="risk",
         backbone=_DummyBackbone(),
@@ -68,6 +72,7 @@ def _downstream_model(
         head_config=model_config.head,
         survival_covariates=["age", "sex"],
         survival_covariate_embedding_dim=3,
+        **kwargs,
     )
 
 
@@ -124,6 +129,79 @@ def test_downstream_classification_head_accepts_covariates(package_name: str, mo
     model = _downstream_model(package_name, monkeypatch, head_name="classification", is_classification=True)
 
     assert model.head.extra_feature_dim == 6
+
+
+def test_sleep2vec2_downstream_adds_survival_covariate_risk(monkeypatch):
+    model = _downstream_model("sleep2vec2", monkeypatch, survival_covariate_fusion="risk")
+    assert model.head.extra_feature_dim == 0
+    assert model.survival_age_embedding is None
+    assert model.survival_sex_embedding is None
+
+    with torch.no_grad():
+        model.survival_covariate_risk.weight.copy_(torch.tensor([[10.0, 1.0], [20.0, 2.0]]))
+        model.survival_covariate_risk.bias.copy_(torch.tensor([0.5, -0.5]))
+
+    model.backbone._tokenize_all = lambda tokens: {"ppg": tokens["ppg"]}
+
+    def token_embeddings_to_hidden(_token_embeddings, batch):
+        return torch.zeros(2, 1, 8), torch.ones(2, 1, dtype=torch.bool), None
+
+    model.backbone._token_embeddings_to_hidden = token_embeddings_to_hidden
+
+    class SignalHead(nn.Module):
+        def forward(self, features):
+            return torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=features[0].device)
+
+    model.head = SignalHead()
+    batch = {
+        "tokens": {"ppg": torch.zeros(2, 1, 8)},
+        "length": torch.tensor([1, 1]),
+        "metadata": {"age": torch.tensor([50.0, 60.0]), "sex": torch.tensor([0, 1])},
+    }
+
+    output = model(batch)
+
+    expected = torch.tensor([[6.5, 11.5], [10.5, 17.5]])
+    assert torch.allclose(output, expected)
+
+
+def test_sleep2vec2_downstream_concats_survival_covariates_to_tokens(monkeypatch):
+    model = _downstream_model(
+        "sleep2vec2",
+        monkeypatch,
+        head_name="classification",
+        is_classification=True,
+        survival_covariate_fusion="token_concat",
+    )
+    assert model.head.extra_feature_dim == 0
+    assert model.head.feature_dim == 14
+
+    with torch.no_grad():
+        model.survival_age_embedding.weight.fill_(2.0)
+        model.survival_age_embedding.bias.fill_(0.5)
+        model.survival_sex_embedding.weight.copy_(
+            torch.tensor(
+                [
+                    [1.0, 2.0, 3.0],
+                    [4.0, 5.0, 6.0],
+                ]
+            )
+        )
+
+    token_hidden = torch.zeros(2, 2, 8)
+    batch = {"metadata": {"age": torch.tensor([50.0, 60.0]), "sex": torch.tensor([0, 1])}}
+
+    token_hidden = model._append_survival_token_features(token_hidden, batch)
+
+    assert token_hidden.shape == (2, 2, 14)
+    expected_covariates = torch.tensor(
+        [
+            [1.5, 1.5, 1.5, 1.0, 2.0, 3.0],
+            [1.7, 1.7, 1.7, 4.0, 5.0, 6.0],
+        ]
+    )
+    assert torch.allclose(token_hidden[:, 0, 8:], expected_covariates)
+    assert torch.allclose(token_hidden[:, 1, 8:], expected_covariates)
 
 
 @pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])

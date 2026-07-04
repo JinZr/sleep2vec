@@ -251,6 +251,7 @@ class SurvivalConfig:
     has_label_index: str
     covariates: t.List[str] = field(default_factory=list)
     covariate_embedding_dim: int = 16
+    covariate_fusion: str = "feature_concat"
 
 
 @dataclass
@@ -261,6 +262,7 @@ class MultilabelConfig:
     has_label_index: str
     covariates: t.List[str] = field(default_factory=list)
     covariate_embedding_dim: int = 16
+    covariate_fusion: str = "feature_concat"
 
 
 @dataclass
@@ -623,7 +625,7 @@ def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalC
         raise ValueError("finetune.survival must be a mapping when provided.")
 
     required = {"key_column", "disease_columns_index", "event_time_index", "is_event_index", "has_label_index"}
-    optional = {"covariates", "covariate_embedding_dim"}
+    optional = {"covariates", "covariate_embedding_dim", "covariate_fusion"}
     missing = sorted(required - set(raw.keys()))
     if missing:
         raise ValueError(f"finetune.survival missing required fields: {missing}")
@@ -650,9 +652,18 @@ def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalC
     if covariate_embedding_dim < 1:
         raise ValueError("finetune.survival.covariate_embedding_dim must be a positive integer.")
 
+    covariate_fusion = raw.get("covariate_fusion", "feature_concat")
+    if covariate_fusion not in {"feature_concat", "risk", "token_concat"}:
+        raise ValueError("finetune.survival.covariate_fusion must be 'feature_concat', 'risk', or 'token_concat'.")
+    if covariate_fusion in {"risk", "token_concat"} and not covariates:
+        raise ValueError(
+            f"finetune.survival.covariate_fusion='{covariate_fusion}' requires finetune.survival.covariates."
+        )
+
     values = {field_name: raw[field_name] for field_name in required}
     values["covariates"] = list(covariates)
     values["covariate_embedding_dim"] = covariate_embedding_dim
+    values["covariate_fusion"] = covariate_fusion
     return SurvivalConfig(**values)
 
 
@@ -667,7 +678,7 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
         raise ValueError("finetune.multilabel must be a mapping when provided.")
 
     required = {"key_column", "disease_columns_index", "label_index", "has_label_index"}
-    optional = {"covariates", "covariate_embedding_dim"}
+    optional = {"covariates", "covariate_embedding_dim", "covariate_fusion"}
     missing = sorted(required - set(raw.keys()))
     if missing:
         raise ValueError(f"finetune.multilabel missing required fields: {missing}")
@@ -694,9 +705,18 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
     if covariate_embedding_dim < 1:
         raise ValueError("finetune.multilabel.covariate_embedding_dim must be a positive integer.")
 
+    covariate_fusion = raw.get("covariate_fusion", "feature_concat")
+    if covariate_fusion not in {"feature_concat", "risk", "token_concat"}:
+        raise ValueError("finetune.multilabel.covariate_fusion must be 'feature_concat', 'risk', or 'token_concat'.")
+    if covariate_fusion in {"risk", "token_concat"} and not covariates:
+        raise ValueError(
+            f"finetune.multilabel.covariate_fusion='{covariate_fusion}' requires finetune.multilabel.covariates."
+        )
+
     values = {field_name: raw[field_name] for field_name in required}
     values["covariates"] = list(covariates)
     values["covariate_embedding_dim"] = covariate_embedding_dim
+    values["covariate_fusion"] = covariate_fusion
     return MultilabelConfig(**values)
 
 
