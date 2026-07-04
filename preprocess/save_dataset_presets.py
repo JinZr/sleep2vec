@@ -249,6 +249,32 @@ def _load_model_channels(
     return all_channels, all_channel_input_dims
 
 
+def _load_model_channel_aliases(config_data: dict[str, t.Any]) -> dict[str, str]:
+    model_block = config_data.get("model")
+    if not isinstance(model_block, dict):
+        raise ValueError("Config YAML must contain a top-level model.channels list.")
+
+    channels_raw = model_block.get("channels")
+    if not isinstance(channels_raw, list) or not channels_raw:
+        raise ValueError("Config YAML must contain a non-empty model.channels list.")
+
+    aliases_by_channel: dict[str, str] = {}
+    for item in channels_raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each model.channels entry must be a mapping.")
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Each model.channels entry must define a non-empty string 'name'.")
+        if "aliases" in item:
+            raise ValueError(f"Channel '{name}' uses unsupported field 'aliases'; use 'alias'.")
+        alias = item.get("alias")
+        if alias is not None:
+            if not isinstance(alias, str) or not alias:
+                raise ValueError(f"Channel '{name}' alias must be a non-empty string.")
+            aliases_by_channel[name] = alias
+    return aliases_by_channel
+
+
 def _load_preset_build_block(
     config_data: dict[str, t.Any],
 ) -> tuple[list[str] | None, int | None]:
@@ -479,6 +505,7 @@ def _build_preset_job(
     survival_output_dim: int | None = None,
     multilabel_label_config: t.Any | None = None,
     multilabel_output_dim: int | None = None,
+    channel_aliases: t.Mapping[str, str] | None = None,
     filter_max_workers: int | None,
 ) -> tuple[Path, int]:
     from data.psg_pretrain_dataset import PSGPretrainDataset
@@ -525,6 +552,7 @@ def _build_preset_job(
             survival_output_dim=survival_output_dim,
             multilabel_label_config=multilabel_label_config,
             multilabel_output_dim=multilabel_output_dim,
+            channel_aliases=channel_aliases,
             batch_size=batch_size,
             shuffle=shuffle,
             filter_max_workers=filter_max_workers,
@@ -616,6 +644,7 @@ def main() -> None:
 
     config_data = _load_config_mapping(args.config)
     model_channels, model_channel_input_dims = _load_model_channels(config_data)
+    model_channel_aliases = _load_model_channel_aliases(config_data)
     preset_required_channels, preset_min_channels = _load_preset_build_block(config_data)
     survival_label_config, survival_output_dim = _load_survival_build_config(config_data)
     multilabel_label_config, multilabel_output_dim = _load_multilabel_build_config(config_data)
@@ -625,6 +654,7 @@ def main() -> None:
         preset_required_channels=preset_required_channels,
         selected_channels=args.channels,
     )
+    channel_aliases = {name: alias for name, alias in model_channel_aliases.items() if name in channel_names}
     if args.allow_missing_channels:
         effective_min_channels = _resolve_effective_min_channels(
             channel_names=channel_names,
@@ -697,6 +727,7 @@ def main() -> None:
                     "index_paths": [str(p) for p in index_paths],
                     "channel_names": channel_names,
                     "channel_input_dims": channel_input_dims,
+                    "channel_aliases": channel_aliases,
                     "split": split,
                     "meta_data_name": meta_data_name,
                     "n_tokens": args.n_tokens,

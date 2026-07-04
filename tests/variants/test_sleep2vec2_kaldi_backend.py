@@ -787,11 +787,22 @@ def test_sleep2vec2_kaldi_dataset_reader_pool_works_with_multiple_workers(tmp_pa
     assert [batch["id"][0] for batch in batches] == keys
 
 
-def _converter_config(tmp_path: Path, channel_dims: dict[str, int], preset_build: dict | None = None) -> Path:
+def _converter_config(
+    tmp_path: Path,
+    channel_dims: dict[str, int],
+    preset_build: dict | None = None,
+    channel_aliases: dict[str, str] | None = None,
+) -> Path:
     path = tmp_path / "converter.yaml"
+    channels = []
+    for name, input_dim in channel_dims.items():
+        channel = {"name": name, "input_dim": input_dim}
+        if channel_aliases and name in channel_aliases:
+            channel["alias"] = channel_aliases[name]
+        channels.append(channel)
     payload = {
         "model": {
-            "channels": [{"name": name, "input_dim": input_dim} for name, input_dim in channel_dims.items()],
+            "channels": channels,
         }
     }
     if preset_build is not None:
@@ -807,7 +818,50 @@ def _scp_keys(path: Path) -> list[str]:
 def _read_matrix(scp_path: Path, key: str) -> np.ndarray:
     kaldi_native_io = _require_kaldi_native_io()
     with kaldi_native_io.RandomAccessFloatMatrixReader(f"scp:{scp_path}") as reader:
-        return np.asarray(reader[key], dtype=np.float32)
+        return np.asarray(reader[key], dtype=np.float32).copy()
+
+
+def test_sleep2vec2_converter_reads_yaml_channel_alias(tmp_path: Path):
+    _require_kaldi_native_io()
+    from sleep2vec2.preprocess.convert_npz_to_kaldi import convert, parse_args
+
+    config_path = _converter_config(tmp_path, {"breath": 4}, channel_aliases={"breath": "psg_breath"})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, psg_breath=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "breath_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    assert json.loads(manifest.loc[0, "available_channels"]) == ["breath"]
+    assert _scp_keys(output_dir / "channels" / "train" / "breath.scp") == ["mesa_s1_000000_000002"]
 
 
 def test_sleep2vec2_converter_roundtrip_writes_manifest_and_matching_scp(tmp_path: Path):

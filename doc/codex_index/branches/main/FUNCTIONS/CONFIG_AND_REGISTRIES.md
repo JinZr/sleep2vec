@@ -10,7 +10,7 @@
   - `AdaptConfig`, `AdaptStage1Config`, `AdaptStage2Config`, `AdaptLrScalesConfig`, `AdaptPairSchedulePoint`
   - `PretrainDataConfig` with `backend`, `kaldi_data_root`, and `kaldi_manifest`
   - `PretrainConfigBundle`, `FinetuneConfigBundle`
-- Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing.
+- Purpose and contract: define the typed schema used everywhere else in the runtime. These dataclasses are the canonical in-memory shape after YAML parsing; `ChannelConfig.alias` carries one optional YAML-declared NPZ input-key fallback.
 - Reuse guidance: extend these dataclasses before adding new ad hoc dict plumbing in entrypoints or Lightning modules.
 
 ## `sleep2vec.config.LoraConfig` and package-local variant mirrors
@@ -94,7 +94,7 @@
 
 - File: `sleep2vec/common.py`
 - Signature: `apply_model_config_args(args, model_cfg: ModelConfig, *, set_backbone_arch: bool = False) -> None`
-- Purpose and contract: copy channel names and channel input dimensions from a typed `ModelConfig` into an argparse namespace, optionally also setting `backbone_arch`.
+- Purpose and contract: copy channel names, channel input dimensions, and YAML-declared channel aliases from a typed `ModelConfig` into an argparse namespace, optionally also setting `backbone_arch`.
 - Important inputs/outputs: mutates `args` in place.
 - Side effects: namespace mutation only.
 - Key callers/callees: callers are `sleep2vec.pretrain.sleep2vec_pretrain` and `sleep2vec.adapt.sleep2vec_adapt`.

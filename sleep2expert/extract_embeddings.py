@@ -230,6 +230,7 @@ def _build_extraction_loader(args: argparse.Namespace, bundle: t.Any, config_kin
         load_preset_path=args.preset_path,
         index=args.data_index,
         stride_tokens=args.max_tokens,
+        channel_aliases=getattr(args, "channel_aliases", {}),
     )
     return _attach_metadata_lookup(dataset.dataloader(device=args.device), dataset, args)
 

@@ -16,6 +16,7 @@ model:
     downstream: tokens
   channels:
     - name: heartbeat
+      alias: psg_heartbeat
       input_dim: 120
       tokenizer:
         name: sundial2
@@ -28,6 +29,7 @@ model:
           clamp_value: null
           modality_scale: 1.0
     - name: breath
+      alias: psg_breath
       input_dim: 120
       tokenizer:
         name: sundial2

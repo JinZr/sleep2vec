@@ -25,14 +25,26 @@ def default_extractor(
     dtype: torch.dtype = torch.float32,
     *,
     source_name: str | None = None,
+    source_alias: str | None = None,
 ):
     """Slice one NPZ channel between token-aligned frame offsets."""
+    if source_name is not None:
+        sources = (str(source_name),)
+    elif source_alias is not None:
+        sources = (str(name), str(source_alias))
+    else:
+        sources = (str(name),)
 
     def extract(npz, start: int, end: int):
         s = start * frames_per_token
         e = end * frames_per_token
 
-        arr = npz[source_name or name]
+        for source in sources:
+            if source in npz:
+                arr = npz[source]
+                break
+        else:
+            arr = npz[sources[0]]
         segment = arr[s:e]
 
         # Collapse trivial second dimension without copying.
@@ -144,6 +156,7 @@ def filter_valid_sample_indices(
     min_channels: int = 2,
     tolerance: int = 1,
     max_workers: int | None = None,
+    channel_aliases: t.Mapping[str, str] | None = None,
 ) -> list[t.Any]:
     """
     Filter out samples with tokenized channel-length mismatches.
@@ -154,6 +167,7 @@ def filter_valid_sample_indices(
 
     worker_count = max_workers or _default_worker_count()
     channel_names = list(channel_names or [])
+    channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
     requires_builtin_ahi = "ahi" in extractors
 
     def _available_from_npz(npz):
@@ -166,7 +180,8 @@ def filter_valid_sample_indices(
                     continue
                 available.append(ch)
                 continue
-            if ch in npz:
+            alias = channel_aliases.get(ch)
+            if ch in npz or (alias is not None and alias in npz):
                 available.append(ch)
         return available
 

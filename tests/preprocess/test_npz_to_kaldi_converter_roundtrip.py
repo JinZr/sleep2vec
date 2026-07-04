@@ -17,11 +17,20 @@ from data.utils import load_npz
 from preprocess.convert_npz_to_kaldi import convert, parse_args
 
 
-def _write_config(tmp_path: Path, channel_dims: dict[str, int], preset_build: dict | None = None) -> Path:
+def _write_config(
+    tmp_path: Path,
+    channel_dims: dict[str, int],
+    preset_build: dict | None = None,
+    channel_aliases: dict[str, str] | None = None,
+) -> Path:
     path = tmp_path / "config.yaml"
-    payload = {
-        "model": {"channels": [{"name": name, "input_dim": input_dim} for name, input_dim in channel_dims.items()]}
-    }
+    channels = []
+    for name, input_dim in channel_dims.items():
+        channel = {"name": name, "input_dim": input_dim}
+        if channel_aliases and name in channel_aliases:
+            channel["alias"] = channel_aliases[name]
+        channels.append(channel)
+    payload = {"model": {"channels": channels}}
     if preset_build is not None:
         payload["preset_build"] = preset_build
     path.write_text(yaml.safe_dump(payload))
@@ -34,7 +43,7 @@ def _scp_keys(path: Path) -> list[str]:
 
 def _read_matrix(scp_path: Path, key: str) -> np.ndarray:
     with kaldi_native_io.RandomAccessFloatMatrixReader(f"scp:{scp_path}") as reader:
-        return np.asarray(reader[key], dtype=np.float32)
+        return np.asarray(reader[key], dtype=np.float32).copy()
 
 
 def test_parse_args_defaults_num_workers_to_four_and_compresses_ark(tmp_path: Path):
@@ -92,6 +101,62 @@ def test_converter_rejects_num_workers_less_than_one(tmp_path: Path):
 
     with pytest.raises(ValueError, match="--num-workers must be >= 1"):
         convert(args)
+
+
+def test_converter_reads_yaml_channel_alias_and_writes_canonical_channel(tmp_path: Path):
+    config_path = _write_config(tmp_path, {"breath": 4}, channel_aliases={"breath": "psg_breath"})
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, psg_breath=np.arange(8, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "dataset": "mesa",
+                "split": "train",
+                "duration": 60,
+                "session_id": "s1",
+                "breath_mask": 1,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    output_dir = tmp_path / "kaldi"
+    convert(
+        parse_args(
+            [
+                "--index",
+                str(index_path),
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+                "--max-tokens",
+                "2",
+                "--channels-from-config",
+            ]
+        )
+    )
+
+    key = "mesa_s1_000000_000002"
+    manifest = pd.read_csv(output_dir / "manifests" / "train.csv", low_memory=False)
+    assert json.loads(manifest.loc[0, "available_channels"]) == ["breath"]
+    assert _scp_keys(output_dir / "channels" / "train" / "breath.scp") == [key]
+
+    registry = _build_channel_registry(
+        channel_names=["breath"],
+        channel_input_dims={"breath": 4},
+        channel_aliases={"breath": "psg_breath"},
+        mask_rate=0.0,
+    )
+    with load_npz(str(npz_path)) as npz:
+        expected = registry["breath"][1](registry["breath"][0](npz, 0, 2)).numpy()
+    np.testing.assert_allclose(
+        _read_matrix(output_dir / "channels" / "train" / "breath.scp", key),
+        expected,
+        rtol=1e-3,
+        atol=1e-3,
+    )
 
 
 def test_converter_writes_progress_status_file(tmp_path: Path):

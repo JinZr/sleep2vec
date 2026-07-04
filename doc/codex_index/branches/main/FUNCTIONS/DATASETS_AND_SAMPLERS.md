@@ -3,9 +3,9 @@
 ## `data.psg_pretrain_dataset._build_channel_registry`
 
 - File: `data/psg_pretrain_dataset.py`
-- Signature: `_build_channel_registry(*, channel_names: Sequence[str], channel_input_dims: Mapping[str, int], mask_rate: float) -> dict[str, tuple[Callable, Callable, Callable]]`
-- Purpose and contract: build the extractor/tokenizer/mask-generator registry for requested channels, including built-in `stage5` and `ahi` behavior.
-- Important inputs/outputs: requested channels and YAML-driven input dims in, per-channel registry out.
+- Signature: `_build_channel_registry(*, channel_names: Sequence[str], channel_input_dims: Mapping[str, int], channel_aliases: Mapping[str, str] | None = None, mask_rate: float) -> dict[str, tuple[Callable, Callable, Callable]]`
+- Purpose and contract: build the extractor/tokenizer/mask-generator registry for requested channels, including built-in `stage5` and `ahi` behavior. Default extractors can read one YAML-declared alias NPZ key when the exact key is absent.
+- Important inputs/outputs: requested channels, YAML-driven input dims, and optional YAML channel alias map in; per-channel registry out.
 - Side effects: none.
 - Key callers/callees: caller is `PSGPretrainDataset.__init__`; callees include `default_extractor`, `default_tokenizer`, and `default_mlm_mask_generator`.
 - Reuse guidance: use this registry path instead of constructing per-channel extractors ad hoc.
@@ -14,7 +14,7 @@
 ## `PSGPretrainDataset.__init__`
 
 - File: `data/psg_pretrain_dataset.py`
-- Signature: `PSGPretrainDataset.__init__(channel_names, save_preset_path, load_preset_path, index, split, max_tokens, *, channel_input_dims, token_sec=30, stride_tokens=0, mask_rate=0.15, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, randomly_select_channels=True, min_channels=2, allow_missing_channels=False, bucket_by_available_channels=False, train_pair_probs=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, filter_max_workers=None, **kwargs)`
+- Signature: `PSGPretrainDataset.__init__(channel_names, save_preset_path, load_preset_path, index, split, max_tokens, *, channel_input_dims, token_sec=30, stride_tokens=0, mask_rate=0.15, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, randomly_select_channels=True, min_channels=2, allow_missing_channels=False, bucket_by_available_channels=False, train_pair_probs=None, train_pair_track_unique_samples=False, generative=False, is_train_set=True, filter_max_workers=None, channel_aliases=None, **kwargs)`
 - Purpose and contract: canonical PSG dataset constructor. It either loads a preset or reads CSV indexes, windows each row into `SampleIndex` records, copies optional `age`/`sex` metadata only when present, builds the channel registry, and delegates the rest to `DefaultDataset`.
 - Important inputs/outputs: channel list, YAML-driven channel widths, optional survival or multilabel label config/output dim, preset/index source, split, token windowing, and batching flags in; dataset instance out.
 - Side effects: when building from CSV, stamps `metadata["source"]` from the CSV path, preserves optional metadata fields, attaches survival or multilabel sidecar vectors when configured, and expands each row into one or more `SampleIndex` windows.
@@ -106,8 +106,8 @@
 ## `data.utils.filter_valid_sample_indices`
 
 - File: `data/utils.py`
-- Signature: `filter_valid_sample_indices(data, extractors, tokenizers, *, allow_missing_channels, channel_names=None, min_channels=2, tolerance=1, max_workers=None) -> list`
-- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, validating built-in AHI metadata when needed, and recording `payload["available_channels"]` for every retained sample.
+- Signature: `filter_valid_sample_indices(data, extractors, tokenizers, *, allow_missing_channels, channel_names=None, min_channels=2, tolerance=1, max_workers=None, channel_aliases=None) -> list`
+- Purpose and contract: validate each sample by opening the NPZ, extracting/tokenizing relevant channels, rejecting unreadable or length-mismatched samples, validating built-in AHI metadata when needed, and recording configured `payload["available_channels"]` for every retained sample. Raw NPZ validation accepts the YAML-declared alias key for a configured channel.
 - Important inputs/outputs: raw `SampleIndex` list in; filtered `SampleIndex` list out.
 - Side effects: mutates `sample_index.payload["available_channels"]` for retained samples; may backfill `sample_index.metadata["ahi"]` and `["tst"]`.
 - Key callers/callees: caller is `DefaultDataset.__init__`; callees are `load_npz`, `load_builtin_ahi_metadata`, extractors, and tokenizers.
@@ -117,7 +117,7 @@
 ## `DefaultDataset.__init__`
 
 - File: `data/default_dataset.py`
-- Signature: `DefaultDataset.__init__(save_preset_path, load_preset_path, data, split, extractors, tokenizers, mask_generators, dataloader_config, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, weighted_random_sampler=False, weighted_random_sampler_target=None, seed=42, filter_max_workers=None) -> None`
+- Signature: `DefaultDataset.__init__(save_preset_path, load_preset_path, data, split, extractors, tokenizers, mask_generators, dataloader_config, few_shot=None, meta_data_names=None, meta_data_regression_names=None, sources=None, pair_selector=None, weighted_random_sampler=False, weighted_random_sampler_target=None, channel_aliases=None, seed=42, filter_max_workers=None) -> None`
 - Purpose and contract: own the lifecycle for either loading a preset or validating raw `SampleIndex` entries, then applying metadata/split/source filtering and optional few-shot selection.
 - Important inputs/outputs: preset paths or raw `SampleIndex` records in; dataset state on `self`.
 - Side effects: loads or writes pickle presets, mutates `self.data`.
@@ -131,7 +131,7 @@
 - Signatures:
   - `_get_available_channels_for_src(self, src: SampleIndex) -> set[str]`
   - `_load_tokens_for_src(self, src: SampleIndex, chosen_channels: list[str]) -> tuple[dict, dict, dict, dict]`
-- Purpose and contract: storage hooks used by `DefaultDataset.dataloader` to discover available channels and materialize payload/tokens/masks/metadata for one sample.
+- Purpose and contract: storage hooks used by `DefaultDataset.dataloader` to discover available channels and materialize payload/tokens/masks/metadata for one sample. `_load_tokens_for_src` relies on extractors for YAML-declared NPZ alias fallback; preset `available_channels` is otherwise passed through unchanged.
 - Important inputs/outputs: `SampleIndex` and selected channels in; available channel set or collate-ready payload maps out.
 - Side effects: default implementation reads NPZ files and may backfill `ahi`/`tst` metadata.
 - Key callers/callees: caller is the nested collate function inside `DefaultDataset.dataloader`; override implementer is `KaldiPSGDataset`.

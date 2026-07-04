@@ -22,6 +22,7 @@ model:
     kwargs: {}
   channels:
     - name: heartbeat
+      alias: psg_heartbeat
       input_dim: 120
       tokenizer:
         name: sundial       # linear | sundial | sundial2
@@ -29,6 +30,7 @@ model:
         kwargs:
           norm_layer: true
     - name: breath
+      alias: psg_breath
       input_dim: 120
       tokenizer:
         name: sundial

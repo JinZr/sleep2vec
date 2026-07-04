@@ -103,6 +103,7 @@ def get_pretrain_dataloader(args):
             allow_missing_channels=allow_missing_channels,
             min_channels=min_channels,
             bucket_by_available_channels=bucket_by_available_channels,
+            channel_aliases=getattr(args, "channel_aliases", {}),
         )
     else:
         base_dataset_kwargs = dict(
@@ -252,6 +253,7 @@ def _build_finetune_loader(
             load_preset_path=args.finetune_preset_path,
             index=args.finetune_data_index,
             stride_tokens=args.max_tokens,
+            channel_aliases=getattr(args, "channel_aliases", {}),
         )
     else:
         dataset_kwargs.update(

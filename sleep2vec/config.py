@@ -27,6 +27,7 @@ class ChannelConfig:
     name: str
     input_dim: int
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
+    alias: str | None = None
 
 
 @dataclass
@@ -315,6 +316,12 @@ def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
 
         if tok_cfg.out_dim is None:
             raise ValueError(f"channel '{item.get('name', '?')}' must set tokenizer.out_dim.")
+
+        if "aliases" in item:
+            raise ValueError(f"channel '{item.get('name', '?')}' uses unsupported field 'aliases'; use 'alias'.")
+        alias = item.get("alias")
+        if alias is not None and (not isinstance(alias, str) or not alias):
+            raise ValueError(f"channel '{item.get('name', '?')}' alias must be a non-empty string.")
 
         channels.append(ChannelConfig(tokenizer=tok_cfg, **item))
     return channels
