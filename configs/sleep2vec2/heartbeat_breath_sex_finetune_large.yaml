@@ -22,11 +22,12 @@ model:
         out_dim: 768
         kwargs:
           norm_layer: true
-          pre_norm: true
-          residual_scale: 0.5
+          pre_norm: false
+          residual_scale: 0.1
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
     - name: breath
       alias: psg_breath
       input_dim: 120
@@ -35,11 +36,12 @@ model:
         out_dim: 768
         kwargs:
           norm_layer: true
-          pre_norm: true
-          residual_scale: 0.5
+          pre_norm: false
+          residual_scale: 0.1
           ff_scale: 1.0
           clamp_value: null
           modality_scale: 1.0
+          num_mlp_layers: 3
   head:
     name: classification
     dropout: 0.1
