@@ -373,6 +373,7 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert [c.name for c in model_cfg.channels] == ["eeg", "ecg"]
     assert args.channel_names == ["eeg", "ecg"]
     assert args.channel_input_dims == {"eeg": 4, "ecg": 4}
+    assert args.channel_aliases == {}
     assert set(args.data_channel_names) == {"eeg", "ecg"}
     assert args.max_tokens == 4
     assert args.finetune_data_index == Path("index/custom.csv")
@@ -400,6 +401,17 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert args.pos_weight is None
     assert args.weighted_random_sampler is False
     assert config_bundle.finetune.task is not None
+
+
+def test_apply_finetune_config_populates_channel_aliases(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["model"]["channels"][0]["aliases"] = ["psg_eeg", "bcg_eeg"]
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="custom_target")
+
+    apply_finetune_config(args)
+
+    assert args.channel_aliases == {"eeg": ["psg_eeg", "bcg_eeg"]}
 
 
 @pytest.mark.parametrize(

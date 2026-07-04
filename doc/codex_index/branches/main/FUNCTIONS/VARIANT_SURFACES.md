@@ -29,7 +29,7 @@ On commit `d95c9d45d63479b0fc28b011e138002691921104`, tracked variant coverage i
 
 - Files: `sleep2vec2/data/`, `sleep2vec2/preprocess/`, `sleep2expert/data/`, `sleep2expert/preprocess/`
 - Purpose and contract: preserve standalone recipe operation for data loading, Kaldi backends, preset generation, split assignment, and WatchPAT conversion.
-- Important inputs/outputs: same `SampleIndex`, NPZ preset, Kaldi manifest, and batch contracts as root unless a package-local test says otherwise.
+- Important inputs/outputs: same `SampleIndex`, NPZ preset, Kaldi manifest, YAML-declared NPZ channel-alias fallback, and batch contracts as root unless a package-local test says otherwise.
 - Side effects: mirror root data/preprocessing file writes and optional `kaldi_native_io` usage.
 - Reuse guidance: when changing root data/preprocess contracts that variants must share, update package-local mirrors and the variant parity tests in the same pass.
 - Duplication-risk notes: root/variant converter and dataset behavior can drift silently if only one namespace is patched.

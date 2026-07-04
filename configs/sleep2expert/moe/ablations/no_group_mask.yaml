@@ -34,11 +34,13 @@ model:
     downstream: tokens
   channels:
     - name: heartbeat
+      aliases: [psg_heartbeat]
       input_dim: 120
       tokenizer:
         name: sundial
         out_dim: 768
     - name: breath
+      aliases: [psg_breath]
       input_dim: 120
       tokenizer:
         name: sundial

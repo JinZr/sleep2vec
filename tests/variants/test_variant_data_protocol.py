@@ -112,6 +112,46 @@ def test_variant_psg_dataset_allows_stage5_index_without_age_or_sex(tmp_path: Pa
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)
+def test_variant_psg_dataset_reads_npz_channel_alias_as_configured_name(tmp_path: Path, package_name: str):
+    dataset_module = importlib.import_module(f"{package_name}.data.psg_pretrain_dataset")
+    npz_path = tmp_path / "sample.npz"
+    np.savez(npz_path, psg_breath=np.arange(8, dtype=np.float32))
+
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "path": str(npz_path),
+                "split": "test",
+                "duration": 60,
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    dataset = dataset_module.PSGPretrainDataset(
+        channel_names=["breath"],
+        channel_input_dims={"breath": 4},
+        channel_aliases={"breath": ["psg_breath"]},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["test"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        min_channels=1,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    assert dataset.data[0].payload["available_channels"] == ["breath"]
+    payload, tokens, _, _ = dataset._load_tokens_for_src(dataset.data[0], ["breath"])
+    assert payload["breath"].tolist() == list(range(8))
+    assert tokens["breath"].shape == (2, 4)
+
+
+@pytest.mark.parametrize("package_name", VARIANT_PACKAGES)
 def test_variant_psg_dataset_allows_ahi_index_without_age_or_sex(tmp_path: Path, package_name: str):
     dataset_module = importlib.import_module(f"{package_name}.data.psg_pretrain_dataset")
     npz_path = tmp_path / "sample.npz"

@@ -24,8 +24,12 @@ def _build_channel_registry(
     *,
     channel_names: t.Sequence[str],
     channel_input_dims: t.Mapping[str, int],
+    channel_aliases: t.Mapping[str, t.Sequence[str]] | None = None,
     mask_rate: float,
 ) -> dict[str, tuple[t.Callable, t.Callable, t.Callable]]:
+    channel_aliases = {
+        str(name): tuple(str(alias) for alias in aliases) for name, aliases in (channel_aliases or {}).items()
+    }
     registry: dict[str, tuple[t.Callable, t.Callable, t.Callable]] = {
         "stage5": (
             default_extractor("stage5", 1),
@@ -47,7 +51,7 @@ def _build_channel_registry(
             missing.append(name)
             continue
         registry[name] = (
-            default_extractor(name, frames_per_token),
+            default_extractor(name, frames_per_token, source_names=channel_aliases.get(name)),
             default_tokenizer(frames_per_token),
             default_mlm_mask_generator(mask_rate),
         )
@@ -95,6 +99,7 @@ class PSGPretrainDataset(DefaultDataset):
         generative: bool = False,
         is_train_set: bool = True,
         filter_max_workers: int | None = None,
+        channel_aliases: t.Mapping[str, t.Sequence[str]] | None = None,
         **kwargs: t.Any,
     ) -> None:
 
@@ -233,6 +238,7 @@ class PSGPretrainDataset(DefaultDataset):
         registry = _build_channel_registry(
             channel_names=channel_names,
             channel_input_dims=self.channel_input_dims,
+            channel_aliases=channel_aliases,
             mask_rate=mask_rate,
         )
 
@@ -261,5 +267,6 @@ class PSGPretrainDataset(DefaultDataset):
             multilabel_output_dim=effective_multilabel_output_dim,
             multilabel_key_column=multilabel_key_column,
             dataloader_config=kwargs,
+            channel_aliases=channel_aliases,
             filter_max_workers=filter_max_workers,
         )
