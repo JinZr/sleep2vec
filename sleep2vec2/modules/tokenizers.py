@@ -118,8 +118,12 @@ class SundialTokenizer2(BaseTokenizer):
         ff_scale: float = 1.0,
         clamp_value: float | None = None,
         modality_scale: float = 1.0,
+        num_mlp_layers: int = 2,
     ):
         super().__init__(out_feature_dim=out_feature_dim, device=device)
+
+        if num_mlp_layers < 2:
+            raise ValueError("num_mlp_layers must be at least 2.")
 
         inter = 2 * out_feature_dim  # keep the same expansion factor
 
@@ -129,6 +133,9 @@ class SundialTokenizer2(BaseTokenizer):
         # FFN branch
         self.hidden_layer = nn.Linear(in_feature_dim, inter, bias=True)
         self.output_layer = nn.Linear(inter, out_feature_dim, bias=True)
+        self.extra_output_layers = nn.ModuleList(
+            nn.Linear(out_feature_dim, out_feature_dim, bias=True) for _ in range(num_mlp_layers - 2)
+        )
 
         # Residual projection branch
         self.residual_layer = nn.Linear(in_feature_dim, out_feature_dim, bias=True)
@@ -158,6 +165,9 @@ class SundialTokenizer2(BaseTokenizer):
         y = self.hidden_layer(x_norm)
         y = self.act(y)
         y = self.output_layer(y)
+        for layer in self.extra_output_layers:
+            y = self.act(y)
+            y = layer(y)
 
         # Optional soft clamp to avoid extreme tails
         # for SpO2 and nasal etc.
