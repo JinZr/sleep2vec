@@ -6,6 +6,9 @@ status_codes:
   fail: 1
 
 global_rules:
+  require_experiment_workspace: true
+  require_named_experiment_step: true
+  require_semantic_run_names: true
   require_explicit_high_impact_decisions: true
   prohibit_silent_external_test_use: true
   prohibit_silent_overwrite: true
@@ -36,12 +39,12 @@ high_impact_fields:
   - id: external_test_locked
     description: "External-test locking must be explicit for hyper-parameter tuning."
     required_for_tasks: ["hparam_tune"]
-    question: "Should the external test set remain locked during all hyper-parameter trials?"
+    question: "Should the external test set remain locked during all hyper-parameter runs?"
 
   - id: selection_metric
-    description: "The validation metric for checkpoint or trial selection must be explicit."
+    description: "The validation metric for checkpoint or run selection must be explicit."
     required_for_tasks: ["finetune", "hparam_tune"]
-    question: "Which validation metric should be used to select the best checkpoint or best trial?"
+    question: "Which validation metric should be used to select the best checkpoint or best run?"
 
   - id: selection_mode
     description: "The metric direction must be explicit."
@@ -103,7 +106,7 @@ high_impact_fields:
   - id: hparam_budget
     description: "Hyper-parameter budget must be explicit."
     required_for_tasks: ["hparam_tune"]
-    question: "What is the maximum number of trials or compute budget for this search?"
+    question: "What is the maximum number of runs or compute budget for this search?"
 
   - id: final_eval_unlock
     description: "Final external-test evaluation must require explicit unlock."

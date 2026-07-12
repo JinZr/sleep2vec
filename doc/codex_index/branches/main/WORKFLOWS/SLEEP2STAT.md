@@ -11,11 +11,11 @@ Run derived sleep-statistics bundles from model outputs, NPZ reference signals, 
 - `python -m sleep2stat summarize --run-dir <run.output_dir>`
 - `python -m sleep2stat plot-record --run-dir <run.output_dir> --record-id <record_id>`
 - `python -m sleep2stat plot-cohort --run-dir <run.output_dir> [--group-column source] [--stage-source <analyzer_name>] [--adjust-covariates age sex]`
-- Agent path: `python -m agent_tools doctor|context|plan` with `task=sleep2stat`.
+- Agent path: diagnostic `python -m agent_tools context`, or recipe-backed `doctor|plan` with `task=sleep2stat`.
 
 ## Agent Consultation
 
-Before generating runnable sleep2stat commands from a recipe, run the agent consultation gate through `agent_tools doctor`, `agent_tools context`, or `agent_tools plan`.
+Before generating runnable sleep2stat commands from a recipe, run the agent consultation gate through `agent_tools doctor` or `agent_tools plan`; `agent_tools context` remains diagnostic-only.
 
 For `task=sleep2stat`:
 

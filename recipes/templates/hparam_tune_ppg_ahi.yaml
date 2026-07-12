@@ -2,11 +2,22 @@ name: ppg_ahi_val_tuning_example
 task: hparam_tune
 variant: sleep2vec
 
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: train
+  purpose: ASK_USER
+
 base_recipe: finetune_ppg_ahi_val_only.yaml
 
 search:
   method: grid
-  max_trials: 12
+  max_runs: 12
   parameters:
     runtime.lr: [1.0e-6, 3.0e-6, 1.0e-5]
     runtime.batch_size: [8, 12]
@@ -21,10 +32,6 @@ evaluation_policy:
   require_manual_unlock_for_final_test: true
   test_after_fit: false
   final_test_unlocked: false
-
-artifacts:
-  plan_dir: artifacts/agent_plans/ppg_ahi_val_tuning
-  generated_config_dir: runs/generated/ppg_ahi_val_tuning/configs
 
 decisions:
   task:

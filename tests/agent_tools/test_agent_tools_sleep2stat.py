@@ -256,8 +256,10 @@ def test_sleep2stat_yasa_plan_adds_record_preflight_and_summary_types(tmp_path: 
 
     assert report.exit_code == 0
     commands = json.loads((output_dir / "plan.json").read_text())["commands"]
+    frozen_config = output_dir / "runs" / "run-000--yasa-recipe" / "config.yaml"
     assert commands[1] == (
-        f"python -m sleep2stat validate-config --config {config} " "--check-records --split test --limit-records 1"
+        f"python -m sleep2stat validate-config --config {frozen_config} "
+        "--check-records --split test --limit-records 1"
     )
 
 
@@ -270,14 +272,16 @@ def test_sleep2stat_plan_ignores_user_decision_config_override(tmp_path: Path):
         {"decisions": {"config": {"value": str(override_config), "source": "explicit_user"}}},
     )
     output_dir = tmp_path / "plan"
+    recipe_path = _write_tiny_recipe(tmp_path, _tiny_recipe_payload())
 
-    report = build_plan(recipe_path=TINY_RECIPE, output_dir=output_dir, user_decisions_path=decisions)
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir, user_decisions_path=decisions)
 
     assert report.exit_code == 0
     commands = json.loads((output_dir / "plan.json").read_text())["commands"]
-    recipe_config = "recipes/examples/fixtures/tiny_sleep2stat_config.yaml"
-    assert f"python -m sleep2stat validate-config --config {recipe_config}" in commands
-    assert any(command.startswith(f"python -m sleep2stat run --config {recipe_config}") for command in commands)
+    frozen_config = output_dir / "runs" / "run-000--tiny-fixture-sleep2stat" / "config.yaml"
+    assert f"python -m sleep2stat validate-config --config {frozen_config}" in commands
+    assert any(command.startswith(f"python -m sleep2stat run --config {frozen_config}") for command in commands)
+    assert yaml.safe_load(frozen_config.read_text())["run"]["output_dir"] != str(tmp_path / "other_run")
     assert str(override_config) not in "\n".join(commands)
 
 
@@ -489,11 +493,16 @@ def test_sleep2stat_direct_context_honors_user_decisions_and_summarizes_index(tm
         user_decisions_path=decisions,
     )
 
-    assert report.exit_code == 0
+    assert report.exit_code == 2
     context = json.loads((output_dir / "context.json").read_text())
     assert context["index_summary"]["rows"] == 1
     assert context["index_summary"]["blocking_issues"] == []
-    assert (output_dir / "commands.sh").exists()
+    assert context["can_generate_commands"] is False
+    assert context["recommended_commands"] == []
+    assert any("experiment" in issue for issue in context["blocking_issues"])
+    assert (output_dir / "commands.blocked.sh").exists()
+    assert not (output_dir / "commands.sh").exists()
+    assert not (output_dir / "validation.sh").exists()
 
 
 def test_sleep2stat_skill_examples_validate_without_variant():

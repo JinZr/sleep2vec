@@ -2,7 +2,9 @@
 
 These policies define when an agent must stop and ask for user confirmation before running or planning an experiment.
 
-The goal is to prevent silent guessing for high-impact choices such as label selection, split usage, checkpoint selection, external-test evaluation, preset regeneration, and hyper-parameter search space.
+The goal is to prevent silent guessing for high-impact choices such as experiment ownership, step purpose, label selection, split usage, checkpoint selection, external-test evaluation, preset regeneration, and hyper-parameter search space.
+
+New runnable plans also require a managed experiment workspace and semantic run names. Monitoring does not authorize launching, and stopping requires a recorded reason.
 
 Agent tools should classify checks as:
 

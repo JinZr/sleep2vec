@@ -12,4 +12,6 @@ For hyper-parameter tuning, use `runtime.<name>` search keys for supported CLI/r
 Use `python -m agent_tools doctor --recipe <recipe.yaml>` to validate a recipe and consultation policy.
 Use `python -m agent_tools plan --recipe <recipe.yaml> --output-dir <dir>` to generate a safe command plan after gates pass.
 
+New runnable recipes must declare an `experiment` (`id`, `title`, `objective`, `root`, and `baseline`) and a named `step` (`id`, `phase`, and `purpose`). The output directory must be inside the experiment root. See `doc/agent_contracts/experiment_workspace.md`.
+
 High-impact decisions must be explicit in `decisions:` or in a user-decision file. Do not rely on filenames or previous runs.

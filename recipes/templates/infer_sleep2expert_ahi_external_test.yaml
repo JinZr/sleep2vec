@@ -2,6 +2,17 @@ name: sleep2expert_ahi_external_infer_example
 task: infer
 variant: sleep2expert
 
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: evaluate
+  purpose: ASK_USER
+
 inputs:
   config: configs/sleep2expert/moe/heartbeat_breath_ahi_finetune.yaml
   label_name: ahi

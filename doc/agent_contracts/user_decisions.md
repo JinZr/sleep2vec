@@ -22,7 +22,7 @@ decisions:
   test_after_fit:
     value: false
     source: explicit_user
-    rationale: "Do not evaluate test after each trial."
+    rationale: "Do not evaluate test after each run."
 
   overwrite_policy:
     value: false

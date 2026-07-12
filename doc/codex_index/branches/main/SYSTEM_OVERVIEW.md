@@ -239,7 +239,7 @@ The canonical Kaldi path is:
 - Agent outputs:
   - context bundles under `artifacts/agent_context/`
   - command plans under `artifacts/agent_plans/`
-  - generated trial configs under `runs/generated/`
+  - generated run configs under `runs/generated/`
   - blocked question files when consultation gates require user input
 - sleep2stat outputs:
   - `config.yaml`, `cli_args.yaml`, `run_manifest.json`, and `record_manifest.csv`

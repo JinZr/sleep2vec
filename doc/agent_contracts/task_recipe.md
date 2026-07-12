@@ -1,14 +1,42 @@
 # Task Recipe Contract
 
-Task recipes live under `recipes/` and use schema version `1`. They describe task, inputs, runtime knobs, artifacts, evaluation policy, search space, and explicit decisions.
+Task recipes live under `recipes/`. They describe their owning experiment and step, task inputs, runtime knobs, artifacts, evaluation policy, search space, and explicit decisions.
+
+Every new runnable recipe must define:
+
+```yaml
+experiment:
+  id: ukb-cox-router-freeze
+  title: UKB Cox router-freeze search
+  objective: Determine whether freezing the router improves validation C-index.
+  root: /wujidata/<user>/sleep2vec/experiments/ukb-cox-router-freeze
+  baseline:
+    run_id: run-000
+    rationale: Current production configuration.
+
+step:
+  id: tune-router-freeze
+  phase: train
+  purpose: Compare learning rate, router freezing, and class weighting.
+```
+
+`phase` is one of `prepare`, `train`, `evaluate`, or `analyze`. The generated plan directory must be inside `experiment.root`. Missing experiment or step metadata blocks runnable plan generation.
+
+For local plans, a relative recipe `experiment.root` is based at the repository root, then user-home expansion and absolute path resolution produce the value persisted in the resolved recipe, plan, and workspace manifests. Experiment CLI paths use the caller's current working directory before the same canonicalization. SSH experiment roots remain exact remote strings and are not resolved locally.
+
+Repository-owned management locators are frozen as absolute local paths at the public entry boundary. This includes the source recipe and plan directory, managed run/report directories, frozen config/script/artifacts files, derived runtime/checkpoint directories, postprocessing config/logits outputs, replay-script plan and candidate-table arguments plus the repository cwd/PYTHONPATH bootstrap, adaptive workflow/round/recipe locations, registry copies, and matching event locators. The rule makes later commands independent of their current working directory; it does not normalize user-authored dataset, external-checkpoint, or other semantic input paths. SSH locators remain exact remote strings.
 
 `variant` must be `sleep2vec`, `sleep2vec2`, or `sleep2expert`. Generated runtime commands use the matching package namespace.
 
-Hyper-parameter search keys must be explicit: use `runtime.<name>` for supported CLI/runtime knobs or `yaml:/json/pointer/path` for generated config overrides.
+Hyper-parameter search keys must be explicit: use `runtime.<name>` for supported CLI/runtime knobs or `yaml:/json/pointer/path` for generated config overrides. Those keys keep the same spelling in all current managed run artifacts; prefixed `param.*` columns are removed-format data. `search.max_runs` is the required positive run budget.
 
-Hparam recipes may add an optional `execution:` block for active orchestration after `agent_tools plan` has generated trial scripts. `execution.target` is `local` or `ssh`; `execution.host` is required for SSH. `execution.path_context=remote` and `execution.path_validation=defer|ssh` prevent local false-negative checks for remote paths; config-copy generation still requires readable local YAML. `execution.gpu_pool`, `max_concurrent`, `conda_env`, `wandb_project`, `wandb_group`, `log_dir`, `pid_dir`, and `env` are wrapper settings only and must not replace trainer config semantics.
+Hparam recipes may add an optional `execution:` block for active orchestration after `agent_tools plan` has generated run scripts. `execution.target` is `local` or `ssh`; `execution.host` is required for SSH. A non-empty `execution.workdir` must be an absolute path and is used verbatim as the generated script working directory and PYTHONPATH root; when omitted, the repository root is used. Frozen `runtime_dir` and `checkpoint_dir` are derived from that same working directory. `execution.path_context=remote` and `execution.path_validation=defer|ssh` prevent local false-negative checks for remote paths; config-copy generation still requires readable local YAML. `execution.gpu_pool`, `gpus_per_run`, `max_concurrent`, `conda_env`, `wandb_project`, `wandb_group`, and `env` are wrapper settings only and must not replace trainer config semantics. Logs and PID files are always co-located in the managed run directory.
 
-Hparam recipes may add an optional `adaptive:` block for append-only external-optimized tuning. When `adaptive.objective_metric` starts with `test_` or `external_`, `adaptive.test_feedback_for_selection` must be `true`. Adaptive commands write under `adaptive/` and must not rewrite earlier round plans, trial configs, logs, or checkpoints.
+Hparam recipes may add an optional `adaptive:` block for append-only external-optimized tuning. `adaptive.max_runs_total` bounds the workflow. When `adaptive.objective_metric` starts with `test_` or `external_`, `adaptive.test_feedback_for_selection` must be `true`. Adaptive commands write under `adaptive/` and must not rewrite earlier round plans, run configs, logs, or checkpoints.
+
+Removed run-budget, GPU-allocation, identity, plan-list, status-file, and registry names are rejected at input boundaries. They are not aliases for the current fields.
+
+Hparam external evaluation, logits export, thresholding, and ensembling validate the complete candidate table before filtering legal rows from other steps. Any removed-format field or incomplete managed identity therefore rejects the whole input. After validation, rows for other valid steps may be ignored, while every retained `(step_id, run_id)` must belong to the current managed plan. Candidate tables may contribute derived checkpoint, prediction, score, and rank fields; frozen identity, version, config, and artifact paths come from the plan.
 
 When an unlocked final external-test script is requested for a hparam recipe that uses `yaml:/...` overrides, the recipe or user-decision file must provide `final_eval_config_path` for the selected checkpoint.
 

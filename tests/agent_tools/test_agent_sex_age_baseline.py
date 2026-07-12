@@ -10,11 +10,7 @@ import yaml
 from agent_tools.configs import config_summary
 from agent_tools.plans import build_plan, evaluate_recipe
 from data.default_dataset import SampleIndex
-
-
-def _write_yaml(path: Path, payload: dict) -> Path:
-    path.write_text(yaml.safe_dump(payload))
-    return path
+from tests.agent_tool_test_helpers import write_yaml as _write_yaml
 
 
 def _write_survival_config(tmp_path: Path) -> Path:
@@ -350,7 +346,7 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
             "task": "hparam_tune",
             "variant": "sex_age_baseline",
             "base_recipe": str(base),
-            "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-3]}},
+            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
             "evaluation_policy": {
                 "selection_metric": "val_c_index",
                 "selection_mode": "max",
@@ -375,7 +371,7 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-hparam-val-only")
 
     assert report.exit_code == 0
-    assert (tmp_path / "plan-hparam-val-only" / "trial_000.sh").exists()
+    assert len(list((tmp_path / "plan-hparam-val-only" / "runs").glob("run-000--*/launch.sh"))) == 1
 
 
 def test_sex_age_baseline_finetune_blocks_invalid_metadata_values(tmp_path: Path):
@@ -459,7 +455,7 @@ def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: P
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fake_run)
 
     for validation in ("ssh", "remote"):
         recipe = _finetune_recipe(tmp_path, config)
@@ -497,7 +493,7 @@ def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: P
         calls.append(command)
         return subprocess.CompletedProcess(command, int("label.csv" in command[2]), "", "")
 
-    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fail_label)
+    monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fail_label)
     missing_recipe = _finetune_recipe(tmp_path, config)
     missing_payload = yaml.safe_load(missing_recipe.read_text())
     missing_payload["name"] = "unit_sex_age_multilabel_missing_label"
@@ -537,7 +533,7 @@ def test_sex_age_baseline_hparam_blocks_local_multilabel_sidecar_issues(tmp_path
             "task": "hparam_tune",
             "variant": "sex_age_baseline",
             "base_recipe": str(base),
-            "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-3]}},
+            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
             "evaluation_policy": {
                 "selection_metric": "val_loss",
                 "selection_mode": "min",
@@ -584,7 +580,7 @@ def test_sex_age_baseline_hparam_blocks_base_pretrained_backbone_path(tmp_path: 
             "task": "hparam_tune",
             "variant": "sex_age_baseline",
             "base_recipe": str(base),
-            "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-3]}},
+            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
             "evaluation_policy": {
                 "selection_metric": "val_c_index",
                 "selection_mode": "max",
@@ -610,7 +606,7 @@ def test_sex_age_baseline_hparam_blocks_base_pretrained_backbone_path(tmp_path: 
 
     assert report.exit_code == 1
     assert any(issue.field == "base_finetune.pretrained_backbone_path" for issue in report.issues)
-    assert not (tmp_path / "plan-hparam-pretrained" / "trial_000.sh").exists()
+    assert not (tmp_path / "plan-hparam-pretrained" / "runs").exists()
 
 
 def test_sex_age_baseline_finetune_preset_keeps_survival_sidecar_checks(tmp_path: Path):

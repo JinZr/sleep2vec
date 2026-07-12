@@ -1,5 +1,15 @@
 name: dense_pretrain_example
 task: pretrain
 variant: sleep2vec
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: pretrain-dense-model
+  phase: train
+  purpose: Pretrain the dense model.
 inputs:
   config: configs/examples/PRETRAIN_EXAMPLE.yaml

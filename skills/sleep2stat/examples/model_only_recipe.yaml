@@ -1,5 +1,15 @@
 name: sleep2stat_model_only_example
 task: sleep2stat
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: analyze-model-only
+  phase: analyze
+  purpose: Run model-only sleep2stat analysis.
 
 inputs:
   config: configs/sleep2stat/model_only_v02.yaml

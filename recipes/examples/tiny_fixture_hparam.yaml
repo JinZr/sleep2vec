@@ -2,11 +2,25 @@ name: tiny_fixture_hparam
 task: hparam_tune
 variant: sleep2vec
 
+experiment:
+  id: tiny-fixture-hparam
+  title: Tiny fixture hyper-parameter search
+  objective: Validate managed semantic run generation and ranking.
+  root: artifacts/experiments/tiny-fixture-hparam
+  baseline:
+    type: none
+    rationale: Synthetic command-generation fixture.
+
+step:
+  id: tune-ahi
+  phase: train
+  purpose: Search the tiny AHI learning-rate fixture.
+
 base_recipe: tiny_fixture_finetune.yaml
 
 search:
   method: grid
-  max_trials: 1
+  max_runs: 1
   parameters:
     runtime.lr: [1.0e-6]
 
@@ -19,9 +33,6 @@ evaluation_policy:
   final_eval_split: test
   final_test_unlocked: false
   require_manual_unlock_for_final_test: true
-
-artifacts:
-  generated_config_dir: runs/generated/tiny_fixture_hparam/configs
 
 decisions:
   task:

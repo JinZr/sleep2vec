@@ -7,6 +7,20 @@ name: ppg_ahi_finetune_example
 task: finetune
 variant: sleep2vec
 
+experiment:
+  id: ppg-ahi-finetune
+  title: PPG AHI finetuning
+  objective: Establish the validation-selected AHI baseline.
+  root: artifacts/experiments/ppg-ahi-finetune
+  baseline:
+    type: none
+    rationale: First managed experiment.
+
+step:
+  id: train-baseline
+  phase: train
+  purpose: Train the initial validation-selected baseline.
+
 inputs:
   config: configs/ppg_ahi_finetune_large.yaml
   label_name: ahi
@@ -34,14 +48,13 @@ artifacts:
 execution:
   target: local
   host: null
-  workdir: null
+  workdir: null  # when set, must be an absolute path used verbatim as the run cwd
   conda_env: null
   gpu_pool: []
+  gpus_per_run: 1
   max_concurrent: 1
   wandb_project: null
   wandb_group: null
-  log_dir: logs
-  pid_dir: pids
   env: {}
 
 adaptive:
@@ -50,7 +63,7 @@ adaptive:
   objective_mode: max
   test_feedback_for_selection: false
   max_rounds: 3
-  max_trials_total: 24
+  max_runs_total: 24
   round_size: 3
   poll_seconds: 60
   replacement:
@@ -104,6 +117,8 @@ Common top-level fields:
 
 - `name`: stable recipe name.
 - `task`: one of `preset_prepare`, `pretrain`, `adapt`, `finetune`, `infer`, `evaluate`, `hparam_tune`, `sleep2stat`.
+- `experiment`: required experiment id, title, objective, root, and baseline metadata for runnable plans.
+- `step`: required id, phase, and purpose for the current preparation, training, evaluation, or analysis step.
 - `variant`: one of `sleep2vec`, `sleep2vec2`, `sleep2expert`, or `sex_age_baseline` for model tasks; omit it or set it to `null` for `task: sleep2stat`.
 - `inputs`: paths and task-specific inputs.
 - `inputs.eval_split`: explicit split for inference/evaluation; use `ASK_USER` only when the agent must stop.
@@ -113,20 +128,23 @@ Common top-level fields:
 - `execution`: optional hparam orchestration settings. Existing recipes may omit this and still generate local scripts only.
 - `adaptive`: optional append-only hparam workflow. Existing recipes may omit this and remain static validation-only tuning.
 - `evaluation_policy`: split, selection, and external-test locking policy.
-- `search`: hyper-parameter tuning method, budget, and parameters. V1 supports `method: grid` only.
+- `search`: hyper-parameter tuning method, budget, and parameters. The supported method is `grid`.
+- `search.max_runs`: required positive run budget for hparam tuning.
 - `search.parameters`: keys must be `runtime.lr`, `runtime.weight_decay`, `runtime.batch_size`, `runtime.epochs`, `runtime.num_workers`, `runtime.precision`, `runtime.gradient_clip_val`, `runtime.accumulate_grad_batches`, `runtime.warmup_steps`, `runtime.patience`, `runtime.check_val_every_n_epoch`, `runtime.ckpt_every_n_epochs`, or `yaml:/json/pointer/path`.
 - `yaml:/...`: JSON Pointer-like config overrides used for generated config copies.
 - `execution.target`: `local` or `ssh`; `execution.host` is required for `ssh`.
 - `execution.path_context`: optional `local` or `remote`; remote absolute paths are not checked with local `Path.exists`.
 - `execution.path_validation`: optional `local`, `defer`, or `ssh`; remote defaults to `defer`, and `ssh` uses short `test -e` checks.
 - `execution.gpu_pool`: GPU ids used by `agent_tools hparam-launch` for `CUDA_VISIBLE_DEVICES`.
-- `execution.max_concurrent`: maximum trials launched immediately by `hparam-launch --execute`.
-- `execution.conda_env`, `execution.wandb_project`, `execution.wandb_group`, `execution.log_dir`, `execution.pid_dir`, and `execution.env`: runtime wrapper settings only; they do not change generated trainer configs.
-- `adaptive.enabled`: when true, `agent_tools hparam-adaptive-*` commands create `adaptive/` ledgers and per-round plans without modifying old trials.
+- `execution.gpus_per_run`: number of GPU ids assigned to each managed run.
+- `execution.max_concurrent`: maximum runs launched immediately by `hparam-launch --execute`.
+- `execution.conda_env`, `execution.wandb_project`, `execution.wandb_group`, and `execution.env`: runtime wrapper settings only; they do not change generated trainer configs. Logs and PID files are always co-located in the managed run directory.
+- `adaptive.enabled`: when true, `agent_tools hparam-adaptive-*` commands create `adaptive/` ledgers and per-round plans without modifying old runs.
+- `adaptive.max_runs_total`: maximum number of registered runs across adaptive rounds.
 - `adaptive.objective_metric`: defaults to `test_auroc` for external-optimized tuning.
 - `adaptive.test_feedback_for_selection`: must be true if `objective_metric` starts with `test_` or `external_`.
 - `adaptive.replacement.allow_running_stop`: allows stopping manifest-recorded running jobs only when failure/timeout/live-metric evidence says they are bad.
-- `adaptive.suggest.strategy`: v1 supports `best_neighborhood`.
+- `adaptive.suggest.strategy`: supports `best_neighborhood`.
 - `decisions`: explicit high-impact decision sources.
 
 Sleep2stat recipes use the existing `sleep2stat` CLI and do not use a model variant:

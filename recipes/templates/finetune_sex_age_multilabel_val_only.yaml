@@ -2,6 +2,17 @@ name: sex_age_multilabel_finetune_example
 task: finetune
 variant: sex_age_baseline
 
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: train
+  purpose: ASK_USER
+
 inputs:
   config: configs/sex_age_baseline/multilabel.yaml
   label_name: disease_multilabel

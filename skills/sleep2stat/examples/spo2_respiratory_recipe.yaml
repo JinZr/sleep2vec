@@ -1,5 +1,15 @@
 name: sleep2stat_spo2_respiratory_example
 task: sleep2stat
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: analyze-spo2-respiratory
+  phase: analyze
+  purpose: Run SpO2 respiratory analysis.
 
 inputs:
   config: configs/sleep2stat/spo2_respiratory_v02.yaml

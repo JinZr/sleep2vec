@@ -1,6 +1,17 @@
 name: sleep2stat_model_only_template
 task: sleep2stat
 
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: analyze
+  purpose: ASK_USER
+
 inputs:
   config: configs/sleep2stat/model_only_v02.yaml
   split: [test]

@@ -10,27 +10,29 @@ from typing import Any
 from .adaptive_hparam import adaptive_loop, adaptive_step, digest_hparam_run, init_adaptive_workflow, suggest_next_round
 from .configs import config_summary
 from .experiments import (
+    finalize_experiment,
     index_checkpoints,
     init_experiment,
     monitor_experiment,
     rank_experiment_candidates,
+    register_experiment_step,
     sync_wandb_runs,
 )
 from .hparam import (
     ensemble_hparam_outputs,
     export_hparam_logits,
     generate_external_eval,
-    launch_hparam_trials,
-    monitor_hparam_trials,
+    launch_hparam_runs,
+    monitor_hparam_runs,
     scan_hparam_checkpoints,
     select_hparam_candidates,
-    stop_hparam_trial,
+    stop_hparam_run,
     threshold_hparam_outputs,
 )
 from .index_csv import index_summary
 from .manifests import write_text
 from .markdown import report_text
-from .models import json_ready
+from .models import REPO_ROOT, json_ready
 from .plans import build_context, build_plan, collect_runs, evaluate_recipe, prepare_doctor_report, write_doctor_outputs
 from .presets import preset_summary
 from .progress import format_progress, read_progress
@@ -104,7 +106,7 @@ def _build_parser() -> argparse.ArgumentParser:
     plan.set_defaults(func=_cmd_plan)
 
     collect = sub.add_parser("collect-runs")
-    collect.add_argument("--root", default="log-finetune")
+    collect.add_argument("--root", required=True)
     collect.add_argument("--metric")
     collect.add_argument("--output", required=True)
     collect.set_defaults(func=_cmd_collect_runs)
@@ -129,9 +131,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
     experiment_init = sub.add_parser("experiment-init")
     experiment_init.add_argument("--run-dir", required=True)
-    experiment_init.add_argument("--name", required=True)
+    experiment_init.add_argument("--spec", required=True)
     experiment_init.add_argument("--remote")
     experiment_init.set_defaults(func=_cmd_experiment_init)
+
+    experiment_step = sub.add_parser("experiment-register-step")
+    experiment_step.add_argument("--run-dir", required=True)
+    experiment_step.add_argument("--spec", required=True)
+    experiment_step.add_argument("--remote")
+    experiment_step.set_defaults(func=_cmd_experiment_register_step)
+
+    experiment_finalize = sub.add_parser("experiment-finalize")
+    experiment_finalize.add_argument("--run-dir", required=True)
+    experiment_finalize.add_argument("--report", required=True)
+    experiment_finalize.add_argument("--remote")
+    experiment_finalize.set_defaults(func=_cmd_experiment_finalize)
 
     experiment_wandb = sub.add_parser("experiment-wandb-sync")
     experiment_wandb.add_argument("--run-dir", required=True)
@@ -161,13 +175,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     stop = sub.add_parser("hparam-stop")
     stop.add_argument("--run-dir", required=True)
-    stop.add_argument("--trial-id", required=True)
+    stop.add_argument("--run-id", required=True)
+    stop.add_argument("--reason", required=True)
     stop.set_defaults(func=_cmd_hparam_stop)
 
     select = sub.add_parser("hparam-select")
     select.add_argument("--run-dir", required=True)
-    select.add_argument("--metric", required=True)
-    select.add_argument("--mode", choices=["max", "min"], required=True)
+    select.add_argument("--metric")
+    select.add_argument("--mode", choices=["max", "min"])
     select.set_defaults(func=_cmd_hparam_select)
 
     external = sub.add_parser("hparam-external-eval")
@@ -345,13 +360,13 @@ def _cmd_collect_runs(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_launch(args: argparse.Namespace) -> int:
-    manifest = launch_hparam_trials(args.plan_dir, dry_run=not args.execute)
+    manifest = launch_hparam_runs(args.plan_dir, dry_run=not args.execute)
     print(f"Wrote {manifest}")
     return 0
 
 
 def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
-    status = monitor_hparam_trials(args.run_dir, once=args.once, health=args.health)
+    status = monitor_hparam_runs(args.run_dir, once=args.once, health=args.health)
     print(f"Wrote {status}")
     return 0
 
@@ -366,8 +381,20 @@ def _cmd_progress(args: argparse.Namespace) -> int:
 
 
 def _cmd_experiment_init(args: argparse.Namespace) -> int:
-    manifest = init_experiment(args.run_dir, args.name, remote=args.remote)
+    manifest = init_experiment(args.run_dir, args.spec, remote=args.remote)
     print(f"Wrote {manifest}")
+    return 0
+
+
+def _cmd_experiment_register_step(args: argparse.Namespace) -> int:
+    path = register_experiment_step(args.run_dir, args.spec, remote=args.remote)
+    print(f"Wrote {path}")
+    return 0
+
+
+def _cmd_experiment_finalize(args: argparse.Namespace) -> int:
+    path = finalize_experiment(args.run_dir, args.report, remote=args.remote)
+    print(f"Wrote {path}")
     return 0
 
 
@@ -409,7 +436,7 @@ def _cmd_experiment_rank(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_stop(args: argparse.Namespace) -> int:
-    status = stop_hparam_trial(args.run_dir, args.trial_id)
+    status = stop_hparam_run(args.run_dir, args.run_id, reason=args.reason)
     print(f"Wrote {status}")
     return 0
 
@@ -464,7 +491,7 @@ def _cmd_hparam_export_logits(args: argparse.Namespace) -> int:
     )
     print(f"Wrote {manifest}")
     if not args.execute:
-        script = Path(args.run_dir) / "logits_export.sh"
+        script = manifest.parent / "logits_export.sh"
         write_text(script, "\n".join(_logits_export_script_lines(args)) + "\n", executable=True)
         print(f"Wrote {script}")
     return 0
@@ -533,9 +560,9 @@ def _logits_export_script_lines(args: argparse.Namespace) -> list[str]:
         "agent_tools",
         "hparam-export-logits",
         "--run-dir",
-        args.run_dir,
+        str(Path(args.run_dir).expanduser().resolve()),
         "--selected",
-        args.selected,
+        str(Path(args.selected).expanduser().resolve()),
         "--val-split",
         args.val_split,
         "--test-split",
@@ -577,9 +604,13 @@ def _logits_export_script_lines(args: argparse.Namespace) -> list[str]:
         command.extend(args.devices)
     if args.all_candidates:
         command.append("--all-candidates")
+    repo_root = shlex.quote(str(REPO_ROOT))
     return [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
+        "",
+        f"cd {repo_root}",
+        f"export PYTHONPATH={repo_root}${{PYTHONPATH:+:$PYTHONPATH}}",
         "",
         " ".join(shlex.quote(str(part)) for part in command),
     ]

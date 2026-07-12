@@ -42,7 +42,7 @@ def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
             "task": "hparam_tune",
             "variant": "sleep2vec",
             "base_recipe": str(base),
-            "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-6]}},
+            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
             "evaluation_policy": {
                 "selection_metric": "val_ahi_pearson",
                 "selection_mode": "max",

@@ -1,6 +1,16 @@
 name: stage5_finetune_example
 task: finetune
 variant: sleep2vec
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: train-stage5
+  phase: train
+  purpose: Finetune the stage5 task.
 inputs:
   config: configs/examples/stage5/FINETUNE_EXAMPLE.yaml
   label_name: stage5
