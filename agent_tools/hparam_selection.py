@@ -86,7 +86,7 @@ def select_hparam_candidates(
                 f"Existing ranking row is outside the canonical manifest: "
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
-        validate_frozen_run_update(canonical, row)
+        validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
     step_id = str((recipe.get("step") or {}).get("id") or "")
     current_keys = {managed_run_key(row) for row in current_ranked}
     preserved = [row for row in existing_ranked if managed_run_key(row) not in current_keys]
@@ -148,6 +148,7 @@ def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     canonical_rows = read_run_manifest(workspace)
     out = root / "checkpoint_ranking.csv"
+    exp_io.validate_managed_output_paths(root, [out])
     existing_ranked = read_rows(out, require_managed_identity=True)
     validate_managed_run_rows(existing_ranked, source=str(out), cardinality="many_per_run")
     for row in existing_ranked:
@@ -157,7 +158,7 @@ def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_
                 f"Existing checkpoint ranking row is outside the canonical manifest: "
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
-        validate_frozen_run_update(canonical, row)
+        validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
     rows = []
     for run in plan["runs"]:
         manifest_path = artifacts.find_run_manifest(run)

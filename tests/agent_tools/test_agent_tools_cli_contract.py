@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
-from agent_tools import cli
+import pytest
+
+from agent_tools import cli, models, plans
+from agent_tools.decisions import evaluate_consultation_gates
+from agent_tools.recipes import load_policy_files
 
 SUBCOMMANDS = {
     "skills",
@@ -37,6 +42,26 @@ SUBCOMMANDS = {
     "hparam-adaptive-step",
     "hparam-adaptive-loop",
 }
+
+RUNNABLE_TASK_VARIANT_MATRIX = [
+    ("sleep2stat", None, "sleep2stat"),
+    *[
+        ("preset_prepare", variant, "preprocess/save_dataset_presets.py")
+        for variant in ("sleep2vec", "sleep2vec2", "sleep2expert")
+    ],
+    *[
+        (task, variant, f"{variant}.{'finetune' if task in {'finetune', 'hparam_tune'} else 'infer'}")
+        for task in ("finetune", "hparam_tune", "infer", "evaluate")
+        for variant in models.SUPPORTED_VARIANTS
+    ],
+]
+
+REJECTED_TASK_VARIANT_MATRIX = [
+    *[(task, None) for task in ("preset_prepare", "finetune", "hparam_tune", "infer", "evaluate")],
+    *[(task, "unsupported") for task in ("preset_prepare", "finetune", "hparam_tune", "infer", "evaluate")],
+    *[("sleep2stat", variant) for variant in models.SUPPORTED_VARIANTS],
+    ("preset_prepare", "sex_age_baseline"),
+]
 
 
 def _parser_contract() -> tuple[argparse.ArgumentParser, dict[str, argparse.ArgumentParser]]:
@@ -118,3 +143,64 @@ def test_experiment_rank_cli_contract():
     assert {name for name, action in actions.items() if action.required} == {"run_dir", "metric", "mode"}
     assert actions["mode"].choices == ["max", "min"]
     assert args.remote is None
+
+
+@pytest.mark.parametrize(("task", "variant", "target"), RUNNABLE_TASK_VARIANT_MATRIX)
+def test_runnable_task_variant_contract_matrix(task: str, variant: str | None, target: str):
+    recipe = {
+        "name": "contract-matrix",
+        "task": task,
+        "variant": variant,
+        "inputs": {
+            "config": "config.yaml",
+            "index": ["index.csv"],
+            "dataset_name": "unit",
+            "label_name": "label",
+            "ckpt_path": "model.ckpt",
+            "eval_split": "test",
+        },
+        "preset": {"n_tokens": 1, "split": ["train"]},
+        "evaluation_policy": {"test_after_fit": False},
+    }
+    if task == "sleep2stat":
+        commands = plans._commands_for_recipe(
+            recipe,
+            {"is_sleep2stat": True, "sleep2stat": {"run": {"output_dir": "runs/unit"}}},
+        )
+        assert any("python -m sleep2stat run" in command for command in commands)
+        assert models.task_requires_variant(task) is False
+        return
+    if task == "preset_prepare":
+        assert target in plans._commands_for_recipe(recipe)[0]
+    elif task == "hparam_tune":
+        # Hparam plans compile finetune scripts separately, but use the same variant namespace resolver.
+        assert models.module_for_variant(str(variant), "finetune") == target
+    else:
+        assert f"python -m {target}" in plans._commands_for_recipe(recipe)[0]
+    module_path = Path(target) if target.endswith(".py") else Path(target.replace(".", "/") + ".py")
+    assert (models.REPO_ROOT / module_path).is_file()
+    assert models.task_requires_variant(task) is True
+
+
+@pytest.mark.parametrize(("task", "variant"), REJECTED_TASK_VARIANT_MATRIX)
+def test_rejected_task_variant_contract_matrix(tmp_path: Path, task: str, variant: str | None):
+    policy, defaults = load_policy_files()
+    recipe = {
+        "name": "rejected-contract-matrix",
+        "task": task,
+        "variant": variant,
+        "experiment": {
+            "id": "contract-matrix",
+            "title": "Contract matrix",
+            "objective": "Validate finite task and variant routing.",
+            "root": str(tmp_path),
+            "baseline": {"type": "none"},
+        },
+        "step": {"id": "contract-step", "phase": "train", "purpose": "Validate routing."},
+        "decisions": {"task": {"value": task, "source": "explicit_recipe"}},
+    }
+
+    report = evaluate_consultation_gates(task, recipe, None, {}, policy, defaults)
+
+    assert report.exit_code != 0
+    assert any(issue.field == "variant" for issue in report.blocking_issues())

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -221,6 +222,38 @@ def test_experiment_checkpoint_preflight_rejects_previous_rows_outside_eligible_
     assert checkpoint_manifest.read_bytes() == original_manifest
 
 
+@pytest.mark.parametrize("checkpoint_kind", ["missing", "file", "symlink"])
+def test_experiment_checkpoint_scan_rejects_invalid_declared_directory_without_rewriting(
+    tmp_path: Path, checkpoint_kind: str
+):
+    _initialize_workspace(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    checkpoint_dir = runtime_dir / "checkpoints"
+    if checkpoint_kind == "file":
+        checkpoint_dir.write_text("not a directory")
+    elif checkpoint_kind == "symlink":
+        target = tmp_path / "external-checkpoints"
+        target.mkdir()
+        checkpoint_dir.symlink_to(target, target_is_directory=True)
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tversion\truntime_dir\tcheckpoint_dir\n"
+        f"unit\ttrain-model\trun-000\tmanaged-v1\t{runtime_dir}\t{checkpoint_dir}\n"
+    )
+    checkpoint_manifest = tmp_path / "checkpoint_manifest.tsv"
+    checkpoint_manifest.write_text(
+        "step_id\trun_id\tcheckpoint_path\n" f"train-model\trun-000\t{checkpoint_dir / 'old.ckpt'}\n"
+    )
+    before = checkpoint_manifest.read_bytes()
+
+    with pytest.raises(
+        ValueError, match="checkpoint_dir is missing or is not a directory|not a regular managed checkpoint"
+    ):
+        experiments.index_checkpoints(tmp_path)
+
+    assert checkpoint_manifest.read_bytes() == before
+
+
 def test_experiment_checkpoint_preflight_rejects_foreign_experiment_before_scan(tmp_path: Path, monkeypatch):
     _initialize_workspace(tmp_path)
     experiment_io.write_rows_at(
@@ -410,6 +443,41 @@ def test_experiment_wandb_sync_exports_summary_history_and_metrics(tmp_path: Pat
     report = tmp_path.parent / "wandb_final.md"
     report.write_text("# Final\n")
     assert _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report)).returncode == 0
+
+
+def test_experiment_wandb_sync_replaces_updated_metric_on_repeat(tmp_path: Path, monkeypatch):
+    _initialize_workspace(tmp_path)
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\trunning\n"
+    )
+
+    class FakeRun:
+        id = "wandb-1"
+        name = "managed-v1"
+        state = "running"
+        url = "https://wandb.example/run"
+        group = ""
+        created_at = "2026-01-01"
+        updated_at = "2026-01-02"
+        config = {"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000"}
+
+        def __init__(self, value):
+            self.summary = {"val_auroc": value, "epoch": 1}
+
+        def history(self, **_kwargs):
+            return []
+
+    current = [FakeRun(0.7)]
+    monkeypatch.setattr(experiment_tracking, "wandb_runs", lambda *_args: current)
+
+    experiments.sync_wandb_runs(tmp_path, entity="entity", project="project")
+    current[:] = [FakeRun(0.8)]
+    experiments.sync_wandb_runs(tmp_path, entity="entity", project="project")
+
+    rows = _read_table(tmp_path / "metrics_manifest.tsv")
+    matching = [row for row in rows if row["metric"] == "val_auroc" and row["source"] == "wandb_summary"]
+    assert len(matching) == 1
+    assert matching[0]["value"] == "0.8"
 
 
 def test_experiment_monitor_preserves_wandb_running_without_pid(tmp_path: Path):
@@ -812,6 +880,62 @@ def test_experiment_run_rows_does_not_take_status_from_local_mirror(tmp_path: Pa
     assert rows[0]["status"] == "planned"
 
 
+@pytest.mark.parametrize("pid", [str(os.getpid()), "99999999"])
+def test_experiment_run_rows_does_not_take_process_evidence_from_local_mirror(tmp_path: Path, pid: str):
+    pid_path = tmp_path / "run.pid"
+    pid_path.write_text(pid)
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
+    )
+    (tmp_path / "run_status.tsv").write_text(
+        "step_id\trun_id\tversion\tstatus\tpid_path\tpid\tlog_path\n"
+        f"train-model\trun-000\tmanaged-v1\trunning\t{pid_path}\t{pid}\t{tmp_path / 'run.log'}\n"
+    )
+
+    rows = experiment_tracking.experiment_run_rows(tmp_path)
+
+    assert rows == [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "managed-v1",
+            "status": "planned",
+        }
+    ]
+
+
+@pytest.mark.parametrize("table", ["launch_manifest.tsv", "run_status.tsv"])
+def test_experiment_run_rows_rejects_aliased_auxiliary_evidence(tmp_path: Path, table: str):
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
+    )
+    outside = tmp_path / "outside.tsv"
+    outside.write_text("step_id\trun_id\tversion\tstatus\ntrain-model\trun-000\tmanaged-v1\trunning\n")
+    (tmp_path / table).symlink_to(outside)
+
+    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
+        experiment_tracking.experiment_run_rows(tmp_path)
+
+
+def test_experiment_checkpoint_scan_ignores_checkpoint_named_directories(tmp_path: Path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "epoch=02.ckpt").mkdir()
+    runs = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "managed-v1",
+            "runtime_dir": str(tmp_path),
+            "checkpoint_dir": str(checkpoint_dir),
+        }
+    ]
+
+    assert experiment_tracking._local_checkpoint_rows(runs) == []
+
+
 def test_experiment_monitor_does_not_advance_planned_run_from_local_mirror(tmp_path: Path):
     _initialize_workspace(tmp_path)
     (tmp_path / "run_manifest.tsv").write_text(
@@ -1155,6 +1279,69 @@ def test_experiment_monitor_matches_previous_rows_by_managed_identity(tmp_path: 
     assert "train-model / run-000 — train" in monitor
 
 
+@pytest.mark.parametrize("artifact_returncode", [0, 255])
+def test_experiment_monitor_observes_remote_artifacts_over_ssh_and_preserves_them_on_uncertainty(
+    tmp_path: Path, monkeypatch, artifact_returncode: int
+):
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "running",
+        "target": "ssh",
+        "host": "unit-host",
+        "pid_path": "/remote/run.pid",
+        "log_path": "/remote/run.log",
+        "runtime_dir": "/remote/runtime/run-000",
+        "checkpoint_dir": "/remote/runtime/run-000/checkpoints",
+    }
+    previous = {
+        **row,
+        "run_manifest": "/remote/runtime/previous/run_manifest.json",
+        "checkpoints": "previous.ckpt",
+    }
+    commands = []
+
+    def fake_remote_command(_row, command):
+        commands.append(command)
+        if "sys.stdout.write(file_obj.read())" in command:
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        if command.startswith("ps "):
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        if "checkpoint_dir = sys.argv[2]" in command:
+            payload = json.dumps(
+                {
+                    "run_manifest": "/remote/runtime/run-000/run_manifest.json",
+                    "checkpoints": ["epoch=01.ckpt", "last.ckpt"],
+                }
+            )
+            return subprocess.CompletedProcess([], artifact_returncode, payload if artifact_returncode == 0 else "", "")
+        if command.startswith("tail -n 8"):
+            return subprocess.CompletedProcess([], 0, "still running", "")
+        raise AssertionError(f"Unexpected remote command: {command}")
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_remote_command)
+    monkeypatch.setattr(
+        run_evidence,
+        "health_fields",
+        lambda _root, _row, _previous, _pid, _running, status, checkpoints: {
+            "health_status": status,
+            "checkpoint_count": len(checkpoints),
+        },
+    )
+
+    observation = experiment_tracking.monitor_run_row(tmp_path, row, [previous], remote="unit-host")
+
+    if artifact_returncode == 0:
+        assert observation["run_manifest"] == "/remote/runtime/run-000/run_manifest.json"
+        assert observation["checkpoints"] == "epoch=01.ckpt;last.ckpt"
+        assert observation["checkpoint_count"] == 2
+    else:
+        assert observation["run_manifest"] == previous["run_manifest"]
+        assert observation["checkpoints"] == previous["checkpoints"]
+        assert observation["checkpoint_count"] == 1
+    assert any("/remote/runtime/run-000" in command for command in commands)
+
+
 def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
     class FakeRun:
         id = "run123"
@@ -1237,7 +1424,126 @@ def test_experiment_wandb_sync_writes_blocked_report(tmp_path: Path, monkeypatch
     assert (tmp_path / "reports" / "wandb_blocked.md").exists()
 
 
-@pytest.mark.parametrize("failure", ["nonzero", "timeout", "malformed", "invalid_mtime", "unmanaged"])
+def test_remote_checkpoint_scan_rejects_missing_declared_roots(monkeypatch):
+    runs = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "run_a",
+            "checkpoint_dir": "/remote/runtime/run_a/checkpoints",
+        },
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-001",
+            "version": "run_b",
+            "checkpoint_dir": "/remote/runtime/run_b/checkpoints",
+        },
+    ]
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 1, "", "missing checkpoint directory")
+
+    monkeypatch.setattr(experiment_tracking.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="SSH checkpoint scan failed"):
+        experiment_tracking._remote_checkpoint_rows(runs, "baichuan3")
+
+    shell = calls[0][0][-1]
+    assert '[ -L "$root" ]' in shell
+    assert '[ ! -d "$root" ]' in shell
+    assert 'find "$root"' in shell
+
+
+def test_remote_checkpoint_scan_rejects_non_directory_declared_root(monkeypatch):
+    runs = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "run_a",
+            "checkpoint_dir": "/remote/runtime/run_a/checkpoints",
+        }
+    ]
+    monkeypatch.setattr(
+        experiment_tracking.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "not a directory"),
+    )
+
+    with pytest.raises(RuntimeError, match="not a directory"):
+        experiment_tracking._remote_checkpoint_rows(runs, "baichuan3")
+
+
+def test_remote_checkpoint_scan_uses_runtime_manifest_best_path_for_ranking(monkeypatch):
+    runs = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "run_a",
+            "runtime_dir": "/remote/runtime/run_a",
+            "checkpoint_dir": "/remote/runtime/run_a/checkpoints",
+        }
+    ]
+    checkpoint_one = "/remote/runtime/run_a/checkpoints/epoch=01-step=10.ckpt"
+    checkpoint_two = "/remote/runtime/run_a/checkpoints/epoch=02-step=20.ckpt"
+    monkeypatch.setattr(
+        experiment_tracking.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            f"{checkpoint_one}\t123.0\n{checkpoint_two}\t124.0\n",
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        experiment_io,
+        "read_text_at",
+        lambda path, remote=None: json.dumps({"best_model_path": checkpoint_one, "epoch": 1}),
+    )
+
+    checkpoints = experiment_tracking._remote_checkpoint_rows(runs, "baichuan3")
+    ranked = experiment_tracking.rank_candidates(
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-000",
+                "version": "run_a",
+                "metric": "val_auroc",
+                "score": 0.8,
+                "epoch": "",
+            }
+        ],
+        checkpoints,
+        mode="max",
+    )
+
+    assert {row["checkpoint_path"]: row["is_best_by_val"] for row in checkpoints} == {
+        checkpoint_one: "true",
+        checkpoint_two: "false",
+    }
+    assert ranked[0]["checkpoint_path"] == checkpoint_one
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "nonzero",
+        "timeout",
+        "malformed",
+        "invalid_mtime",
+        "unmanaged",
+        "manifest_transport",
+        "corrupt_manifest",
+        "empty_manifest",
+    ],
+)
 def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path: Path, monkeypatch, failure: str):
     _initialize_workspace(tmp_path)
     checkpoint_manifest = tmp_path / "checkpoint_manifest.tsv"
@@ -1278,6 +1584,13 @@ def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path
                 "/remote/runtime/other/checkpoints/epoch=2.ckpt\t124.0\n",
                 "",
             )
+        if failure in {"manifest_transport", "corrupt_manifest", "empty_manifest"}:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "/remote/runtime/run_a/checkpoints/epoch=1.ckpt\t123.0\n",
+                "",
+            )
         return subprocess.CompletedProcess(
             command,
             1,
@@ -1286,19 +1599,25 @@ def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path
         )
 
     monkeypatch.setattr("agent_tools.experiment_tracking.subprocess.run", fake_run)
-    monkeypatch.setattr(
-        experiment_io,
-        "read_text_at",
-        lambda path, remote=None, **_kwargs: (
-            (tmp_path / "experiment.yaml").read_text()
-            if Path(path).name == "experiment.yaml"
-            else run_manifest if Path(path).name == "run_manifest.tsv" else ""
-        ),
-    )
+
+    def fake_read_text(path, remote=None, **_kwargs):
+        if Path(path).name == "experiment.yaml":
+            return (tmp_path / "experiment.yaml").read_text()
+        if Path(path).name == "run_manifest.tsv":
+            return run_manifest
+        if Path(path).name == "run_manifest.json":
+            if failure == "manifest_transport":
+                raise RuntimeError("SSH read failed")
+            if failure == "corrupt_manifest":
+                return "{"
+        return ""
+
+    monkeypatch.setattr(experiment_io, "read_text_at", fake_read_text)
     monkeypatch.setattr(
         experiment_io,
         "path_exists_at",
-        lambda path, remote=None: Path(path).name == "run_manifest.tsv",
+        lambda path, remote=None: Path(path).name == "run_manifest.tsv"
+        or (failure == "empty_manifest" and Path(path).name == "run_manifest.json"),
     )
     monkeypatch.setattr(
         experiment_io,

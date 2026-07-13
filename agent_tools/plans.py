@@ -7,7 +7,13 @@ from typing import Any
 
 import yaml
 
-from . import plan_context as context, plan_hparam as hparam, plan_rendering as rendering, repo as repo_tools
+from . import (
+    experiment_io as exp_io,
+    plan_context as context,
+    plan_hparam as hparam,
+    plan_rendering as rendering,
+    repo as repo_tools,
+)
 from .configs import config_summary
 from .decisions import DecisionIssue, DecisionReport, DecisionStatus, evaluate_consultation_gates, merge_status
 from .experiment_workspace import (
@@ -181,6 +187,7 @@ def build_context(
         report,
         context.planned_context_paths(out, report),
         report.decisions.get("overwrite_policy"),
+        root=out,
     )
     if _has_output_artifact_issue(report):
         return report
@@ -391,6 +398,7 @@ def preflight_plan(
         report,
         _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test),
         report.decisions.get("overwrite_policy"),
+        root=out,
     )
     if successful_plan:
         root = experiment_root(recipe)
@@ -399,6 +407,7 @@ def preflight_plan(
                 report,
                 [root / "run_matrix.csv", root / "reports" / "run_matrix.md", root / "events.jsonl"],
                 report.decisions.get("overwrite_policy"),
+                root=root,
                 allow_existing=True,
             )
     return recipe, cfg, report
@@ -407,12 +416,16 @@ def preflight_plan(
 def collect_runs(root: str | Path, metric: str | None, output: str | Path) -> None:
     rows: list[dict[str, Any]] = []
     root_path = Path(root)
-    output_path = Path(output)
+    output_path = Path(output).expanduser()
+    if not output_path.is_absolute():
+        output_path = Path.cwd() / output_path
     canonical_manifest = root_path / "run_manifest.tsv"
     if output_path.resolve() == canonical_manifest.resolve() or (
         output_path.exists() and canonical_manifest.exists() and output_path.samefile(canonical_manifest)
     ):
         raise ValueError("collect-runs output cannot overwrite canonical run_manifest.tsv.")
+    # The report may live outside the experiment, so validate its complete absolute topology from the filesystem root.
+    exp_io.validate_managed_output_paths(Path(output_path.anchor), [output_path])
     managed_rows = read_run_manifest(root_path)
     for managed in managed_rows:
         runtime_dir = Path(managed["runtime_dir"]) if managed.get("runtime_dir") else None
@@ -605,19 +618,21 @@ def _guard_existing_outputs(
     paths: list[Path],
     overwrite_decision: Any,
     *,
+    root: Path,
     allow_existing: bool = False,
 ) -> DecisionReport:
-    aliases = sorted(str(path) for path in paths if path.is_symlink() or (path.is_file() and path.stat().st_nlink > 1))
-    if aliases:
+    try:
+        exp_io.validate_managed_output_paths(root, paths)
+    except ValueError as exc:
         return _append_issues(
             report,
             [
                 DecisionIssue(
                     DecisionStatus.FAIL,
                     "output_artifacts",
-                    "Output artifacts must not be symlinks or hard links.",
+                    f"Output artifacts are unsafe: {exc}",
                     None,
-                    {"aliased_paths": aliases},
+                    {"paths": [str(path) for path in paths]},
                 )
             ],
         )

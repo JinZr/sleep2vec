@@ -299,6 +299,28 @@ def test_fixed_checkpoint_does_not_escape_frozen_checkpoint_dir(tmp_path: Path):
     assert path == ""
 
 
+@pytest.mark.parametrize("alias_kind", ["checkpoint", "checkpoint_dir"])
+def test_fixed_checkpoint_rejects_filesystem_aliases(tmp_path: Path, alias_kind: str):
+    foreign_dir = tmp_path / "foreign"
+    foreign_dir.mkdir()
+    foreign = foreign_dir / "epoch=07.ckpt"
+    foreign.write_text("foreign")
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.parent.mkdir()
+    if alias_kind == "checkpoint_dir":
+        checkpoint_dir.symlink_to(foreign_dir, target_is_directory=True)
+    else:
+        checkpoint_dir.mkdir()
+        (checkpoint_dir / foreign.name).symlink_to(foreign)
+
+    path = run_artifacts.fixed_checkpoint_path(
+        {"best_model_path": str(checkpoint_dir / foreign.name), "epoch": 7},
+        checkpoint_dir,
+    )
+
+    assert path == ""
+
+
 def test_hparam_select_rejects_legacy_plan_without_rewriting_outputs(tmp_path: Path):
     (tmp_path / "plan.json").write_text(json.dumps({"trials": [{"trial_id": "trial_000"}], "recipe": {}}))
     ranking = tmp_path / "candidate_ranking.csv"
@@ -379,6 +401,7 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     other_config = tmp_path / "other.yaml"
+    other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
         tmp_path,
         [
@@ -388,12 +411,13 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
                 "run_id": "run-999",
                 "version": "other-version",
                 "config": str(other_config),
+                "checkpoint_dir": str(other_checkpoint_dir),
                 "status": "completed",
             }
         ],
     )
     ranking = _ranking_path(plan_dir)
-    other_checkpoint = tmp_path / "other.ckpt"
+    other_checkpoint = other_checkpoint_dir / "epoch=1.ckpt"
     write_rows(
         ranking,
         [
@@ -413,6 +437,46 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
 
     rows = read_rows(ranking)
     assert any(row["step_id"] == "other-step" and row["run_id"] == "run-999" for row in rows)
+
+
+def test_hparam_select_rejects_unowned_preserved_checkpoint_before_writing(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    other_checkpoint_dir = tmp_path / "other-checkpoints"
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "experiment_id": "unit-experiment",
+                "step_id": "other-step",
+                "run_id": "run-999",
+                "version": "other-version",
+                "checkpoint_dir": str(other_checkpoint_dir),
+                "status": "completed",
+            }
+        ],
+    )
+    ranking = _ranking_path(plan_dir)
+    write_rows(
+        ranking,
+        [
+            {
+                "experiment_id": "unit-experiment",
+                "step_id": "other-step",
+                "run_id": "run-999",
+                "version": "other-version",
+                "checkpoint_path": str(tmp_path / "foreign" / "epoch=1.ckpt"),
+                "rank": 1,
+            }
+        ],
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="checkpoint_path is outside the frozen checkpoint_dir"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 @pytest.mark.parametrize("target_kind", ["directory", "hardlink"])
@@ -505,6 +569,28 @@ def test_hparam_checkpoint_scan_rejects_header_only_legacy_ranking(tmp_path: Pat
         hparam_selection.scan_hparam_checkpoints(plan_dir, "val_auroc", "max")
 
     assert ranking.read_text() == "trial_id,epoch\n"
+
+
+def test_hparam_checkpoint_scan_rejects_symlink_output_before_runtime_scan(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    ranking = plan_dir / "checkpoint_ranking.csv"
+    outside = tmp_path / "outside.csv"
+    outside.write_text("step_id,run_id\n")
+    ranking.symlink_to(outside)
+    runtime_reads = []
+    monkeypatch.setattr(
+        hparam_selection.artifacts,
+        "find_run_manifest",
+        lambda _run: runtime_reads.append("runtime") or None,
+    )
+
+    with pytest.raises(ValueError, match="Managed output"):
+        hparam_selection.scan_hparam_checkpoints(plan_dir, "val_auroc", "max")
+
+    assert runtime_reads == []
+    assert outside.read_text() == "step_id,run_id\n"
 
 
 @pytest.mark.parametrize("existing_fault", ["unmanaged", "frozen_drift"])

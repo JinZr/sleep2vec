@@ -256,10 +256,12 @@ def sync_wandb_runs(
 def index_checkpoints(run_dir: str | Path, *, remote: str | None = None) -> Path:
     root = _target_root(run_dir, remote)
     managed_rows = _managed_rows(root, remote=remote)
-    metrics = exp_io.read_rows_at(root / "metrics_manifest.tsv", remote=remote, require_managed_identity=True)
-    _validate_evidence_rows(managed_rows, metrics, "metrics_manifest.tsv")
+    metrics_path = root / "metrics_manifest.tsv"
     checkpoint_path = root / "checkpoint_manifest.tsv"
-    exp_io.validate_managed_output_paths(root, [checkpoint_path], remote=remote)
+    # Workspace location proves evidence ownership only when the table path is not an alias.
+    exp_io.validate_managed_output_paths(root, [metrics_path, checkpoint_path], remote=remote)
+    metrics = exp_io.read_rows_at(metrics_path, remote=remote, require_managed_identity=True)
+    _validate_evidence_rows(managed_rows, metrics, "metrics_manifest.tsv")
     rows = tracking.checkpoint_rows(root, remote=remote)
     for row in rows:
         row.update(tracking.best_metric_for_checkpoint(row, metrics))
@@ -275,7 +277,17 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
     root = _target_root(run_dir, remote)
     previous_rows = _managed_rows(root, remote=remote)
     report_path = root / "reports" / "monitor.md"
-    exp_io.validate_managed_output_paths(root, [report_path], remote=remote)
+    exp_io.validate_managed_output_paths(
+        root,
+        [
+            report_path,
+            root / "run_manifest.tsv",
+            root / "run_matrix.csv",
+            root / "reports" / "run_matrix.md",
+            root / "events.jsonl",
+        ],
+        remote=remote,
+    )
     run_rows = tracking.experiment_run_rows(root, remote=remote)
     observations = [tracking.monitor_run_row(root, row, previous_rows, remote=remote) for row in run_rows]
     committed = merge_run_manifest(root, observations, remote=remote)
@@ -290,7 +302,12 @@ def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, r
     out = root / "reports" / "experiment_ranking.csv"
     exp_io.validate_managed_output_paths(
         root,
-        [out, root / "reports" / "experiment_ranking.md"],
+        [
+            out,
+            root / "reports" / "experiment_ranking.md",
+            root / "metrics_manifest.tsv",
+            root / "checkpoint_manifest.tsv",
+        ],
         remote=remote,
     )
     metric_rows = exp_io.read_rows_at(root / "metrics_manifest.tsv", remote=remote, require_managed_identity=True)

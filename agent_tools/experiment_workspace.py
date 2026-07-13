@@ -294,6 +294,8 @@ def initialize_run_manifest(root: str | Path, *, remote: str | None = None) -> P
 
 def read_run_manifest(root: str | Path, *, remote: str | None = None) -> list[dict[str, str]]:
     path = Path(root) / "run_manifest.tsv"
+    # The canonical path itself is part of the ownership proof; aliases are not managed state.
+    exp_io.validate_managed_output_paths(root, [path], remote=remote)
     if not exp_io.path_exists_at(path, remote=remote):
         raise FileNotFoundError(f"Managed run manifest is missing: {path}")
     text = exp_io.read_text_at(path, remote=remote)
@@ -599,9 +601,15 @@ def validate_frozen_run_update(
     checkpoint_path = incoming.get("checkpoint_path")
     if require_checkpoint_ownership and checkpoint_path not in (None, ""):
         checkpoint_dir = existing.get("checkpoint_dir")
-        if checkpoint_dir in (None, "") or Path(str(checkpoint_path)).parent != Path(str(checkpoint_dir)):
+        candidate = Path(str(checkpoint_path))
+        frozen_dir = Path(str(checkpoint_dir)) if checkpoint_dir not in (None, "") else None
+        if frozen_dir is None or candidate.parent != frozen_dir:
             step_id, run_id = key or ("", "")
             raise ValueError(f"checkpoint_path is outside the frozen checkpoint_dir for {step_id} / {run_id}.")
+        # Lexical containment cannot prove ownership when an existing checkpoint entry is an alias.
+        if frozen_dir.is_symlink() or candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+            step_id, run_id = key or ("", "")
+            raise ValueError(f"checkpoint_path is not a regular managed checkpoint for {step_id} / {run_id}.")
 
 
 def merge_run_manifest(

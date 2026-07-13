@@ -159,7 +159,7 @@ This page answers the practical question: when you need to add or change behavio
 - Keep context gathering lightweight and free of Torch/Lightning imports.
 - Enforce `NEEDS_USER_INPUT` for high-impact ambiguous decisions before writing runnable scripts.
 - Keep removed-format experiment trees read-only: do not migrate, adopt, recursively aggregate, or add compatibility readers for them.
-- Preserve recipe `variant` routing so generated commands call `sleep2vec`, `sleep2vec2`, or `sleep2expert` package-local entrypoints as requested.
+- Preserve the finite recipe routing matrix: model commands call `sleep2vec`, `sleep2vec2`, `sleep2expert`, or `sex_age_baseline` package-local entrypoints; preset preparation excludes `sex_age_baseline`; `sleep2stat` remains variantless.
 
 ### If you are changing sleep2stat
 

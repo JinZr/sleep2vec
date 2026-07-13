@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from . import run_artifacts as artifacts
+from . import experiment_io as exp_io, run_artifacts as artifacts
 from .experiment_workspace import (
     canonical_local_experiment_root,
     experiment_root,
@@ -55,12 +55,23 @@ def generate_external_eval(
         all_candidates=all_candidates,
     )
     config_dir = root / "external_eval_configs"
+    config_paths = []
+    checkpoint_paths = []
+    for index, row in enumerate(rows, start=1):
+        checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
+        if not checkpoint_path:
+            raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
+        config_paths.append(config_dir / f"{_candidate_id(row)}_{index:03d}_external.yaml")
+        checkpoint_paths.append(checkpoint_path)
+    manifest_path = root / "external_eval_manifest.tsv"
+    script_path = root / "external_eval.sh"
+    # Validate the whole output topology before a later alias can leave a partial export.
+    exp_io.validate_managed_output_paths(root, [*config_paths, manifest_path, script_path])
     config_dir.mkdir(parents=True, exist_ok=True)
     commands = []
     manifest_rows = []
-    for index, row in enumerate(rows, start=1):
+    for row, target_config, checkpoint_path in zip(rows, config_paths, checkpoint_paths, strict=True):
         source_config = Path(str(row["config"]))
-        target_config = config_dir / f"{_candidate_id(row)}_{index:03d}_external.yaml"
         _copy_config_with_data_paths(
             source_config,
             target_config,
@@ -68,9 +79,6 @@ def generate_external_eval(
             kaldi_manifest=kaldi_manifest,
             finetune_data_index=finetune_data_index,
         )
-        checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
-        if not checkpoint_path:
-            raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
         runtime = dict(base_runtime)
         for key, value in row.items():
             if key.startswith("runtime.") and value not in (None, ""):
@@ -93,15 +101,15 @@ def generate_external_eval(
         )
         commands.append(command)
         manifest_rows.append({**row, "external_config": str(target_config), "external_command": command})
-    write_rows(root / "external_eval_manifest.tsv", manifest_rows)
+    write_rows(manifest_path, manifest_rows)
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
     write_text(
-        root / "external_eval.sh",
+        script_path,
         "\n".join(_external_script_lines(commands, run_cwd)) + "\n",
         executable=True,
     )
-    return root / "external_eval.sh"
+    return script_path
 
 
 def export_hparam_logits(
@@ -150,18 +158,39 @@ def export_hparam_logits(
     )
     config_dir = root / "logits_export_configs"
     output_dir = root / "logits_exports"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    manifest_rows = []
+    manifest = root / "logits_export_manifest.tsv"
+    output_paths = [manifest]
+    if not execute:
+        # The CLI writes this script after the facade returns, so reserve it in the same preflight.
+        output_paths.append(root / "logits_export.sh")
+    prepared = []
     for index, row in enumerate(rows, start=1):
         checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
         if not checkpoint_path:
             raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
-
         candidate = _candidate_id(row)
+        paths = {
+            "val_config": config_dir / f"{candidate}_{index:03d}_{val_split}.yaml",
+            "val_logits_path": output_dir / f"{candidate}_{index:03d}_{val_split}_logits.csv",
+        }
+        if not skip_test:
+            paths.update(
+                {
+                    "test_config": config_dir / f"{candidate}_{index:03d}_{test_split}.yaml",
+                    "test_logits_path": output_dir / f"{candidate}_{index:03d}_{test_split}_logits.csv",
+                }
+            )
+        prepared.append((row, checkpoint_path, paths))
+        output_paths.extend(paths.values())
+    # Configs, manifests, and inference targets are one managed mutation boundary.
+    exp_io.validate_managed_output_paths(root, output_paths)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_rows = []
+    for row, checkpoint_path, paths in prepared:
         source_config = Path(str(row["config"]))
-        val_config = config_dir / f"{candidate}_{index:03d}_{val_split}.yaml"
+        val_config = paths["val_config"]
         _copy_config_with_data_paths(
             source_config,
             val_config,
@@ -169,7 +198,7 @@ def export_hparam_logits(
             kaldi_manifest=val_kaldi_manifest,
             finetune_data_index=val_finetune_data_index,
         )
-        val_logits_path = output_dir / f"{candidate}_{index:03d}_{val_split}_logits.csv"
+        val_logits_path = paths["val_logits_path"]
         manifest_row = {
             **row,
             "checkpoint_path": checkpoint_path,
@@ -194,7 +223,7 @@ def export_hparam_logits(
         }
 
         if not skip_test:
-            test_config = config_dir / f"{candidate}_{index:03d}_{test_split}.yaml"
+            test_config = paths["test_config"]
             _copy_config_with_data_paths(
                 source_config,
                 test_config,
@@ -202,7 +231,7 @@ def export_hparam_logits(
                 kaldi_manifest=test_kaldi_manifest,
                 finetune_data_index=test_finetune_data_index,
             )
-            test_logits_path = output_dir / f"{candidate}_{index:03d}_{test_split}_logits.csv"
+            test_logits_path = paths["test_logits_path"]
             manifest_row.update(
                 {
                     "test_split": test_split,
@@ -226,7 +255,6 @@ def export_hparam_logits(
             )
         manifest_rows.append(manifest_row)
 
-    manifest = root / "logits_export_manifest.tsv"
     write_rows(manifest, manifest_rows)
     if execute:
         _execute_logit_exports(
@@ -247,10 +275,12 @@ def export_hparam_logits(
 def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> Path:
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     plan = artifacts.read_hparam_plan(root)
-    rows = []
     selected_rows = _selected_candidate_rows(
         read_rows(selected_csv, require_managed_identity=True), plan=plan, all_candidates=True
     )
+    out = root / "threshold_summary.csv"
+    exp_io.validate_managed_output_paths(root, [out])
+    rows = []
     for row in selected_rows:
         val_path = _first_value(row, ["val_predictions_path", "val_logits_path"])
         test_path = _first_value(row, ["test_predictions_path", "test_logits_path"])
@@ -274,7 +304,6 @@ def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> P
                 **{f"test_{key}": value for key, value in test_metrics.items()},
             }
         )
-    out = root / "threshold_summary.csv"
     write_rows(out, rows)
     return out
 
@@ -294,6 +323,8 @@ def ensemble_hparam_outputs(
     rows = _selected_candidate_rows(
         read_rows(candidates_csv, require_managed_identity=True), plan=plan, all_candidates=True
     )
+    out = root / "ensemble_summary.csv"
+    exp_io.validate_managed_output_paths(root, [out])
     usable = [row for row in rows if _first_value(row, ["val_predictions_path", "val_logits_path"])]
     summary = []
     if usable and search_combinations:
@@ -314,7 +345,6 @@ def ensemble_hparam_outputs(
             row["rank_metric"] = metric
     elif usable:
         summary.append(_ensemble_summary_row(usable))
-    out = root / "ensemble_summary.csv"
     write_rows(out, summary)
     return out
 
@@ -354,7 +384,8 @@ def _selected_candidate_rows(
             if key in runs_by_key
             else row
         )
-        validate_frozen_run_update(managed, ownership_evidence)
+        # A selected checkpoint is external evidence and must belong to its frozen managed run.
+        validate_frozen_run_update(managed, ownership_evidence, require_checkpoint_ownership=True)
     rows = [row for row in rows if managed_run_key(row) in runs_by_key]
     if not rows:
         raise ValueError(f"No selected candidates match the current hparam step: {', '.join(sorted(plan_steps))}")
@@ -377,7 +408,7 @@ def _selected_candidate_rows(
             if actual != expected:
                 raise ValueError(f"Selected candidate parameter differs from the managed plan: {field}")
         derived = {field: value for field, value in row.items() if field not in candidate_parameters}
-        validate_frozen_run_update(run, derived)
+        validate_frozen_run_update(run, derived, require_checkpoint_ownership=True)
         managed_rows.append({**derived, **run})
     if all_candidates:
         return managed_rows

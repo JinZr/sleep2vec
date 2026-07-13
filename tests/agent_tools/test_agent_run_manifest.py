@@ -4,10 +4,23 @@ import argparse
 import importlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import types
 
 import pytest
+
+
+@pytest.fixture(scope="module")
+def training_runtime_dependencies():
+    result = subprocess.run(
+        [sys.executable, "-c", "import torch; import pytorch_lightning; import wandb"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip("Training runtime dependencies are unavailable in this test environment.")
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec", "sleep2vec2", "sleep2expert"])
@@ -53,10 +66,12 @@ def test_training_run_manifest_writer_serializes_checkpoint_and_score(tmp_path: 
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec", "sleep2vec2", "sleep2expert"])
-def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch, namespace: str):
-    pytest.importorskip("torch")
-    pytest.importorskip("pytorch_lightning")
-    pytest.importorskip("wandb")
+def test_failed_manifest_write_does_not_mask_primary_training_error(
+    monkeypatch, training_runtime_dependencies, namespace: str
+):
+    importlib.import_module("torch")
+    importlib.import_module("pytorch_lightning")
+    importlib.import_module("wandb")
     sys.modules.pop(f"{namespace}.finetune", None)
     finetune = importlib.import_module(f"{namespace}.finetune")
     args = argparse.Namespace(
@@ -87,6 +102,7 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch,
     monkeypatch.setattr(finetune, "persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr(finetune, "prepare_dataloader", lambda args: ([], [], []))
     monkeypatch.setattr(finetune, "Sleep2vecFinetuning", lambda *args, **kwargs: DummyModel())
+
     def build_logger(**kwargs):
         logger_kwargs.update(kwargs)
         return DummyLogger()

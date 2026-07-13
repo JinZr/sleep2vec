@@ -745,6 +745,20 @@ def test_read_run_manifest_distinguishes_missing_from_valid_header_only(tmp_path
     assert read_run_manifest(tmp_path) == []
 
 
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias_kind: str):
+    outside = tmp_path / "outside.tsv"
+    outside.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain-model\trun-000\tfailed\n")
+    manifest = tmp_path / "run_manifest.tsv"
+    if alias_kind == "symlink":
+        manifest.symlink_to(outside)
+    else:
+        manifest.hardlink_to(outside)
+
+    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
+        read_run_manifest(tmp_path)
+
+
 def test_read_step_manifest_rejects_invalid_phase(tmp_path: Path):
     path = tmp_path / "steps" / "train" / "step.yaml"
     path.parent.mkdir(parents=True)

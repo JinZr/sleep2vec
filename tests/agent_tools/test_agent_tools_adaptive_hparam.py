@@ -189,6 +189,23 @@ def test_adaptive_init_initializes_fresh_experiment_root(tmp_path: Path):
     assert _read_table(workflow_dir / "run_manifest.tsv")
 
 
+def test_adaptive_init_preflights_round_recipe_before_workspace_mutation(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    round_recipe = workflow_dir / "adaptive" / "rounds" / "round_000" / "round_recipe.yaml"
+    round_recipe.parent.mkdir(parents=True)
+    round_recipe.symlink_to(tmp_path / "run_manifest.tsv")
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    events_path = tmp_path / "events.jsonl"
+
+    with pytest.raises(ValueError, match="Managed output"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    assert not events_path.exists()
+    assert not (workflow_dir / "adaptive" / "workflow.json").exists()
+
+
 def test_adaptive_management_paths_are_canonical_across_alias_entries(tmp_path: Path):
     source = tmp_path / "source"
     recipe = _adaptive_recipe(source)
@@ -404,6 +421,53 @@ def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Pa
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "run_status_changed" not in [event["event_type"] for event in events]
+
+
+def test_adaptive_digest_preflights_outputs_before_monitor(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    digest.parent.mkdir(parents=True)
+    digest.symlink_to(tmp_path / "run_manifest.tsv")
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+    monitor_calls = []
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "monitor_hparam_runs",
+        lambda path: monitor_calls.append(Path(path)) or round_dir / "run_status.tsv",
+    )
+
+    with pytest.raises(ValueError, match="Managed output"):
+        adaptive_hparam.digest_hparam_run(workflow_dir)
+
+    assert monitor_calls == []
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
+
+
+@pytest.mark.parametrize("filename", ["round_001.yaml", "round_001.md"])
+def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path, filename: str):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
+    suggestion = workflow_dir / "adaptive" / "suggestions" / filename
+    suggestion.parent.mkdir(parents=True)
+    suggestion.hardlink_to(tmp_path / "run_manifest.tsv")
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="Managed output"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
 
 
 def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_round(tmp_path: Path):
@@ -668,7 +732,7 @@ def test_hparam_count_does_not_materialize_search_values():
 
 
 def test_adaptive_step_execute_stops_bad_running_run_through_recorded_manifest(tmp_path: Path, monkeypatch):
-    recipe = _adaptive_recipe(tmp_path, max_rounds=1)
+    recipe = _adaptive_recipe(tmp_path, max_rounds=2)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
@@ -696,6 +760,87 @@ def test_adaptive_step_execute_stops_bad_running_run_through_recorded_manifest(t
 
     assert stopped == [(round_dir, "run-000")]
     assert "stop_bad_running_run" in (tmp_path / "events.jsonl").read_text()
+
+
+def test_adaptive_step_execute_at_budget_keeps_current_runs_unchanged(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=1)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    _write_fake_manifest(workflow_dir, score=0.73)
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
+    calls = []
+
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: digest)
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args: calls.append("stop"))
+    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert calls == []
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    event_types = [event["event_type"] for event in events]
+    assert "adaptive_budget_exhausted" in event_types
+    assert "adaptive_step_dry_run" not in event_types
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").exists()
+
+
+def test_adaptive_step_checks_prospective_round_size_against_run_budget(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["max_runs_total"] = 2
+    payload["adaptive"]["round_size"] = 2
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    _write_fake_manifest(workflow_dir, score=0.73)
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
+    calls = []
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: digest)
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args: calls.append("stop"))
+    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+    registry = workflow_dir / "adaptive" / "run_registry.tsv"
+    registry_before = registry.read_bytes()
+
+    adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert calls == []
+    assert registry.read_bytes() == registry_before
+    assert len(_read_table(registry)) == 1
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").exists()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["event_type"] == "adaptive_budget_exhausted"
+
+
+def test_adaptive_loop_stops_when_step_cannot_create_a_budgeted_round(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    suggestion = workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
+    calls = []
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "adaptive_step",
+        lambda path, *, execute=False: calls.append((Path(path), execute)) or suggestion,
+    )
+    monkeypatch.setattr(
+        adaptive_hparam.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(AssertionError("loop should stop before polling")),
+    )
+
+    result = adaptive_hparam.adaptive_loop(workflow_dir, execute=True)
+
+    assert result == suggestion
+    assert calls == [(workflow_dir, True)]
 
 
 def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Path, monkeypatch):

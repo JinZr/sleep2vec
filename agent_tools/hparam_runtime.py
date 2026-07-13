@@ -73,10 +73,19 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     refreshed = {}
     for key in expected_keys:
         previous = workspace_by_key.get(key, {})
+        # Dry-run only renders launch metadata; it must never probe PID, logs, or SSH.
+        if dry_run:
+            if previous:
+                refreshed[key] = previous
+            continue
         if key in existing_by_key:
+            # Launch tables are execution evidence, not snapshots that may restore canonical fields.
             observation = {
-                field: value for field, value in existing_by_key[key].items() if field not in {"status", "state"}
+                field: existing_by_key[key][field]
+                for field in evidence.RUN_EVIDENCE_FIELDS
+                if field in existing_by_key[key]
             }
+            observation.update({"step_id": key[0], "run_id": key[1]})
             observation["status"] = previous.get("status", "")
             refreshed[key] = evidence.status_row(
                 run_dir,
@@ -142,6 +151,13 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
             )
     else:
         exp_io.validate_managed_output_paths(workspace, run_output_paths)
+    if not dry_run:
+        launchable = [row for row in rows if row["status"] in {"planned", "pending"}]
+        runtime_roots = [Path(str(row[field])) for row in launchable for field in ("runtime_dir", "checkpoint_dir")]
+        runtime_root = Path(str(execution.get("workdir") or REPO_ROOT))
+        remote_host = str(execution["host"]) if target == "ssh" else None
+        # Trainer artifact directories are single-use; aliases or prior contents must fail before any start.
+        exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote_host)
     if target != "ssh":
         for row in rows:
             Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
@@ -218,7 +234,8 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
         if launch is None:
             rows.append(prior)
             continue
-        observation = {field: value for field, value in launch.items() if field not in {"status", "state"}}
+        observation = {field: launch[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in launch}
+        observation.update({"step_id": key[0], "run_id": key[1]})
         observation["status"] = prior.get("status", "")
         rows.append(evidence.status_row(root, observation, prior, health=health))
     out = status_path
@@ -292,7 +309,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     launch_by_key = {managed_run_key(item): item for item in rows}
     row = launch_by_key[key]
     previous = workspace_by_key[key]
-    launch_evidence = {field: value for field, value in row.items() if field not in {"status", "state"}}
+    launch_evidence = {field: row[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in row}
     previous = merge_run_row(previous, launch_evidence)
     if previous.get("status") in TERMINAL_STATUSES:
         raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")

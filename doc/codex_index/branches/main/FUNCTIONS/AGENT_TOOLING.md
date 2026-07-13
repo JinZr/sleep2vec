@@ -70,7 +70,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/plans.py`
 - Signature: `collect_runs(root: str | Path, metric: str | None, output: str | Path) -> None`
-- Purpose and contract: require an explicit managed workspace root, validate its current `run_manifest.tsv`, then collect only declared rows and each row's exact `runtime_dir` when present. A missing, unreadable, or invalid canonical manifest fails instead of producing an empty inventory; a valid header-only manifest still represents zero runs, and the output must not resolve to or share an inode with the canonical table.
+- Purpose and contract: require an explicit managed workspace root, validate its current `run_manifest.tsv`, then collect only declared rows and each row's exact `runtime_dir` when present. A missing, unreadable, or invalid canonical manifest fails instead of producing an empty inventory; a valid header-only manifest still represents zero runs. Before creating a parent directory or opening the output, the command rejects the canonical table itself plus directory, symlink, hard-link, and aliased-ancestor output topologies.
 - Important inputs/outputs: run root, optional metric, and output path in; CSV file out.
 - Side effects: reads the canonical table and its declared artifact paths, then writes the requested CSV; optional W&B summaries are best-effort evidence, and it does not recursively adopt historical directories.
 - Key callers/callees: called by `agent_tools collect-runs`; reads W&B summary files when present.
@@ -203,7 +203,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/run_evidence.py`
 - Signature: `status_row(run_dir: Path, row: dict[str, Any], previous: dict[str, Any] | None = None, *, health: bool = False) -> dict[str, Any]`
-- Purpose and contract: produce one PID/process/log/progress/checkpoint observation and merge it with the previous row through `experiment_workspace.merge_run_row`, preserving terminal-state precedence. Only a confirmed absent PID file returns no PID. Empty, non-numeric, non-positive, or invalid-encoding local PID content is confirmed corrupt, so `planned` or `pending` becomes non-launchable `missing_pid`. A local path/read `OSError` while a run is still `planned` or `pending` aborts the observation without committing state, allowing a later confirmed absence to remain launchable; other prior states retain their normal reducer precedence. Remote permission, type, decoding, transport, and timeout failures produce recoverable `unknown_remote` evidence.
+- Purpose and contract: own the shared `RUN_EVIDENCE_FIELDS`/`RUN_STATUS_FIELDS` allowlist, produce one PID/process/log/progress/checkpoint observation, and merge it with the previous row through `experiment_workspace.merge_run_row`, preserving terminal-state precedence. Launch mirrors may supply only those execution fields, never stale score, rank, W&B, or other canonical snapshot fields. Only a confirmed absent PID file returns no PID. Empty, non-numeric, non-positive, or invalid-encoding local PID content is confirmed corrupt, so `planned` or `pending` becomes non-launchable `missing_pid`. A local path/read `OSError` while a run is still `planned` or `pending` aborts the observation without committing state. Remote process exit becomes terminal only after a certain log read; timeout, permission, or transport failure remains `unknown_remote`. Remote runtime-manifest and checkpoint evidence is read on the execution host through the same bounded transport and preserves prior fields when that probe is uncertain.
 - Side effects: reads local or timeout-bounded remote process/log state.
 - Key callers/callees: used by hparam runtime and experiment tracking; delegates checkpoint interpretation to `run_artifacts`.
 - Reuse guidance: use for observed run state instead of applying status updates outside the shared reducer.
@@ -212,7 +212,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path`
-- Purpose and contract: validate the current-format registered plan, non-completed experiment, all managed tables, every frozen config/script hash, and all canonical/mirror/report/event plus per-run log/PID output targets before creating a run directory, starting any process, or writing launch state; canonical status decides launch eligibility, local status is mirror-only, and launch rows contribute non-status execution evidence. SSH execute validates log/PID paths on the execution host; dry-run performs no remote output probe.
+- Purpose and contract: validate the current-format registered plan, non-completed experiment, all managed tables, every frozen config/script hash, canonical/mirror/report/event and per-run log/PID targets, plus the single-use frozen runtime/checkpoint roots before creating a run directory, starting any process, or writing launch state. Canonical status decides launch eligibility, local status is mirror-only, and launch rows contribute only the shared execution-evidence allowlist. SSH execute validates the same paths on the execution host; dry-run performs no remote output probe.
 - Important inputs/outputs: plan directory and dry-run flag in; `launch_manifest.tsv` path out.
 - Side effects: creates log/PID directories, writes `launch_manifest.tsv` and `run_status.tsv`, and starts processes only when `dry_run=False`.
 - Key callers/callees: public facade for `hparam_runtime.launch_hparam_runs`, called by `agent_tools hparam-launch` and adaptive step; runtime helpers remain in `hparam_runtime`.
@@ -256,7 +256,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_k: int | None = None) -> Path`
-- Purpose and contract: validate every existing checkpoint-ranking row against canonical workspace ownership and frozen metadata before runtime scanning, then rank fixed epoch checkpoints using W&B history, CSV history, or manifest fallback metrics; repeated empty scans preserve a valid `step_id`/`run_id` header.
+- Purpose and contract: preflight `checkpoint_ranking.csv`, validate every existing checkpoint-ranking row against canonical workspace ownership and frozen metadata before runtime scanning, then rank fixed epoch checkpoints using W&B history, CSV history, or manifest fallback metrics; repeated empty scans preserve a valid `step_id`/`run_id` header.
 - Important inputs/outputs: run directory, metric, mode, and optional top-k in; `checkpoint_ranking.csv` path out.
 - Side effects: reads local histories/manifests and writes ranking CSV.
 - Key callers/callees: public facade for `hparam_selection.scan_hparam_checkpoints`, called by `agent_tools hparam-checkpoint-scan`.
@@ -267,7 +267,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `generate_external_eval(run_dir: str | Path, selected_csv: str | Path, *, unlock_final_test: bool, kaldi_data_root: str | None = None, kaldi_manifest: str | None = None, finetune_data_index: str | None = None, eval_split: str = "test", top_k: int = 1, all_candidates: bool = False) -> Path`
-- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate the complete candidate table against the workspace before filtering ownership-valid other-step or earlier same-step plan rows, apply top-k to retained current-plan rows in numeric rank order when ranks are step-global, then create locked final/external inference configs and commands; frozen run fields come from the plan.
+- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate the complete candidate table against the workspace before filtering ownership-valid other-step or earlier same-step plan rows, require every checkpoint path to be a direct child of its frozen checkpoint directory, apply top-k to retained current-plan rows in numeric rank order when ranks are step-global, then preflight all configs/manifest/script outputs before creating locked final/external inference commands; frozen run fields come from the plan.
 - Important inputs/outputs: hparam run directory, selected candidates, explicit unlock, optional replacement data paths, split, base runtime settings, selected-row `runtime.*` overrides, and candidate selection controls in; `external_eval.sh` path out.
 - Side effects: writes copied configs, `external_eval_manifest.tsv`, and executable shell script.
 - Key callers/callees: public facade for `hparam_postprocess.generate_external_eval`; uses `module_for_variant` and `plan_rendering.infer_runtime_cli_args`.
@@ -278,7 +278,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `export_hparam_logits(run_dir: str | Path, selected_csv: str | Path, *, unlock_final_test: bool, val_split: str = "val", test_split: str = "test", skip_test: bool = False, label_name: str | None = None, val_kaldi_data_root: str | None = None, val_kaldi_manifest: str | None = None, val_finetune_data_index: str | None = None, test_kaldi_data_root: str | None = None, test_kaldi_manifest: str | None = None, test_finetune_data_index: str | None = None, batch_size: int = 12, num_workers: int = 8, devices: list[int] | None = None, accelerator: str = "gpu", device: str = "cuda", precision: str = "bf16-mixed", seed: int = 4523, top_k: int = 1, all_candidates: bool = False, execute: bool = False) -> Path`
-- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate the complete candidate table against the workspace before filtering ownership-valid other-step or earlier same-step plan rows, apply top-k to retained current-plan rows in numeric rank order when ranks are step-global, then prepare or execute inference commands that export validation and optional test logits; frozen run fields come from the plan, and dry-run replay scripts persist absolute plan/candidate-table arguments with the repository cwd/PYTHONPATH bootstrap.
+- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate the complete candidate table plus checkpoint ownership before filtering ownership-valid other-step or earlier same-step plan rows, apply top-k to retained current-plan rows in numeric rank order when ranks are step-global, then preflight all configs/manifest/logits/script outputs before preparing or executing inference; frozen run fields come from the plan, and dry-run replay scripts persist absolute plan/candidate-table arguments with the repository cwd/PYTHONPATH bootstrap.
 - Important inputs/outputs: selected candidates, split/data overrides, runtime controls, unlock/skip-test, and execution flag in; `logits_export_manifest.tsv` path out.
 - Side effects: writes copied configs and manifests; with `execute=True`, runs inference commands and copies produced prediction CSVs to logits paths.
 - Key callers/callees: public facade for `hparam_postprocess.export_hparam_logits`, called by `agent_tools hparam-export-logits`.
@@ -336,7 +336,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiment_workspace.py`
 - Signatures: `initialize_run_manifest(root: str | Path, *, remote: str | None = None) -> Path`; `read_run_manifest(root: str | Path, *, remote: str | None = None) -> list[dict[str, str]]`
-- Purpose and contract: initialize a fresh workspace with the canonical `step_id`/`run_id` header, then distinguish that valid header-only state from missing, blank, malformed, non-rectangular, wrong-header, legacy, or duplicate-key canonical tables. Non-empty rows require a non-blank experiment owner and exact non-whitespace managed identity. Only initialization may create a missing manifest; every later canonical read is strict locally and over SSH.
+- Purpose and contract: initialize a fresh workspace with the canonical `step_id`/`run_id` header, then distinguish that valid header-only state from missing, blank, malformed, non-rectangular, wrong-header, legacy, duplicate-key, symlinked, or hard-linked canonical tables. Non-empty rows require a non-blank experiment owner and exact non-whitespace managed identity. The path itself is part of ownership proof: only initialization may create a missing manifest, and every later canonical read is strict locally and over SSH.
 - Side effects: initialization writes one new canonical header; the reader performs local or bounded SSH reads only.
 - Key callers/callees: workspace creation calls the initializer; planning, hparam runtime/selection/adaptive paths, experiment tracking, reporting, and `merge_run_manifest` use the reader.
 - Reuse guidance: never call generic row/text readers for `run_manifest.tsv`; best-effort readers remain limited to optional evidence.
@@ -440,7 +440,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiment_tracking.py`
 - Signatures: `managed_metric_rows(run_rows: list[dict[str, Any]], metric_rows: list[dict[str, Any]]) -> list[dict[str, Any]]`; `checkpoint_rows(root: Path, *, remote: str | None = None) -> list[dict[str, Any]]`
-- Purpose and contract: apply provenance-specific ownership before managed metric/checkpoint projection. External W&B metrics use `resolve_external_run_row`; workspace checkpoint rows require an exact canonical key. Any supplied ownership, version, config, hash, or frozen-locator drift is validated before fields are replaced, filtered, scanned, or ranked.
+- Purpose and contract: apply provenance-specific ownership before managed metric/checkpoint projection. External W&B metrics use `resolve_external_run_row`; workspace checkpoint rows require an exact canonical key. Checkpoint roots must be real directories rather than symlinks, and local/remote scans include only regular non-symlink files. Any supplied ownership, version, config, hash, or frozen-locator drift is validated before fields are replaced, filtered, scanned, or ranked.
 - Side effects: metric projection is pure; checkpoint indexing reads declared local/remote runtime and checkpoint locations only after the full prior table passes ownership validation.
 - Reuse guidance: use these boundaries instead of joining evidence by display name, bare id, or inferred directory location; unmatched external evidence remains raw, while unmatched workspace-scoped rows fail.
 
@@ -486,7 +486,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiments.py`
 - Signature: `index_checkpoints(run_dir: str | Path, *, remote: str | None = None) -> Path`
-- Purpose and contract: index checkpoints only from managed rows whose frozen `runtime_dir` and `checkpoint_dir` are both present, allow both paths to be empty for non-checkpoint-producing runs, reject partial pairs or prior checkpoint rows outside the eligible managed keys, require every non-empty prior `checkpoint_path` to be a direct child of its run's frozen `checkpoint_dir`, then attach matching validation evidence.
+- Purpose and contract: preflight both the metrics evidence path and checkpoint output path, then index checkpoints only from managed rows whose frozen `runtime_dir` and `checkpoint_dir` are both present. Both paths may be empty for non-checkpoint-producing runs; partial pairs, symlink roots, non-regular checkpoint entries, or prior checkpoint rows outside eligible managed keys fail before replacement. Every non-empty prior `checkpoint_path` must be a direct child of its frozen directory.
 - Important inputs/outputs: run directory and optional remote host in; `checkpoint_manifest.tsv` path out.
 - Side effects: scans the declared local or remote directories and writes the checkpoint manifest; it does not recursively scan or infer identity from path names.
 - Key callers/callees: called by `agent_tools experiment-index-checkpoints`; delegates local/remote checkpoint scanning and metric attachment to `experiment_tracking`.
@@ -508,7 +508,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiments.py`
 - Signature: `rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, remote: str | None = None) -> Path`
-- Purpose and contract: rank experiment metric rows by step-scoped run identity and attach matching checkpoint paths.
+- Purpose and contract: preflight metric/checkpoint evidence paths plus ranking outputs before reading or writing, then rank experiment metric rows by step-scoped run identity and attach matching checkpoint paths.
 - Important inputs/outputs: run directory, metric, mode, and optional remote host in; `reports/experiment_ranking.csv` path out.
 - Side effects: reads metric/checkpoint manifests and writes ranking/report files.
 - Key callers/callees: called by `agent_tools experiment-rank`; delegates candidate/checkpoint matching and report rendering to `experiment_tracking`.
@@ -530,7 +530,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/adaptive_hparam.py`
 - Signature: `digest_hparam_run(run_dir: str | Path) -> Path`
-- Purpose and contract: summarize one adaptive round's run state, metrics, checkpoints, logs, and params.
+- Purpose and contract: preflight digest, incumbent, and event outputs before monitoring can commit canonical state, then summarize one adaptive round's run state, metrics, checkpoints, logs, and params.
 - Important inputs/outputs: workflow root or round directory in; digest CSV path out.
 - Side effects: monitors run status, writes `adaptive/digests/round_*.csv`, Markdown digest, event rows, and incumbents.
 - Key callers/callees: called by `agent_tools hparam-digest` and adaptive step.
@@ -552,7 +552,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/adaptive_hparam.py`
 - Signature: `adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path`
-- Purpose and contract: perform one adaptive iteration: monitor/digest and suggest in preview mode; with `execute=True`, stop eligible bad runs, preflight canonical and round-mirror targets together, commit pending runs as `superseded` through the canonical owner, then plan and launch the next round when budget remains.
+- Purpose and contract: perform one adaptive iteration: preflight deterministic outputs, monitor/digest, and suggest in preview mode; with `execute=True`, require the complete prospective replacement round to fit `max_rounds` and `max_runs_total` before stopping or superseding current runs, then plan and launch the next round.
 - Important inputs/outputs: workflow root and execute flag in; suggestion path out.
 - Side effects: writes digest/suggestion/events; only execute mode may stop or supersede runs, write a next-round plan, and launch runs.
 - Key callers/callees: called by `agent_tools hparam-adaptive-step` and adaptive loop.

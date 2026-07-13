@@ -371,7 +371,9 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-hparam-val-only")
 
     assert report.exit_code == 0
-    assert len(list((tmp_path / "plan-hparam-val-only" / "runs").glob("run-000--*/launch.sh"))) == 1
+    scripts = list((tmp_path / "plan-hparam-val-only" / "runs").glob("run-000--*/launch.sh"))
+    assert len(scripts) == 1
+    assert "python -m sex_age_baseline.finetune" in scripts[0].read_text()
 
 
 def test_sex_age_baseline_finetune_blocks_invalid_metadata_values(tmp_path: Path):

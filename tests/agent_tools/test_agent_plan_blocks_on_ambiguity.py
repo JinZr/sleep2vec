@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from agent_tool_test_helpers import survival_config_payload, write_finetune_recipe, write_survival_sidecars, write_yaml
+import pytest
 import yaml
 
 from agent_tools.experiment_workspace import file_sha256
@@ -1005,8 +1006,9 @@ def test_variant_controls_generated_finetune_module(tmp_path: Path):
     assert "--no-test-after-fit" in script
 
 
-def test_sleep2expert_variant_controls_generated_hparam_module(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, variant="sleep2expert")
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_model_variant_controls_generated_hparam_module(tmp_path: Path, variant: str):
+    recipe = _hparam_recipe(tmp_path, variant=variant)
     output_dir = tmp_path / "plan"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -1015,7 +1017,7 @@ def test_sleep2expert_variant_controls_generated_hparam_module(tmp_path: Path):
     script = Path(_first_run(output_dir)["script"]).read_text()
     assert f"cd {shlex_quote(str(REPO_ROOT))}" in script
     assert f"export PYTHONPATH={shlex_quote(str(REPO_ROOT))}" in script
-    assert "python -m sleep2expert.finetune" in script
+    assert f"python -m {variant}.finetune" in script
     assert "--no-test-after-fit" in script
     assert f"--results-csv-path {shlex_quote(str(tmp_path / 'results.csv'))}" in script
 
@@ -1252,6 +1254,55 @@ def test_plan_overwrite_rejects_output_alias_to_canonical_without_writing(tmp_pa
             assert result.returncode == 1
             assert step_manifest.read_bytes() == step_before
             assert not (output_dir / "runs").exists()
+
+
+def test_plan_rejects_runs_ancestor_symlink_before_workspace_mutation(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    recipe = write_finetune_recipe(workspace)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["overwrite_policy"]["value"] = True
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = workspace / "plan"
+    output_dir.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (output_dir / "runs").symlink_to(external, target_is_directory=True)
+    experiment_before = (workspace / "experiment.yaml").read_bytes()
+    canonical_before = (workspace / "run_manifest.tsv").read_bytes()
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "Output artifacts" in result.stdout
+    assert (workspace / "experiment.yaml").read_bytes() == experiment_before
+    assert (workspace / "run_manifest.tsv").read_bytes() == canonical_before
+    assert not (workspace / "steps").exists()
+    assert not (workspace / "events.jsonl").exists()
+    assert list(external.iterdir()) == []
+    assert sorted(path.name for path in output_dir.iterdir()) == ["runs"]
+
+
+def test_plan_overwrite_rejects_leaf_directory_before_workspace_mutation(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    recipe = write_finetune_recipe(workspace)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["overwrite_policy"]["value"] = True
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = workspace / "plan"
+    (output_dir / "plan.json").mkdir(parents=True)
+    experiment_before = (workspace / "experiment.yaml").read_bytes()
+    canonical_before = (workspace / "run_manifest.tsv").read_bytes()
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "Output artifacts" in result.stdout
+    assert (workspace / "experiment.yaml").read_bytes() == experiment_before
+    assert (workspace / "run_manifest.tsv").read_bytes() == canonical_before
+    assert not (workspace / "steps").exists()
+    assert not (workspace / "events.jsonl").exists()
+    assert list((output_dir / "plan.json").iterdir()) == []
+    assert sorted(path.name for path in output_dir.iterdir()) == ["plan.json"]
 
 
 def test_plan_allows_existing_workspace_matrix_and_events_for_new_plan(tmp_path: Path):
@@ -1864,6 +1915,39 @@ def test_collect_runs_rejects_canonical_manifest_output_alias_without_writing(tm
             assert manifest.read_bytes() == original
             raise AssertionError("collect_runs must not overwrite run_manifest.tsv")
         assert manifest.read_bytes() == original
+
+
+@pytest.mark.parametrize("target_kind", ["symlink", "hardlink", "directory", "ancestor_symlink"])
+def test_collect_runs_rejects_unsafe_output_topology_without_writing(tmp_path: Path, target_kind: str):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manifest = workspace / "run_manifest.tsv"
+    original_manifest = b"step_id\trun_id\n"
+    manifest.write_bytes(original_manifest)
+    sentinel = tmp_path / "sentinel.csv"
+    sentinel.write_bytes(b"keep me\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    output = workspace / "collected.csv"
+    if target_kind == "symlink":
+        output.symlink_to(sentinel)
+    elif target_kind == "hardlink":
+        output.hardlink_to(sentinel)
+    elif target_kind == "directory":
+        output.mkdir()
+    else:
+        alias = workspace / "reports"
+        alias.symlink_to(outside, target_is_directory=True)
+        output = alias / "collected.csv"
+
+    with pytest.raises(ValueError, match="Managed output paths"):
+        collect_runs(workspace, None, output)
+
+    assert manifest.read_bytes() == original_manifest
+    assert sentinel.read_bytes() == b"keep me\n"
+    assert list(outside.iterdir()) == []
+    if target_kind == "directory":
+        assert list(output.iterdir()) == []
 
 
 def test_collect_runs_allows_header_only_canonical_manifest(tmp_path: Path):

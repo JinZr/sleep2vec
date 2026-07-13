@@ -211,12 +211,16 @@ def metric_value(manifest: dict[str, Any], metric: str) -> float | str:
 
 
 def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str:
+    if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
+        return ""
+    resolved_dir = checkpoint_dir.resolve()
     raw = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
     if raw:
         path = Path(str(raw))
         if path.name.startswith("best-epoch="):
             fixed = checkpoint_dir / path.name.removeprefix("best-")
-            if fixed.exists():
+            # Lexical containment is insufficient when the checkpoint entry itself is an alias.
+            if not fixed.is_symlink() and fixed.is_file() and fixed.resolve().parent == resolved_dir:
                 return str(fixed)
             matched = checkpoint_for_epoch_in_dir(checkpoint_dir, epoch_number_from_checkpoint_name(fixed.name))
             if matched:
@@ -224,12 +228,20 @@ def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str
             return ""
         if path.name.startswith("epoch="):
             fixed = checkpoint_dir / path.name
-            return str(fixed) if fixed.exists() else ""
+            return (
+                str(fixed)
+                if not fixed.is_symlink() and fixed.is_file() and fixed.resolve().parent == resolved_dir
+                else ""
+            )
         matched = checkpoint_for_epoch_in_dir(checkpoint_dir, epoch_number(manifest.get("epoch")))
         if matched:
             return str(matched)
         return ""
-    checkpoints = sorted(checkpoint_dir.glob("epoch=*.ckpt"))
+    checkpoints = [
+        path
+        for path in sorted(checkpoint_dir.glob("epoch=*.ckpt"))
+        if not path.is_symlink() and path.is_file() and path.resolve().parent == resolved_dir
+    ]
     if checkpoints:
         return str(checkpoints[-1])
     return ""
@@ -245,10 +257,17 @@ def checkpoint_names(run: dict[str, Any]) -> list[str]:
 
 
 def checkpoint_for_epoch_in_dir(ckpt_dir: Path, epoch: int | None) -> Path | None:
-    if epoch is None:
+    if epoch is None or ckpt_dir.is_symlink() or not ckpt_dir.is_dir():
         return None
+    resolved_dir = ckpt_dir.resolve()
     for path in sorted(ckpt_dir.glob("epoch=*.ckpt")):
-        if not path.name.startswith("best-") and epoch_number_from_checkpoint_name(path.name) == epoch:
+        if (
+            not path.name.startswith("best-")
+            and not path.is_symlink()
+            and path.is_file()
+            and path.resolve().parent == resolved_dir
+            and epoch_number_from_checkpoint_name(path.name) == epoch
+        ):
             return path
     return None
 

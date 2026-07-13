@@ -169,7 +169,7 @@ def test_hparam_external_eval_uses_frozen_plan_fields_and_workdir(tmp_path: Path
                 "config": run["config"],
                 "runtime_dir": run["runtime_dir"],
                 "runtime.batch_size": 48,
-                "checkpoint_path": tmp_path / "epoch=1.ckpt",
+                "checkpoint_path": Path(run["checkpoint_dir"]) / "epoch=1.ckpt",
             }
         )
 
@@ -202,7 +202,8 @@ def test_hparam_external_eval_rejects_changed_snapshot_before_writing(tmp_path: 
     run = _first_run(plan_dir)
     selected = plan_dir / "selected.csv"
     selected.write_text(
-        "step_id,run_id,rank,checkpoint_path\n" f"{run['step_id']},{run['run_id']},1,{tmp_path / 'epoch=1.ckpt'}\n"
+        "step_id,run_id,rank,checkpoint_path\n"
+        f"{run['step_id']},{run['run_id']},1,{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
     )
     snapshot_path = Path(run[snapshot_field])
     snapshot_path.write_bytes(snapshot_path.read_bytes() + b"\n# changed after planning\n")
@@ -242,7 +243,7 @@ def test_hparam_external_eval_rejects_candidate_parameter_sources_before_writing
         "step_id": run["step_id"],
         "run_id": run["run_id"],
         "rank": 1,
-        "checkpoint_path": tmp_path / "epoch=1.ckpt",
+        "checkpoint_path": Path(run["checkpoint_dir"]) / "epoch=1.ckpt",
         **candidate_parameters,
     }
     with selected.open("w", newline="") as file_obj:
@@ -270,6 +271,7 @@ def test_hparam_external_eval_filters_workspace_ranking_to_current_step(tmp_path
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
+    other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
         tmp_path,
         [
@@ -278,12 +280,12 @@ def test_hparam_external_eval_filters_workspace_ranking_to_current_step(tmp_path
                 "step_id": "other-step",
                 "run_id": "run-000",
                 "config": run["config"],
+                "checkpoint_dir": str(other_checkpoint_dir),
                 "status": "completed",
             }
         ],
     )
-    checkpoint = tmp_path / "epoch=1.ckpt"
-    checkpoint.write_text("checkpoint")
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
     ranking = _ranking_path(plan_dir)
     ranking.parent.mkdir(parents=True, exist_ok=True)
     with ranking.open("w", newline="") as file_obj:
@@ -298,7 +300,7 @@ def test_hparam_external_eval_filters_workspace_ranking_to_current_step(tmp_path
                 "run_id": "run-000",
                 "rank": 1,
                 "config": run["config"],
-                "checkpoint_path": checkpoint,
+                "checkpoint_path": other_checkpoint_dir / "epoch=1.ckpt",
             }
         )
         writer.writerow(
@@ -331,7 +333,8 @@ def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_pa
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
-    checkpoint = tmp_path / "epoch=1.ckpt"
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_text("checkpoint")
     selected = tmp_path / "selected.csv"
     with selected.open("w", newline="") as file_obj:
@@ -363,6 +366,125 @@ def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_pa
     assert Path(external_row["external_config"]).is_absolute()
     for field in ("val_config", "val_logits_path", "test_config", "test_logits_path"):
         assert Path(logits_row[field]).is_absolute()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["external_ancestor", "logits_ancestor", "logits_script", "threshold_leaf", "ensemble_leaf"],
+)
+def test_hparam_postprocess_preflights_outputs_before_side_effects(tmp_path: Path, monkeypatch, mutation: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_text("checkpoint")
+    val_predictions = tmp_path / "val.csv"
+    test_predictions = tmp_path / "test.csv"
+    pd.DataFrame({"label": [0, 1], "prob": [0.1, 0.9]}).to_csv(val_predictions, index=False)
+    pd.DataFrame({"label": [0, 1], "prob": [0.2, 0.8]}).to_csv(test_predictions, index=False)
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,rank,checkpoint_path,val_predictions_path,test_predictions_path\n"
+        f"{run['step_id']},{run['run_id']},1,{checkpoint},{val_predictions},{test_predictions}\n"
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = plan_dir / "plan.json"
+    if mutation == "external_ancestor":
+        (plan_dir / "external_eval_configs").symlink_to(outside, target_is_directory=True)
+    elif mutation == "logits_ancestor":
+        (plan_dir / "logits_exports").symlink_to(outside, target_is_directory=True)
+    elif mutation == "logits_script":
+        (plan_dir / "logits_export.sh").symlink_to(protected)
+    elif mutation == "threshold_leaf":
+        (plan_dir / "threshold_summary.csv").symlink_to(protected)
+    else:
+        (plan_dir / "ensemble_summary.csv").symlink_to(protected)
+    inference_calls = []
+    monkeypatch.setattr(
+        hparam_postprocess,
+        "_run_logit_export",
+        lambda *_args, **_kwargs: inference_calls.append(_kwargs),
+    )
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+
+    with pytest.raises(ValueError, match="Managed output"):
+        if mutation == "external_ancestor":
+            hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
+        elif mutation in {"logits_ancestor", "logits_script"}:
+            hparam_postprocess.export_hparam_logits(
+                plan_dir,
+                selected,
+                unlock_final_test=True,
+                execute=mutation == "logits_ancestor",
+            )
+        elif mutation == "threshold_leaf":
+            hparam_postprocess.threshold_hparam_outputs(plan_dir, selected)
+        else:
+            hparam_postprocess.ensemble_hparam_outputs(plan_dir, selected)
+
+    assert inference_calls == []
+    assert {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    } == before
+
+
+def test_hparam_external_eval_rejects_checkpoint_outside_frozen_directory_before_writing(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    foreign_checkpoint = tmp_path / "foreign" / "epoch=1.ckpt"
+    foreign_checkpoint.parent.mkdir()
+    foreign_checkpoint.write_text("foreign")
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,rank,checkpoint_path\n" f"{run['step_id']},{run['run_id']},1,{foreign_checkpoint}\n"
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="checkpoint_path is outside the frozen checkpoint_dir"):
+        hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_external_eval_rejects_checkpoint_symlink_inside_frozen_directory_before_writing(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path)})
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    foreign = tmp_path / "foreign.ckpt"
+    foreign.write_text("foreign")
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    if checkpoint.exists() or checkpoint.is_symlink():
+        checkpoint.unlink()
+    checkpoint.symlink_to(foreign)
+    selected = plan_dir / "selected.csv"
+    selected.write_text("step_id,run_id,rank,checkpoint_path\n" f"{run['step_id']},{run['run_id']},1,{checkpoint}\n")
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+
+    with pytest.raises(ValueError, match="checkpoint_path is not a regular managed checkpoint"):
+        hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
+
+    assert {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    } == before
 
 
 def test_hparam_external_eval_validates_other_step_rows_before_filtering(tmp_path: Path):
@@ -523,6 +645,7 @@ def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
+    other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
         tmp_path,
         [
@@ -531,6 +654,7 @@ def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp
                 "step_id": "other-step",
                 "run_id": "run-000",
                 "config": run["config"],
+                "checkpoint_dir": str(other_checkpoint_dir),
                 "status": "completed",
             }
         ],
@@ -539,7 +663,7 @@ def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp
     ranking.parent.mkdir(parents=True, exist_ok=True)
     ranking.write_text(
         "step_id,run_id,rank,config,checkpoint_path\n"
-        f"other-step,run-000,1,{run['config']},{tmp_path / 'epoch=1.ckpt'}\n"
+        f"other-step,run-000,1,{run['config']},{other_checkpoint_dir / 'epoch=1.ckpt'}\n"
     )
 
     result = _run(
@@ -587,9 +711,9 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "step_id,run_id,rank,config,checkpoint_path\n"
-        f"unit-hparam-tune,run-000,1,{runs[0]['config']},{tmp_path / 'epoch=1.ckpt'}\n"
-        f"unit-hparam-tune,run-001,2,{runs[1]['config']},{tmp_path / 'epoch=2.ckpt'}\n"
-        f"unit-hparam-tune,run-002,3,{runs[2]['config']},{tmp_path / 'epoch=3.ckpt'}\n"
+        f"unit-hparam-tune,run-000,1,{runs[0]['config']},{Path(runs[0]['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
+        f"unit-hparam-tune,run-001,2,{runs[1]['config']},{Path(runs[1]['checkpoint_dir']) / 'epoch=2.ckpt'}\n"
+        f"unit-hparam-tune,run-002,3,{runs[2]['config']},{Path(runs[2]['checkpoint_dir']) / 'epoch=3.ckpt'}\n"
     )
 
     locked = _run("hparam-external-eval", "--run-dir", str(plan_dir), "--selected", str(selected))
@@ -685,8 +809,8 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "step_id,run_id,rank,config,checkpoint_path\n"
-        f"unit-hparam-tune,run-000,1,{runs[0]['config']},{tmp_path / 'epoch=1.ckpt'}\n"
-        f"unit-hparam-tune,run-001,2,{runs[1]['config']},{tmp_path / 'epoch=2.ckpt'}\n"
+        f"unit-hparam-tune,run-000,1,{runs[0]['config']},{Path(runs[0]['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
+        f"unit-hparam-tune,run-001,2,{runs[1]['config']},{Path(runs[1]['checkpoint_dir']) / 'epoch=2.ckpt'}\n"
     )
 
     locked = _run("hparam-export-logits", "--run-dir", str(plan_dir), "--selected", str(selected))
@@ -760,7 +884,7 @@ def test_hparam_export_logits_dry_run_script_freezes_absolute_inputs(tmp_path: P
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "step_id,run_id,rank,config,checkpoint_path\n"
-        f"{run['step_id']},{run['run_id']},1,{run['config']},{tmp_path / 'epoch=1.ckpt'}\n"
+        f"{run['step_id']},{run['run_id']},1,{run['config']},{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
     )
     monkeypatch.chdir(tmp_path)
 
@@ -828,7 +952,8 @@ def test_hparam_postprocess_rejects_empty_rank_filter_before_writing(
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "step_id,run_id,rank,config,checkpoint_path\n"
-        f"{run['step_id']},{run['run_id']},{rank},{run['config']},{tmp_path / 'epoch=1.ckpt'}\n"
+        f"{run['step_id']},{run['run_id']},{rank},{run['config']},"
+        f"{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
     )
 
     result = _run(command, "--run-dir", str(plan_dir), "--selected", str(selected), *extra_args)
@@ -843,6 +968,7 @@ def test_hparam_export_logits_rejects_workspace_ranking_without_current_step(tmp
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
+    other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
         tmp_path,
         [
@@ -851,6 +977,7 @@ def test_hparam_export_logits_rejects_workspace_ranking_without_current_step(tmp
                 "step_id": "other-step",
                 "run_id": "run-000",
                 "config": run["config"],
+                "checkpoint_dir": str(other_checkpoint_dir),
                 "status": "completed",
             }
         ],
@@ -859,7 +986,7 @@ def test_hparam_export_logits_rejects_workspace_ranking_without_current_step(tmp
     ranking.parent.mkdir(parents=True, exist_ok=True)
     ranking.write_text(
         "step_id,run_id,rank,config,checkpoint_path\n"
-        f"other-step,run-000,1,{run['config']},{tmp_path / 'epoch=1.ckpt'}\n"
+        f"other-step,run-000,1,{run['config']},{other_checkpoint_dir / 'epoch=1.ckpt'}\n"
     )
 
     result = _run(
@@ -919,9 +1046,10 @@ def test_hparam_export_logits_execute_uses_manifest_paths(tmp_path: Path, monkey
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     selected = plan_dir / "selected.csv"
+    run = _first_run(plan_dir)
     selected.write_text(
         "step_id,run_id,rank,config,checkpoint_path\n"
-        f"unit-hparam-tune,run-000,1,{Path(_first_run(plan_dir)['config'])},{tmp_path / 'epoch=1.ckpt'}\n"
+        f"unit-hparam-tune,run-000,1,{Path(run['config'])},{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
     )
     calls = []
 

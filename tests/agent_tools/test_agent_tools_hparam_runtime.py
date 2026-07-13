@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from agent_tools import hparam_runtime, manifests, run_evidence
-from agent_tools.experiment_workspace import file_sha256, merge_run_manifest
+from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
 
 
@@ -356,6 +356,35 @@ def test_hparam_launch_ignores_stale_local_status(tmp_path: Path, monkeypatch, l
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["score"] == "0.9"
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "running"
     assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "running"
+
+
+@pytest.mark.parametrize("operation", ["launch", "monitor", "stop"])
+def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: Path, monkeypatch, operation: str):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    launch_rows = _read_table(tmp_path / "launch_manifest.tsv")
+    launch_rows[0].update({"score": "0.1", "wandb_url": "https://wandb.example/stale"})
+    manifests.write_rows(tmp_path / "launch_manifest.tsv", launch_rows)
+    canonical_rows = _read_table(tmp_path / "run_manifest.tsv")
+    canonical_rows[0].update({"score": "0.9", "wandb_url": "https://wandb.example/current"})
+    manifests.write_rows(tmp_path / "run_manifest.tsv", canonical_rows)
+    monkeypatch.setattr(
+        run_evidence,
+        "status_row",
+        lambda _root, row, previous, health=False: merge_run_row(previous, row),
+    )
+    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
+    monkeypatch.setattr(hparam_runtime.os, "kill", lambda _pid, _signal: None)
+
+    if operation == "launch":
+        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+    elif operation == "monitor":
+        hparam_runtime.monitor_hparam_runs(tmp_path)
+    else:
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
+
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert canonical["score"] == "0.9"
+    assert canonical["wandb_url"] == "https://wandb.example/current"
 
 
 def test_hparam_launch_records_event_only_for_a_process_started_by_that_call(tmp_path: Path, monkeypatch):
@@ -951,6 +980,118 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
     assert rows[0]["pid_path"].endswith("runs/run-000--lr-1e-6/pid")
     assert not (plan_dir / "logs").exists()
     assert not (plan_dir / "pids").exists()
+
+
+def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "target": "ssh",
+            "host": "offline-host",
+            "workdir": str(tmp_path / "plan"),
+            "max_concurrent": 1,
+        },
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    remote_calls = []
+
+    def fake_remote_command(row, command):
+        remote_calls.append((row, command))
+        return subprocess.CompletedProcess([], run_evidence.REMOTE_MISSING_RETURN_CODE, "", "")
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_remote_command)
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
+
+    assert remote_calls == []
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
+    assert _read_table(plan_dir / "launch_manifest.tsv")[0]["status"] == "planned"
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+
+    def validate_without_remote(root, paths, remote=None):
+        if remote is None:
+            return real_validate(root, paths)
+
+    started = []
+    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
+    monkeypatch.setattr(
+        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert len(started) == 1
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
+
+
+@pytest.mark.parametrize("runtime_fault", ["existing", "ancestor_symlink"])
+def test_hparam_launch_rejects_unsafe_runtime_root_before_start(tmp_path: Path, monkeypatch, runtime_fault: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    runtime_dir = Path(run["runtime_dir"])
+    if runtime_fault == "existing":
+        runtime_dir.mkdir(parents=True)
+    else:
+        outside = tmp_path / "outside-runtime"
+        outside.mkdir()
+        runtime_dir.parent.symlink_to(outside, target_is_directory=True)
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    with pytest.raises(ValueError, match="Managed runtime output|Managed output"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert started == []
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
+
+
+def test_hparam_ssh_launch_rejects_existing_remote_runtime_root_before_start(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "target": "ssh",
+            "host": "offline-host",
+            "workdir": str(tmp_path),
+            "max_concurrent": 1,
+        },
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    runtime_dir = Path(run["runtime_dir"])
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+
+    def fake_validate(root, paths, remote=None):
+        if remote and runtime_dir in paths:
+            raise ValueError(f"Managed output paths must be independent regular files: {runtime_dir}")
+        if not remote:
+            real_validate(root, paths)
+
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        fake_validate,
+    )
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert started == []
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
 def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path):
@@ -1607,6 +1748,8 @@ def test_hparam_monitor_remote_pid_probe_failure_is_unknown_until_recovery(tmp_p
 
     def fake_run(args, **kwargs):
         command = args[-1]
+        if "checkpoint_dir = sys.argv[2]" in command:
+            return subprocess.CompletedProcess(args, 0, '{"run_manifest": "", "checkpoints": []}', "")
         if "os.lstat" in command:
             assert "open(path" in command
             if probe["failure"] == "timeout":
@@ -1649,6 +1792,69 @@ def test_hparam_monitor_remote_pid_probe_failure_is_unknown_until_recovery(tmp_p
     assert [(event["from"], event["to"]) for event in events] == [
         ("running", "unknown_remote"),
         ("unknown_remote", "running"),
+    ]
+
+
+@pytest.mark.parametrize("uncertain_returncode", [124, 255, 1])
+@pytest.mark.parametrize(
+    ("recovered_log", "expected_status"), [("clean shutdown\n", "finished"), ("Traceback\n", "failed")]
+)
+def test_hparam_monitor_requires_explicit_remote_log_read_before_terminal_state(
+    tmp_path: Path,
+    monkeypatch,
+    uncertain_returncode: int,
+    recovered_log: str,
+    expected_status: str,
+):
+    _write_runtime_rows(
+        tmp_path,
+        [
+            {
+                "run_id": "run-000",
+                "target": "ssh",
+                "host": "unit-host",
+                "status": "running",
+                "pid": "123",
+            }
+        ],
+    )
+    state = {"uncertain": True}
+
+    def fake_remote_command(_row, command):
+        if command.startswith("ps "):
+            return subprocess.CompletedProcess([], 1, "", "")
+        if "lines = file_obj.readlines()" in command:
+            if state["uncertain"]:
+                return subprocess.CompletedProcess([], uncertain_returncode, "", "permission or transport failure")
+            return subprocess.CompletedProcess([], 0, recovered_log, "")
+        if "checkpoint_dir = sys.argv[2]" in command:
+            return subprocess.CompletedProcess([], 0, '{"run_manifest": "", "checkpoints": []}', "")
+        if command.startswith("tail -n 8"):
+            return subprocess.CompletedProcess(
+                [], 0 if not state["uncertain"] else uncertain_returncode, recovered_log, ""
+            )
+        if "sys.stdout.write(file_obj.read())" in command:
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        raise AssertionError(f"Unexpected remote command: {command}")
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_remote_command)
+
+    hparam_runtime.monitor_hparam_runs(tmp_path)
+    hparam_runtime.monitor_hparam_runs(tmp_path)
+
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "unknown_remote"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "unknown_remote"
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [(event["from"], event["to"]) for event in events] == [("running", "unknown_remote")]
+
+    state["uncertain"] = False
+    hparam_runtime.monitor_hparam_runs(tmp_path)
+
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == expected_status
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [(event["from"], event["to"]) for event in events] == [
+        ("running", "unknown_remote"),
+        ("unknown_remote", expected_status),
     ]
 
 

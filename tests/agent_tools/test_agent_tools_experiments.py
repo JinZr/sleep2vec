@@ -447,6 +447,79 @@ def test_experiment_mutation_rejects_manifest_root_drift_without_writing(tmp_pat
     assert _workspace_files(tmp_path) == before
 
 
+def test_experiment_monitor_preflights_canonical_outputs_before_observation(tmp_path: Path, monkeypatch):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [{"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000", "status": "running"}],
+    )
+    (tmp_path / "run_matrix.csv").mkdir()
+    before = _workspace_files(tmp_path)
+    observation_calls = []
+    monkeypatch.setattr(
+        experiments.tracking,
+        "monitor_run_row",
+        lambda *_args, **_kwargs: observation_calls.append(True),
+    )
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.monitor_experiment(tmp_path)
+
+    assert observation_calls == []
+    assert _workspace_files(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("operation", "table"),
+    [
+        ("index", "metrics_manifest.tsv"),
+        ("rank", "metrics_manifest.tsv"),
+        ("rank", "checkpoint_manifest.tsv"),
+    ],
+)
+def test_experiment_rejects_aliased_evidence_before_scan_or_rank(
+    tmp_path: Path, monkeypatch, operation: str, table: str
+):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [{"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000", "status": "running"}],
+    )
+    outside = tmp_path / "outside.tsv"
+    if table == "metrics_manifest.tsv":
+        experiment_io.write_rows_at(
+            outside,
+            [{"step_id": "train-model", "run_id": "run-000", "metric": "val_auroc", "value": "0.9"}],
+        )
+    else:
+        experiment_io.write_rows_at(
+            outside,
+            [{"step_id": "train-model", "run_id": "run-000", "checkpoint_path": "/tmp/epoch=1.ckpt"}],
+        )
+    (tmp_path / table).symlink_to(outside)
+    calls = []
+    monkeypatch.setattr(
+        experiments.tracking,
+        "checkpoint_rows",
+        lambda *_args, **_kwargs: calls.append("checkpoint") or [],
+    )
+    monkeypatch.setattr(
+        experiments.tracking,
+        "experiment_run_rows",
+        lambda *_args, **_kwargs: calls.append("rank") or [],
+    )
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        if operation == "index":
+            experiments.index_checkpoints(tmp_path)
+        else:
+            experiments.rank_experiment_candidates(tmp_path, metric="val_auroc", mode="max")
+
+    assert calls == []
+    assert _workspace_files(tmp_path) == before
+
+
 def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypatch):
     calls = []
 

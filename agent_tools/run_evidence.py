@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 import os
 from pathlib import Path
 import shlex
@@ -15,6 +16,38 @@ from .manifests import utc_now
 from .progress import read_progress
 
 SSH_TIMEOUT_SECONDS = 10
+RUN_EVIDENCE_FIELDS = {
+    "target",
+    "host",
+    "workdir",
+    "gpus",
+    "pid_path",
+    "pid",
+    "log_path",
+    "log_tail",
+    "log_age_seconds",
+    "command",
+    "launched_at",
+    "monitored_at",
+    "stopped_at",
+    "stop_reason",
+    "run_manifest",
+    "checkpoints",
+    "checkpoint_count",
+    "health_status",
+    "gpu_summary",
+    "io_read_bytes",
+    "io_write_bytes",
+    "io_read_delta_bytes",
+    "io_write_delta_bytes",
+    "progress_dir",
+    "progress_status",
+    "progress_processed",
+    "progress_total",
+    "progress_updated_at",
+    "progress_age_seconds",
+}
+RUN_STATUS_FIELDS = RUN_EVIDENCE_FIELDS | {"status"}
 
 
 def status_row(
@@ -64,10 +97,81 @@ def status_row(
             observed_status = "unknown_remote"
     elif running:
         observed_status = "running"
-    elif observed_status in {"launched", "running"}:
-        observed_status = "failed" if log_has_failure(row.get("log_path"), row) else "finished"
-    manifest = artifacts.find_run_manifest(row)
-    checkpoints = artifacts.checkpoint_names(row)
+    elif observed_status in {"launched", "running", "unknown_remote"}:
+        log_failed = log_has_failure(row.get("log_path"), row)
+        # A stopped remote PID is not terminal evidence until its log read is also certain.
+        if log_failed is None and is_remote_row(row):
+            observed_status = "unknown_remote"
+        else:
+            observed_status = "failed" if log_failed else "finished"
+    if is_remote_row(row):
+        # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
+        manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
+        checkpoints = [
+            name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name
+        ]
+        script = """
+import json
+import os
+import sys
+
+runtime_dir = sys.argv[1]
+checkpoint_dir = sys.argv[2]
+payload = {"run_manifest": "", "checkpoints": []}
+
+if runtime_dir:
+    manifest = os.path.join(runtime_dir, "run_manifest.json")
+    try:
+        os.lstat(manifest)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    else:
+        payload["run_manifest"] = manifest
+
+if checkpoint_dir:
+    try:
+        os.lstat(checkpoint_dir)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    else:
+        if not os.path.isdir(checkpoint_dir):
+            print(f"Remote checkpoint path is not a directory: {checkpoint_dir}", file=sys.stderr)
+            raise SystemExit(1)
+        try:
+            payload["checkpoints"] = sorted(
+                name
+                for name in os.listdir(checkpoint_dir)
+                if name.endswith(".ckpt") and os.path.isfile(os.path.join(checkpoint_dir, name))
+            )
+        except OSError as exc:
+            print(exc, file=sys.stderr)
+            raise SystemExit(1)
+
+sys.stdout.write(json.dumps(payload))
+"""
+        result = run_row_command(
+            row,
+            "python3 -c "
+            f"{shlex.quote(script)} {shlex.quote(str(row.get('runtime_dir') or ''))} "
+            f"{shlex.quote(str(row.get('checkpoint_dir') or ''))}",
+        )
+        if result.returncode == 0:
+            try:
+                artifact_payload = json.loads(result.stdout)
+            except (TypeError, json.JSONDecodeError):
+                artifact_payload = None
+            if isinstance(artifact_payload, dict) and isinstance(artifact_payload.get("checkpoints"), list):
+                manifest = str(artifact_payload.get("run_manifest") or "")
+                checkpoints = [str(name) for name in artifact_payload["checkpoints"]]
+    else:
+        manifest = artifacts.find_run_manifest(row)
+        checkpoints = artifacts.checkpoint_names(row)
     observation = {
         **row,
         "status": observed_status,
@@ -151,13 +255,40 @@ def process_running(row: dict[str, Any], pid: int | None) -> bool | None:
     return True
 
 
-def log_has_failure(path: Any, row: dict[str, Any] | None = None) -> bool:
+def log_has_failure(path: Any, row: dict[str, Any] | None = None) -> bool | None:
     if not path:
         return False
     if is_remote_row(row):
-        result = run_row_command(row or {}, f"tail -n 100 {shlex.quote(str(path))}")
-        if result.returncode != 0:
+        script = f"""
+import os
+import sys
+
+path = sys.argv[1]
+try:
+    os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit({REMOTE_MISSING_RETURN_CODE})
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    with open(path, encoding="utf-8", errors="replace") as file_obj:
+        lines = file_obj.readlines()
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+
+sys.stdout.write("".join(lines[-100:]))
+"""
+        result = run_row_command(
+            row or {},
+            f"python3 -c {shlex.quote(script)} {shlex.quote(str(path))}",
+        )
+        if result.returncode == REMOTE_MISSING_RETURN_CODE:
             return False
+        if result.returncode != 0:
+            return None
         tail = result.stdout
     else:
         log_path = Path(str(path))

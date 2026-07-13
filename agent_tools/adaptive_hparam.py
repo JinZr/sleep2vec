@@ -44,6 +44,23 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
     _, _, preflight = preflight_plan(recipe_path=recipe_path, output_dir=round_dir)
     if preflight.exit_code != 0:
         raise RuntimeError(f"Round 000 plan failed preflight with exit code {preflight.exit_code}.")
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    initial_run_count = _hparam_count(recipe)
+    initial_run_count = min(initial_run_count, int((recipe.get("search") or {}).get("max_runs") or initial_run_count))
+    if initial_run_count > int(_adaptive(recipe).get("max_runs_total") or 10**9):
+        raise ValueError("Round 000 would exceed adaptive.max_runs_total.")
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            round_dir / "round_recipe.yaml",
+            adaptive_dir / "workflow.json",
+            adaptive_dir / "run_registry.tsv",
+            adaptive_dir / "README.md",
+            workspace / "events.jsonl",
+        ],
+    )
     ensure_experiment_workspace(recipe, round_dir)
     round_recipe = _write_round_recipe(recipe, recipe_path, round_dir, 0)
     report = build_plan(recipe_path=round_recipe, output_dir=round_dir)
@@ -70,6 +87,21 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
         _workflow(workflow_root)
     plan = artifacts.read_hparam_plan(round_dir)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    out_dir = workflow_root / "adaptive" / "digests"
+    out = out_dir / f"round_{round_index:03d}.csv"
+    # Digest outputs must be safe before monitor is allowed to update canonical state.
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            out,
+            out_dir / f"round_{round_index:03d}.md",
+            workflow_root / "adaptive" / "incumbents.tsv",
+            workspace / "events.jsonl",
+        ],
+    )
     status_path = monitor_hparam_runs(round_dir)
     status_table = read_rows(status_path, require_managed_identity=True)
     validate_managed_run_rows(status_table, source=str(status_path), cardinality="one_per_run")
@@ -101,8 +133,6 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
         row["status"] = status.get("status", "")
         row["pid"] = status.get("pid", "")
         rows.append(row)
-    out_dir = workflow_root / "adaptive" / "digests"
-    out = out_dir / f"round_{round_index:03d}.csv"
     write_rows(out, rows)
     write_text(out_dir / f"round_{round_index:03d}.md", _digest_markdown(rows, _objective(workflow_root, recipe)))
     _append_event(workflow_root, "digest", {"round": round_index, "path": str(out), "rows": len(rows)})
@@ -120,6 +150,15 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
     rows = read_rows(digest)
     objective = _objective(root, recipe)
     ranked = _rank_rows(rows, objective)
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    out_dir = root / "adaptive" / "suggestions"
+    out = out_dir / f"round_{next_round:03d}.yaml"
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [out, out_dir / f"round_{next_round:03d}.md", workspace / "events.jsonl"],
+    )
     if not ranked:
         _append_event(root, "suggest_blocked", {"round": next_round, "reason": "no_scored_runs"})
         raise ValueError(f"No digest rows with finite {objective['metric']} are available for suggestion.")
@@ -133,9 +172,7 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
     suggested["search"]["max_runs"] = int(_adaptive(recipe).get("round_size") or _hparam_count(suggested))
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
-    out_dir = root / "adaptive" / "suggestions"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"round_{next_round:03d}.yaml"
     out.write_text(yaml.safe_dump(_strip_internal_recipe_keys(suggested), sort_keys=False))
     rationale = _suggestion_rationale(next_round, objective, best, suggested["search"]["parameters"])
     write_text(out_dir / f"round_{next_round:03d}.md", rationale)
@@ -149,17 +186,30 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     recipe = load_recipe_with_base(workflow["recipe_path"])
     current_round = _latest_round_index(root)
     round_dir = _round_dir(root, current_round)
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    next_dir = _round_dir(root, current_round + 1)
+    targets = [workspace / "events.jsonl"]
+    if execute:
+        targets.extend([root / "adaptive" / "run_registry.tsv", next_dir / "round_recipe.yaml"])
+    exp_io.validate_managed_output_paths(workspace, targets)
     digest = digest_hparam_run(round_dir)
     suggestion = suggest_next_round(root)
     next_round = current_round + 1
-    next_dir = _round_dir(root, next_round)
-    _, _, preflight = preflight_plan(recipe_path=suggestion, output_dir=next_dir)
+    next_recipe, _, preflight = preflight_plan(recipe_path=suggestion, output_dir=next_dir)
     if preflight.exit_code != 0:
         raise RuntimeError(f"Round {next_round:03d} plan failed preflight with exit code {preflight.exit_code}.")
-    if execute:
+    next_run_count = _hparam_count(next_recipe)
+    next_max_runs = (next_recipe.get("search") or {}).get("max_runs")
+    if next_max_runs not in (None, ""):
+        next_run_count = min(next_run_count, int(next_max_runs))
+    # Retiring current runs is allowed only when the complete replacement round fits the remaining budget.
+    budget_exhausted = execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count)
+    if execute and not budget_exhausted:
         _stop_bad_running_runs(root, round_dir, recipe)
         _supersede_pending_runs(root, round_dir)
-    if execute and not _budget_exhausted(root, recipe):
+    if execute and not budget_exhausted:
         round_recipe = _write_round_recipe(load_recipe_with_base(suggestion), suggestion, next_dir, next_round)
         report = build_plan(recipe_path=round_recipe, output_dir=next_dir)
         if report.exit_code != 0:
@@ -167,6 +217,12 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
         _append_registry_rows(root, next_round, next_dir)
         launch_hparam_runs(next_dir, dry_run=False)
         _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
+    elif budget_exhausted:
+        _append_event(
+            root,
+            "adaptive_budget_exhausted",
+            {"round": current_round, "digest": str(digest), "suggestion": str(suggestion)},
+        )
     else:
         _append_event(
             root,
@@ -179,10 +235,17 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
 def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     recipe = load_recipe_with_base(_workflow(root)["recipe_path"])
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    exp_io.validate_managed_output_paths(workspace, [workspace / "events.jsonl"])
     last = root
     while not _budget_exhausted(root, recipe):
+        previous_round = _latest_round_index(root)
         last = adaptive_step(root, execute=execute)
         if not execute:
+            break
+        if _latest_round_index(root) == previous_round:
             break
         time.sleep(float(_adaptive(recipe).get("poll_seconds") or 60))
     _append_event(root, "adaptive_loop_done", {"path": str(last)})
@@ -598,13 +661,15 @@ def _latest_incumbent_score(root: Path) -> float | None:
         return None
 
 
-def _budget_exhausted(root: Path, recipe: dict[str, Any]) -> bool:
+def _budget_exhausted(root: Path, recipe: dict[str, Any], *, prospective_runs: int = 0) -> bool:
     adaptive = _adaptive(recipe)
     max_rounds = int(adaptive.get("max_rounds") or 1)
     max_runs = int(adaptive.get("max_runs_total") or 10**9)
+    current_runs = len(read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True))
     return (
         _latest_round_index(root) + 1 >= max_rounds
-        or len(read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)) >= max_runs
+        or current_runs >= max_runs
+        or current_runs + prospective_runs > max_runs
     )
 
 
