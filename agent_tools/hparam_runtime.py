@@ -11,6 +11,7 @@ import yaml
 
 from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
+    EXECUTION_IDENTITY_FIELDS,
     TERMINAL_STATUSES,
     append_event,
     experiment_root,
@@ -69,7 +70,11 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     workspace_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     for table in (existing_rows, previous_status):
         for row in table:
-            validate_frozen_run_update(workspace_by_key[managed_run_key(row)], row)
+            validate_frozen_run_update(
+                workspace_by_key[managed_run_key(row)],
+                row,
+                allow_execution_identity_fill=False,
+            )
     refreshed = {}
     for key in expected_keys:
         previous = workspace_by_key.get(key, {})
@@ -140,7 +145,11 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
                 row[field] = previous[field]
         rows.append(row)
     for row in rows:
-        validate_frozen_run_update(workspace_by_key[managed_run_key(row)], row)
+        validate_frozen_run_update(
+            workspace_by_key[managed_run_key(row)],
+            row,
+            allow_execution_identity_fill=True,
+        )
     run_output_paths = [Path(str(row[field])) for row in rows for field in ("log_path", "pid_path")]
     if target == "ssh":
         if not dry_run:
@@ -224,7 +233,11 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
     launch_by_key = {managed_run_key(row): row for row in manifest}
     for table in (manifest, previous):
         for row in table:
-            validate_frozen_run_update(workspace_by_key[managed_run_key(row)], row)
+            validate_frozen_run_update(
+                workspace_by_key[managed_run_key(row)],
+                row,
+                allow_execution_identity_fill=False,
+            )
     previous_rows = {key: workspace_by_key[key] for key in expected_keys}
     rows = []
     for run in plan["runs"]:
@@ -299,7 +312,11 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     workspace_by_key = {managed_run_key(item): item for item in workspace_rows}
     for table in (rows, status_rows):
         for item in table:
-            validate_frozen_run_update(workspace_by_key[managed_run_key(item)], item)
+            validate_frozen_run_update(
+                workspace_by_key[managed_run_key(item)],
+                item,
+                allow_execution_identity_fill=False,
+            )
     matched = [run for run in plan["runs"] if run.get("run_id") == run_id]
     if not matched:
         raise ValueError(f"Unknown run_id: {run_id}")
@@ -307,10 +324,14 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
     key = managed_run_key(matched[0])
     launch_by_key = {managed_run_key(item): item for item in rows}
-    row = launch_by_key[key]
     previous = workspace_by_key[key]
-    launch_evidence = {field: row[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in row}
-    previous = merge_run_row(previous, launch_evidence)
+    missing_execution_identity = {field for field in EXECUTION_IDENTITY_FIELDS if field not in previous}
+    if previous.get("target") in (None, ""):
+        missing_execution_identity.add("target")
+    if missing_execution_identity:
+        raise ValueError(
+            f"Canonical run is missing execution identity for {run_id}: {', '.join(sorted(missing_execution_identity))}"
+        )
     if previous.get("status") in TERMINAL_STATUSES:
         raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
     pid = evidence.read_pid(previous.get("pid_path"), previous)

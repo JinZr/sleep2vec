@@ -379,7 +379,7 @@ def write_hparam_plan(
         "plan_created",
         {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": len(runs)},
     )
-    resolved_recipe = {key: value for key, value in recipe.items() if not str(key).startswith("_")}
+    resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
     (out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     final_script_path = out / "final_external_test.sh"
     final_unlocked = final_test_unlocked(evaluation, report.decisions, unlock_final_test)

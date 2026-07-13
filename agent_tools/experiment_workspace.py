@@ -15,6 +15,15 @@ from .models import REPO_ROOT, json_ready
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
+EXECUTION_IDENTITY_FIELDS = {
+    "target",
+    "host",
+    "workdir",
+    "gpus",
+    "pid_path",
+    "log_path",
+    "command",
+}
 FROZEN_RUN_FIELDS = {
     "experiment_id",
     "step_id",
@@ -30,7 +39,7 @@ FROZEN_RUN_FIELDS = {
     "artifacts",
     "runtime_dir",
     "checkpoint_dir",
-}
+} | EXECUTION_IDENTITY_FIELDS
 MANAGED_RUN_PATH_FIELDS = {
     "artifacts",
     "checkpoint_dir",
@@ -584,18 +593,32 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
 
 
 def validate_frozen_run_update(
-    existing: dict[str, Any], incoming: dict[str, Any], *, require_checkpoint_ownership: bool = False
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    require_checkpoint_ownership: bool = False,
+    allow_execution_identity_fill: bool = False,
 ) -> None:
     key = managed_run_key(existing) or managed_run_key(incoming)
     managed_run_parameters(existing)
     incoming_parameters = managed_run_parameters(incoming)
+    execution_identity_initialized = existing.get("target") not in (None, "")
     for field, incoming_value in incoming.items():
         if field not in FROZEN_RUN_FIELDS and field not in incoming_parameters:
             continue
         existing_value = existing.get(field)
-        if existing_value in (None, ""):
+        if field in EXECUTION_IDENTITY_FIELDS:
+            if not execution_identity_initialized:
+                if allow_execution_identity_fill:
+                    continue
+                step_id, run_id = key or ("", "")
+                raise ValueError(f"Canonical execution identity is missing for {step_id} / {run_id}: {field}")
+            changed = str(json_ready(incoming_value)) != str(json_ready(existing_value))
+        elif existing_value in (None, ""):
             continue
-        if incoming_value in (None, "") or str(json_ready(incoming_value)) != str(json_ready(existing_value)):
+        else:
+            changed = incoming_value in (None, "") or str(json_ready(incoming_value)) != str(json_ready(existing_value))
+        if changed:
             step_id, run_id = key or ("", "")
             raise ValueError(f"Frozen run field differs for {step_id} / {run_id}: {field}")
     checkpoint_path = incoming.get("checkpoint_path")
@@ -649,7 +672,7 @@ def merge_run_manifest(
         if key not in by_id:
             order.append(key)
         else:
-            validate_frozen_run_update(by_id[key], row)
+            validate_frozen_run_update(by_id[key], row, allow_execution_identity_fill=True)
         by_id[key] = merge_run_row(by_id.get(key, {}), row)
     committed = [by_id[key] for key in order if key in by_id]
     if committed:
@@ -664,7 +687,10 @@ def write_run_matrix(root: str | Path, rows: list[dict[str, Any]], *, remote: st
     root = Path(root)
     validate_managed_run_rows(rows, source="run_manifest.tsv", cardinality="one_per_run")
     matrix_path = root / "run_matrix.csv"
-    exp_io.write_rows_at(matrix_path, rows, remote=remote)
+    if rows:
+        exp_io.write_rows_at(matrix_path, rows, remote=remote)
+    else:
+        exp_io.write_text_at(matrix_path, "step_id,run_id\n", remote=remote)
     path = root / "reports" / "run_matrix.md"
     lines = ["# Run Matrix", ""]
     if not rows:

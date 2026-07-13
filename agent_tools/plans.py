@@ -13,6 +13,7 @@ from . import (
     plan_hparam as hparam,
     plan_rendering as rendering,
     repo as repo_tools,
+    run_artifacts as artifacts,
 )
 from .configs import config_summary
 from .decisions import DecisionIssue, DecisionReport, DecisionStatus, evaluate_consultation_gates, merge_status
@@ -30,7 +31,7 @@ from .experiment_workspace import (
     safe_artifact_name,
     validate_plan_output,
 )
-from .manifests import write_json, write_text
+from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import REPO_ROOT, resolve_repo_path
 from .recipes import load_policy_files, load_recipe_with_base, load_user_decisions, recipe_name
@@ -220,12 +221,18 @@ def build_context(
     elif report.exit_code == 0:
         write_text(
             out / "commands.sh",
-            "\n".join(rendering.script_lines(_commands_for_recipe(recipe, cfg, report.decisions))) + "\n",
+            "\n".join(
+                rendering.script_lines(
+                    _commands_for_recipe(recipe, cfg, report.decisions),
+                    run_cwd=REPO_ROOT,
+                )
+            )
+            + "\n",
             executable=True,
         )
         write_text(
             out / "validation.sh",
-            "\n".join(rendering.script_lines(context.validation_commands(recipe))) + "\n",
+            "\n".join(rendering.script_lines(context.validation_commands(recipe), run_cwd=REPO_ROOT)) + "\n",
             executable=True,
         )
     return report
@@ -320,7 +327,16 @@ def build_plan(
         write_text(out / "plan.md", context.plan_markdown(report, commands))
         write_text(
             out / "run.sh",
-            "\n".join(rendering.script_lines(commands, run_cwd=REPO_ROOT if task == "finetune" else None)) + "\n",
+            "\n".join(
+                rendering.script_lines(
+                    commands,
+                    run_cwd=REPO_ROOT,
+                    experiment_root=root,
+                    step_id=run["step_id"],
+                    run_id=run_id,
+                )
+            )
+            + "\n",
             executable=True,
         )
         launch_path = run_dir / "launch.sh"
@@ -429,10 +445,8 @@ def collect_runs(root: str | Path, metric: str | None, output: str | Path) -> No
     managed_rows = read_run_manifest(root_path)
     for managed in managed_rows:
         runtime_dir = Path(managed["runtime_dir"]) if managed.get("runtime_dir") else None
-        manifest = runtime_dir / "run_manifest.json" if runtime_dir is not None else None
-        data = yaml.safe_load(manifest.read_text()) if manifest is not None and manifest.exists() else {}
-        if not isinstance(data, dict):
-            raise ValueError(f"Run manifest must contain a mapping: {manifest}")
+        manifest = artifacts.find_run_manifest(managed)
+        data = read_json(manifest) if manifest is not None else {}
         wandb_summary = _wandb_summary_for_run(runtime_dir) if runtime_dir is not None else {}
         row = {
             "kind": "managed_run",

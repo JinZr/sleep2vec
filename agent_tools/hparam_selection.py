@@ -12,7 +12,9 @@ from .experiment_workspace import (
     managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
+    read_managed_yaml_mapping,
     read_run_manifest,
+    read_step_manifest,
     resolve_run_row,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -41,6 +43,75 @@ def select_hparam_candidates(
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     canonical_rows = read_run_manifest(workspace)
+    step_id = str((recipe.get("step") or {}).get("id") or "")
+    out = workspace / "reports" / "ranking.csv"
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            out,
+            workspace / "run_manifest.tsv",
+            workspace / "run_matrix.csv",
+            workspace / "reports" / "run_matrix.md",
+            workspace / "events.jsonl",
+        ],
+    )
+    existing_ranked = read_rows(out, require_managed_identity=True)
+    validate_managed_run_rows(existing_ranked, source=str(out), cardinality="one_per_run")
+    for row in existing_ranked:
+        canonical = resolve_run_row(canonical_rows, row)
+        if canonical is None:
+            raise ValueError(
+                f"Existing ranking row is outside the canonical manifest: "
+                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
+            )
+        validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
+    current_keys = {managed_run_key(run) for run in plan["runs"]}
+    preserved = [row for row in existing_ranked if managed_run_key(row) not in current_keys]
+    prior_step_rows = [row for row in preserved if row.get("step_id") == step_id]
+    for row in prior_step_rows:
+        if row.get("metric") != metric:
+            raise ValueError("Existing ranking selection metric differs from the current recipe.")
+    remaining_prior_keys = {managed_run_key(row) for row in prior_step_rows}
+    step_manifest = read_step_manifest(workspace, step_id)
+    for registered_plan_dir in step_manifest["plans"]:
+        registered_root = Path(str(registered_plan_dir))
+        registered_plan_path = registered_root / "plan.json"
+        resolved_recipe_path = registered_root / "recipe.resolved.yaml"
+        if not registered_plan_path.exists():
+            blocked_path = registered_root / "plan.blocked.md"
+            if blocked_path.is_file() and not blocked_path.is_symlink() and not resolved_recipe_path.exists():
+                continue
+            raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
+        registered_plan = read_json(registered_plan_path)
+        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        resolved_recipe = read_managed_yaml_mapping(
+            resolved_recipe_path.read_text(),
+            source=f"Frozen registered recipe {resolved_recipe_path}",
+        )
+        if registered_recipe.get("task") != resolved_recipe.get("task"):
+            raise ValueError(f"Registered plan task differs from recipe.resolved.yaml: {registered_root}")
+        if resolved_recipe.get("task") != "hparam_tune":
+            continue
+        registered_runs = registered_plan.get("runs")
+        matched_keys = (
+            {managed_run_key(run) for run in registered_runs if managed_run_key(run) in remaining_prior_keys}
+            if isinstance(registered_runs, list)
+            else set()
+        )
+        registered_plan = artifacts.read_hparam_plan(registered_root)
+        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        registered_evaluation = (
+            registered_recipe.get("evaluation_policy")
+            if isinstance(registered_recipe.get("evaluation_policy"), dict)
+            else {}
+        )
+        if registered_evaluation.get("selection_metric") != metric:
+            raise ValueError("Existing ranking selection metric differs from the current recipe.")
+        if registered_evaluation.get("selection_mode") != mode:
+            raise ValueError("Existing ranking selection mode differs from the current recipe.")
+        remaining_prior_keys -= matched_keys
+    if remaining_prior_keys:
+        raise ValueError("Existing ranking rows are not owned by a registered plan for this step.")
     rows = []
     for run in plan["runs"]:
         canonical = resolve_run_row(canonical_rows, run)
@@ -75,21 +146,7 @@ def select_hparam_candidates(
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
     current_ranked = ranked
-    out = workspace / "reports" / "ranking.csv"
-    existing_ranked = read_rows(out, require_managed_identity=True)
-    validate_managed_run_rows(existing_ranked, source=str(out), cardinality="one_per_run")
     validate_managed_run_rows(current_ranked, source="current ranking", cardinality="one_per_run")
-    for row in existing_ranked:
-        canonical = resolve_run_row(canonical_rows, row)
-        if canonical is None:
-            raise ValueError(
-                f"Existing ranking row is outside the canonical manifest: "
-                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
-            )
-        validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
-    step_id = str((recipe.get("step") or {}).get("id") or "")
-    current_keys = {managed_run_key(row) for row in current_ranked}
-    preserved = [row for row in existing_ranked if managed_run_key(row) not in current_keys]
     step_ranked = [row for row in [*preserved, *current_ranked] if row.get("step_id") == step_id]
     step_ranked = sorted(
         step_ranked,
@@ -99,16 +156,6 @@ def select_hparam_candidates(
     for rank, row in enumerate(step_ranked, start=1):
         row["rank"] = rank
     all_ranked = [row for row in preserved if row.get("step_id") != step_id] + step_ranked
-    exp_io.validate_managed_output_paths(
-        workspace,
-        [
-            out,
-            workspace / "run_manifest.tsv",
-            workspace / "run_matrix.csv",
-            workspace / "reports" / "run_matrix.md",
-            workspace / "events.jsonl",
-        ],
-    )
     write_rows(out, all_ranked)
     merge_run_manifest(
         workspace,

@@ -819,6 +819,36 @@ def test_monitor_observation_contains_only_managed_identity_and_status_fields(tm
     }
 
 
+@pytest.mark.parametrize("canonical_target", [None, "local"])
+def test_remote_monitor_uses_transport_identity_without_persisting_it(tmp_path: Path, monkeypatch, canonical_target):
+    previous = {"step_id": "train-model", "run_id": "run-000", "status": "running"}
+    if canonical_target is not None:
+        previous.update({"target": canonical_target, "host": ""})
+    observed_rows = []
+
+    def fake_status(_root, row, _previous, *, health):
+        observed_rows.append(dict(row))
+        return {**row, "status": "running", "health_status": "running"}
+
+    monkeypatch.setattr(run_evidence, "status_row", fake_status)
+    monkeypatch.setattr(experiment_tracking, "read_run_manifest", lambda *_args, **_kwargs: [dict(previous)])
+    monkeypatch.setattr(experiment_tracking.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_tracking.exp_io, "read_rows_at", lambda *_args, **_kwargs: [])
+    run_rows = experiment_tracking.experiment_run_rows(tmp_path, remote="unit-host")
+
+    observation = experiment_tracking.monitor_run_row(
+        tmp_path,
+        run_rows[0],
+        [dict(previous)],
+        remote="unit-host",
+    )
+
+    assert observed_rows[0]["target"] == "ssh"
+    assert observed_rows[0]["host"] == "unit-host"
+    assert "target" not in observation
+    assert "host" not in observation
+
+
 def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkeypatch):
     _initialize_workspace(tmp_path)
     experiment_io.write_rows_at(
@@ -1476,6 +1506,32 @@ def test_remote_checkpoint_scan_rejects_non_directory_declared_root(monkeypatch)
 
     with pytest.raises(RuntimeError, match="not a directory"):
         experiment_tracking._remote_checkpoint_rows(runs, "baichuan3")
+
+
+def test_remote_checkpoint_scan_validates_runtime_root_before_manifest_read(monkeypatch):
+    runs = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "run_a",
+            "runtime_dir": "/remote/runtime/run_a",
+            "checkpoint_dir": "/remote/runtime/run_a/checkpoints",
+        }
+    ]
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command[-1])
+        return subprocess.CompletedProcess(command, 1, "", "runtime directory is aliased")
+
+    monkeypatch.setattr(experiment_tracking.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="SSH checkpoint scan failed"):
+        experiment_tracking._remote_checkpoint_rows(runs, "unit-host")
+
+    assert "for runtime_root in /remote/runtime/run_a" in calls[0]
+    assert '[ -L "$runtime_root" ] || [ ! -d "$runtime_root" ]' in calls[0]
 
 
 def test_remote_checkpoint_scan_uses_runtime_manifest_best_path_for_ranking(monkeypatch):

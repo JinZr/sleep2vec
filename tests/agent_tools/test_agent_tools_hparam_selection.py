@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
+import yaml
 
 from agent_tools import hparam_selection, run_artifacts
 from agent_tools.experiment_workspace import merge_run_manifest
@@ -18,8 +20,23 @@ def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
 
 
-def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
+def _hparam_recipe(
+    tmp_path: Path,
+    *,
+    execution: dict | None = None,
+    selection_metric: str = "val_ahi_pearson",
+    selection_mode: str = "max",
+) -> Path:
     base = write_finetune_recipe(tmp_path)
+    base_payload = yaml.safe_load(base.read_text())
+    config_path = Path(base_payload["inputs"]["config"])
+    config_payload = yaml.safe_load(config_path.read_text())
+    config_payload["finetune"]["task"]["monitor"] = selection_metric
+    config_payload["finetune"]["task"]["monitor_mod"] = selection_mode
+    write_yaml(config_path, config_payload)
+    base_payload["evaluation_policy"]["selection_metric"] = selection_metric
+    base_payload["evaluation_policy"]["selection_mode"] = selection_mode
+    write_yaml(base, base_payload)
     return write_yaml(
         tmp_path / "tune.yaml",
         {
@@ -34,8 +51,8 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
             },
             "execution": execution if execution is not None else {"workdir": str(tmp_path)},
             "evaluation_policy": {
-                "selection_metric": "val_ahi_pearson",
-                "selection_mode": "max",
+                "selection_metric": selection_metric,
+                "selection_mode": selection_mode,
                 "selection_split": "val",
                 "external_test_locked": True,
                 "test_after_fit": False,
@@ -542,6 +559,223 @@ def test_hparam_select_preserves_and_reranks_previous_plans_for_same_step(tmp_pa
         if json.loads(line)["event_type"] == "candidate_selected"
     ]
     assert selections[-1]["selected_run_id"] == "run-000"
+
+
+def test_hparam_select_only_preflights_registered_plans_that_own_preserved_rankings(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first_plan)).returncode == 0
+    hparam_selection.select_hparam_candidates(first_plan)
+
+    finetune_recipe = write_finetune_recipe(tmp_path)
+    finetune_payload = yaml.safe_load(finetune_recipe.read_text())
+    finetune_payload["step"] = json.loads((first_plan / "plan.json").read_text())["recipe"]["step"]
+    finetune_recipe = write_yaml(tmp_path / "non-hparam.yaml", finetune_payload)
+    non_hparam_plan = tmp_path / "non-hparam-plan"
+    assert _run("plan", "--recipe", str(finetune_recipe), "--output-dir", str(non_hparam_plan)).returncode == 0
+
+    recipe = _hparam_recipe(tmp_path)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan)).returncode == 0
+    strict_reads = []
+    original_read_hparam_plan = hparam_selection.artifacts.read_hparam_plan
+
+    def tracked_read_hparam_plan(path):
+        strict_reads.append(Path(path))
+        return original_read_hparam_plan(path)
+
+    monkeypatch.setattr(hparam_selection.artifacts, "read_hparam_plan", tracked_read_hparam_plan)
+
+    hparam_selection.select_hparam_candidates(second_plan)
+
+    assert non_hparam_plan not in strict_reads
+    assert {row["run_id"] for row in read_rows(_ranking_path(second_plan))} == {"run-000", "run-002"}
+
+
+def test_hparam_select_skips_registered_blocked_plan_after_successful_retry(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+    write_yaml(recipe, payload)
+    blocked_plan = tmp_path / "blocked-plan"
+
+    blocked = _run("plan", "--recipe", str(recipe), "--output-dir", str(blocked_plan))
+
+    assert blocked.returncode == 2
+    assert (blocked_plan / "plan.blocked.md").exists()
+    assert not (blocked_plan / "plan.json").exists()
+    payload["decisions"]["overwrite_policy"]["value"] = False
+    write_yaml(recipe, payload)
+    current_plan = tmp_path / "current-plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(current_plan)).returncode == 0
+    run = _first_run(current_plan)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+
+    out = hparam_selection.select_hparam_candidates(current_plan)
+
+    assert out == _ranking_path(current_plan)
+
+
+def test_hparam_select_rejects_registered_plan_task_drift_before_writing(tmp_path: Path):
+    first_recipe = _hparam_recipe(tmp_path)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    first_plan_path = first_plan / "plan.json"
+    first_payload = json.loads(first_plan_path.read_text())
+    first_payload["recipe"]["task"] = "finetune"
+    first_plan_path.write_text(json.dumps(first_payload))
+
+    second_recipe = _hparam_recipe(tmp_path, selection_mode="min")
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    run = _first_run(second_plan)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=2.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.7},
+                "best_model_path": str(checkpoint),
+                "epoch": 2,
+            }
+        )
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="task|recipe.resolved.yaml"):
+        hparam_selection.select_hparam_candidates(second_plan)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    ("selection_metric", "selection_mode", "expected_message"),
+    [
+        ("val_loss", "max", "metric"),
+        ("val_ahi_pearson", "min", "mode"),
+    ],
+)
+@pytest.mark.parametrize("select_first_plan", [False, True])
+def test_hparam_select_rejects_selection_contract_drift_across_plans_before_writing(
+    tmp_path: Path,
+    selection_metric: str,
+    selection_mode: str,
+    expected_message: str,
+    select_first_plan: bool,
+):
+    first_recipe = _hparam_recipe(tmp_path)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    first_run = _first_run(first_plan)
+    first_runtime = Path(first_run["runtime_dir"])
+    first_checkpoint_dir = Path(first_run["checkpoint_dir"])
+    first_checkpoint_dir.mkdir(parents=True)
+    first_checkpoint = first_checkpoint_dir / "epoch=1.ckpt"
+    first_checkpoint.write_text("checkpoint")
+    (first_runtime / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.9},
+                "best_model_path": str(first_checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    if select_first_plan:
+        hparam_selection.select_hparam_candidates(first_plan)
+
+    second_recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric=selection_metric,
+        selection_mode=selection_mode,
+    )
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    second_run = _first_run(second_plan)
+    second_runtime = Path(second_run["runtime_dir"])
+    second_checkpoint_dir = Path(second_run["checkpoint_dir"])
+    second_checkpoint_dir.mkdir(parents=True)
+    second_checkpoint = second_checkpoint_dir / "epoch=2.ckpt"
+    second_checkpoint.write_text("checkpoint")
+    (second_runtime / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {selection_metric: 0.8},
+                "best_model_path": str(second_checkpoint),
+                "epoch": 2,
+            }
+        )
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match=expected_message):
+        hparam_selection.select_hparam_candidates(second_plan)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("target_kind", ["fifo", "directory", "symlink", "hardlink"])
+def test_hparam_select_preflights_ranking_before_read_or_runtime_scan(
+    tmp_path: Path,
+    monkeypatch,
+    target_kind: str,
+):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    ranking = _ranking_path(plan_dir)
+    ranking.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.csv"
+    if target_kind == "fifo":
+        os.mkfifo(ranking)
+    elif target_kind == "directory":
+        ranking.mkdir()
+    else:
+        outside.write_text("sentinel\n")
+        if target_kind == "symlink":
+            ranking.symlink_to(outside)
+        else:
+            ranking.hardlink_to(outside)
+    canonical_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+    ranking_reads = []
+    runtime_reads = []
+    original_read_rows = hparam_selection.read_rows
+
+    def tracked_read_rows(path, **kwargs):
+        if Path(path) == ranking:
+            ranking_reads.append(Path(path))
+            raise AssertionError("ranking read before topology preflight")
+        return original_read_rows(path, **kwargs)
+
+    monkeypatch.setattr(hparam_selection, "read_rows", tracked_read_rows)
+    monkeypatch.setattr(
+        hparam_selection.artifacts,
+        "find_run_manifest",
+        lambda _run: runtime_reads.append("runtime") or None,
+    )
+
+    with pytest.raises(ValueError, match="Managed output"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert ranking_reads == []
+    assert runtime_reads == []
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == canonical_before
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
+    if outside.exists():
+        assert outside.read_text() == "sentinel\n"
 
 
 def test_hparam_select_rejects_header_only_legacy_ranking(tmp_path: Path):

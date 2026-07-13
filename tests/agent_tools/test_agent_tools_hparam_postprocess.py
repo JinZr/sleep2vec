@@ -220,6 +220,28 @@ def test_hparam_external_eval_rejects_changed_snapshot_before_writing(tmp_path: 
     assert after == before
 
 
+def test_hparam_external_eval_rejects_base_recipe_drift_before_writing(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path)})
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    selected = plan_dir / "selected.csv"
+    selected.write_text("step_id,run_id,rank,checkpoint_path\n" f"{run['step_id']},{run['run_id']},1,{checkpoint}\n")
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["_base_recipe"]["inputs"]["label_name"] = "drifted-label"
+    plan_path.write_text(json.dumps(plan))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="recipe.resolved.yaml"):
+        hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 @pytest.mark.parametrize(
     ("candidate_parameters", "error"),
     [
@@ -605,7 +627,10 @@ def test_selected_candidates_filters_managed_same_step_rows_from_previous_plans(
     second_plan = json.loads((second_plan_dir / "plan.json").read_text())
     second_run = second_plan["runs"][0]
 
-    rows = [{**first_run, "rank": "1"}, {**second_run, "rank": "2"}]
+    rows = [
+        {"step_id": first_run["step_id"], "run_id": first_run["run_id"], "rank": "1"},
+        {"step_id": second_run["step_id"], "run_id": second_run["run_id"], "rank": "2"},
+    ]
     selected = hparam_postprocess._selected_candidate_rows(
         rows,
         plan=second_plan,
@@ -629,9 +654,9 @@ def test_selected_candidates_ranks_current_plan_rows_after_filtering_previous_pl
 
     selected = hparam_postprocess._selected_candidate_rows(
         [
-            {**first_run, "rank": "1"},
-            {**worse, "rank": "4"},
-            {**better, "rank": "3"},
+            {"step_id": first_run["step_id"], "run_id": first_run["run_id"], "rank": "1"},
+            {"step_id": worse["step_id"], "run_id": worse["run_id"], "rank": "4"},
+            {"step_id": better["step_id"], "run_id": better["run_id"], "rank": "3"},
         ],
         plan=second_plan,
         top_k=1,

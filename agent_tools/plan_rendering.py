@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shlex
+import sys
 from typing import Any
 
 from .models import REPO_ROOT, module_for_variant
@@ -232,11 +233,57 @@ def sleep2stat_has_yasa_stage(cfg: dict | None) -> bool:
     return False
 
 
-def script_lines(commands: list[str], *, run_cwd: str | Path | None = None) -> list[str]:
+def script_lines(
+    commands: list[str],
+    *,
+    run_cwd: str | Path | None = None,
+    experiment_root: str | Path | None = None,
+    step_id: str | None = None,
+    run_id: str | None = None,
+) -> list[str]:
     cwd_lines = []
     if run_cwd is not None:
         root = shlex.quote(str(run_cwd))
         cwd_lines = [f"cd {root}", f"export PYTHONPATH={root}${{PYTHONPATH:+:$PYTHONPATH}}", ""]
+    lifecycle_lines = []
+    if experiment_root is not None:
+        commit_code = (
+            "import sys; "
+            "from agent_tools.experiment_workspace import merge_run_manifest; "
+            "rows = merge_run_manifest(sys.argv[1], "
+            "[{'step_id': sys.argv[2], 'run_id': sys.argv[3], 'status': sys.argv[4]}]); "
+            "row = next((row for row in rows "
+            "if row.get('step_id') == sys.argv[2] and row.get('run_id') == sys.argv[3]), None); "
+            "(row is not None and row.get('status') == sys.argv[4]) or "
+            "sys.exit('Canonical run status did not commit as ' + sys.argv[4])"
+        )
+        commit_command = render_command([sys.executable, "-c", commit_code, experiment_root, step_id, run_id]) + ' "$1"'
+        lifecycle_lines = [
+            "_agent_commit_status() {",
+            f"  {commit_command}",
+            "}",
+            "_agent_finish_run() {",
+            "  _agent_runtime_status=$?",
+            "  trap - EXIT",
+            "  set +e",
+            '  if [ "$_agent_runtime_status" -eq 0 ]; then',
+            "    _agent_final_status=completed",
+            "  else",
+            "    _agent_final_status=failed",
+            "  fi",
+            '  _agent_commit_status "$_agent_final_status"',
+            "  _agent_commit_status_code=$?",
+            '  if [ "$_agent_runtime_status" -ne 0 ]; then',
+            '    exit "$_agent_runtime_status"',
+            "  fi",
+            '  exit "$_agent_commit_status_code"',
+            "}",
+            "",
+            "_agent_commit_status running",
+            # The trap is installed only after the owner accepts running, so terminal runs never execute again.
+            "trap _agent_finish_run EXIT",
+            "",
+        ]
     return [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -246,6 +293,7 @@ def script_lines(commands: list[str], *, run_cwd: str | Path | None = None) -> l
         "# This script was generated only after consultation gates passed.",
         "# High-impact decisions were resolved by explicit recipe/config/user inputs.",
         "",
+        *lifecycle_lines,
         *commands,
     ]
 

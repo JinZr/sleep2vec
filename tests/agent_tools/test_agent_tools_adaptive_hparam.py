@@ -476,10 +476,10 @@ def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_rou
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    launch = _read_table(round_dir / "launch_manifest.tsv")[0]
     manifests.write_rows(
         round_dir / "launch_manifest.tsv",
-        [{**run, "status": "planned", "target": "local", "pid_path": "", "log_path": ""}],
+        [{**launch, "status": "planned"}],
     )
 
     result = _run("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
@@ -737,16 +737,15 @@ def test_adaptive_step_execute_stops_bad_running_run_through_recorded_manifest(t
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    pid_path = round_dir / "pids" / "run-000.pid"
-    log_path = round_dir / "logs" / "run-000.log"
-    pid_path.parent.mkdir()
-    log_path.parent.mkdir()
+    launch = _read_table(round_dir / "launch_manifest.tsv")[0]
+    pid_path = Path(launch["pid_path"])
+    log_path = Path(launch["log_path"])
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(os.getpid()))
     log_path.write_text("Traceback\nRuntimeError: failed\n")
-    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     manifests.write_rows(
         round_dir / "launch_manifest.tsv",
-        [{**run, "status": "launched", "target": "local", "pid_path": str(pid_path), "log_path": str(log_path)}],
+        [{**launch, "status": "launched"}],
     )
     stopped = []
 

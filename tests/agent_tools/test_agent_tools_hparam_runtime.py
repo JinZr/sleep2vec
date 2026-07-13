@@ -12,7 +12,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import hparam_runtime, manifests, run_evidence
+from agent_tools import hparam_runtime, manifests, run_artifacts, run_evidence
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
 
@@ -125,9 +125,16 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
             "target": "local",
             "host": "",
             "workdir": str(root),
+            "gpus": "",
             "pid_path": str(managed_dir / "pid"),
             "log_path": str(managed_dir / "stdout.log"),
-            "command": f"run {run_id}",
+            "command": hparam_runtime._launch_command(
+                {"workdir": str(root)},
+                script,
+                managed_dir / "stdout.log",
+                managed_dir / "pid",
+                [],
+            ),
             "status": "planned",
             "launched_at": "",
             **spec,
@@ -145,9 +152,19 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
             }
         )
     )
+    (root / "recipe.resolved.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "experiment": experiment,
+                "step": step,
+                "execution": {"workdir": str(root)},
+            },
+            sort_keys=False,
+        )
+    )
     manifests.write_rows(
         root / "run_manifest.tsv",
-        [{**run, "status": row["status"]} for run, row in zip(runs, rows)],
+        rows,
     )
     manifests.write_rows(root / "launch_manifest.tsv", rows)
     manifests.write_rows(root / "run_status.tsv", rows)
@@ -942,6 +959,296 @@ def test_hparam_stop_rejects_frozen_drift_before_kill(tmp_path: Path, monkeypatc
     assert (tmp_path / "launch_manifest.tsv").read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("target", "ssh"),
+        ("host", "other-host"),
+        ("workdir", "/other/workdir"),
+        ("gpus", "7"),
+        ("pid_path", "/tmp/other.pid"),
+        ("log_path", "/tmp/other.log"),
+        ("command", "other-command"),
+    ],
+)
+def test_hparam_stop_rejects_launch_execution_identity_drift_before_observation(
+    tmp_path: Path, monkeypatch, field: str, changed: str
+):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    merge_run_manifest(tmp_path, [rows[0]])
+    rows[0][field] = changed
+    manifests.write_rows(tmp_path / "launch_manifest.tsv", rows)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    calls = []
+    monkeypatch.setattr(run_evidence, "read_pid", lambda *_args: calls.append("pid") or 123)
+    monkeypatch.setattr(hparam_runtime.os, "kill", lambda *_args: calls.append("kill"))
+    monkeypatch.setattr(hparam_runtime.subprocess, "run", lambda *_args, **_kwargs: calls.append("ssh"))
+
+    with pytest.raises(ValueError, match=field):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("target", "ssh"),
+        ("host", "other-host"),
+        ("env", {"UNIT_CHANGED": "1"}),
+        ("conda_env", "other-env"),
+        ("gpu_pool", [7]),
+        ("gpus_per_run", 2),
+    ],
+)
+def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_effects(
+    tmp_path: Path, monkeypatch, field: str, changed
+):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"].setdefault("execution", {})[field] = changed
+    plan_path.write_text(json.dumps(plan))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    calls = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args, **_kwargs: calls.append("start") or "launched",
+    )
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+
+    def record_remote_probe(root, paths, remote=None):
+        if remote is not None:
+            calls.append("remote-probe")
+        return real_validate(root, paths, remote=remote)
+
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        record_remote_probe,
+    )
+
+    with pytest.raises(ValueError, match="recipe.resolved.yaml"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_launch_rejects_base_runtime_drift_before_side_effects(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["_base_recipe"]["runtime"]["devices"] = [7]
+    plan_path.write_text(json.dumps(plan))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    calls = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args, **_kwargs: calls.append("start") or "launched",
+    )
+
+    with pytest.raises(ValueError, match="recipe.resolved.yaml"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("operation", ["launch", "monitor"])
+def test_hparam_runtime_rejects_uncommitted_launch_execution_identity_before_observation(
+    tmp_path: Path, monkeypatch, operation: str
+):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(
+        plan_dir / "launch_manifest.tsv",
+        [
+            {
+                **run,
+                "status": "launched",
+                "target": "ssh",
+                "host": "foreign-host",
+                "workdir": "/foreign/workdir",
+                "gpus": "7",
+                "pid_path": "/foreign/run.pid",
+                "log_path": "/foreign/run.log",
+                "command": "foreign-command",
+            }
+        ],
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    calls = []
+    monkeypatch.setattr(
+        run_evidence,
+        "status_row",
+        lambda *_args, **_kwargs: calls.append("observe") or {},
+    )
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args, **_kwargs: calls.append("start") or "launched",
+    )
+
+    with pytest.raises(ValueError, match="execution identity"):
+        if operation == "launch":
+            hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+        else:
+            hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["runtime_dir_file", "symlink", "dangling_symlink", "directory", "bad_encoding", "bad_json"],
+)
+def test_local_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypatch, failure: str):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    runtime_dir = Path(rows[0]["runtime_dir"])
+    if failure == "runtime_dir_file":
+        runtime_dir.parent.mkdir(parents=True)
+        runtime_dir.write_text("not a directory")
+    else:
+        runtime_dir.mkdir(parents=True)
+    manifest = runtime_dir / "run_manifest.json"
+    if failure == "runtime_dir_file":
+        pass
+    elif failure == "symlink":
+        foreign = tmp_path / "foreign.json"
+        foreign.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.99}}))
+        manifest.symlink_to(foreign)
+    elif failure == "dangling_symlink":
+        manifest.symlink_to(tmp_path / "missing.json")
+    elif failure == "directory":
+        manifest.mkdir()
+    elif failure == "bad_encoding":
+        manifest.write_bytes(b"\xff")
+    else:
+        manifest.write_text("{")
+    monkeypatch.setattr(run_evidence, "process_running", lambda *_args: True)
+
+    with pytest.raises((ValueError, UnicodeError), match="run manifest"):
+        run_evidence.status_row(tmp_path, rows[0], rows[0])
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["runtime_dir_file", "symlink", "dangling_symlink", "directory", "bad_encoding", "bad_json"],
+)
+def test_remote_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypatch, failure: str):
+    runtime_dir = tmp_path / "remote-runtime"
+    if failure == "runtime_dir_file":
+        runtime_dir.write_text("not a directory")
+    else:
+        runtime_dir.mkdir()
+    manifest = runtime_dir / "run_manifest.json"
+    if failure == "runtime_dir_file":
+        pass
+    elif failure == "symlink":
+        foreign = tmp_path / "foreign.json"
+        foreign.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.99}}))
+        manifest.symlink_to(foreign)
+    elif failure == "dangling_symlink":
+        manifest.symlink_to(tmp_path / "missing.json")
+    elif failure == "directory":
+        manifest.mkdir()
+    elif failure == "bad_encoding":
+        manifest.write_bytes(b"\xff")
+    else:
+        manifest.write_text("{")
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "running",
+        "target": "ssh",
+        "host": "unit-host",
+        "pid_path": "/remote/run.pid",
+        "log_path": "/remote/run.log",
+        "runtime_dir": str(runtime_dir),
+        "checkpoint_dir": str(runtime_dir / "checkpoints"),
+    }
+
+    def fake_command(_row, command):
+        if "sys.stdout.write(file_obj.read())" in command:
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        if command.startswith("ps "):
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        if "checkpoint_dir = sys.argv[2]" in command:
+            assert "json.load" in command
+            assert "stat.S_ISREG" in command
+            assert "stat.S_ISDIR" in command
+            return subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
+        if command.startswith("tail -n 8"):
+            return subprocess.CompletedProcess([], 0, "running", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
+
+    with pytest.raises(RuntimeError, match="runtime artifact observation failed"):
+        run_evidence.status_row(tmp_path, row, row)
+
+
+@pytest.mark.parametrize("state", ["missing", "regular"])
+def test_remote_runtime_manifest_distinguishes_missing_and_regular_file(tmp_path: Path, monkeypatch, state: str):
+    runtime_dir = tmp_path / "remote-runtime"
+    runtime_dir.mkdir()
+    manifest = runtime_dir / "run_manifest.json"
+    if state == "regular":
+        manifest.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "running",
+        "target": "ssh",
+        "host": "unit-host",
+        "pid_path": "/remote/run.pid",
+        "log_path": "/remote/run.log",
+        "runtime_dir": str(runtime_dir),
+        "checkpoint_dir": str(runtime_dir / "checkpoints"),
+    }
+
+    def fake_command(_row, command):
+        if "sys.stdout.write(file_obj.read())" in command:
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        if command.startswith("ps "):
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        if "checkpoint_dir = sys.argv[2]" in command:
+            return subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
+        if command.startswith("tail -n 8"):
+            return subprocess.CompletedProcess([], 0, "running", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
+
+    observed = run_evidence.status_row(tmp_path, row, row)
+
+    assert observed["run_manifest"] == (str(manifest) if state == "regular" else "")
+
+
+def test_find_run_manifest_distinguishes_missing_and_valid_regular_file(tmp_path: Path):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    run = {"runtime_dir": str(runtime_dir)}
+
+    assert run_artifacts.find_run_manifest(run) is None
+
+    manifest = runtime_dir / "run_manifest.json"
+    manifest.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
+
+    assert run_artifacts.find_run_manifest(run) == manifest
+
+
 def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
     tmp_path: Path,
 ):
@@ -998,6 +1305,8 @@ def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: 
 
     def fake_remote_command(row, command):
         remote_calls.append((row, command))
+        if "checkpoint_dir = sys.argv[2]" in command:
+            return subprocess.CompletedProcess([], 0, json.dumps({"run_manifest": "", "checkpoints": []}), "")
         return subprocess.CompletedProcess([], run_evidence.REMOTE_MISSING_RETURN_CODE, "", "")
 
     monkeypatch.setattr(run_evidence, "run_row_command", fake_remote_command)
@@ -1168,7 +1477,6 @@ def test_hparam_launch_does_not_retry_missing_pid(tmp_path: Path, monkeypatch):
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     rows[0]["status"] = "launched"
-    rows[0]["pid_path"] = str(plan_dir / "missing.pid")
     rows[1]["status"] = "pending"
     manifests.write_rows(plan_dir / "launch_manifest.tsv", rows)
     manifests.write_rows(plan_dir / "run_status.tsv", rows)
@@ -1366,7 +1674,6 @@ def test_hparam_monitor_does_not_overwrite_workspace_terminal_status(tmp_path: P
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     rows[0]["status"] = "launched"
-    rows[0]["pid_path"] = str(plan_dir / "missing.pid")
     manifests.write_rows(plan_dir / "launch_manifest.tsv", rows)
     manifests.write_rows(plan_dir / "run_status.tsv", rows)
     merge_run_manifest(

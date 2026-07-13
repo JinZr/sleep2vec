@@ -32,6 +32,12 @@ def read_hparam_plan(run_dir: Path) -> dict[str, Any]:
     legacy_status = run_dir / "trial_status.tsv"
     if legacy_status.exists():
         raise ValueError(f"Legacy hparam status is read-only and cannot be managed: {legacy_status}")
+    resolved_recipe_path = run_dir / "recipe.resolved.yaml"
+    if not resolved_recipe_path.exists():
+        raise FileNotFoundError(f"Missing frozen hparam recipe: {resolved_recipe_path}")
+    resolved_recipe = read_managed_yaml_mapping(
+        resolved_recipe_path.read_text(), source=f"Frozen hparam recipe {resolved_recipe_path}"
+    )
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
         raise ValueError(f"Hparam plan must define a non-empty runs list: {plan_path}")
@@ -146,6 +152,9 @@ def read_hparam_plan(run_dir: Path) -> dict[str, Any]:
     ]
     if legacy_fields:
         raise ValueError(f"Legacy hparam fields are read-only and unsupported: {', '.join(legacy_fields)}")
+    frozen_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
+    if frozen_recipe != resolved_recipe:
+        raise ValueError(f"Hparam plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
     for run in runs:
         verify_run_snapshot(run)
     return plan
@@ -197,8 +206,23 @@ def validate_run_rows(
 def find_run_manifest(run: dict[str, Any]) -> Path | None:
     if not run.get("runtime_dir"):
         return None
-    path = Path(str(run["runtime_dir"])) / "run_manifest.json"
-    return path if path.exists() else None
+    runtime_dir = Path(str(run["runtime_dir"]))
+    path = runtime_dir / "run_manifest.json"
+    if runtime_dir.is_symlink() or path.is_symlink():
+        raise ValueError(f"Runtime run manifest is not an independent regular file: {path}")
+    if runtime_dir.exists() and not runtime_dir.is_dir():
+        raise ValueError(f"Runtime run manifest parent is not a directory: {runtime_dir}")
+    if not path.exists():
+        return None
+    if not path.is_file() or path.stat().st_nlink != 1:
+        raise ValueError(f"Runtime run manifest is not an independent regular file: {path}")
+    try:
+        manifest = read_json(path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"Runtime run manifest is corrupt: {path}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"Runtime run manifest is corrupt: {path}")
+    return path
 
 
 def metric_value(manifest: dict[str, Any], metric: str) -> float | str:

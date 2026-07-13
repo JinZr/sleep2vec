@@ -12,6 +12,7 @@ from typing import Any
 
 from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
+    EXECUTION_IDENTITY_FIELDS,
     managed_run_key,
     merge_run_row,
     read_managed_yaml_mapping,
@@ -177,8 +178,18 @@ def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[s
                 f"{launch_path.name} row is not managed by run_manifest.tsv: "
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
-        validate_frozen_run_update(existing, row)
-        update = {field: row[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in row}
+        execution_initialized = existing.get("target") not in (None, "")
+        ownership_row = (
+            row
+            if execution_initialized
+            else {field: value for field, value in row.items() if field not in EXECUTION_IDENTITY_FIELDS}
+        )
+        validate_frozen_run_update(existing, ownership_row)
+        update = {
+            field: row[field]
+            for field in evidence.RUN_EVIDENCE_FIELDS
+            if field in row and (execution_initialized or field not in EXECUTION_IDENTITY_FIELDS)
+        }
         by_key[key] = merge_run_row(existing, update)
 
     status_rows = exp_io.read_rows_at(status_path, remote=remote, require_managed_identity=True)
@@ -191,15 +202,15 @@ def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[s
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
         # The status table is a mirror: validate its ownership, but never reuse its runtime evidence.
-        validate_frozen_run_update(existing, row)
+        ownership_row = (
+            row
+            if existing.get("target") not in (None, "")
+            else {field: value for field, value in row.items() if field not in EXECUTION_IDENTITY_FIELDS}
+        )
+        validate_frozen_run_update(existing, ownership_row)
 
     merged_rows = list(by_key.values())
 
-    if remote:
-        for row in merged_rows:
-            if not row.get("host"):
-                row["target"] = "ssh"
-                row["host"] = remote
     return merged_rows
 
 
@@ -284,19 +295,25 @@ def monitor_run_row(
     remote: str | None = None,
 ) -> dict[str, Any]:
     previous = resolve_run_row(previous_rows, row) or {}
-    if remote and not row.get("host"):
-        row["target"] = "ssh"
-        row["host"] = remote
-    status = evidence.status_row(root, row, previous, health=True)
+    observation_row = dict(row)
+    transport_override = bool(remote and not observation_row.get("host"))
+    if transport_override:
+        observation_row["target"] = "ssh"
+        observation_row["host"] = remote
+    status = evidence.status_row(root, observation_row, previous, health=True)
     if status.get("status") == "finished":
         status["status"] = "completed"
     if status.get("health_status") == "finished":
         status["health_status"] = "completed"
-    return {
+    observation = {
         "step_id": row["step_id"],
         "run_id": row["run_id"],
         **{field: status[field] for field in evidence.RUN_STATUS_FIELDS if field in status},
     }
+    if transport_override:
+        observation.pop("target", None)
+        observation.pop("host", None)
+    return observation
 
 
 def candidate_rows(
@@ -448,8 +465,8 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 f"Managed checkpoint_dir is missing or is not a directory: "
                 f"{run['step_id']} / {run['run_id']} / {checkpoint_dir}"
             )
-        manifest_path = Path(str(run["runtime_dir"])) / "run_manifest.json"
-        manifest = read_json(manifest_path) if manifest_path.exists() else {}
+        manifest_path = artifacts.find_run_manifest(run)
+        manifest = read_json(manifest_path) if manifest_path else {}
         best_path = artifacts.fixed_checkpoint_path(manifest, checkpoint_dir)
         for path in sorted(checkpoint_dir.glob("*.ckpt")):
             if not path.is_file() or path.is_symlink():
@@ -476,8 +493,20 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> list[dict[str, Any]]:
     if not remote or not runs:
         return []
+    runtime_roots = " ".join(
+        shlex.quote(str(run["runtime_dir"])) for run in runs if run.get("runtime_dir") not in (None, "")
+    )
     roots = " ".join(shlex.quote(str(run["checkpoint_dir"])) for run in runs)
     command = (
+        (
+            f"for runtime_root in {runtime_roots}; do "
+            'if [ -L "$runtime_root" ] || [ ! -d "$runtime_root" ]; then '
+            "printf 'Managed runtime_dir is missing or is not a directory: %s\\n' \"$runtime_root\" >&2; exit 1; "
+            "fi; done; "
+        )
+        if runtime_roots
+        else ""
+    ) + (
         f"for root in {roots}; do "
         'if [ -L "$root" ] || [ ! -d "$root" ]; then '
         "printf 'Managed checkpoint_dir is missing or is not a directory: %s\\n' \"$root\" >&2; exit 1; "
@@ -532,6 +561,7 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
     for run in runs:
         manifest_path = str(run["runtime_dir"]).rstrip("/") + "/run_manifest.json"
         try:
+            exp_io.validate_managed_output_paths(run["runtime_dir"], [manifest_path], remote=remote)
             manifest_text = exp_io.read_text_at(manifest_path, remote=remote)
             manifest_exists = bool(manifest_text) or exp_io.path_exists_at(manifest_path, remote=remote)
         except (RuntimeError, subprocess.TimeoutExpired) as exc:

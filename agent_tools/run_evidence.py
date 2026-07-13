@@ -113,6 +113,7 @@ def status_row(
         script = """
 import json
 import os
+import stat
 import sys
 
 runtime_dir = sys.argv[1]
@@ -120,15 +121,41 @@ checkpoint_dir = sys.argv[2]
 payload = {"run_manifest": "", "checkpoints": []}
 
 if runtime_dir:
+    try:
+        runtime_info = os.lstat(runtime_dir)
+    except FileNotFoundError:
+        runtime_info = None
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if runtime_info is not None and (stat.S_ISLNK(runtime_info.st_mode) or not stat.S_ISDIR(runtime_info.st_mode)):
+        print(f"Remote runtime path is not a directory: {runtime_dir}", file=sys.stderr)
+        raise SystemExit(1)
     manifest = os.path.join(runtime_dir, "run_manifest.json")
     try:
-        os.lstat(manifest)
+        manifest_info = os.lstat(manifest)
     except FileNotFoundError:
         pass
     except OSError as exc:
         print(exc, file=sys.stderr)
         raise SystemExit(1)
     else:
+        if (
+            stat.S_ISLNK(manifest_info.st_mode)
+            or not stat.S_ISREG(manifest_info.st_mode)
+            or manifest_info.st_nlink != 1
+        ):
+            print(f"Remote run manifest is not an independent regular file: {manifest}", file=sys.stderr)
+            raise SystemExit(1)
+        try:
+            with open(manifest, encoding="utf-8") as file_obj:
+                manifest_payload = json.load(file_obj)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(exc, file=sys.stderr)
+            raise SystemExit(1)
+        if not isinstance(manifest_payload, dict):
+            print(f"Remote run manifest is corrupt: {manifest}", file=sys.stderr)
+            raise SystemExit(1)
         payload["run_manifest"] = manifest
 
 if checkpoint_dir:
@@ -165,10 +192,14 @@ sys.stdout.write(json.dumps(payload))
             try:
                 artifact_payload = json.loads(result.stdout)
             except (TypeError, json.JSONDecodeError):
-                artifact_payload = None
-            if isinstance(artifact_payload, dict) and isinstance(artifact_payload.get("checkpoints"), list):
-                manifest = str(artifact_payload.get("run_manifest") or "")
-                checkpoints = [str(name) for name in artifact_payload["checkpoints"]]
+                raise RuntimeError(f"SSH runtime artifact observation returned malformed output on {row['host']}.")
+            if not isinstance(artifact_payload, dict) or not isinstance(artifact_payload.get("checkpoints"), list):
+                raise RuntimeError(f"SSH runtime artifact observation returned malformed output on {row['host']}.")
+            manifest = str(artifact_payload.get("run_manifest") or "")
+            checkpoints = [str(name) for name in artifact_payload["checkpoints"]]
+        elif result.returncode not in {124, 255}:
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"SSH runtime artifact observation failed on {row['host']}: {detail}")
     else:
         manifest = artifacts.find_run_manifest(row)
         checkpoints = artifacts.checkpoint_names(row)

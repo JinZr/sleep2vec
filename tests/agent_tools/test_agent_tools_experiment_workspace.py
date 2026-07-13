@@ -13,6 +13,7 @@ import yaml
 
 from agent_tools import experiment_io, experiments, hparam, hparam_runtime, plans, run_artifacts
 from agent_tools.experiment_workspace import (
+    EXECUTION_IDENTITY_FIELDS,
     MANAGED_RUN_PATH_FIELDS,
     append_event,
     canonical_local_experiment_root,
@@ -30,6 +31,7 @@ from agent_tools.experiment_workspace import (
     resolve_run_row,
     run_evidence_key,
     semantic_run_name,
+    validate_frozen_run_update,
     validate_managed_run_rows,
 )
 
@@ -307,19 +309,10 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    pid_path = plan_dir / "pid"
+    hparam.launch_hparam_runs(plan_dir, dry_run=True)
+    row = list(csv.DictReader((plan_dir / "launch_manifest.tsv").open(), delimiter="\t"))[0]
+    pid_path = Path(row["pid_path"])
     pid_path.write_text("123")
-    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
-    row = {
-        **{field: run[field] for field in ("experiment_id", "step_id", "run_id", "run_name", "version")},
-        "target": "local",
-        "pid_path": str(pid_path),
-        "status": "launched",
-    }
-    with (plan_dir / "launch_manifest.tsv").open("w", newline="") as file_obj:
-        writer = csv.DictWriter(file_obj, delimiter="\t", fieldnames=list(row))
-        writer.writeheader()
-        writer.writerow(row)
     monkeypatch.setattr(hparam_runtime.os, "kill", lambda _pid, _signal: None)
 
     with pytest.raises(ValueError, match="reason"):
@@ -801,7 +794,31 @@ def test_empty_canonical_commit_preserves_the_valid_identity_header(tmp_path: Pa
     assert merge_run_manifest(tmp_path, []) == []
 
     assert (tmp_path / "run_manifest.tsv").read_text() == "step_id\trun_id\n"
+    assert (tmp_path / "run_matrix.csv").read_text() == "step_id,run_id\n"
     assert read_run_manifest(tmp_path) == []
+
+
+def test_empty_remote_canonical_commit_preserves_the_valid_matrix_identity_header(monkeypatch):
+    writes = {}
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_io, "read_text_at", lambda *_args, **_kwargs: "step_id\trun_id\n")
+    monkeypatch.setattr(
+        experiment_io,
+        "write_rows_at",
+        lambda path, rows, *, remote=None: writes.update({Path(path).name: (rows, remote)}),
+    )
+    monkeypatch.setattr(
+        experiment_io,
+        "write_text_at",
+        lambda path, text, *, remote=None: writes.update({Path(path).name: (text, remote)}),
+    )
+
+    assert merge_run_manifest("/remote/workspace", [], remote="unit-host") == []
+
+    assert writes["run_manifest.tsv"] == ("step_id\trun_id\n", "unit-host")
+    assert writes["run_matrix.csv"] == ("step_id,run_id\n", "unit-host")
 
 
 def test_only_experiment_workspace_reads_or_writes_the_canonical_run_manifest():
@@ -925,6 +942,13 @@ def test_canonical_local_experiment_root_resolves_aliases(tmp_path: Path):
         "artifacts",
         "runtime_dir",
         "checkpoint_dir",
+        "target",
+        "host",
+        "workdir",
+        "gpus",
+        "pid_path",
+        "log_path",
+        "command",
         "runtime.lr",
     ],
 )
@@ -938,13 +962,26 @@ def test_merge_run_manifest_rejects_frozen_field_changes_before_writing(
     changed = str(tmp_path / "changed") if field in MANAGED_RUN_PATH_FIELDS and incoming_value else incoming_value
     workspace_experiment_id = original if field == "experiment_id" else identity["experiment_id"]
     (tmp_path / "experiment.yaml").write_text(f"experiment:\n  id: {workspace_experiment_id}\n")
-    merge_run_manifest(tmp_path, [{**identity, field: original, "status": "planned"}])
+    initial = {**identity, field: original, "status": "planned"}
+    if field in EXECUTION_IDENTITY_FIELDS and field != "target":
+        initial["target"] = "local"
+    merge_run_manifest(tmp_path, [initial])
     before = (tmp_path / "run_manifest.tsv").read_bytes()
 
     with pytest.raises(ValueError, match=field.replace(".", r"\.")):
         merge_run_manifest(tmp_path, [{**identity, field: changed, "status": "running"}])
 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+
+
+def test_frozen_validator_only_allows_trusted_execution_identity_initialization():
+    existing = {"step_id": "train", "run_id": "run-000", "status": "planned"}
+    incoming = {"step_id": "train", "run_id": "run-000", "target": "ssh", "host": "foreign-host"}
+
+    with pytest.raises(ValueError, match="execution identity"):
+        validate_frozen_run_update(existing, incoming)
+
+    validate_frozen_run_update(existing, incoming, allow_execution_identity_fill=True)
 
 
 def test_semantic_run_name_keeps_boolean_settings_readable():

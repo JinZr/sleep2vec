@@ -10,7 +10,8 @@ from agent_tool_test_helpers import survival_config_payload, write_finetune_reci
 import pytest
 import yaml
 
-from agent_tools.experiment_workspace import file_sha256
+from agent_tools import experiments, plans
+from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import collect_runs
 
@@ -1868,6 +1869,42 @@ def test_collect_runs_only_reads_managed_manifest_paths(tmp_path: Path):
     assert "historical-version" not in output.read_text()
 
 
+@pytest.mark.parametrize(
+    "failure",
+    ["symlink", "dangling_symlink", "directory", "hardlink", "bad_encoding", "yaml_only"],
+)
+def test_collect_runs_rejects_invalid_runtime_manifest_without_overwriting_output(tmp_path: Path, failure: str):
+    runtime_dir = tmp_path / "runtime" / "run-000"
+    runtime_dir.mkdir(parents=True)
+    manifest = runtime_dir / "run_manifest.json"
+    if failure == "symlink":
+        target = tmp_path / "foreign.json"
+        target.write_text(json.dumps({"metrics": {"score": 0.9}}))
+        manifest.symlink_to(target)
+    elif failure == "dangling_symlink":
+        manifest.symlink_to(tmp_path / "missing.json")
+    elif failure == "directory":
+        manifest.mkdir()
+    elif failure == "hardlink":
+        target = tmp_path / "foreign.json"
+        target.write_text(json.dumps({"metrics": {"score": 0.9}}))
+        manifest.hardlink_to(target)
+    elif failure == "bad_encoding":
+        manifest.write_bytes(b"\xff")
+    else:
+        manifest.write_text("metrics:\n  score: 0.9\n")
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\truntime_dir\tstatus\n" f"unit\ttrain\trun-000\t{runtime_dir}\tfailed\n"
+    )
+    output = tmp_path / "collected.csv"
+    output.write_bytes(b"existing output\n")
+
+    with pytest.raises(ValueError, match="run manifest"):
+        collect_runs(tmp_path, "score", output)
+
+    assert output.read_bytes() == b"existing output\n"
+
+
 def test_collect_runs_rejects_missing_canonical_manifest_without_overwriting_output(tmp_path: Path):
     output = tmp_path / "collected.csv"
     output.write_bytes(b"existing output\n")
@@ -1974,6 +2011,126 @@ def test_hparam_run_all_uses_output_dir_for_run_scripts(tmp_path: Path):
 
     assert run_all.returncode == 0, run_all.stderr
     assert marker.read_text() == "ok"
+
+
+@pytest.mark.parametrize("task", ["finetune", "infer", "evaluate", "preset_prepare", "sleep2stat"])
+@pytest.mark.parametrize("cwd_kind", ["plan", "outside"])
+def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
+    tmp_path: Path,
+    monkeypatch,
+    task: str,
+    cwd_kind: str,
+):
+    source = tmp_path / "source"
+    recipe_path = write_finetune_recipe(source)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    workspace = tmp_path / "workspace"
+    recipe["task"] = task
+    recipe["name"] = f"unit_{task}"
+    recipe["experiment"]["root"] = str(workspace)
+    recipe["step"] = {
+        "id": f"unit-{task.replace('_', '-')}",
+        "phase": "train" if task == "finetune" else "analyze",
+        "purpose": "Exercise managed non-hparam lifecycle.",
+    }
+    recipe["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, None, report))
+    marker = tmp_path / "runtime.txt"
+    runtime_code = (
+        "import sys; from pathlib import Path; "
+        "from agent_tools.experiment_workspace import read_run_manifest; "
+        "rows = read_run_manifest(sys.argv[1]); "
+        "Path(sys.argv[2]).write_text(rows[0]['status'] + '\\n' + str(Path.cwd()))"
+    )
+    command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", runtime_code, workspace, marker))
+    monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    plan_dir = workspace / "plan"
+
+    assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cwd = plan_dir if cwd_kind == "plan" else outside
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], cwd=cwd, text=True, capture_output=True)
+
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text().splitlines() == ["running", str(REPO_ROOT)]
+    assert read_run_manifest(workspace)[0]["status"] == "completed"
+    script = (plan_dir / "run.sh").read_text()
+    assert f"cd {shlex_quote(str(REPO_ROOT))}" in script
+    assert f"export PYTHONPATH={shlex_quote(str(REPO_ROOT))}${{PYTHONPATH:+:$PYTHONPATH}}" in script
+    assert f"  {shlex_quote(sys.executable)} -c " in script
+    final_report = tmp_path / "final.md"
+    final_report.write_text("# Final\n\nManaged run completed.\n")
+    assert experiments.finalize_experiment(workspace, final_report) == workspace / "reports" / "final.md"
+
+
+def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    recipe_path = write_finetune_recipe(source)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    workspace = tmp_path / "workspace"
+    recipe["experiment"]["root"] = str(workspace)
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, None, report))
+    command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", "import sys; sys.exit(7)"))
+    monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    plan_dir = workspace / "plan"
+    plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
+
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], cwd=plan_dir, text=True, capture_output=True)
+
+    assert result.returncode == 7
+    assert read_run_manifest(workspace)[0]["status"] == "failed"
+
+
+def test_non_hparam_run_script_propagates_terminal_commit_failure(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    recipe_path = write_finetune_recipe(source)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    workspace = tmp_path / "workspace"
+    recipe["experiment"]["root"] = str(workspace)
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, None, report))
+    runtime_code = "import sys; from pathlib import Path; (Path(sys.argv[1]) / 'run_manifest.tsv').unlink()"
+    command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", runtime_code, workspace))
+    monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    plan_dir = workspace / "plan"
+    plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
+
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], cwd=plan_dir, text=True, capture_output=True)
+
+    assert result.returncode != 0
+    assert "run_manifest.tsv" in result.stderr
+
+
+def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    recipe_path = write_finetune_recipe(source)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    workspace = tmp_path / "workspace"
+    recipe["experiment"]["root"] = str(workspace)
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, None, report))
+    marker = tmp_path / "runtime.txt"
+    command = " ".join(
+        shlex_quote(str(value))
+        for value in (sys.executable, "-c", "import sys; from pathlib import Path; Path(sys.argv[1]).touch()", marker)
+    )
+    monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    plan_dir = workspace / "plan"
+    plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
+    run = _first_run(plan_dir)
+    merge_run_manifest(
+        workspace,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "completed"}],
+    )
+
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], cwd=plan_dir, text=True, capture_output=True)
+
+    assert result.returncode != 0
+    assert not marker.exists()
+    assert read_run_manifest(workspace)[0]["status"] == "completed"
 
 
 def test_hparam_yaml_parameter_updates_run_config(tmp_path: Path):

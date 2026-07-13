@@ -39,7 +39,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/plans.py`
 - Signature: `build_plan(*, recipe_path: str | Path, output_dir: str | Path, user_decisions_path: str | Path | None = None, allow_unresolved: bool = False, unlock_final_test: bool = False) -> DecisionReport`
-- Purpose and contract: evaluate a task recipe and write a runnable or blocked command plan after the shared read-only preflight succeeds far enough to bind an experiment and step. Hparam ownership must come from the local tuning recipe rather than its base finetune recipe, and a user-selected effective config passes config summary and consultation again before workspace mutation. Planned output files may be overwritten only as independent regular files; symlinks and hard links fail the output guard even when overwrite is explicitly allowed. Existing workspace run-matrix and event files remain legal derived/append-only outputs, but they pass the same alias check before a successful plan mutates the workspace.
+- Purpose and contract: evaluate a task recipe and write a runnable or blocked command plan after the shared read-only preflight succeeds far enough to bind an experiment and step. Hparam ownership must come from the local tuning recipe rather than its base finetune recipe, and a user-selected effective config passes config summary and consultation again before workspace mutation. Runnable non-hparam scripts use `REPO_ROOT` for cwd/PYTHONPATH and commit `running` then `completed/failed` through the canonical owner without W&B. Planned output files may be overwritten only as independent regular files; symlinks and hard links fail the output guard even when overwrite is explicitly allowed. Existing workspace run-matrix and event files remain legal derived/append-only outputs, but they pass the same alias check before a successful plan mutates the workspace.
 - Important inputs/outputs: recipe path, output directory, optional decisions, draft allowance, and final-test unlock in; `DecisionReport` out.
 - Side effects: unresolved experiment/step metadata produces no files; other blockers initialize the managed workspace and write questions plus `plan.blocked.md` without registering a run. Passing plans write `plan.json`, `plan.md`, `run.sh`, frozen run scripts/configs, and an explicitly unlocked final external-test script when applicable.
 - Key callers/callees: called by `agent_tools plan` and adaptive init/step; uses consultation gates and output guards, then delegates final-test/grid/frozen-plan work to `plan_hparam` and rendering to `plan_rendering`.
@@ -70,7 +70,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/plans.py`
 - Signature: `collect_runs(root: str | Path, metric: str | None, output: str | Path) -> None`
-- Purpose and contract: require an explicit managed workspace root, validate its current `run_manifest.tsv`, then collect only declared rows and each row's exact `runtime_dir` when present. A missing, unreadable, or invalid canonical manifest fails instead of producing an empty inventory; a valid header-only manifest still represents zero runs. Before creating a parent directory or opening the output, the command rejects the canonical table itself plus directory, symlink, hard-link, and aliased-ancestor output topologies.
+- Purpose and contract: require an explicit managed workspace root, validate its current `run_manifest.tsv`, then collect only declared rows and each row's exact `runtime_dir` when present. Runtime `run_manifest.json` is resolved through `run_artifacts.find_run_manifest`, so aliases, non-regular files, invalid encoding/JSON, and non-mapping payloads fail rather than being parsed as YAML. A missing, unreadable, or invalid canonical manifest fails instead of producing an empty inventory; a valid header-only manifest still represents zero runs. Before creating a parent directory or opening the output, the command rejects the canonical table itself plus directory, symlink, hard-link, and aliased-ancestor output topologies.
 - Important inputs/outputs: run root, optional metric, and output path in; CSV file out.
 - Side effects: reads the canonical table and its declared artifact paths, then writes the requested CSV; optional W&B summaries are best-effort evidence, and it does not recursively adopt historical directories.
 - Key callers/callees: called by `agent_tools collect-runs`; reads W&B summary files when present.
@@ -86,14 +86,14 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Key callers/callees: used by decision task rules and `plan_hparam` final checkpoint/config gates.
 - Reuse guidance: call this instead of duplicating path-context or SSH checks in plans.
 
-## `agent_tools.plan_rendering.infer_runtime_cli_args`
+## `agent_tools.plan_rendering.script_lines` and `infer_runtime_cli_args`
 
 - File: `agent_tools/plan_rendering.py`
-- Signature: `infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]`
-- Purpose and contract: render the shared inference runtime flags used by recipe plans and post-hparam evaluation/export.
+- Signatures: `script_lines(commands: list[str], *, run_cwd: str | Path | None = None, experiment_root: str | Path | None = None, step_id: str | None = None, run_id: str | None = None) -> list[str]`; `infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]`
+- Purpose and contract: render the shared shell cwd/PYTHONPATH and optional canonical non-hparam lifecycle wrapper, plus the inference runtime flags used by recipe plans and post-hparam evaluation/export. The lifecycle wrapper refuses terminal replay and preserves runtime or terminal-commit failure.
 - Side effects: none.
-- Key callers/callees: used by `plans._commands_for_recipe`, `plan_hparam.write_hparam_plan`, and `hparam_postprocess`.
-- Reuse guidance: keep inference CLI propagation here instead of importing a private helper from `plans`.
+- Key callers/callees: `script_lines` is used by `plans.build_context` and `plans.build_plan`; `infer_runtime_cli_args` is used by `plans._commands_for_recipe`, `plan_hparam.write_hparam_plan`, and `hparam_postprocess`.
+- Reuse guidance: keep generated-script bootstrap/lifecycle and inference CLI propagation here instead of importing or duplicating private plan behavior.
 
 ## `agent_tools.plan_hparam.write_hparam_plan`
 
@@ -185,7 +185,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/run_artifacts.py`
 - Signature: `read_hparam_plan(run_dir: Path) -> dict[str, Any]`
-- Purpose and contract: validate the run-only plan shape, complete experiment/step metadata, initialized workspace ownership, step-registered plan path, plan containment, run-to-recipe identity consistency, required canonical run-manifest rows and fields, frozen artifact fields, actual config/script hashes, and removed recipe fields before a caller mutates state.
+- Purpose and contract: validate the run-only plan shape, complete experiment/step metadata, initialized workspace ownership, step-registered plan path, plan containment, run-to-recipe identity consistency, required canonical run-manifest rows and fields, exact equality between the runtime-consumed plan recipe (including its resolved base recipe) and `recipe.resolved.yaml`, frozen artifact fields, actual config/script hashes, and removed recipe fields before a caller mutates state.
 - Side effects: reads the frozen plan and workspace manifests only.
 - Key callers/callees: shared by hparam runtime, selection, postprocess, and adaptive workflows.
 - Reuse guidance: every operation that consumes a hparam plan should cross this boundary before starting/stopping processes or writing canonical tables.
@@ -194,8 +194,8 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/run_artifacts.py`
 - Signature: `find_run_manifest(run: dict[str, Any]) -> Path | None`
-- Purpose and contract: read the canonical manifest only from the managed row's frozen `runtime_dir/run_manifest.json` path.
-- Side effects: reads filesystem metadata only.
+- Purpose and contract: locate runtime evidence only at the managed row's frozen `runtime_dir/run_manifest.json` path. A confirmed missing file means no current evidence; a symlink, dangling symlink, directory, hard link, invalid encoding, invalid JSON, or non-mapping payload is corrupt and fails closed.
+- Side effects: reads exact-path filesystem metadata and validates JSON content.
 - Key callers/callees: used by hparam selection, run evidence, and adaptive digests together with the checkpoint/metric interpreters in the same module.
 - Reuse guidance: use this low-level owner instead of importing an implementation detail from the `hparam` facade.
 
@@ -234,7 +234,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path`
-- Purpose and contract: preflight every canonical/mirror/report/event output target, use canonical prior state plus non-status launch evidence, validate but never merge the local status mirror, fail before PID access or writes when canonical is terminal, otherwise terminate one manifest-recorded PID and reduce one `stopped` observation with its non-empty reason.
+- Purpose and contract: preflight every canonical/mirror/report/event output target, validate launch execution evidence against the immutable canonical execution identity, ignore launch values when choosing target/host/PID, fail before PID access or writes when canonical is terminal, otherwise terminate the canonical PID and reduce one `stopped` observation with its non-empty reason.
 - Important inputs/outputs: run directory, run id, and reason in; updated `run_status.tsv` path out.
 - Side effects: after a successful signal, writes the same reduced final row to canonical status, the local status mirror, and the launch mirror, then appends one experiment event.
 - Key callers/callees: public facade for `hparam_runtime.stop_hparam_run`, called by `agent_tools hparam-stop` and adaptive replacement logic.
@@ -245,7 +245,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `select_hparam_candidates(run_dir: str | Path, metric: str | None = None, mode: str | None = None) -> Path`
-- Purpose and contract: rank runs by the validation metric and direction frozen in the recipe, record fixed checkpoint paths, validate every existing experiment-wide ranking row against canonical ownership, replace only the current plan's managed keys, and rerank all preserved runs for the same step across plans. Ranking plus canonical matrix/event targets are preflighted together before the first write.
+- Purpose and contract: rank runs by the validation metric and direction frozen in the recipe, require every runnable registered hparam plan in the same step to use that same selection contract, record fixed checkpoint paths, validate every existing experiment-wide ranking row against canonical ownership, replace only the current plan's managed keys, and rerank all preserved runs for the step. Explicit blocked-plan artifacts are skipped, while a runnable plan missing `plan.json` or a plan/resolved task mismatch fails. Ranking plus canonical matrix/event targets are preflighted before the first ranking or runtime-evidence read.
 - Important inputs/outputs: run directory plus optional matching metric/mode assertions in; experiment `reports/ranking.csv` path out.
 - Side effects: reads plan and run manifests; writes ranking CSV and updates experiment manifests/events.
 - Key callers/callees: public facade for `hparam_selection.select_hparam_candidates`; uses canonical interpreters from `run_artifacts`.
@@ -404,8 +404,8 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 ## `agent_tools.experiment_workspace.merge_run_row`, `validate_frozen_run_update`, `merge_run_manifest`, and `write_run_matrix`
 
 - File: `agent_tools/experiment_workspace.py`
-- Signatures: `merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]`; `validate_frozen_run_update(existing: dict[str, Any], incoming: dict[str, Any], *, require_checkpoint_ownership: bool = False) -> None`; `merge_run_manifest(root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> list[dict[str, Any]]`; `write_run_matrix(root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> Path`
-- Purpose and contract: keep `merge_run_row` as the pure status reducer with terminal precedence, the active-to-scheduled regression guard, and an owner-time rule that permits `superseded` only from canonical `planned/pending`; use `validate_frozen_run_update` at pre-side-effect boundaries; and let `merge_run_manifest` own local and SSH canonical persistence after re-reading current state. The validator's explicit checkpoint-ownership mode additionally requires each non-empty evidence `checkpoint_path` to be a direct child of the run's frozen `checkpoint_dir`; empty checkpoint evidence remains valid. The owner verifies every newly introduced key against the experiment id in the workspace's authoritative manifest, rejects changes to registered identity, semantic parameters, snapshots, hashes, and artifact paths, preflights canonical/matrix/event targets through the transport owner, returns the complete rows actually committed, and passes those rows directly to `write_run_matrix` without a second manifest read.
+- Signatures: `merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]`; `validate_frozen_run_update(existing: dict[str, Any], incoming: dict[str, Any], *, require_checkpoint_ownership: bool = False, allow_execution_identity_fill: bool = False) -> None`; `merge_run_manifest(root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> list[dict[str, Any]]`; `write_run_matrix(root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> Path`
+- Purpose and contract: keep `merge_run_row` as the pure status reducer with terminal precedence, the active-to-scheduled regression guard, and an owner-time rule that permits `superseded` only from canonical `planned/pending`; use `validate_frozen_run_update` at pre-side-effect boundaries; and let `merge_run_manifest` own local and SSH canonical persistence after re-reading current state. Execution evidence cannot initialize canonical execution identity by default; only the canonical owner and its generated launch-row validation opt into the first trusted fill. The validator's explicit checkpoint-ownership mode additionally requires each non-empty evidence `checkpoint_path` to be a direct child of the run's frozen `checkpoint_dir`; empty checkpoint evidence remains valid. The owner verifies every newly introduced key against the experiment id in the workspace's authoritative manifest, rejects changes to registered identity, semantic parameters, snapshots, hashes, artifact paths, and execution identity, preflights canonical/matrix/event targets through the transport owner, returns the complete rows actually committed, and passes those rows directly to `write_run_matrix` without a second manifest read. An empty matrix has exactly the `step_id,run_id` header in both transports.
 - Side effects: the reducer returns a new row; the validator is pure and raises on drift; the manifest merger validates and rewrites the canonical manifest and its run matrix through the selected transport.
 - Reuse guidance: tracking code must produce ownership-proven narrow observations and submit them to this owner; mirrors, reports, and transition events must consume its returned rows. Do not read or update `run_manifest.tsv` directly or reimplement frozen-field checks.
 
@@ -422,7 +422,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiment_tracking.py`
 - Signature: `experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[str, Any]]`
-- Purpose and contract: read the current managed manifest through the workspace owner, prove launch/status evidence belongs to that workspace and managed key, reject any explicit experiment/version/config/frozen-locator drift, and only then project source allowlists for monitoring and ranking. The result is an in-memory view only and is never written as a canonical snapshot.
+- Purpose and contract: read the current managed manifest through the workspace owner, prove launch/status evidence belongs to that workspace and managed key, reject any explicit experiment/version/config/frozen-locator drift, and only then project source allowlists for monitoring and ranking. Until canonical execution identity has a trusted target, auxiliary execution fields are ignored rather than used for process access or persistence. The result is an in-memory view only and is never written as a canonical snapshot.
 - Side effects: reads experiment tables only.
 - Key callers/callees: used by public monitor/rank commands; delegates I/O to `experiment_io` and row reduction to `experiment_workspace`.
 - Reuse guidance: use this as the experiment-wide row aggregation boundary.
@@ -431,7 +431,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiment_tracking.py`
 - Signatures: `wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict[str, Any]]) -> list[dict[str, Any]]`; `monitor_run_row(root: Path, row: dict[str, Any], previous_rows: list[dict[str, str]], *, remote: str | None = None) -> dict[str, Any]`
-- Purpose and contract: turn ownership-proven W&B or runtime evidence into narrow managed-keyed observations. W&B evidence uses `resolve_external_run_row`, so a supplied experiment id must match and evidence without one may resolve only by unique version; observations contain only `(step_id, run_id)` plus `WANDB_RUN_FIELDS`, collapse repeated evidence to one row per key, and never persist display `version`. Monitor evidence is workspace-scoped, validates explicit frozen fields before allowlisting, and emits only the managed key plus `RUN_STATUS_FIELDS`.
+- Purpose and contract: turn ownership-proven W&B or runtime evidence into narrow managed-keyed observations. W&B evidence uses `resolve_external_run_row`, so a supplied experiment id must match and evidence without one may resolve only by unique version; observations contain only `(step_id, run_id)` plus `WANDB_RUN_FIELDS`, collapse repeated evidence to one row per key, and never persist display `version`. Monitor evidence is workspace-scoped, validates explicit frozen fields before allowlisting, and emits only the managed key plus `RUN_STATUS_FIELDS`; an SSH target/host injected solely for the current transport probe is stripped before canonical commit.
 - Side effects: W&B observation projection is pure; monitor projection reads local or remote process/runtime evidence.
 - Key callers/callees: used by `experiments.sync_wandb_runs` and `experiments.monitor_experiment`, which submit the observations to `experiment_workspace.merge_run_manifest`.
 - Reuse guidance: add evidence interpretation here, but keep canonical persistence in the workspace owner.

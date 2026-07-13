@@ -8,6 +8,7 @@ import yaml
 
 from . import experiment_io as exp_io, experiment_tracking as tracking
 from .experiment_workspace import (
+    EXECUTION_IDENTITY_FIELDS,
     TERMINAL_STATUSES,
     canonical_local_experiment_root,
     experiment_metadata_issues,
@@ -394,7 +395,10 @@ def _validate_evidence_rows(
         managed = managed_by_key.get(managed_run_key(row))
         if managed is None:
             raise ValueError(f"{source} contains a run outside the canonical manifest.")
-        validate_frozen_run_update(managed, row, require_checkpoint_ownership=True)
+        ownership_row = row
+        if source in {"launch_manifest.tsv", "run_status.tsv"} and managed.get("target") in (None, ""):
+            ownership_row = {field: value for field, value in row.items() if field not in EXECUTION_IDENTITY_FIELDS}
+        validate_frozen_run_update(managed, ownership_row, require_checkpoint_ownership=True)
 
 
 def _experiment_readme(experiment: dict[str, Any]) -> str:
