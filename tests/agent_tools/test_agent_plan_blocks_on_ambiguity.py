@@ -241,6 +241,176 @@ def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path
     assert (retry_dir / "run.sh").exists()
 
 
+def test_hparam_recipe_cannot_inherit_experiment_and_step_from_base(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload.pop("experiment")
+    payload.pop("step")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    plan = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+
+    assert doctor.returncode == 2
+    assert plan.returncode == 2
+    assert "experiment" in doctor.stdout
+    assert "experiment" in plan.stdout
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_effective_user_config_fails_before_workspace_mutation(tmp_path: Path):
+    for case, config_text in (("missing", None), ("invalid", "model: not-a-mapping\n")):
+        root = tmp_path / case
+        recipe = write_finetune_recipe(root)
+        selected_config = root / "selected.yaml"
+        if config_text is not None:
+            selected_config.write_text(config_text)
+        decisions = root / "decisions.yaml"
+        decisions.write_text(
+            yaml.safe_dump({"decisions": {"config": {"value": str(selected_config), "source": "explicit_user"}}})
+        )
+        before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+        result = _run(
+            "plan",
+            "--recipe",
+            str(recipe),
+            "--user-decisions",
+            str(decisions),
+            "--output-dir",
+            str(root / "plan"),
+        )
+
+        assert result.returncode == 1
+        assert "config" in result.stdout.lower()
+        assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+
+
+def test_unresolved_effective_user_config_fails_before_workspace_mutation(tmp_path: Path):
+    for case, value in (("null", None), ("empty", ""), ("ask", "ASK_USER")):
+        root = tmp_path / case
+        recipe = write_finetune_recipe(root)
+        decisions = root / "decisions.yaml"
+        decisions.write_text(yaml.safe_dump({"decisions": {"config": {"value": value, "source": "explicit_user"}}}))
+        before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+        result = _run(
+            "plan",
+            "--recipe",
+            str(recipe),
+            "--user-decisions",
+            str(decisions),
+            "--output-dir",
+            str(root / "plan"),
+        )
+
+        assert result.returncode == 2
+        assert "config" in result.stdout.lower()
+        assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+
+
+def test_unresolved_hparam_user_config_fails_before_workspace_mutation(tmp_path: Path):
+    for case, value in (("null", None), ("empty", ""), ("ask", "ASK_USER")):
+        root = tmp_path / case
+        recipe = _hparam_recipe(root)
+        decisions = root / "decisions.yaml"
+        decisions.write_text(yaml.safe_dump({"decisions": {"config": {"value": value, "source": "explicit_user"}}}))
+        before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+        result = _run(
+            "plan",
+            "--recipe",
+            str(recipe),
+            "--user-decisions",
+            str(decisions),
+            "--output-dir",
+            str(root / "plan"),
+        )
+
+        assert result.returncode == 2
+        assert "config" in result.stdout.lower()
+        assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+
+
+def test_resolved_hparam_user_config_owns_consultation_and_snapshot(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    base_recipe = yaml.safe_load(Path(recipe_payload["base_recipe"]).read_text())
+    base_config = yaml.safe_load(Path(base_recipe["inputs"]["config"]).read_text())
+    selected_config = tmp_path / "selected.yaml"
+    base_config["data"]["max_tokens"] = 5
+    selected_config.write_text(yaml.safe_dump(base_config, sort_keys=False))
+    decisions = tmp_path / "decisions.yaml"
+    decisions.write_text(
+        yaml.safe_dump({"decisions": {"config": {"value": str(selected_config), "source": "explicit_user"}}})
+    )
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(tmp_path / "plan"),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(tmp_path / "plan")
+    assert yaml.safe_load(Path(run["config"]).read_text())["data"]["max_tokens"] == 5
+    plan = json.loads((tmp_path / "plan" / "plan.json").read_text())
+    assert plan["recipe"]["_base_recipe"]["inputs"]["config"] == str(selected_config)
+
+
+def test_resolved_hparam_user_config_rechecks_base_consultation(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    base_recipe = yaml.safe_load(Path(recipe_payload["base_recipe"]).read_text())
+    base_config = yaml.safe_load(Path(base_recipe["inputs"]["config"]).read_text())
+    selected_config = tmp_path / "selected-mismatch.yaml"
+    base_config["finetune"]["task"]["monitor"] = "val_other"
+    selected_config.write_text(yaml.safe_dump(base_config, sort_keys=False))
+    decisions = tmp_path / "decisions.yaml"
+    decisions.write_text(
+        yaml.safe_dump({"decisions": {"config": {"value": str(selected_config), "source": "explicit_user"}}})
+    )
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(tmp_path / "plan"),
+    )
+
+    assert result.returncode == 2
+    assert "selection_metric differs" in result.stdout
+    assert (tmp_path / "plan" / "plan.blocked.md").exists()
+    assert not (tmp_path / "plan" / "runs").exists()
+
+
+def test_missing_or_unsupported_task_without_workspace_returns_report(tmp_path: Path):
+    for name, task, expected_returncode in (("missing", None, 2), ("unsupported", "unknown", 1)):
+        root = tmp_path / name
+        root.mkdir()
+        payload = {"name": name, "variant": "sleep2vec", "inputs": {}}
+        if task is not None:
+            payload["task"] = task
+        recipe = root / "recipe.yaml"
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+        before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(root / "plan"))
+
+        assert result.returncode == expected_returncode
+        assert "task" in result.stdout.lower()
+        assert not result.stderr
+        assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+
+
 def test_plan_skips_survival_index_gate_when_finetune_preset_is_configured(tmp_path: Path):
     recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
     preset = tmp_path / "preset.pkl"

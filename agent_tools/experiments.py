@@ -59,7 +59,18 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
             if existing_experiment.get(field) != experiment.get(field):
                 raise ValueError(f"experiment.{field} differs from the existing experiment manifest.")
         _managed_rows(root, remote=remote)
-        rows = exp_io.read_rows_at(manifest, remote=remote)
+        rows = exp_io.read_rows_at(manifest, remote=remote, strict=True)
+    exp_io.validate_managed_output_paths(
+        root,
+        [
+            root / "experiment.yaml",
+            root / "run_manifest.tsv",
+            root / "events.jsonl",
+            root / "README.md",
+            manifest,
+        ],
+        remote=remote,
+    )
     exp_io.mkdir_experiment_dirs(root, remote=remote)
     if not existing_text:
         exp_io.write_text_at(
@@ -128,6 +139,7 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
         existing or {},
         {"step": step, "experiment_id": experiment["id"], "recipe_path": "", "plans": []},
     )
+    exp_io.validate_managed_output_paths(root, [path, root / "events.jsonl"], remote=remote)
     if merged != existing:
         exp_io.write_text_at(path, yaml.safe_dump(merged, sort_keys=False), remote=remote)
     if existing is None:
@@ -155,6 +167,11 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if not isinstance(manifest.get("experiment"), dict):
         raise ValueError("experiment.yaml is missing.")
     target = root / "reports" / "final.md"
+    exp_io.validate_managed_output_paths(
+        root,
+        [target, root / "experiment.yaml", root / "events.jsonl"],
+        remote=remote,
+    )
     exp_io.write_text_at(target, report_text, remote=remote)
     manifest["experiment"]["status"] = "completed"
     manifest["experiment"]["completed_at"] = utc_now()
@@ -175,10 +192,22 @@ def sync_wandb_runs(
     managed_rows = _managed_rows(root, remote=remote)
     existing_metrics = exp_io.read_rows_at(root / "metrics_manifest.tsv", remote=remote, require_managed_identity=True)
     _validate_evidence_rows(managed_rows, existing_metrics, "metrics_manifest.tsv")
+    blocked = root / "reports" / "wandb_blocked.md"
+    exp_io.validate_managed_output_paths(
+        root,
+        [
+            blocked,
+            root / "wandb" / "summaries.jsonl",
+            root / "wandb" / "runs.tsv",
+            root / "metrics_manifest.tsv",
+            root / "experiment_manifest.tsv",
+            root / "reports" / "wandb.md",
+        ],
+        remote=remote,
+    )
     try:
         runs = tracking.wandb_runs(entity, project, group)
     except Exception as exc:
-        blocked = root / "reports" / "wandb_blocked.md"
         exp_io.write_text_at(blocked, f"# W&B Sync Blocked\n\n{type(exc).__name__}: {exc}\n", remote=remote)
         raise RuntimeError(f"W&B sync blocked; wrote {blocked}") from exc
 
@@ -189,6 +218,11 @@ def sync_wandb_runs(
     observations = tracking.wandb_run_observations(managed_rows, run_rows)
     managed_metrics = tracking.managed_metric_rows(managed_rows, metric_rows)
     merged_metrics = tracking.merge_rows(existing_metrics, managed_metrics)
+    exp_io.validate_managed_output_paths(
+        root,
+        [root / "wandb" / "history" / payload["history_filename"] for payload in payloads],
+        remote=remote,
+    )
 
     exp_io.mkdir_experiment_dirs(root, remote=remote)
     for payload in payloads:
@@ -220,11 +254,12 @@ def index_checkpoints(run_dir: str | Path, *, remote: str | None = None) -> Path
     managed_rows = _managed_rows(root, remote=remote)
     metrics = exp_io.read_rows_at(root / "metrics_manifest.tsv", remote=remote, require_managed_identity=True)
     _validate_evidence_rows(managed_rows, metrics, "metrics_manifest.tsv")
+    checkpoint_path = root / "checkpoint_manifest.tsv"
+    exp_io.validate_managed_output_paths(root, [checkpoint_path], remote=remote)
     rows = tracking.checkpoint_rows(root, remote=remote)
     for row in rows:
         row.update(tracking.best_metric_for_checkpoint(row, metrics))
     validate_managed_run_rows(rows, source="checkpoint_manifest.tsv", cardinality="many_per_run")
-    checkpoint_path = root / "checkpoint_manifest.tsv"
     if rows:
         exp_io.write_rows_at(checkpoint_path, rows, remote=remote)
     else:
@@ -235,17 +270,25 @@ def index_checkpoints(run_dir: str | Path, *, remote: str | None = None) -> Path
 def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
     root = _target_root(run_dir, remote)
     previous_rows = _managed_rows(root, remote=remote)
+    report_path = root / "reports" / "monitor.md"
+    exp_io.validate_managed_output_paths(root, [report_path], remote=remote)
     run_rows = tracking.experiment_run_rows(root, remote=remote)
     observations = [tracking.monitor_run_row(root, row, previous_rows, remote=remote) for row in run_rows]
     committed = merge_run_manifest(root, observations, remote=remote)
     report = tracking.monitor_report(committed)
-    exp_io.write_text_at(root / "reports" / "monitor.md", report, remote=remote)
-    return {"run_dir": str(root), "runs": committed, "report": str(root / "reports" / "monitor.md")}
+    exp_io.write_text_at(report_path, report, remote=remote)
+    return {"run_dir": str(root), "runs": committed, "report": str(report_path)}
 
 
 def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, remote: str | None = None) -> Path:
     root = _target_root(run_dir, remote)
     managed_rows = _managed_rows(root, remote=remote)
+    out = root / "reports" / "experiment_ranking.csv"
+    exp_io.validate_managed_output_paths(
+        root,
+        [out, root / "reports" / "experiment_ranking.md"],
+        remote=remote,
+    )
     metric_rows = exp_io.read_rows_at(root / "metrics_manifest.tsv", remote=remote, require_managed_identity=True)
     checkpoint_rows = exp_io.read_rows_at(
         root / "checkpoint_manifest.tsv", remote=remote, require_managed_identity=True
@@ -256,7 +299,6 @@ def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, r
     rows = tracking.candidate_rows(run_rows, metric_rows, metric)
     ranked = tracking.rank_candidates(rows, checkpoint_rows, mode=mode)
     validate_managed_run_rows(ranked, source="experiment_ranking.csv", cardinality="one_per_run")
-    out = root / "reports" / "experiment_ranking.csv"
     if ranked:
         exp_io.write_rows_at(out, ranked, remote=remote)
     else:
@@ -299,7 +341,7 @@ def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
 
     experiment_manifest = root / "experiment_manifest.tsv"
     if exp_io.path_exists_at(experiment_manifest, remote=remote):
-        manifest_rows = exp_io.read_rows_at(experiment_manifest, remote=remote)
+        manifest_rows = exp_io.read_rows_at(experiment_manifest, remote=remote, strict=True)
         if len(manifest_rows) != 1:
             raise ValueError("experiment_manifest.tsv must contain exactly one row.")
         manifest_row = manifest_rows[0]

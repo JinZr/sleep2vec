@@ -473,6 +473,51 @@ def test_selected_candidates_reject_foreign_other_step_before_filtering(tmp_path
         hparam_postprocess._selected_candidate_rows(rows, plan=plan)
 
 
+def test_selected_candidates_filters_managed_same_step_rows_from_previous_plans(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    first_plan_dir = tmp_path / "plan-1"
+    second_plan_dir = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first_plan_dir)).returncode == 0
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan_dir)).returncode == 0
+    first_run = _first_run(first_plan_dir)
+    second_plan = json.loads((second_plan_dir / "plan.json").read_text())
+    second_run = second_plan["runs"][0]
+
+    rows = [{**first_run, "rank": "1"}, {**second_run, "rank": "2"}]
+    selected = hparam_postprocess._selected_candidate_rows(
+        rows,
+        plan=second_plan,
+        all_candidates=True,
+    )
+    top = hparam_postprocess._selected_candidate_rows(rows, plan=second_plan)
+
+    assert [row["run_id"] for row in selected] == [second_run["run_id"]]
+    assert [row["run_id"] for row in top] == [second_run["run_id"]]
+
+
+def test_selected_candidates_ranks_current_plan_rows_after_filtering_previous_plan(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, run_count=2)
+    first_plan_dir = tmp_path / "plan-1"
+    second_plan_dir = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first_plan_dir)).returncode == 0
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan_dir)).returncode == 0
+    first_run = _first_run(first_plan_dir)
+    second_plan = json.loads((second_plan_dir / "plan.json").read_text())
+    better, worse = second_plan["runs"]
+
+    selected = hparam_postprocess._selected_candidate_rows(
+        [
+            {**first_run, "rank": "1"},
+            {**worse, "rank": "4"},
+            {**better, "rank": "3"},
+        ],
+        plan=second_plan,
+        top_k=1,
+    )
+
+    assert [row["run_id"] for row in selected] == [better["run_id"]]
+
+
 def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

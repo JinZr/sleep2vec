@@ -14,6 +14,7 @@ import yaml
 from agent_tools import experiment_io, experiments, hparam, hparam_runtime, plans, run_artifacts
 from agent_tools.experiment_workspace import (
     MANAGED_RUN_PATH_FIELDS,
+    append_event,
     canonical_local_experiment_root,
     ensure_experiment_workspace,
     file_sha256,
@@ -524,6 +525,11 @@ def test_managed_run_parameters_reject_legacy_prefix():
         ("unknown_remote", {"status": "planned"}, "unknown_remote"),
         ("missing_pid", {"status": "pending"}, "missing_pid"),
         ("running", {"status": "failed"}, "failed"),
+        ("planned", {"status": "superseded"}, "superseded"),
+        ("pending", {"status": "superseded"}, "superseded"),
+        ("launched", {"status": "superseded"}, "launched"),
+        ("running", {"status": "superseded"}, "running"),
+        ("unknown_remote", {"status": "superseded"}, "unknown_remote"),
         ("completed", {"status": "failed"}, "failed"),
         ("finished", {"status": "failed"}, "failed"),
         ("completed", {"status": "running"}, "completed"),
@@ -580,6 +586,43 @@ def test_merge_run_manifest_returns_the_canonical_rows_it_committed(tmp_path: Pa
 
     assert committed == rows
     assert committed[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("target_name", ["run_matrix.csv", "reports/run_matrix.md"])
+@pytest.mark.parametrize("target_kind", ["directory", "hardlink"])
+def test_merge_run_manifest_rejects_invalid_derived_targets_before_canonical_commit(
+    tmp_path: Path, target_name: str, target_kind: str
+):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {"experiment_id": "unit", "step_id": "train", "run_id": "run-000"}
+    merge_run_manifest(tmp_path, [{**identity, "status": "planned"}])
+    manifest_path = tmp_path / "run_manifest.tsv"
+    target = tmp_path / target_name
+    target.unlink()
+    if target_kind == "directory":
+        target.mkdir()
+    else:
+        target.hardlink_to(manifest_path)
+    before = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="Managed output"):
+        merge_run_manifest(tmp_path, [{**identity, "status": "running"}])
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_append_event_rejects_canonical_manifest_alias(tmp_path: Path):
+    initialize_run_manifest(tmp_path)
+    manifest_path = tmp_path / "run_manifest.tsv"
+    events_path = tmp_path / "events.jsonl"
+    events_path.hardlink_to(manifest_path)
+    before = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="Managed output"):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert manifest_path.read_bytes() == before
 
 
 def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch):

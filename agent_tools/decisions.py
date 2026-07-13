@@ -103,7 +103,10 @@ def evaluate_consultation_gates(
         )
 
     if require_experiment:
-        for issue in experiment_metadata_issues(recipe):
+        metadata_recipe = recipe
+        if task_value == "hparam_tune" and isinstance(recipe.get("_local_recipe"), dict):
+            metadata_recipe = recipe["_local_recipe"]
+        for issue in experiment_metadata_issues(metadata_recipe):
             issues.append(
                 DecisionIssue(
                     DecisionStatus(issue["status"]),

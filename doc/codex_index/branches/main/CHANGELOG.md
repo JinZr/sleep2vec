@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-13
+
+- Made local status tables non-authoritative, limited adaptive supersede to canonical `planned/pending`, and added combination coverage for launch, monitor, stop, and adaptive races.
+- Preserved and reranked same-step runs across multiple plans, while postprocessing validates the complete workspace ranking before retaining current-plan keys.
+- Added strict non-run table reads and one local/SSH managed-output preflight for canonical, matrix, event, report, W&B, checkpoint, and experiment lifecycle writers.
+- Required hparam recipes to declare their own experiment/step ownership and validated user-selected effective configs before workspace mutation.
+
 ## 2026-07-12
 
 - Refreshed the agent-tooling index after splitting decision, plan, hparam, and experiment responsibilities behind their existing public entrypoints.

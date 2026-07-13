@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 
@@ -140,3 +141,55 @@ def test_managed_table_reader_accepts_current_header_only_table(tmp_path: Path):
     path.write_text("step_id\trun_id\n")
 
     assert experiment_io.read_rows_at(path, require_managed_identity=True) == []
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "experiment_id\texperiment_id\texperiment_root\nunit\tunit\t/root\n",
+        "experiment_id\texperiment_root\nunit\t/root\textra\n",
+    ],
+)
+def test_strict_table_reader_rejects_duplicate_header_and_non_rectangular_rows(tmp_path: Path, contents: str):
+    path = tmp_path / "experiment_manifest.tsv"
+    path.write_text(contents)
+
+    with pytest.raises(ValueError):
+        experiment_io.read_rows_at(path, strict=True)
+
+
+def test_strict_table_reader_does_not_require_managed_run_identity(tmp_path: Path):
+    path = tmp_path / "experiment_manifest.tsv"
+    path.write_text("experiment_id\texperiment_root\nunit\t/root\n")
+
+    assert experiment_io.read_rows_at(path, strict=True) == [{"experiment_id": "unit", "experiment_root": "/root"}]
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_managed_output_preflight_rejects_aliased_target(tmp_path: Path, alias_kind: str):
+    canonical = tmp_path / "run_manifest.tsv"
+    canonical.write_text("step_id\trun_id\n")
+    output = tmp_path / "reports" / "final.md"
+    output.parent.mkdir()
+    if alias_kind == "symlink":
+        output.symlink_to(canonical)
+    else:
+        os.link(canonical, output)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiment_io.validate_managed_output_paths(tmp_path, [output])
+
+
+def test_remote_managed_output_preflight_fails_closed(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 2, "", "aliased output")
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="aliased output"):
+        experiment_io.validate_managed_output_paths("/remote/root", ["/remote/root/reports/final.md"], remote="host")
+
+    assert calls[0][1]["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS

@@ -9,6 +9,7 @@ from . import run_artifacts as artifacts
 from .experiment_workspace import (
     append_event,
     experiment_root,
+    managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
     read_run_manifest,
@@ -87,7 +88,17 @@ def select_hparam_candidates(
             )
         validate_frozen_run_update(canonical, row)
     step_id = str((recipe.get("step") or {}).get("id") or "")
-    all_ranked = [row for row in existing_ranked if row.get("step_id") != step_id] + current_ranked
+    current_keys = {managed_run_key(row) for row in current_ranked}
+    preserved = [row for row in existing_ranked if managed_run_key(row) not in current_keys]
+    step_ranked = [row for row in [*preserved, *current_ranked] if row.get("step_id") == step_id]
+    step_ranked = sorted(
+        step_ranked,
+        key=lambda row: artifacts.sortable_score(row.get("score"), reverse),
+        reverse=reverse,
+    )
+    for rank, row in enumerate(step_ranked, start=1):
+        row["rank"] = rank
+    all_ranked = [row for row in preserved if row.get("step_id") != step_id] + step_ranked
     write_rows(out, all_ranked)
     merge_run_manifest(
         workspace,
@@ -101,7 +112,7 @@ def select_hparam_candidates(
                 "rank": row.get("rank"),
                 "checkpoint_path": row.get("checkpoint_path"),
             }
-            for row in current_ranked
+            for row in step_ranked
         ],
     )
     append_event(
@@ -112,7 +123,7 @@ def select_hparam_candidates(
             "metric": metric,
             "mode": mode,
             "ranking": str(out),
-            "selected_run_id": current_ranked[0].get("run_id") if current_ranked else None,
+            "selected_run_id": step_ranked[0].get("run_id") if step_ranked else None,
         },
     )
     return out

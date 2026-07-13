@@ -415,6 +415,48 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
     assert any(row["step_id"] == "other-step" and row["run_id"] == "run-999" for row in rows)
 
 
+def test_hparam_select_preserves_and_reranks_previous_plans_for_same_step(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plans = []
+    for index, score in enumerate((0.9, 0.8), start=1):
+        plan_dir = tmp_path / f"plan-{index}"
+        assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+        run = _first_run(plan_dir)
+        runtime_dir = Path(run["runtime_dir"])
+        checkpoint_dir = Path(run["checkpoint_dir"])
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint = checkpoint_dir / f"epoch={index}.ckpt"
+        checkpoint.write_text("checkpoint")
+        (runtime_dir / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "metrics": {"val_ahi_pearson": score},
+                    "best_model_path": str(checkpoint),
+                    "epoch": index,
+                }
+            )
+        )
+        hparam_selection.select_hparam_candidates(plan_dir)
+        plans.append((plan_dir, run))
+
+    ranking = read_rows(_ranking_path(plans[-1][0]))
+    assert [(row["run_id"], row["score"], row["rank"]) for row in ranking] == [
+        ("run-000", "0.9", "1"),
+        ("run-001", "0.8", "2"),
+    ]
+    canonical = read_rows(tmp_path / "run_manifest.tsv")
+    assert [(row["run_id"], row["score"], row["rank"]) for row in canonical] == [
+        ("run-000", "0.9", "1"),
+        ("run-001", "0.8", "2"),
+    ]
+    selections = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+        if json.loads(line)["event_type"] == "candidate_selected"
+    ]
+    assert selections[-1]["selected_run_id"] == "run-000"
+
+
 def test_hparam_select_rejects_header_only_legacy_ranking(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

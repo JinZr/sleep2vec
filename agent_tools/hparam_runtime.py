@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from . import run_artifacts as artifacts, run_evidence as evidence
+from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
     TERMINAL_STATUSES,
     append_event,
@@ -37,6 +37,18 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            workspace / "run_manifest.tsv",
+            workspace / "run_matrix.csv",
+            workspace / "reports" / "run_matrix.md",
+            workspace / "events.jsonl",
+            workspace / "reports" / "status.md",
+            run_dir / "launch_manifest.tsv",
+            run_dir / "run_status.tsv",
+        ],
+    )
     experiment_manifest = yaml.safe_load((workspace / "experiment.yaml").read_text()) or {}
     experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
     if isinstance(experiment, dict) and experiment.get("status") == "completed":
@@ -54,14 +66,13 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
         if path.exists() and {managed_run_key(row) for row in table} != expected_keys:
             raise ValueError(f"Managed table does not match the current hparam plan: {path}")
     existing_by_key = {managed_run_key(row): row for row in existing_rows}
-    previous_by_key = {managed_run_key(row): row for row in previous_status}
     workspace_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     for table in (existing_rows, previous_status):
         for row in table:
             validate_frozen_run_update(workspace_by_key[managed_run_key(row)], row)
     refreshed = {}
     for key in expected_keys:
-        previous = merge_run_row(workspace_by_key.get(key, {}), previous_by_key.get(key, {}))
+        previous = workspace_by_key.get(key, {})
         if key in existing_by_key:
             observation = {
                 field: value for field, value in existing_by_key[key].items() if field not in {"status", "state"}
@@ -121,6 +132,16 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
         rows.append(row)
     for row in rows:
         validate_frozen_run_update(workspace_by_key[managed_run_key(row)], row)
+    run_output_paths = [Path(str(row[field])) for row in rows for field in ("log_path", "pid_path")]
+    if target == "ssh":
+        if not dry_run:
+            exp_io.validate_managed_output_paths(
+                workspace,
+                run_output_paths,
+                remote=str(execution["host"]),
+            )
+    else:
+        exp_io.validate_managed_output_paths(workspace, run_output_paths)
     if target != "ssh":
         for row in rows:
             Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
@@ -170,14 +191,25 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            workspace / "run_manifest.tsv",
+            workspace / "run_matrix.csv",
+            workspace / "reports" / "run_matrix.md",
+            workspace / "events.jsonl",
+            workspace / "reports" / "status.md",
+            root / "launch_manifest.tsv",
+            root / "run_status.tsv",
+        ],
+    )
     workspace_rows = read_run_manifest(workspace)
     workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
-    local_by_key = {managed_run_key(row): row for row in previous}
     launch_by_key = {managed_run_key(row): row for row in manifest}
     for table in (manifest, previous):
         for row in table:
             validate_frozen_run_update(workspace_by_key[managed_run_key(row)], row)
-    previous_rows = {key: merge_run_row(workspace_by_key[key], local_by_key.get(key, {})) for key in expected_keys}
+    previous_rows = {key: workspace_by_key[key] for key in expected_keys}
     rows = []
     for run in plan["runs"]:
         key = managed_run_key(run)
@@ -234,6 +266,18 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            workspace / "run_manifest.tsv",
+            workspace / "run_matrix.csv",
+            workspace / "reports" / "run_matrix.md",
+            workspace / "events.jsonl",
+            workspace / "reports" / "status.md",
+            root / "launch_manifest.tsv",
+            root / "run_status.tsv",
+        ],
+    )
     workspace_rows = read_run_manifest(workspace)
     workspace_by_key = {managed_run_key(item): item for item in workspace_rows}
     for table in (rows, status_rows):
@@ -246,9 +290,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
     key = managed_run_key(matched[0])
     launch_by_key = {managed_run_key(item): item for item in rows}
-    local_by_key = {managed_run_key(item): item for item in status_rows}
     row = launch_by_key[key]
-    previous = merge_run_row(workspace_by_key[key], local_by_key.get(key, {}))
+    previous = workspace_by_key[key]
     launch_evidence = {field: value for field, value in row.items() if field not in {"status", "state"}}
     previous = merge_run_row(previous, launch_evidence)
     if previous.get("status") in TERMINAL_STATUSES:

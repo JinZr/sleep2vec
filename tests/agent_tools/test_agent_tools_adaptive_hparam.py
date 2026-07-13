@@ -529,6 +529,31 @@ def test_supersede_event_uses_the_status_committed_by_the_canonical_owner(tmp_pa
     assert events_path.read_bytes() == before
 
 
+def test_supersede_does_not_override_run_launched_after_eligibility_check(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    _write_fake_manifest(workflow_dir, score=0.73)
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    real_merge = merge_run_manifest
+
+    def merge_after_launch(root, rows):
+        real_merge(root, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "running"}])
+        return real_merge(root, rows)
+
+    monkeypatch.setattr(adaptive_hparam, "merge_run_manifest", merge_after_launch)
+    events_path = tmp_path / "events.jsonl"
+    before = events_path.read_bytes()
+
+    adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
+
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
+    assert _read_table(round_dir / "run_status.tsv")[0]["status"] == "running"
+    assert _read_table(round_dir / "launch_manifest.tsv")[0]["status"] == "running"
+    assert events_path.read_bytes() == before
+
+
 def test_adaptive_step_blocks_suggestion_without_scored_objective(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"

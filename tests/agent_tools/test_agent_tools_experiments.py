@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -210,6 +211,69 @@ def test_experiment_init_validates_existing_tables_before_writing(tmp_path: Path
     assert _workspace_files(tmp_path) == before
 
 
+@pytest.mark.parametrize("corruption", ["duplicate_header", "non_rectangular"])
+@pytest.mark.parametrize("operation", ["reinit", "monitor"])
+def test_experiment_manifest_corruption_fails_before_mutation(tmp_path: Path, corruption: str, operation: str):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    manifest = tmp_path / "experiment_manifest.tsv"
+    header, row = manifest.read_text().splitlines()
+    if corruption == "duplicate_header":
+        manifest.write_text(f"experiment_id\t{header}\nunit\t{row}\n")
+    else:
+        manifest.write_text(f"{header}\n{row}\textra\n")
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError):
+        if operation == "reinit":
+            experiments.init_experiment(tmp_path, spec)
+        else:
+            experiments.monitor_experiment(tmp_path)
+
+    assert _workspace_files(tmp_path) == before
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_experiment_reinit_rejects_readme_alias_before_writing(tmp_path: Path, alias_kind: str):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    run_manifest = tmp_path / "run_manifest.tsv"
+    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\trunning\n")
+    readme = tmp_path / "README.md"
+    readme.unlink()
+    if alias_kind == "symlink":
+        readme.symlink_to(run_manifest)
+    else:
+        os.link(run_manifest, readme)
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.init_experiment(tmp_path, spec)
+
+    assert _workspace_files(tmp_path) == before
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_experiment_finalize_rejects_report_alias_before_writing(tmp_path: Path, alias_kind: str):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    run_manifest = tmp_path / "run_manifest.tsv"
+    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n")
+    final = tmp_path / "reports" / "final.md"
+    if alias_kind == "symlink":
+        final.symlink_to(run_manifest)
+    else:
+        os.link(run_manifest, final)
+    report = tmp_path.parent / "final.md"
+    report.write_text("# Final\n\nValidation-selected result.\n")
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.finalize_experiment(tmp_path, report)
+
+    assert _workspace_files(tmp_path) == before
+
+
 def test_experiment_registers_step_and_finalizes_completed_workspace(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
@@ -388,7 +452,7 @@ def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypa
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        if "mkdir -p" in command[-1]:
+        if "mkdir -p" in command[-1] or "seen_inodes" in command[-1]:
             return subprocess.CompletedProcess(command, 0, "", "")
         return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
 

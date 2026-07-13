@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 from pathlib import Path
 import shlex
+import stat
 import subprocess
 from typing import Any
 
@@ -111,22 +113,31 @@ def read_rows_at(
     *,
     remote: str | None = None,
     require_managed_identity: bool = False,
+    strict: bool = False,
 ) -> list[dict[str, str]]:
-    if not remote:
+    strict = strict or require_managed_identity
+    if not remote and not strict:
         return read_rows(path, require_managed_identity=require_managed_identity)
-    text = read_text_at(path, remote=remote)
+    if remote:
+        text = read_text_at(path, remote=remote)
+    else:
+        target = Path(path)
+        if not target.exists() and not target.is_symlink():
+            return []
+        text = target.read_text()
     if not text:
-        if require_managed_identity and path_exists_at(path, remote=remote):
-            raise ValueError(f"Managed table is empty: {path}")
+        if strict and path_exists_at(path, remote=remote):
+            raise ValueError(f"Strict table is empty: {path}")
         return []
     delimiter = "\t" if Path(str(path)).suffix == ".tsv" else ","
-    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter, strict=require_managed_identity)
-    if require_managed_identity:
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter, strict=strict)
+    if strict:
         fieldnames = reader.fieldnames
         if not fieldnames:
-            raise ValueError(f"Managed table has no header: {path}")
+            raise ValueError(f"Strict table has no header: {path}")
         if len(fieldnames) != len(set(fieldnames)):
-            raise ValueError(f"Managed table has duplicate header fields: {path}")
+            raise ValueError(f"Strict table has duplicate header fields: {path}")
+    if require_managed_identity:
         if "trial_id" in fieldnames:
             raise ValueError(
                 f"Historical managed table fields are read-only; Historical trial_id fields are unsupported: {path}"
@@ -138,10 +149,139 @@ def read_rows_at(
             raise ValueError(
                 f"Managed table header must define step_id and run_id; missing {', '.join(missing)}: {path}"
             )
-    rows = list(reader)
-    if require_managed_identity and any(None in row or any(value is None for value in row.values()) for row in rows):
-        raise ValueError(f"Managed table has a non-rectangular row: {path}")
+    try:
+        rows = list(reader)
+    except csv.Error as exc:
+        raise ValueError(f"Strict table is malformed: {path}") from exc
+    if strict and any(None in row or any(value is None for value in row.values()) for row in rows):
+        raise ValueError(f"Strict table has a non-rectangular row: {path}")
     return rows
+
+
+def validate_managed_output_paths(
+    root: str | Path,
+    paths: list[str | Path],
+    *,
+    remote: str | None = None,
+) -> None:
+    if not paths:
+        return
+    if remote:
+        script = """
+import json
+import os
+import stat
+import sys
+
+root, *targets = json.loads(sys.argv[1])
+root = os.path.abspath(root)
+seen_paths = set()
+seen_inodes = set()
+
+def reject(path):
+    print(f"Managed output paths must be independent regular files: {path}", file=sys.stderr)
+    raise SystemExit(2)
+
+for raw_target in targets:
+    target = os.path.abspath(raw_target)
+    try:
+        if os.path.commonpath([root, target]) != root:
+            reject(target)
+    except ValueError:
+        reject(target)
+    if target in seen_paths:
+        reject(target)
+    seen_paths.add(target)
+
+    relative = os.path.relpath(target, root)
+    ancestors = []
+    current = root
+    for part in relative.split(os.sep)[:-1]:
+        current = os.path.join(current, part)
+        ancestors.append(current)
+    missing_ancestor = False
+    for ancestor in ancestors:
+        try:
+            info = os.lstat(ancestor)
+        except FileNotFoundError:
+            missing_ancestor = True
+            break
+        except OSError as exc:
+            print(exc, file=sys.stderr)
+            raise SystemExit(1)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            reject(ancestor)
+    if missing_ancestor:
+        continue
+
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        continue
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        reject(target)
+    inode = (info.st_dev, info.st_ino)
+    if inode in seen_inodes:
+        reject(target)
+    seen_inodes.add(inode)
+"""
+        payload = json.dumps([str(root), *(str(path) for path in paths)])
+        result = subprocess.run(
+            ["ssh", remote, f"python3 -c {shlex.quote(script)} {shlex.quote(payload)}"],
+            text=True,
+            capture_output=True,
+            timeout=SSH_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 2:
+            raise ValueError(result.stderr.strip() or "Managed output paths must be independent regular files.")
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"SSH output path validation failed on {remote}: {detail}")
+        return
+
+    root_path = Path(os.path.abspath(root))
+    seen_paths = set()
+    seen_inodes = set()
+    for raw_target in paths:
+        target = Path(os.path.abspath(raw_target))
+        try:
+            relative = target.relative_to(root_path)
+        except ValueError as exc:
+            raise ValueError(f"Managed output path is outside its workspace: {target}") from exc
+        if target in seen_paths:
+            raise ValueError(f"Managed output paths must be independent regular files: {target}")
+        seen_paths.add(target)
+
+        ancestors = []
+        current = root_path
+        for part in relative.parts[:-1]:
+            current /= part
+            ancestors.append(current)
+        missing_ancestor = False
+        for ancestor in ancestors:
+            try:
+                info = os.lstat(ancestor)
+            except FileNotFoundError:
+                missing_ancestor = True
+                break
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise ValueError(f"Managed output paths must be independent regular files: {ancestor}")
+        if missing_ancestor:
+            continue
+
+        try:
+            info = os.lstat(target)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError(f"Managed output paths must be independent regular files: {target}")
+        inode = (info.st_dev, info.st_ino)
+        if inode in seen_inodes:
+            raise ValueError(f"Managed output paths must be independent regular files: {target}")
+        seen_inodes.add(inode)
 
 
 def read_text_at(path: str | Path, *, remote: str | None = None) -> str:

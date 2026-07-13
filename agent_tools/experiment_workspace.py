@@ -371,6 +371,11 @@ def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) 
         "plans": [str(plan_path)],
     }
     merged_step_payload = merge_step_manifest(existing_step_payload or {}, step_payload)
+    step_manifest = root / "steps" / str(step["id"]) / "step.yaml"
+    exp_io.validate_managed_output_paths(
+        root,
+        [manifest_path, root / "run_manifest.tsv", root / "events.jsonl", root / "README.md", step_manifest],
+    )
 
     root.mkdir(parents=True, exist_ok=True)
     (root / "reports").mkdir(exist_ok=True)
@@ -380,7 +385,6 @@ def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) 
         manifest_path.write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
         initialize_run_manifest(root)
         append_event(root, "experiment_initialized", {"experiment_id": experiment["id"]})
-    step_manifest = step_dir / "step.yaml"
     if merged_step_payload != existing_step_payload:
         step_manifest.write_text(yaml.safe_dump(merged_step_payload, sort_keys=False))
     if existing_step_payload is None:
@@ -390,7 +394,9 @@ def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) 
 
 
 def append_event(root: str | Path, event_type: str, payload: dict[str, Any]) -> None:
-    path = Path(root) / "events.jsonl"
+    root = Path(root)
+    path = root / "events.jsonl"
+    exp_io.validate_managed_output_paths(root, [path])
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {"time": _now(), "event_type": event_type, **json_ready(payload)}
     with path.open("a") as file_obj:
@@ -565,6 +571,8 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
             merged["status"] = "failed"
         else:
             merged["status"] = existing_status
+    elif incoming_status == "superseded" and existing_status not in {"planned", "pending"}:
+        merged["status"] = existing_status
     elif existing_status in {"launched", "running", "unknown_remote", "missing_pid"} and incoming_status in {
         "planned",
         "pending",
@@ -599,7 +607,13 @@ def validate_frozen_run_update(
 def merge_run_manifest(
     root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None
 ) -> list[dict[str, Any]]:
-    path = Path(root) / "run_manifest.tsv"
+    root = Path(root)
+    path = root / "run_manifest.tsv"
+    exp_io.validate_managed_output_paths(
+        root,
+        [path, root / "run_matrix.csv", root / "reports" / "run_matrix.md", root / "events.jsonl"],
+        remote=remote,
+    )
     existing = read_run_manifest(root, remote=remote)
     validate_managed_run_rows(rows, source="incoming run manifest", cardinality="one_per_run")
     by_id = {managed_run_key(row): dict(row) for row in existing}

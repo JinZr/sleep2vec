@@ -333,8 +333,11 @@ def _selected_candidate_rows(
     if workspace is None:
         raise ValueError("Selected candidates require a managed experiment workspace.")
     workspace_by_key = {managed_run_key(run): run for run in read_run_manifest(workspace)}
+    runs_by_key = {managed_run_key(run): run for run in plan.get("runs", [])}
+    has_same_step_previous_plan = False
     for row in rows:
-        managed = workspace_by_key.get(managed_run_key(row))
+        key = managed_run_key(row)
+        managed = workspace_by_key.get(key)
         if managed is None:
             if str(row.get("step_id") or "") in plan_steps:
                 raise ValueError(
@@ -344,16 +347,17 @@ def _selected_candidate_rows(
                 f"Selected candidate is not managed by the experiment workspace: {row['step_id']} / {row['run_id']}"
             )
         candidate_parameters = managed_run_parameters(row)
+        if str(row.get("step_id") or "") in plan_steps and key not in runs_by_key:
+            has_same_step_previous_plan = True
         ownership_evidence = (
-            row
-            if str(row.get("step_id") or "") not in plan_steps
-            else {field: value for field, value in row.items() if field not in candidate_parameters}
+            {field: value for field, value in row.items() if field not in candidate_parameters}
+            if key in runs_by_key
+            else row
         )
         validate_frozen_run_update(managed, ownership_evidence)
-    rows = [row for row in rows if str(row.get("step_id") or "") in plan_steps]
+    rows = [row for row in rows if managed_run_key(row) in runs_by_key]
     if not rows:
         raise ValueError(f"No selected candidates match the current hparam step: {', '.join(sorted(plan_steps))}")
-    runs_by_key = {managed_run_key(run): run for run in plan.get("runs", [])}
     managed_rows = []
     for row in rows:
         key = managed_run_key(row)
@@ -377,6 +381,21 @@ def _selected_candidate_rows(
         managed_rows.append({**derived, **run})
     if all_candidates:
         return managed_rows
+    if has_same_step_previous_plan:
+        ranked_rows = []
+        for index, row in enumerate(managed_rows):
+            rank = row.get("rank")
+            if rank in (None, ""):
+                ranked_rows.append((-math.inf, index, row))
+                continue
+            try:
+                ranked_rows.append((int(float(rank)), index, row))
+            except ValueError:
+                continue
+        selected = [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
+        if not selected:
+            raise ValueError("No selected candidates remain after rank/top_k filtering.")
+        return selected
     selected = []
     for row in managed_rows:
         rank = row.get("rank")

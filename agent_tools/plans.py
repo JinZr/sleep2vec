@@ -14,6 +14,7 @@ from .experiment_workspace import (
     append_event,
     canonical_local_experiment_root,
     ensure_experiment_workspace,
+    experiment_metadata_issues,
     experiment_root,
     file_sha256,
     merge_run_manifest,
@@ -37,9 +38,9 @@ def evaluate_recipe(
     source = resolve_repo_path(recipe_path)
     if source is not None:
         recipe["_recipe_path"] = str(source.resolve())
-    cfg = context.load_config_summary_for_recipe(recipe)
     policy, defaults = load_policy_files()
     user_decisions = load_user_decisions(user_decisions_path)
+    cfg = context.load_config_summary_for_recipe(recipe)
     report = evaluate_consultation_gates(
         recipe.get("task"),
         recipe,
@@ -48,6 +49,68 @@ def evaluate_recipe(
         policy,
         defaults,
     )
+    config_decision = report.decisions.get("config")
+    selected_config = (
+        recipe.get("task") in {"finetune", "infer", "evaluate", "hparam_tune"}
+        and "config" in user_decisions
+        and config_decision is not None
+    )
+    if selected_config and config_decision.value in (None, "", "ASK_USER"):
+        report = _append_issues(
+            report,
+            [
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "config",
+                    "Explicit config decision is unresolved.",
+                    "Which config should this task use?",
+                    {
+                        "config": config_decision.value,
+                        "preflight_before_workspace": True,
+                    },
+                )
+            ],
+        )
+    elif selected_config:
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        recipe["inputs"] = {**inputs, "config": config_decision.value}
+        if recipe.get("task") == "hparam_tune" and isinstance(recipe.get("_base_recipe"), dict):
+            base_inputs = (
+                recipe["_base_recipe"].get("inputs") if isinstance(recipe["_base_recipe"].get("inputs"), dict) else {}
+            )
+            recipe["_base_recipe"]["inputs"] = {**base_inputs, "config": config_decision.value}
+        config_error = None
+        try:
+            cfg = context.load_config_summary_for_recipe(recipe)
+        except Exception as exc:
+            cfg = None
+            config_error = str(exc)
+        report = evaluate_consultation_gates(
+            recipe.get("task"),
+            recipe,
+            cfg,
+            {"user_decisions": user_decisions},
+            policy,
+            defaults,
+        )
+        blocking_config_issues = cfg.get("blocking_issues", []) if cfg is not None else []
+        if config_error or cfg is None or cfg.get("is_finetune") is not True or blocking_config_issues:
+            message = config_error or "Selected config must be a readable finetune config without blocking issues."
+            report = _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "config",
+                        message,
+                        None,
+                        {
+                            "config": config_decision.value,
+                            "preflight_before_workspace": True,
+                        },
+                    )
+                ],
+            )
     report = _append_issues(report, context.index_summary_issues(recipe, cfg, report.decisions))
     return recipe, cfg, report
 
@@ -180,11 +243,11 @@ def build_plan(
     if _has_output_artifact_issue(report):
         return report
     if report.exit_code != 0:
-        preflight_failed_before_workspace = any(
-            issue.field in {"experiment", "step"}
+        preflight_failed_before_workspace = bool(experiment_metadata_issues(recipe)) or any(
+            issue.field in {"experiment", "step", "execution.workdir"}
             or issue.field.startswith("experiment.")
             or issue.field.startswith("step.")
-            or issue.field == "execution.workdir"
+            or issue.evidence.get("preflight_before_workspace") is True
             for issue in report.blocking_issues()
         )
         if preflight_failed_before_workspace:
@@ -299,7 +362,7 @@ def preflight_plan(
 ) -> tuple[dict, dict | None, DecisionReport]:
     recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path)
     out = canonical_local_experiment_root(output_dir, Path.cwd())
-    metadata_unresolved = any(
+    metadata_unresolved = bool(experiment_metadata_issues(recipe)) or any(
         issue.field in {"experiment", "step"}
         or issue.field.startswith("experiment.")
         or issue.field.startswith("step.")

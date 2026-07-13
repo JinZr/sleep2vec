@@ -1158,6 +1158,8 @@ def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
         shell = command[-1]
+        if "seen_inodes" in shell:
+            return subprocess.CompletedProcess(command, 0, "", "")
         if "experiment.yaml" in shell and "sys.stdout.write" in shell:
             return subprocess.CompletedProcess(command, 0, experiment_text, "")
         if "run_manifest.tsv" in shell and "sys.stdout.write" in shell:
@@ -1217,6 +1219,8 @@ def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
+        if "seen_inodes" in command[-1]:
+            return subprocess.CompletedProcess(command, 0, "", "")
         if failure == "timeout":
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         if failure == "malformed":
@@ -1328,6 +1332,8 @@ def test_experiment_rank_remote_reads_and_writes_over_ssh(monkeypatch):
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
         shell = command[-1]
+        if "seen_inodes" in shell:
+            return subprocess.CompletedProcess(command, 0, "", "")
         if "experiment.yaml" in shell and "sys.stdout.write" in shell:
             return subprocess.CompletedProcess(command, 0, experiment_text, "")
         if "metrics_manifest.tsv" in shell and "sys.stdout.write" in shell:
@@ -1350,7 +1356,9 @@ def test_experiment_rank_remote_reads_and_writes_over_ssh(monkeypatch):
     assert any("/wujidata/run/reports/experiment_ranking.csv" in target for target in write_targets)
     assert any("/wujidata/run/reports/experiment_ranking.md" in target for target in write_targets)
     ranking_write = next(
-        kwargs["input"] for command, kwargs in calls if "reports/experiment_ranking.csv" in command[-1]
+        kwargs["input"]
+        for command, kwargs in calls
+        if "cat >" in command[-1] and "reports/experiment_ranking.csv" in command[-1]
     )
     assert "0.8" in ranking_write
     assert "/remote/run/run_a/checkpoints/epoch=2.ckpt" in ranking_write
