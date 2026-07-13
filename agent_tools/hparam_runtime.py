@@ -98,11 +98,31 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
         observation.update({"step_id": key[0], "run_id": key[1], "status": previous.get("status", "")})
         refreshed[key] = evidence.status_row(run_dir, observation, previous, health=False)
     active_statuses = {"launched", "running", "unknown_remote", "missing_pid"}
-    active = sum(row.get("status") in active_statuses for row in refreshed.values())
+    current_host = str(execution.get("host") or "") if target == "ssh" else ""
+    gpu_group_values = [{str(item) for item in group} for group in gpu_groups]
+    current_gpu_pool = set().union(*gpu_group_values) if gpu_group_values else set()
+    other_active_gpu_sets = []
+    for key, row in workspace_by_key.items():
+        if not gpu_groups or key in expected_keys or row.get("status") not in active_statuses:
+            continue
+        if str(row.get("target") or "") != target:
+            continue
+        if target == "ssh" and str(row.get("host") or "") != current_host:
+            continue
+        assigned = {part.strip() for part in str(row.get("gpus") or "").split(",") if part.strip()}
+        if not assigned.intersection(current_gpu_pool):
+            continue
+        other_active_gpu_sets.append(assigned)
+    active = sum(row.get("status") in active_statuses for row in refreshed.values()) + len(other_active_gpu_sets)
     slots = max(max_concurrent - active, 0)
     gpu_group_by_value = {",".join(str(item) for item in group): index for index, group in enumerate(gpu_groups)}
     active_gpu_loads = [0] * len(gpu_groups)
     assigned_gpu_loads = [0] * len(gpu_groups)
+    for assigned in other_active_gpu_sets:
+        for group_index, group in enumerate(gpu_group_values):
+            if assigned.intersection(group):
+                active_gpu_loads[group_index] += 1
+                assigned_gpu_loads[group_index] += 1
     assigned_group_by_key = {}
     for key, previous in refreshed.items():
         assigned = ",".join(part.strip() for part in str(previous.get("gpus") or "").split(",") if part.strip())

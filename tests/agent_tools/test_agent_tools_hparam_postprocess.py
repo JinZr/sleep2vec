@@ -22,14 +22,20 @@ def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
 
 
-def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None, run_count: int = 1) -> Path:
-    base = write_finetune_recipe(tmp_path)
+def _hparam_recipe(
+    tmp_path: Path,
+    *,
+    execution: dict | None = None,
+    run_count: int = 1,
+    variant: str = "sleep2vec",
+) -> Path:
+    base = write_finetune_recipe(tmp_path, variant=variant)
     return write_yaml(
         tmp_path / "tune.yaml",
         {
             "name": "unit_hparam",
             "task": "hparam_tune",
-            "variant": "sleep2vec",
+            "variant": variant,
             "base_recipe": str(base),
             "search": {
                 "method": "grid",
@@ -637,7 +643,7 @@ def test_selected_candidates_reject_foreign_other_step_before_filtering(tmp_path
         hparam_postprocess._selected_candidate_rows(rows, plan=plan)
 
 
-def test_selected_candidates_filters_managed_same_step_rows_from_previous_plans(tmp_path: Path):
+def test_selected_candidates_keep_managed_same_step_rows_from_registered_plans(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     first_plan_dir = tmp_path / "plan-1"
     second_plan_dir = tmp_path / "plan-2"
@@ -651,18 +657,18 @@ def test_selected_candidates_filters_managed_same_step_rows_from_previous_plans(
         {"step_id": first_run["step_id"], "run_id": first_run["run_id"], "rank": "1"},
         {"step_id": second_run["step_id"], "run_id": second_run["run_id"], "rank": "2"},
     ]
-    selected = hparam_postprocess._selected_candidate_rows(
+    selected, _owner_plans = hparam_postprocess._selected_candidate_rows(
         rows,
         plan=second_plan,
         all_candidates=True,
     )
-    top = hparam_postprocess._selected_candidate_rows(rows, plan=second_plan)
+    top, _owner_plans = hparam_postprocess._selected_candidate_rows(rows, plan=second_plan)
 
-    assert [row["run_id"] for row in selected] == [second_run["run_id"]]
-    assert [row["run_id"] for row in top] == [second_run["run_id"]]
+    assert [row["run_id"] for row in selected] == [first_run["run_id"], second_run["run_id"]]
+    assert [row["run_id"] for row in top] == [first_run["run_id"]]
 
 
-def test_selected_candidates_ranks_current_plan_rows_after_filtering_previous_plan(tmp_path: Path):
+def test_selected_candidates_rank_all_registered_plans_in_current_step(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=2)
     first_plan_dir = tmp_path / "plan-1"
     second_plan_dir = tmp_path / "plan-2"
@@ -672,7 +678,7 @@ def test_selected_candidates_ranks_current_plan_rows_after_filtering_previous_pl
     second_plan = json.loads((second_plan_dir / "plan.json").read_text())
     better, worse = second_plan["runs"]
 
-    selected = hparam_postprocess._selected_candidate_rows(
+    selected, _owner_plans = hparam_postprocess._selected_candidate_rows(
         [
             {"step_id": first_run["step_id"], "run_id": first_run["run_id"], "rank": "1"},
             {"step_id": worse["step_id"], "run_id": worse["run_id"], "rank": "4"},
@@ -682,7 +688,7 @@ def test_selected_candidates_ranks_current_plan_rows_after_filtering_previous_pl
         top_k=1,
     )
 
-    assert [row["run_id"] for row in selected] == [better["run_id"]]
+    assert [row["run_id"] for row in selected] == [first_run["run_id"]]
 
 
 @pytest.mark.parametrize("rank", [None, "", 0, -1, 1.5, "nan", "invalid", True])
@@ -707,7 +713,7 @@ def test_selected_candidates_enforce_top_k_as_hard_limit(tmp_path: Path):
     plan = json.loads((plan_dir / "plan.json").read_text())
     rows = [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": "1"} for run in plan["runs"]]
 
-    selected = hparam_postprocess._selected_candidate_rows(rows, plan=plan, top_k=1)
+    selected, _owner_plans = hparam_postprocess._selected_candidate_rows(rows, plan=plan, top_k=1)
 
     assert [row["run_id"] for row in selected] == [plan["runs"][0]["run_id"]]
 
@@ -878,6 +884,109 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     )
     assert all_candidates.returncode == 0, all_candidates.stderr
     assert len(_read_table(plan_dir / "external_eval_manifest.tsv")) == 3
+
+
+def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tmp_path: Path):
+    owner_workdir = tmp_path / "owner-workdir"
+    owner_recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(owner_workdir)},
+        variant="sleep2vec2",
+    )
+    owner_payload = yaml.safe_load(owner_recipe.read_text())
+    owner_payload["inputs"] = {"label_name": "owner-label"}
+    owner_payload["decisions"]["label_name"]["value"] = "owner-label"
+    owner_base = Path(owner_payload["base_recipe"])
+    owner_base_payload = yaml.safe_load(owner_base.read_text())
+    owner_base_payload["runtime"]["batch_size"] = 41
+    write_yaml(owner_base, owner_base_payload)
+    write_yaml(owner_recipe, owner_payload)
+    owner_plan_dir = tmp_path / "owner-plan"
+    owner_result = _run("plan", "--recipe", str(owner_recipe), "--output-dir", str(owner_plan_dir))
+    assert owner_result.returncode == 0, owner_result.stderr
+    owner_run = _first_run(owner_plan_dir)
+
+    caller_workdir = tmp_path / "caller-workdir"
+    caller_recipe = _hparam_recipe(tmp_path, execution={"workdir": str(caller_workdir)})
+    caller_plan_dir = tmp_path / "caller-plan"
+    caller_result = _run("plan", "--recipe", str(caller_recipe), "--output-dir", str(caller_plan_dir))
+    assert caller_result.returncode == 0, caller_result.stderr
+    caller_run = _first_run(caller_plan_dir)
+
+    owner_checkpoint = Path(owner_run["checkpoint_dir"]) / "epoch=1.ckpt"
+    caller_checkpoint = Path(caller_run["checkpoint_dir"]) / "epoch=2.ckpt"
+    for checkpoint in (owner_checkpoint, caller_checkpoint):
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_text("checkpoint")
+    ranking = tmp_path / "step-ranking.csv"
+    ranking.write_text(
+        "step_id,run_id,rank,checkpoint_path\n"
+        f"{owner_run['step_id']},{owner_run['run_id']},1,{owner_checkpoint}\n"
+        f"{caller_run['step_id']},{caller_run['run_id']},2,{caller_checkpoint}\n"
+    )
+
+    external = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(caller_plan_dir),
+        "--selected",
+        str(ranking),
+        "--unlock-final-test",
+    )
+
+    assert external.returncode == 0, external.stderr
+    external_row = _read_table(caller_plan_dir / "external_eval_manifest.tsv")[0]
+    assert external_row["run_id"] == owner_run["run_id"]
+    assert external_row["config"] == owner_run["config"]
+    assert external_row["external_command"].startswith("python -m sleep2vec2.infer")
+    assert "cd " not in external_row["external_command"]
+    external_script = (caller_plan_dir / "external_eval.sh").read_text()
+    assert "python -m sleep2vec2.infer" in external_script
+    assert "python -m sleep2vec.infer" not in external_script
+    assert "--label-name owner-label" in external_script
+    assert "--batch-size 41" in external_script
+    assert f"cd {shlex.quote(str(owner_workdir))}" in external_script
+    assert str(caller_workdir) not in external_script
+    assert not any(field.startswith("owner") or field.startswith("_") for field in external_row)
+
+    exported = _run(
+        "hparam-export-logits",
+        "--run-dir",
+        str(caller_plan_dir),
+        "--selected",
+        str(ranking),
+        "--skip-test",
+    )
+
+    assert exported.returncode == 0, exported.stderr
+    export_row = _read_table(caller_plan_dir / "logits_export_manifest.tsv")[0]
+    assert export_row["run_id"] == owner_run["run_id"]
+    assert export_row["config"] == owner_run["config"]
+    assert export_row["label_name"] == "owner-label"
+    assert "python -m sleep2vec2.infer" in export_row["val_infer_command"]
+    assert not any(field.startswith("owner") or field.startswith("_") for field in export_row)
+
+    val_predictions = tmp_path / "step-val.csv"
+    test_predictions = tmp_path / "step-test.csv"
+    pd.DataFrame({"label": [0, 1], "prob": [0.1, 0.9]}).to_csv(val_predictions, index=False)
+    pd.DataFrame({"label": [0, 1], "prob": [0.2, 0.8]}).to_csv(test_predictions, index=False)
+    candidates = tmp_path / "step-candidates.csv"
+    candidates.write_text(
+        "step_id,run_id,val_predictions_path,test_predictions_path\n"
+        f"{owner_run['step_id']},{owner_run['run_id']},{val_predictions},{test_predictions}\n"
+        f"{caller_run['step_id']},{caller_run['run_id']},{val_predictions},{test_predictions}\n"
+    )
+
+    threshold = _run("hparam-threshold", "--run-dir", str(caller_plan_dir), "--selected", str(candidates))
+    ensemble = _run("hparam-ensemble", "--run-dir", str(caller_plan_dir), "--candidates", str(candidates))
+
+    assert threshold.returncode == 0, threshold.stderr
+    assert ensemble.returncode == 0, ensemble.stderr
+    assert {row["run_id"] for row in _read_table(caller_plan_dir / "threshold_summary.csv")} == {
+        owner_run["run_id"],
+        caller_run["run_id"],
+    }
+    assert _read_table(caller_plan_dir / "ensemble_summary.csv")[0]["n_models"] == "2"
 
 
 def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: Path):
@@ -1140,7 +1249,7 @@ def test_hparam_postprocess_rejects_unknown_run_in_current_step(tmp_path: Path):
     )
 
     assert result.returncode == 1
-    assert "not managed by the current hparam plan" in result.stderr
+    assert "not managed by a registered hparam plan for the current step" in result.stderr
     assert not (plan_dir / "external_eval.sh").exists()
 
 

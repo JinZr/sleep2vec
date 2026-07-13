@@ -2447,29 +2447,46 @@ def test_hparam_yaml_parameter_cannot_conflict_with_decision_contract(
 
 
 @pytest.mark.parametrize(
-    ("section", "key", "parameter", "value", "field"),
+    ("section", "key", "recipe_value", "parameter", "value", "expected_message"),
     [
-        ("inputs", "data_backend", "yaml:/data/backend", "kaldi", "data_backend"),
+        (
+            "inputs",
+            "data_backend",
+            None,
+            "yaml:/data/backend",
+            "kaldi",
+            "data_backend decision differs from config",
+        ),
         (
             "evaluation_policy",
             "selection_metric",
-            "yaml:/finetune/task/monitor",
-            "val_loss",
+            None,
+            "runtime.lr",
+            1e-6,
+            "selection_metric must be a non-empty value",
+        ),
+        (
+            "evaluation_policy",
             "selection_metric",
+            "",
+            "runtime.lr",
+            1e-6,
+            "selection_metric must be a non-empty value",
         ),
     ],
 )
-def test_hparam_yaml_parameter_uses_base_contract_for_null_recipe_value(
+def test_hparam_yaml_parameter_handles_empty_recipe_semantics(
     tmp_path: Path,
     section: str,
     key: str,
+    recipe_value: object,
     parameter: str,
-    value: str,
-    field: str,
+    value: object,
+    expected_message: str,
 ):
     recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
     payload = yaml.safe_load(recipe.read_text())
-    payload[section][key] = None
+    payload[section][key] = recipe_value
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
     manifest = tmp_path / "run_manifest.tsv"
@@ -2478,7 +2495,30 @@ def test_hparam_yaml_parameter_uses_base_contract_for_null_recipe_value(
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
-    assert f"{field} decision differs from config" in result.stdout
+    assert expected_message in result.stdout
+    assert not output_dir.exists()
+    if manifest_before is None:
+        assert not manifest.exists()
+    else:
+        assert manifest.read_bytes() == manifest_before
+    assert not (tmp_path / "events.jsonl").exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune" / "step.yaml").exists()
+
+
+def test_hparam_yaml_parameter_rejects_ask_user_backend_after_null_input(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, parameters={"yaml:/data/backend": ["kaldi"]})
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["data_backend"] = None
+    payload.setdefault("runtime", {})["data_backend"] = "ASK_USER"
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+    manifest = tmp_path / "run_manifest.tsv"
+    manifest_before = manifest.read_bytes() if manifest.exists() else None
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "data_backend must be resolved before hparam YAML overrides" in result.stdout
     assert not output_dir.exists()
     if manifest_before is None:
         assert not manifest.exists()
