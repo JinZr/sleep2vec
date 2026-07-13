@@ -1144,6 +1144,92 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
     assert not (plan_dir / "pids").exists()
 
 
+def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1},
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 4
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6, 4e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert len(started) == 2
+    assert [row["gpus"] for row in rows] == ["0", "1", "0", "1"]
+    assert [row["status"] for row in rows] == ["launched", "launched", "pending", "pending"]
+
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": rows[1]["step_id"], "run_id": rows[1]["run_id"], "status": "finished"}],
+    )
+    started.clear()
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert len(started) == 1
+    assert "CUDA_VISIBLE_DEVICES=1" in started[0]
+    assert [row["status"] for row in rows] == ["missing_pid", "finished", "pending", "launched"]
+
+
+def test_hparam_launch_explicit_gpu_oversubscription_warns_and_balances_groups(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "workdir": str(tmp_path),
+            "gpu_pool": [0, 1],
+            "gpus_per_run": 1,
+            "max_concurrent": 4,
+        },
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 4
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6, 4e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr
+    assert "Status: WARN" in result.stdout
+    assert "GPU oversubscription is explicitly enabled" in result.stdout
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert len(started) == 4
+    assert [row["gpus"] for row in rows] == ["0", "1", "0", "1"]
+    assert {row["status"] for row in rows} == {"launched"}
+
+
+def test_hparam_plan_rejects_duplicate_gpu_assignments_within_a_run(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "gpu_pool": [0, 0], "gpus_per_run": 2},
+    )
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+
+    assert result.returncode == 1
+    assert "must not contain duplicate GPU identifiers" in result.stdout
+
+
 @pytest.mark.parametrize("env_name", ["WANDB_PROJECT", "WANDB_GROUP", "WANDB_RUN_GROUP", "WANDB_MODE"])
 def test_hparam_plan_rejects_wandb_environment_aliases(tmp_path: Path, env_name: str):
     recipe = _hparam_recipe(

@@ -469,7 +469,7 @@ def test_hparam_user_selection_metric_rechecks_config_monitor(tmp_path: Path):
         str(plan_dir),
     )
 
-    assert result.returncode == 2
+    assert result.returncode == 1
     assert "selection_metric differs" in result.stdout
     assert not (plan_dir / "runs").exists()
 
@@ -497,7 +497,7 @@ def test_resolved_hparam_user_config_rechecks_base_consultation(tmp_path: Path):
         str(tmp_path / "plan"),
     )
 
-    assert result.returncode == 2
+    assert result.returncode == 1
     assert "selection_metric differs" in result.stdout
     assert (tmp_path / "plan" / "plan.blocked.md").exists()
     assert not (tmp_path / "plan" / "runs").exists()
@@ -809,6 +809,78 @@ def test_plan_uses_user_decision_test_after_fit_in_command(tmp_path: Path):
 
     assert result.returncode == 0
     assert "--no-test-after-fit" in (output_dir / "run.sh").read_text()
+
+
+@pytest.mark.parametrize("value", [None, "", "ASK_USER", "false", 0, 1, [], {}])
+def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: object):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"test_after_fit": {"value": value, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "test_after_fit must be explicitly true or false" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "config_field"),
+    [
+        ("data_backend", "kaldi", "data.backend"),
+        ("selection_metric", "val_loss", "finetune.task.monitor"),
+        ("selection_mode", "min", "finetune.task.monitor_mod"),
+    ],
+)
+def test_plan_fails_when_decision_differs_from_runtime_config(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    config_field: str,
+):
+    recipe = write_finetune_recipe(tmp_path)
+    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    config_before = config.read_bytes()
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {field: {"value": value, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"{field} decision differs from config {config_field}" in result.stdout
+    assert config.read_bytes() == config_before
+    assert not (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("data_backend", "npz"),
+        ("selection_metric", "val_ahi_pearson"),
+        ("selection_mode", "max"),
+    ],
+)
+def test_plan_allows_decision_matching_runtime_config(tmp_path: Path, field: str, value: str):
+    recipe = write_finetune_recipe(tmp_path)
+    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    config_before = config.read_bytes()
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {field: {"value": value, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert config.read_bytes() == config_before
+    assert (output_dir / "run.sh").exists()
 
 
 @pytest.mark.parametrize("value", [None, ""])

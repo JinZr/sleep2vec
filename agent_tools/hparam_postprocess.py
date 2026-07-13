@@ -351,10 +351,18 @@ def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> P
         val_path = _first_value(row, ["val_predictions_path", "val_logits_path"])
         test_path = _first_value(row, ["test_predictions_path", "test_logits_path"])
         if not val_path or not test_path:
-            continue
+            raise ValueError(
+                f"Selected candidate must define validation and test predictions/logits: "
+                f"{row['step_id']} / {row['run_id']}"
+            )
         label_name = _first_value(row, ["label_name", "target_name", "target_label"])
         val = _read_binary_predictions(val_path, label_name=label_name)
         test = _read_binary_predictions(test_path, label_name=label_name)
+        if not val["y"] or not test["y"]:
+            raise ValueError(
+                f"Selected candidate validation and test predictions/logits must contain samples: "
+                f"{row['step_id']} / {row['run_id']}"
+            )
         threshold = _best_f1_threshold(val["y"], val["p"])
         val_metrics = _binary_metrics(val["y"], val["p"], threshold)
         test_metrics = _binary_metrics(test["y"], test["p"], threshold)
@@ -430,7 +438,6 @@ def _selected_candidate_rows(
         raise ValueError("Selected candidates require a managed experiment workspace.")
     workspace_by_key = {managed_run_key(run): run for run in read_run_manifest(workspace)}
     runs_by_key = {managed_run_key(run): run for run in plan.get("runs", [])}
-    has_same_step_previous_plan = False
     for row in rows:
         key = managed_run_key(row)
         managed = workspace_by_key.get(key)
@@ -443,8 +450,6 @@ def _selected_candidate_rows(
                 f"Selected candidate is not managed by the experiment workspace: {row['step_id']} / {row['run_id']}"
             )
         candidate_parameters = managed_run_parameters(row)
-        if str(row.get("step_id") or "") in plan_steps and key not in runs_by_key:
-            has_same_step_previous_plan = True
         ownership_evidence = (
             {field: value for field, value in row.items() if field not in candidate_parameters}
             if key in runs_by_key
@@ -478,32 +483,24 @@ def _selected_candidate_rows(
         managed_rows.append({**derived, **run})
     if all_candidates:
         return managed_rows
-    if has_same_step_previous_plan:
-        ranked_rows = []
-        for index, row in enumerate(managed_rows):
-            rank = row.get("rank")
-            if rank in (None, ""):
-                ranked_rows.append((-math.inf, index, row))
-                continue
-            try:
-                ranked_rows.append((int(float(rank)), index, row))
-            except ValueError:
-                continue
-        selected = [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
-        if not selected:
-            raise ValueError("No selected candidates remain after rank/top_k filtering.")
-        return selected
-    selected = []
-    for row in managed_rows:
+    if type(top_k) is not int or top_k <= 0:
+        raise ValueError("top_k must be a positive integer.")
+    ranked_rows = []
+    for index, row in enumerate(managed_rows):
         rank = row.get("rank")
-        if rank in (None, ""):
-            selected.append(row)
-            continue
         try:
-            if int(float(rank)) <= top_k:
-                selected.append(row)
-        except ValueError:
-            continue
+            numeric_rank = float(rank)
+        except (TypeError, ValueError):
+            numeric_rank = math.nan
+        if (
+            isinstance(rank, bool)
+            or not math.isfinite(numeric_rank)
+            or not numeric_rank.is_integer()
+            or numeric_rank <= 0
+        ):
+            raise ValueError(f"Selected candidate rank must be a positive integer: {row['step_id']} / {row['run_id']}")
+        ranked_rows.append((int(numeric_rank), index, row))
+    selected = [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
     if not selected:
         raise ValueError("No selected candidates remain after rank/top_k filtering.")
     return selected

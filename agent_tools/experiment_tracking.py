@@ -610,12 +610,21 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
 
 
 def _checkpoint_for_metric_row(row: dict[str, Any], checkpoints: list[dict[str, str]]) -> str:
-    epoch = artifacts.epoch_number(row.get("epoch"))
+    raw_epoch = row.get("epoch")
     key = managed_run_key(row)
     same_run = [item for item in checkpoints if managed_run_key(item) == key]
-    for item in same_run:
-        if artifacts.epoch_number(item.get("epoch")) == epoch:
-            return item.get("checkpoint_path", "")
+    if raw_epoch not in (None, ""):
+        try:
+            numeric_epoch = float(str(raw_epoch))
+        except ValueError:
+            return ""
+        if not math.isfinite(numeric_epoch) or not numeric_epoch.is_integer():
+            return ""
+        epoch = int(numeric_epoch)
+        for item in same_run:
+            if artifacts.epoch_number(item.get("epoch")) == epoch:
+                return item.get("checkpoint_path", "")
+        return ""
     best = [item for item in same_run if item.get("is_best_by_val") == "true"]
     if best:
         return best[0].get("checkpoint_path", "")

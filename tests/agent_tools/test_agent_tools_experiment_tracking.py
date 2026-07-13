@@ -97,6 +97,31 @@ def test_experiment_indexes_checkpoints_and_ranks_validation_metric(tmp_path: Pa
     assert (tmp_path / "reports" / "experiment_ranking.md").exists()
 
 
+@pytest.mark.parametrize("epoch", ["2", "2.5"])
+def test_experiment_rank_does_not_fallback_to_checkpoint_from_another_epoch(epoch: str):
+    metric = {"step_id": "train-model", "run_id": "run-000", "epoch": epoch}
+    checkpoints = [
+        {
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "epoch": "5",
+            "checkpoint_path": "/runtime/checkpoints/epoch=5.ckpt",
+            "is_best_by_val": "true",
+            "is_last": "false",
+        },
+        {
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "epoch": "",
+            "checkpoint_path": "/runtime/checkpoints/last.ckpt",
+            "is_best_by_val": "false",
+            "is_last": "true",
+        },
+    ]
+
+    assert experiment_tracking._checkpoint_for_metric_row(metric, checkpoints) == ""
+
+
 def test_experiment_indexes_checkpoints_from_managed_runtime_dir(tmp_path: Path):
     workspace = tmp_path / "workspace"
     _initialize_workspace(workspace)

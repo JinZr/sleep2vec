@@ -209,6 +209,29 @@ def test_hparam_select_preserves_zero_padded_epoch_checkpoint(tmp_path: Path):
     assert rows[0]["checkpoint_path"] == str(fixed)
 
 
+@pytest.mark.parametrize("score", [None, "not-a-number", float("nan"), float("inf"), True])
+def test_hparam_select_fails_without_any_valid_score_and_preserves_state(tmp_path: Path, score):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    if score is not None:
+        runtime_dir = Path(run["runtime_dir"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": score}}))
+    canonical = tmp_path / "run_manifest.tsv"
+    events = tmp_path / "events.jsonl"
+    canonical_before = canonical.read_bytes()
+    events_before = events.read_bytes()
+
+    with pytest.raises(ValueError, match="No valid val_ahi_pearson scores"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert not _ranking_path(plan_dir).exists()
+    assert canonical.read_bytes() == canonical_before
+    assert events.read_bytes() == events_before
+
+
 def test_hparam_select_uses_canonical_status_not_runtime_manifest_status(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -327,13 +350,17 @@ def test_hparam_select_does_not_scan_unmanaged_runtime_directories(tmp_path: Pat
             }
         )
     )
+    managed_runtime = Path(run["runtime_dir"])
+    managed_runtime.mkdir(parents=True, exist_ok=True)
+    managed_manifest = managed_runtime / "run_manifest.json"
+    managed_manifest.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
 
     result = _run("hparam-select", "--run-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     row = _read_table(_ranking_path(plan_dir))[0]
-    assert row["score"] == ""
-    assert row["run_manifest"] == ""
+    assert row["score"] == "0.7"
+    assert row["run_manifest"] == str(managed_manifest)
     assert row["checkpoint_path"] == ""
 
 
@@ -450,6 +477,10 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
     other_config = tmp_path / "other.yaml"
     other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
@@ -478,6 +509,8 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
                 "version": "other-version",
                 "config": str(other_config),
                 "checkpoint_path": str(other_checkpoint),
+                "metric": "val_other",
+                "score": 0.5,
                 "rank": 1,
             }
         ],
@@ -594,6 +627,10 @@ def test_hparam_select_only_preflights_registered_plans_that_own_preserved_ranki
     recipe = _hparam_recipe(tmp_path)
     first_plan = tmp_path / "plan-1"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first_plan)).returncode == 0
+    first_run = _first_run(first_plan)
+    first_runtime = Path(first_run["runtime_dir"])
+    first_runtime.mkdir(parents=True, exist_ok=True)
+    (first_runtime / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.9}}))
     hparam_selection.select_hparam_candidates(first_plan)
 
     finetune_recipe = write_finetune_recipe(tmp_path)
@@ -606,6 +643,10 @@ def test_hparam_select_only_preflights_registered_plans_that_own_preserved_ranki
     recipe = _hparam_recipe(tmp_path)
     second_plan = tmp_path / "plan-2"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan)).returncode == 0
+    second_run = _first_run(second_plan)
+    second_runtime = Path(second_run["runtime_dir"])
+    second_runtime.mkdir(parents=True, exist_ok=True)
+    (second_runtime / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.8}}))
     strict_reads = []
     original_read_hparam_plan = hparam_selection.artifacts.read_hparam_plan
 

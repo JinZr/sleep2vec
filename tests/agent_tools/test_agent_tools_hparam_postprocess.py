@@ -358,11 +358,24 @@ def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_pa
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_text("checkpoint")
+    val_predictions = tmp_path / "val_predictions.csv"
+    test_predictions = tmp_path / "test_predictions.csv"
+    pd.DataFrame({"label": [0, 1], "prob": [0.1, 0.9]}).to_csv(val_predictions, index=False)
+    pd.DataFrame({"label": [0, 1], "prob": [0.2, 0.8]}).to_csv(test_predictions, index=False)
     selected = tmp_path / "selected.csv"
     with selected.open("w", newline="") as file_obj:
         writer = csv.DictWriter(
             file_obj,
-            fieldnames=["experiment_id", "step_id", "run_id", "rank", "config", "checkpoint_path"],
+            fieldnames=[
+                "experiment_id",
+                "step_id",
+                "run_id",
+                "rank",
+                "config",
+                "checkpoint_path",
+                "val_predictions_path",
+                "test_predictions_path",
+            ],
         )
         writer.writeheader()
         writer.writerow(
@@ -373,6 +386,8 @@ def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_pa
                 "rank": 1,
                 "config": run["config"],
                 "checkpoint_path": checkpoint,
+                "val_predictions_path": val_predictions,
+                "test_predictions_path": test_predictions,
             }
         )
     monkeypatch.chdir(tmp_path)
@@ -668,6 +683,49 @@ def test_selected_candidates_ranks_current_plan_rows_after_filtering_previous_pl
     )
 
     assert [row["run_id"] for row in selected] == [better["run_id"]]
+
+
+@pytest.mark.parametrize("rank", [None, "", 0, -1, 1.5, "nan", "invalid", True])
+def test_selected_candidates_require_positive_integer_rank(tmp_path: Path, rank):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    run = plan["runs"][0]
+
+    with pytest.raises(ValueError, match="rank must be a positive integer"):
+        hparam_postprocess._selected_candidate_rows(
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": rank}],
+            plan=plan,
+        )
+
+
+def test_selected_candidates_enforce_top_k_as_hard_limit(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, run_count=2)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    rows = [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": "1"} for run in plan["runs"]]
+
+    selected = hparam_postprocess._selected_candidate_rows(rows, plan=plan, top_k=1)
+
+    assert [row["run_id"] for row in selected] == [plan["runs"][0]["run_id"]]
+
+
+@pytest.mark.parametrize("top_k", [0, -1, True])
+def test_selected_candidates_require_positive_integer_top_k(tmp_path: Path, top_k):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    run = plan["runs"][0]
+
+    with pytest.raises(ValueError, match="top_k must be a positive integer"):
+        hparam_postprocess._selected_candidate_rows(
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": 1}],
+            plan=plan,
+            top_k=top_k,
+        )
 
 
 def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp_path: Path):
@@ -993,12 +1051,12 @@ def test_hparam_export_logits_uses_effective_recipe_label(tmp_path: Path):
         (
             "hparam-export-logits",
             2,
-            ["--skip-test"],
+            ["--skip-test", "--top-k", "0"],
             ["logits_export_configs", "logits_exports", "logits_export_manifest.tsv", "logits_export.sh"],
         ),
     ],
 )
-def test_hparam_postprocess_rejects_empty_rank_filter_before_writing(
+def test_hparam_postprocess_rejects_nonpositive_top_k_before_writing(
     tmp_path: Path,
     command: str,
     rank: int,
@@ -1019,7 +1077,7 @@ def test_hparam_postprocess_rejects_empty_rank_filter_before_writing(
     result = _run(command, "--run-dir", str(plan_dir), "--selected", str(selected), *extra_args)
 
     assert result.returncode == 1
-    assert "No selected candidates remain after rank/top_k filtering" in result.stderr
+    assert "top_k must be a positive integer" in result.stderr
     assert all(not (plan_dir / path).exists() for path in unexpected_paths)
 
 
@@ -1164,6 +1222,52 @@ def test_hparam_export_logits_does_not_commit_manifest_after_execution_failure(t
     assert [call["eval_split"] for call in calls] == ["val", "test"]
     assert Path(calls[0]["output_path"]).exists()
     assert not (plan_dir / "logits_export_manifest.tsv").exists()
+
+
+@pytest.mark.parametrize(
+    ("header", "value"),
+    [
+        ("val_predictions_path", "val.csv"),
+        ("test_predictions_path", "test.csv"),
+    ],
+)
+def test_hparam_threshold_requires_validation_and_test_inputs(tmp_path: Path, header: str, value: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    selected = tmp_path / "selected.csv"
+    selected.write_text(f"step_id,run_id,{header}\n" f"{run['step_id']},{run['run_id']},{tmp_path / value}\n")
+
+    result = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
+
+    assert result.returncode == 1
+    assert "must define validation and test predictions/logits" in result.stderr
+    assert not (plan_dir / "threshold_summary.csv").exists()
+
+
+@pytest.mark.parametrize("empty_split", ["val", "test"])
+def test_hparam_threshold_rejects_prediction_files_without_samples(tmp_path: Path, empty_split: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    val = tmp_path / "val.csv"
+    test = tmp_path / "test.csv"
+    pd.DataFrame({"label": [], "prob": []}).to_csv(val, index=False)
+    pd.DataFrame({"label": [0, 1], "prob": [0.1, 0.9]}).to_csv(test, index=False)
+    if empty_split == "test":
+        val, test = test, val
+    selected = tmp_path / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,val_predictions_path,test_predictions_path\n" f"{run['step_id']},{run['run_id']},{val},{test}\n"
+    )
+
+    result = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
+
+    assert result.returncode == 1
+    assert "must contain samples" in result.stderr
+    assert not (plan_dir / "threshold_summary.csv").exists()
 
 
 def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):

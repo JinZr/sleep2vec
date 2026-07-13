@@ -42,6 +42,7 @@ def hparam_tune_issues(
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
 
     local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
@@ -144,7 +145,7 @@ def hparam_tune_issues(
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     else:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
-    issues.extend(_hparam_execution_issues(execution))
+    issues.extend(_hparam_execution_issues(execution, runtime))
     issues.extend(_hparam_adaptive_issues(adaptive))
     max_runs = search.get("max_runs")
     if max_runs in (None, ""):
@@ -224,10 +225,8 @@ def hparam_tune_issues(
     return issues
 
 
-def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
+def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any]) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
-    if not execution:
-        return issues
     legacy_fields = {"gpus_per_trial", "log_dir", "pid_dir"}
     for field in sorted(set(execution) - _HPARAM_EXECUTION_FIELDS - legacy_fields):
         issues.append(
@@ -312,9 +311,11 @@ def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
                 {"path_validation": execution.get("path_validation")},
             )
         )
+    max_concurrent = None
     if "max_concurrent" in execution:
         try:
-            if int(execution["max_concurrent"]) <= 0:
+            max_concurrent = int(execution["max_concurrent"])
+            if max_concurrent <= 0:
                 raise ValueError
         except (TypeError, ValueError):
             issues.append(
@@ -336,9 +337,11 @@ def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
                 {"gpu_pool": execution.get("gpu_pool")},
             )
         )
+    gpus_per_run = None
     if "gpus_per_run" in execution:
         try:
-            if int(execution["gpus_per_run"]) <= 0:
+            gpus_per_run = int(execution["gpus_per_run"])
+            if gpus_per_run <= 0:
                 raise ValueError
         except (TypeError, ValueError):
             issues.append(
@@ -348,6 +351,62 @@ def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
                     "execution.gpus_per_run must be a positive integer.",
                     None,
                     {"gpus_per_run": execution.get("gpus_per_run")},
+                )
+            )
+    devices_value = runtime.get("devices")
+    if devices_value in (None, "", "ASK_USER"):
+        devices = []
+    elif isinstance(devices_value, (list, tuple)):
+        devices = list(devices_value)
+    else:
+        devices = [devices_value]
+    gpu_pool = execution.get("gpu_pool") if isinstance(execution.get("gpu_pool"), list) else None
+    pool = list(gpu_pool) if gpu_pool else devices
+    per_run = gpus_per_run if gpus_per_run is not None else len(devices) or 1
+    if pool and (gpus_per_run is not None or "gpus_per_run" not in execution):
+        pool_field = "execution.gpu_pool" if gpu_pool else "runtime.devices"
+        if len({str(item) for item in pool}) != len(pool):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    pool_field,
+                    f"{pool_field} must not contain duplicate GPU identifiers.",
+                    None,
+                    {"gpu_pool": pool},
+                )
+            )
+        elif per_run > len(pool):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.gpus_per_run",
+                    "execution.gpus_per_run cannot exceed the effective GPU pool size.",
+                    None,
+                    {"gpus_per_run": per_run, "gpu_pool": pool},
+                )
+            )
+        elif len(pool) % per_run != 0:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.gpus_per_run",
+                    "The effective GPU pool must divide evenly into disjoint per-run GPU groups.",
+                    None,
+                    {"gpus_per_run": per_run, "gpu_pool": pool},
+                )
+            )
+        elif max_concurrent is not None and max_concurrent > len(pool) // per_run:
+            group_count = len(pool) // per_run
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.WARN,
+                    "execution.max_concurrent",
+                    (
+                        f"execution.max_concurrent={max_concurrent} exceeds the {group_count} available GPU "
+                        "group(s); GPU oversubscription is explicitly enabled."
+                    ),
+                    None,
+                    {"max_concurrent": max_concurrent, "gpu_group_count": group_count},
                 )
             )
     if "env" in execution and not isinstance(execution["env"], dict):

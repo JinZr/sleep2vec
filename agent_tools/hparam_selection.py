@@ -66,7 +66,11 @@ def select_hparam_candidates(
             )
         validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
     current_keys = {managed_run_key(run) for run in plan["runs"]}
-    preserved = [row for row in existing_ranked if managed_run_key(row) not in current_keys]
+    preserved = [
+        row
+        for row in existing_ranked
+        if managed_run_key(row) not in current_keys and artifacts.float_or_none(row.get("score")) is not None
+    ]
     prior_step_rows = [row for row in preserved if row.get("step_id") == step_id]
     for row in prior_step_rows:
         if row.get("metric") != metric:
@@ -113,6 +117,7 @@ def select_hparam_candidates(
     if remaining_prior_keys:
         raise ValueError("Existing ranking rows are not owned by a registered plan for this step.")
     rows = []
+    unscored_rows = []
     for run in plan["runs"]:
         canonical = resolve_run_row(canonical_rows, run)
         if canonical is None:
@@ -121,22 +126,24 @@ def select_hparam_candidates(
         manifest = read_json(manifest_path) if manifest_path else {}
         score = artifacts.metric_value(manifest, metric)
         ckpt = artifacts.fixed_checkpoint_path(manifest, Path(str(run["checkpoint_dir"])))
-        rows.append(
-            {
-                "step_id": run["step_id"],
-                "run_id": run["run_id"],
-                "run_name": run["run_name"],
-                "parameter_summary": run.get("parameter_summary", ""),
-                "version": run["version"],
-                "metric": metric,
-                "score": score,
-                "config": run.get("config"),
-                "checkpoint_path": ckpt,
-                "run_manifest": str(manifest_path or ""),
-                "status": canonical.get("status", ""),
-                **managed_run_parameters(run),
-            }
-        )
+        row = {
+            "step_id": run["step_id"],
+            "run_id": run["run_id"],
+            "run_name": run["run_name"],
+            "parameter_summary": run.get("parameter_summary", ""),
+            "version": run["version"],
+            "metric": metric,
+            "score": score,
+            "config": run.get("config"),
+            "checkpoint_path": ckpt,
+            "run_manifest": str(manifest_path or ""),
+            "status": canonical.get("status", ""),
+            **managed_run_parameters(run),
+        }
+        if isinstance(score, bool) or artifacts.float_or_none(score) is None:
+            unscored_rows.append(row)
+        else:
+            rows.append(row)
     reverse = mode == "max"
     ranked = sorted(
         rows,
@@ -148,6 +155,8 @@ def select_hparam_candidates(
     current_ranked = ranked
     validate_managed_run_rows(current_ranked, source="current ranking", cardinality="one_per_run")
     step_ranked = [row for row in [*preserved, *current_ranked] if row.get("step_id") == step_id]
+    if not step_ranked:
+        raise ValueError(f"No valid {metric} scores are available for hparam selection.")
     step_ranked = sorted(
         step_ranked,
         key=lambda row: artifacts.sortable_score(row.get("score"), reverse),
@@ -170,6 +179,18 @@ def select_hparam_candidates(
                 "checkpoint_path": row.get("checkpoint_path"),
             }
             for row in step_ranked
+        ]
+        + [
+            {
+                "step_id": row.get("step_id"),
+                "run_id": row.get("run_id"),
+                "run_name": row.get("run_name"),
+                "metric": metric,
+                "score": "",
+                "rank": "",
+                "checkpoint_path": "",
+            }
+            for row in unscored_rows
         ],
     )
     append_event(

@@ -161,6 +161,43 @@ def evaluate_recipe(
         policy,
     )
     report = _append_issues(report, materialization_issues)
+    if cfg is not None and cfg.get("is_finetune") is True and not cfg.get("blocking_issues"):
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        finetune_task = cfg.get("finetune", {}).get("task", {})
+        config_contracts = {
+            "data_backend": (
+                inputs.get("data_backend", runtime.get("data_backend")),
+                cfg.get("data_backend"),
+                "data.backend",
+            ),
+            "selection_metric": (
+                evaluation.get("selection_metric"),
+                finetune_task.get("monitor"),
+                "finetune.task.monitor",
+            ),
+            "selection_mode": (
+                evaluation.get("selection_mode"),
+                finetune_task.get("monitor_mod"),
+                "finetune.task.monitor_mod",
+            ),
+        }
+        contract_issues = []
+        for field, (decision_value, config_value, config_field) in config_contracts.items():
+            if decision_value in (None, "", "ASK_USER"):
+                continue
+            if decision_value != config_value:
+                contract_issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        field,
+                        f"{field} decision differs from config {config_field}.",
+                        None,
+                        {"decision": decision_value, "config": config_value},
+                    )
+                )
+        report = _append_issues(report, contract_issues)
     raw_config_decision = user_decisions.get("config")
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
@@ -640,7 +677,7 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
                 variant=str(recipe.get("variant")),
             ),
         ]
-        if test_after_fit is False:
+        if test_after_fit is False or evaluation.get("external_test_locked") is True:
             pieces.append("--no-test-after-fit")
         return [rendering.render_command(pieces)]
     if task in {"infer", "evaluate"}:

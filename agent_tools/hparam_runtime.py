@@ -76,7 +76,11 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     runs = plan["runs"]
     target = str(execution.get("target", "local") or "local")
-    max_concurrent = int(execution.get("max_concurrent") or len(runs) or 1)
+    gpu_groups = _gpu_groups(recipe)
+    max_concurrent = int(execution["max_concurrent"]) if "max_concurrent" in execution else max(len(gpu_groups), 1)
+    if max_concurrent <= 0:
+        raise ValueError("execution.max_concurrent must be a positive integer.")
+    allow_gpu_oversubscription = bool(gpu_groups) and max_concurrent > len(gpu_groups)
     expected_keys = {managed_run_key(run) for run in runs}
     manifest = run_dir / "launch_manifest.tsv"
     status_path = run_dir / "run_status.tsv"
@@ -96,17 +100,41 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
     active_statuses = {"launched", "running", "unknown_remote", "missing_pid"}
     active = sum(row.get("status") in active_statuses for row in refreshed.values())
     slots = max(max_concurrent - active, 0)
+    gpu_group_by_value = {",".join(str(item) for item in group): index for index, group in enumerate(gpu_groups)}
+    active_gpu_loads = [0] * len(gpu_groups)
+    assigned_gpu_loads = [0] * len(gpu_groups)
+    assigned_group_by_key = {}
+    for key, previous in refreshed.items():
+        assigned = ",".join(part.strip() for part in str(previous.get("gpus") or "").split(",") if part.strip())
+        if not assigned:
+            continue
+        group_index = gpu_group_by_value.get(assigned)
+        if group_index is None:
+            raise ValueError(f"Frozen GPUs are not one configured GPU group for {key[0]} / {key[1]}: {assigned}")
+        assigned_group_by_key[key] = group_index
+        if previous.get("status") in active_statuses:
+            active_gpu_loads[group_index] += 1
+            assigned_gpu_loads[group_index] += 1
     rows = []
-    for index, run in enumerate(runs):
+    for run in runs:
         key = managed_run_key(run)
         run_id = str(run["run_id"])
         script = Path(str(run["script"]))
-        gpus = _assigned_gpus(recipe, index)
+        previous = refreshed.get(key, {})
+        group_index = assigned_group_by_key.get(key)
+        if group_index is None and gpu_groups:
+            group_index = min(range(len(gpu_groups)), key=lambda index: (assigned_gpu_loads[index], index))
+            assigned_gpu_loads[group_index] += 1
+            gpus = list(gpu_groups[group_index])
+            assigned_group_by_key[key] = group_index
+            if previous.get("status") in active_statuses:
+                active_gpu_loads[group_index] += 1
+        else:
+            gpus = list(gpu_groups[group_index]) if group_index is not None else []
         semantic_run_dir = Path(str(run.get("run_dir") or script.parent))
         log_path = semantic_run_dir / "stdout.log"
         pid_path = semantic_run_dir / "pid"
         command = _launch_command(execution, script, log_path, pid_path, gpus)
-        previous = refreshed.get(key, {})
         status = previous.get("status") or "planned"
         launched_at = previous.get("launched_at", "")
         row = {
@@ -165,14 +193,33 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
             Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
     started_keys = set()
     if not dry_run:
-        for row in rows:
-            if row["status"] in {"planned", "pending"} and slots > 0:
-                row["status"] = _start_process(execution, row["command"])
-                row["launched_at"] = utc_now() if row["status"] == "launched" else ""
-                if row["status"] == "launched":
-                    started_keys.add(managed_run_key(row))
-                    slots -= 1
-            elif row["status"] == "planned":
+        launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in {"planned", "pending"}]
+        while launchable and slots > 0:
+            eligible = []
+            for index, row in launchable:
+                group_index = assigned_group_by_key.get(managed_run_key(row))
+                if group_index is not None:
+                    if not allow_gpu_oversubscription and active_gpu_loads[group_index] >= 1:
+                        continue
+                    load = active_gpu_loads[group_index]
+                else:
+                    load = 0
+                eligible.append((load, index, row, group_index))
+            if not eligible:
+                break
+            _load, index, row, group_index = min(eligible, key=lambda item: (item[0], item[1]))
+            launchable = [
+                (candidate_index, candidate) for candidate_index, candidate in launchable if candidate_index != index
+            ]
+            row["status"] = _start_process(execution, row["command"])
+            row["launched_at"] = utc_now() if row["status"] == "launched" else ""
+            if row["status"] == "launched":
+                started_keys.add(managed_run_key(row))
+                if group_index is not None:
+                    active_gpu_loads[group_index] += 1
+                slots -= 1
+        for _index, row in launchable:
+            if row["status"] == "planned":
                 row["status"] = "pending"
     committed = merge_run_manifest(workspace, rows, lock_held=manifest_lock_held)
     committed_by_key = {managed_run_key(row): row for row in committed}
@@ -337,16 +384,23 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     return status_path
 
 
-def _assigned_gpus(recipe: dict[str, Any], run_index: int) -> list[Any]:
+def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     devices = _as_list(runtime.get("devices"))
     pool = _as_list(execution.get("gpu_pool")) or devices
     if not pool:
         return []
-    per_run = int(execution.get("gpus_per_run") or len(devices) or 1)
-    start = (run_index * per_run) % len(pool)
-    return [pool[(start + offset) % len(pool)] for offset in range(per_run)]
+    if len({str(item) for item in pool}) != len(pool):
+        raise ValueError("The effective GPU pool must not contain duplicate GPU identifiers.")
+    per_run = int(execution["gpus_per_run"]) if "gpus_per_run" in execution else len(devices) or 1
+    if per_run <= 0:
+        raise ValueError("execution.gpus_per_run must be a positive integer.")
+    if per_run > len(pool):
+        raise ValueError("execution.gpus_per_run cannot exceed the effective GPU pool size.")
+    if len(pool) % per_run != 0:
+        raise ValueError("The effective GPU pool must divide evenly into disjoint per-run GPU groups.")
+    return [pool[index : index + per_run] for index in range(0, len(pool), per_run)]
 
 
 def _as_list(value: Any) -> list[Any]:
