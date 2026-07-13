@@ -133,7 +133,11 @@ def write_finetune_recipe(tmp_path: Path, *, include_label: bool = True, variant
         },
         "inputs": inputs,
         "runtime": {"devices": [0]},
-        "artifacts": {"results_csv_path": str(tmp_path / "results.csv"), "version_name": "unit"},
+        "artifacts": {
+            "results_csv_path": str(tmp_path / "results.csv"),
+            "version_name": "unit",
+            "overwrite": False,
+        },
         "evaluation_policy": {
             "selection_metric": "val_ahi_pearson",
             "selection_mode": "max",

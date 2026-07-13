@@ -33,6 +33,7 @@ runtime:
 artifacts:
   version_name: sex-age-cox-agent-example
   results_csv_path: results/sex_age_cox_agent_example.csv
+  overwrite: false
 
 evaluation_policy:
   selection_metric: val_c_index

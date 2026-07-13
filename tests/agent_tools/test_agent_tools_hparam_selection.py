@@ -137,6 +137,40 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
     assert selected["selected_run_id"] == "run-000"
 
 
+def test_hparam_select_reads_the_user_materialized_effective_metric(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, selection_metric="val_effective")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"]["selection_metric"] = "val_stale"
+    write_yaml(recipe, payload)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"selection_metric": {"value": "val_effective", "source": "explicit_user"}}},
+    )
+    plan_dir = tmp_path / "plan"
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(plan_dir),
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "epoch=1.ckpt").write_text("checkpoint")
+    (runtime_dir / "run_manifest.json").write_text(json.dumps({"epoch": 1, "metrics": {"val_effective": 0.7}}))
+
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+
+    row = _read_table(ranking)[0]
+    assert row["metric"] == "val_effective"
+    assert row["score"] == "0.7"
+
+
 def test_hparam_select_preserves_zero_padded_epoch_checkpoint(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

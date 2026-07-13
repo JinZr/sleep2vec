@@ -45,10 +45,9 @@ SUBCOMMANDS = {
 
 RUNNABLE_TASK_VARIANT_MATRIX = [
     ("sleep2stat", None, "sleep2stat"),
-    *[
-        ("preset_prepare", variant, "preprocess/save_dataset_presets.py")
-        for variant in ("sleep2vec", "sleep2vec2", "sleep2expert")
-    ],
+    ("preset_prepare", "sleep2vec", "preprocess/save_dataset_presets.py"),
+    ("preset_prepare", "sleep2vec2", "sleep2vec2/preprocess/save_dataset_presets.py"),
+    ("preset_prepare", "sleep2expert", "sleep2expert/preprocess/save_dataset_presets.py"),
     *[
         (task, variant, f"{variant}.{'finetune' if task in {'finetune', 'hparam_tune'} else 'infer'}")
         for task in ("finetune", "hparam_tune", "infer", "evaluate")
@@ -109,6 +108,19 @@ def test_hparam_launch_cli_contract():
     assert {name for name, action in actions.items() if action.required} == {"plan_dir"}
     assert args.dry_run is True
     assert args.execute is False
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["hparam-launch", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
+
+
+def test_hparam_export_logits_cli_leaves_script_writing_to_postprocess(tmp_path: Path, monkeypatch):
+    manifest = tmp_path / "logits_export_manifest.tsv"
+    monkeypatch.setattr(cli, "export_hparam_logits", lambda *_args, **_kwargs: manifest)
+
+    result = cli.main(["hparam-export-logits", "--run-dir", str(tmp_path), "--selected", "selected.csv", "--skip-test"])
+
+    assert result == 0
+    assert not (tmp_path / "logits_export.sh").exists()
 
 
 def test_hparam_export_logits_cli_contract():

@@ -33,6 +33,7 @@ runtime:
 artifacts:
   version_name: sex-age-multilabel-agent-example
   results_csv_path: results/sex_age_multilabel_agent_example.csv
+  overwrite: false
 
 evaluation_policy:
   selection_metric: val_macro_auroc

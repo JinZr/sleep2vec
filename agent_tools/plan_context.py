@@ -89,8 +89,8 @@ def skill_context(task: str) -> tuple[dict[str, Any], list[str]]:
     return {"name": None, "path": None, "owners": []}, []
 
 
-def context_index_summary(recipe: dict, cfg: dict | None, decisions: dict | None = None) -> dict | None:
-    paths, config, split_values = index_summary_inputs(recipe, cfg, decisions=decisions)
+def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
+    paths, config, split_values = index_summary_inputs(recipe, cfg)
     data = (cfg or {}).get("data") or {}
     uses_kaldi_manifest = bool(
         cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi"
@@ -126,9 +126,7 @@ def context_index_summary(recipe: dict, cfg: dict | None, decisions: dict | None
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
 
 
-def index_summary_inputs(
-    recipe: dict, cfg: dict | None, decisions: dict | None = None
-) -> tuple[list[Any], Any, list[Any]]:
+def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any, list[Any]]:
     task = recipe.get("task")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
@@ -140,11 +138,9 @@ def index_summary_inputs(
         return rendering.list_value(inputs.get("index")), config, rendering.list_value(preset.get("split"))
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
         if task in {"infer", "evaluate"}:
-            split_values = rendering.list_value(
-                rendering.decision_value(decisions, "eval_split", inputs.get("eval_split"))
-            )
+            split_values = rendering.list_value(inputs.get("eval_split"))
         else:
-            split_values = finetune_loaded_split_values(recipe, decisions)
+            split_values = finetune_loaded_split_values(recipe)
         if effective_preset_path(recipe, cfg) not in (None, ""):
             return [], config, split_values
         data = (cfg or {}).get("data") or {}
@@ -157,22 +153,16 @@ def index_summary_inputs(
     return paths, config, []
 
 
-def finetune_loaded_split_values(recipe: dict, decisions: dict | None) -> list[str]:
+def finetune_loaded_split_values(recipe: dict) -> list[str]:
     task = recipe.get("task")
-    base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
-    train_recipe = base_recipe if task == "hparam_tune" and base_recipe else recipe
-    runtime = train_recipe.get("runtime") if isinstance(train_recipe.get("runtime"), dict) else {}
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    if task == "finetune":
-        evaluation = (
-            train_recipe.get("evaluation_policy") if isinstance(train_recipe.get("evaluation_policy"), dict) else {}
-        )
 
     splits: list[str] = []
     if loads_train_val(runtime.get("epochs", 30)):
         splits.extend(["train", "val"])
 
-    test_after_fit = rendering.decision_value(decisions, "test_after_fit", evaluation.get("test_after_fit"))
+    test_after_fit = evaluation.get("test_after_fit")
     if task == "hparam_tune":
         if test_after_fit is True:
             splits.append("test")
@@ -191,11 +181,10 @@ def loads_train_val(epochs: Any) -> bool:
 def index_summary_issues(
     recipe: dict,
     cfg: dict | None,
-    decisions: dict,
     *,
     index_payload: dict | None = None,
 ) -> list[DecisionIssue]:
-    index_payload = context_index_summary(recipe, cfg, decisions=decisions) if index_payload is None else index_payload
+    index_payload = context_index_summary(recipe, cfg) if index_payload is None else index_payload
     blocking = (index_payload or {}).get("blocking_issues") or []
     return [
         DecisionIssue(

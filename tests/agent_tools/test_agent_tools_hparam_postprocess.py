@@ -388,6 +388,11 @@ def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_pa
     assert Path(external_row["external_config"]).is_absolute()
     for field in ("val_config", "val_logits_path", "test_config", "test_logits_path"):
         assert Path(logits_row[field]).is_absolute()
+    logits_script = plan_dir / "logits_export.sh"
+    assert logits_script.exists()
+    replay_command = shlex.split(logits_script.read_text().splitlines()[-1])
+    assert replay_command[replay_command.index("--run-dir") + 1] == str(plan_dir.resolve())
+    assert replay_command[replay_command.index("--selected") + 1] == str(selected.resolve())
 
 
 @pytest.mark.parametrize(
@@ -944,6 +949,36 @@ def test_hparam_export_logits_dry_run_script_freezes_absolute_inputs(tmp_path: P
     replay = subprocess.run(["bash", str(script)], cwd=replay_cwd, env=env, text=True, capture_output=True)
 
     assert replay.returncode == 0, replay.stderr
+
+
+def test_hparam_export_logits_uses_effective_recipe_label(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"] = {"label_name": "effective-label"}
+    payload["decisions"]["label_name"]["value"] = "effective-label"
+    write_yaml(recipe, payload)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,rank,config,checkpoint_path\n"
+        f"{run['step_id']},{run['run_id']},1,{run['config']},{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
+    )
+
+    result = _run(
+        "hparam-export-logits",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--skip-test",
+    )
+
+    assert result.returncode == 0, result.stderr
+    row = _read_table(plan_dir / "logits_export_manifest.tsv")[0]
+    assert row["label_name"] == "effective-label"
+    assert "--label-name effective-label" in row["val_infer_command"]
 
 
 @pytest.mark.parametrize(

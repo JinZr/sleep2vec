@@ -3,8 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from .experiment_workspace import read_managed_yaml_mapping
 from .models import repo_relative, resolve_repo_path
 
 
@@ -12,10 +11,7 @@ def load_yaml_file(path: str | Path) -> dict[str, Any]:
     resolved = resolve_repo_path(path)
     if resolved is None:
         raise FileNotFoundError("Path is required.")
-    data = yaml.safe_load(resolved.read_text())
-    if not isinstance(data, dict):
-        raise ValueError(f"YAML must be a mapping: {resolved}")
-    return data
+    return read_managed_yaml_mapping(resolved.read_text(), source=f"YAML file {resolved}")
 
 
 def load_recipe(path: str | Path) -> dict[str, Any]:
@@ -46,7 +42,7 @@ def load_user_decisions(path: str | Path | None) -> dict[str, Any]:
     data = load_yaml_file(path)
     decisions = data.get("decisions")
     if not isinstance(decisions, dict):
-        return {}
+        raise ValueError(f"User-decision file must contain a decisions mapping: {resolve_repo_path(path)}")
     return decisions
 
 

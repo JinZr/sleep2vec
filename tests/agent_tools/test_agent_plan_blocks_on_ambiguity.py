@@ -362,7 +362,80 @@ def test_resolved_hparam_user_config_owns_consultation_and_snapshot(tmp_path: Pa
     run = _first_run(tmp_path / "plan")
     assert yaml.safe_load(Path(run["config"]).read_text())["data"]["max_tokens"] == 5
     plan = json.loads((tmp_path / "plan" / "plan.json").read_text())
-    assert plan["recipe"]["_base_recipe"]["inputs"]["config"] == str(selected_config)
+    assert plan["recipe"]["inputs"]["config"] == str(selected_config)
+    assert plan["recipe"]["_base_recipe"]["inputs"]["config"] != str(selected_config)
+
+
+def test_hparam_user_decisions_freeze_one_effective_recipe(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"]["selection_metric"] = "val_wrong"
+    write_yaml(recipe, payload)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {
+            "decisions": {
+                "selection_metric": {"value": "val_ahi_pearson", "source": "explicit_user"},
+                "selection_mode": {"value": "max", "source": "explicit_user"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_user"},
+                "hparam_search_space": {
+                    "value": {"runtime.lr": [2e-6]},
+                    "source": "explicit_user",
+                },
+                "hparam_budget": {"value": 1, "source": "explicit_user"},
+            }
+        },
+    )
+    plan_dir = tmp_path / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(plan_dir),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    effective = plan["recipe"]
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    assert effective["evaluation_policy"]["selection_metric"] == "val_ahi_pearson"
+    assert effective["evaluation_policy"]["selection_split"] == "val"
+    assert effective["_local_recipe"]["evaluation_policy"]["selection_metric"] == "val_wrong"
+    assert effective["search"] == {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [2e-6]}}
+    assert effective["_local_recipe"]["search"] != effective["search"]
+    assert "--lr 2e-06" in plan["runs"][0]["command"]
+    assert resolved == {key: value for key, value in effective.items() if key != "_recipe_path"}
+
+
+def test_hparam_user_selection_metric_rechecks_config_monitor(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {
+            "decisions": {
+                "selection_metric": {"value": "val_other", "source": "explicit_user"},
+            }
+        },
+    )
+    plan_dir = tmp_path / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(plan_dir),
+    )
+
+    assert result.returncode == 2
+    assert "selection_metric differs" in result.stdout
+    assert not (plan_dir / "runs").exists()
 
 
 def test_resolved_hparam_user_config_rechecks_base_consultation(tmp_path: Path):
@@ -761,6 +834,33 @@ def test_hparam_run_script_honors_base_runtime_wandb_mode_env(tmp_path: Path):
     assert "WANDB_MODE=offline python -m sleep2vec.finetune" in Path(_first_run(output_dir)["script"]).read_text()
 
 
+def test_hparam_plan_and_launch_use_merged_effective_recipe(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["label_name"] = "effective-label"
+    payload["runtime"] = {"devices": [4], "batch_size": 7}
+    payload["artifacts"] = {"results_csv_path": "effective/results.csv"}
+    payload["decisions"]["label_name"]["value"] = "effective-label"
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    launched = _run("hparam-launch", "--plan-dir", str(output_dir))
+
+    assert planned.returncode == 0, planned.stderr or planned.stdout
+    assert launched.returncode == 0, launched.stderr or launched.stdout
+    plan = json.loads((output_dir / "plan.json").read_text())
+    command = plan["runs"][0]["command"]
+    assert "--label-name effective-label" in command
+    assert "--batch-size 7" in command
+    assert f"--results-csv-path {output_dir / 'effective/results.csv'}" in command
+    assert plan["recipe"]["runtime"]["devices"] == [4]
+    assert plan["recipe"]["_base_recipe"]["runtime"]["devices"] != [4]
+    with (output_dir / "launch_manifest.tsv").open(newline="") as file_obj:
+        launch_rows = list(csv.DictReader(file_obj, delimiter="\t"))
+    assert launch_rows[0]["gpus"] == "4"
+
+
 def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("checkpoint")
@@ -1111,6 +1211,7 @@ def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_c
             "overwrite_policy": {"value": True, "source": "explicit_user"},
         }
     )
+    payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
     output_dir.mkdir()
@@ -1149,7 +1250,7 @@ def test_hparam_plan_blocks_user_test_after_fit_when_lock_stays_resolved(tmp_pat
     assert not (output_dir / "runs").exists()
 
 
-def test_pretrain_and_adapt_tasks_fail_instead_of_generating_empty_scripts(tmp_path: Path):
+def test_pretrain_and_adapt_are_not_runnable_recipe_tasks(tmp_path: Path):
     pretrained = tmp_path / "pretrained.ckpt"
     pretrained.write_text("checkpoint")
     recipes = []
@@ -1175,7 +1276,7 @@ def test_pretrain_and_adapt_tasks_fail_instead_of_generating_empty_scripts(tmp_p
         result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
         assert result.returncode == 1
-        assert "No command renderer is implemented" in result.stdout
+        assert f"Unsupported task: {task}" in result.stdout
         assert (output_dir / "plan.blocked.md").exists()
         assert not (output_dir / "run.sh").exists()
 
@@ -1185,8 +1286,8 @@ def test_context_without_workspace_writes_blocked_script(tmp_path: Path):
 
     result = _run("context", "--task", "pretrain", "--variant", "sleep2vec", "--output-dir", str(output_dir))
 
-    assert result.returncode == 2
-    assert "experiment" in (output_dir / "questions.md").read_text()
+    assert result.returncode == 1
+    assert "Unsupported task: pretrain" in json.loads((output_dir / "context.json").read_text())["blocking_issues"]
     assert (output_dir / "commands.blocked.sh").exists()
     assert not (output_dir / "commands.sh").exists()
     assert not (output_dir / "validation.sh").exists()
@@ -1227,6 +1328,7 @@ def test_plan_overwrite_rejects_output_alias_to_canonical_without_writing(tmp_pa
             payload = yaml.safe_load(recipe.read_text())
             payload["experiment"]["root"] = str(workspace)
             payload["decisions"]["overwrite_policy"]["value"] = True
+            payload["artifacts"]["overwrite"] = True
             recipe.write_text(yaml.safe_dump(payload))
             initial = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-1"))
             assert initial.returncode == 0, initial.stderr or initial.stdout
@@ -1262,6 +1364,7 @@ def test_plan_rejects_runs_ancestor_symlink_before_workspace_mutation(tmp_path: 
     recipe = write_finetune_recipe(workspace)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"]["overwrite_policy"]["value"] = True
+    payload["artifacts"]["overwrite"] = True
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = workspace / "plan"
     output_dir.mkdir()
@@ -1288,6 +1391,7 @@ def test_plan_overwrite_rejects_leaf_directory_before_workspace_mutation(tmp_pat
     recipe = write_finetune_recipe(workspace)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"]["overwrite_policy"]["value"] = True
+    payload["artifacts"]["overwrite"] = True
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = workspace / "plan"
     (output_dir / "plan.json").mkdir(parents=True)
@@ -1325,6 +1429,7 @@ def test_plan_refuses_existing_blocked_artifact_when_overwrite_missing(tmp_path:
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"].pop("overwrite_policy")
+    payload["artifacts"].pop("overwrite")
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
     output_dir.mkdir()
@@ -1413,6 +1518,91 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     assert "--dry-run" in script
     assert f"--manifest-output {shlex_quote(str(manifest_output))}" in script
     assert "--no-write-sidecar-manifest" in script
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_script"),
+    [
+        ("sleep2vec", "preprocess/save_dataset_presets.py"),
+        ("sleep2vec2", "sleep2vec2/preprocess/save_dataset_presets.py"),
+        ("sleep2expert", "sleep2expert/preprocess/save_dataset_presets.py"),
+    ],
+)
+def test_preset_plan_routes_to_variant_local_script(tmp_path: Path, variant: str, expected_script: str):
+    base = write_finetune_recipe(tmp_path, variant=variant)
+    config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    index = tmp_path / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
+    recipe = write_yaml(
+        tmp_path / "preset.yaml",
+        {
+            "name": "unit_preset",
+            "task": "preset_prepare",
+            "variant": variant,
+            "inputs": {"config": config, "index": [str(index)], "dataset_name": "unit"},
+            "preset": {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False},
+            "decisions": {
+                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
+                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
+                "min_channels": {"value": 1, "source": "explicit_recipe"},
+            },
+        },
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert expected_script in (output_dir / "run.sh").read_text()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("manifest_output", "manifest.json"), ("write_sidecar_manifest", False)],
+)
+@pytest.mark.parametrize("variant", ["sleep2vec2", "sleep2expert"])
+def test_variant_preset_rejects_root_only_manifest_flags_before_writing(
+    tmp_path: Path,
+    variant: str,
+    field: str,
+    value: str | bool,
+):
+    base = write_finetune_recipe(tmp_path, variant=variant)
+    config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    index = tmp_path / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
+    recipe = write_yaml(
+        tmp_path / "preset.yaml",
+        {
+            "name": "unit_preset",
+            "task": "preset_prepare",
+            "variant": variant,
+            "inputs": {"config": config, "index": [str(index)], "dataset_name": "unit"},
+            "preset": {
+                "n_tokens": 128,
+                "split": ["train"],
+                "allow_missing_channels": False,
+                field: value,
+            },
+            "decisions": {
+                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
+                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
+                "min_channels": {"value": 1, "source": "explicit_recipe"},
+            },
+        },
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"does not support {field}" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+    assert not (output_dir / "plan.json").exists()
 
 
 def test_preset_plan_checks_inputs_index_even_when_config_has_finetune_preset(tmp_path: Path):
@@ -1668,6 +1858,28 @@ def test_hparam_rejects_removed_adaptive_field_when_adaptive_is_disabled(tmp_pat
 
     assert result.returncode == 1
     assert "adaptive.max_trials_total is no longer supported" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [("execution", "max_concurent"), ("evaluation_policy", "selection_metic")],
+)
+def test_hparam_rejects_unknown_execution_and_evaluation_fields(
+    tmp_path: Path,
+    section: str,
+    field: str,
+):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload.setdefault(section, {})[field] = 1
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"{section}.{field}" in result.stdout
+    assert not output_dir.exists()
 
 
 def test_hparam_runtime_parameter_reaches_run_script(tmp_path: Path):
@@ -1996,21 +2208,27 @@ def test_collect_runs_allows_header_only_canonical_manifest(tmp_path: Path):
     assert output.read_text() == "version\n"
 
 
-def test_hparam_run_all_uses_output_dir_for_run_scripts(tmp_path: Path):
+def test_hparam_run_all_rejects_tampered_leaf_before_execution(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     output_dir = tmp_path / "plan"
     marker = tmp_path / "ran.txt"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
     assert result.returncode == 0
+    run_all_text = (output_dir / "run_all.sh").read_text()
+    assert (
+        f"python -m agent_tools hparam-launch --plan-dir {shlex_quote(str(output_dir.resolve()))} --execute"
+        in run_all_text
+    )
     Path(_first_run(output_dir)["script"]).write_text(
         f"#!/usr/bin/env bash\nset -euo pipefail\nprintf ok > {shlex_quote(str(marker))}\n"
     )
 
     run_all = subprocess.run(["bash", str(output_dir / "run_all.sh")], cwd=tmp_path, text=True, capture_output=True)
 
-    assert run_all.returncode == 0, run_all.stderr
-    assert marker.read_text() == "ok"
+    assert run_all.returncode != 0
+    assert "snapshot hash changed" in run_all.stderr
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("task", ["finetune", "infer", "evaluate", "preset_prepare", "sleep2stat"])

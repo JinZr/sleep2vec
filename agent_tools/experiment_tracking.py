@@ -12,7 +12,6 @@ from typing import Any
 
 from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
-    EXECUTION_IDENTITY_FIELDS,
     managed_run_key,
     merge_run_row,
     read_managed_yaml_mapping,
@@ -159,59 +158,7 @@ def wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict
 
 
 def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[str, Any]]:
-    by_key: dict[tuple[str, ...], dict[str, Any]] = {}
-    canonical_rows = read_run_manifest(root, remote=remote)
-    for row in canonical_rows:
-        key = managed_run_key(row)
-        by_key[key] = merge_run_row(by_key.get(key, {}), row)
-
-    launch_path = root / "launch_manifest.tsv"
-    status_path = root / "run_status.tsv"
-    exp_io.validate_managed_output_paths(root, [launch_path, status_path], remote=remote)
-    launch_rows = exp_io.read_rows_at(launch_path, remote=remote, require_managed_identity=True)
-    validate_managed_run_rows(launch_rows, source=launch_path.name, cardinality="one_per_run")
-    for row in launch_rows:
-        key = managed_run_key(row)
-        existing = by_key.get(key)
-        if existing is None:
-            raise ValueError(
-                f"{launch_path.name} row is not managed by run_manifest.tsv: "
-                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
-            )
-        execution_initialized = existing.get("target") not in (None, "")
-        ownership_row = (
-            row
-            if execution_initialized
-            else {field: value for field, value in row.items() if field not in EXECUTION_IDENTITY_FIELDS}
-        )
-        validate_frozen_run_update(existing, ownership_row)
-        update = {
-            field: row[field]
-            for field in evidence.RUN_EVIDENCE_FIELDS
-            if field in row and (execution_initialized or field not in EXECUTION_IDENTITY_FIELDS)
-        }
-        by_key[key] = merge_run_row(existing, update)
-
-    status_rows = exp_io.read_rows_at(status_path, remote=remote, require_managed_identity=True)
-    validate_managed_run_rows(status_rows, source=status_path.name, cardinality="one_per_run")
-    for row in status_rows:
-        existing = by_key.get(managed_run_key(row))
-        if existing is None:
-            raise ValueError(
-                f"{status_path.name} row is not managed by run_manifest.tsv: "
-                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
-            )
-        # The status table is a mirror: validate its ownership, but never reuse its runtime evidence.
-        ownership_row = (
-            row
-            if existing.get("target") not in (None, "")
-            else {field: value for field, value in row.items() if field not in EXECUTION_IDENTITY_FIELDS}
-        )
-        validate_frozen_run_update(existing, ownership_row)
-
-    merged_rows = list(by_key.values())
-
-    return merged_rows
+    return read_run_manifest(root, remote=remote)
 
 
 def managed_metric_rows(run_rows: list[dict[str, Any]], metric_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

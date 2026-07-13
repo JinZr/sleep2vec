@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 import shlex
 import stat
 import subprocess
+import tempfile
 from typing import Any
 
 from .manifests import read_rows, utc_now, write_rows, write_text
@@ -15,6 +17,7 @@ from .models import json_ready
 
 SSH_TIMEOUT_SECONDS = 10
 REMOTE_MISSING_RETURN_CODE = 44
+REMOTE_CONFLICT_RETURN_CODE = 45
 
 
 def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
@@ -287,7 +290,7 @@ for raw_target in targets:
 def read_text_at(path: str | Path, *, remote: str | None = None) -> str:
     if not remote:
         target = Path(path)
-        return target.read_text() if target.exists() else ""
+        return target.read_bytes().decode() if target.exists() else ""
     script = f"""
 import os
 import sys
@@ -302,7 +305,7 @@ except OSError as exc:
     raise SystemExit(1)
 
 try:
-    with open(path, encoding="utf-8") as file_obj:
+    with open(path, encoding="utf-8", newline="") as file_obj:
         sys.stdout.write(file_obj.read())
 except (OSError, UnicodeError) as exc:
     print(exc, file=sys.stderr)
@@ -314,16 +317,16 @@ except (OSError, UnicodeError) as exc:
             remote,
             f"python3 -c {shlex.quote(script)} {shlex.quote(str(path))}",
         ],
-        text=True,
         capture_output=True,
         timeout=SSH_TIMEOUT_SECONDS,
     )
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
         return ""
     if result.returncode != 0:
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        detail = stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH read failed for {path} on {remote}: {detail}")
-    return result.stdout
+    return result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
 
 
 def write_rows_at(path: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> None:
@@ -354,6 +357,92 @@ def write_text_at(path: str | Path, text: str, *, remote: str | None = None) -> 
         check=True,
         timeout=SSH_TIMEOUT_SECONDS,
     )
+
+
+def conditional_atomic_replace_text_at(
+    path: str | Path,
+    text: str,
+    expected_sha256: str,
+    *,
+    remote: str | None = None,
+) -> bool:
+    target = Path(str(path))
+    payload = text.encode()
+    if not remote:
+        with target.open("rb") as file_obj:
+            current = file_obj.read()
+            target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
+        if hashlib.sha256(current).hexdigest() != expected_sha256:
+            return False
+        file_descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        try:
+            with os.fdopen(file_descriptor, "wb") as file_obj:
+                file_obj.write(payload)
+                os.fchmod(file_obj.fileno(), target_mode)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            os.replace(temporary, target)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+        return True
+
+    script = f"""
+import fcntl
+import hashlib
+import os
+import stat
+import sys
+import tempfile
+
+path = sys.argv[1]
+expected = sys.argv[2]
+lock_path = path + ".lock"
+parent = os.path.dirname(path) or "."
+
+with open(lock_path, "a+") as lock_file:
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    try:
+        with open(path, "rb") as file_obj:
+            current = file_obj.read()
+            target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
+    except FileNotFoundError:
+        raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+    if hashlib.sha256(current).hexdigest() != expected:
+        raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+    payload = sys.stdin.buffer.read()
+    descriptor, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=parent)
+    try:
+        with os.fdopen(descriptor, "wb") as file_obj:
+            file_obj.write(payload)
+            os.fchmod(file_obj.fileno(), target_mode)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+"""
+    result = subprocess.run(
+        [
+            "ssh",
+            remote,
+            f"python3 -c {shlex.quote(script)} {shlex.quote(str(target))} {shlex.quote(expected_sha256)}",
+        ],
+        input=payload,
+        capture_output=True,
+        timeout=SSH_TIMEOUT_SECONDS,
+    )
+    if result.returncode == REMOTE_CONFLICT_RETURN_CODE:
+        return False
+    if result.returncode != 0:
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        detail = stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"SSH atomic replace failed for {target} on {remote}: {detail}")
+    return True
 
 
 def append_event_at(

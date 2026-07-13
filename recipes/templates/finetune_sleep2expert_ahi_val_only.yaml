@@ -30,6 +30,7 @@ runtime:
 artifacts:
   version_name: sleep2expert-ahi-agent-example
   results_csv_path: results/sleep2expert_ahi_agent_example.csv
+  overwrite: false
 
 evaluation_policy:
   selection_metric: val_ahi_pearson

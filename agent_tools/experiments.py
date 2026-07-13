@@ -8,7 +8,6 @@ import yaml
 
 from . import experiment_io as exp_io, experiment_tracking as tracking
 from .experiment_workspace import (
-    EXECUTION_IDENTITY_FIELDS,
     TERMINAL_STATUSES,
     canonical_local_experiment_root,
     experiment_metadata_issues,
@@ -376,9 +375,6 @@ def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
     for row in rows:
         if row["experiment_id"] != experiment["id"]:
             raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")
-    for path in (root / "launch_manifest.tsv", root / "run_status.tsv"):
-        auxiliary_rows = exp_io.read_rows_at(path, remote=remote, require_managed_identity=True)
-        _validate_evidence_rows(rows, auxiliary_rows, path.name, cardinality="one_per_run")
     return rows
 
 
@@ -386,19 +382,14 @@ def _validate_evidence_rows(
     managed_rows: list[dict[str, Any]],
     evidence_rows: list[dict[str, Any]],
     source: str,
-    *,
-    cardinality: str = "many_per_run",
 ) -> None:
-    validate_managed_run_rows(evidence_rows, source=source, cardinality=cardinality)
+    validate_managed_run_rows(evidence_rows, source=source, cardinality="many_per_run")
     managed_by_key = {managed_run_key(row): row for row in managed_rows}
     for row in evidence_rows:
         managed = managed_by_key.get(managed_run_key(row))
         if managed is None:
             raise ValueError(f"{source} contains a run outside the canonical manifest.")
-        ownership_row = row
-        if source in {"launch_manifest.tsv", "run_status.tsv"} and managed.get("target") in (None, ""):
-            ownership_row = {field: value for field, value in row.items() if field not in EXECUTION_IDENTITY_FIELDS}
-        validate_frozen_run_update(managed, ownership_row, require_checkpoint_ownership=True)
+        validate_frozen_run_update(managed, row, require_checkpoint_ownership=True)
 
 
 def _experiment_readme(experiment: dict[str, Any]) -> str:

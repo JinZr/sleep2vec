@@ -175,7 +175,7 @@ def evaluate_consultation_gates(
     if str(task_value) == "hparam_tune":
         issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy, approved_defaults))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
-    issues.extend(paths.path_issues(str(task_value), recipe, config_summary, decisions))
+    issues.extend(paths.path_issues(str(task_value), recipe, config_summary))
     if _output_paths_missing(recipe):
         issues.append(
             DecisionIssue(
@@ -335,7 +335,7 @@ def _task_specific_issues(
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
     if task == "sleep2stat":
-        return rules.sleep2stat_issues(recipe, config_summary, decisions, high_impact)
+        return rules.sleep2stat_issues(recipe, config_summary, high_impact)
     if task == "preset_prepare":
         return rules.preset_prepare_issues(recipe, config_summary, high_impact)
     if task == "finetune":
@@ -358,32 +358,11 @@ def _base_finetune_issues(
     if not base_recipe:
         return []
     local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
-    base_gate = dict(base_recipe)
+    base_gate = {key: value for key, value in recipe.items() if not key.startswith("_")}
     base_gate["task"] = "finetune"
-    if recipe.get("variant") and not base_gate.get("variant"):
-        base_gate["variant"] = recipe.get("variant")
-    if recipe.get("execution") and not base_gate.get("execution"):
-        base_gate["execution"] = recipe.get("execution")
-
-    local_evaluation = (
-        local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
-    )
-    base_evaluation = dict(base_gate.get("evaluation_policy") or {})
-    for evaluation_field in (
-        "selection_metric",
-        "selection_mode",
-        "selection_split",
-        "external_test_locked",
-        "test_after_fit",
-        "final_eval_split",
-        "require_manual_unlock_for_final_test",
-    ):
-        if evaluation_field not in base_evaluation and evaluation_field in local_evaluation:
-            base_evaluation[evaluation_field] = local_evaluation[evaluation_field]
-    base_gate["evaluation_policy"] = base_evaluation
 
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
-    base_decisions = dict(base_gate.get("decisions") or {})
+    base_decisions = dict(base_recipe.get("decisions") or {})
     for decision_field, value in local_decisions.items():
         if decision_field != "task" and decision_field not in base_decisions:
             base_decisions[decision_field] = value

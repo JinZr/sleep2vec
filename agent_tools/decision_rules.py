@@ -9,7 +9,6 @@ from .decision_paths import multilabel_sidecar_issue, sleep2stat_existing_run_di
 def sleep2stat_issues(
     recipe: dict,
     config_summary: dict | None,
-    decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
@@ -77,9 +76,6 @@ def sleep2stat_issues(
             )
         )
     external_test_locked = evaluation.get("external_test_locked")
-    external_test_decision = decisions.get("external_test_locked")
-    if external_test_decision is not None and external_test_decision.value not in (None, ""):
-        external_test_locked = external_test_decision.value
     if "test" in {str(value) for value in effective_split} and external_test_locked is not True:
         issues.append(
             DecisionIssue(
@@ -130,6 +126,27 @@ def preset_prepare_issues(
         issues.append(
             needs_issue("min_channels", "min_channels is required when missing channels are allowed.", high_impact)
         )
+    if recipe.get("variant") in {"sleep2vec2", "sleep2expert"}:
+        if preset.get("manifest_output") not in (None, ""):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "manifest_output",
+                    f"{recipe['variant']} preset preparation does not support manifest_output.",
+                    None,
+                    {"variant": recipe["variant"]},
+                )
+            )
+        if "write_sidecar_manifest" in preset:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "write_sidecar_manifest",
+                    f"{recipe['variant']} preset preparation does not support write_sidecar_manifest.",
+                    None,
+                    {"variant": recipe["variant"]},
+                )
+            )
     survival_issue = survival_sidecar_issue("preset_prepare", recipe, config_summary)
     if survival_issue is not None:
         issues.append(survival_issue)
@@ -159,7 +176,7 @@ def finetune_task_issues(
                     {"config_path": config_summary.get("config_path")},
                 )
             )
-    if "test_after_fit" not in evaluation and not _has_explicit_decision(decisions, "test_after_fit"):
+    if "test_after_fit" not in evaluation:
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
@@ -169,7 +186,7 @@ def finetune_task_issues(
                 {"evaluation_policy": evaluation},
             )
         )
-    if "external_test_locked" not in evaluation and not _has_explicit_decision(decisions, "external_test_locked"):
+    if "external_test_locked" not in evaluation:
         issues.append(
             needs_issue("external_test_locked", "external_test_locked must be explicit for finetune.", high_impact)
         )
@@ -200,7 +217,7 @@ def finetune_task_issues(
                     {"config": data},
                 )
             )
-    pretrained_issue = _sex_age_pretrained_backbone_issue("finetune", recipe, decisions)
+    pretrained_issue = _sex_age_pretrained_backbone_issue("finetune", recipe)
     if pretrained_issue is not None:
         issues.append(pretrained_issue)
     survival_issue = survival_sidecar_issue("finetune", recipe, config_summary)
@@ -209,18 +226,8 @@ def finetune_task_issues(
     multilabel_issue = multilabel_sidecar_issue("finetune", recipe, config_summary)
     if multilabel_issue is not None:
         issues.append(multilabel_issue)
-    external_test_decision = decisions.get("external_test_locked")
-    external_test_locked = (
-        external_test_decision.value
-        if external_test_decision is not None and external_test_decision.value not in (None, "")
-        else evaluation.get("external_test_locked")
-    )
-    test_after_fit_decision = decisions.get("test_after_fit")
-    test_after_fit = (
-        test_after_fit_decision.value
-        if test_after_fit_decision is not None and test_after_fit_decision.value not in (None, "")
-        else evaluation.get("test_after_fit")
-    )
+    external_test_locked = evaluation.get("external_test_locked")
+    test_after_fit = evaluation.get("test_after_fit")
     if external_test_locked is True and test_after_fit is True:
         issues.append(
             DecisionIssue(
@@ -256,11 +263,7 @@ def infer_evaluate_issues(
                 )
             )
     if inputs.get("eval_split") == "test":
-        final_eval_unlock = decisions.get("final_eval_unlock")
-        unlocked = evaluation.get("final_test_unlocked") is True or (
-            final_eval_unlock is not None and final_eval_unlock.value is True
-        )
-        if not unlocked:
+        if evaluation.get("final_test_unlocked") is not True:
             issues.append(
                 needs_issue("final_eval_unlock", "Test evaluation requires explicit final unlock.", high_impact)
             )
@@ -274,7 +277,7 @@ def infer_evaluate_issues(
                 {"inputs": inputs},
             )
         )
-    pretrained_issue = _sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe, decisions)
+    pretrained_issue = _sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe)
     if pretrained_issue is not None:
         issues.append(pretrained_issue)
     override_issue = _sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
@@ -289,30 +292,14 @@ def infer_evaluate_issues(
     return issues
 
 
-def _has_explicit_decision(decisions: dict[str, ResolvedDecision], field: str) -> bool:
-    decision = decisions.get(field)
-    return decision is not None and decision.source in {
-        "explicit_user",
-        "explicit_cli",
-        "explicit_recipe",
-        "explicit_config",
-    }
-
-
 def _sex_age_pretrained_backbone_issue(
     task: str,
     recipe: dict,
-    decisions: dict[str, ResolvedDecision],
 ) -> DecisionIssue | None:
     if recipe.get("variant") != "sex_age_baseline" or task not in {"finetune", "infer", "evaluate"}:
         return None
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    decision = decisions.get("pretrained_backbone_path")
-    value = (
-        decision.value
-        if decision is not None and decision.value not in (None, "", "ASK_USER")
-        else inputs.get("pretrained_backbone_path")
-    )
+    value = inputs.get("pretrained_backbone_path")
     if value in (None, "", "ASK_USER"):
         return None
     return DecisionIssue(

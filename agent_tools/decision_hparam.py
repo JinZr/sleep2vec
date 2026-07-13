@@ -6,6 +6,31 @@ from typing import Any
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import multilabel_sidecar_issue
 
+_HPARAM_EXECUTION_FIELDS = {
+    "target",
+    "host",
+    "workdir",
+    "path_context",
+    "path_validation",
+    "max_concurrent",
+    "gpu_pool",
+    "gpus_per_run",
+    "env",
+    "conda_env",
+    "wandb_project",
+    "wandb_group",
+}
+_HPARAM_EVALUATION_FIELDS = {
+    "selection_metric",
+    "selection_mode",
+    "selection_split",
+    "external_test_locked",
+    "test_after_fit",
+    "final_eval_split",
+    "final_test_unlocked",
+    "require_manual_unlock_for_final_test",
+}
+
 
 def hparam_tune_issues(
     recipe: dict,
@@ -24,6 +49,16 @@ def hparam_tune_issues(
         local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
     )
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
+    for field in sorted(set(evaluation) - _HPARAM_EVALUATION_FIELDS):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                f"evaluation_policy.{field}",
+                f"Unknown hparam evaluation_policy field: {field}.",
+                None,
+                {field: evaluation[field], "preflight_before_workspace": True},
+            )
+        )
     if config_summary:
         for issue in config_summary.get("blocking_issues", []):
             issues.append(
@@ -36,11 +71,9 @@ def hparam_tune_issues(
                 )
             )
     if config_summary is None:
-        base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
-        base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
-        recipe_inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        base_config = base_inputs.get("config") or recipe_inputs.get("config")
-        if base_config:
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        config = inputs.get("config")
+        if config:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
@@ -50,7 +83,7 @@ def hparam_tune_issues(
                         "deferred, but YAML overrides cannot be generated from an unreadable config."
                     ),
                     None,
-                    {"config": base_config},
+                    {"config": config},
                 )
             )
     multilabel_issue = multilabel_sidecar_issue("hparam_tune", recipe, config_summary)
@@ -148,23 +181,9 @@ def hparam_tune_issues(
     )
     if not has_external_lock:
         issues.append(needs_issue("external_test_locked", "external_test_locked must be explicit.", high_impact))
-    test_after_fit_decision = decisions.get("test_after_fit")
-    test_after_fit = (
-        test_after_fit_decision.value
-        if test_after_fit_decision is not None and test_after_fit_decision.value not in (None, "")
-        else evaluation.get("test_after_fit")
-    )
-    final_eval_unlock = decisions.get("final_eval_unlock")
-    final_test_unlocked = (
-        final_eval_unlock.value
-        if final_eval_unlock is not None and final_eval_unlock.value not in (None, "")
-        else evaluation.get("final_test_unlocked")
-    )
-    external_test_locked = (
-        user_external_lock.value
-        if user_external_lock is not None and user_external_lock.value not in (None, "")
-        else evaluation.get("external_test_locked")
-    )
+    test_after_fit = evaluation.get("test_after_fit")
+    final_test_unlocked = evaluation.get("final_test_unlocked")
+    external_test_locked = evaluation.get("external_test_locked")
     if test_after_fit is True and not (external_test_locked is False and final_test_unlocked is True):
         issues.append(
             DecisionIssue(
@@ -180,26 +199,26 @@ def hparam_tune_issues(
             needs_issue("final_eval_unlock", "Final test evaluation requires manual unlock policy.", high_impact)
         )
     finetune_task = config_summary.get("finetune", {}).get("task", {}) if config_summary else {}
-    if local_evaluation.get("selection_metric") and finetune_task.get("monitor"):
-        if local_evaluation["selection_metric"] != finetune_task["monitor"]:
+    if evaluation.get("selection_metric") and finetune_task.get("monitor"):
+        if evaluation["selection_metric"] != finetune_task["monitor"]:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.NEEDS_USER_INPUT,
                     "selection_metric",
                     "Hparam selection_metric differs from config finetune.task.monitor.",
                     question_for(high_impact, "selection_metric"),
-                    {"recipe": local_evaluation["selection_metric"], "config": finetune_task["monitor"]},
+                    {"recipe": evaluation["selection_metric"], "config": finetune_task["monitor"]},
                 )
             )
-    if local_evaluation.get("selection_mode") and finetune_task.get("monitor_mod"):
-        if local_evaluation["selection_mode"] != finetune_task["monitor_mod"]:
+    if evaluation.get("selection_mode") and finetune_task.get("monitor_mod"):
+        if evaluation["selection_mode"] != finetune_task["monitor_mod"]:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.NEEDS_USER_INPUT,
                     "selection_mode",
                     "Hparam selection_mode differs from config finetune.task.monitor_mod.",
                     question_for(high_impact, "selection_mode"),
-                    {"recipe": local_evaluation["selection_mode"], "config": finetune_task["monitor_mod"]},
+                    {"recipe": evaluation["selection_mode"], "config": finetune_task["monitor_mod"]},
                 )
             )
     return issues
@@ -209,6 +228,17 @@ def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     if not execution:
         return issues
+    legacy_fields = {"gpus_per_trial", "log_dir", "pid_dir"}
+    for field in sorted(set(execution) - _HPARAM_EXECUTION_FIELDS - legacy_fields):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                f"execution.{field}",
+                f"Unknown hparam execution field: {field}.",
+                None,
+                {field: execution[field], "preflight_before_workspace": True},
+            )
+        )
     if "gpus_per_trial" in execution:
         issues.append(
             DecisionIssue(

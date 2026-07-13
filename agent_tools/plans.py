@@ -37,6 +37,81 @@ from .models import REPO_ROOT, resolve_repo_path
 from .recipes import load_policy_files, load_recipe_with_base, load_user_decisions, recipe_name
 
 
+def _materialize_user_decisions(recipe: dict, user_decisions: dict) -> list[DecisionIssue]:
+    decision_values = {
+        field: raw.get("value") if isinstance(raw, dict) else raw for field, raw in user_decisions.items()
+    }
+    issues: list[DecisionIssue] = []
+
+    if "task" in decision_values:
+        task = decision_values["task"]
+        task_owner = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+        recipe_task = task_owner.get("task")
+        if task not in (None, "", "ASK_USER"):
+            if recipe_task in (None, "", "ASK_USER"):
+                recipe["task"] = task
+                task_owner["task"] = task
+            elif task != recipe_task:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "task",
+                        "Explicit user task conflicts with the recipe task.",
+                        None,
+                        {"recipe": recipe_task, "user": task, "preflight_before_workspace": True},
+                    )
+                )
+
+    if "train_val_test_policy" in decision_values:
+        selection_split = decision_values["train_val_test_policy"]
+        if selection_split not in (None, "", "ASK_USER") and selection_split not in ("train", "val", "test"):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "train_val_test_policy",
+                    "Explicit train_val_test_policy must be train, val, or test.",
+                    None,
+                    {"value": selection_split, "preflight_before_workspace": True},
+                )
+            )
+
+    canonical_fields = {
+        "label_name": ("inputs", "label_name"),
+        "data_backend": ("inputs", "data_backend"),
+        "external_test_locked": ("evaluation_policy", "external_test_locked"),
+        "selection_metric": ("evaluation_policy", "selection_metric"),
+        "selection_mode": ("evaluation_policy", "selection_mode"),
+        "pretrained_backbone_path": ("inputs", "pretrained_backbone_path"),
+        "config": ("inputs", "config"),
+        "ckpt_path": ("inputs", "ckpt_path"),
+        "eval_split": ("inputs", "eval_split"),
+        "final_eval_config_path": ("inputs", "final_eval_config_path"),
+        "preset_regeneration": ("preset", "regenerate"),
+        "required_channels": ("preset", "required_channels"),
+        "min_channels": ("preset", "min_channels"),
+        "hparam_search_space": ("search", "parameters"),
+        "hparam_budget": ("search", "max_runs"),
+        "final_eval_unlock": ("evaluation_policy", "final_test_unlocked"),
+        "test_after_fit": ("evaluation_policy", "test_after_fit"),
+    }
+    if recipe.get("task") == "preset_prepare":
+        canonical_fields["overwrite_policy"] = ("preset", "overwrite")
+    else:
+        canonical_fields["overwrite_policy"] = ("artifacts", "overwrite")
+    if decision_values.get("train_val_test_policy") in ("train", "val", "test"):
+        canonical_fields["train_val_test_policy"] = ("evaluation_policy", "selection_split")
+
+    for field, (section, key) in canonical_fields.items():
+        if field not in decision_values:
+            continue
+        value = decision_values[field]
+        if value in ("", "ASK_USER") or value is None and field != "pretrained_backbone_path":
+            continue
+        target = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
+        recipe[section] = {**target, key: value}
+    return issues
+
+
 def evaluate_recipe(
     recipe_path: str | Path,
     user_decisions_path: str | Path | None = None,
@@ -47,7 +122,16 @@ def evaluate_recipe(
         recipe["_recipe_path"] = str(source.resolve())
     policy, defaults = load_policy_files()
     user_decisions = load_user_decisions(user_decisions_path)
-    cfg = context.load_config_summary_for_recipe(recipe)
+    materialization_issues = _materialize_user_decisions(recipe, user_decisions)
+
+    config_error = None
+    try:
+        cfg = context.load_config_summary_for_recipe(recipe)
+    except Exception as exc:
+        if "config" not in user_decisions:
+            raise
+        cfg = None
+        config_error = str(exc)
     report = evaluate_consultation_gates(
         recipe.get("task"),
         recipe,
@@ -56,13 +140,15 @@ def evaluate_recipe(
         policy,
         defaults,
     )
-    config_decision = report.decisions.get("config")
-    selected_config = (
-        recipe.get("task") in {"finetune", "infer", "evaluate", "hparam_tune"}
-        and "config" in user_decisions
-        and config_decision is not None
+    report = _append_issues(report, materialization_issues)
+    raw_config_decision = user_decisions.get("config")
+    selected_config_value = (
+        raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
     )
-    if selected_config and config_decision.value in (None, "", "ASK_USER"):
+    selected_config = (
+        recipe.get("task") in {"finetune", "infer", "evaluate", "hparam_tune"} and "config" in user_decisions
+    )
+    if selected_config and selected_config_value in (None, "", "ASK_USER"):
         report = _append_issues(
             report,
             [
@@ -72,34 +158,13 @@ def evaluate_recipe(
                     "Explicit config decision is unresolved.",
                     "Which config should this task use?",
                     {
-                        "config": config_decision.value,
+                        "config": selected_config_value,
                         "preflight_before_workspace": True,
                     },
                 )
             ],
         )
     elif selected_config:
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        recipe["inputs"] = {**inputs, "config": config_decision.value}
-        if recipe.get("task") == "hparam_tune" and isinstance(recipe.get("_base_recipe"), dict):
-            base_inputs = (
-                recipe["_base_recipe"].get("inputs") if isinstance(recipe["_base_recipe"].get("inputs"), dict) else {}
-            )
-            recipe["_base_recipe"]["inputs"] = {**base_inputs, "config": config_decision.value}
-        config_error = None
-        try:
-            cfg = context.load_config_summary_for_recipe(recipe)
-        except Exception as exc:
-            cfg = None
-            config_error = str(exc)
-        report = evaluate_consultation_gates(
-            recipe.get("task"),
-            recipe,
-            cfg,
-            {"user_decisions": user_decisions},
-            policy,
-            defaults,
-        )
         blocking_config_issues = cfg.get("blocking_issues", []) if cfg is not None else []
         if config_error or cfg is None or cfg.get("is_finetune") is not True or blocking_config_issues:
             message = config_error or "Selected config must be a readable finetune config without blocking issues."
@@ -112,13 +177,13 @@ def evaluate_recipe(
                         message,
                         None,
                         {
-                            "config": config_decision.value,
+                            "config": selected_config_value,
                             "preflight_before_workspace": True,
                         },
                     )
                 ],
             )
-    report = _append_issues(report, context.index_summary_issues(recipe, cfg, report.decisions))
+    report = _append_issues(report, context.index_summary_issues(recipe, cfg))
     return recipe, cfg, report
 
 
@@ -156,9 +221,11 @@ def build_context(
         "evaluation_policy": {},
         "artifacts": {"output_dir": str(output_dir)},
     }
-    cfg = config_summary(config, variant=variant) if config else None
     policy, defaults = load_policy_files()
     user_decisions = load_user_decisions(user_decisions_path)
+    materialization_issues = _materialize_user_decisions(recipe, user_decisions)
+    effective_config = (recipe.get("inputs") or {}).get("config")
+    cfg = config_summary(effective_config, variant=variant) if effective_config else None
     report = evaluate_consultation_gates(
         task,
         recipe,
@@ -168,6 +235,7 @@ def build_context(
         defaults,
         require_experiment=True,
     )
+    report = _append_issues(report, materialization_issues)
     out = Path(output_dir)
     if report.exit_code == 0:
         workspace_issue = validate_plan_output(recipe, out)
@@ -176,18 +244,18 @@ def build_context(
                 report,
                 [DecisionIssue(DecisionStatus.FAIL, "experiment.root", workspace_issue, None, {})],
             )
-    index_payload = context.context_index_summary(recipe, cfg, decisions=report.decisions)
+    index_payload = context.context_index_summary(recipe, cfg)
     report = _append_issues(
         report,
-        context.index_summary_issues(recipe, cfg, report.decisions, index_payload=index_payload),
+        context.index_summary_issues(recipe, cfg, index_payload=index_payload),
     )
-    commands = _commands_for_recipe(recipe, cfg, report.decisions) if report.exit_code == 0 else []
+    commands = _commands_for_recipe(recipe, cfg) if report.exit_code == 0 else []
     if report.exit_code == 0 and not commands:
         report = _unsupported_command_report(report, task)
     report = _guard_existing_outputs(
         report,
         context.planned_context_paths(out, report),
-        report.decisions.get("overwrite_policy"),
+        _overwrite_policy(recipe),
         root=out,
     )
     if _has_output_artifact_issue(report):
@@ -223,7 +291,7 @@ def build_context(
             out / "commands.sh",
             "\n".join(
                 rendering.script_lines(
-                    _commands_for_recipe(recipe, cfg, report.decisions),
+                    _commands_for_recipe(recipe, cfg),
                     run_cwd=REPO_ROOT,
                 )
             )
@@ -280,7 +348,7 @@ def build_plan(
 
     task = recipe.get("task")
     if task == "hparam_tune":
-        hparam.write_hparam_plan(recipe, cfg, out, unlock_final_test=unlock_final_test, report=report)
+        hparam.write_hparam_plan(recipe, out, unlock_final_test=unlock_final_test)
     else:
         root = experiment_root(recipe)
         if root is None:
@@ -294,8 +362,6 @@ def build_plan(
         run_dir.mkdir(parents=True, exist_ok=True)
         config_path = run_dir / "config.yaml"
         source_config = (recipe.get("inputs") or {}).get("config")
-        if task in {"finetune", "infer", "evaluate"}:
-            source_config = rendering.decision_value(report.decisions, "config", source_config)
         source_path = resolve_repo_path(source_config)
         if source_path is None or not source_path.exists():
             raise ValueError(f"Cannot freeze missing config: {source_config}")
@@ -303,9 +369,8 @@ def build_plan(
         runtime_recipe = copy.deepcopy(recipe)
         runtime_recipe.setdefault("inputs", {})["config"] = str(config_path)
         runtime_recipe.setdefault("artifacts", {})["version_name"] = version
-        runtime_decisions = {key: value for key, value in report.decisions.items() if key != "config"}
         runtime_cfg = config_summary(config_path, variant=recipe.get("variant"))
-        commands = _commands_for_recipe(runtime_recipe, runtime_cfg, runtime_decisions)
+        commands = _commands_for_recipe(runtime_recipe, runtime_cfg)
         runtime_dir = REPO_ROOT / "log-finetune" / version if task == "finetune" else None
         checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
         artifacts_path = run_dir / "artifacts.json"
@@ -403,17 +468,17 @@ def preflight_plan(
     if report.exit_code == 0 and recipe.get("task") == "hparam_tune":
         report = _append_issues(
             report,
-            hparam.final_test_checkpoint_issues(report, recipe, unlock_final_test=unlock_final_test),
+            hparam.final_test_checkpoint_issues(recipe, unlock_final_test=unlock_final_test),
         )
     if report.exit_code == 0 and recipe.get("task") != "hparam_tune":
-        commands = _commands_for_recipe(recipe, cfg, report.decisions)
+        commands = _commands_for_recipe(recipe, cfg)
         if not commands:
             report = _unsupported_command_report(report, str(recipe.get("task")))
     successful_plan = report.exit_code == 0
     report = _guard_existing_outputs(
         report,
         _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test),
-        report.decisions.get("overwrite_policy"),
+        _overwrite_policy(recipe),
         root=out,
     )
     if successful_plan:
@@ -422,7 +487,7 @@ def preflight_plan(
             report = _guard_existing_outputs(
                 report,
                 [root / "run_matrix.csv", root / "reports" / "run_matrix.md", root / "events.jsonl"],
-                report.decisions.get("overwrite_policy"),
+                _overwrite_policy(recipe),
                 root=root,
                 allow_existing=True,
             )
@@ -481,7 +546,7 @@ def _wandb_summary_for_run(run_dir: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict | None = None) -> list[str]:
+def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
     task = recipe.get("task")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
@@ -535,15 +600,15 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
             commands.append(rendering.render_command(plot_cmd))
         return commands
     if task == "finetune":
-        test_after_fit = rendering.decision_value(decisions, "test_after_fit", evaluation.get("test_after_fit"))
+        test_after_fit = evaluation.get("test_after_fit")
         pieces = [
             "python",
             "-m",
             rendering.variant_module(recipe, "finetune"),
             "--config",
-            rendering.decision_value(decisions, "config", inputs.get("config")),
+            inputs.get("config"),
             "--label-name",
-            rendering.decision_value(decisions, "label_name", inputs.get("label_name")),
+            inputs.get("label_name"),
             "--version-name",
             artifacts.get("version_name", recipe_name(recipe)),
             "--results-csv-path",
@@ -551,8 +616,6 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
             *rendering.runtime_cli_args(runtime),
             *rendering.finetune_input_cli_args(
                 inputs,
-                decisions,
-                ckpt_from_decisions=True,
                 variant=str(recipe.get("variant")),
             ),
         ]
@@ -567,25 +630,30 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None, decisions: dict 
                     "-m",
                     rendering.variant_module(recipe, "infer"),
                     "--config",
-                    rendering.decision_value(decisions, "config", inputs.get("config")),
+                    inputs.get("config"),
                     "--ckpt-path",
-                    rendering.decision_value(decisions, "ckpt_path", inputs.get("ckpt_path")),
+                    inputs.get("ckpt_path"),
                     "--label-name",
-                    rendering.decision_value(decisions, "label_name", inputs.get("label_name")),
+                    inputs.get("label_name"),
                     "--eval-split",
-                    rendering.decision_value(decisions, "eval_split", inputs.get("eval_split")),
+                    inputs.get("eval_split"),
                     *rendering.infer_runtime_cli_args(runtime),
-                    *rendering.infer_input_cli_args(inputs, decisions, variant=str(recipe.get("variant"))),
+                    *rendering.infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
                 ]
             )
         ]
     if task == "preset_prepare":
         preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
+        preset_script = {
+            "sleep2vec": "preprocess/save_dataset_presets.py",
+            "sleep2vec2": "sleep2vec2/preprocess/save_dataset_presets.py",
+            "sleep2expert": "sleep2expert/preprocess/save_dataset_presets.py",
+        }[str(recipe.get("variant"))]
         return [
             rendering.render_command(
                 [
                     "python",
-                    "preprocess/save_dataset_presets.py",
+                    preset_script,
                     "--config",
                     inputs.get("config"),
                     "--index",
@@ -627,10 +695,16 @@ def _has_output_artifact_issue(report: DecisionReport) -> bool:
     return any(issue.field == "output_artifacts" for issue in report.issues)
 
 
+def _overwrite_policy(recipe: dict) -> Any:
+    section = "preset" if recipe.get("task") == "preset_prepare" else "artifacts"
+    owner = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
+    return owner.get("overwrite")
+
+
 def _guard_existing_outputs(
     report: DecisionReport,
     paths: list[Path],
-    overwrite_decision: Any,
+    overwrite_policy: Any,
     *,
     root: Path,
     allow_existing: bool = False,
@@ -655,9 +729,9 @@ def _guard_existing_outputs(
     existing = sorted(str(path) for path in paths if path.exists())
     if not existing:
         return report
-    if overwrite_decision is not None and overwrite_decision.value is True:
+    if overwrite_policy is True:
         return report
-    if overwrite_decision is not None and overwrite_decision.value is False:
+    if overwrite_policy is False:
         status = DecisionStatus.FAIL
         message = "Output artifacts already exist and overwrite_policy=false."
         question = None
@@ -690,7 +764,7 @@ def _planned_plan_paths(
         paths = [out / "questions.json", out / "questions.md", out / "plan.blocked.md"]
         if recipe.get("task") == "hparam_tune":
             evaluation = recipe.get("evaluation_policy") or {}
-            if hparam.final_test_unlocked(evaluation, report.decisions, unlock_final_test):
+            if hparam.final_test_unlocked(evaluation, unlock_final_test):
                 paths.append(out / "final_external_test.sh")
         if allow_unresolved and report.exit_code == 2:
             paths.append(out / "plan.draft.json")

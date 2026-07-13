@@ -2,6 +2,8 @@
 
 User-decision files resolve high-impact ambiguity with explicit user intent.
 
+An explicitly supplied file must contain a `decisions` mapping. Concrete values are materialized into the effective recipe's existing `inputs`, `evaluation_policy`, `preset`, `search`, or artifact owner before config inspection and consultation are rerun. A user `task` may fill a missing recipe task but cannot replace an explicit one. `train_val_test_policy` must be exactly `train`, `val`, or `test`; descriptive text is not interpreted as a split.
+
 ```yaml
 decisions:
   label_name:

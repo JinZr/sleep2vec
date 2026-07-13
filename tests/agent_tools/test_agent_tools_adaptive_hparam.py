@@ -362,15 +362,16 @@ def test_adaptive_registry_rejects_header_only_legacy_identity(tmp_path: Path):
     assert registry_path.read_text() == "trial_id\tround\n"
 
 
-def test_adaptive_stop_scan_rejects_header_only_legacy_status(tmp_path: Path):
-    round_dir = tmp_path / "round"
-    round_dir.mkdir()
+def test_adaptive_stop_scan_ignores_header_only_legacy_projection(tmp_path: Path):
+    recipe_path = _adaptive_recipe(tmp_path, max_rounds=1)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe_path), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     status_path = round_dir / "run_status.tsv"
     status_path.write_text("trial_id\tstatus\n")
-    recipe = {"adaptive": {"replacement": {"enabled": True, "allow_running_stop": True}}}
+    recipe = adaptive_hparam.load_recipe_with_base(recipe_path)
 
-    with pytest.raises(ValueError, match="Historical trial_id fields"):
-        adaptive_hparam._stop_bad_running_runs(tmp_path, round_dir, recipe)
+    adaptive_hparam._stop_bad_running_runs(workflow_dir, round_dir, recipe)
 
     assert status_path.read_text() == "trial_id\tstatus\n"
 
@@ -413,6 +414,7 @@ def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Pa
         tmp_path,
         [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "failed"}],
     )
+    manifests.write_rows(round_dir / "run_status.tsv", [{**run, "status": "planned"}])
 
     digest = adaptive_hparam.digest_hparam_run(round_dir)
 
@@ -847,10 +849,25 @@ def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Pa
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
-    manifests.write_rows(
-        round_dir / "run_status.tsv",
-        [{**run, "status": "running", "target": "ssh", "host": "baichuan3", "log_path": "/remote/run.log"}],
+    plan = json.loads((round_dir / "plan.json").read_text())
+    run = plan["runs"][0]
+    workspace = Path(plan["recipe"]["experiment"]["root"])
+    merge_run_manifest(
+        workspace,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "status": "running",
+                "target": "ssh",
+                "host": "baichuan3",
+                "workdir": "/remote/workdir",
+                "gpus": "0",
+                "pid_path": "/remote/run.pid",
+                "log_path": "/remote/run.log",
+                "command": "remote-command",
+            }
+        ],
     )
     seen_rows = []
     stopped = []
@@ -881,7 +898,7 @@ def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     plan = json.loads((round_dir / "plan.json").read_text())
     run = plan["runs"][0]
-    version = run["version"]
+    workspace = Path(plan["recipe"]["experiment"]["root"])
     run_dir = Path(run["runtime_dir"])
     run_dir.mkdir(parents=True)
     log_path = round_dir / "logs" / "run-000.log"
@@ -897,9 +914,23 @@ def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
 
     (run_dir / "run_manifest.json").write_text(json.dumps({"epoch": 0, "metrics": {"test_auroc": 0.6}}))
-    (round_dir / "run_status.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\tlog_path\tlaunched_at\truntime_dir\n"
-        f"unit-hparam-tune\trun-000\t{version}\trunning\t{log_path}\t{manifests.utc_now()}\t{run['runtime_dir']}\n"
+    merge_run_manifest(
+        workspace,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "status": "running",
+                "target": "local",
+                "host": "",
+                "workdir": str(tmp_path),
+                "gpus": "",
+                "pid_path": str(round_dir / "runs" / "run-000" / "pid"),
+                "log_path": str(log_path),
+                "command": "unit-command",
+                "launched_at": manifests.utc_now(),
+            }
+        ],
     )
     recipe_data = adaptive_hparam.load_recipe_with_base(recipe)
 
@@ -907,9 +938,16 @@ def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
 
     assert stopped == []
     (run_dir / "run_manifest.json").write_text(json.dumps({"epoch": 2, "metrics": {"test_auroc": 0.6}}))
-    (round_dir / "run_status.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\tlog_path\tlaunched_at\truntime_dir\n"
-        f"unit-hparam-tune\trun-000\t{version}\trunning\t{log_path}\t2000-01-01T00:00:00Z\t{run['runtime_dir']}\n"
+    merge_run_manifest(
+        workspace,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "status": "running",
+                "launched_at": "2000-01-01T00:00:00Z",
+            }
+        ],
     )
 
     adaptive_hparam._stop_bad_running_runs(workflow_dir, round_dir, recipe_data)

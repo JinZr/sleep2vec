@@ -9,7 +9,7 @@ import yaml
 
 from . import plan_rendering as rendering
 from .configs import load_yaml
-from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
+from .decision_models import DecisionIssue, DecisionStatus
 from .decision_paths import validate_input_path
 from .experiment_workspace import (
     append_event,
@@ -24,44 +24,35 @@ from .manifests import write_json, write_text
 from .models import REPO_ROOT
 
 
-def final_test_unlocked(
-    evaluation: dict,
-    decisions: dict | None = None,
-    unlock_final_test: bool = False,
-) -> bool:
+def final_test_unlocked(evaluation: dict, unlock_final_test: bool = False) -> bool:
     return unlock_final_test or (
-        rendering.decision_value(decisions, "external_test_locked", evaluation.get("external_test_locked")) is False
-        and rendering.decision_value(decisions, "final_eval_unlock", evaluation.get("final_test_unlocked")) is True
+        evaluation.get("external_test_locked") is False and evaluation.get("final_test_unlocked") is True
     )
 
 
-def has_resolved_ckpt_path(recipe: dict, report: DecisionReport) -> bool:
-    ckpt_path = resolved_ckpt_path(recipe, report)
+def has_resolved_ckpt_path(recipe: dict) -> bool:
+    ckpt_path = resolved_ckpt_path(recipe)
     return ckpt_path not in (None, "", "ASK_USER") and not str(ckpt_path).startswith("<")
 
 
 def final_script_allowed(
     recipe: dict,
-    report: DecisionReport,
     evaluation: dict,
     unlock_final_test: bool,
 ) -> bool:
-    return unlock_final_test or (
-        final_test_unlocked(evaluation, report.decisions) and has_resolved_ckpt_path(recipe, report)
-    )
+    return unlock_final_test or (final_test_unlocked(evaluation) and has_resolved_ckpt_path(recipe))
 
 
 def final_test_checkpoint_issues(
-    report: DecisionReport,
     recipe: dict,
     *,
     unlock_final_test: bool,
 ) -> list[DecisionIssue]:
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    if not unlock_final_test and not final_script_allowed(recipe, report, evaluation, unlock_final_test):
+    if not unlock_final_test and not final_script_allowed(recipe, evaluation, unlock_final_test):
         return []
     issues: list[DecisionIssue] = []
-    ckpt_path = resolved_ckpt_path(recipe, report)
+    ckpt_path = resolved_ckpt_path(recipe)
     if ckpt_path in (None, "", "ASK_USER") or str(ckpt_path).startswith("<"):
         return [
             DecisionIssue(
@@ -78,7 +69,7 @@ def final_test_checkpoint_issues(
         if ckpt_issue.status == DecisionStatus.FAIL:
             return issues
     if has_yaml_search_overrides(recipe):
-        final_config = resolved_final_eval_config_path(recipe, report, None)
+        final_config = resolved_final_eval_config_path(recipe, None)
         if final_config in (None, "", "ASK_USER") or str(final_config).startswith("<"):
             issues.append(
                 DecisionIssue(
@@ -100,12 +91,12 @@ def final_test_checkpoint_issues(
 
 
 def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
-    base_recipe = recipe.get("_base_recipe") or {}
-    base_cfg_path = (base_recipe.get("inputs") or {}).get("config") or (recipe.get("inputs") or {}).get("config")
-    if not base_cfg_path:
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    config_path = inputs.get("config")
+    if not config_path:
         return []
     try:
-        base_config = load_yaml(base_cfg_path)
+        base_config = load_yaml(config_path)
         for combo in hparam_combos(recipe):
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
@@ -122,22 +113,14 @@ def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
     return []
 
 
-def resolved_ckpt_path(recipe: dict, report: DecisionReport | None = None) -> Any:
-    if report is not None:
-        resolved = rendering.decision_value(report.decisions, "ckpt_path")
-        if resolved not in (None, ""):
-            return resolved
+def resolved_ckpt_path(recipe: dict) -> Any:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     return inputs.get("ckpt_path")
 
 
-def resolved_final_eval_config_path(recipe: dict, report: DecisionReport, fallback: Any) -> Any:
+def resolved_final_eval_config_path(recipe: dict, fallback: Any) -> Any:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    return rendering.decision_value(
-        report.decisions,
-        "final_eval_config_path",
-        inputs.get("final_eval_config_path", fallback),
-    )
+    return inputs.get("final_eval_config_path", fallback)
 
 
 def has_yaml_search_overrides(recipe: dict) -> bool:
@@ -208,11 +191,9 @@ def json_pointer_parts(pointer: str) -> list[str]:
 
 def write_hparam_plan(
     recipe: dict,
-    cfg: dict | None,
     out: Path,
     *,
     unlock_final_test: bool,
-    report: DecisionReport,
 ) -> None:
     out = out.expanduser()
     if not out.is_absolute():
@@ -221,17 +202,15 @@ def write_hparam_plan(
     run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
     if not run_cwd.is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
-    base_recipe = recipe.get("_base_recipe") or {}
-    base_cfg_path = (base_recipe.get("inputs") or {}).get("config") or (recipe.get("inputs") or {}).get("config")
-    base_config = load_yaml(base_cfg_path) if base_cfg_path else {}
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
+    source_config_path = inputs.get("config")
+    base_config = load_yaml(source_config_path) if source_config_path else {}
     combos = hparam_combos(recipe)
     runs = []
-    scripts = []
-    base_inputs = base_recipe.get("inputs") or {}
-    base_runtime = base_recipe.get("runtime") or {}
-    base_artifacts = base_recipe.get("artifacts") or {}
     evaluation = recipe.get("evaluation_policy") or {}
-    test_after_fit = rendering.decision_value(report.decisions, "test_after_fit", evaluation.get("test_after_fit"))
+    test_after_fit = evaluation.get("test_after_fit")
     run_index_offset = next_run_index(recipe)
     for idx, combo in enumerate(combos):
         identity = run_identity(recipe, run_index_offset + idx, combo)
@@ -245,7 +224,7 @@ def write_hparam_plan(
         with cfg_copy.open("w") as file_obj:
             yaml.safe_dump(run_config, file_obj)
         version = identity["version"]
-        runtime = {**base_runtime, **runtime_overrides}
+        runtime = {**runtime_defaults, **runtime_overrides}
         command_parts = [
             "python",
             "-m",
@@ -253,16 +232,14 @@ def write_hparam_plan(
             "--config",
             cfg_copy,
             "--label-name",
-            rendering.decision_value(report.decisions, "label_name", base_inputs.get("label_name")),
+            inputs.get("label_name"),
             "--version-name",
             version,
             "--results-csv-path",
-            plan_output_path(out, base_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
+            plan_output_path(out, artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
             *rendering.runtime_cli_args(runtime),
             *rendering.finetune_input_cli_args(
-                base_inputs,
-                report.decisions,
-                ckpt_from_decisions=False,
+                inputs,
                 variant=str(recipe.get("variant")),
             ),
         ]
@@ -285,8 +262,6 @@ def write_hparam_plan(
             + "\n",
             executable=True,
         )
-        relative_script = str(script_path.relative_to(out))
-        scripts.append(relative_script)
         run = {
             "experiment_id": (recipe.get("experiment") or {}).get("id"),
             "step_id": (recipe.get("step") or {}).get("id"),
@@ -329,8 +304,9 @@ def write_hparam_plan(
         "\n".join(
             rendering.hparam_script_lines(
                 [
-                    'cd "$(dirname "${BASH_SOURCE[0]}")"',
-                    *[rendering.render_command(["bash", script]) for script in scripts],
+                    rendering.render_command(
+                        ["python", "-m", "agent_tools", "hparam-launch", "--plan-dir", out, "--execute"]
+                    )
                 ],
                 test_after_fit=test_after_fit is True,
                 run_cwd=run_cwd,
@@ -382,8 +358,8 @@ def write_hparam_plan(
     resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
     (out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     final_script_path = out / "final_external_test.sh"
-    final_unlocked = final_test_unlocked(evaluation, report.decisions, unlock_final_test)
-    final_allowed = final_script_allowed(recipe, report, evaluation, unlock_final_test)
+    final_unlocked = final_test_unlocked(evaluation, unlock_final_test)
+    final_allowed = final_script_allowed(recipe, evaluation, unlock_final_test)
     test_after_fit_message = (
         "Run commands evaluate the configured test split because test_after_fit is explicitly unlocked."
         if test_after_fit is True
@@ -397,8 +373,8 @@ def write_hparam_plan(
         test_after_fit_message,
     ]
     if final_allowed:
-        ckpt_path = resolved_ckpt_path(recipe, report)
-        final_config_path = resolved_final_eval_config_path(recipe, report, base_cfg_path)
+        ckpt_path = resolved_ckpt_path(recipe)
+        final_config_path = resolved_final_eval_config_path(recipe, source_config_path)
         final_command = rendering.render_command(
             [
                 "python",
@@ -409,13 +385,12 @@ def write_hparam_plan(
                 "--ckpt-path",
                 ckpt_path,
                 "--label-name",
-                rendering.decision_value(report.decisions, "label_name", base_inputs.get("label_name")),
+                inputs.get("label_name"),
                 "--eval-split",
                 "test",
-                *rendering.infer_runtime_cli_args(base_runtime),
+                *rendering.infer_runtime_cli_args(runtime_defaults),
                 *rendering.infer_input_cli_args(
-                    base_inputs,
-                    report.decisions,
+                    inputs,
                     variant=str(recipe.get("variant")),
                 ),
             ]

@@ -24,6 +24,9 @@ search:
   parameters:
     runtime.lr: [1.0e-6]
 
+artifacts:
+  overwrite: false
+
 evaluation_policy:
   selection_metric: val_ahi_pearson
   selection_mode: max

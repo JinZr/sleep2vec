@@ -116,7 +116,7 @@ High-impact fields must not be silently inferred from filenames, nearby configs,
 Common top-level fields:
 
 - `name`: stable recipe name.
-- `task`: one of `preset_prepare`, `pretrain`, `adapt`, `finetune`, `infer`, `evaluate`, `hparam_tune`, `sleep2stat`.
+- `task`: one of `preset_prepare`, `finetune`, `infer`, `evaluate`, `hparam_tune`, `sleep2stat`.
 - `experiment`: required experiment id, title, objective, root, and baseline metadata for runnable plans.
 - `step`: required id, phase, and purpose for the current preparation, training, evaluation, or analysis step.
 - `variant`: one of `sleep2vec`, `sleep2vec2`, `sleep2expert`, or `sex_age_baseline` for model tasks; omit it or set it to `null` for `task: sleep2stat`.
@@ -146,6 +146,8 @@ Common top-level fields:
 - `adaptive.replacement.allow_running_stop`: allows stopping manifest-recorded running jobs only when failure/timeout/live-metric evidence says they are bad.
 - `adaptive.suggest.strategy`: supports `best_neighborhood`.
 - `decisions`: explicit high-impact decision sources.
+
+`pretrain` and `adapt` are not runnable task-recipe values because agent tools do not render those commands. Use the corresponding skill and direct variant runtime CLI instead.
 
 Sleep2stat recipes use the existing `sleep2stat` CLI and do not use a model variant:
 

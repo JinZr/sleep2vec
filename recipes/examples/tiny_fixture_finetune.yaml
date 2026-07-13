@@ -33,6 +33,7 @@ runtime:
 artifacts:
   version_name: tiny-fixture
   results_csv_path: results/tiny_fixture_results.csv
+  overwrite: false
 
 evaluation_policy:
   selection_metric: val_ahi_pearson

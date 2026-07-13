@@ -263,9 +263,9 @@ def test_sleep2stat_yasa_plan_adds_record_preflight_and_summary_types(tmp_path: 
     )
 
 
-def test_sleep2stat_plan_ignores_user_decision_config_override(tmp_path: Path):
+def test_sleep2stat_plan_materializes_user_decision_config_override(tmp_path: Path):
     override_payload = yaml.safe_load((REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml").read_text())
-    override_payload["run"]["output_dir"] = str(tmp_path / "other_run")
+    override_payload["run"]["seed"] = 9001
     override_config = write_yaml(tmp_path / "other_sleep2stat_config.yaml", override_payload)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
@@ -281,7 +281,8 @@ def test_sleep2stat_plan_ignores_user_decision_config_override(tmp_path: Path):
     frozen_config = output_dir / "runs" / "run-000--tiny-fixture-sleep2stat" / "config.yaml"
     assert f"python -m sleep2stat validate-config --config {frozen_config}" in commands
     assert any(command.startswith(f"python -m sleep2stat run --config {frozen_config}") for command in commands)
-    assert yaml.safe_load(frozen_config.read_text())["run"]["output_dir"] != str(tmp_path / "other_run")
+    assert yaml.safe_load(frozen_config.read_text())["run"]["seed"] == 9001
+    assert json.loads((output_dir / "plan.json").read_text())["recipe"]["inputs"]["config"] == str(override_config)
     assert str(override_config) not in "\n".join(commands)
 
 

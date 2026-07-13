@@ -11,7 +11,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import experiment_io, experiments, hparam, hparam_runtime, plans, run_artifacts
+from agent_tools import experiment_io, experiment_workspace, experiments, hparam, hparam_runtime, plans, run_artifacts
 from agent_tools.experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     MANAGED_RUN_PATH_FIELDS,
@@ -633,11 +633,16 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
     def fake_write_text(path, text, *, remote=None):
         writes[Path(path).name] = (text, remote)
 
+    def fake_commit(path, text, _expected_sha256, *, remote=None):
+        writes[Path(path).name] = (text, remote)
+        return True
+
     monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
     monkeypatch.setattr(experiment_io, "write_rows_at", fake_write_rows)
     monkeypatch.setattr(experiment_io, "write_text_at", fake_write_text)
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
 
     committed = merge_run_manifest(
         "/remote/workspace",
@@ -647,7 +652,8 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
 
     assert committed == existing
     assert reads == [("run_manifest.tsv", "baichuan3")]
-    assert writes["run_manifest.tsv"] == (existing, "baichuan3")
+    assert "unit\trun-000\tfailed\ttrain" in writes["run_manifest.tsv"][0]
+    assert writes["run_manifest.tsv"][1] == "baichuan3"
     assert writes["run_matrix.csv"] == (existing, "baichuan3")
     assert "| failed |" in writes["run_matrix.md"][0]
     assert writes["run_matrix.md"][1] == "baichuan3"
@@ -814,11 +820,145 @@ def test_empty_remote_canonical_commit_preserves_the_valid_matrix_identity_heade
         "write_text_at",
         lambda path, text, *, remote=None: writes.update({Path(path).name: (text, remote)}),
     )
+    monkeypatch.setattr(
+        experiment_io,
+        "conditional_atomic_replace_text_at",
+        lambda path, text, _expected_sha256, *, remote=None: writes.update({Path(path).name: (text, remote)}) is None,
+    )
 
     assert merge_run_manifest("/remote/workspace", [], remote="unit-host") == []
 
     assert writes["run_manifest.tsv"] == ("step_id\trun_id\n", "unit-host")
     assert writes["run_matrix.csv"] == ("step_id,run_id\n", "unit-host")
+
+
+def test_concurrent_local_manifest_writers_preserve_distinct_runs(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    code = (
+        "import sys; "
+        "from agent_tools.experiment_workspace import merge_run_manifest; "
+        "merge_run_manifest(sys.argv[1], [{'experiment_id': 'unit', 'step_id': 'train', "
+        "'run_id': sys.argv[2], 'status': 'planned'}])"
+    )
+    processes = [
+        subprocess.Popen([sys.executable, "-c", code, str(tmp_path), run_id], text=True)
+        for run_id in ("run-000", "run-001")
+    ]
+
+    assert [process.wait(timeout=10) for process in processes] == [0, 0]
+    assert {row["run_id"] for row in read_run_manifest(tmp_path)} == {"run-000", "run-001"}
+
+
+def test_concurrent_terminal_updates_use_the_existing_reducer(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(
+        tmp_path,
+        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "running"}],
+    )
+    code = (
+        "import sys; "
+        "from agent_tools.experiment_workspace import merge_run_manifest; "
+        "merge_run_manifest(sys.argv[1], [{'step_id': 'train', 'run_id': 'run-000', 'status': sys.argv[2]}])"
+    )
+    processes = [
+        subprocess.Popen([sys.executable, "-c", code, str(tmp_path), status], text=True)
+        for status in ("completed", "failed")
+    ]
+
+    assert [process.wait(timeout=10) for process in processes] == [0, 0]
+    assert read_run_manifest(tmp_path)[0]["status"] == "failed"
+
+
+def test_interrupted_atomic_replace_preserves_the_complete_old_manifest(tmp_path: Path, monkeypatch):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(
+        tmp_path,
+        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
+    )
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+    monkeypatch.setattr(experiment_io.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("interrupted")))
+
+    with pytest.raises(OSError, match="interrupted"):
+        merge_run_manifest(tmp_path, [{"step_id": "train", "run_id": "run-000", "status": "running"}])
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+    assert read_run_manifest(tmp_path)[0]["status"] == "planned"
+
+
+def test_projection_failure_does_not_roll_back_canonical_commit(tmp_path: Path, monkeypatch):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    real_write_run_matrix = experiment_workspace.write_run_matrix
+    monkeypatch.setattr(
+        experiment_workspace,
+        "write_run_matrix",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("projection failed")),
+    )
+
+    with pytest.raises(OSError, match="projection failed"):
+        merge_run_manifest(
+            tmp_path,
+            [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "running"}],
+        )
+
+    assert read_run_manifest(tmp_path)[0]["status"] == "running"
+    monkeypatch.setattr(experiment_workspace, "write_run_matrix", real_write_run_matrix)
+    merge_run_manifest(tmp_path, [])
+    assert "running" in (tmp_path / "run_matrix.csv").read_text()
+
+
+def test_remote_manifest_commit_retries_after_digest_conflict_without_losing_rows(monkeypatch):
+    state = {"text": "step_id\trun_id\n", "attempts": 0}
+
+    def fake_read(path, *, remote=None):
+        if Path(path).name == "experiment.yaml":
+            return "experiment:\n  id: unit\n"
+        return state["text"]
+
+    def fake_commit(_path, text, _expected_sha256, *, remote=None):
+        state["attempts"] += 1
+        if state["attempts"] == 1:
+            state["text"] = "experiment_id\tstatus\tstep_id\trun_id\n" "unit\tplanned\ttrain\trun-001\n"
+            return False
+        state["text"] = text
+        return True
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
+    monkeypatch.setattr(experiment_io, "write_rows_at", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_io, "write_text_at", lambda *_args, **_kwargs: None)
+
+    committed = merge_run_manifest(
+        "/remote/workspace",
+        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
+        remote="unit-host",
+    )
+
+    assert state["attempts"] == 2
+    assert {row["run_id"] for row in committed} == {"run-000", "run-001"}
+    assert "run-000" in state["text"] and "run-001" in state["text"]
+
+
+def test_remote_manifest_commit_fails_after_three_digest_conflicts(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_io, "read_text_at", lambda *_args, **_kwargs: "step_id\trun_id\n")
+    monkeypatch.setattr(
+        experiment_io,
+        "conditional_atomic_replace_text_at",
+        lambda *_args, **_kwargs: attempts.append(True) and False,
+    )
+
+    with pytest.raises(RuntimeError, match="three commit attempts"):
+        merge_run_manifest("/remote/workspace", [], remote="unit-host")
+
+    assert len(attempts) == 3
 
 
 def test_only_experiment_workspace_reads_or_writes_the_canonical_run_manifest():

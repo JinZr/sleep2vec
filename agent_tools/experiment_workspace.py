@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import hashlib
 import io
 import json
@@ -308,6 +309,10 @@ def read_run_manifest(root: str | Path, *, remote: str | None = None) -> list[di
     if not exp_io.path_exists_at(path, remote=remote):
         raise FileNotFoundError(f"Managed run manifest is missing: {path}")
     text = exp_io.read_text_at(path, remote=remote)
+    return _parse_run_manifest(text, path)
+
+
+def _parse_run_manifest(text: str, path: Path) -> list[dict[str, str]]:
     if not text.strip():
         raise ValueError(f"Managed run manifest is empty: {path}")
     try:
@@ -640,45 +645,82 @@ def merge_run_manifest(
 ) -> list[dict[str, Any]]:
     root = Path(root)
     path = root / "run_manifest.tsv"
+    lock_path = path.with_name(path.name + ".lock")
     exp_io.validate_managed_output_paths(
         root,
-        [path, root / "run_matrix.csv", root / "reports" / "run_matrix.md", root / "events.jsonl"],
+        [
+            path,
+            lock_path,
+            root / "run_matrix.csv",
+            root / "reports" / "run_matrix.md",
+            root / "events.jsonl",
+        ],
         remote=remote,
     )
-    existing = read_run_manifest(root, remote=remote)
     validate_managed_run_rows(rows, source="incoming run manifest", cardinality="one_per_run")
-    by_id = {managed_run_key(row): dict(row) for row in existing}
-    order = [managed_run_key(row) for row in existing]
-    new_rows = [row for row in rows if managed_run_key(row) not in by_id]
-    if new_rows:
-        for row in new_rows:
-            experiment_id = str(row.get("experiment_id") or "")
-            if not experiment_id.strip() or experiment_id != experiment_id.strip():
+    lock_file = None
+    if not remote:
+        lock_file = lock_path.open("a+")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    try:
+        for _attempt in range(3 if remote else 1):
+            if not exp_io.path_exists_at(path, remote=remote):
+                raise FileNotFoundError(f"Managed run manifest is missing: {path}")
+            current_text = exp_io.read_text_at(path, remote=remote)
+            existing = _parse_run_manifest(current_text, path)
+            by_id = {managed_run_key(row): dict(row) for row in existing}
+            order = [managed_run_key(row) for row in existing]
+            new_rows = [row for row in rows if managed_run_key(row) not in by_id]
+            if new_rows:
+                for row in new_rows:
+                    experiment_id = str(row.get("experiment_id") or "")
+                    if not experiment_id.strip() or experiment_id != experiment_id.strip():
+                        key = managed_run_key(row)
+                        raise ValueError(f"New canonical run must define experiment_id: {key[0]} / {key[1]}")
+                experiment_path = root / "experiment.yaml"
+                experiment_text = exp_io.read_text_at(experiment_path, remote=remote)
+                if not experiment_text:
+                    raise ValueError(f"Managed experiment manifest is missing: {experiment_path}")
+                manifest = read_managed_yaml_mapping(
+                    experiment_text, source=f"Managed experiment manifest {experiment_path}"
+                )
+                experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
+                workspace_experiment_id = str(experiment.get("id") or "") if isinstance(experiment, dict) else ""
+                if not workspace_experiment_id:
+                    raise ValueError(f"Managed experiment manifest is missing experiment.id: {experiment_path}")
+                if any(str(row["experiment_id"]) != workspace_experiment_id for row in new_rows):
+                    raise ValueError("New canonical run belongs to a different experiment.")
+            for row in rows:
                 key = managed_run_key(row)
-                raise ValueError(f"New canonical run must define experiment_id: {key[0]} / {key[1]}")
-        experiment_path = Path(root) / "experiment.yaml"
-        experiment_text = exp_io.read_text_at(experiment_path, remote=remote)
-        if not experiment_text:
-            raise ValueError(f"Managed experiment manifest is missing: {experiment_path}")
-        manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {experiment_path}")
-        experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
-        workspace_experiment_id = str(experiment.get("id") or "") if isinstance(experiment, dict) else ""
-        if not workspace_experiment_id:
-            raise ValueError(f"Managed experiment manifest is missing experiment.id: {experiment_path}")
-        if any(str(row["experiment_id"]) != workspace_experiment_id for row in new_rows):
-            raise ValueError("New canonical run belongs to a different experiment.")
-    for row in rows:
-        key = managed_run_key(row)
-        if key not in by_id:
-            order.append(key)
+                if key not in by_id:
+                    order.append(key)
+                else:
+                    validate_frozen_run_update(by_id[key], row, allow_execution_identity_fill=True)
+                by_id[key] = merge_run_row(by_id.get(key, {}), row)
+            committed = [by_id[key] for key in order if key in by_id]
+            if committed:
+                buffer = io.StringIO()
+                fieldnames = sorted({key for row in committed for key in row})
+                writer = csv.DictWriter(buffer, fieldnames=fieldnames, delimiter="\t", lineterminator="\n")
+                writer.writeheader()
+                writer.writerows(committed)
+                replacement = buffer.getvalue()
+            else:
+                replacement = "step_id\trun_id\n"
+            expected_sha256 = hashlib.sha256(current_text.encode()).hexdigest()
+            if exp_io.conditional_atomic_replace_text_at(
+                path,
+                replacement,
+                expected_sha256,
+                remote=remote,
+            ):
+                break
         else:
-            validate_frozen_run_update(by_id[key], row, allow_execution_identity_fill=True)
-        by_id[key] = merge_run_row(by_id.get(key, {}), row)
-    committed = [by_id[key] for key in order if key in by_id]
-    if committed:
-        exp_io.write_rows_at(path, committed, remote=remote)
-    else:
-        exp_io.write_text_at(path, "step_id\trun_id\n", remote=remote)
+            raise RuntimeError(f"Canonical run manifest changed during three commit attempts: {path}")
+    finally:
+        if lock_file is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
     write_run_matrix(root, committed, remote=remote)
     return committed
 

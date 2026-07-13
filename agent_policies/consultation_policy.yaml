@@ -18,8 +18,8 @@ global_rules:
 high_impact_fields:
   - id: task
     description: "The task type must be explicit."
-    required_for_tasks: ["preset_prepare", "pretrain", "adapt", "finetune", "infer", "evaluate", "hparam_tune", "sleep2stat"]
-    question: "Which task should be performed: preset_prepare, pretrain, adapt, finetune, infer, evaluate, hparam_tune, or sleep2stat?"
+    required_for_tasks: ["preset_prepare", "finetune", "infer", "evaluate", "hparam_tune", "sleep2stat"]
+    question: "Which task should be performed: preset_prepare, finetune, infer, evaluate, hparam_tune, or sleep2stat?"
 
   - id: label_name
     description: "The downstream label must be explicit for finetuning, inference, evaluation, and tuning."
@@ -54,7 +54,7 @@ high_impact_fields:
 
   - id: pretrained_backbone_path
     description: "Whether to initialize from a pretrained checkpoint must be explicit."
-    required_for_tasks: ["finetune", "adapt"]
+    required_for_tasks: ["finetune"]
     question: "Should this run initialize from a pretrained backbone checkpoint? If yes, which path should be used?"
 
   - id: ckpt_path

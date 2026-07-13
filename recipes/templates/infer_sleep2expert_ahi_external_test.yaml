@@ -23,6 +23,9 @@ runtime:
   devices: [0]
   precision: bf16-mixed
 
+artifacts:
+  overwrite: false
+
 evaluation_policy:
   external_test_locked: true
   final_eval_split: test

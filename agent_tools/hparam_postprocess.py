@@ -45,9 +45,8 @@ def generate_external_eval(
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     plan = artifacts.read_hparam_plan(root)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
-    base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
-    base_runtime = base_recipe.get("runtime") if isinstance(base_recipe.get("runtime"), dict) else {}
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     rows = _selected_candidate_rows(
         read_rows(selected_csv, require_managed_identity=True),
         plan=plan,
@@ -79,7 +78,7 @@ def generate_external_eval(
             kaldi_manifest=kaldi_manifest,
             finetune_data_index=finetune_data_index,
         )
-        runtime = dict(base_runtime)
+        runtime = dict(runtime_defaults)
         for key, value in row.items():
             if key.startswith("runtime.") and value not in (None, ""):
                 runtime[key.removeprefix("runtime.")] = value
@@ -93,7 +92,7 @@ def generate_external_eval(
                 "--ckpt-path",
                 checkpoint_path,
                 "--label-name",
-                base_inputs.get("label_name") or (recipe.get("inputs") or {}).get("label_name"),
+                inputs.get("label_name"),
                 "--eval-split",
                 eval_split,
                 *infer_runtime_cli_args(runtime),
@@ -144,11 +143,10 @@ def export_hparam_logits(
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     plan = artifacts.read_hparam_plan(root)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
-    base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
-    resolved_label = label_name or base_inputs.get("label_name") or (recipe.get("inputs") or {}).get("label_name")
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    resolved_label = label_name or inputs.get("label_name")
     if not resolved_label:
-        raise ValueError("hparam-export-logits requires --label-name when the hparam plan has no base label_name.")
+        raise ValueError("hparam-export-logits requires --label-name when the hparam plan has no label_name.")
 
     rows = _selected_candidate_rows(
         read_rows(selected_csv, require_managed_identity=True),
@@ -161,7 +159,7 @@ def export_hparam_logits(
     manifest = root / "logits_export_manifest.tsv"
     output_paths = [manifest]
     if not execute:
-        # The CLI writes this script after the facade returns, so reserve it in the same preflight.
+        # Dry-run writes a replay script alongside the manifest.
         output_paths.append(root / "logits_export.sh")
     prepared = []
     for index, row in enumerate(rows, start=1):
@@ -268,6 +266,74 @@ def export_hparam_logits(
             precision=precision,
             seed=seed,
             skip_test=skip_test,
+        )
+    else:
+        command = [
+            "python",
+            "-m",
+            "agent_tools",
+            "hparam-export-logits",
+            "--run-dir",
+            str(root),
+            "--selected",
+            str(Path(selected_csv).expanduser().resolve()),
+            "--val-split",
+            val_split,
+            "--test-split",
+            test_split,
+            "--batch-size",
+            batch_size,
+            "--num-workers",
+            num_workers,
+            "--accelerator",
+            accelerator,
+            "--device",
+            device,
+            "--precision",
+            precision,
+            "--seed",
+            seed,
+            "--top-k",
+            top_k,
+            "--execute",
+        ]
+        if unlock_final_test:
+            command.append("--unlock-final-test")
+        if skip_test:
+            command.append("--skip-test")
+        if label_name:
+            command.extend(["--label-name", label_name])
+        for flag, value in (
+            ("--val-kaldi-data-root", val_kaldi_data_root),
+            ("--val-kaldi-manifest", val_kaldi_manifest),
+            ("--val-finetune-data-index", val_finetune_data_index),
+            ("--test-kaldi-data-root", test_kaldi_data_root),
+            ("--test-kaldi-manifest", test_kaldi_manifest),
+            ("--test-finetune-data-index", test_finetune_data_index),
+        ):
+            if value:
+                command.extend([flag, value])
+        if devices:
+            command.append("--devices")
+            command.extend(devices)
+        if all_candidates:
+            command.append("--all-candidates")
+        repo_root = shlex.quote(str(REPO_ROOT))
+        write_text(
+            root / "logits_export.sh",
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    "",
+                    f"cd {repo_root}",
+                    f"export PYTHONPATH={repo_root}${{PYTHONPATH:+:$PYTHONPATH}}",
+                    "",
+                    render_command(command),
+                ]
+            )
+            + "\n",
+            executable=True,
         )
     return manifest
 

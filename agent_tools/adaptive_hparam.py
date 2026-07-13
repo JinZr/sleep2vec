@@ -102,10 +102,11 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
             workspace / "events.jsonl",
         ],
     )
-    status_path = monitor_hparam_runs(round_dir)
-    status_table = read_rows(status_path, require_managed_identity=True)
-    validate_managed_run_rows(status_table, source=str(status_path), cardinality="one_per_run")
-    status_rows = {managed_run_key(row): row for row in status_table}
+    monitor_hparam_runs(round_dir)
+    plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
+    status_rows = {
+        managed_run_key(row): row for row in read_run_manifest(workspace) if managed_run_key(row) in plan_keys
+    }
     rows = []
     for run in plan.get("runs", []):
         run_id = str(run["run_id"])
@@ -604,7 +605,15 @@ def _stop_bad_running_runs(root: Path, round_dir: Path, recipe: dict[str, Any]) 
     objective = _objective(root, recipe)
     incumbent = _latest_incumbent_score(root)
     margin = float(replacement.get("kill_margin") or 0.0)
-    for row in read_rows(round_dir / "run_status.tsv", require_managed_identity=True):
+    plan = artifacts.read_hparam_plan(round_dir)
+    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(plan_recipe)
+    if workspace is None:
+        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    plan_keys = {managed_run_key(run) for run in plan["runs"]}
+    for row in read_run_manifest(workspace):
+        if managed_run_key(row) not in plan_keys:
+            continue
         if row.get("status") != "running":
             continue
         should_stop = evidence.log_has_failure(row.get("log_path"), row)

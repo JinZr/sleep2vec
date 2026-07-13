@@ -160,8 +160,6 @@ def test_experiment_mutation_rejects_duplicate_workspace_ownership_without_writi
 @pytest.mark.parametrize(
     ("filename", "header", "operation"),
     [
-        ("launch_manifest.tsv", "trial_id\n", "monitor"),
-        ("run_status.tsv", "run_id\n", "monitor"),
         ("metrics_manifest.tsv", "trial_id\n", "index"),
         ("checkpoint_manifest.tsv", "run_id\n", "rank"),
     ],
@@ -184,17 +182,33 @@ def test_experiment_mutation_rejects_header_only_invalid_managed_table_before_wr
     assert _workspace_files(tmp_path) == before
 
 
-def test_experiment_monitor_rejects_dangling_managed_table_symlink_without_writing(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("filename", "header"),
+    [("launch_manifest.tsv", "trial_id\n"), ("run_status.tsv", "run_id\n")],
+)
+def test_experiment_monitor_ignores_invalid_projection_table(tmp_path: Path, filename: str, header: str):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    projection = tmp_path / filename
+    projection.write_text(header)
+    canonical_before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    experiments.monitor_experiment(tmp_path)
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == canonical_before
+    assert projection.read_text() == header
+
+
+def test_experiment_monitor_ignores_dangling_projection_symlink(tmp_path: Path):
     experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
     launch_manifest = tmp_path / "launch_manifest.tsv"
     launch_manifest.symlink_to(tmp_path / "missing-launch-manifest.tsv")
-    before = _workspace_files(tmp_path)
+    canonical_before = (tmp_path / "run_manifest.tsv").read_bytes()
 
-    with pytest.raises(FileNotFoundError):
-        experiments.monitor_experiment(tmp_path)
+    experiments.monitor_experiment(tmp_path)
 
     assert launch_manifest.is_symlink()
-    assert _workspace_files(tmp_path) == before
+    assert not (tmp_path / "missing-launch-manifest.tsv").exists()
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == canonical_before
 
 
 def test_experiment_init_validates_existing_tables_before_writing(tmp_path: Path):

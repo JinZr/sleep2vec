@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -58,6 +59,54 @@ def test_remote_read_distinguishes_contents_from_missing(monkeypatch, returncode
     assert "open(path" in command[-1]
     assert "[ -f" not in command[-1]
     assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+
+
+def test_remote_read_preserves_exact_line_endings(monkeypatch):
+    monkeypatch.setattr(
+        experiment_io.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, b"a\r\nb\r\n", b""),
+    )
+
+    assert experiment_io.read_text_at("/remote/file", remote="host") == "a\r\nb\r\n"
+
+
+def test_local_conditional_replace_requires_expected_digest(tmp_path: Path):
+    path = tmp_path / "state.tsv"
+    path.write_bytes(b"old\r\n")
+    path.chmod(0o640)
+
+    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", "wrong")
+    assert path.read_bytes() == b"old\r\n"
+    assert experiment_io.conditional_atomic_replace_text_at(
+        path,
+        "new\n",
+        hashlib.sha256(b"old\r\n").hexdigest(),
+    )
+    assert path.read_bytes() == b"new\n"
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_remote_conditional_replace_reports_conflict_and_writes_exact_bytes(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, experiment_io.REMOTE_CONFLICT_RETURN_CODE, b"", b"")
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
+
+    assert not experiment_io.conditional_atomic_replace_text_at(
+        "/remote/state.tsv",
+        "new\r\n",
+        hashlib.sha256(b"old\r\n").hexdigest(),
+        remote="host",
+    )
+    command, kwargs = calls[0]
+    assert "fcntl.flock" in command[-1]
+    assert "os.fchmod" in command[-1]
+    assert "os.replace" in command[-1]
+    assert kwargs["input"] == b"new\r\n"
 
 
 @pytest.mark.parametrize("returncode", [1, 255])

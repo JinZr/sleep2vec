@@ -936,7 +936,7 @@ def test_experiment_run_rows_does_not_take_process_evidence_from_local_mirror(tm
 
 
 @pytest.mark.parametrize("table", ["launch_manifest.tsv", "run_status.tsv"])
-def test_experiment_run_rows_rejects_aliased_auxiliary_evidence(tmp_path: Path, table: str):
+def test_experiment_run_rows_ignores_aliased_projection(tmp_path: Path, table: str):
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
     )
@@ -944,8 +944,9 @@ def test_experiment_run_rows_rejects_aliased_auxiliary_evidence(tmp_path: Path, 
     outside.write_text("step_id\trun_id\tversion\tstatus\ntrain-model\trun-000\tmanaged-v1\trunning\n")
     (tmp_path / table).symlink_to(outside)
 
-    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
-        experiment_tracking.experiment_run_rows(tmp_path)
+    rows = experiment_tracking.experiment_run_rows(tmp_path)
+
+    assert rows[0]["status"] == "planned"
 
 
 def test_experiment_checkpoint_scan_ignores_checkpoint_named_directories(tmp_path: Path):
@@ -1017,7 +1018,7 @@ def test_experiment_run_rows_does_not_take_status_from_launch_manifest(tmp_path:
     assert rows[0]["status"] == "running"
 
 
-def test_experiment_run_rows_only_accepts_operational_auxiliary_fields(tmp_path: Path):
+def test_experiment_run_rows_ignores_conflicting_projection_fields(tmp_path: Path):
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\trun_name\tparameter_summary\tversion\tconfig\tstatus\tstate\n"
         "unit\ttrain-model\trun-000\tmanaged\tlr=1e-6\tmanaged-v1\t/config.yaml\tplanned\tcanonical\n"
@@ -1027,11 +1028,24 @@ def test_experiment_run_rows_only_accepts_operational_auxiliary_fields(tmp_path:
         "other\ttrain-model\trun-000\tcorrupt\tlr=9\tdisplay-name\t/other.yaml\trunning\tauxiliary\t/run.log\n"
     )
 
-    with pytest.raises(ValueError, match="Frozen run field differs.*experiment_id"):
-        experiment_tracking.experiment_run_rows(tmp_path)
+    rows = experiment_tracking.experiment_run_rows(tmp_path)
+
+    assert rows == [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "run_name": "managed",
+            "parameter_summary": "lr=1e-6",
+            "version": "managed-v1",
+            "config": "/config.yaml",
+            "status": "planned",
+            "state": "canonical",
+        }
+    ]
 
 
-def test_experiment_run_rows_rejects_unmanaged_auxiliary_row_before_allowlist(tmp_path: Path):
+def test_experiment_run_rows_ignores_unmanaged_projection_row(tmp_path: Path):
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
     )
@@ -1039,8 +1053,9 @@ def test_experiment_run_rows_rejects_unmanaged_auxiliary_row_before_allowlist(tm
         "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-999\tmanaged-v1\trunning\n"
     )
 
-    with pytest.raises(ValueError, match="not managed by run_manifest.tsv"):
-        experiment_tracking.experiment_run_rows(tmp_path)
+    rows = experiment_tracking.experiment_run_rows(tmp_path)
+
+    assert [row["run_id"] for row in rows] == ["run-000"]
 
 
 def test_candidate_rows_reject_foreign_metric_before_metric_filtering():
@@ -1178,7 +1193,7 @@ def test_wandb_observations_only_accept_allowed_fields(tmp_path: Path):
     assert "unexpected" not in row
 
 
-def test_experiment_run_rows_rejects_incomplete_auxiliary_identity(tmp_path: Path):
+def test_experiment_run_rows_ignores_incomplete_projection_identity(tmp_path: Path):
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\tstatus\n"
         "unit\tstep-a\trun-000\tshared\tplanned\n"
@@ -1186,8 +1201,12 @@ def test_experiment_run_rows_rejects_incomplete_auxiliary_identity(tmp_path: Pat
     )
     (tmp_path / "launch_manifest.tsv").write_text("run_id\tversion\tstatus\n" "run-000\tshared\trunning\n")
 
-    with pytest.raises(ValueError, match="step_id and run_id"):
-        experiment_tracking.experiment_run_rows(tmp_path)
+    rows = experiment_tracking.experiment_run_rows(tmp_path)
+
+    assert {(row["step_id"], row["run_id"]) for row in rows} == {
+        ("step-a", "run-000"),
+        ("step-b", "run-000"),
+    }
 
 
 def test_experiment_run_rows_rejects_historical_status_without_rewriting(tmp_path: Path):
@@ -1416,6 +1435,8 @@ def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
             return subprocess.CompletedProcess(command, 0, run_manifest, "")
         if "run_manifest.tsv" in shell and "os.lstat" in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
+        if "os.replace(temporary, path)" in shell:
+            return subprocess.CompletedProcess(command, 0, "", "")
         if "cat >" in shell or "mkdir -p" in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
         return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
@@ -1429,7 +1450,8 @@ def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
     assert any("/wujidata/run/wandb/runs.tsv" in target for target in write_targets)
     assert any("/wujidata/run/wandb/history/run123.csv" in target for target in write_targets)
     assert any("/wujidata/run/metrics_manifest.tsv" in target for target in write_targets)
-    assert any("/wujidata/run/run_manifest.tsv" in target for target in write_targets)
+    atomic_targets = [command[-1] for command, kwargs in calls if "os.replace(temporary, path)" in command[-1]]
+    assert any("/wujidata/run/run_manifest.tsv" in target for target in atomic_targets)
     assert any("/wujidata/run/reports/wandb.md" in target for target in write_targets)
 
 

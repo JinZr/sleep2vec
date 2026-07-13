@@ -145,7 +145,6 @@ def path_issues(
     task: str,
     recipe: dict,
     config_summary: dict | None,
-    decisions: dict[str, Any],
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
@@ -156,24 +155,14 @@ def path_issues(
         for path in inputs.get("index") or []:
             required_paths.append(("index", path))
     if task in {"infer", "evaluate"}:
-        ckpt_decision = decisions.get("ckpt_path")
-        ckpt_path = (
-            ckpt_decision.value
-            if ckpt_decision is not None and ckpt_decision.value not in (None, "")
-            else inputs.get("ckpt_path")
-        )
+        ckpt_path = inputs.get("ckpt_path")
         if ckpt_path not in (None, "", "ASK_USER"):
             required_paths.append(("ckpt_path", ckpt_path))
     if task == "finetune":
         for input_field in ("pretrained_backbone_path", "ckpt_path"):
             if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
                 continue
-            decision = decisions.get(input_field)
-            value = (
-                decision.value
-                if decision is not None and decision.value not in (None, "", "ASK_USER")
-                else inputs.get(input_field)
-            )
+            value = inputs.get(input_field)
             if value not in (None, "", "ASK_USER"):
                 required_paths.append((input_field, value))
 

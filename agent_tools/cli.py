@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
-import shlex
 import sys
 from typing import Any
 
@@ -30,9 +28,8 @@ from .hparam import (
     threshold_hparam_outputs,
 )
 from .index_csv import index_summary
-from .manifests import write_text
 from .markdown import report_text
-from .models import REPO_ROOT, json_ready
+from .models import json_ready
 from .plans import build_context, build_plan, collect_runs, evaluate_recipe, prepare_doctor_report, write_doctor_outputs
 from .presets import preset_summary
 from .progress import format_progress, read_progress
@@ -113,8 +110,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     launch = sub.add_parser("hparam-launch")
     launch.add_argument("--plan-dir", required=True)
-    launch.add_argument("--dry-run", action="store_true", default=True)
-    launch.add_argument("--execute", action="store_true")
+    launch_mode = launch.add_mutually_exclusive_group()
+    launch_mode.add_argument("--dry-run", action="store_true", default=True)
+    launch_mode.add_argument("--execute", action="store_true")
     launch.set_defaults(func=_cmd_hparam_launch)
 
     monitor = sub.add_parser("hparam-monitor")
@@ -491,9 +489,7 @@ def _cmd_hparam_export_logits(args: argparse.Namespace) -> int:
     )
     print(f"Wrote {manifest}")
     if not args.execute:
-        script = manifest.parent / "logits_export.sh"
-        write_text(script, "\n".join(_logits_export_script_lines(args)) + "\n", executable=True)
-        print(f"Wrote {script}")
+        print(f"Wrote {manifest.parent / 'logits_export.sh'}")
     return 0
 
 
@@ -551,69 +547,6 @@ def _cmd_hparam_adaptive_loop(args: argparse.Namespace) -> int:
     result = adaptive_loop(args.workflow_dir, execute=args.execute)
     print(f"Wrote {result}")
     return 0
-
-
-def _logits_export_script_lines(args: argparse.Namespace) -> list[str]:
-    command = [
-        "python",
-        "-m",
-        "agent_tools",
-        "hparam-export-logits",
-        "--run-dir",
-        str(Path(args.run_dir).expanduser().resolve()),
-        "--selected",
-        str(Path(args.selected).expanduser().resolve()),
-        "--val-split",
-        args.val_split,
-        "--test-split",
-        args.test_split,
-        "--batch-size",
-        args.batch_size,
-        "--num-workers",
-        args.num_workers,
-        "--accelerator",
-        args.accelerator,
-        "--device",
-        args.device,
-        "--precision",
-        args.precision,
-        "--seed",
-        args.seed,
-        "--top-k",
-        args.top_k,
-        "--execute",
-    ]
-    if args.unlock_final_test:
-        command.append("--unlock-final-test")
-    if args.skip_test:
-        command.append("--skip-test")
-    if args.label_name:
-        command.extend(["--label-name", args.label_name])
-    for flag, value in (
-        ("--val-kaldi-data-root", args.val_kaldi_data_root),
-        ("--val-kaldi-manifest", args.val_kaldi_manifest),
-        ("--val-finetune-data-index", args.val_finetune_data_index),
-        ("--test-kaldi-data-root", args.test_kaldi_data_root),
-        ("--test-kaldi-manifest", args.test_kaldi_manifest),
-        ("--test-finetune-data-index", args.test_finetune_data_index),
-    ):
-        if value:
-            command.extend([flag, value])
-    if args.devices:
-        command.append("--devices")
-        command.extend(args.devices)
-    if args.all_candidates:
-        command.append("--all-candidates")
-    repo_root = shlex.quote(str(REPO_ROOT))
-    return [
-        "#!/usr/bin/env bash",
-        "set -euo pipefail",
-        "",
-        f"cd {repo_root}",
-        f"export PYTHONPATH={repo_root}${{PYTHONPATH:+:$PYTHONPATH}}",
-        "",
-        " ".join(shlex.quote(str(part)) for part in command),
-    ]
 
 
 if __name__ == "__main__":

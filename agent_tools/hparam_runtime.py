@@ -20,10 +20,9 @@ from .experiment_workspace import (
     merge_run_row,
     read_run_manifest,
     validate_frozen_run_update,
-    validate_managed_run_rows,
     write_status_report,
 )
-from .manifests import read_rows, utc_now, write_rows
+from .manifests import utc_now, write_rows
 from .models import REPO_ROOT
 
 LAUNCH_TIMEOUT_SECONDS = 60
@@ -61,45 +60,19 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     expected_keys = {managed_run_key(run) for run in runs}
     manifest = run_dir / "launch_manifest.tsv"
     status_path = run_dir / "run_status.tsv"
-    existing_rows = _managed_table(manifest, expected_keys)
-    previous_status = _managed_table(status_path, expected_keys)
-    for path, table in ((manifest, existing_rows), (status_path, previous_status)):
-        if path.exists() and {managed_run_key(row) for row in table} != expected_keys:
-            raise ValueError(f"Managed table does not match the current hparam plan: {path}")
-    existing_by_key = {managed_run_key(row): row for row in existing_rows}
     workspace_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
-    for table in (existing_rows, previous_status):
-        for row in table:
-            validate_frozen_run_update(
-                workspace_by_key[managed_run_key(row)],
-                row,
-                allow_execution_identity_fill=False,
-            )
     refreshed = {}
     for key in expected_keys:
-        previous = workspace_by_key.get(key, {})
+        previous = workspace_by_key.get(key)
+        if previous is None:
+            raise ValueError(f"Canonical run is missing for the current hparam plan: {key[0]} / {key[1]}")
         # Dry-run only renders launch metadata; it must never probe PID, logs, or SSH.
-        if dry_run:
-            if previous:
-                refreshed[key] = previous
-            continue
-        if key in existing_by_key:
-            # Launch tables are execution evidence, not snapshots that may restore canonical fields.
-            observation = {
-                field: existing_by_key[key][field]
-                for field in evidence.RUN_EVIDENCE_FIELDS
-                if field in existing_by_key[key]
-            }
-            observation.update({"step_id": key[0], "run_id": key[1]})
-            observation["status"] = previous.get("status", "")
-            refreshed[key] = evidence.status_row(
-                run_dir,
-                observation,
-                previous,
-                health=False,
-            )
-        elif previous:
+        if dry_run or previous.get("target") in (None, ""):
             refreshed[key] = previous
+            continue
+        observation = {field: previous[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in previous}
+        observation.update({"step_id": key[0], "run_id": key[1], "status": previous.get("status", "")})
+        refreshed[key] = evidence.status_row(run_dir, observation, previous, health=False)
     active_statuses = {"launched", "running", "unknown_remote", "missing_pid"}
     active = sum(row.get("status") in active_statuses for row in refreshed.values())
     slots = max(max_concurrent - active, 0)
@@ -202,17 +175,7 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
     plan = artifacts.read_hparam_plan(root)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     expected_keys = {managed_run_key(run) for run in plan["runs"]}
-    manifest_path = root / "launch_manifest.tsv"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        manifest = _managed_table(manifest_path, expected_keys)
-    else:
-        manifest = []
-    if manifest_path.exists() and {managed_run_key(row) for row in manifest} != expected_keys:
-        raise ValueError(f"Launch manifest does not match the current hparam plan: {manifest_path}")
-    previous = _managed_table(root / "run_status.tsv", expected_keys)
     status_path = root / "run_status.tsv"
-    if status_path.exists() and {managed_run_key(row) for row in previous} != expected_keys:
-        raise ValueError(f"Managed table does not match the current hparam plan: {status_path}")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
@@ -230,26 +193,20 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
     )
     workspace_rows = read_run_manifest(workspace)
     workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
-    launch_by_key = {managed_run_key(row): row for row in manifest}
-    for table in (manifest, previous):
-        for row in table:
-            validate_frozen_run_update(
-                workspace_by_key[managed_run_key(row)],
-                row,
-                allow_execution_identity_fill=False,
-            )
+    missing = expected_keys - set(workspace_by_key)
+    if missing:
+        step_id, run_id = sorted(missing)[0]
+        raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {run_id}")
     previous_rows = {key: workspace_by_key[key] for key in expected_keys}
     rows = []
     for run in plan["runs"]:
         key = managed_run_key(run)
         prior = previous_rows[key]
-        launch = launch_by_key.get(key)
-        if launch is None:
+        if prior.get("target") in (None, ""):
             rows.append(prior)
             continue
-        observation = {field: launch[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in launch}
-        observation.update({"step_id": key[0], "run_id": key[1]})
-        observation["status"] = prior.get("status", "")
+        observation = {field: prior[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in prior}
+        observation.update({"step_id": key[0], "run_id": key[1], "status": prior.get("status", "")})
         rows.append(evidence.status_row(root, observation, prior, health=health))
     out = status_path
     committed = merge_run_manifest(workspace, rows)
@@ -284,15 +241,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     expected_keys = {managed_run_key(run) for run in plan["runs"]}
     manifest_path = root / "launch_manifest.tsv"
-    if not manifest_path.exists() and not manifest_path.is_symlink():
-        raise FileNotFoundError(f"Missing launch manifest: {manifest_path}")
-    rows = _managed_table(manifest_path, expected_keys)
-    if {managed_run_key(row) for row in rows} != expected_keys:
-        raise ValueError(f"Launch manifest does not match the current hparam plan: {manifest_path}")
     status_path = root / "run_status.tsv"
-    status_rows = _managed_table(status_path, expected_keys) if status_path.exists() or status_path.is_symlink() else []
-    if status_path.exists() and {managed_run_key(row) for row in status_rows} != expected_keys:
-        raise ValueError(f"Managed table does not match the current hparam plan: {status_path}")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
@@ -310,20 +259,16 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     )
     workspace_rows = read_run_manifest(workspace)
     workspace_by_key = {managed_run_key(item): item for item in workspace_rows}
-    for table in (rows, status_rows):
-        for item in table:
-            validate_frozen_run_update(
-                workspace_by_key[managed_run_key(item)],
-                item,
-                allow_execution_identity_fill=False,
-            )
+    missing = expected_keys - set(workspace_by_key)
+    if missing:
+        step_id, missing_run_id = sorted(missing)[0]
+        raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {missing_run_id}")
     matched = [run for run in plan["runs"] if run.get("run_id") == run_id]
     if not matched:
         raise ValueError(f"Unknown run_id: {run_id}")
     if len(matched) > 1:
         raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
     key = managed_run_key(matched[0])
-    launch_by_key = {managed_run_key(item): item for item in rows}
     previous = workspace_by_key[key]
     missing_execution_identity = {field for field in EXECUTION_IDENTITY_FIELDS if field not in previous}
     if previous.get("target") in (None, ""):
@@ -361,12 +306,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     committed = merge_run_manifest(workspace, [final])
     committed_by_key = {managed_run_key(item): item for item in committed}
     final_status_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
-    final_launch_rows = [
-        committed_by_key[managed_run_key(run)] if managed_run_key(run) == key else launch_by_key[managed_run_key(run)]
-        for run in plan["runs"]
-    ]
     write_rows(status_path, final_status_rows)
-    write_rows(manifest_path, final_launch_rows)
+    write_rows(manifest_path, final_status_rows)
     append_event(
         workspace,
         "run_stopped",
@@ -378,29 +319,14 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
 
 def _assigned_gpus(recipe: dict[str, Any], run_index: int) -> list[Any]:
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    base = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
-    base_runtime = base.get("runtime") if isinstance(base.get("runtime"), dict) else {}
-    base_devices = _as_list(base_runtime.get("devices"))
-    pool = _as_list(execution.get("gpu_pool")) or base_devices
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    devices = _as_list(runtime.get("devices"))
+    pool = _as_list(execution.get("gpu_pool")) or devices
     if not pool:
         return []
-    per_run = int(execution.get("gpus_per_run") or len(base_devices) or 1)
+    per_run = int(execution.get("gpus_per_run") or len(devices) or 1)
     start = (run_index * per_run) % len(pool)
     return [pool[(start + offset) % len(pool)] for offset in range(per_run)]
-
-
-def _managed_table(path: Path, expected_keys: set[tuple[str, str]]) -> list[dict[str, str]]:
-    if path.is_symlink() and not path.exists():
-        raise FileNotFoundError(f"Managed table symlink target is missing: {path}")
-    rows = read_rows(path, require_managed_identity=True)
-    if not rows:
-        return []
-    validate_managed_run_rows(rows, source=str(path), cardinality="one_per_run")
-    unexpected = {managed_run_key(row) for row in rows} - expected_keys
-    if unexpected:
-        step_id, run_id = sorted(unexpected)[0]
-        raise ValueError(f"Managed run is not present in the current hparam plan: {step_id} / {run_id}")
-    return rows
 
 
 def _as_list(value: Any) -> list[Any]:

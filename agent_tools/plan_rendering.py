@@ -51,13 +51,6 @@ def list_value(value: Any) -> list[Any]:
     return [value]
 
 
-def decision_value(decisions: dict | None, field: str, fallback: Any = None) -> Any:
-    decision = decisions.get(field) if decisions else None
-    if decision is not None and decision.value not in (None, ""):
-        return decision.value
-    return fallback
-
-
 def runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
     args: list[Any] = [
         "--devices",
@@ -131,34 +124,20 @@ def infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
 
 def finetune_input_cli_args(
     inputs: dict[str, Any],
-    decisions: dict | None,
     *,
-    ckpt_from_decisions: bool,
     variant: str | None = None,
 ) -> list[Any]:
     args: list[Any] = []
     if variant != "sex_age_baseline":
-        append_option(
-            args,
-            "--pretrained-backbone-path",
-            decision_value(decisions, "pretrained_backbone_path", inputs.get("pretrained_backbone_path")),
-        )
-    if ckpt_from_decisions:
-        ckpt_path = decision_value(decisions, "ckpt_path", inputs.get("ckpt_path"))
-    else:
-        ckpt_path = inputs.get("ckpt_path")
-    append_option(args, "--ckpt-path", ckpt_path)
+        append_option(args, "--pretrained-backbone-path", inputs.get("pretrained_backbone_path"))
+    append_option(args, "--ckpt-path", inputs.get("ckpt_path"))
     return args
 
 
-def infer_input_cli_args(inputs: dict[str, Any], decisions: dict | None, *, variant: str | None = None) -> list[Any]:
+def infer_input_cli_args(inputs: dict[str, Any], *, variant: str | None = None) -> list[Any]:
     args: list[Any] = []
     if variant != "sex_age_baseline":
-        append_option(
-            args,
-            "--pretrained-backbone-path",
-            decision_value(decisions, "pretrained_backbone_path", inputs.get("pretrained_backbone_path")),
-        )
+        append_option(args, "--pretrained-backbone-path", inputs.get("pretrained_backbone_path"))
     append_option(args, "--inference-preset-path", inputs.get("inference_preset_path"))
     if variant != "sex_age_baseline":
         append_list_option(args, "--override-dataset-names", inputs.get("override_dataset_names"))
