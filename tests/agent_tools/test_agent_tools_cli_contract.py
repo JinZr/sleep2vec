@@ -7,7 +7,7 @@ import pytest
 
 from agent_tools import cli, models, plans
 from agent_tools.decisions import evaluate_consultation_gates
-from agent_tools.recipes import load_policy_files
+from agent_tools.recipes import load_consultation_policy
 
 SUBCOMMANDS = {
     "skills",
@@ -113,13 +113,25 @@ def test_hparam_launch_cli_contract():
         parser.parse_args(["hparam-launch", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
 
 
-def test_hparam_export_logits_cli_leaves_script_writing_to_postprocess(tmp_path: Path, monkeypatch):
+def test_hparam_export_logits_cli_delegates_writes_to_postprocess(tmp_path: Path, monkeypatch, capsys):
     manifest = tmp_path / "logits_export_manifest.tsv"
-    monkeypatch.setattr(cli, "export_hparam_logits", lambda *_args, **_kwargs: manifest)
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "export_hparam_logits",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or manifest,
+    )
 
     result = cli.main(["hparam-export-logits", "--run-dir", str(tmp_path), "--selected", "selected.csv", "--skip-test"])
 
     assert result == 0
+    assert calls[0][0] == (str(tmp_path), "selected.csv")
+    assert calls[0][1]["skip_test"] is True
+    assert calls[0][1]["execute"] is False
+    assert capsys.readouterr().out.splitlines() == [
+        f"Wrote {manifest}",
+        f"Wrote {tmp_path / 'logits_export.sh'}",
+    ]
     assert not (tmp_path / "logits_export.sh").exists()
 
 
@@ -196,7 +208,7 @@ def test_runnable_task_variant_contract_matrix(task: str, variant: str | None, t
 
 @pytest.mark.parametrize(("task", "variant"), REJECTED_TASK_VARIANT_MATRIX)
 def test_rejected_task_variant_contract_matrix(tmp_path: Path, task: str, variant: str | None):
-    policy, defaults = load_policy_files()
+    policy = load_consultation_policy()
     recipe = {
         "name": "rejected-contract-matrix",
         "task": task,
@@ -212,7 +224,7 @@ def test_rejected_task_variant_contract_matrix(tmp_path: Path, task: str, varian
         "decisions": {"task": {"value": task, "source": "explicit_recipe"}},
     }
 
-    report = evaluate_consultation_gates(task, recipe, None, {}, policy, defaults)
+    report = evaluate_consultation_gates(task, recipe, None, {}, policy)
 
     assert report.exit_code != 0
     assert any(issue.field == "variant" for issue in report.blocking_issues())

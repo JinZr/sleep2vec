@@ -14,12 +14,13 @@ def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
 
 
+def _write_decisions(tmp_path: Path, decisions: dict) -> Path:
+    return write_yaml(tmp_path / "decisions.yaml", {"decisions": decisions})
+
+
 def test_user_decision_yaml_resolves_missing_label_name(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
-    decisions = write_yaml(
-        tmp_path / "decisions.yaml",
-        {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
-    )
+    decisions = _write_decisions(tmp_path, {"label_name": {"value": "ahi", "source": "explicit_user"}})
 
     result = _run(
         "doctor",
@@ -63,10 +64,7 @@ def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
             },
         },
     )
-    decisions = write_yaml(
-        tmp_path / "decisions.yaml",
-        {"decisions": {"external_test_locked": {"value": True, "source": "explicit_user"}}},
-    )
+    decisions = _write_decisions(tmp_path, {"external_test_locked": {"value": True, "source": "explicit_user"}})
 
     result = _run(
         "doctor",
@@ -121,10 +119,7 @@ def test_user_decision_file_requires_decisions_mapping_before_output(tmp_path: P
 
 def test_user_task_cannot_override_explicit_recipe_task(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
-    decisions = write_yaml(
-        tmp_path / "decisions.yaml",
-        {"decisions": {"task": {"value": "evaluate", "source": "explicit_user"}}},
-    )
+    decisions = _write_decisions(tmp_path, {"task": {"value": "evaluate", "source": "explicit_user"}})
 
     effective, _cfg, report = evaluate_recipe(recipe, decisions)
 
@@ -138,10 +133,7 @@ def test_user_task_fills_missing_recipe_task(tmp_path: Path):
     payload = yaml.safe_load(recipe.read_text())
     payload.pop("task")
     recipe.write_text(yaml.safe_dump(payload))
-    decisions = write_yaml(
-        tmp_path / "decisions.yaml",
-        {"decisions": {"task": {"value": "finetune", "source": "explicit_user"}}},
-    )
+    decisions = _write_decisions(tmp_path, {"task": {"value": "finetune", "source": "explicit_user"}})
 
     effective, _cfg, report = evaluate_recipe(recipe, decisions)
 
@@ -151,9 +143,9 @@ def test_user_task_fills_missing_recipe_task(tmp_path: Path):
 
 def test_user_split_decision_requires_concrete_split(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
-    decisions = write_yaml(
-        tmp_path / "decisions.yaml",
-        {"decisions": {"train_val_test_policy": {"value": "select on val", "source": "explicit_user"}}},
+    decisions = _write_decisions(
+        tmp_path,
+        {"train_val_test_policy": {"value": "select on val", "source": "explicit_user"}},
     )
 
     effective, _cfg, report = evaluate_recipe(recipe, decisions)
@@ -165,9 +157,9 @@ def test_user_split_decision_requires_concrete_split(tmp_path: Path):
 
 def test_user_split_decision_materializes_selection_split(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
-    decisions = write_yaml(
-        tmp_path / "decisions.yaml",
-        {"decisions": {"train_val_test_policy": {"value": "train", "source": "explicit_user"}}},
+    decisions = _write_decisions(
+        tmp_path,
+        {"train_val_test_policy": {"value": "train", "source": "explicit_user"}},
     )
 
     effective, _cfg, report = evaluate_recipe(recipe, decisions)

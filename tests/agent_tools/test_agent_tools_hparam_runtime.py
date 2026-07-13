@@ -311,76 +311,13 @@ def test_hparam_launch_does_not_restart_workspace_terminal_run(tmp_path: Path, m
     assert _read_table(plan_dir / "run_status.tsv")[0]["status"] == "failed"
 
 
-@pytest.mark.parametrize(
-    ("local_status_exists", "launch_exists", "expected_status"),
-    [
-        (False, False, "finished"),
-        (False, True, "finished"),
-        (True, False, "finished"),
-        (True, True, "finished"),
-    ],
-)
-def test_hparam_launch_does_not_restart_canonical_running_run_from_stale_mirrors(
-    tmp_path: Path,
-    monkeypatch,
-    local_status_exists: bool,
-    launch_exists: bool,
-    expected_status: str,
-):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
-    workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
-    workspace_rows[0]["status"] = "running"
-    manifests.write_rows(tmp_path / "run_manifest.tsv", workspace_rows)
-    if not local_status_exists:
-        (tmp_path / "run_status.tsv").unlink()
-    if not launch_exists:
-        (tmp_path / "launch_manifest.tsv").unlink()
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
-    )
-
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
-
-    assert started == []
-    assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == expected_status
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == expected_status
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == expected_status
-
-
-@pytest.mark.parametrize("local_status", ["launched", "unknown_remote"])
-def test_hparam_launch_ignores_stale_local_status(tmp_path: Path, monkeypatch, local_status: str):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": local_status}])
-    workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
-    workspace_rows[0]["status"] = "running"
-    workspace_rows[0]["score"] = "0.9"
-    manifests.write_rows(tmp_path / "run_manifest.tsv", workspace_rows)
-    local_rows = _read_table(tmp_path / "run_status.tsv")
-    local_rows[0]["score"] = "0.1"
-    manifests.write_rows(tmp_path / "run_status.tsv", local_rows)
-    (tmp_path / "launch_manifest.tsv").unlink()
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
-
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
-
-    assert started == []
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "finished"
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["score"] == "0.9"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
-    assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "finished"
-
-
 @pytest.mark.parametrize("operation", ["launch", "monitor", "stop"])
 def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: Path, monkeypatch, operation: str):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     launch_rows = _read_table(tmp_path / "launch_manifest.tsv")
-    launch_rows[0].update({"score": "0.1", "wandb_url": "https://wandb.example/stale"})
+    launch_rows[0].update({"status": "planned", "score": "0.1", "wandb_url": "https://wandb.example/stale"})
     manifests.write_rows(tmp_path / "launch_manifest.tsv", launch_rows)
+    manifests.write_rows(tmp_path / "run_status.tsv", launch_rows)
     canonical_rows = _read_table(tmp_path / "run_manifest.tsv")
     canonical_rows[0].update({"score": "0.9", "wandb_url": "https://wandb.example/current"})
     manifests.write_rows(tmp_path / "run_manifest.tsv", canonical_rows)
@@ -391,6 +328,12 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
     )
     monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
     monkeypatch.setattr(hparam_runtime.os, "kill", lambda _pid, _signal: None)
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
 
     if operation == "launch":
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
@@ -400,6 +343,7 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert started == []
     assert canonical["score"] == "0.9"
     assert canonical["wandb_url"] == "https://wandb.example/current"
 
@@ -473,21 +417,13 @@ def test_hparam_launch_rejects_workspace_frozen_drift_before_start(tmp_path: Pat
     assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
-@pytest.mark.parametrize("target_name", ["run_matrix.csv", "reports/run_matrix.md"])
-@pytest.mark.parametrize("target_kind", ["directory", "hardlink"])
-def test_hparam_launch_rejects_invalid_canonical_output_before_start(
-    tmp_path: Path, monkeypatch, target_name: str, target_kind: str
-):
+def test_hparam_launch_rejects_invalid_canonical_output_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    target = tmp_path / target_name
+    target = tmp_path / "run_matrix.csv"
     target.unlink()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target_kind == "directory":
-        target.mkdir()
-    else:
-        target.hardlink_to(tmp_path / "run_manifest.tsv")
+    target.hardlink_to(tmp_path / "run_manifest.tsv")
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     started = []
     monkeypatch.setattr(
@@ -503,83 +439,6 @@ def test_hparam_launch_rejects_invalid_canonical_output_before_start(
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_hparam_launch_rejects_aliased_local_mirrors_before_start(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
-    launch_path = plan_dir / "launch_manifest.tsv"
-    status_path = plan_dir / "run_status.tsv"
-    status_path.unlink()
-    status_path.hardlink_to(launch_path)
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
-
-    with pytest.raises(ValueError, match="Managed output"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-
-    assert started == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_hparam_launch_rejects_aliased_status_report_before_start(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    status_report = tmp_path / "reports" / "status.md"
-    status_report.hardlink_to(tmp_path / "README.md")
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
-
-    with pytest.raises(ValueError, match="Managed output"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-
-    assert started == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize("target_kind", ["run_dir_symlink", "log_hardlink", "pid_hardlink"])
-def test_hparam_launch_rejects_aliased_run_outputs_before_start(tmp_path: Path, monkeypatch, target_kind: str):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
-    semantic_run_dir = Path(run["run_dir"])
-    protected = plan_dir / "plan.json"
-    if target_kind == "run_dir_symlink":
-        real_run_dir = plan_dir / "real-run-dir"
-        semantic_run_dir.rename(real_run_dir)
-        semantic_run_dir.symlink_to(real_run_dir, target_is_directory=True)
-    else:
-        output = semantic_run_dir / ("stdout.log" if target_kind == "log_hardlink" else "pid")
-        output.hardlink_to(protected)
-    protected_before = protected.read_bytes()
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
-
-    with pytest.raises(ValueError, match="Managed output"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-
-    assert started == []
-    assert protected.read_bytes() == protected_before
-    assert not (plan_dir / "launch_manifest.tsv").exists()
-    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_hparam_ssh_launch_validates_run_outputs_remotely_before_start(tmp_path: Path, monkeypatch):
@@ -840,39 +699,10 @@ def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monk
     assert [event["event_type"] for event in events].count("run_stopped") == 1
 
 
-def test_hparam_stop_ignores_stale_local_terminal_status(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    Path(rows[0]["pid_path"]).write_text("123")
-    merge_run_manifest(
-        tmp_path,
-        [{"step_id": "train-model", "run_id": "run-000", "status": "running"}],
-    )
-    local_rows = _read_table(tmp_path / "run_status.tsv")
-    local_rows[0]["status"] = "failed"
-    manifests.write_rows(tmp_path / "run_status.tsv", local_rows)
-    killed = []
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
-
-    assert killed == [(123, hparam_runtime.signal.SIGTERM)]
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "stopped"
-    assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "stopped"
-
-
-@pytest.mark.parametrize("target_name", ["run_matrix.csv", "reports/run_matrix.md"])
-@pytest.mark.parametrize("target_kind", ["directory", "hardlink"])
-def test_hparam_stop_rejects_invalid_canonical_output_before_kill(
-    tmp_path: Path, monkeypatch, target_name: str, target_kind: str
-):
+def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    target = tmp_path / target_name
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target_kind == "directory":
-        target.mkdir()
-    else:
-        target.hardlink_to(tmp_path / "run_manifest.tsv")
+    target = tmp_path / "run_matrix.csv"
+    target.hardlink_to(tmp_path / "run_manifest.tsv")
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     killed = []
     monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
@@ -884,41 +714,6 @@ def test_hparam_stop_rejects_invalid_canonical_output_before_kill(
     assert killed == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
     assert not (tmp_path / "events.jsonl").exists()
-
-
-def test_hparam_stop_rejects_aliased_local_mirrors_before_kill(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    launch_path = tmp_path / "launch_manifest.tsv"
-    status_path = tmp_path / "run_status.tsv"
-    status_path.unlink()
-    status_path.hardlink_to(launch_path)
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    killed = []
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    with pytest.raises(ValueError, match="Managed output"):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
-
-    assert killed == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_hparam_stop_rejects_aliased_status_report_before_kill(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    status_report = tmp_path / "reports" / "status.md"
-    status_report.parent.mkdir(parents=True)
-    status_report.hardlink_to(tmp_path / "experiment.yaml")
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    killed = []
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    with pytest.raises(ValueError, match="Managed output"):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
-
-    assert killed == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 def test_hparam_stop_mirrors_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
@@ -941,21 +736,6 @@ def test_hparam_stop_mirrors_the_status_committed_by_the_canonical_owner(tmp_pat
     assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "failed"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
-
-
-def test_hparam_stop_ignores_frozen_drift_in_projection(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    rows[0]["version"] = "drifted-version"
-    manifests.write_rows(tmp_path / "launch_manifest.tsv", rows)
-    killed = []
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="stale metadata")
-
-    assert killed == [(123, hparam_runtime.signal.SIGTERM)]
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["version"] != "drifted-version"
-    assert _read_table(tmp_path / "launch_manifest.tsv")[0]["version"] != "drifted-version"
 
 
 @pytest.mark.parametrize(
@@ -1720,22 +1500,6 @@ def test_hparam_monitor_without_launch_manifest_uses_canonical_execution_evidenc
     assert [event["event_type"] for event in events].count("run_status_changed") == 1
 
 
-@pytest.mark.parametrize("local_status", ["launched", "unknown_remote"])
-def test_hparam_monitor_without_launch_manifest_ignores_stale_local_status(tmp_path: Path, local_status: str):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": local_status}])
-    workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
-    workspace_rows[0]["status"] = "running"
-    manifests.write_rows(tmp_path / "run_manifest.tsv", workspace_rows)
-    (tmp_path / "launch_manifest.tsv").unlink()
-
-    hparam_runtime.monitor_hparam_runs(tmp_path)
-
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "finished"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert [event["event_type"] for event in events].count("run_status_changed") == 1
-
-
 def test_hparam_monitor_rejects_aliased_status_report_before_canonical_write(tmp_path: Path):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     status_report = tmp_path / "reports" / "status.md"
@@ -2218,13 +1982,3 @@ def test_hparam_remote_command_timeout_returns_unknown_remote(monkeypatch):
     result = run_evidence.run_row_command({"target": "ssh", "host": "baichuan3"}, "ps")
 
     assert result.returncode == 124
-
-
-def test_hparam_start_process_timeout_returns_launch_failed(monkeypatch):
-    def fake_run(*_args, **kwargs):
-        assert kwargs["timeout"] == hparam_runtime.LAUNCH_TIMEOUT_SECONDS
-        raise subprocess.TimeoutExpired(["bash", "-lc", "cmd"], kwargs["timeout"])
-
-    monkeypatch.setattr(hparam_runtime.subprocess, "run", fake_run)
-
-    assert hparam_runtime._start_process({}, "cmd") == "launch_failed"

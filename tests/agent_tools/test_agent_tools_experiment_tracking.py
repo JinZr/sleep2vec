@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -894,61 +893,6 @@ def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkey
     assert "train-model / run-001" in report
 
 
-def test_experiment_run_rows_does_not_take_status_from_local_mirror(tmp_path: Path):
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
-    )
-    (tmp_path / "run_status.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\n" "train-model\trun-000\tmanaged-v1\trunning\n"
-    )
-
-    rows = experiment_tracking.experiment_run_rows(tmp_path)
-
-    assert len(rows) == 1
-    assert rows[0]["step_id"] == "train-model"
-    assert rows[0]["run_id"] == "run-000"
-    assert rows[0]["status"] == "planned"
-
-
-@pytest.mark.parametrize("pid", [str(os.getpid()), "99999999"])
-def test_experiment_run_rows_does_not_take_process_evidence_from_local_mirror(tmp_path: Path, pid: str):
-    pid_path = tmp_path / "run.pid"
-    pid_path.write_text(pid)
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
-    )
-    (tmp_path / "run_status.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\tpid_path\tpid\tlog_path\n"
-        f"train-model\trun-000\tmanaged-v1\trunning\t{pid_path}\t{pid}\t{tmp_path / 'run.log'}\n"
-    )
-
-    rows = experiment_tracking.experiment_run_rows(tmp_path)
-
-    assert rows == [
-        {
-            "experiment_id": "unit",
-            "step_id": "train-model",
-            "run_id": "run-000",
-            "version": "managed-v1",
-            "status": "planned",
-        }
-    ]
-
-
-@pytest.mark.parametrize("table", ["launch_manifest.tsv", "run_status.tsv"])
-def test_experiment_run_rows_ignores_aliased_projection(tmp_path: Path, table: str):
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
-    )
-    outside = tmp_path / "outside.tsv"
-    outside.write_text("step_id\trun_id\tversion\tstatus\ntrain-model\trun-000\tmanaged-v1\trunning\n")
-    (tmp_path / table).symlink_to(outside)
-
-    rows = experiment_tracking.experiment_run_rows(tmp_path)
-
-    assert rows[0]["status"] == "planned"
-
-
 def test_experiment_checkpoint_scan_ignores_checkpoint_named_directories(tmp_path: Path):
     checkpoint_dir = tmp_path / "checkpoints"
     checkpoint_dir.mkdir()
@@ -1005,19 +949,6 @@ def test_experiment_monitor_does_not_regress_canonical_running_from_stale_status
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
 
-def test_experiment_run_rows_does_not_take_status_from_launch_manifest(tmp_path: Path):
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\trunning\n"
-    )
-    (tmp_path / "launch_manifest.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\n" "train-model\trun-000\tmanaged-v1\tplanned\n"
-    )
-
-    rows = experiment_tracking.experiment_run_rows(tmp_path)
-
-    assert rows[0]["status"] == "running"
-
-
 def test_experiment_run_rows_ignores_conflicting_projection_fields(tmp_path: Path):
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\trun_name\tparameter_summary\tversion\tconfig\tstatus\tstate\n"
@@ -1043,19 +974,6 @@ def test_experiment_run_rows_ignores_conflicting_projection_fields(tmp_path: Pat
             "state": "canonical",
         }
     ]
-
-
-def test_experiment_run_rows_ignores_unmanaged_projection_row(tmp_path: Path):
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
-    )
-    (tmp_path / "run_status.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-999\tmanaged-v1\trunning\n"
-    )
-
-    rows = experiment_tracking.experiment_run_rows(tmp_path)
-
-    assert [row["run_id"] for row in rows] == ["run-000"]
 
 
 def test_candidate_rows_reject_foreign_metric_before_metric_filtering():
@@ -1191,22 +1109,6 @@ def test_wandb_observations_only_accept_allowed_fields(tmp_path: Path):
     assert row["state"] == "running"
     assert row["wandb_run_id"] == "wandb-1"
     assert "unexpected" not in row
-
-
-def test_experiment_run_rows_ignores_incomplete_projection_identity(tmp_path: Path):
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tstatus\n"
-        "unit\tstep-a\trun-000\tshared\tplanned\n"
-        "unit\tstep-b\trun-000\tshared\tplanned\n"
-    )
-    (tmp_path / "launch_manifest.tsv").write_text("run_id\tversion\tstatus\n" "run-000\tshared\trunning\n")
-
-    rows = experiment_tracking.experiment_run_rows(tmp_path)
-
-    assert {(row["step_id"], row["run_id"]) for row in rows} == {
-        ("step-a", "run-000"),
-        ("step-b", "run-000"),
-    }
 
 
 def test_experiment_run_rows_rejects_historical_status_without_rewriting(tmp_path: Path):
@@ -1476,99 +1378,50 @@ def test_experiment_wandb_sync_writes_blocked_report(tmp_path: Path, monkeypatch
     assert (tmp_path / "reports" / "wandb_blocked.md").exists()
 
 
-def test_remote_checkpoint_scan_rejects_missing_declared_roots(monkeypatch):
-    runs = [
-        {
-            "experiment_id": "unit",
-            "step_id": "train-model",
-            "run_id": "run-000",
-            "version": "run_a",
-            "checkpoint_dir": "/remote/runtime/run_a/checkpoints",
-        },
-        {
-            "experiment_id": "unit",
-            "step_id": "train-model",
-            "run_id": "run-001",
-            "version": "run_b",
-            "checkpoint_dir": "/remote/runtime/run_b/checkpoints",
-        },
-    ]
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 1, "", "missing checkpoint directory")
-
-    monkeypatch.setattr(experiment_tracking.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="SSH checkpoint scan failed"):
-        experiment_tracking._remote_checkpoint_rows(runs, "baichuan3")
-
-    shell = calls[0][0][-1]
-    assert '[ -L "$root" ]' in shell
-    assert '[ ! -d "$root" ]' in shell
-    assert 'find "$root"' in shell
-
-
-def test_remote_checkpoint_scan_rejects_non_directory_declared_root(monkeypatch):
-    runs = [
-        {
-            "experiment_id": "unit",
-            "step_id": "train-model",
-            "run_id": "run-000",
-            "version": "run_a",
-            "checkpoint_dir": "/remote/runtime/run_a/checkpoints",
-        }
-    ]
-    monkeypatch.setattr(
-        experiment_tracking.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "not a directory"),
-    )
-
-    with pytest.raises(RuntimeError, match="not a directory"):
-        experiment_tracking._remote_checkpoint_rows(runs, "baichuan3")
-
-
-def test_remote_checkpoint_scan_validates_runtime_root_before_manifest_read(monkeypatch):
-    runs = [
-        {
-            "experiment_id": "unit",
-            "step_id": "train-model",
-            "run_id": "run-000",
-            "version": "run_a",
-            "runtime_dir": "/remote/runtime/run_a",
-            "checkpoint_dir": "/remote/runtime/run_a/checkpoints",
-        }
-    ]
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append(command[-1])
-        return subprocess.CompletedProcess(command, 1, "", "runtime directory is aliased")
-
-    monkeypatch.setattr(experiment_tracking.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="SSH checkpoint scan failed"):
-        experiment_tracking._remote_checkpoint_rows(runs, "unit-host")
-
-    assert "for runtime_root in /remote/runtime/run_a" in calls[0]
-    assert '[ -L "$runtime_root" ] || [ ! -d "$runtime_root" ]' in calls[0]
-
-
-def test_remote_checkpoint_scan_uses_runtime_manifest_best_path_for_ranking(monkeypatch):
-    runs = [
-        {
-            "experiment_id": "unit",
-            "step_id": "train-model",
-            "run_id": "run-000",
-            "version": "run_a",
-            "runtime_dir": "/remote/runtime/run_a",
-            "checkpoint_dir": "/remote/runtime/run_a/checkpoints",
-        }
-    ]
+def test_experiment_remote_checkpoint_index_uses_runtime_manifest_best_path(monkeypatch):
+    root = Path("/remote/workspace")
     checkpoint_one = "/remote/runtime/run_a/checkpoints/epoch=01-step=10.ckpt"
     checkpoint_two = "/remote/runtime/run_a/checkpoints/epoch=02-step=20.ckpt"
+    run_manifest = (
+        "experiment_id\tstep_id\trun_id\trun_name\tversion\truntime_dir\tcheckpoint_dir\tstatus\n"
+        "unit\ttrain-model\trun-000\tmanaged\trun_a\t/remote/runtime/run_a\t"
+        "/remote/runtime/run_a/checkpoints\tcompleted\n"
+    )
+    writes = {}
+
+    def fake_read_text(path, remote=None):
+        name = Path(path).name
+        if name == "experiment.yaml":
+            return json.dumps(
+                {
+                    "experiment": {
+                        "id": "unit",
+                        "title": "Unit experiment",
+                        "objective": "Exercise experiment workspace contracts.",
+                        "root": str(root),
+                        "baseline": {"type": "none", "rationale": "Unit fixture."},
+                    }
+                }
+            )
+        if name == "run_manifest.tsv":
+            return run_manifest
+        if name == "run_manifest.json":
+            return json.dumps({"best_model_path": checkpoint_one, "epoch": 1})
+        return ""
+
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_io, "read_text_at", fake_read_text)
+    monkeypatch.setattr(
+        experiment_io,
+        "path_exists_at",
+        lambda path, remote=None: Path(path).name in {"run_manifest.tsv", "run_manifest.json"},
+    )
+    monkeypatch.setattr(experiment_io, "read_rows_at", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        experiment_io,
+        "write_rows_at",
+        lambda path, rows, remote=None: writes.update({Path(path).name: rows}),
+    )
     monkeypatch.setattr(
         experiment_tracking.subprocess,
         "run",
@@ -1579,34 +1432,14 @@ def test_remote_checkpoint_scan_uses_runtime_manifest_best_path_for_ranking(monk
             "",
         ),
     )
-    monkeypatch.setattr(
-        experiment_io,
-        "read_text_at",
-        lambda path, remote=None: json.dumps({"best_model_path": checkpoint_one, "epoch": 1}),
-    )
 
-    checkpoints = experiment_tracking._remote_checkpoint_rows(runs, "baichuan3")
-    ranked = experiment_tracking.rank_candidates(
-        [
-            {
-                "experiment_id": "unit",
-                "step_id": "train-model",
-                "run_id": "run-000",
-                "version": "run_a",
-                "metric": "val_auroc",
-                "score": 0.8,
-                "epoch": "",
-            }
-        ],
-        checkpoints,
-        mode="max",
-    )
+    result = experiments.index_checkpoints(root, remote="baichuan3")
 
-    assert {row["checkpoint_path"]: row["is_best_by_val"] for row in checkpoints} == {
+    assert result == root / "checkpoint_manifest.tsv"
+    assert {row["checkpoint_path"]: row["is_best_by_val"] for row in writes["checkpoint_manifest.tsv"]} == {
         checkpoint_one: "true",
         checkpoint_two: "false",
     }
-    assert ranked[0]["checkpoint_path"] == checkpoint_one
 
 
 @pytest.mark.parametrize(

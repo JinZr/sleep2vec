@@ -1,105 +1,26 @@
 # Task Recipe Schema
 
-Recipes are YAML mappings.
+Recipes are YAML mappings. This minimal skeleton shows the major sections; it is not a complete runnable recipe.
 
 ```yaml
-name: ppg_ahi_finetune_example
-task: finetune
+name: unit_hparam
+task: hparam_tune
 variant: sleep2vec
-
-experiment:
-  id: ppg-ahi-finetune
-  title: PPG AHI finetuning
-  objective: Establish the validation-selected AHI baseline.
-  root: artifacts/experiments/ppg-ahi-finetune
-  baseline:
-    type: none
-    rationale: First managed experiment.
-
-step:
-  id: train-baseline
-  phase: train
-  purpose: Train the initial validation-selected baseline.
-
+experiment: {id: unit-experiment, title: Unit experiment, objective: Exercise tuning, root: artifacts/experiments/unit, baseline: {type: none, rationale: First run.}}
+step: {id: tune, phase: train, purpose: Select a validation configuration.}
 inputs:
-  config: configs/ppg_ahi_finetune_large.yaml
+  config: configs/example.yaml
   label_name: ahi
-  pretrained_backbone_path: null
-  ckpt_path: null
-  final_eval_config_path: null
-
-runtime:
-  devices: [0]
-  accelerator: gpu
-  precision: bf16-mixed
-  epochs: 30
-  batch_size: 12
-  num_workers: 8
-  lr: 1.0e-6
-  weight_decay: 1.0e-5
-  gradient_clip_val: 1.0
-  accumulate_grad_batches: 1
-  wandb_mode: offline
-
-artifacts:
-  version_name: ppg-ahi-agent-example
-  results_csv_path: results/ppg_ahi_agent_example.csv
-
-execution:
-  target: local
-  host: null
-  workdir: null  # when set, must be an absolute path used verbatim as the run cwd
-  conda_env: null
-  gpu_pool: []
-  gpus_per_run: 1
-  max_concurrent: 1
-  wandb_project: null
-  wandb_group: null
-  env: {}
-
-adaptive:
-  enabled: false
-  objective_metric: test_auroc
-  objective_mode: max
-  test_feedback_for_selection: false
-  max_rounds: 3
-  max_runs_total: 24
-  round_size: 3
-  poll_seconds: 60
-  replacement:
-    enabled: true
-    allow_running_stop: true
-    grace_epochs: 1
-    grace_minutes: 10
-    kill_margin: 0.05
-  suggest:
-    strategy: best_neighborhood
-
 evaluation_policy:
   selection_split: val
-  final_eval_split: test
   external_test_locked: true
-  test_after_fit: false
-  require_manual_unlock_for_final_test: true
-
-decisions:
-  task:
-    value: finetune
-    source: explicit_recipe
-  label_name:
-    value: ahi
-    source: explicit_recipe
-  pretrained_backbone_path:
-    value: null
-    source: explicit_recipe
-    meaning: "train downstream model without loading a pretrained backbone"
-  external_test_locked:
-    value: true
-    source: explicit_recipe
-  overwrite_policy:
-    value: false
-    source: explicit_recipe
+search:
+  method: grid
+  max_runs: 1
+  parameters: {runtime.lr: [1.0e-6]}
 ```
+
+See [`recipes/examples/tiny_fixture_hparam.yaml`](../examples/tiny_fixture_hparam.yaml) for a complete runnable example.
 
 Use `ASK_USER` when a recipe author intentionally wants the agent to stop and ask the user before generating commands.
 
@@ -128,13 +49,15 @@ Common top-level fields:
 - `execution`: optional hparam orchestration settings. Existing recipes may omit this and still generate local scripts only.
 - `adaptive`: optional append-only hparam workflow. Existing recipes may omit this and remain static validation-only tuning.
 - `evaluation_policy`: split, selection, and external-test locking policy.
+- For `hparam_tune`, `evaluation_policy` accepts only `selection_metric`, `selection_mode`, `selection_split`, `external_test_locked`, `test_after_fit`, `final_eval_split`, `final_test_unlocked`, and `require_manual_unlock_for_final_test`.
 - `search`: hyper-parameter tuning method, budget, and parameters. The supported method is `grid`.
 - `search.max_runs`: required positive run budget for hparam tuning.
 - `search.parameters`: keys must be `runtime.lr`, `runtime.weight_decay`, `runtime.batch_size`, `runtime.epochs`, `runtime.num_workers`, `runtime.precision`, `runtime.gradient_clip_val`, `runtime.accumulate_grad_batches`, `runtime.warmup_steps`, `runtime.patience`, `runtime.check_val_every_n_epoch`, `runtime.ckpt_every_n_epochs`, or `yaml:/json/pointer/path`.
 - `yaml:/...`: JSON Pointer-like config overrides used for generated config copies.
 - `execution.target`: `local` or `ssh`; `execution.host` is required for `ssh`.
+- `execution.workdir`: optional absolute run cwd and PYTHONPATH root; when omitted, the repository root is used.
 - `execution.path_context`: optional `local` or `remote`; remote absolute paths are not checked with local `Path.exists`.
-- `execution.path_validation`: optional `local`, `defer`, or `ssh`; remote defaults to `defer`, and `ssh` uses short `test -e` checks.
+- `execution.path_validation`: optional `local`, `remote`, `defer`, or `ssh`; remote paths default to `defer`, while `remote` and `ssh` use short `test -e` checks.
 - `execution.gpu_pool`: GPU ids used by `agent_tools hparam-launch` for `CUDA_VISIBLE_DEVICES`.
 - `execution.gpus_per_run`: number of GPU ids assigned to each managed run.
 - `execution.max_concurrent`: maximum runs launched immediately by `hparam-launch --execute`.

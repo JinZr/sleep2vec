@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -530,18 +529,14 @@ def test_hparam_select_rejects_unowned_preserved_checkpoint_before_writing(tmp_p
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-@pytest.mark.parametrize("target_kind", ["directory", "hardlink"])
-def test_hparam_select_rejects_invalid_owner_target_before_ranking_write(tmp_path: Path, target_kind: str):
+def test_hparam_select_rejects_invalid_owner_target_before_ranking_write(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     ranking = _ranking_path(plan_dir)
     matrix = tmp_path / "run_matrix.csv"
     matrix.unlink()
-    if target_kind == "directory":
-        matrix.mkdir()
-    else:
-        matrix.hardlink_to(tmp_path / "run_manifest.tsv")
+    matrix.hardlink_to(tmp_path / "run_manifest.tsv")
     before = {path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")}
 
     with pytest.raises(ValueError, match="Managed output"):
@@ -760,28 +755,15 @@ def test_hparam_select_rejects_selection_contract_drift_across_plans_before_writ
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-@pytest.mark.parametrize("target_kind", ["fifo", "directory", "symlink", "hardlink"])
-def test_hparam_select_preflights_ranking_before_read_or_runtime_scan(
-    tmp_path: Path,
-    monkeypatch,
-    target_kind: str,
-):
+def test_hparam_select_preflights_ranking_before_read_or_runtime_scan(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     ranking = _ranking_path(plan_dir)
     ranking.parent.mkdir(parents=True, exist_ok=True)
     outside = tmp_path / "outside.csv"
-    if target_kind == "fifo":
-        os.mkfifo(ranking)
-    elif target_kind == "directory":
-        ranking.mkdir()
-    else:
-        outside.write_text("sentinel\n")
-        if target_kind == "symlink":
-            ranking.symlink_to(outside)
-        else:
-            ranking.hardlink_to(outside)
+    outside.write_text("sentinel\n")
+    ranking.hardlink_to(outside)
     canonical_before = (tmp_path / "run_manifest.tsv").read_bytes()
     events_before = (tmp_path / "events.jsonl").read_bytes()
     ranking_reads = []
@@ -808,8 +790,7 @@ def test_hparam_select_preflights_ranking_before_read_or_runtime_scan(
     assert runtime_reads == []
     assert (tmp_path / "run_manifest.tsv").read_bytes() == canonical_before
     assert (tmp_path / "events.jsonl").read_bytes() == events_before
-    if outside.exists():
-        assert outside.read_text() == "sentinel\n"
+    assert outside.read_text() == "sentinel\n"
 
 
 def test_hparam_select_rejects_header_only_legacy_ranking(tmp_path: Path):

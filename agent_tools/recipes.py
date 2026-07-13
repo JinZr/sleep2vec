@@ -46,10 +46,8 @@ def load_user_decisions(path: str | Path | None) -> dict[str, Any]:
     return decisions
 
 
-def load_policy_files() -> tuple[dict[str, Any], dict[str, Any]]:
-    policy = load_yaml_file("agent_policies/consultation_policy.yaml")
-    defaults = load_yaml_file("agent_policies/approved_defaults.yaml")
-    return policy, defaults
+def load_consultation_policy() -> dict[str, Any]:
+    return load_yaml_file("agent_policies/consultation_policy.yaml")
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

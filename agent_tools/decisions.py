@@ -33,7 +33,6 @@ def evaluate_consultation_gates(
     config_summary: dict | None,
     cli_args: dict | None,
     policy: dict,
-    approved_defaults: dict,
     *,
     require_experiment: bool = True,
 ) -> DecisionReport:
@@ -50,7 +49,6 @@ def evaluate_consultation_gates(
         config_summary,
         cli_args,
         user_decisions,
-        approved_defaults,
         task_override=task,
     )
     task_value = task_decision.value
@@ -122,9 +120,7 @@ def evaluate_consultation_gates(
             continue
         if decision_field == "task":
             continue
-        decision = _resolve_decision(
-            decision_field, recipe, config_summary, cli_args, user_decisions, approved_defaults
-        )
+        decision = _resolve_decision(decision_field, recipe, config_summary, cli_args, user_decisions)
         decisions[decision_field] = decision
         if decision.value == "ASK_USER":
             issues.append(
@@ -168,12 +164,10 @@ def evaluate_consultation_gates(
         "eval_split",
         "external_test_locked",
     ):
-        decisions[optional_field] = _resolve_decision(
-            optional_field, recipe, config_summary, cli_args, user_decisions, approved_defaults
-        )
+        decisions[optional_field] = _resolve_decision(optional_field, recipe, config_summary, cli_args, user_decisions)
 
     if str(task_value) == "hparam_tune":
-        issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy, approved_defaults))
+        issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
     issues.extend(paths.path_issues(str(task_value), recipe, config_summary))
     if _output_paths_missing(recipe):
@@ -210,7 +204,6 @@ def _resolve_decision(
     config_summary: dict | None,
     cli_args: dict,
     user_decisions: dict,
-    approved_defaults: dict,
     *,
     task_override: str | None = None,
 ) -> ResolvedDecision:
@@ -235,11 +228,6 @@ def _resolve_decision(
         if field in {"selection_metric", "selection_mode"}:
             source = "explicit_config"
         return ResolvedDecision(field, config_value, source, "medium", {"config": config_value})
-
-    defaults = approved_defaults.get("approved_defaults", {}) if isinstance(approved_defaults, dict) else {}
-    if field in defaults:
-        value = defaults[field].get("value") if isinstance(defaults[field], dict) else defaults[field]
-        return ResolvedDecision(field, value, "approved_default", "medium", {"approved_default": defaults[field]})
 
     return ResolvedDecision(
         field,
@@ -352,7 +340,6 @@ def _base_finetune_issues(
     config_summary: dict | None,
     cli_args: dict,
     policy: dict,
-    approved_defaults: dict,
 ) -> list[DecisionIssue]:
     base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else None
     if not base_recipe:
@@ -379,7 +366,6 @@ def _base_finetune_issues(
         config_summary,
         base_cli_args,
         policy,
-        approved_defaults,
         require_experiment=False,
     )
     return [

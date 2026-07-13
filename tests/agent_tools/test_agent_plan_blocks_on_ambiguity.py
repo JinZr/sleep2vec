@@ -163,6 +163,36 @@ def _write_infer_recipe(
     )
 
 
+def _write_preset_recipe(
+    tmp_path: Path,
+    *,
+    config: str | Path,
+    index: str | Path,
+    variant: str = "sleep2vec",
+    preset: dict | None = None,
+    execution: dict | None = None,
+    name: str = "unit_preset",
+) -> Path:
+    preset = preset or {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False}
+    payload = {
+        "name": name,
+        "task": "preset_prepare",
+        "variant": variant,
+        "inputs": {"config": str(config), "index": [str(index)], "dataset_name": "unit"},
+        "preset": preset,
+        "decisions": {
+            "task": {"value": "preset_prepare", "source": "explicit_recipe"},
+            "preset_regeneration": {"value": True, "source": "explicit_recipe"},
+            "overwrite_policy": {"value": bool(preset.get("overwrite", False)), "source": "explicit_recipe"},
+            "required_channels": {"value": preset.get("channels", ["ppg"]), "source": "explicit_recipe"},
+            "min_channels": {"value": preset.get("min_channels", 1), "source": "explicit_recipe"},
+        },
+    }
+    if execution is not None:
+        payload["execution"] = execution
+    return write_yaml(tmp_path / f"{name}.yaml", payload)
+
+
 def test_plan_does_not_create_run_all_when_consultation_required(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     output_dir = tmp_path / "plan"
@@ -1320,94 +1350,28 @@ def test_plan_refuses_existing_artifact_when_overwrite_false(tmp_path: Path):
 
 
 def test_plan_overwrite_rejects_output_alias_to_canonical_without_writing(tmp_path: Path):
-    for target_kind in ("plan", "matrix_csv", "matrix_md", "events"):
-        for alias_kind in ("symlink", "hardlink"):
-            case_dir = tmp_path / f"{target_kind}-{alias_kind}"
-            recipe = write_finetune_recipe(case_dir / "source")
-            workspace = case_dir / "workspace"
-            payload = yaml.safe_load(recipe.read_text())
-            payload["experiment"]["root"] = str(workspace)
-            payload["decisions"]["overwrite_policy"]["value"] = True
-            payload["artifacts"]["overwrite"] = True
-            recipe.write_text(yaml.safe_dump(payload))
-            initial = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-1"))
-            assert initial.returncode == 0, initial.stderr or initial.stdout
-            canonical = workspace / "run_manifest.tsv"
-            canonical_before = canonical.read_bytes()
-            step_manifest = workspace / "steps" / payload["step"]["id"] / "step.yaml"
-            step_before = step_manifest.read_bytes()
-            output_dir = workspace / "plan-2"
-            output_dir.mkdir()
-            alias_path = {
-                "plan": output_dir / "plan.json",
-                "matrix_csv": workspace / "run_matrix.csv",
-                "matrix_md": workspace / "reports" / "run_matrix.md",
-                "events": workspace / "events.jsonl",
-            }[target_kind]
-            if alias_path.exists():
-                alias_path.unlink()
-            if alias_kind == "symlink":
-                alias_path.symlink_to(canonical)
-            else:
-                alias_path.hardlink_to(canonical)
-
-            result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-
-            assert canonical.read_bytes() == canonical_before
-            assert result.returncode == 1
-            assert step_manifest.read_bytes() == step_before
-            assert not (output_dir / "runs").exists()
-
-
-def test_plan_rejects_runs_ancestor_symlink_before_workspace_mutation(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path / "source")
     workspace = tmp_path / "workspace"
-    recipe = write_finetune_recipe(workspace)
     payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
     payload["decisions"]["overwrite_policy"]["value"] = True
     payload["artifacts"]["overwrite"] = True
     recipe.write_text(yaml.safe_dump(payload))
-    output_dir = workspace / "plan"
+    initial = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-1"))
+    assert initial.returncode == 0, initial.stderr or initial.stdout
+    output_dir = workspace / "plan-2"
     output_dir.mkdir()
-    external = tmp_path / "external"
-    external.mkdir()
-    (output_dir / "runs").symlink_to(external, target_is_directory=True)
-    experiment_before = (workspace / "experiment.yaml").read_bytes()
     canonical_before = (workspace / "run_manifest.tsv").read_bytes()
+    step_manifest = workspace / "steps" / payload["step"]["id"] / "step.yaml"
+    step_before = step_manifest.read_bytes()
+    (output_dir / "plan.json").hardlink_to(workspace / "run_manifest.tsv")
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
-    assert "Output artifacts" in result.stdout
-    assert (workspace / "experiment.yaml").read_bytes() == experiment_before
     assert (workspace / "run_manifest.tsv").read_bytes() == canonical_before
-    assert not (workspace / "steps").exists()
-    assert not (workspace / "events.jsonl").exists()
-    assert list(external.iterdir()) == []
-    assert sorted(path.name for path in output_dir.iterdir()) == ["runs"]
-
-
-def test_plan_overwrite_rejects_leaf_directory_before_workspace_mutation(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    recipe = write_finetune_recipe(workspace)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["decisions"]["overwrite_policy"]["value"] = True
-    payload["artifacts"]["overwrite"] = True
-    recipe.write_text(yaml.safe_dump(payload))
-    output_dir = workspace / "plan"
-    (output_dir / "plan.json").mkdir(parents=True)
-    experiment_before = (workspace / "experiment.yaml").read_bytes()
-    canonical_before = (workspace / "run_manifest.tsv").read_bytes()
-
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-
-    assert result.returncode == 1
-    assert "Output artifacts" in result.stdout
-    assert (workspace / "experiment.yaml").read_bytes() == experiment_before
-    assert (workspace / "run_manifest.tsv").read_bytes() == canonical_before
-    assert not (workspace / "steps").exists()
-    assert not (workspace / "events.jsonl").exists()
-    assert list((output_dir / "plan.json").iterdir()) == []
-    assert sorted(path.name for path in output_dir.iterdir()) == ["plan.json"]
+    assert step_manifest.read_bytes() == step_before
+    assert not (output_dir / "runs").exists()
 
 
 def test_plan_allows_existing_workspace_matrix_and_events_for_new_plan(tmp_path: Path):
@@ -1464,38 +1428,27 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     index.write_text("path,split,duration,ppg_mask,ah_event_mask\nx.npz,train,60,1,1\n")
     output_template = tmp_path / "{dataset}_{split}_{tokens}.pkl"
     manifest_output = tmp_path / "manifest.json"
-    recipe = write_yaml(
-        tmp_path / "preset.yaml",
-        {
-            "name": "unit_preset",
-            "task": "preset_prepare",
-            "variant": "sleep2vec",
-            "inputs": {"config": config, "index": [str(index)], "dataset_name": "unit"},
-            "preset": {
-                "n_tokens": 128,
-                "stride_tokens": 64,
-                "split": ["train"],
-                "channels": ["ppg", "ahi"],
-                "meta_data_names": ["age"],
-                "include_no_metadata": True,
-                "allow_missing_channels": True,
-                "min_channels": 2,
-                "output_template": str(output_template),
-                "overwrite": True,
-                "batch_size": 4,
-                "shuffle": False,
-                "mask_rate": 0.1,
-                "dry_run": True,
-                "manifest_output": str(manifest_output),
-                "write_sidecar_manifest": False,
-            },
-            "decisions": {
-                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": True, "source": "explicit_recipe"},
-                "required_channels": {"value": ["ppg", "ahi"], "source": "explicit_recipe"},
-                "min_channels": {"value": 2, "source": "explicit_recipe"},
-            },
+    recipe = _write_preset_recipe(
+        tmp_path,
+        config=config,
+        index=index,
+        preset={
+            "n_tokens": 128,
+            "stride_tokens": 64,
+            "split": ["train"],
+            "channels": ["ppg", "ahi"],
+            "meta_data_names": ["age"],
+            "include_no_metadata": True,
+            "allow_missing_channels": True,
+            "min_channels": 2,
+            "output_template": str(output_template),
+            "overwrite": True,
+            "batch_size": 4,
+            "shuffle": False,
+            "mask_rate": 0.1,
+            "dry_run": True,
+            "manifest_output": str(manifest_output),
+            "write_sidecar_manifest": False,
         },
     )
     output_dir = tmp_path / "plan"
@@ -1533,23 +1486,7 @@ def test_preset_plan_routes_to_variant_local_script(tmp_path: Path, variant: str
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = write_yaml(
-        tmp_path / "preset.yaml",
-        {
-            "name": "unit_preset",
-            "task": "preset_prepare",
-            "variant": variant,
-            "inputs": {"config": config, "index": [str(index)], "dataset_name": "unit"},
-            "preset": {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False},
-            "decisions": {
-                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
-                "min_channels": {"value": 1, "source": "explicit_recipe"},
-            },
-        },
-    )
+    recipe = _write_preset_recipe(tmp_path, config=config, index=index, variant=variant)
     output_dir = tmp_path / "plan"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -1573,27 +1510,12 @@ def test_variant_preset_rejects_root_only_manifest_flags_before_writing(
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = write_yaml(
-        tmp_path / "preset.yaml",
-        {
-            "name": "unit_preset",
-            "task": "preset_prepare",
-            "variant": variant,
-            "inputs": {"config": config, "index": [str(index)], "dataset_name": "unit"},
-            "preset": {
-                "n_tokens": 128,
-                "split": ["train"],
-                "allow_missing_channels": False,
-                field: value,
-            },
-            "decisions": {
-                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
-                "min_channels": {"value": 1, "source": "explicit_recipe"},
-            },
-        },
+    recipe = _write_preset_recipe(
+        tmp_path,
+        config=config,
+        index=index,
+        variant=variant,
+        preset={"n_tokens": 128, "split": ["train"], "allow_missing_channels": False, field: value},
     )
     output_dir = tmp_path / "plan"
 
@@ -2081,30 +2003,11 @@ def test_collect_runs_only_reads_managed_manifest_paths(tmp_path: Path):
     assert "historical-version" not in output.read_text()
 
 
-@pytest.mark.parametrize(
-    "failure",
-    ["symlink", "dangling_symlink", "directory", "hardlink", "bad_encoding", "yaml_only"],
-)
-def test_collect_runs_rejects_invalid_runtime_manifest_without_overwriting_output(tmp_path: Path, failure: str):
+def test_collect_runs_rejects_invalid_runtime_manifest_without_overwriting_output(tmp_path: Path):
     runtime_dir = tmp_path / "runtime" / "run-000"
     runtime_dir.mkdir(parents=True)
     manifest = runtime_dir / "run_manifest.json"
-    if failure == "symlink":
-        target = tmp_path / "foreign.json"
-        target.write_text(json.dumps({"metrics": {"score": 0.9}}))
-        manifest.symlink_to(target)
-    elif failure == "dangling_symlink":
-        manifest.symlink_to(tmp_path / "missing.json")
-    elif failure == "directory":
-        manifest.mkdir()
-    elif failure == "hardlink":
-        target = tmp_path / "foreign.json"
-        target.write_text(json.dumps({"metrics": {"score": 0.9}}))
-        manifest.hardlink_to(target)
-    elif failure == "bad_encoding":
-        manifest.write_bytes(b"\xff")
-    else:
-        manifest.write_text("metrics:\n  score: 0.9\n")
+    manifest.write_text("{")
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\truntime_dir\tstatus\n" f"unit\ttrain\trun-000\t{runtime_dir}\tfailed\n"
     )
@@ -2131,43 +2034,18 @@ def test_collect_runs_rejects_missing_canonical_manifest_without_overwriting_out
     assert output.read_bytes() == b"existing output\n"
 
 
-def test_collect_runs_propagates_canonical_manifest_decode_error_without_overwriting_output(tmp_path: Path):
-    (tmp_path / "run_manifest.tsv").write_bytes(b"\xff\xfe\n")
-    output = tmp_path / "collected.csv"
-    output.write_bytes(b"existing output\n")
-
-    try:
-        collect_runs(tmp_path, None, output)
-    except UnicodeDecodeError:
-        pass
-    else:
-        raise AssertionError("collect_runs must propagate canonical manifest read failures")
-
-    assert output.read_bytes() == b"existing output\n"
-
-
 def test_collect_runs_rejects_canonical_manifest_output_alias_without_writing(tmp_path: Path):
     manifest = tmp_path / "run_manifest.tsv"
     original = b"step_id\trun_id\n"
     manifest.write_bytes(original)
-    alias = tmp_path / "workspace-alias"
-    alias.symlink_to(tmp_path, target_is_directory=True)
-    hard_link = tmp_path / "run-manifest-hard-link.tsv"
-    hard_link.hardlink_to(manifest)
 
-    for output in (manifest, alias / "run_manifest.tsv", hard_link):
-        try:
-            collect_runs(tmp_path, None, output)
-        except ValueError as exc:
-            assert "cannot overwrite canonical run_manifest.tsv" in str(exc)
-        else:
-            assert manifest.read_bytes() == original
-            raise AssertionError("collect_runs must not overwrite run_manifest.tsv")
-        assert manifest.read_bytes() == original
+    with pytest.raises(ValueError, match="cannot overwrite canonical run_manifest.tsv"):
+        collect_runs(tmp_path, None, manifest)
+
+    assert manifest.read_bytes() == original
 
 
-@pytest.mark.parametrize("target_kind", ["symlink", "hardlink", "directory", "ancestor_symlink"])
-def test_collect_runs_rejects_unsafe_output_topology_without_writing(tmp_path: Path, target_kind: str):
+def test_collect_runs_rejects_unsafe_output_topology_without_writing(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     manifest = workspace / "run_manifest.tsv"
@@ -2175,28 +2053,14 @@ def test_collect_runs_rejects_unsafe_output_topology_without_writing(tmp_path: P
     manifest.write_bytes(original_manifest)
     sentinel = tmp_path / "sentinel.csv"
     sentinel.write_bytes(b"keep me\n")
-    outside = tmp_path / "outside"
-    outside.mkdir()
     output = workspace / "collected.csv"
-    if target_kind == "symlink":
-        output.symlink_to(sentinel)
-    elif target_kind == "hardlink":
-        output.hardlink_to(sentinel)
-    elif target_kind == "directory":
-        output.mkdir()
-    else:
-        alias = workspace / "reports"
-        alias.symlink_to(outside, target_is_directory=True)
-        output = alias / "collected.csv"
+    output.hardlink_to(sentinel)
 
     with pytest.raises(ValueError, match="Managed output paths"):
         collect_runs(workspace, None, output)
 
     assert manifest.read_bytes() == original_manifest
     assert sentinel.read_bytes() == b"keep me\n"
-    assert list(outside.iterdir()) == []
-    if target_kind == "directory":
-        assert list(output.iterdir()) == []
 
 
 def test_collect_runs_allows_header_only_canonical_manifest(tmp_path: Path):

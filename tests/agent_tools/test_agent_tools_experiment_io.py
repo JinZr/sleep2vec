@@ -214,16 +214,30 @@ def test_strict_table_reader_does_not_require_managed_run_identity(tmp_path: Pat
     assert experiment_io.read_rows_at(path, strict=True) == [{"experiment_id": "unit", "experiment_root": "/root"}]
 
 
-@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
-def test_managed_output_preflight_rejects_aliased_target(tmp_path: Path, alias_kind: str):
+@pytest.mark.parametrize(
+    "target_kind",
+    ["symlink", "dangling_symlink", "hardlink", "directory", "fifo", "ancestor_symlink"],
+)
+def test_managed_output_preflight_rejects_unsafe_topology(tmp_path: Path, target_kind: str):
     canonical = tmp_path / "run_manifest.tsv"
     canonical.write_text("step_id\trun_id\n")
     output = tmp_path / "reports" / "final.md"
-    output.parent.mkdir()
-    if alias_kind == "symlink":
-        output.symlink_to(canonical)
+    if target_kind == "ancestor_symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        output.parent.symlink_to(outside, target_is_directory=True)
     else:
+        output.parent.mkdir()
+    if target_kind == "symlink":
+        output.symlink_to(canonical)
+    elif target_kind == "dangling_symlink":
+        output.symlink_to(tmp_path / "missing.tsv")
+    elif target_kind == "hardlink":
         os.link(canonical, output)
+    elif target_kind == "directory":
+        output.mkdir()
+    elif target_kind == "fifo":
+        os.mkfifo(output)
 
     with pytest.raises(ValueError, match="independent regular files"):
         experiment_io.validate_managed_output_paths(tmp_path, [output])

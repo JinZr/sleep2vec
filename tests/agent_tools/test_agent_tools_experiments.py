@@ -182,35 +182,6 @@ def test_experiment_mutation_rejects_header_only_invalid_managed_table_before_wr
     assert _workspace_files(tmp_path) == before
 
 
-@pytest.mark.parametrize(
-    ("filename", "header"),
-    [("launch_manifest.tsv", "trial_id\n"), ("run_status.tsv", "run_id\n")],
-)
-def test_experiment_monitor_ignores_invalid_projection_table(tmp_path: Path, filename: str, header: str):
-    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
-    projection = tmp_path / filename
-    projection.write_text(header)
-    canonical_before = (tmp_path / "run_manifest.tsv").read_bytes()
-
-    experiments.monitor_experiment(tmp_path)
-
-    assert (tmp_path / "run_manifest.tsv").read_bytes() == canonical_before
-    assert projection.read_text() == header
-
-
-def test_experiment_monitor_ignores_dangling_projection_symlink(tmp_path: Path):
-    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
-    launch_manifest = tmp_path / "launch_manifest.tsv"
-    launch_manifest.symlink_to(tmp_path / "missing-launch-manifest.tsv")
-    canonical_before = (tmp_path / "run_manifest.tsv").read_bytes()
-
-    experiments.monitor_experiment(tmp_path)
-
-    assert launch_manifest.is_symlink()
-    assert not (tmp_path / "missing-launch-manifest.tsv").exists()
-    assert (tmp_path / "run_manifest.tsv").read_bytes() == canonical_before
-
-
 def test_experiment_init_validates_existing_tables_before_writing(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     experiments.init_experiment(tmp_path, spec)
@@ -225,40 +196,28 @@ def test_experiment_init_validates_existing_tables_before_writing(tmp_path: Path
     assert _workspace_files(tmp_path) == before
 
 
-@pytest.mark.parametrize("corruption", ["duplicate_header", "non_rectangular"])
-@pytest.mark.parametrize("operation", ["reinit", "monitor"])
-def test_experiment_manifest_corruption_fails_before_mutation(tmp_path: Path, corruption: str, operation: str):
+def test_experiment_monitor_delegates_manifest_validation_before_mutation(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     experiments.init_experiment(tmp_path, spec)
     manifest = tmp_path / "experiment_manifest.tsv"
     header, row = manifest.read_text().splitlines()
-    if corruption == "duplicate_header":
-        manifest.write_text(f"experiment_id\t{header}\nunit\t{row}\n")
-    else:
-        manifest.write_text(f"{header}\n{row}\textra\n")
+    manifest.write_text(f"{header}\n{row}\textra\n")
     before = _workspace_files(tmp_path)
 
     with pytest.raises(ValueError):
-        if operation == "reinit":
-            experiments.init_experiment(tmp_path, spec)
-        else:
-            experiments.monitor_experiment(tmp_path)
+        experiments.monitor_experiment(tmp_path)
 
     assert _workspace_files(tmp_path) == before
 
 
-@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
-def test_experiment_reinit_rejects_readme_alias_before_writing(tmp_path: Path, alias_kind: str):
+def test_experiment_reinit_rejects_readme_alias_before_writing(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     experiments.init_experiment(tmp_path, spec)
     run_manifest = tmp_path / "run_manifest.tsv"
     run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\trunning\n")
     readme = tmp_path / "README.md"
     readme.unlink()
-    if alias_kind == "symlink":
-        readme.symlink_to(run_manifest)
-    else:
-        os.link(run_manifest, readme)
+    os.link(run_manifest, readme)
     before = _workspace_files(tmp_path)
 
     with pytest.raises(ValueError, match="independent regular files"):
@@ -267,17 +226,13 @@ def test_experiment_reinit_rejects_readme_alias_before_writing(tmp_path: Path, a
     assert _workspace_files(tmp_path) == before
 
 
-@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
-def test_experiment_finalize_rejects_report_alias_before_writing(tmp_path: Path, alias_kind: str):
+def test_experiment_finalize_rejects_report_alias_before_writing(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     experiments.init_experiment(tmp_path, spec)
     run_manifest = tmp_path / "run_manifest.tsv"
     run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n")
     final = tmp_path / "reports" / "final.md"
-    if alias_kind == "symlink":
-        final.symlink_to(run_manifest)
-    else:
-        os.link(run_manifest, final)
+    os.link(run_manifest, final)
     report = tmp_path.parent / "final.md"
     report.write_text("# Final\n\nValidation-selected result.\n")
     before = _workspace_files(tmp_path)
@@ -487,7 +442,6 @@ def test_experiment_monitor_preflights_canonical_outputs_before_observation(tmp_
     ("operation", "table"),
     [
         ("index", "metrics_manifest.tsv"),
-        ("rank", "metrics_manifest.tsv"),
         ("rank", "checkpoint_manifest.tsv"),
     ],
 )

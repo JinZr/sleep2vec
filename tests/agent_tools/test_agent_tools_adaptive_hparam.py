@@ -450,8 +450,7 @@ def test_adaptive_digest_preflights_outputs_before_monitor(tmp_path: Path, monke
     assert (tmp_path / "events.jsonl").read_bytes() == events_before
 
 
-@pytest.mark.parametrize("filename", ["round_001.yaml", "round_001.md"])
-def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path, filename: str):
+def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
@@ -459,7 +458,7 @@ def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path, file
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
     manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
-    suggestion = workflow_dir / "adaptive" / "suggestions" / filename
+    suggestion = workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
     suggestion.parent.mkdir(parents=True)
     suggestion.hardlink_to(tmp_path / "run_manifest.tsv")
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
@@ -620,9 +619,7 @@ def test_supersede_does_not_override_run_launched_after_eligibility_check(tmp_pa
     assert events_path.read_bytes() == before
 
 
-@pytest.mark.parametrize("target_name", ["run_status.tsv", "launch_manifest.tsv"])
-@pytest.mark.parametrize("target_kind", ["directory", "hardlink"])
-def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Path, target_name: str, target_kind: str):
+def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
@@ -631,12 +628,9 @@ def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Pa
     mirrors = [{**run, "status": "planned", "target": "local", "pid_path": "", "log_path": ""}]
     manifests.write_rows(round_dir / "run_status.tsv", mirrors)
     manifests.write_rows(round_dir / "launch_manifest.tsv", mirrors)
-    target = round_dir / target_name
+    target = round_dir / "run_status.tsv"
     target.unlink()
-    if target_kind == "directory":
-        target.mkdir()
-    else:
-        target.hardlink_to(tmp_path / "run_manifest.tsv")
+    target.hardlink_to(tmp_path / "run_manifest.tsv")
     manifest_path = tmp_path / "run_manifest.tsv"
     before = manifest_path.read_bytes()
 

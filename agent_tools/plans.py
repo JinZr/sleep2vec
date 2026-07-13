@@ -34,7 +34,7 @@ from .experiment_workspace import (
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import REPO_ROOT, resolve_repo_path
-from .recipes import load_policy_files, load_recipe_with_base, load_user_decisions, recipe_name
+from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 
 def _materialize_user_decisions(recipe: dict, user_decisions: dict) -> list[DecisionIssue]:
@@ -120,7 +120,7 @@ def evaluate_recipe(
     source = resolve_repo_path(recipe_path)
     if source is not None:
         recipe["_recipe_path"] = str(source.resolve())
-    policy, defaults = load_policy_files()
+    policy = load_consultation_policy()
     user_decisions = load_user_decisions(user_decisions_path)
     materialization_issues = _materialize_user_decisions(recipe, user_decisions)
 
@@ -138,7 +138,6 @@ def evaluate_recipe(
         cfg,
         {"user_decisions": user_decisions},
         policy,
-        defaults,
     )
     report = _append_issues(report, materialization_issues)
     raw_config_decision = user_decisions.get("config")
@@ -221,7 +220,7 @@ def build_context(
         "evaluation_policy": {},
         "artifacts": {"output_dir": str(output_dir)},
     }
-    policy, defaults = load_policy_files()
+    policy = load_consultation_policy()
     user_decisions = load_user_decisions(user_decisions_path)
     materialization_issues = _materialize_user_decisions(recipe, user_decisions)
     effective_config = (recipe.get("inputs") or {}).get("config")
@@ -232,7 +231,6 @@ def build_context(
         cfg,
         {"label_name": label_name, "user_decisions": user_decisions},
         policy,
-        defaults,
         require_experiment=True,
     )
     report = _append_issues(report, materialization_issues)
