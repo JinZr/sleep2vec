@@ -202,6 +202,10 @@ def sync_wandb_runs(
             root / "metrics_manifest.tsv",
             root / "experiment_manifest.tsv",
             root / "reports" / "wandb.md",
+            root / "run_manifest.tsv",
+            root / "run_matrix.csv",
+            root / "reports" / "run_matrix.md",
+            root / "events.jsonl",
         ],
         remote=remote,
     )

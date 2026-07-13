@@ -415,6 +415,29 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
     assert any(row["step_id"] == "other-step" and row["run_id"] == "run-999" for row in rows)
 
 
+@pytest.mark.parametrize("target_kind", ["directory", "hardlink"])
+def test_hparam_select_rejects_invalid_owner_target_before_ranking_write(tmp_path: Path, target_kind: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    ranking = _ranking_path(plan_dir)
+    matrix = tmp_path / "run_matrix.csv"
+    matrix.unlink()
+    if target_kind == "directory":
+        matrix.mkdir()
+    else:
+        matrix.hardlink_to(tmp_path / "run_manifest.tsv")
+    before = {path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")}
+
+    with pytest.raises(ValueError, match="Managed output"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert not ranking.exists()
+    assert {
+        path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")
+    } == before
+
+
 def test_hparam_select_preserves_and_reranks_previous_plans_for_same_step(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plans = []

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import run_artifacts as artifacts
+from . import experiment_io as exp_io, run_artifacts as artifacts
 from .experiment_workspace import (
     append_event,
     experiment_root,
@@ -99,6 +99,16 @@ def select_hparam_candidates(
     for rank, row in enumerate(step_ranked, start=1):
         row["rank"] = rank
     all_ranked = [row for row in preserved if row.get("step_id") != step_id] + step_ranked
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            out,
+            workspace / "run_manifest.tsv",
+            workspace / "run_matrix.csv",
+            workspace / "reports" / "run_matrix.md",
+            workspace / "events.jsonl",
+        ],
+    )
     write_rows(out, all_ranked)
     merge_run_manifest(
         workspace,

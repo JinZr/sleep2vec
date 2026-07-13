@@ -200,7 +200,6 @@ def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[s
     for path in (root / "launch_manifest.tsv", root / "run_status.tsv"):
         auxiliary_rows = exp_io.read_rows_at(path, remote=remote, require_managed_identity=True)
         validate_managed_run_rows(auxiliary_rows, source=path.name, cardinality="one_per_run")
-        allowed_fields = RUN_STATUS_FIELDS if path.name == "run_status.tsv" else AUXILIARY_RUN_FIELDS
         for row in auxiliary_rows:
             key = managed_run_key(row)
             existing = next((candidate for candidate in merged_rows if managed_run_key(candidate) == key), None)
@@ -210,7 +209,7 @@ def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[s
                     f"{row.get('step_id', '')} / {row.get('run_id', '')}"
                 )
             validate_frozen_run_update(existing, row)
-            update = {field: row[field] for field in allowed_fields if field in row}
+            update = {field: row[field] for field in AUXILIARY_RUN_FIELDS if field in row}
             merged = merge_run_row(existing, update)
             index = next(index for index, candidate in enumerate(merged_rows) if candidate is existing)
             merged_rows[index] = merged

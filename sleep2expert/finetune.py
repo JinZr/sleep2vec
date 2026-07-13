@@ -84,7 +84,7 @@ def supervised(args, config_bundle):
     preexisting_wandb_run = wandb.run
     logger = WandbLogger(
         project="sleep2expert-finetune",  # 相当于 TensorBoard 的 log dir
-        name=f"sleep2expert-finetune-{version}",  # run 名称
+        name=version,  # run 名称
         save_dir="./wandb_logs",  # 本地缓存目录，可选
         log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )

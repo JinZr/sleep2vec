@@ -67,6 +67,7 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch,
         print_diagnostics=False,
     )
     config_bundle = types.SimpleNamespace(model={}, finetune={}, averaging={})
+    logger_kwargs = {}
 
     class DummyLogger:
         experiment = types.SimpleNamespace(log=lambda *args, **kwargs: None)
@@ -86,7 +87,11 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch,
     monkeypatch.setattr(finetune, "persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr(finetune, "prepare_dataloader", lambda args: ([], [], []))
     monkeypatch.setattr(finetune, "Sleep2vecFinetuning", lambda *args, **kwargs: DummyModel())
-    monkeypatch.setattr(finetune, "WandbLogger", lambda **kwargs: DummyLogger())
+    def build_logger(**kwargs):
+        logger_kwargs.update(kwargs)
+        return DummyLogger()
+
+    monkeypatch.setattr(finetune, "WandbLogger", build_logger)
     if hasattr(finetune, "is_rank_zero_process"):
         monkeypatch.setattr(finetune, "is_rank_zero_process", lambda: False)
 
@@ -101,3 +106,5 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch,
 
     with pytest.raises(RuntimeError, match="primary training failure"):
         finetune.supervised(args, config_bundle)
+
+    assert logger_kwargs["name"] == args.version

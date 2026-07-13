@@ -152,6 +152,7 @@ def test_experiment_checkpoint_preflight_rejects_partial_paths_before_scan(
         lambda runs, host: scan_calls.append((host, runs)) or [],
     )
     if remote:
+        monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(
             experiment_io,
             "read_text_at",
@@ -613,6 +614,23 @@ def test_wandb_sync_rejects_foreign_existing_metrics_before_api_or_write(tmp_pat
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
+def test_wandb_sync_rejects_invalid_canonical_target_before_api_or_write(tmp_path: Path, monkeypatch):
+    _initialize_workspace(tmp_path)
+    experiment_workspace.initialize_run_manifest(tmp_path)
+    (tmp_path / "run_matrix.csv").mkdir()
+    before = {path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")}
+    calls = []
+    monkeypatch.setattr(experiment_tracking, "wandb_runs", lambda *_args: calls.append("wandb") or [])
+
+    with pytest.raises(ValueError, match="Managed output"):
+        experiments.sync_wandb_runs(tmp_path, entity="entity", project="project")
+
+    assert calls == []
+    assert {
+        path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")
+    } == before
+
+
 def test_wandb_sync_commits_observations_against_latest_canonical_rows(tmp_path: Path, monkeypatch):
     _initialize_workspace(tmp_path)
     experiment_io.write_rows_at(
@@ -671,7 +689,7 @@ def test_wandb_sync_commits_observations_against_latest_canonical_rows(tmp_path:
     ]
 
 
-def test_experiment_monitor_preserves_canonical_terminal_over_stale_auxiliary_rows(tmp_path: Path):
+def test_experiment_monitor_ignores_stale_auxiliary_status_rows(tmp_path: Path):
     _initialize_workspace(tmp_path)
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\trun_name\tversion\tstatus\n"
@@ -696,8 +714,8 @@ def test_experiment_monitor_preserves_canonical_terminal_over_stale_auxiliary_ro
 
     assert {(row["run_id"], row["status"]) for row in result["runs"]} == {
         ("run-000", "failed"),
-        ("run-001", "failed"),
-        ("run-002", "failed"),
+        ("run-001", "completed"),
+        ("run-002", "completed"),
     }
 
 
@@ -778,7 +796,7 @@ def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkey
     assert "train-model / run-001" in report
 
 
-def test_experiment_run_rows_merges_current_status_row_by_managed_identity(tmp_path: Path):
+def test_experiment_run_rows_does_not_take_status_from_local_mirror(tmp_path: Path):
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
     )
@@ -791,7 +809,22 @@ def test_experiment_run_rows_merges_current_status_row_by_managed_identity(tmp_p
     assert len(rows) == 1
     assert rows[0]["step_id"] == "train-model"
     assert rows[0]["run_id"] == "run-000"
-    assert rows[0]["status"] == "running"
+    assert rows[0]["status"] == "planned"
+
+
+def test_experiment_monitor_does_not_advance_planned_run_from_local_mirror(tmp_path: Path):
+    _initialize_workspace(tmp_path)
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
+    )
+    (tmp_path / "run_status.tsv").write_text(
+        "step_id\trun_id\tversion\tstatus\n" "train-model\trun-000\tmanaged-v1\trunning\n"
+    )
+
+    result = experiments.monitor_experiment(tmp_path)
+
+    assert result["runs"][0]["status"] == "planned"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
 def test_experiment_monitor_does_not_regress_canonical_running_from_stale_status(tmp_path: Path, monkeypatch):

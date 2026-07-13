@@ -245,7 +245,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `select_hparam_candidates(run_dir: str | Path, metric: str | None = None, mode: str | None = None) -> Path`
-- Purpose and contract: rank runs by the validation metric and direction frozen in the recipe, record fixed checkpoint paths, validate every existing experiment-wide ranking row against canonical ownership, replace only the current plan's managed keys, and rerank all preserved runs for the same step across plans.
+- Purpose and contract: rank runs by the validation metric and direction frozen in the recipe, record fixed checkpoint paths, validate every existing experiment-wide ranking row against canonical ownership, replace only the current plan's managed keys, and rerank all preserved runs for the same step across plans. Ranking plus canonical matrix/event targets are preflighted together before the first write.
 - Important inputs/outputs: run directory plus optional matching metric/mode assertions in; experiment `reports/ranking.csv` path out.
 - Side effects: reads plan and run manifests; writes ranking CSV and updates experiment manifests/events.
 - Key callers/callees: public facade for `hparam_selection.select_hparam_candidates`; uses canonical interpreters from `run_artifacts`.
@@ -413,7 +413,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - Files: `agent_tools/manifests.py`, `agent_tools/experiment_io.py`
 - Signatures: `read_rows(path: str | Path, *, require_managed_identity: bool = False) -> list[dict[str, str]]`; `path_exists_at(path: str | Path, *, remote: str | None = None) -> bool`; `read_rows_at(path: str | Path, *, remote: str | None = None, require_managed_identity: bool = False, strict: bool = False) -> list[dict[str, str]]`; `validate_managed_output_paths(root: str | Path, paths: list[str | Path], *, remote: str | None = None) -> None`; `write_rows_at(path: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> None`
-- Purpose and contract: provide consistent local/SSH delimiter, quoting, timeout, strict-table, and managed-output behavior. `path_exists_at` distinguishes confirmed absence. Optional generic reads may represent genuinely missing input as `[]`; strict mode rejects empty/headerless, duplicate-header, malformed, and non-rectangular tables without imposing run identity, while managed-table mode adds current identity and removed-format checks. `validate_managed_output_paths` performs one fail-closed local or SSH preflight for all targets, rejecting out-of-root paths, aliased subdirectories, duplicate targets, directories, symlinks, and hard links before mutation. Transport, timeout, target-type, and read failures fail closed.
+- Purpose and contract: provide consistent local/SSH delimiter, quoting, timeout, strict-table, and managed-output behavior. `path_exists_at` distinguishes confirmed absence. Optional generic reads may represent genuinely missing input as `[]`; strict mode rejects empty/headerless, duplicate-header, malformed, and non-rectangular tables without imposing run identity, while managed-table mode adds current identity and removed-format checks. `validate_managed_output_paths` performs one fail-closed local or SSH preflight for all targets, rejecting out-of-root paths, aliased subdirectories, duplicate targets, directories, symlinks, and hard links before mutation. Transport, timeout, target-type, and read failures fail closed. Unit and contract tests mock this SSH boundary; no live host is required by the automated gate.
 - Side effects: reads or writes local files, or executes one short SSH command.
 - Key callers/callees: used by `experiments` lifecycle orchestration and `experiment_tracking` reports/history.
 - Reuse guidance: add transport behavior here rather than branching local/remote I/O in each command. Use managed-table mode for launch/status/metric/checkpoint/ranking/registry/candidate evidence; canonical step/run lifecycle semantics remain in the strict workspace readers that compose these primitives.
@@ -475,7 +475,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiments.py`
 - Signature: `sync_wandb_runs(run_dir: str | Path, *, entity: str, project: str, group: str | None = None, remote: str | None = None) -> Path`
-- Purpose and contract: sync W&B metadata, summaries, and history; exact managed identity or identity-absent unique-version evidence may update only the W&B/status field allowlist, while canonical identity and version are reapplied to managed metric rows.
+- Purpose and contract: sync W&B metadata, summaries, and history; exact managed identity or identity-absent unique-version evidence may update only the W&B/status field allowlist, while canonical identity and version are reapplied to managed metric rows. Raw W&B and canonical owner targets are preflighted together before the API call or any write.
 - Important inputs/outputs: run directory plus W&B entity/project/group and optional remote host in; `wandb/runs.tsv` path out, with recognized W&B states mapped into canonical managed-run status.
 - Side effects: calls `wandb.Api()`, writes raw W&B inventories, history, and managed metrics, then submits managed-keyed W&B observations to `experiment_workspace.merge_run_manifest`; unmatched W&B rows remain only in `wandb/runs.tsv`, summaries, and history.
 - Key callers/callees: called by `agent_tools experiment-wandb-sync`; delegates W&B payload/history/report shaping to `experiment_tracking` and persistence to `experiment_io`.
@@ -552,7 +552,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/adaptive_hparam.py`
 - Signature: `adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path`
-- Purpose and contract: perform one adaptive iteration: monitor/digest and suggest in preview mode; with `execute=True`, stop eligible bad runs, commit pending runs as `superseded` through the canonical owner, then plan and launch the next round when budget remains.
+- Purpose and contract: perform one adaptive iteration: monitor/digest and suggest in preview mode; with `execute=True`, stop eligible bad runs, preflight canonical and round-mirror targets together, commit pending runs as `superseded` through the canonical owner, then plan and launch the next round when budget remains.
 - Important inputs/outputs: workflow root and execute flag in; suggestion path out.
 - Side effects: writes digest/suggestion/events; only execute mode may stop or supersede runs, write a next-round plan, and launch runs.
 - Key callers/callees: called by `agent_tools hparam-adaptive-step` and adaptive loop.

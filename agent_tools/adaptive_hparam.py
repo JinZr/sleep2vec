@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from . import run_artifacts as artifacts, run_evidence as evidence
+from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
     append_event as _write_experiment_event,
     canonical_local_experiment_root,
@@ -493,6 +493,17 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> None:
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    launch_path = round_dir / "launch_manifest.tsv"
+    targets = [
+        workspace / "run_manifest.tsv",
+        workspace / "run_matrix.csv",
+        workspace / "reports" / "run_matrix.md",
+        workspace / "events.jsonl",
+        round_dir / "run_status.tsv",
+    ]
+    if launch_path.exists():
+        targets.append(launch_path)
+    exp_io.validate_managed_output_paths(workspace, targets)
     canonical_rows = read_run_manifest(workspace)
     canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
     transitions = []
@@ -510,7 +521,6 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> None:
     committed_by_key = {managed_run_key(row): row for row in committed}
     round_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
     write_rows(round_dir / "run_status.tsv", round_rows)
-    launch_path = round_dir / "launch_manifest.tsv"
     if launch_path.exists():
         write_rows(launch_path, round_rows)
     for row in transitions:

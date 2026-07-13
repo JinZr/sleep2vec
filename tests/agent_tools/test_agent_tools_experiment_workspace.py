@@ -641,6 +641,7 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
         writes[Path(path).name] = (text, remote)
 
     monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
     monkeypatch.setattr(experiment_io, "write_rows_at", fake_write_rows)
     monkeypatch.setattr(experiment_io, "write_text_at", fake_write_text)
@@ -662,6 +663,7 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
 def test_merge_run_manifest_remote_read_failure_writes_nothing(monkeypatch):
     writes = []
     monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         experiment_io,
         "read_text_at",
@@ -691,6 +693,7 @@ def test_merge_run_manifest_remote_new_key_checks_workspace_owner_before_writing
         return "step_id\trun_id\n"
 
     monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
     monkeypatch.setattr(experiment_io, "write_rows_at", lambda *args, **kwargs: writes.append((args, kwargs)))
     monkeypatch.setattr(experiment_io, "write_text_at", lambda *args, **kwargs: writes.append((args, kwargs)))

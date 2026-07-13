@@ -193,3 +193,25 @@ def test_remote_managed_output_preflight_fails_closed(monkeypatch):
         experiment_io.validate_managed_output_paths("/remote/root", ["/remote/root/reports/final.md"], remote="host")
 
     assert calls[0][1]["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("returncode", [1, 255])
+def test_remote_managed_output_preflight_propagates_transport_failure(monkeypatch, returncode):
+    monkeypatch.setattr(
+        experiment_io.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, returncode, "", "transport failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="SSH output path validation failed"):
+        experiment_io.validate_managed_output_paths("/remote/root", ["/remote/root/final.md"], remote="host")
+
+
+def test_remote_managed_output_preflight_propagates_timeout(monkeypatch):
+    def timeout(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, experiment_io.SSH_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", timeout)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        experiment_io.validate_managed_output_paths("/remote/root", ["/remote/root/final.md"], remote="host")

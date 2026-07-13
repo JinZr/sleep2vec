@@ -554,6 +554,32 @@ def test_supersede_does_not_override_run_launched_after_eligibility_check(tmp_pa
     assert events_path.read_bytes() == before
 
 
+@pytest.mark.parametrize("target_name", ["run_status.tsv", "launch_manifest.tsv"])
+@pytest.mark.parametrize("target_kind", ["directory", "hardlink"])
+def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Path, target_name: str, target_kind: str):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    mirrors = [{**run, "status": "planned", "target": "local", "pid_path": "", "log_path": ""}]
+    manifests.write_rows(round_dir / "run_status.tsv", mirrors)
+    manifests.write_rows(round_dir / "launch_manifest.tsv", mirrors)
+    target = round_dir / target_name
+    target.unlink()
+    if target_kind == "directory":
+        target.mkdir()
+    else:
+        target.hardlink_to(tmp_path / "run_manifest.tsv")
+    manifest_path = tmp_path / "run_manifest.tsv"
+    before = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="Managed output"):
+        adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
+
+    assert manifest_path.read_bytes() == before
+
+
 def test_adaptive_step_blocks_suggestion_without_scored_objective(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
