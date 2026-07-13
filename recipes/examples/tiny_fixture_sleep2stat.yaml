@@ -1,6 +1,20 @@
 name: tiny_fixture_sleep2stat
 task: sleep2stat
 
+experiment:
+  id: tiny-fixture-sleep2stat
+  title: Tiny fixture sleep2stat analysis
+  objective: Validate managed sleep2stat analysis planning.
+  root: artifacts/experiments/tiny-fixture-sleep2stat
+  baseline:
+    type: none
+    rationale: Synthetic analysis fixture.
+
+step:
+  id: analyze-spo2
+  phase: analyze
+  purpose: Run one tiny descriptive SpO2 analysis.
+
 inputs:
   config: recipes/examples/fixtures/tiny_sleep2stat_config.yaml
   split: [test]

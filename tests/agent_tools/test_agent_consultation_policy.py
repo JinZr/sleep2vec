@@ -10,7 +10,7 @@ import yaml
 from agent_tools.configs import config_summary
 from agent_tools.decisions import DecisionStatus, evaluate_consultation_gates
 from agent_tools.plans import evaluate_recipe
-from agent_tools.recipes import load_policy_files
+from agent_tools.recipes import load_consultation_policy
 
 
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess:
@@ -181,9 +181,9 @@ def test_local_config_path_expands_home_before_validation(tmp_path: Path, monkey
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["config"] = "~/config.yaml"
-    policy, defaults = load_policy_files()
+    policy = load_consultation_policy()
 
-    report = evaluate_consultation_gates("finetune", payload, config_summary("~/config.yaml"), {}, policy, defaults)
+    report = evaluate_consultation_gates("finetune", payload, config_summary("~/config.yaml"), {}, policy)
 
     assert report.exit_code == 0
 
@@ -195,16 +195,16 @@ def test_remote_ssh_path_validation_uses_short_test_command(tmp_path: Path, monk
     payload["inputs"]["data_backend"] = "npz"
     payload["decisions"]["required_channels"] = {"value": ["ppg", "ahi", "stage5"], "source": "explicit_recipe"}
     payload["execution"] = {"target": "ssh", "host": "baichuan3", "path_context": "remote", "path_validation": "ssh"}
-    policy, defaults = load_policy_files()
+    policy = load_consultation_policy()
     calls = []
 
     def fake_run(command, **kwargs):
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fake_run)
 
-    report = evaluate_consultation_gates("finetune", payload, None, {}, policy, defaults)
+    report = evaluate_consultation_gates("finetune", payload, None, {}, policy)
 
     assert report.exit_code == 0
     assert calls == [["ssh", "baichuan3", "test -e /wujidata/example/config.yaml"]]
@@ -230,7 +230,7 @@ def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fake_run)
 
     for validation in ("ssh", "remote"):
         recipe = write_yaml(
@@ -291,7 +291,7 @@ def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path
         calls.append(command)
         return subprocess.CompletedProcess(command, int("event_time.csv" in command[2]), "", "")
 
-    monkeypatch.setattr("agent_tools.decisions.subprocess.run", fail_event_time)
+    monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fail_event_time)
     missing_recipe = write_yaml(
         tmp_path / "recipe_missing_event_time.yaml",
         {
@@ -353,7 +353,7 @@ def test_hparam_tune_missing_external_test_locked_needs_user_input(tmp_path: Pat
         "task": "hparam_tune",
         "variant": "sleep2vec",
         "base_recipe": str(write_finetune_recipe(tmp_path)),
-        "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-6]}},
+        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
         "evaluation_policy": {
             "selection_metric": "val_ahi_pearson",
             "selection_mode": "max",
@@ -379,7 +379,7 @@ def test_hparam_tune_selection_split_test_needs_user_input(tmp_path: Path):
         "task": "hparam_tune",
         "variant": "sleep2vec",
         "base_recipe": str(write_finetune_recipe(tmp_path)),
-        "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-6]}},
+        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
         "evaluation_policy": {
             "selection_metric": "val_ahi_pearson",
             "selection_mode": "max",
@@ -426,7 +426,7 @@ def test_hparam_tune_blocks_on_base_config_blocking_issues(tmp_path: Path):
         "task": "hparam_tune",
         "variant": "sleep2vec",
         "base_recipe": str(base),
-        "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-6]}},
+        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
         "evaluation_policy": {
             "selection_metric": "val_ahi_pearson",
             "selection_mode": "max",
@@ -466,7 +466,7 @@ def test_hparam_tune_requires_local_selection_policy_even_when_base_has_it(tmp_p
         "task": "hparam_tune",
         "variant": "sleep2vec",
         "base_recipe": str(write_finetune_recipe(tmp_path)),
-        "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-6]}},
+        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
         "evaluation_policy": {
             "external_test_locked": True,
             "test_after_fit": False,
@@ -502,7 +502,7 @@ def test_hparam_tune_blocks_when_selection_metric_conflicts_with_config(tmp_path
         "task": "hparam_tune",
         "variant": "sleep2vec",
         "base_recipe": str(write_finetune_recipe(tmp_path)),
-        "search": {"method": "grid", "max_trials": 1, "parameters": {"runtime.lr": [1e-6]}},
+        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
         "evaluation_policy": {
             "selection_metric": "val_loss",
             "selection_mode": "max",
@@ -536,21 +536,15 @@ def test_hparam_tune_blocks_when_selection_metric_conflicts_with_config(tmp_path
     assert "differs from config" in result.stdout
 
 
-def test_approved_defaults_do_not_resolve_high_impact_label():
-    policy, defaults = load_policy_files()
+def test_missing_high_impact_label_requires_user_input():
+    policy = load_consultation_policy()
     report = evaluate_consultation_gates(
         "finetune",
         {"task": "finetune", "evaluation_policy": {"test_after_fit": False, "external_test_locked": True}},
         None,
         {},
         policy,
-        defaults,
     )
 
     assert report.status == DecisionStatus.NEEDS_USER_INPUT
     assert any(issue.field == "label_name" for issue in report.issues)
-
-
-def test_approved_defaults_can_resolve_low_impact_wandb_mode():
-    _policy, defaults = load_policy_files()
-    assert defaults["approved_defaults"]["wandb_mode"]["value"] == "offline"

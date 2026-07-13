@@ -2,6 +2,17 @@ name: ppg_ahi_finetune_example
 task: finetune
 variant: sleep2vec
 
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: train
+  purpose: ASK_USER
+
 inputs:
   config: configs/ppg_ahi_finetune_large.yaml
   label_name: ahi
@@ -24,6 +35,7 @@ runtime:
 artifacts:
   version_name: ppg-ahi-agent-example
   results_csv_path: results/ppg_ahi_agent_example.csv
+  overwrite: false
 
 evaluation_policy:
   selection_metric: val_ahi_pearson

@@ -1,6 +1,16 @@
 name: npz_to_kaldi_example
 task: kaldi_convert
 variant: sleep2vec
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: prepare-kaldi-data
+  phase: prepare
+  purpose: Convert the NPZ index into Kaldi-style data.
 inputs:
   config: configs/ppg_ahi_finetune_large.yaml
   index: [index/example.csv]

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import csv
-import json
+import os
 from pathlib import Path
 import subprocess
 import sys
-import types
 
-from agent_tools import experiments
+import pytest
+
+from agent_tools import experiment_io, experiments
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -20,14 +21,520 @@ def _read_table(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(file_obj, delimiter=delimiter))
 
 
+def _experiment_spec(tmp_path: Path) -> Path:
+    path = tmp_path / "experiment_spec.yaml"
+    path.write_text(
+        "id: unit\n"
+        "title: Unit experiment\n"
+        "objective: Exercise experiment workspace contracts.\n"
+        "baseline:\n"
+        "  type: none\n"
+        "  rationale: Unit fixture.\n"
+    )
+    return path
+
+
+def _workspace_files(root: Path) -> dict[Path, bytes]:
+    return {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
 def test_experiment_init_creates_manifest(tmp_path: Path):
-    result = _run("experiment-init", "--run-dir", str(tmp_path), "--name", "unit")
+    spec = _experiment_spec(tmp_path.parent)
+    result = _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec))
 
     assert result.returncode == 0, result.stderr
     rows = _read_table(tmp_path / "experiment_manifest.tsv")
     assert rows[0]["experiment_id"] == "unit"
     assert rows[0]["remote_host"] == ""
     assert (tmp_path / "reports").exists()
+    assert (tmp_path / "run_manifest.tsv").read_text() == "step_id\trun_id\n"
+
+
+def test_experiment_init_and_mutation_share_canonical_relative_root(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    root = (tmp_path / "workspace").resolve()
+
+    manifest = experiments.init_experiment("workspace", _experiment_spec(tmp_path))
+    monitored = experiments.monitor_experiment("workspace")
+
+    assert manifest == root / "experiment_manifest.tsv"
+    assert f"root: {root}" in (root / "experiment.yaml").read_text()
+    assert monitored["run_dir"] == str(root)
+
+
+def test_experiment_init_rejects_metadata_drift_for_existing_id(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
+    changed = tmp_path.parent / "changed_experiment_spec.yaml"
+    changed.write_text(
+        "id: unit\n"
+        "title: Changed title\n"
+        "objective: Changed objective.\n"
+        "baseline:\n"
+        "  type: none\n"
+        "  rationale: Changed baseline.\n"
+    )
+
+    result = _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(changed))
+
+    assert result.returncode == 1
+    assert "differs from the existing experiment manifest" in result.stderr
+    assert "# Unit experiment" in (tmp_path / "README.md").read_text()
+
+
+def test_experiment_init_failure_leaves_workspace_unchanged(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text(
+        "experiment:\n"
+        "  id: existing\n"
+        "  title: Existing\n"
+        "  objective: Existing objective.\n"
+        "  root: placeholder\n"
+        "  baseline: {type: none}\n"
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="different experiment"):
+        experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+
+    after = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    assert after == before
+    assert not (tmp_path / "reports").exists()
+    assert not (tmp_path / "wandb").exists()
+
+
+def test_experiment_init_rejects_existing_root_drift_without_writing(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    (tmp_path / "experiment.yaml").write_text(
+        "experiment:\n"
+        "  id: unit\n"
+        "  title: Unit experiment\n"
+        "  objective: Exercise experiment workspace contracts.\n"
+        "  root: /different/root\n"
+        "  baseline:\n"
+        "    type: none\n"
+        "    rationale: Unit fixture.\n"
+    )
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="experiment.root differs"):
+        experiments.init_experiment(tmp_path, spec)
+
+    assert _workspace_files(tmp_path) == before
+    assert not (tmp_path / "reports").exists()
+
+
+def test_experiment_init_rejects_duplicate_spec_keys_before_writing(tmp_path: Path):
+    root = tmp_path / "workspace"
+    spec = tmp_path / "duplicate_experiment.yaml"
+    spec.write_text(
+        "id: foreign\n"
+        "id: unit\n"
+        "title: Unit experiment\n"
+        "objective: Exercise experiment workspace contracts.\n"
+        "baseline: {type: none}\n"
+    )
+
+    with pytest.raises(ValueError, match="duplicate key: id"):
+        experiments.init_experiment(root, spec)
+
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("operation", ["init", "monitor"])
+def test_experiment_mutation_rejects_duplicate_workspace_ownership_without_writing(tmp_path: Path, operation: str):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    manifest = tmp_path / "experiment.yaml"
+    manifest.write_text(manifest.read_text().replace("  id: unit\n", "  id: foreign\n  id: unit\n"))
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="duplicate key"):
+        if operation == "init":
+            experiments.init_experiment(tmp_path, spec)
+        else:
+            experiments.monitor_experiment(tmp_path)
+
+    assert _workspace_files(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("filename", "header", "operation"),
+    [
+        ("metrics_manifest.tsv", "trial_id\n", "index"),
+        ("checkpoint_manifest.tsv", "run_id\n", "rank"),
+    ],
+)
+def test_experiment_mutation_rejects_header_only_invalid_managed_table_before_writing(
+    tmp_path: Path, filename: str, header: str, operation: str
+):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    (tmp_path / filename).write_text(header)
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError):
+        if operation == "monitor":
+            experiments.monitor_experiment(tmp_path)
+        elif operation == "index":
+            experiments.index_checkpoints(tmp_path)
+        else:
+            experiments.rank_experiment_candidates(tmp_path, metric="val_auroc", mode="max")
+
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_init_validates_existing_tables_before_writing(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    manifest = tmp_path / "experiment_manifest.tsv"
+    lines = manifest.read_text().splitlines()
+    manifest.write_text("\n".join([lines[0], lines[1], lines[1]]) + "\n")
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="exactly one row"):
+        experiments.init_experiment(tmp_path, spec)
+
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_monitor_delegates_manifest_validation_before_mutation(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    manifest = tmp_path / "experiment_manifest.tsv"
+    header, row = manifest.read_text().splitlines()
+    manifest.write_text(f"{header}\n{row}\textra\n")
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError):
+        experiments.monitor_experiment(tmp_path)
+
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_reinit_rejects_readme_alias_before_writing(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    run_manifest = tmp_path / "run_manifest.tsv"
+    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\trunning\n")
+    readme = tmp_path / "README.md"
+    readme.unlink()
+    os.link(run_manifest, readme)
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.init_experiment(tmp_path, spec)
+
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_finalize_rejects_report_alias_before_writing(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    run_manifest = tmp_path / "run_manifest.tsv"
+    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n")
+    final = tmp_path / "reports" / "final.md"
+    os.link(run_manifest, final)
+    report = tmp_path.parent / "final.md"
+    report.write_text("# Final\n\nValidation-selected result.\n")
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.finalize_experiment(tmp_path, report)
+
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_registers_step_and_finalizes_completed_workspace(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
+    step = tmp_path.parent / "step.yaml"
+    step.write_text(
+        "id: analyze-results\n"
+        "phase: analyze\n"
+        "purpose: Summarize selected validation results.\n"
+        "inputs: [reports/ranking.csv]\n"
+        "outputs: [reports/final.md]\n"
+    )
+    registered = _run("experiment-register-step", "--run-dir", str(tmp_path), "--spec", str(step))
+    assert registered.returncode == 0, registered.stderr
+    assert (tmp_path / "steps" / "analyze-results" / "step.yaml").exists()
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfinished\n"
+    )
+    report = tmp_path.parent / "final.md"
+    report.write_text("# Final\n\nValidation-selected result.\n")
+
+    finalized = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
+
+    assert finalized.returncode == 0, finalized.stderr
+    assert (tmp_path / "reports" / "final.md").read_text() == report.read_text()
+    assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        "",
+        "null\n",
+        "{}\n",
+        (
+            "step:\n"
+            "  id: analyze-results\n"
+            "  phase: analyze\n"
+            "  phase: train\n"
+            "  purpose: Summarize selected validation results.\n"
+            "experiment_id: unit\n"
+            "recipe_path: ''\n"
+            "plans: []\n"
+        ),
+    ],
+)
+def test_experiment_register_step_rejects_corrupt_existing_manifest_without_writing(tmp_path: Path, existing: str):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    step = tmp_path.parent / "step.yaml"
+    step.write_text(
+        "id: analyze-results\n"
+        "phase: analyze\n"
+        "purpose: Summarize selected validation results.\n"
+        "inputs: [reports/ranking.csv]\n"
+        "outputs: [reports/final.md]\n"
+    )
+    target = tmp_path / "steps" / "analyze-results" / "step.yaml"
+    target.parent.mkdir(parents=True)
+    target.write_text(existing)
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="step manifest"):
+        experiments.register_experiment_step(tmp_path, step)
+
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_register_step_rejects_duplicate_spec_keys_before_writing(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    spec = tmp_path / "duplicate_step.yaml"
+    spec.write_text(
+        "id: analyze-results\n"
+        "phase: train\n"
+        "phase: analyze\n"
+        "purpose: Summarize selected validation results.\n"
+        "inputs: [reports/ranking.csv]\n"
+        "outputs: [reports/final.md]\n"
+    )
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="duplicate key: phase"):
+        experiments.register_experiment_step(root, spec)
+
+    assert _workspace_files(root) == before
+
+
+def test_experiment_finalize_rejects_missing_pid_status(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tmissing_pid\n"
+    )
+    report = tmp_path.parent / "missing_pid_final.md"
+    report.write_text("# Final\n")
+
+    result = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
+
+    assert result.returncode == 1
+    assert "unresolved runs" in result.stderr
+    assert "status: completed" not in (tmp_path / "experiment.yaml").read_text()
+
+
+def test_experiment_finalize_rejects_workspace_without_managed_runs(tmp_path: Path):
+    spec = _experiment_spec(tmp_path.parent)
+    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
+    report = tmp_path.parent / "empty_final.md"
+    report.write_text("# Final\n")
+
+    result = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
+
+    assert result.returncode == 1
+    assert "no managed runs" in result.stderr
+    assert "status: completed" not in (tmp_path / "experiment.yaml").read_text()
+
+
+def test_experiment_finalize_validates_manifest_before_writing_report(tmp_path: Path):
+    (tmp_path / "run_manifest.tsv").write_text("step_id\trun_id\tstatus\ntrain\trun-000\tfinished\n")
+    report = tmp_path.parent / "final_without_manifest.md"
+    report.write_text("# Final\n")
+
+    result = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
+
+    assert result.returncode == 1
+    assert "experiment.yaml is missing" in result.stderr
+    assert not (tmp_path / "reports" / "final.md").exists()
+
+
+def test_experiment_mutations_require_initialized_workspace_before_side_effects(tmp_path: Path, monkeypatch):
+    wandb_calls = []
+    monkeypatch.setattr(experiments.tracking, "wandb_runs", lambda *_args: wandb_calls.append(True) or [])
+    actions = (
+        lambda root: experiments.register_experiment_step(root, root / "missing-step.yaml"),
+        lambda root: experiments.finalize_experiment(root, root / "missing-report.md"),
+        lambda root: experiments.sync_wandb_runs(root, entity="entity", project="project"),
+        lambda root: experiments.index_checkpoints(root),
+        lambda root: experiments.monitor_experiment(root),
+        lambda root: experiments.rank_experiment_candidates(root, metric="val_auroc", mode="max"),
+    )
+
+    for index, action in enumerate(actions):
+        root = tmp_path / str(index)
+        root.mkdir()
+        before = _workspace_files(root)
+        with pytest.raises(ValueError, match="experiment.yaml is missing"):
+            action(root)
+        assert _workspace_files(root) == before
+
+    assert wandb_calls == []
+
+
+def test_experiment_mutation_rejects_empty_legacy_table_without_writing(tmp_path: Path):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    (tmp_path / "trial_status.tsv").touch()
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="read-only"):
+        experiments.monitor_experiment(tmp_path)
+
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_mutation_rejects_manifest_root_drift_without_writing(tmp_path: Path):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    manifest = tmp_path / "experiment_manifest.tsv"
+    manifest.write_text(manifest.read_text().replace(str(tmp_path), "/different/root"))
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="root differs"):
+        experiments.monitor_experiment(tmp_path)
+
+    assert _workspace_files(tmp_path) == before
+
+
+@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
+def test_experiment_mutation_rejects_experiment_manifest_alias_before_writing(tmp_path: Path, monkeypatch, alias: str):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    manifest = tmp_path / "experiment.yaml"
+    outside = tmp_path.parent / f"{alias}_experiment.yaml"
+    outside.write_text(manifest.read_text())
+    manifest.unlink()
+    if alias == "symlink":
+        manifest.symlink_to(outside)
+    else:
+        os.link(outside, manifest)
+    observation_calls = []
+    monkeypatch.setattr(
+        experiments.tracking,
+        "experiment_run_rows",
+        lambda *_args, **_kwargs: observation_calls.append(True) or [],
+    )
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.monitor_experiment(tmp_path)
+
+    assert observation_calls == []
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_remote_mutation_preflights_manifest_before_reading_workspace_identity(monkeypatch):
+    root = Path("/wujidata/remote_run")
+    reads = []
+
+    def _reject_alias(root_arg, paths, *, remote=None):
+        assert root_arg == root
+        assert paths == [root / "experiment.yaml"]
+        assert remote == "baichuan3"
+        raise ValueError("Managed output paths must be independent regular files")
+
+    monkeypatch.setattr(experiments.exp_io, "validate_managed_output_paths", _reject_alias)
+    monkeypatch.setattr(
+        experiments.exp_io,
+        "read_text_at",
+        lambda *args, **kwargs: reads.append((args, kwargs)) or "",
+    )
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.monitor_experiment(root, remote="baichuan3")
+
+    assert reads == []
+
+
+def test_experiment_monitor_preflights_canonical_outputs_before_observation(tmp_path: Path, monkeypatch):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [{"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000", "status": "running"}],
+    )
+    (tmp_path / "run_matrix.csv").mkdir()
+    before = _workspace_files(tmp_path)
+    observation_calls = []
+    monkeypatch.setattr(
+        experiments.tracking,
+        "monitor_run_row",
+        lambda *_args, **_kwargs: observation_calls.append(True),
+    )
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.monitor_experiment(tmp_path)
+
+    assert observation_calls == []
+    assert _workspace_files(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("operation", "table"),
+    [
+        ("index", "metrics_manifest.tsv"),
+        ("rank", "checkpoint_manifest.tsv"),
+    ],
+)
+def test_experiment_rejects_aliased_evidence_before_scan_or_rank(
+    tmp_path: Path, monkeypatch, operation: str, table: str
+):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [{"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000", "status": "running"}],
+    )
+    outside = tmp_path / "outside.tsv"
+    if table == "metrics_manifest.tsv":
+        experiment_io.write_rows_at(
+            outside,
+            [{"step_id": "train-model", "run_id": "run-000", "metric": "val_auroc", "value": "0.9"}],
+        )
+    else:
+        experiment_io.write_rows_at(
+            outside,
+            [{"step_id": "train-model", "run_id": "run-000", "checkpoint_path": "/tmp/epoch=1.ckpt"}],
+        )
+    (tmp_path / table).symlink_to(outside)
+    calls = []
+    monkeypatch.setattr(
+        experiments.tracking,
+        "checkpoint_rows",
+        lambda *_args, **_kwargs: calls.append("checkpoint") or [],
+    )
+    monkeypatch.setattr(
+        experiments.tracking,
+        "experiment_run_rows",
+        lambda *_args, **_kwargs: calls.append("rank") or [],
+    )
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        if operation == "index":
+            experiments.index_checkpoints(tmp_path)
+        else:
+            experiments.rank_experiment_candidates(tmp_path, metric="val_auroc", mode="max")
+
+    assert calls == []
+    assert _workspace_files(tmp_path) == before
 
 
 def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypatch):
@@ -35,197 +542,63 @@ def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypa
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, "", "")
+        if "mkdir -p" in command[-1] or "seen_inodes" in command[-1]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
 
-    monkeypatch.setattr("agent_tools.experiments.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
 
-    experiments.init_experiment("/wujidata/remote_run", "unit", remote="baichuan3")
+    experiments.init_experiment("/wujidata/remote_run", _experiment_spec(tmp_path), remote="baichuan3")
 
-    assert len(calls) == 3
-    assert calls[0][0][:2] == ["ssh", "baichuan3"]
-    assert "mkdir -p" in calls[0][0][2]
-    assert calls[1][0] == ["ssh", "baichuan3", "cat /wujidata/remote_run/experiment_manifest.tsv"]
-    assert calls[2][0][:2] == ["ssh", "baichuan3"]
-    assert "cat > /wujidata/remote_run/experiment_manifest.tsv" in calls[2][0][2]
-    assert calls[2][1]["input"]
+    assert all(command[:2] == ["ssh", "baichuan3"] for command, _kwargs in calls)
+    assert any("mkdir -p" in command[-1] for command, _kwargs in calls)
+    write_targets = [command[-1] for command, _kwargs in calls if "cat >" in command[-1]]
+    assert any("/wujidata/remote_run/experiment.yaml" in target for target in write_targets)
+    assert any("/wujidata/remote_run/README.md" in target for target in write_targets)
+    assert any("/wujidata/remote_run/events.jsonl" in target for target in write_targets)
+    assert any("/wujidata/remote_run/experiment_manifest.tsv" in target for target in write_targets)
     assert not (tmp_path / "reports").exists()
 
 
-def test_experiment_indexes_checkpoints_and_ranks_validation_metric(tmp_path: Path):
-    run_dir = tmp_path / "log-finetune" / "trial_a"
-    ckpt_dir = run_dir / "checkpoints"
-    ckpt_dir.mkdir(parents=True)
-    ckpt = ckpt_dir / "epoch=02-step=20.ckpt"
-    ckpt.write_text("checkpoint")
-    (run_dir / "run_manifest.json").write_text(
-        json.dumps(
-            {
-                "best_model_path": str(ckpt_dir / "best-epoch=02-step=20.ckpt"),
-                "epoch": 2,
-                "metrics": {"val_auroc": 0.8},
-            }
-        )
-    )
-    (tmp_path / "metrics_manifest.tsv").write_text(
-        "trial_id\tversion\tepoch\tmetric\tvalue\tmetric_scope\tsource\n"
-        "trial_a\ttrial_a\t1\tval_auroc\t0.6\tvalidation\twandb_history\n"
-        "trial_a\ttrial_a\t2\tval_auroc\t0.8\tvalidation\twandb_history\n"
-    )
-
-    checkpoints = _run("experiment-index-checkpoints", "--run-dir", str(tmp_path))
-    ranking = _run("experiment-rank", "--run-dir", str(tmp_path), "--metric", "val_auroc", "--mode", "max")
-
-    assert checkpoints.returncode == 0, checkpoints.stderr
-    assert ranking.returncode == 0, ranking.stderr
-    checkpoint_rows = _read_table(tmp_path / "checkpoint_manifest.tsv")
-    assert checkpoint_rows[0]["epoch"] == "02"
-    ranked = _read_table(tmp_path / "candidate_ranking.tsv")
-    assert ranked[0]["version"] == "trial_a"
-    assert ranked[0]["score"] == "0.8"
-    assert ranked[0]["checkpoint_path"].endswith("epoch=02-step=20.ckpt")
-
-
-def test_experiment_wandb_sync_exports_summary_history_and_metrics(tmp_path: Path, monkeypatch):
-    class FakeRun:
-        id = "run123"
-        name = "trial_a"
-        state = "finished"
-        url = "https://wandb.ai/entity/project/runs/run123"
-        group = "unit_group"
-        created_at = "2026-01-01"
-        updated_at = "2026-01-02"
-        summary = {"val_auroc": 0.71, "test_auroc": 0.66, "epoch": 3}
-        config = {"trial_id": "trial_a"}
-
-        def history(self, **_kwargs):
-            return [{"epoch": 1, "val_auroc": 0.6}, {"epoch": 2, "val_auroc": 0.72}]
-
-    class FakeApi:
-        def runs(self, path, filters=None):
-            assert path == "entity/project"
-            assert filters == {"group": "unit_group"}
-            return [FakeRun()]
-
-    monkeypatch.setitem(sys.modules, "wandb", types.SimpleNamespace(Api=lambda: FakeApi()))
-
-    out = experiments.sync_wandb_runs(tmp_path, entity="entity", project="project", group="unit_group")
-
-    assert out == tmp_path / "wandb" / "runs.tsv"
-    run_rows = _read_table(out)
-    assert run_rows[0]["version"] == "trial_a"
-    assert (tmp_path / "wandb" / "history" / "run123.csv").exists()
-    metric_rows = _read_table(tmp_path / "metrics_manifest.tsv")
-    scopes = {row["metric"]: row["metric_scope"] for row in metric_rows}
-    assert scopes["val_auroc"] == "validation"
-    assert scopes["test_auroc"] == "test_or_external"
-
-
-def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
-    class FakeRun:
-        id = "run123"
-        name = "trial_a"
-        state = "finished"
-        url = "https://wandb.ai/entity/project/runs/run123"
-        group = "unit_group"
-        created_at = "2026-01-01"
-        updated_at = "2026-01-02"
-        summary = {"val_auroc": 0.71, "epoch": 3}
-        config = {"trial_id": "trial_a"}
-
-        def history(self, **_kwargs):
-            return [{"epoch": 1, "val_auroc": 0.6}]
-
-    class FakeApi:
-        def runs(self, path, filters=None):
-            return [FakeRun()]
-
+def test_experiment_remote_read_failure_is_not_treated_as_missing(tmp_path: Path, monkeypatch):
     calls = []
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        returncode = 0 if "cat >" in command[-1] or "mkdir -p" in command[-1] else 1
-        return subprocess.CompletedProcess(command, returncode, "", "")
+        return subprocess.CompletedProcess(command, 255, "", "connection failed")
 
-    monkeypatch.setitem(sys.modules, "wandb", types.SimpleNamespace(Api=lambda: FakeApi()))
-    monkeypatch.setattr("agent_tools.experiments.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
 
-    experiments.sync_wandb_runs("/wujidata/run", entity="entity", project="project", remote="baichuan3")
+    with pytest.raises(RuntimeError, match="SSH read failed"):
+        experiments.init_experiment("/wujidata/remote_run", _experiment_spec(tmp_path), remote="baichuan3")
 
-    write_targets = [command[-1] for command, kwargs in calls if "cat >" in command[-1]]
-    assert any("/wujidata/run/wandb/runs.tsv" in target for target in write_targets)
-    assert any("/wujidata/run/wandb/history/run123.csv" in target for target in write_targets)
-    assert any("/wujidata/run/metrics_manifest.tsv" in target for target in write_targets)
-    assert any("/wujidata/run/run_manifest.tsv" in target for target in write_targets)
-    assert any("/wujidata/run/reports/wandb_rank.md" in target for target in write_targets)
+    assert len(calls) == 1
+    assert not any("mkdir -p" in command[-1] or "cat >" in command[-1] for command, _kwargs in calls)
 
 
-def test_experiment_wandb_sync_writes_blocked_report(tmp_path: Path, monkeypatch):
-    class FakeApi:
-        def __init__(self):
-            raise RuntimeError("not logged in")
-
-    monkeypatch.setitem(sys.modules, "wandb", types.SimpleNamespace(Api=FakeApi))
-
-    try:
-        experiments.sync_wandb_runs(tmp_path, entity="entity", project="project")
-    except RuntimeError as exc:
-        error = str(exc)
-    else:
-        error = ""
-
-    assert "W&B sync blocked" in error
-    assert (tmp_path / "reports" / "wandb_blocked.md").exists()
-
-
-def test_experiment_remote_checkpoint_scan_uses_short_ssh_timeout(tmp_path: Path, monkeypatch):
+def test_experiment_remote_finalize_rejects_relative_report_before_ssh(monkeypatch):
     calls = []
+    monkeypatch.setattr(
+        "agent_tools.experiment_io.subprocess.run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", ""),
+    )
 
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            "/remote/run/trial_a/checkpoints/epoch=1.ckpt\t123.0\n",
-            "",
+    with pytest.raises(ValueError, match="Remote final report path must be absolute"):
+        experiments.finalize_experiment(
+            "/wujidata/remote_run",
+            "reports/final.md",
+            remote="baichuan3",
         )
 
-    monkeypatch.setattr("agent_tools.experiments.subprocess.run", fake_run)
-
-    experiments.index_checkpoints(tmp_path, remote="baichuan3")
-
-    command, kwargs = calls[0]
-    assert command[:2] == ["ssh", "baichuan3"]
-    assert kwargs["timeout"] == experiments.SSH_TIMEOUT_SECONDS
+    assert calls == []
 
 
-def test_experiment_rank_remote_reads_and_writes_over_ssh(monkeypatch):
-    calls = []
-    metrics = (
-        "trial_id\tversion\tepoch\tmetric\tvalue\tmetric_scope\tsource\n"
-        "trial_a\ttrial_a\t1\tval_auroc\t0.6\tvalidation\twandb_history\n"
-        "trial_a\ttrial_a\t2\tval_auroc\t0.8\tvalidation\twandb_history\n"
-    )
-    checkpoints = (
-        "trial_id\tversion\tepoch\tcheckpoint_path\tis_best_by_val\tis_last\n"
-        "trial_a\ttrial_a\t2\t/remote/run/trial_a/checkpoints/epoch=2.ckpt\ttrue\tfalse\n"
+def test_remote_directory_probe_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        "agent_tools.experiment_io.subprocess.run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 1, "", "permission denied"),
     )
 
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        shell = command[-1]
-        if shell == "cat /wujidata/run/metrics_manifest.tsv":
-            return subprocess.CompletedProcess(command, 0, metrics, "")
-        if shell == "cat /wujidata/run/checkpoint_manifest.tsv":
-            return subprocess.CompletedProcess(command, 0, checkpoints, "")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr("agent_tools.experiments.subprocess.run", fake_run)
-
-    experiments.rank_experiment_candidates("/wujidata/run", metric="val_auroc", mode="max", remote="baichuan3")
-
-    write_targets = [command[-1] for command, kwargs in calls if "cat >" in command[-1]]
-    assert any("/wujidata/run/candidate_ranking.tsv" in target for target in write_targets)
-    assert any("/wujidata/run/reports/wandb_rank.md" in target for target in write_targets)
-    ranking_write = next(kwargs["input"] for command, kwargs in calls if "candidate_ranking.tsv" in command[-1])
-    assert "0.8" in ranking_write
-    assert "/remote/run/trial_a/checkpoints/epoch=2.ckpt" in ranking_write
+    with pytest.raises(RuntimeError, match="SSH directory probe failed"):
+        experiment_io.remote_dir_nonempty(Path("/wujidata/remote_run"), "baichuan3")

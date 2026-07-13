@@ -10,34 +10,58 @@ from typing import Any
 
 import yaml
 
-from .hparam import (
-    _find_run_manifest,
-    _fixed_checkpoint_path,
-    _log_has_failure,
-    _log_tail,
-    _metric_value,
-    _now,
-    _read_json,
-    _read_plan,
-    _read_rows,
-    _write_rows,
-    launch_hparam_trials,
-    monitor_hparam_trials,
-    stop_hparam_trial,
+from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
+from .experiment_workspace import (
+    append_event as _write_experiment_event,
+    canonical_local_experiment_root,
+    ensure_experiment_workspace,
+    experiment_root,
+    managed_run_key,
+    managed_run_parameters,
+    merge_run_manifest,
+    read_run_manifest,
+    validate_frozen_run_update,
+    validate_managed_run_rows,
 )
-from .manifests import write_json, write_text
+from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
+from .manifests import read_json, read_rows, utc_now, write_json, write_rows, write_text
 from .models import resolve_repo_path
-from .plans import build_plan
+from .plans import build_plan, preflight_plan
 from .recipes import load_recipe_with_base, recipe_name
 
 
 def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path:
-    root = Path(output_dir)
-    recipe_path = Path(recipe_path)
+    root = canonical_local_experiment_root(output_dir, Path.cwd())
+    resolved_recipe_path = resolve_repo_path(recipe_path)
+    if resolved_recipe_path is None:
+        raise FileNotFoundError("Path is required.")
+    recipe_path = resolved_recipe_path.resolve()
     recipe = load_recipe_with_base(recipe_path)
+    recipe["_recipe_path"] = str(recipe_path)
     _validate_adaptive_recipe(recipe)
     adaptive_dir = root / "adaptive"
     round_dir = adaptive_dir / "rounds" / "round_000"
+    _, _, preflight = preflight_plan(recipe_path=recipe_path, output_dir=round_dir)
+    if preflight.exit_code != 0:
+        raise RuntimeError(f"Round 000 plan failed preflight with exit code {preflight.exit_code}.")
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    initial_run_count = _hparam_count(recipe)
+    initial_run_count = min(initial_run_count, int((recipe.get("search") or {}).get("max_runs") or initial_run_count))
+    if initial_run_count > int(_adaptive(recipe).get("max_runs_total") or 10**9):
+        raise ValueError("Round 000 would exceed adaptive.max_runs_total.")
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            round_dir / "round_recipe.yaml",
+            adaptive_dir / "workflow.json",
+            adaptive_dir / "run_registry.tsv",
+            adaptive_dir / "README.md",
+            workspace / "events.jsonl",
+        ],
+    )
+    ensure_experiment_workspace(recipe, round_dir)
     round_recipe = _write_round_recipe(recipe, recipe_path, round_dir, 0)
     report = build_plan(recipe_path=round_recipe, output_dir=round_dir)
     if report.exit_code != 0:
@@ -57,39 +81,72 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
 
 
 def digest_hparam_run(run_dir: str | Path) -> Path:
-    root = Path(run_dir)
+    root = canonical_local_experiment_root(run_dir, Path.cwd())
     workflow_root, round_dir, round_index = _resolve_workflow_round(root)
-    plan = _read_plan(round_dir)
+    if (workflow_root / "adaptive" / "workflow.json").exists():
+        _workflow(workflow_root)
+    plan = artifacts.read_hparam_plan(round_dir)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    monitor_hparam_trials(round_dir)
-    status_rows = {row.get("trial_id"): row for row in _read_rows(round_dir / "trial_status.tsv")}
-    rows = []
-    for trial in plan.get("trials", []):
-        trial_id = str(trial.get("trial_id"))
-        version = str(trial.get("version") or f"{recipe.get('name')}-{trial_id}")
-        manifest_path = _find_run_manifest(round_dir, version, recipe)
-        manifest = _read_json(manifest_path) if manifest_path else {}
-        status = status_rows.get(trial_id, {})
-        row = {
-            "round": round_index,
-            "trial_id": trial_id,
-            "version": version,
-            "external_optimized": True,
-            "status": status.get("status", ""),
-            "pid": status.get("pid", ""),
-            "config": trial.get("config", ""),
-            "checkpoint_path": _fixed_checkpoint_path(manifest, manifest_path),
-            "run_manifest": str(manifest_path or ""),
-            "log_path": status.get("log_path", ""),
-            "log_failed": _log_has_failure(status.get("log_path")),
-            "log_tail": _log_tail(status.get("log_path"), lines=4),
-        }
-        row.update(_trial_params(trial))
-        row.update(_manifest_metrics(manifest))
-        rows.append(row)
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
     out_dir = workflow_root / "adaptive" / "digests"
     out = out_dir / f"round_{round_index:03d}.csv"
-    _write_rows(out, rows)
+    # Digest outputs must be safe before monitor is allowed to update canonical state.
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            out,
+            out_dir / f"round_{round_index:03d}.md",
+            workflow_root / "adaptive" / "incumbents.tsv",
+            workspace / "events.jsonl",
+        ],
+    )
+    monitor_hparam_runs(round_dir)
+    plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
+    status_rows = {
+        managed_run_key(row): row for row in read_run_manifest(workspace) if managed_run_key(row) in plan_keys
+    }
+    rows = []
+    for run in plan.get("runs", []):
+        run_id = str(run["run_id"])
+        version = str(run["version"])
+        status = status_rows.get(managed_run_key(run), {})
+        artifact_row = {**run, **status}
+        observed_artifacts = evidence.runtime_artifacts(artifact_row)
+        if observed_artifacts is None:
+            manifest_path = str(status.get("run_manifest") or "")
+            manifest = {}
+            checkpoint_names = []
+        else:
+            manifest_path, manifest, checkpoint_names = observed_artifacts
+        checkpoint_dir = str(artifact_row.get("checkpoint_dir") or "")
+        checkpoint_path = (
+            artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, checkpoint_names)
+            if evidence.is_remote_row(artifact_row)
+            else artifacts.fixed_checkpoint_path(manifest, Path(checkpoint_dir))
+        )
+        row = {
+            "round": round_index,
+            "experiment_id": run["experiment_id"],
+            "step_id": run["step_id"],
+            "run_id": run_id,
+            "run_name": run["run_name"],
+            "version": version,
+            "external_optimized": True,
+            "config": run.get("config", ""),
+            "checkpoint_path": checkpoint_path,
+            "run_manifest": str(manifest_path or ""),
+            "log_path": artifact_row.get("log_path", ""),
+            "log_failed": evidence.log_has_failure(artifact_row.get("log_path"), artifact_row),
+            "log_tail": evidence.log_tail(artifact_row.get("log_path"), artifact_row, lines=4),
+        }
+        row.update(managed_run_parameters(run))
+        row.update(_manifest_metrics(manifest))
+        row["status"] = status.get("status", "")
+        row["pid"] = status.get("pid", "")
+        rows.append(row)
+    write_rows(out, rows)
     write_text(out_dir / f"round_{round_index:03d}.md", _digest_markdown(rows, _objective(workflow_root, recipe)))
     _append_event(workflow_root, "digest", {"round": round_index, "path": str(out), "rows": len(rows)})
     _write_incumbent(workflow_root, rows, _objective(workflow_root, recipe), round_index)
@@ -97,57 +154,88 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
 
 
 def suggest_next_round(workflow_dir: str | Path) -> Path:
-    root = Path(workflow_dir)
+    root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
     recipe = load_recipe_with_base(workflow["recipe_path"])
     current_round = _latest_round_index(root)
     next_round = current_round + 1
     digest = _latest_digest(root)
-    rows = _read_rows(digest)
+    rows = read_rows(digest)
     objective = _objective(root, recipe)
     ranked = _rank_rows(rows, objective)
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    out_dir = root / "adaptive" / "suggestions"
+    out = out_dir / f"round_{next_round:03d}.yaml"
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [out, out_dir / f"round_{next_round:03d}.md", workspace / "events.jsonl"],
+    )
     if not ranked:
-        _append_event(root, "suggest_blocked", {"round": next_round, "reason": "no_scored_trials"})
+        _append_event(root, "suggest_blocked", {"round": next_round, "reason": "no_scored_runs"})
         raise ValueError(f"No digest rows with finite {objective['metric']} are available for suggestion.")
     best = ranked[0]
     suggested = copy.deepcopy(recipe)
+    suggested_root = experiment_root(suggested)
+    if suggested_root is not None:
+        suggested["experiment"]["root"] = str(suggested_root)
     suggested["name"] = f"{recipe_name(recipe)}_adaptive_round_{next_round:03d}"
     suggested.setdefault("search", {})["parameters"] = _suggest_parameters(recipe, ranked)
-    suggested["search"]["max_trials"] = int(_adaptive(recipe).get("round_size") or _hparam_count(suggested))
+    suggested["search"]["max_runs"] = int(_adaptive(recipe).get("round_size") or _hparam_count(suggested))
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
-    suggested.setdefault("artifacts", {}).pop("generated_config_dir", None)
-    out_dir = root / "adaptive" / "suggestions"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"round_{next_round:03d}.yaml"
     out.write_text(yaml.safe_dump(_strip_internal_recipe_keys(suggested), sort_keys=False))
     rationale = _suggestion_rationale(next_round, objective, best, suggested["search"]["parameters"])
     write_text(out_dir / f"round_{next_round:03d}.md", rationale)
-    _append_event(root, "suggest", {"round": next_round, "path": str(out), "best_trial": best.get("trial_id")})
+    _append_event(root, "suggest", {"round": next_round, "path": str(out), "best_run": best.get("run_id")})
     return out
 
 
 def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
-    root = Path(workflow_dir)
+    root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
     recipe = load_recipe_with_base(workflow["recipe_path"])
     current_round = _latest_round_index(root)
     round_dir = _round_dir(root, current_round)
-    digest = digest_hparam_run(round_dir)
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    next_dir = _round_dir(root, current_round + 1)
+    targets = [workspace / "events.jsonl"]
     if execute:
-        _stop_bad_running_trials(root, round_dir, recipe)
+        targets.extend([root / "adaptive" / "run_registry.tsv", next_dir / "round_recipe.yaml"])
+    exp_io.validate_managed_output_paths(workspace, targets)
+    digest = digest_hparam_run(round_dir)
     suggestion = suggest_next_round(root)
-    _supersede_pending_trials(root, round_dir)
-    if execute and not _budget_exhausted(root, recipe):
-        next_round = current_round + 1
-        next_dir = _round_dir(root, next_round)
+    next_round = current_round + 1
+    next_recipe, _, preflight = preflight_plan(recipe_path=suggestion, output_dir=next_dir)
+    if preflight.exit_code != 0:
+        raise RuntimeError(f"Round {next_round:03d} plan failed preflight with exit code {preflight.exit_code}.")
+    next_run_count = _hparam_count(next_recipe)
+    next_max_runs = (next_recipe.get("search") or {}).get("max_runs")
+    if next_max_runs not in (None, ""):
+        next_run_count = min(next_run_count, int(next_max_runs))
+    # Retiring current runs is allowed only when the complete replacement round fits the remaining budget.
+    budget_exhausted = execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count)
+    if execute and not budget_exhausted:
+        _stop_bad_running_runs(root, round_dir, recipe)
+        _supersede_pending_runs(root, round_dir)
+    if execute and not budget_exhausted:
         round_recipe = _write_round_recipe(load_recipe_with_base(suggestion), suggestion, next_dir, next_round)
         report = build_plan(recipe_path=round_recipe, output_dir=next_dir)
         if report.exit_code != 0:
             raise RuntimeError(f"Round {next_round:03d} plan failed with exit code {report.exit_code}.")
         _append_registry_rows(root, next_round, next_dir)
-        launch_hparam_trials(next_dir, dry_run=False)
+        launch_hparam_runs(next_dir, dry_run=False)
         _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
+    elif budget_exhausted:
+        _append_event(
+            root,
+            "adaptive_budget_exhausted",
+            {"round": current_round, "digest": str(digest), "suggestion": str(suggestion)},
+        )
     else:
         _append_event(
             root,
@@ -158,12 +246,19 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
 
 
 def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
-    root = Path(workflow_dir)
+    root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     recipe = load_recipe_with_base(_workflow(root)["recipe_path"])
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    exp_io.validate_managed_output_paths(workspace, [workspace / "events.jsonl"])
     last = root
     while not _budget_exhausted(root, recipe):
+        previous_round = _latest_round_index(root)
         last = adaptive_step(root, execute=execute)
         if not execute:
+            break
+        if _latest_round_index(root) == previous_round:
             break
         time.sleep(float(_adaptive(recipe).get("poll_seconds") or 60))
     _append_event(root, "adaptive_loop_done", {"path": str(last)})
@@ -184,6 +279,16 @@ def _adaptive(recipe: dict[str, Any]) -> dict[str, Any]:
     return recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
 
 
+def _append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
+    workflow_path = root / "adaptive" / "workflow.json"
+    target = root
+    if workflow_path.exists():
+        workflow = json.loads(workflow_path.read_text())
+        recipe = load_recipe_with_base(workflow["recipe_path"])
+        target = experiment_root(recipe) or root
+    _write_experiment_event(target, event_type, payload)
+
+
 def _objective(root: Path, recipe: dict[str, Any]) -> dict[str, str]:
     workflow = _workflow(root) if (root / "adaptive" / "workflow.json").exists() else {}
     adaptive = _adaptive(recipe)
@@ -197,7 +302,50 @@ def _workflow(root: Path) -> dict[str, Any]:
     path = root / "adaptive" / "workflow.json"
     if not path.exists():
         raise FileNotFoundError(f"Missing adaptive workflow: {path}")
-    return json.loads(path.read_text())
+    workflow = read_json(path)
+    if not isinstance(workflow, dict):
+        raise ValueError(f"Adaptive workflow must contain a mapping: {path}")
+    if str(workflow.get("root") or "") != str(root):
+        raise ValueError(f"Adaptive workflow root differs from the requested workspace: {root}")
+    recipe_path = Path(str(workflow.get("recipe_path") or ""))
+    if not recipe_path.is_absolute():
+        raise ValueError(f"Adaptive workflow recipe_path must be absolute: {path}")
+    legacy_registry = root / "adaptive" / "trial_registry.tsv"
+    if legacy_registry.exists():
+        raise ValueError(f"Legacy adaptive registry is read-only and cannot be managed: {legacy_registry}")
+    registry_path = root / "adaptive" / "run_registry.tsv"
+    if not registry_path.exists():
+        raise FileNotFoundError(f"Missing adaptive run registry: {registry_path}")
+    registry_rows = read_rows(registry_path, require_managed_identity=True)
+    validate_managed_run_rows(registry_rows, source=str(registry_path), cardinality="one_per_run")
+    round_index = _latest_round_index(root)
+    round_dir = _round_dir(root, round_index)
+    plan = artifacts.read_hparam_plan(round_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    for registered in registry_rows:
+        canonical = canonical_by_key.get(managed_run_key(registered))
+        if canonical is None:
+            raise ValueError(
+                f"Adaptive registry row is outside the canonical manifest: "
+                f"{registered.get('step_id', '')} / {registered.get('run_id', '')}"
+            )
+        validate_frozen_run_update(canonical, registered)
+    registry_by_key = {managed_run_key(row): row for row in registry_rows}
+    for run in plan.get("runs", []):
+        key = managed_run_key(run)
+        registered = registry_by_key.get(key)
+        if registered is None:
+            raise ValueError(f"Adaptive registry is missing the current plan run: {key[0]} / {key[1]}")
+        if str(registered.get("round") or "") != str(round_index) or str(registered.get("round_dir") or "") != str(
+            round_dir
+        ):
+            raise ValueError(f"Adaptive registry round binding differs for run: {key[0]} / {key[1]}")
+        validate_frozen_run_update(run, registered)
+    return workflow
 
 
 def _write_round_recipe(
@@ -205,9 +353,11 @@ def _write_round_recipe(
 ) -> Path:
     round_dir.mkdir(parents=True, exist_ok=True)
     copied = _strip_internal_recipe_keys(copy.deepcopy(recipe))
+    copied_root = experiment_root(copied)
+    if copied_root is not None:
+        copied["experiment"]["root"] = str(copied_root)
     if copied.get("base_recipe"):
         copied["base_recipe"] = str(_resolve_base_recipe(source_recipe_path, copied["base_recipe"]))
-    copied.setdefault("artifacts", {})["generated_config_dir"] = str(round_dir / "configs")
     copied["name"] = f"{recipe_name(recipe)}-round-{round_index:03d}"
     target = round_dir / "round_recipe.yaml"
     target.write_text(yaml.safe_dump(copied, sort_keys=False))
@@ -217,45 +367,40 @@ def _write_round_recipe(
 def _resolve_base_recipe(recipe_path: str | Path, base_recipe: str | Path) -> Path:
     raw = Path(base_recipe).expanduser()
     if raw.is_absolute():
-        return raw
+        return raw.resolve()
     source = Path(recipe_path)
     if source.exists():
         candidate = source.parent / raw
         if candidate.exists():
             return candidate.resolve()
     resolved = resolve_repo_path(raw)
-    return resolved.resolve() if resolved and resolved.exists() else raw
+    return resolved.resolve() if resolved is not None else raw.resolve()
 
 
 def _strip_internal_recipe_keys(recipe: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in recipe.items() if not str(key).startswith("_")}
 
 
-def _append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
-    path = root / "adaptive" / "events.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    row = {"time": _now(), "event_type": event_type, **payload}
-    with path.open("a") as file_obj:
-        file_obj.write(json.dumps(row, sort_keys=True) + "\n")
-
-
 def _append_registry_rows(root: Path, round_index: int, round_dir: Path) -> None:
-    path = root / "adaptive" / "trial_registry.tsv"
-    plan = _read_plan(round_dir)
-    rows = _read_rows(path) if path.exists() else []
-    for trial in plan.get("trials", []):
+    path = root / "adaptive" / "run_registry.tsv"
+    plan = artifacts.read_hparam_plan(round_dir)
+    rows = read_rows(path, require_managed_identity=True) if path.exists() else []
+    for run in plan.get("runs", []):
         rows.append(
             {
                 "round": round_index,
-                "trial_id": trial.get("trial_id"),
-                "version": trial.get("version"),
-                "config": trial.get("config"),
-                "script": str(round_dir / str(trial.get("script"))),
+                "experiment_id": run.get("experiment_id"),
+                "step_id": run.get("step_id"),
+                "run_id": run.get("run_id"),
+                "run_name": run.get("run_name"),
+                "version": run.get("version"),
+                "config": run.get("config"),
+                "script": run.get("script"),
                 "round_dir": str(round_dir),
-                "registered_at": _now(),
+                "registered_at": utc_now(),
             }
         )
-    _write_rows(path, rows)
+    write_rows(path, rows)
 
 
 def _resolve_workflow_round(path: Path) -> tuple[Path, Path, int]:
@@ -281,14 +426,10 @@ def _round_dir(root: Path, index: int) -> Path:
     return root / "adaptive" / "rounds" / f"round_{index:03d}"
 
 
-def _trial_params(trial: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in trial.items() if key.startswith("runtime.") or key.startswith("yaml:/")}
-
-
 def _manifest_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
     metrics = manifest.get("metrics") if isinstance(manifest.get("metrics"), dict) else {}
-    row = {key: value for key, value in metrics.items() if isinstance(key, str)}
-    for key in ("best_model_score", "epoch", "monitor", "monitor_mode", "status"):
+    row = {key: value for key, value in metrics.items() if isinstance(key, str) and key != "status"}
+    for key in ("best_model_score", "epoch", "monitor", "monitor_mode"):
         if manifest.get(key) is not None:
             row[key] = manifest.get(key)
     return row
@@ -302,12 +443,12 @@ def _digest_markdown(rows: list[dict[str, Any]], objective: dict[str, str]) -> s
         "external_optimized: true",
         f"objective: {objective['metric']} ({objective['mode']})",
         "",
-        "## Top trials",
+        "## Top runs",
         "",
     ]
     for row in ranked[:5]:
         lines.append(
-            f"- {row.get('trial_id')}: {objective['metric']}={row.get(objective['metric'], '')} "
+            f"- {row.get('run_id')}: {objective['metric']}={row.get(objective['metric'], '')} "
             f"status={row.get('status', '')} checkpoint={row.get('checkpoint_path', '')}"
         )
     return "\n".join(lines) + "\n"
@@ -319,21 +460,24 @@ def _write_incumbent(root: Path, rows: list[dict[str, Any]], objective: dict[str
         return
     best = ranked[0]
     path = root / "adaptive" / "incumbents.tsv"
-    incumbents = _read_rows(path) if path.exists() else []
+    incumbents = read_rows(path) if path.exists() else []
     incumbents.append(
         {
             "round": round_index,
-            "trial_id": best.get("trial_id", ""),
+            "experiment_id": best.get("experiment_id", ""),
+            "step_id": best.get("step_id", ""),
+            "run_id": best.get("run_id", ""),
+            "run_name": best.get("run_name", ""),
             "version": best.get("version", ""),
             "objective_metric": objective["metric"],
             "objective_mode": objective["mode"],
             "objective_score": best.get(objective["metric"], ""),
             "checkpoint_path": best.get("checkpoint_path", ""),
             "external_optimized": True,
-            "selected_at": _now(),
+            "selected_at": utc_now(),
         }
     )
-    _write_rows(path, incumbents)
+    write_rows(path, incumbents)
 
 
 def _rank_rows(rows: list[dict[str, Any]], objective: dict[str, str]) -> list[dict[str, Any]]:
@@ -409,7 +553,7 @@ def _suggestion_rationale(
         "",
         "external_optimized: true",
         f"objective: {objective['metric']} ({objective['mode']})",
-        f"best_trial: {best.get('trial_id', '')}",
+        f"best_run: {best.get('run_id', '')}",
         f"best_score: {best.get(objective['metric'], '')}",
         "",
         "## Parameters",
@@ -419,17 +563,53 @@ def _suggestion_rationale(
     return "\n".join(lines) + "\n"
 
 
-def _supersede_pending_trials(root: Path, round_dir: Path) -> None:
-    for row in _read_rows(round_dir / "trial_status.tsv"):
+def _supersede_pending_runs(root: Path, round_dir: Path) -> None:
+    plan = artifacts.read_hparam_plan(round_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    launch_path = round_dir / "launch_manifest.tsv"
+    targets = [
+        workspace / "run_manifest.tsv",
+        workspace / "run_matrix.csv",
+        workspace / "reports" / "run_matrix.md",
+        workspace / "events.jsonl",
+        round_dir / "run_status.tsv",
+    ]
+    if launch_path.exists():
+        targets.append(launch_path)
+    exp_io.validate_managed_output_paths(workspace, targets)
+    canonical_rows = read_run_manifest(workspace)
+    canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
+    transitions = []
+    for run in plan["runs"]:
+        row = canonical_by_key[managed_run_key(run)]
         if row.get("status") in {"planned", "pending"}:
-            _append_event(
-                root,
-                "supersede_pending_trial",
-                {"round_dir": str(round_dir), "trial_id": row.get("trial_id"), "status": row.get("status")},
-            )
+            transitions.append(row)
+    if transitions:
+        committed = merge_run_manifest(
+            workspace,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "superseded"} for row in transitions],
+        )
+    else:
+        committed = canonical_rows
+    committed_by_key = {managed_run_key(row): row for row in committed}
+    round_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
+    write_rows(round_dir / "run_status.tsv", round_rows)
+    if launch_path.exists():
+        write_rows(launch_path, round_rows)
+    for row in transitions:
+        if committed_by_key[managed_run_key(row)].get("status") != "superseded":
+            continue
+        _append_event(
+            root,
+            "supersede_pending_run",
+            {"round_dir": str(round_dir), "run_id": row["run_id"], "status": row["status"]},
+        )
 
 
-def _stop_bad_running_trials(root: Path, round_dir: Path, recipe: dict[str, Any]) -> None:
+def _stop_bad_running_runs(root: Path, round_dir: Path, recipe: dict[str, Any]) -> None:
     adaptive = _adaptive(recipe)
     replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
     if not replacement.get("enabled", True) or not replacement.get("allow_running_stop", False):
@@ -437,13 +617,24 @@ def _stop_bad_running_trials(root: Path, round_dir: Path, recipe: dict[str, Any]
     objective = _objective(root, recipe)
     incumbent = _latest_incumbent_score(root)
     margin = float(replacement.get("kill_margin") or 0.0)
-    for row in _read_rows(round_dir / "trial_status.tsv"):
+    plan = artifacts.read_hparam_plan(round_dir)
+    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(plan_recipe)
+    if workspace is None:
+        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    plan_keys = {managed_run_key(run) for run in plan["runs"]}
+    for row in read_run_manifest(workspace):
+        if managed_run_key(row) not in plan_keys:
+            continue
         if row.get("status") != "running":
             continue
-        should_stop = _log_has_failure(row.get("log_path"), row)
-        manifest = _find_run_manifest(round_dir, row.get("version", ""), recipe)
-        data = _read_json(manifest) if manifest else {}
-        score = _metric_value(data, objective["metric"])
+        should_stop = evidence.log_has_failure(row.get("log_path"), row)
+        data = {}
+        if not should_stop:
+            observed_artifacts = evidence.runtime_artifacts(row)
+            if observed_artifacts is not None:
+                _manifest_path, data, _checkpoint_names = observed_artifacts
+        score = artifacts.metric_value(data, objective["metric"])
         if (
             not should_stop
             and incumbent is not None
@@ -456,8 +647,8 @@ def _stop_bad_running_trials(root: Path, round_dir: Path, recipe: dict[str, Any]
             except (TypeError, ValueError):
                 should_stop = False
         if should_stop:
-            stop_hparam_trial(round_dir, str(row["trial_id"]))
-            _append_event(root, "stop_bad_running_trial", {"round_dir": str(round_dir), "trial_id": row["trial_id"]})
+            stop_hparam_run(round_dir, str(row["run_id"]), reason="adaptive replacement")
+            _append_event(root, "stop_bad_running_run", {"round_dir": str(round_dir), "run_id": row["run_id"]})
 
 
 def _grace_satisfied(row: dict[str, Any], manifest: dict[str, Any], replacement: dict[str, Any]) -> bool:
@@ -485,7 +676,7 @@ def _minutes_since(timestamp: str) -> float | None:
 
 
 def _latest_incumbent_score(root: Path) -> float | None:
-    rows = _read_rows(root / "adaptive" / "incumbents.tsv")
+    rows = read_rows(root / "adaptive" / "incumbents.tsv")
     if not rows:
         return None
     try:
@@ -494,13 +685,15 @@ def _latest_incumbent_score(root: Path) -> float | None:
         return None
 
 
-def _budget_exhausted(root: Path, recipe: dict[str, Any]) -> bool:
+def _budget_exhausted(root: Path, recipe: dict[str, Any], *, prospective_runs: int = 0) -> bool:
     adaptive = _adaptive(recipe)
     max_rounds = int(adaptive.get("max_rounds") or 1)
-    max_trials = int(adaptive.get("max_trials_total") or 10**9)
+    max_runs = int(adaptive.get("max_runs_total") or 10**9)
+    current_runs = len(read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True))
     return (
         _latest_round_index(root) + 1 >= max_rounds
-        or len(_read_rows(root / "adaptive" / "trial_registry.tsv")) >= max_trials
+        or current_runs >= max_runs
+        or current_runs + prospective_runs > max_runs
     )
 
 

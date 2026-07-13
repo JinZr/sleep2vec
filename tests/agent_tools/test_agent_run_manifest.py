@@ -4,10 +4,45 @@ import argparse
 import importlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import types
 
 import pytest
+
+
+@pytest.mark.parametrize(
+    ("namespace", "default_project"),
+    [
+        ("sleep2vec", "sleep2vec-finetune"),
+        ("sleep2vec2", "sleep2vec2-finetune"),
+        ("sleep2expert", "sleep2expert-finetune"),
+    ],
+)
+def test_finetune_wandb_cli_contract(namespace: str, default_project: str):
+    source = (Path(__file__).resolve().parents[2] / namespace / "finetune.py").read_text()
+    for flag, help_text in [
+        ("--wandb-project", "W&B project name."),
+        ("--wandb-group", "W&B run group."),
+        ("--wandb-mode", "W&B run mode."),
+    ]:
+        assert f'parser.add_argument("{flag}", type=str, default=None, help="{help_text}")' in source
+    assert f'project=getattr(args, "wandb_project", None) or "{default_project}"' in source
+    assert 'group=getattr(args, "wandb_group", None),' in source
+    assert 'mode=getattr(args, "wandb_mode", None),' in source
+    assert 'if args.wandb_mode not in {"offline", "disabled"}:\n        wandb.login()' in source
+
+
+@pytest.fixture(scope="module")
+def training_runtime_dependencies():
+    result = subprocess.run(
+        [sys.executable, "-c", "import torch; import pytorch_lightning; import wandb"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip("Training runtime dependencies are unavailable in this test environment.")
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec", "sleep2vec2", "sleep2expert"])
@@ -53,10 +88,12 @@ def test_training_run_manifest_writer_serializes_checkpoint_and_score(tmp_path: 
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec", "sleep2vec2", "sleep2expert"])
-def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch, namespace: str):
-    pytest.importorskip("torch")
-    pytest.importorskip("pytorch_lightning")
-    pytest.importorskip("wandb")
+def test_failed_manifest_write_does_not_mask_primary_training_error(
+    monkeypatch, training_runtime_dependencies, namespace: str
+):
+    importlib.import_module("torch")
+    importlib.import_module("pytorch_lightning")
+    importlib.import_module("wandb")
     sys.modules.pop(f"{namespace}.finetune", None)
     finetune = importlib.import_module(f"{namespace}.finetune")
     args = argparse.Namespace(
@@ -65,8 +102,12 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch,
         monitor_mod="min",
         patience=1,
         print_diagnostics=False,
+        wandb_project="managed-hparam",
+        wandb_group="unit",
+        wandb_mode="offline",
     )
     config_bundle = types.SimpleNamespace(model={}, finetune={}, averaging={})
+    logger_kwargs = {}
 
     class DummyLogger:
         experiment = types.SimpleNamespace(log=lambda *args, **kwargs: None)
@@ -86,7 +127,12 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch,
     monkeypatch.setattr(finetune, "persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr(finetune, "prepare_dataloader", lambda args: ([], [], []))
     monkeypatch.setattr(finetune, "Sleep2vecFinetuning", lambda *args, **kwargs: DummyModel())
-    monkeypatch.setattr(finetune, "WandbLogger", lambda **kwargs: DummyLogger())
+
+    def build_logger(**kwargs):
+        logger_kwargs.update(kwargs)
+        return DummyLogger()
+
+    monkeypatch.setattr(finetune, "WandbLogger", build_logger)
     if hasattr(finetune, "is_rank_zero_process"):
         monkeypatch.setattr(finetune, "is_rank_zero_process", lambda: False)
 
@@ -101,3 +147,8 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(monkeypatch,
 
     with pytest.raises(RuntimeError, match="primary training failure"):
         finetune.supervised(args, config_bundle)
+
+    assert logger_kwargs["name"] == args.version
+    assert logger_kwargs["project"] == args.wandb_project
+    assert logger_kwargs["group"] == args.wandb_group
+    assert logger_kwargs["mode"] == args.wandb_mode

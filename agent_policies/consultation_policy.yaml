@@ -1,111 +1,78 @@
-
-status_codes:
-  pass: 0
-  warn: 0
-  needs_user_input: 2
-  fail: 1
-
-global_rules:
-  require_explicit_high_impact_decisions: true
-  prohibit_silent_external_test_use: true
-  prohibit_silent_overwrite: true
-  prohibit_silent_checkpoint_choice: true
-  prohibit_silent_label_choice: true
-
 high_impact_fields:
   - id: task
-    description: "The task type must be explicit."
-    required_for_tasks: ["preset_prepare", "pretrain", "adapt", "finetune", "infer", "evaluate", "hparam_tune", "sleep2stat"]
-    question: "Which task should be performed: preset_prepare, pretrain, adapt, finetune, infer, evaluate, hparam_tune, or sleep2stat?"
+    required_for_tasks: ["preset_prepare", "finetune", "infer", "evaluate", "hparam_tune", "sleep2stat"]
+    question: "Which task should be performed: preset_prepare, finetune, infer, evaluate, hparam_tune, or sleep2stat?"
 
   - id: label_name
-    description: "The downstream label must be explicit for finetuning, inference, evaluation, and tuning."
     required_for_tasks: ["finetune", "infer", "evaluate", "hparam_tune"]
     question: "Which label should this task use, for example ahi, age, sex, stage5, or a custom metadata label?"
 
   - id: data_backend
-    description: "The data backend must be explicit when both preset and Kaldi-style inputs are possible."
     required_for_tasks: ["finetune", "infer", "evaluate"]
     question: "Should this run use npz/preset data or Kaldi manifest data?"
 
   - id: train_val_test_policy
-    description: "The split policy must be explicit for model selection."
     required_for_tasks: ["finetune", "hparam_tune"]
     question: "Which split should be used for model selection, and should the test split remain locked until final evaluation?"
 
   - id: external_test_locked
-    description: "External-test locking must be explicit for hyper-parameter tuning."
     required_for_tasks: ["hparam_tune"]
-    question: "Should the external test set remain locked during all hyper-parameter trials?"
+    question: "Should the external test set remain locked during all hyper-parameter runs?"
 
   - id: selection_metric
-    description: "The validation metric for checkpoint or trial selection must be explicit."
     required_for_tasks: ["finetune", "hparam_tune"]
-    question: "Which validation metric should be used to select the best checkpoint or best trial?"
+    question: "Which validation metric should be used to select the best checkpoint or best run?"
 
   - id: selection_mode
-    description: "The metric direction must be explicit."
     required_for_tasks: ["finetune", "hparam_tune"]
     allowed_values: ["min", "max"]
     question: "Should the selection metric be minimized or maximized?"
 
   - id: pretrained_backbone_path
-    description: "Whether to initialize from a pretrained checkpoint must be explicit."
-    required_for_tasks: ["finetune", "adapt"]
+    required_for_tasks: ["finetune"]
     question: "Should this run initialize from a pretrained backbone checkpoint? If yes, which path should be used?"
 
   - id: ckpt_path
-    description: "Inference and final evaluation must use an explicit checkpoint."
     required_for_tasks: ["infer", "evaluate"]
     question: "Which checkpoint path should be used for inference/evaluation?"
 
   - id: eval_split
-    description: "Inference and evaluation split selection must be explicit."
     required_for_tasks: ["infer", "evaluate"]
     allowed_values: ["train", "val", "test"]
     question: "Which split should be evaluated: train, val, or test?"
 
   - id: preset_regeneration
-    description: "Agents must not regenerate presets unless instructed."
     required_for_tasks: ["preset_prepare"]
     question: "Should existing preset files be reused or regenerated?"
 
   - id: overwrite_policy
-    description: "Agents must not overwrite generated presets, configs, plans, results, or checkpoints unless explicitly allowed."
     required_for_tasks: ["preset_prepare", "finetune", "hparam_tune", "infer", "evaluate", "sleep2stat"]
     question: "Is overwriting existing output files allowed for this task?"
 
   - id: sleep2stat_split_policy
-    description: "The agent must know which split(s) sleep2stat will process and how outputs may be used."
     required_for_tasks: ["sleep2stat"]
     question: "Which split(s) should sleep2stat process, and are outputs restricted to descriptive alignment/statistics rather than threshold or cleaning-rule selection?"
 
   - id: sleep2stat_metric_use_policy
-    description: "The agent must distinguish clinical annotation-derived metrics from model-derived or signal-derived proxy metrics."
     required_for_tasks: ["sleep2stat"]
     question: "Should model-derived metrics such as predicted AHI, ODI, or hypoxic-burden-like summaries be treated as proxy metrics unless clinical annotations are configured?"
 
   - id: required_channels
-    description: "The required input/label channels must be explicit for preset generation."
     required_for_tasks: ["preset_prepare", "finetune"]
     question: "Which channels are required, and which channels are optional?"
 
   - id: min_channels
-    description: "The minimum channel-availability policy must be explicit when missing channels are allowed."
     required_for_tasks: ["preset_prepare"]
     question: "If missing channels are allowed, what is the minimum number of channels that each sample must contain?"
 
   - id: hparam_search_space
-    description: "Hyper-parameter search space must be explicit."
     required_for_tasks: ["hparam_tune"]
     question: "Which hyper-parameters and values should be searched?"
 
   - id: hparam_budget
-    description: "Hyper-parameter budget must be explicit."
     required_for_tasks: ["hparam_tune"]
-    question: "What is the maximum number of trials or compute budget for this search?"
+    question: "What is the maximum number of runs or compute budget for this search?"
 
   - id: final_eval_unlock
-    description: "Final external-test evaluation must require explicit unlock."
     required_for_tasks: ["hparam_tune", "evaluate"]
     question: "Should the selected model now be evaluated on the external test set?"

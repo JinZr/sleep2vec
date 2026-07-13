@@ -2,6 +2,20 @@ name: tiny_fixture_finetune
 task: finetune
 variant: sleep2vec
 
+experiment:
+  id: tiny-fixture-finetune
+  title: Tiny fixture finetune
+  objective: Validate the managed finetune planning contract.
+  root: artifacts/experiments/tiny-fixture-finetune
+  baseline:
+    type: none
+    rationale: Synthetic command-generation fixture.
+
+step:
+  id: train-ahi
+  phase: train
+  purpose: Generate one tiny AHI finetune plan.
+
 inputs:
   config: recipes/examples/fixtures/tiny_finetune_config.yaml
   label_name: ahi
@@ -19,6 +33,7 @@ runtime:
 artifacts:
   version_name: tiny-fixture
   results_csv_path: results/tiny_fixture_results.csv
+  overwrite: false
 
 evaluation_policy:
   selection_metric: val_ahi_pearson

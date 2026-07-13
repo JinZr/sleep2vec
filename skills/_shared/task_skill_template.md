@@ -4,7 +4,7 @@
 State the task types and examples.
 
 ## Required inputs
-List required files, config keys, CLI arguments, and optional inputs.
+List required experiment metadata, named step, files, config keys, CLI arguments, and optional inputs.
 
 ## First information-gathering commands
 List deterministic commands the agent must run before editing or launching a long job.
@@ -19,7 +19,7 @@ The agent must stop and ask the user before continuing if any high-impact decisi
 Give the canonical repository commands. Prefer existing entrypoints.
 
 ## Expected artifacts
-List paths and files created.
+List workspace snapshots, manifests, external artifact links, and reports created inside `experiment.root`.
 
 ## Validation gates
 List fast checks, targeted tests, and optional smoke tests.

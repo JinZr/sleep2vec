@@ -2,6 +2,17 @@ name: sex_age_cox_finetune_example
 task: finetune
 variant: sex_age_baseline
 
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: train
+  purpose: ASK_USER
+
 inputs:
   config: configs/sex_age_baseline/cox.yaml
   label_name: incident_cox
@@ -22,6 +33,7 @@ runtime:
 artifacts:
   version_name: sex-age-cox-agent-example
   results_csv_path: results/sex_age_cox_agent_example.csv
+  overwrite: false
 
 evaluation_policy:
   selection_metric: val_c_index
@@ -55,4 +67,3 @@ decisions:
   required_channels:
     value: []
     source: explicit_config
-

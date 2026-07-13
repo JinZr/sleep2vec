@@ -1,69 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
-import subprocess
 from typing import Any
 
-from .models import REPO_ROOT, SUPPORTED_VARIANTS, task_requires_variant
+from . import decision_hparam as hparam_rules, decision_paths as paths, decision_rules as rules
+from .decision_models import (
+    DecisionIssue,
+    DecisionReport,
+    DecisionStatus,
+    ResolvedDecision,
+    merge_status,
+    needs_issue,
+    question_for,
+)
+from .experiment_workspace import experiment_metadata_issues
+from .models import SUPPORTED_VARIANTS, task_requires_variant
+
+__all__ = [
+    "DecisionIssue",
+    "DecisionReport",
+    "DecisionStatus",
+    "ResolvedDecision",
+    "evaluate_consultation_gates",
+    "merge_status",
+]
 
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
-
-
-class DecisionStatus(str, Enum):
-    PASS = "PASS"
-    WARN = "WARN"
-    NEEDS_USER_INPUT = "NEEDS_USER_INPUT"
-    FAIL = "FAIL"
-
-
-@dataclass
-class DecisionIssue:
-    status: DecisionStatus
-    field: str
-    message: str
-    question: str | None = None
-    evidence: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class DecisionReport:
-    status: DecisionStatus
-    issues: list[DecisionIssue] = field(default_factory=list)
-    decisions: dict[str, "ResolvedDecision"] = field(default_factory=dict)
-
-    @property
-    def exit_code(self) -> int:
-        if any(issue.status == DecisionStatus.FAIL for issue in self.issues):
-            return 1
-        if any(issue.status == DecisionStatus.NEEDS_USER_INPUT for issue in self.issues):
-            return 2
-        return 0
-
-    def blocking_issues(self) -> list[DecisionIssue]:
-        return [
-            issue for issue in self.issues if issue.status in {DecisionStatus.NEEDS_USER_INPUT, DecisionStatus.FAIL}
-        ]
-
-
-@dataclass
-class ResolvedDecision:
-    field: str
-    value: Any
-    source: str
-    confidence: str
-    evidence: dict[str, Any] = field(default_factory=dict)
-
-
-def merge_status(issues: list[DecisionIssue]) -> DecisionStatus:
-    if any(i.status == DecisionStatus.FAIL for i in issues):
-        return DecisionStatus.FAIL
-    if any(i.status == DecisionStatus.NEEDS_USER_INPUT for i in issues):
-        return DecisionStatus.NEEDS_USER_INPUT
-    if any(i.status == DecisionStatus.WARN for i in issues):
-        return DecisionStatus.WARN
-    return DecisionStatus.PASS
 
 
 def evaluate_consultation_gates(
@@ -72,7 +33,8 @@ def evaluate_consultation_gates(
     config_summary: dict | None,
     cli_args: dict | None,
     policy: dict,
-    approved_defaults: dict,
+    *,
+    require_experiment: bool = True,
 ) -> DecisionReport:
     recipe = recipe or {}
     cli_args = cli_args or {}
@@ -87,13 +49,12 @@ def evaluate_consultation_gates(
         config_summary,
         cli_args,
         user_decisions,
-        approved_defaults,
         task_override=task,
     )
     task_value = task_decision.value
     decisions["task"] = task_decision
     if task_value in (None, ""):
-        issues.append(_needs("task", "Task is missing.", high_impact))
+        issues.append(needs_issue("task", "Task is missing.", high_impact))
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
     if task_value not in supported_tasks:
         issues.append(
@@ -101,7 +62,7 @@ def evaluate_consultation_gates(
                 DecisionStatus.FAIL,
                 "task",
                 f"Unsupported task: {task_value}",
-                _question(high_impact, "task"),
+                question_for(high_impact, "task"),
                 {"supported_tasks": sorted(supported_tasks)},
             )
         )
@@ -139,14 +100,27 @@ def evaluate_consultation_gates(
             )
         )
 
+    if require_experiment:
+        metadata_recipe = recipe
+        if task_value == "hparam_tune" and isinstance(recipe.get("_local_recipe"), dict):
+            metadata_recipe = recipe["_local_recipe"]
+        for issue in experiment_metadata_issues(metadata_recipe):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus(issue["status"]),
+                    issue["field"],
+                    issue["message"],
+                    issue.get("question"),
+                    issue.get("evidence", {}),
+                )
+            )
+
     for decision_field, rule in high_impact.items():
         if task_value not in rule.get("required_for_tasks", []):
             continue
         if decision_field == "task":
             continue
-        decision = _resolve_decision(
-            decision_field, recipe, config_summary, cli_args, user_decisions, approved_defaults
-        )
+        decision = _resolve_decision(decision_field, recipe, config_summary, cli_args, user_decisions)
         decisions[decision_field] = decision
         if decision.value == "ASK_USER":
             issues.append(
@@ -190,14 +164,12 @@ def evaluate_consultation_gates(
         "eval_split",
         "external_test_locked",
     ):
-        decisions[optional_field] = _resolve_decision(
-            optional_field, recipe, config_summary, cli_args, user_decisions, approved_defaults
-        )
+        decisions[optional_field] = _resolve_decision(optional_field, recipe, config_summary, cli_args, user_decisions)
 
     if str(task_value) == "hparam_tune":
-        issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy, approved_defaults))
+        issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
-    issues.extend(_path_issues(str(task_value), recipe, config_summary, decisions))
+    issues.extend(paths.path_issues(str(task_value), recipe, config_summary))
     if _output_paths_missing(recipe):
         issues.append(
             DecisionIssue(
@@ -226,32 +198,12 @@ def _supported_tasks(high_impact: dict[str, dict[str, Any]]) -> set[str]:
     return tasks
 
 
-def _question(high_impact: dict[str, dict[str, Any]], field: str) -> str | None:
-    return high_impact.get(field, {}).get("question")
-
-
-def _needs(
-    field: str,
-    message: str,
-    high_impact: dict[str, dict[str, Any]],
-    evidence: dict | None = None,
-) -> DecisionIssue:
-    return DecisionIssue(
-        DecisionStatus.NEEDS_USER_INPUT,
-        field,
-        message,
-        _question(high_impact, field),
-        evidence or {},
-    )
-
-
 def _resolve_decision(
     field: str,
     recipe: dict,
     config_summary: dict | None,
     cli_args: dict,
     user_decisions: dict,
-    approved_defaults: dict,
     *,
     task_override: str | None = None,
 ) -> ResolvedDecision:
@@ -276,11 +228,6 @@ def _resolve_decision(
         if field in {"selection_metric", "selection_mode"}:
             source = "explicit_config"
         return ResolvedDecision(field, config_value, source, "medium", {"config": config_value})
-
-    defaults = approved_defaults.get("approved_defaults", {}) if isinstance(approved_defaults, dict) else {}
-    if field in defaults:
-        value = defaults[field].get("value") if isinstance(defaults[field], dict) else defaults[field]
-        return ResolvedDecision(field, value, "approved_default", "medium", {"approved_default": defaults[field]})
 
     return ResolvedDecision(
         field,
@@ -336,7 +283,7 @@ def _recipe_field_value(field: str, recipe: dict) -> Any:
         "required_channels": preset.get("required_channels", preset.get("channels", _MISSING)),
         "min_channels": preset.get("min_channels", _MISSING),
         "hparam_search_space": search.get("parameters", _MISSING),
-        "hparam_budget": search.get("max_trials", _MISSING),
+        "hparam_budget": search.get("max_runs", _MISSING),
         "final_eval_unlock": evaluation.get("final_test_unlocked", _MISSING),
         "test_after_fit": evaluation.get("test_after_fit", _MISSING),
     }
@@ -376,631 +323,16 @@ def _task_specific_issues(
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
     if task == "sleep2stat":
-        return _sleep2stat_issues(recipe, config_summary, decisions, high_impact)
+        return rules.sleep2stat_issues(recipe, config_summary, high_impact)
     if task == "preset_prepare":
-        return _preset_prepare_issues(recipe, config_summary, high_impact)
+        return rules.preset_prepare_issues(recipe, config_summary, high_impact)
     if task == "finetune":
-        return _finetune_task_issues(recipe, config_summary, decisions, high_impact)
+        return rules.finetune_task_issues(recipe, config_summary, decisions, high_impact)
     if task == "hparam_tune":
-        return _hparam_tune_issues(recipe, config_summary, decisions, high_impact)
+        return hparam_rules.hparam_tune_issues(recipe, config_summary, decisions, high_impact)
     if task in {"infer", "evaluate"}:
-        return _infer_evaluate_issues(recipe, config_summary, decisions, high_impact)
+        return rules.infer_evaluate_issues(recipe, config_summary, decisions, high_impact)
     return []
-
-
-def _sleep2stat_issues(
-    recipe: dict,
-    config_summary: dict | None,
-    decisions: dict[str, ResolvedDecision],
-    high_impact: dict[str, dict[str, Any]],
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-
-    if not inputs.get("config"):
-        issues.append(_needs("config", "sleep2stat requires inputs.config.", high_impact))
-        return issues
-    if not config_summary or not config_summary.get("is_sleep2stat"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "config",
-                "task=sleep2stat requires a sleep2stat config.",
-                None,
-                {"config_summary": config_summary},
-            )
-        )
-        return issues
-    for message in config_summary.get("blocking_issues", []):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "sleep2stat_config",
-                message,
-                "Please fix the sleep2stat config before the agent generates commands.",
-                {"config_path": config_summary.get("config_path")},
-            )
-        )
-    sleep2stat = config_summary.get("sleep2stat") or {}
-    cfg_run = sleep2stat.get("run") or {}
-    cfg_data = sleep2stat.get("data") or {}
-    recipe_run_dir = (recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}).get("run_dir")
-    config_run_dir = cfg_run.get("output_dir")
-    if recipe_run_dir and config_run_dir and str(recipe_run_dir) != str(config_run_dir):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "artifacts.run_dir",
-                (
-                    "Recipe artifacts.run_dir differs from sleep2stat config run.output_dir. "
-                    "The sleep2stat CLI uses config run.output_dir, so commands would target the wrong directory."
-                ),
-                (
-                    "Should artifacts.run_dir be changed to match config run.output_dir, or should the "
-                    "sleep2stat config run.output_dir be changed?"
-                ),
-                {"recipe": recipe_run_dir, "config": config_run_dir},
-            )
-        )
-    if config_run_dir:
-        existing_run_dir_issue = _sleep2stat_existing_run_dir_issue(recipe, config_run_dir)
-        if existing_run_dir_issue is not None:
-            issues.append(existing_run_dir_issue)
-    effective_split = _as_list(inputs.get("split") or cfg_data.get("split"))
-    if not effective_split:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "sleep2stat_split_policy",
-                "sleep2stat split is not explicit in recipe or config.",
-                "Which split(s) should sleep2stat process?",
-                {"recipe_split": inputs.get("split"), "config_split": cfg_data.get("split")},
-            )
-        )
-    external_test_locked = evaluation.get("external_test_locked")
-    external_test_decision = decisions.get("external_test_locked")
-    if external_test_decision is not None and external_test_decision.value not in (None, ""):
-        external_test_locked = external_test_decision.value
-    if "test" in {str(value) for value in effective_split} and external_test_locked is not True:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "external_test_locked",
-                "sleep2stat is configured for test split, but external_test_locked is not explicitly true.",
-                "Is this test split external/locked, and should outputs be descriptive-only?",
-                {"effective_split": effective_split, "external_test_locked": external_test_locked},
-            )
-        )
-    for message in config_summary.get("agent_risk_issues", []):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "sleep2stat_config",
-                message,
-                "Please provide a concrete path, adjust path context, or disable the analyzer.",
-                {"config_path": config_summary.get("config_path")},
-            )
-        )
-    return issues
-
-
-def _preset_prepare_issues(
-    recipe: dict, config_summary: dict | None, high_impact: dict[str, dict[str, Any]]
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
-
-    for input_field, value in {
-        "index": inputs.get("index"),
-        "dataset_name": inputs.get("dataset_name"),
-        "split": preset.get("split"),
-        "n_tokens": preset.get("n_tokens"),
-        "allow_missing_channels": preset.get("allow_missing_channels"),
-    }.items():
-        if value in (None, "", []):
-            issues.append(
-                _needs(
-                    input_field,
-                    f"{input_field} is required for preset preparation.",
-                    high_impact,
-                    {"recipe": value},
-                )
-            )
-    if preset.get("allow_missing_channels") is True and preset.get("min_channels") is None:
-        issues.append(
-            _needs("min_channels", "min_channels is required when missing channels are allowed.", high_impact)
-        )
-    survival_issue = _survival_sidecar_issue("preset_prepare", recipe, config_summary)
-    if survival_issue is not None:
-        issues.append(survival_issue)
-    return issues
-
-
-def _finetune_task_issues(
-    recipe: dict,
-    config_summary: dict | None,
-    decisions: dict[str, ResolvedDecision],
-    high_impact: dict[str, dict[str, Any]],
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-
-    if not inputs.get("config"):
-        issues.append(_needs("config", "Config path is required for finetune.", high_impact))
-    if config_summary:
-        for issue in config_summary.get("blocking_issues", []):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "config",
-                    issue,
-                    "Please fix the config before the agent generates commands.",
-                    {"config_path": config_summary.get("config_path")},
-                )
-            )
-    if "test_after_fit" not in evaluation and not _has_explicit_decision(decisions, "test_after_fit"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "test_after_fit",
-                "test_after_fit policy is required for finetune command generation.",
-                "Should test evaluation run after fit for this task?",
-                {"evaluation_policy": evaluation},
-            )
-        )
-    if "external_test_locked" not in evaluation and not _has_explicit_decision(decisions, "external_test_locked"):
-        issues.append(
-            _needs("external_test_locked", "external_test_locked must be explicit for finetune.", high_impact)
-        )
-    data = config_summary.get("data", {}) if config_summary else {}
-    if config_summary and config_summary.get("data_backend") == "npz":
-        if not data.get("finetune_data_index") and not data.get("finetune_preset_path"):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "data_input",
-                    "NPZ finetune requires finetune_preset_path or finetune_data_index.",
-                    "Which preset or index should this run use?",
-                    {"config": data},
-                )
-            )
-    if (
-        config_summary
-        and config_summary.get("variant_guess") == "sex_age_baseline"
-        and config_summary.get("data_backend") == "kaldi"
-    ):
-        if not data.get("kaldi_data_root") or not data.get("kaldi_manifest"):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "data_input",
-                    "Kaldi-backed sex_age_baseline finetune requires kaldi_data_root and kaldi_manifest.",
-                    "Which Kaldi data root and manifest should this sex/age baseline use?",
-                    {"config": data},
-                )
-            )
-    pretrained_issue = _sex_age_pretrained_backbone_issue("finetune", recipe, decisions)
-    if pretrained_issue is not None:
-        issues.append(pretrained_issue)
-    survival_issue = _survival_sidecar_issue("finetune", recipe, config_summary)
-    if survival_issue is not None:
-        issues.append(survival_issue)
-    multilabel_issue = _multilabel_sidecar_issue("finetune", recipe, config_summary)
-    if multilabel_issue is not None:
-        issues.append(multilabel_issue)
-    external_test_decision = decisions.get("external_test_locked")
-    external_test_locked = (
-        external_test_decision.value
-        if external_test_decision is not None and external_test_decision.value not in (None, "")
-        else evaluation.get("external_test_locked")
-    )
-    test_after_fit_decision = decisions.get("test_after_fit")
-    test_after_fit = (
-        test_after_fit_decision.value
-        if test_after_fit_decision is not None and test_after_fit_decision.value not in (None, "")
-        else evaluation.get("test_after_fit")
-    )
-    if external_test_locked is True and test_after_fit is True:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "test_after_fit",
-                "test_after_fit=true would evaluate test while external_test_locked=true.",
-                "Should test evaluation be disabled during model selection?",
-                {"evaluation_policy": evaluation, "external_test_locked": external_test_locked},
-            )
-        )
-    return issues
-
-
-def _hparam_tune_issues(
-    recipe: dict,
-    config_summary: dict | None,
-    decisions: dict[str, ResolvedDecision],
-    high_impact: dict[str, dict[str, Any]],
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
-
-    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
-    local_evaluation = (
-        local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
-    )
-    local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
-    if config_summary:
-        for issue in config_summary.get("blocking_issues", []):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "config",
-                    issue,
-                    "Which corrected config, preset path, or index path should this task use?",
-                    {"config_path": config_summary.get("config_path")},
-                )
-            )
-    if config_summary is None:
-        base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else {}
-        base_inputs = base_recipe.get("inputs") if isinstance(base_recipe.get("inputs"), dict) else {}
-        recipe_inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        base_config = base_inputs.get("config") or recipe_inputs.get("config")
-        if base_config:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "config",
-                    (
-                        "Hparam plan generation needs local config YAML content; remote path validation may be "
-                        "deferred, but YAML overrides cannot be generated from an unreadable config."
-                    ),
-                    None,
-                    {"config": base_config},
-                )
-            )
-    multilabel_issue = _multilabel_sidecar_issue("hparam_tune", recipe, config_summary)
-    if multilabel_issue is not None:
-        issues.append(multilabel_issue)
-    local_field_map = {
-        "selection_metric": ("evaluation_policy.selection_metric", "selection_metric"),
-        "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),
-        "selection_split": ("evaluation_policy.selection_split", "train_val_test_policy"),
-        "external_test_locked": ("evaluation_policy.external_test_locked", "external_test_locked"),
-        "test_after_fit": ("evaluation_policy.test_after_fit", "test_after_fit"),
-        "final_eval_split": ("evaluation_policy.final_eval_split", "final_eval_split"),
-        "final_test_unlocked": ("evaluation_policy.final_test_unlocked", "final_eval_unlock"),
-        "require_manual_unlock_for_final_test": (
-            "evaluation_policy.require_manual_unlock_for_final_test",
-            "final_eval_unlock",
-        ),
-    }
-    for eval_field, (path, decision_field) in local_field_map.items():
-        if eval_field not in local_evaluation and not _has_explicit_user_or_local_decision(
-            decisions, local_decisions, decision_field
-        ):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    decision_field,
-                    f"{path} must be explicit in the hparam recipe or user-decision file.",
-                    _question(high_impact, decision_field)
-                    or f"What should {path} be for this hyper-parameter tuning task?",
-                    {"local_recipe": "missing"},
-                )
-            )
-    if not recipe.get("base_recipe"):
-        issues.append(_needs("base_recipe", "base_recipe is required for hyper-parameter tuning.", high_impact))
-    if not search.get("method"):
-        issues.append(_needs("search_method", "search.method is required.", high_impact))
-    elif search.get("method") != "grid":
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "search_method",
-                "Only search.method=grid is supported.",
-                None,
-                {"method": search.get("method")},
-            )
-        )
-    if not search.get("parameters"):
-        issues.append(_needs("hparam_search_space", "search.parameters is required.", high_impact))
-    else:
-        issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
-    issues.extend(_hparam_execution_issues(execution))
-    issues.extend(_hparam_adaptive_issues(adaptive))
-    max_trials = search.get("max_trials")
-    if max_trials in (None, ""):
-        issues.append(_needs("hparam_budget", "search.max_trials is required.", high_impact))
-    else:
-        try:
-            if int(max_trials) <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "hparam_budget",
-                    "search.max_trials must be a positive integer.",
-                    None,
-                    {"max_trials": max_trials},
-                )
-            )
-    if evaluation.get("selection_split") == "test":
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "selection_split",
-                "selection_split=test is not allowed for model selection.",
-                "Which validation split should be used for model selection?",
-                {"evaluation_policy": evaluation},
-            )
-        )
-    user_external_lock = decisions.get("external_test_locked")
-    has_external_lock = (
-        "external_test_locked" in local_evaluation
-        or "external_test_locked" in local_decisions
-        or (user_external_lock is not None and user_external_lock.source == "explicit_user")
-    )
-    if not has_external_lock:
-        issues.append(_needs("external_test_locked", "external_test_locked must be explicit.", high_impact))
-    test_after_fit_decision = decisions.get("test_after_fit")
-    test_after_fit = (
-        test_after_fit_decision.value
-        if test_after_fit_decision is not None and test_after_fit_decision.value not in (None, "")
-        else evaluation.get("test_after_fit")
-    )
-    final_eval_unlock = decisions.get("final_eval_unlock")
-    final_test_unlocked = (
-        final_eval_unlock.value
-        if final_eval_unlock is not None and final_eval_unlock.value not in (None, "")
-        else evaluation.get("final_test_unlocked")
-    )
-    external_test_locked = (
-        user_external_lock.value
-        if user_external_lock is not None and user_external_lock.value not in (None, "")
-        else evaluation.get("external_test_locked")
-    )
-    if test_after_fit is True and not (external_test_locked is False and final_test_unlocked is True):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "test_after_fit",
-                "Trial commands would evaluate test data without an explicit test unlock.",
-                "Should test_after_fit be false, or should external_test_locked=false and final_test_unlocked=true?",
-                {"evaluation_policy": evaluation},
-            )
-        )
-    if evaluation.get("final_eval_split") == "test" and "require_manual_unlock_for_final_test" not in evaluation:
-        issues.append(_needs("final_eval_unlock", "Final test evaluation requires manual unlock policy.", high_impact))
-    finetune_task = config_summary.get("finetune", {}).get("task", {}) if config_summary else {}
-    if local_evaluation.get("selection_metric") and finetune_task.get("monitor"):
-        if local_evaluation["selection_metric"] != finetune_task["monitor"]:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "selection_metric",
-                    "Hparam selection_metric differs from config finetune.task.monitor.",
-                    _question(high_impact, "selection_metric"),
-                    {"recipe": local_evaluation["selection_metric"], "config": finetune_task["monitor"]},
-                )
-            )
-    if local_evaluation.get("selection_mode") and finetune_task.get("monitor_mod"):
-        if local_evaluation["selection_mode"] != finetune_task["monitor_mod"]:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "selection_mode",
-                    "Hparam selection_mode differs from config finetune.task.monitor_mod.",
-                    _question(high_impact, "selection_mode"),
-                    {"recipe": local_evaluation["selection_mode"], "config": finetune_task["monitor_mod"]},
-                )
-            )
-    return issues
-
-
-def _infer_evaluate_issues(
-    recipe: dict,
-    config_summary: dict | None,
-    decisions: dict[str, ResolvedDecision],
-    high_impact: dict[str, dict[str, Any]],
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-
-    if config_summary:
-        for issue in config_summary.get("blocking_issues", []):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "config",
-                    issue,
-                    "Please fix the config before the agent generates commands.",
-                    {"config_path": config_summary.get("config_path")},
-                )
-            )
-    if inputs.get("eval_split") == "test":
-        final_eval_unlock = decisions.get("final_eval_unlock")
-        unlocked = evaluation.get("final_test_unlocked") is True or (
-            final_eval_unlock is not None and final_eval_unlock.value is True
-        )
-        if not unlocked:
-            issues.append(_needs("final_eval_unlock", "Test evaluation requires explicit final unlock.", high_impact))
-    if not inputs.get("eval_split"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "eval_split",
-                "eval_split is required for inference/evaluation.",
-                "Which split should be evaluated?",
-                {"inputs": inputs},
-            )
-        )
-    pretrained_issue = _sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe, decisions)
-    if pretrained_issue is not None:
-        issues.append(pretrained_issue)
-    override_issue = _sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
-    if override_issue is not None:
-        issues.append(override_issue)
-    survival_issue = _survival_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
-    if survival_issue is not None:
-        issues.append(survival_issue)
-    multilabel_issue = _multilabel_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
-    if multilabel_issue is not None:
-        issues.append(multilabel_issue)
-    return issues
-
-
-def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    if not execution:
-        return issues
-    target = execution.get("target", "local")
-    if target not in {"local", "ssh"}:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.target",
-                "execution.target must be local or ssh.",
-                None,
-                {"target": target},
-            )
-        )
-    if target == "ssh" and not execution.get("host"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.host",
-                "execution.host is required when execution.target=ssh.",
-                None,
-                {},
-            )
-        )
-    if execution.get("path_context") not in (None, "local", "remote"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.path_context",
-                "execution.path_context must be local or remote.",
-                None,
-                {"path_context": execution.get("path_context")},
-            )
-        )
-    if execution.get("path_validation") not in (None, "local", "remote", "defer", "ssh"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.path_validation",
-                "execution.path_validation must be local, remote, defer, or ssh.",
-                None,
-                {"path_validation": execution.get("path_validation")},
-            )
-        )
-    if "max_concurrent" in execution:
-        try:
-            if int(execution["max_concurrent"]) <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "execution.max_concurrent",
-                    "execution.max_concurrent must be a positive integer.",
-                    None,
-                    {"max_concurrent": execution.get("max_concurrent")},
-                )
-            )
-    if "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.gpu_pool",
-                "execution.gpu_pool must be a list.",
-                None,
-                {"gpu_pool": execution.get("gpu_pool")},
-            )
-        )
-    if "env" in execution and not isinstance(execution["env"], dict):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.env",
-                "execution.env must be a mapping.",
-                None,
-                {"env": execution.get("env")},
-            )
-        )
-    return issues
-
-
-def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    if not adaptive:
-        return issues
-    if adaptive.get("enabled") is not True:
-        return issues
-    objective = str(adaptive.get("objective_metric") or "test_auroc")
-    if (objective.startswith("test_") or objective.startswith("external_")) and adaptive.get(
-        "test_feedback_for_selection"
-    ) is not True:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "adaptive.test_feedback_for_selection",
-                (
-                    "adaptive.test_feedback_for_selection=true is required when adaptive objective "
-                    "uses test/external metrics."
-                ),
-                None,
-                {"objective_metric": objective},
-            )
-        )
-    if adaptive.get("objective_mode", "max") not in {"max", "min"}:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "adaptive.objective_mode",
-                "adaptive.objective_mode must be max or min.",
-                None,
-                {"objective_mode": adaptive.get("objective_mode")},
-            )
-        )
-    for adaptive_field in ("max_rounds", "max_trials_total", "round_size", "poll_seconds"):
-        if adaptive_field not in adaptive:
-            continue
-        try:
-            if int(adaptive[adaptive_field]) <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    f"adaptive.{adaptive_field}",
-                    f"adaptive.{adaptive_field} must be a positive integer.",
-                    None,
-                    {adaptive_field: adaptive.get(adaptive_field)},
-                )
-            )
-    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
-    if replacement and replacement.get("kill_margin") is not None:
-        try:
-            if float(replacement["kill_margin"]) < 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "adaptive.replacement.kill_margin",
-                    "adaptive.replacement.kill_margin must be a non-negative number.",
-                    None,
-                    {"kill_margin": replacement.get("kill_margin")},
-                )
-            )
-    return issues
 
 
 def _base_finetune_issues(
@@ -1008,38 +340,16 @@ def _base_finetune_issues(
     config_summary: dict | None,
     cli_args: dict,
     policy: dict,
-    approved_defaults: dict,
 ) -> list[DecisionIssue]:
     base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else None
     if not base_recipe:
         return []
     local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
-    base_gate = dict(base_recipe)
+    base_gate = {key: value for key, value in recipe.items() if not key.startswith("_")}
     base_gate["task"] = "finetune"
-    if recipe.get("variant") and not base_gate.get("variant"):
-        base_gate["variant"] = recipe.get("variant")
-    if recipe.get("execution") and not base_gate.get("execution"):
-        base_gate["execution"] = recipe.get("execution")
-
-    local_evaluation = (
-        local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
-    )
-    base_evaluation = dict(base_gate.get("evaluation_policy") or {})
-    for evaluation_field in (
-        "selection_metric",
-        "selection_mode",
-        "selection_split",
-        "external_test_locked",
-        "test_after_fit",
-        "final_eval_split",
-        "require_manual_unlock_for_final_test",
-    ):
-        if evaluation_field not in base_evaluation and evaluation_field in local_evaluation:
-            base_evaluation[evaluation_field] = local_evaluation[evaluation_field]
-    base_gate["evaluation_policy"] = base_evaluation
 
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
-    base_decisions = dict(base_gate.get("decisions") or {})
+    base_decisions = dict(base_recipe.get("decisions") or {})
     for decision_field, value in local_decisions.items():
         if decision_field != "task" and decision_field not in base_decisions:
             base_decisions[decision_field] = value
@@ -1051,7 +361,12 @@ def _base_finetune_issues(
             field: value for field, value in base_cli_args["user_decisions"].items() if field != "task"
         }
     report = evaluate_consultation_gates(
-        "finetune", base_gate, config_summary, base_cli_args, policy, approved_defaults
+        "finetune",
+        base_gate,
+        config_summary,
+        base_cli_args,
+        policy,
+        require_experiment=False,
     )
     return [
         DecisionIssue(
@@ -1063,494 +378,6 @@ def _base_finetune_issues(
         )
         for issue in report.blocking_issues()
     ]
-
-
-def _has_explicit_decision(decisions: dict[str, ResolvedDecision], field: str) -> bool:
-    decision = decisions.get(field)
-    return decision is not None and decision.source in {
-        "explicit_user",
-        "explicit_cli",
-        "explicit_recipe",
-        "explicit_config",
-    }
-
-
-def _has_explicit_user_or_local_decision(
-    decisions: dict[str, ResolvedDecision],
-    local_decisions: dict[str, Any],
-    field: str,
-) -> bool:
-    decision = decisions.get(field)
-    return field in local_decisions or decision is not None and decision.source == "explicit_user"
-
-
-def _hparam_search_parameter_issues(parameters: Any) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    if not isinstance(parameters, dict):
-        return [
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "hparam_search_space",
-                "search.parameters must be a mapping.",
-                None,
-                {"parameters": parameters},
-            )
-        ]
-    allowed_runtime = {
-        "lr",
-        "weight_decay",
-        "batch_size",
-        "epochs",
-        "num_workers",
-        "precision",
-        "gradient_clip_val",
-        "accumulate_grad_batches",
-        "warmup_steps",
-        "patience",
-        "check_val_every_n_epoch",
-        "ckpt_every_n_epochs",
-    }
-    for key, values in parameters.items():
-        if not isinstance(values, list) or not values:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "hparam_search_space",
-                    "Each search parameter must have a non-empty list of values.",
-                    None,
-                    {"parameter": key, "value": values},
-                )
-            )
-        if isinstance(key, str) and key.startswith("runtime."):
-            runtime_name = key.split(".", 1)[1]
-            if runtime_name not in allowed_runtime:
-                issues.append(
-                    DecisionIssue(
-                        DecisionStatus.FAIL,
-                        "hparam_search_space",
-                        "Unsupported runtime search parameter.",
-                        None,
-                        {"parameter": key, "allowed_runtime": sorted(allowed_runtime)},
-                    )
-                )
-        elif isinstance(key, str) and key.startswith("yaml:/"):
-            continue
-        else:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "hparam_search_space",
-                    "Search parameters must use runtime.<name> or yaml:/json/pointer/path keys.",
-                    None,
-                    {"parameter": key},
-                )
-            )
-    return issues
-
-
-def _config_data(config_summary: dict | None) -> dict[str, Any]:
-    data = config_summary.get("data") if isinstance(config_summary, dict) else {}
-    return data if isinstance(data, dict) else {}
-
-
-def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
-    finetune = config_summary.get("finetune") if isinstance(config_summary, dict) else {}
-    return finetune if isinstance(finetune, dict) else {}
-
-
-def _effective_preset_path(task: str, recipe: dict, config_summary: dict | None) -> tuple[str, Any]:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    if task in {"infer", "evaluate"}:
-        value = inputs.get("inference_preset_path")
-        if value not in (None, "", "ASK_USER"):
-            return "inference_preset_path", value
-    value = _config_data(config_summary).get("finetune_preset_path")
-    if task in {"finetune", "hparam_tune", "infer", "evaluate"} and value not in (None, "", "ASK_USER"):
-        return "finetune_preset_path", value
-    return "", None
-
-
-def _survival_sidecar_issue(
-    task: str,
-    recipe: dict,
-    config_summary: dict | None,
-) -> DecisionIssue | None:
-    if not _requires_survival_sidecars(task, recipe, config_summary):
-        return None
-    survival = _config_finetune(config_summary).get("survival")
-    if not isinstance(survival, dict) or not survival.get("issues"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.NEEDS_USER_INPUT,
-        "survival_sidecars",
-        "Survival sidecar files are missing or inconsistent.",
-        (
-            "Please provide valid disease_columns_index, event_time_index, is_event_index, and "
-            "has_label_index files, and keep output_dim equal to the disease column count."
-        ),
-        {"survival": survival},
-    )
-
-
-def _multilabel_sidecar_issue(
-    task: str,
-    recipe: dict,
-    config_summary: dict | None,
-) -> DecisionIssue | None:
-    if not _requires_multilabel_sidecars(task, recipe, config_summary):
-        return None
-    multilabel = _config_finetune(config_summary).get("multilabel")
-    if not isinstance(multilabel, dict) or not multilabel.get("issues"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.NEEDS_USER_INPUT,
-        "multilabel_sidecars",
-        "Multilabel sidecar files are missing or inconsistent.",
-        (
-            "Please provide valid disease_columns_index, label_index, and has_label_index files, "
-            "and keep output_dim equal to the disease column count."
-        ),
-        {"multilabel": multilabel},
-    )
-
-
-def _requires_survival_sidecars(task: str, recipe: dict, config_summary: dict | None) -> bool:
-    task_cfg = _config_finetune(config_summary).get("task")
-    if not isinstance(task_cfg, dict) or task_cfg.get("type") != "survival":
-        return False
-    if task == "preset_prepare":
-        return True
-    if config_summary and config_summary.get("variant_guess") == "sex_age_baseline":
-        return task in {"finetune", "hparam_tune", "infer", "evaluate"}
-    if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
-        _field, preset_path = _effective_preset_path(task, recipe, config_summary)
-        return preset_path in (None, "")
-    return False
-
-
-def _requires_multilabel_sidecars(task: str, recipe: dict, config_summary: dict | None) -> bool:
-    task_cfg = _config_finetune(config_summary).get("task")
-    if not isinstance(task_cfg, dict) or task_cfg.get("type") != "multilabel_classification":
-        return False
-    return task in {"finetune", "hparam_tune", "infer", "evaluate"}
-
-
-def _sex_age_pretrained_backbone_issue(
-    task: str,
-    recipe: dict,
-    decisions: dict[str, ResolvedDecision],
-) -> DecisionIssue | None:
-    if recipe.get("variant") != "sex_age_baseline" or task not in {"finetune", "infer", "evaluate"}:
-        return None
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    decision = decisions.get("pretrained_backbone_path")
-    value = (
-        decision.value
-        if decision is not None and decision.value not in (None, "", "ASK_USER")
-        else inputs.get("pretrained_backbone_path")
-    )
-    if value in (None, "", "ASK_USER"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        "pretrained_backbone_path",
-        "sex_age_baseline does not support pretrained_backbone_path.",
-        None,
-        {"variant": "sex_age_baseline", "pretrained_backbone_path": value},
-    )
-
-
-def _sex_age_override_dataset_names_issue(task: str, recipe: dict) -> DecisionIssue | None:
-    if recipe.get("variant") != "sex_age_baseline" or task not in {"infer", "evaluate"}:
-        return None
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    value = inputs.get("override_dataset_names")
-    if value in (None, "", "ASK_USER"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        "override_dataset_names",
-        "sex_age_baseline does not support override_dataset_names.",
-        None,
-        {"variant": "sex_age_baseline", "override_dataset_names": value},
-    )
-
-
-def _append_remote_survival_sidecar_issues(
-    issues: list[DecisionIssue],
-    task: str,
-    recipe: dict,
-    config_summary: dict | None,
-) -> None:
-    if not _requires_survival_sidecars(task, recipe, config_summary):
-        return
-    survival = _config_finetune(config_summary).get("survival")
-    if not isinstance(survival, dict):
-        return
-    for data_field in ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index"):
-        value = survival.get(data_field)
-        if not value:
-            continue
-        context = _path_context(recipe, value)
-        validation = _path_validation(recipe, context)
-        if context == "remote" and validation in {"ssh", "remote"}:
-            issue = _validate_input_path(recipe, f"finetune.survival.{data_field}", value, configured=True)
-            if issue is not None:
-                issues.append(issue)
-
-
-def _append_remote_multilabel_sidecar_issues(
-    issues: list[DecisionIssue],
-    task: str,
-    recipe: dict,
-    config_summary: dict | None,
-) -> None:
-    if not _requires_multilabel_sidecars(task, recipe, config_summary):
-        return
-    multilabel = _config_finetune(config_summary).get("multilabel")
-    if not isinstance(multilabel, dict):
-        return
-    for data_field in ("disease_columns_index", "label_index", "has_label_index"):
-        value = multilabel.get(data_field)
-        if not value:
-            continue
-        context = _path_context(recipe, value)
-        validation = _path_validation(recipe, context)
-        if context == "remote" and validation in {"ssh", "remote"}:
-            issue = _validate_input_path(recipe, f"finetune.multilabel.{data_field}", value, configured=True)
-            if issue is not None:
-                issues.append(issue)
-
-
-def _path_issues(
-    task: str,
-    recipe: dict,
-    config_summary: dict | None,
-    decisions: dict[str, ResolvedDecision],
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    required_paths: list[tuple[str, Any]] = []
-    if inputs.get("config"):
-        required_paths.append(("config", inputs.get("config")))
-    if task == "preset_prepare":
-        for path in inputs.get("index") or []:
-            required_paths.append(("index", path))
-    if task in {"infer", "evaluate"}:
-        ckpt_decision = decisions.get("ckpt_path")
-        ckpt_path = (
-            ckpt_decision.value
-            if ckpt_decision is not None and ckpt_decision.value not in (None, "")
-            else inputs.get("ckpt_path")
-        )
-        if ckpt_path not in (None, "", "ASK_USER"):
-            required_paths.append(("ckpt_path", ckpt_path))
-    if task == "finetune":
-        for input_field in ("pretrained_backbone_path", "ckpt_path"):
-            if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
-                continue
-            decision = decisions.get(input_field)
-            value = (
-                decision.value
-                if decision is not None and decision.value not in (None, "", "ASK_USER")
-                else inputs.get(input_field)
-            )
-            if value not in (None, "", "ASK_USER"):
-                required_paths.append((input_field, value))
-
-    for path_field, raw_path in required_paths:
-        issue = _validate_input_path(recipe, path_field, raw_path, configured=False)
-        if issue is not None:
-            issues.append(issue)
-
-    if task in {"finetune", "infer", "evaluate"} and config_summary and config_summary.get("data_backend") == "npz":
-        data = _config_data(config_summary)
-        preset_field, preset_path = _effective_preset_path(task, recipe, config_summary)
-        if preset_path not in (None, ""):
-            issue = _validate_input_path(
-                recipe, preset_field, preset_path, configured=preset_field == "finetune_preset_path"
-            )
-            if issue is not None:
-                issues.append(issue)
-        else:
-            value = data.get("finetune_data_index")
-            if value:
-                issue = _validate_input_path(recipe, "finetune_data_index", value, configured=True)
-                if issue is not None:
-                    issues.append(issue)
-    if (
-        task in {"finetune", "infer", "evaluate"}
-        and config_summary
-        and config_summary.get("variant_guess") == "sex_age_baseline"
-        and config_summary.get("data_backend") == "kaldi"
-    ):
-        data = _config_data(config_summary)
-        for data_field in ("kaldi_data_root", "kaldi_manifest"):
-            value = data.get(data_field)
-            if value:
-                issue = _validate_input_path(recipe, data_field, value, configured=True)
-                if issue is not None:
-                    issues.append(issue)
-    _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary)
-    _append_remote_multilabel_sidecar_issues(issues, task, recipe, config_summary)
-    if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
-        sleep2stat = config_summary.get("sleep2stat") or {}
-        data = sleep2stat.get("data") or {}
-        for data_field in ("index", "kaldi_data_root", "kaldi_manifest"):
-            value = data.get(data_field)
-            if value:
-                issue = _validate_input_path(recipe, f"sleep2stat.data.{data_field}", value, configured=True)
-                if issue is not None:
-                    issues.append(issue)
-        for analyzer in sleep2stat.get("analyzers", []):
-            if analyzer.get("enabled") is False:
-                continue
-            for analyzer_field in ("config", "ckpt_path"):
-                value = analyzer.get(analyzer_field)
-                if not value or _looks_like_placeholder_path(value):
-                    continue
-                issue = _validate_input_path(
-                    recipe,
-                    f"sleep2stat.analyzer.{analyzer.get('name')}.{analyzer_field}",
-                    value,
-                    configured=True,
-                )
-                if issue is not None:
-                    issues.append(issue)
-    return issues
-
-
-def _validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: bool) -> DecisionIssue | None:
-    context = _path_context(recipe, raw_path)
-    validation = _path_validation(recipe, context)
-    if context not in {"local", "remote"}:
-        return DecisionIssue(
-            DecisionStatus.FAIL,
-            "execution.path_context",
-            "execution.path_context must be local or remote.",
-            None,
-            {"path_context": context},
-        )
-    if validation not in {"local", "remote", "defer", "ssh"}:
-        return DecisionIssue(
-            DecisionStatus.FAIL,
-            "execution.path_validation",
-            "execution.path_validation must be local, remote, defer, or ssh.",
-            None,
-            {"path_validation": validation},
-        )
-    if validation == "remote":
-        validation = "ssh"
-    if context == "remote" and validation == "defer":
-        return DecisionIssue(
-            DecisionStatus.WARN,
-            field,
-            f"{_path_label(configured)} path validation deferred for remote path: {raw_path}",
-            None,
-            {"path": str(raw_path), "path_context": "remote", "path_validation": "defer"},
-        )
-    if context == "remote" and validation == "ssh":
-        host = _execution(recipe).get("host")
-        if not host:
-            return DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.host",
-                "execution.host is required for remote path validation.",
-                None,
-                {"path": str(raw_path)},
-            )
-        result = subprocess.run(["ssh", str(host), f"test -e {_sh(raw_path)}"], text=True, capture_output=True)
-        if result.returncode != 0:
-            return DecisionIssue(
-                DecisionStatus.FAIL,
-                field,
-                f"{_path_label(configured)} remote path does not exist: {raw_path}",
-                None,
-                {"path": str(raw_path), "host": str(host), "stderr": result.stderr.strip()},
-            )
-        return None
-
-    path = Path(str(raw_path)).expanduser()
-    if not path.is_absolute():
-        path = REPO_ROOT / path
-    if path.exists():
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        field,
-        f"{_path_label(configured)} path does not exist: {raw_path}",
-        None,
-        {"path": str(raw_path), "path_context": "local", "path_validation": validation},
-    )
-
-
-def _sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIssue | None:
-    context = _path_context(recipe, raw_path)
-    validation = _path_validation(recipe, context)
-    if context != "local" or validation in {"remote", "ssh"}:
-        return None
-    path = Path(str(raw_path)).expanduser()
-    if not path.is_absolute():
-        path = REPO_ROOT / path
-    if not path.exists() or (path.is_dir() and not any(path.iterdir())):
-        return None
-    return DecisionIssue(
-        DecisionStatus.NEEDS_USER_INPUT,
-        "sleep2stat.run.output_dir",
-        "sleep2stat run.output_dir already exists and is not empty; sleep2stat run directories are single-use.",
-        "Use a fresh run.output_dir or manually clear the existing directory before generating commands.",
-        {"path": str(raw_path), "resolved_path": str(path)},
-    )
-
-
-def _path_label(configured: bool) -> str:
-    return "Configured input" if configured else "Required input"
-
-
-def _path_context(recipe: dict, raw_path: Any) -> str:
-    execution = _execution(recipe)
-    explicit = execution.get("path_context")
-    if explicit:
-        return str(explicit)
-    if execution.get("target") == "ssh" and Path(str(raw_path)).expanduser().is_absolute():
-        return "remote"
-    return "local"
-
-
-def _path_validation(recipe: dict, context: str) -> str:
-    explicit = _execution(recipe).get("path_validation")
-    if explicit:
-        return str(explicit)
-    return "defer" if context == "remote" else "local"
-
-
-def _execution(recipe: dict) -> dict[str, Any]:
-    return recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-
-
-def _sh(value: Any) -> str:
-    import shlex
-
-    return shlex.quote(str(value))
-
-
-def _as_list(value: Any) -> list[Any]:
-    if value in (None, "", []):
-        return []
-    if isinstance(value, (list, tuple, set)):
-        return list(value)
-    return [value]
-
-
-def _looks_like_placeholder_path(value: Any) -> bool:
-    text = str(value).strip()
-    lowered = text.lower()
-    return (
-        lowered in {"", "ask_user", "none", "null", "todo", "tbd", "placeholder"}
-        or text.startswith("/path/to")
-        or text.startswith("<")
-        or "ASK_USER" in text
-    )
 
 
 def _output_paths_missing(recipe: dict) -> bool:

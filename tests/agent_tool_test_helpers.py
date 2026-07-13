@@ -69,6 +69,40 @@ def survival_config_payload(index_path: Path, sidecars: dict[str, str], *, outpu
 
 
 def write_yaml(path: Path, payload: dict) -> Path:
+    if "task" in payload:
+        phase = {
+            "preset_prepare": "prepare",
+            "pretrain": "train",
+            "finetune": "train",
+            "hparam_tune": "train",
+            "infer": "evaluate",
+            "sleep2stat": "analyze",
+        }.get(str(payload["task"]), "analyze")
+        experiment = payload.get("experiment") or {
+            "id": "unit-experiment",
+            "title": "Unit experiment",
+            "objective": "Exercise agent tooling contracts.",
+            "baseline": {"type": "none", "rationale": "unit fixture"},
+        }
+        experiment = {**experiment, "root": str(path.parent)}
+        step = payload.get("step") or {
+            "id": f"unit-{str(payload['task']).replace('_', '-')}",
+            "phase": phase,
+            "purpose": "Exercise the requested agent tooling step.",
+        }
+        payload = {
+            **payload,
+            "experiment": experiment,
+            "step": step,
+        }
+        root = Path(experiment["root"])
+        root.mkdir(parents=True, exist_ok=True)
+        manifest = root / "experiment.yaml"
+        if not manifest.exists():
+            manifest.write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
+        run_manifest = root / "run_manifest.tsv"
+        if not run_manifest.exists():
+            run_manifest.write_text("step_id\trun_id\n")
     path.write_text(yaml.safe_dump(payload))
     return path
 
@@ -85,9 +119,25 @@ def write_finetune_recipe(tmp_path: Path, *, include_label: bool = True, variant
         "name": "unit_finetune",
         "task": "finetune",
         "variant": variant,
+        "experiment": {
+            "id": "unit-experiment",
+            "title": "Unit experiment",
+            "objective": "Exercise agent tooling contracts.",
+            "root": str(tmp_path),
+            "baseline": {"type": "none", "rationale": "unit fixture"},
+        },
+        "step": {
+            "id": "unit-finetune",
+            "phase": "train",
+            "purpose": "Run the unit finetune fixture.",
+        },
         "inputs": inputs,
         "runtime": {"devices": [0]},
-        "artifacts": {"results_csv_path": str(tmp_path / "results.csv"), "version_name": "unit"},
+        "artifacts": {
+            "results_csv_path": str(tmp_path / "results.csv"),
+            "version_name": "unit",
+            "overwrite": False,
+        },
         "evaluation_policy": {
             "selection_metric": "val_ahi_pearson",
             "selection_mode": "max",

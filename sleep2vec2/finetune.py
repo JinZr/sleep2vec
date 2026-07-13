@@ -81,8 +81,10 @@ def supervised(args, config_bundle):
     version = args.version
     preexisting_wandb_run = wandb.run
     logger = WandbLogger(
-        project="sleep2vec2-finetune",  # 相当于 TensorBoard 的 log dir
-        name=f"sleep2vec2-finetune-{version}",  # run 名称
+        project=getattr(args, "wandb_project", None) or "sleep2vec2-finetune",  # 相当于 TensorBoard 的 log dir
+        name=version,  # run 名称
+        group=getattr(args, "wandb_group", None),
+        mode=getattr(args, "wandb_mode", None),
         save_dir="./wandb_logs",  # 本地缓存目录，可选
         log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )
@@ -311,9 +313,6 @@ def build_version_name(args) -> str:
 
 
 if __name__ == "__main__":
-    # Login to WandB only when running as a script
-    wandb.login()
-
     parser = argparse.ArgumentParser(description="Fine-tune sleep2vec downstream models on PSG data.")
 
     parser.add_argument(
@@ -461,6 +460,9 @@ if __name__ == "__main__":
         required=True,
         help="path to the CSV file storing aggregated evaluation metrics",
     )
+    parser.add_argument("--wandb-project", type=str, default=None, help="W&B project name.")
+    parser.add_argument("--wandb-group", type=str, default=None, help="W&B run group.")
+    parser.add_argument("--wandb-mode", type=str, default=None, help="W&B run mode.")
     parser.add_argument(
         "--test-after-fit",
         action=argparse.BooleanOptionalAction,
@@ -496,4 +498,6 @@ if __name__ == "__main__":
     logging.info(args)
 
     # Run fine-tuning
+    if args.wandb_mode not in {"offline", "disabled"}:
+        wandb.login()
     supervised(args, config_bundle)

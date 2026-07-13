@@ -2,6 +2,17 @@ name: ppg_cox_finetune_example
 task: finetune
 variant: sleep2vec
 
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: train
+  purpose: ASK_USER
+
 inputs:
   config: configs/ppg_cox_finetune_large.yaml
   label_name: incident_cox
@@ -24,6 +35,7 @@ runtime:
 artifacts:
   version_name: ppg-cox-agent-example
   results_csv_path: results/ppg_cox_agent_example.csv
+  overwrite: false
 
 evaluation_policy:
   selection_metric: val_loss

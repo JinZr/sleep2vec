@@ -1,92 +1,26 @@
 # Task Recipe Schema
 
-Recipes are YAML mappings.
+Recipes are YAML mappings. This minimal skeleton shows the major sections; it is not a complete runnable recipe.
 
 ```yaml
-name: ppg_ahi_finetune_example
-task: finetune
+name: unit_hparam
+task: hparam_tune
 variant: sleep2vec
-
+experiment: {id: unit-experiment, title: Unit experiment, objective: Exercise tuning, root: artifacts/experiments/unit, baseline: {type: none, rationale: First run.}}
+step: {id: tune, phase: train, purpose: Select a validation configuration.}
 inputs:
-  config: configs/ppg_ahi_finetune_large.yaml
+  config: configs/example.yaml
   label_name: ahi
-  pretrained_backbone_path: null
-  ckpt_path: null
-  final_eval_config_path: null
-
-runtime:
-  devices: [0]
-  accelerator: gpu
-  precision: bf16-mixed
-  epochs: 30
-  batch_size: 12
-  num_workers: 8
-  lr: 1.0e-6
-  weight_decay: 1.0e-5
-  gradient_clip_val: 1.0
-  accumulate_grad_batches: 1
-  wandb_mode: offline
-
-artifacts:
-  version_name: ppg-ahi-agent-example
-  results_csv_path: results/ppg_ahi_agent_example.csv
-
-execution:
-  target: local
-  host: null
-  workdir: null
-  conda_env: null
-  gpu_pool: []
-  max_concurrent: 1
-  wandb_project: null
-  wandb_group: null
-  log_dir: logs
-  pid_dir: pids
-  env: {}
-
-adaptive:
-  enabled: false
-  objective_metric: test_auroc
-  objective_mode: max
-  test_feedback_for_selection: false
-  max_rounds: 3
-  max_trials_total: 24
-  round_size: 3
-  poll_seconds: 60
-  replacement:
-    enabled: true
-    allow_running_stop: true
-    grace_epochs: 1
-    grace_minutes: 10
-    kill_margin: 0.05
-  suggest:
-    strategy: best_neighborhood
-
 evaluation_policy:
   selection_split: val
-  final_eval_split: test
   external_test_locked: true
-  test_after_fit: false
-  require_manual_unlock_for_final_test: true
-
-decisions:
-  task:
-    value: finetune
-    source: explicit_recipe
-  label_name:
-    value: ahi
-    source: explicit_recipe
-  pretrained_backbone_path:
-    value: null
-    source: explicit_recipe
-    meaning: "train downstream model without loading a pretrained backbone"
-  external_test_locked:
-    value: true
-    source: explicit_recipe
-  overwrite_policy:
-    value: false
-    source: explicit_recipe
+search:
+  method: grid
+  max_runs: 1
+  parameters: {runtime.lr: [1.0e-6]}
 ```
+
+See [`recipes/examples/tiny_fixture_hparam.yaml`](../examples/tiny_fixture_hparam.yaml) for a complete runnable example.
 
 Use `ASK_USER` when a recipe author intentionally wants the agent to stop and ask the user before generating commands.
 
@@ -103,31 +37,41 @@ High-impact fields must not be silently inferred from filenames, nearby configs,
 Common top-level fields:
 
 - `name`: stable recipe name.
-- `task`: one of `preset_prepare`, `pretrain`, `adapt`, `finetune`, `infer`, `evaluate`, `hparam_tune`, `sleep2stat`.
+- `task`: one of `preset_prepare`, `finetune`, `infer`, `evaluate`, `hparam_tune`, `sleep2stat`.
+- `experiment`: required experiment id, title, objective, root, and baseline metadata for runnable plans.
+- `step`: required id, phase, and purpose for the current preparation, training, evaluation, or analysis step.
 - `variant`: one of `sleep2vec`, `sleep2vec2`, `sleep2expert`, or `sex_age_baseline` for model tasks; omit it or set it to `null` for `task: sleep2stat`.
 - `inputs`: paths and task-specific inputs.
 - `inputs.eval_split`: explicit split for inference/evaluation; use `ASK_USER` only when the agent must stop.
 - `inputs.final_eval_config_path`: selected config for unlocked final external-test evaluation when hparam search uses `yaml:/...` config overrides.
-- `runtime`: low-impact runtime knobs and CLI hyperparameters.
+- `runtime`: low-impact runtime knobs and CLI hyperparameters, including explicit `wandb_mode` for W&B-backed finetune variants.
 - `artifacts`: generated output paths and version names.
 - `execution`: optional hparam orchestration settings. Existing recipes may omit this and still generate local scripts only.
 - `adaptive`: optional append-only hparam workflow. Existing recipes may omit this and remain static validation-only tuning.
 - `evaluation_policy`: split, selection, and external-test locking policy.
-- `search`: hyper-parameter tuning method, budget, and parameters. V1 supports `method: grid` only.
+- For `hparam_tune`, `evaluation_policy` accepts only `selection_metric`, `selection_mode`, `selection_split`, `external_test_locked`, `test_after_fit`, `final_eval_split`, `final_test_unlocked`, and `require_manual_unlock_for_final_test`.
+- `search`: hyper-parameter tuning method, budget, and parameters. The supported method is `grid`.
+- `search.max_runs`: required positive run budget for hparam tuning.
 - `search.parameters`: keys must be `runtime.lr`, `runtime.weight_decay`, `runtime.batch_size`, `runtime.epochs`, `runtime.num_workers`, `runtime.precision`, `runtime.gradient_clip_val`, `runtime.accumulate_grad_batches`, `runtime.warmup_steps`, `runtime.patience`, `runtime.check_val_every_n_epoch`, `runtime.ckpt_every_n_epochs`, or `yaml:/json/pointer/path`.
 - `yaml:/...`: JSON Pointer-like config overrides used for generated config copies.
 - `execution.target`: `local` or `ssh`; `execution.host` is required for `ssh`.
+- `execution.workdir`: optional absolute run cwd and PYTHONPATH root; when omitted, the repository root is used.
 - `execution.path_context`: optional `local` or `remote`; remote absolute paths are not checked with local `Path.exists`.
-- `execution.path_validation`: optional `local`, `defer`, or `ssh`; remote defaults to `defer`, and `ssh` uses short `test -e` checks.
+- `execution.path_validation`: optional `local`, `remote`, `defer`, or `ssh`; remote paths default to `defer`, while `remote` and `ssh` use short `test -e` checks.
 - `execution.gpu_pool`: GPU ids used by `agent_tools hparam-launch` for `CUDA_VISIBLE_DEVICES`.
-- `execution.max_concurrent`: maximum trials launched immediately by `hparam-launch --execute`.
-- `execution.conda_env`, `execution.wandb_project`, `execution.wandb_group`, `execution.log_dir`, `execution.pid_dir`, and `execution.env`: runtime wrapper settings only; they do not change generated trainer configs.
-- `adaptive.enabled`: when true, `agent_tools hparam-adaptive-*` commands create `adaptive/` ledgers and per-round plans without modifying old trials.
+- `execution.gpus_per_run`: number of GPU ids assigned to each managed run.
+- `execution.max_concurrent`: maximum runs launched immediately by `hparam-launch --execute`.
+- `execution.wandb_project` and `execution.wandb_group`: emitted as explicit `--wandb-project` and `--wandb-group` values in generated W&B-backed hparam finetune commands; they do not rewrite the generated YAML config.
+- `execution.conda_env` and `execution.env`: runtime wrapper settings only. `execution.env` must not set `WANDB_PROJECT`, `WANDB_GROUP`, `WANDB_RUN_GROUP`, or `WANDB_MODE`; use the explicit fields above. Logs and PID files are always co-located in the managed run directory.
+- `adaptive.enabled`: when true, `agent_tools hparam-adaptive-*` commands create `adaptive/` ledgers and per-round plans without modifying old runs.
+- `adaptive.max_runs_total`: maximum number of registered runs across adaptive rounds.
 - `adaptive.objective_metric`: defaults to `test_auroc` for external-optimized tuning.
 - `adaptive.test_feedback_for_selection`: must be true if `objective_metric` starts with `test_` or `external_`.
 - `adaptive.replacement.allow_running_stop`: allows stopping manifest-recorded running jobs only when failure/timeout/live-metric evidence says they are bad.
-- `adaptive.suggest.strategy`: v1 supports `best_neighborhood`.
+- `adaptive.suggest.strategy`: supports `best_neighborhood`.
 - `decisions`: explicit high-impact decision sources.
+
+`pretrain` and `adapt` are not runnable task-recipe values because agent tools do not render those commands. Use the corresponding skill and direct variant runtime CLI instead.
 
 Sleep2stat recipes use the existing `sleep2stat` CLI and do not use a model variant:
 

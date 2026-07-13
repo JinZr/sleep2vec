@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-07-13
+
+- Made local status tables non-authoritative, limited adaptive supersede to canonical `planned/pending`, and added combination coverage for launch, monitor, stop, and adaptive races.
+- Preserved and reranked same-step runs across multiple plans, while postprocessing validates the complete workspace ranking before retaining current-plan keys.
+- Added strict non-run table reads and one local/SSH managed-output preflight for canonical, matrix, event, report, W&B, checkpoint, and experiment lifecycle writers.
+- Required hparam recipes to declare their own experiment/step ownership and validated user-selected effective configs before workspace mutation.
+
+## 2026-07-12
+
+- Refreshed the agent-tooling index after splitting decision, plan, hparam, and experiment responsibilities behind their existing public entrypoints.
+- Added ownership and reuse guidance for `decision_*`, `plan_*`, `hparam_*`, `run_artifacts`, `run_evidence`, `experiment_io`, and `experiment_tracking`.
+- Converged active experiment identity on complete `(step_id, run_id)` keys and removed compatibility readers, aliases, and automatic aggregation for historical workspaces.
+- Renamed active plan, status, adaptive-registry, recipe, and Python-facade contracts to run-only terminology while retaining all 31 CLI subcommands.
+- Documented the shared no-write plan preflight, mutation-free blocked metadata behavior, adaptive preflight ordering, and all-snapshot launch validation.
+- Documented exact frozen runtime/checkpoint paths, raw-only unmatched W&B evidence, and canonical-table validation before experiment mutations.
+- Added state-machine coverage for blocked retries, adaptive initialization, zero-partial launch, terminal-state stickiness, exact artifact/W&B ranking, and historical read-only boundaries.
+- Tightened managed-run boundaries so complete identities never fall back by version, frozen metadata cannot drift, W&B and auxiliary evidence update only owned fields, and local/workspace status snapshots share one reduced transition.
+- Made every hparam and experiment writer preflight initialized ownership, made remote reads fail closed, aligned script cwd with frozen runtime paths, and limited launch events to processes started by the current invocation.
+- Established `run_manifest.tsv` as the sole durable status owner, filtered launch status from launch/monitor/experiment evidence, made terminal stop fail before PID access, and made adaptive digests consume the monitor-owned status table.
+- Unified `step.yaml` producers behind one merge contract, persisted search parameters only as raw `runtime.*` / `yaml:/...` keys, and required explicit one-row or many-row cardinality at every managed-table boundary.
+- Made remote checkpoint scans fail closed without replacing prior manifests and retained multiple epoch rows across repeated checkpoint scans.
+- Made canonical manifest commits return the exact rows used by launch, monitor, stop, and adaptive mirrors and events.
+- Made remote PID and process-probe uncertainty recoverable as `unknown_remote`, moved actual snapshot verification into the shared hparam preflight, and limited adaptive supersede to execute mode.
+- Added checkpoint eligibility checks for paired frozen artifact paths and prior manifest ownership before full-table replacement.
+- Closed the canonical writer boundary by routing local and SSH W&B/monitor observations through `merge_run_manifest`, using its committed rows for run matrices, reports, and payloads, and documenting an observation-only tracking layer.
+- Made managed candidate validation precede legal other-step filtering, made `collect-runs` fail closed on unavailable canonical manifests, and unified local experiment-root persistence while preserving exact SSH root strings.
+- Centralized strict step/run canonical reads in the workspace owner, distinguished missing, valid empty, and corrupt lifecycle states, and prohibited owner-bypassing canonical I/O.
+- Required provenance-specific external ownership proof before evidence allowlisting and made repository-owned plan/run/adaptive/event locators absolute without rewriting user semantic input paths.
+- Tightened authoritative experiment/step YAML, managed-table empty/header lifecycle, ranking/registry/candidate ownership, postprocess path canonicalization, and remote PID missing semantics without adding a schema or compatibility layer.
+- Added cross-owner regressions for empty tables, foreign evidence, registry/ranking drift, relative locators, repeated checkpoint scans, and fail-closed PID/SSH reads.
+- Sealed the remaining owner/lifecycle gaps: new canonical keys now prove experiment ownership, recursive YAML aliases and dangling table symlinks fail closed across experiment and hparam readers, corrupt or non-positive local PID evidence stays non-terminal and cannot reach kill, collect output cannot overwrite canonical state through path, symlink, or hard-link aliases, existing checkpoint rankings prove ownership before scans, and postprocess replay/filter boundaries are cwd-stable and non-empty.
+- Classified confirmed invalid local PID content as non-launchable `missing_pid`, made transient local read errors preserve launch eligibility by aborting without mutation, and made planner overwrite reject symlink or hard-link aliases across plan, run-matrix, and event outputs.
+- Required strict experiment/step spec parsing, absolute remote final-report paths, and direct frozen-directory ownership for non-empty checkpoint evidence.
+- Removed stale guidance that directed changes to private helpers in the monolithic `decisions.py`, `plans.py`, `hparam.py`, or `experiments.py` implementations.
+- No schema layer or schema-version field was added.
+
 ## 2026-06-21
 
 - Refreshed the `main` branch index for commit `d95c9d45d63479b0fc28b011e138002691921104`.

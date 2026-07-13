@@ -1,25 +1,25 @@
 {
   "branch": "main",
-  "commit": "d95c9d45d63479b0fc28b011e138002691921104",
-  "generated_at": "2026-06-21T04:32:55Z",
+  "commit": "e5d8f614012aa115557634d06397b09146624e82",
+  "generated_at": "2026-07-12T15:14:28Z",
   "mode": "refresh",
   "coverage": {
     "tracked_file_counts": {
       "sleep2vec": 87,
-      "data": 9,
+      "data": 10,
       "preprocess": 7,
-      "sleep2vec2": 110,
-      "sleep2expert": 115,
+      "sleep2vec2": 111,
+      "sleep2expert": 116,
       "sleep2stat": 30,
       "sleep2vec_moe": 0,
       "sleep2vec_hires": 0,
-      "configs": 103,
-      "tests": 98,
+      "configs": 106,
+      "tests": 108,
       "utils": 8,
-      "agent_tools": 18,
+      "agent_tools": 33,
       "skills": 37,
-      "recipes": 25,
-      "agent_policy_and_contract_docs": 9
+      "recipes": 27,
+      "agent_policy_and_contract_docs": 10
     },
     "function_catalog_scope": [
       "config parsing, built-in task semantics, LoRA/DoRA adapter settings, and run-artifact persistence",
@@ -35,7 +35,7 @@
       "standalone UKB/asleep night cutting, UKB annotation parsing, UKB demographic collection, Kaldi index repair, and case-control matching utilities",
       "downstream evaluation metrics including specificity, downstream evaluation plots, pair-accuracy heatmaps, and diagnostics hooks",
       "sleep2stat config parsing, NPZ/Kaldi record loading, analyzer/reducer registries, model/YASA/SpO2 analyzers, output bundle writers, plotting, and single-use output semantics",
-      "agent_tools CLI, recipe schemas, skill manifests, consultation gates, survival sidecar/index summaries, context bundles, generated command plans, hparam launch/monitor/select/export, experiment monitoring, adaptive hparam loops, progress files, final-test unlock gates, and external-test locking policy"
+      "agent_tools CLI, run-only recipe and artifact contracts, skill manifests, consultation gates, responsibility-based decision/plan/hparam/experiment owners, canonical local roots and exact remote roots, absolute management locators, strict step/run canonical lifecycle readers, provenance-specific external ownership proof, canonical step envelopes, raw managed parameters, explicit table cardinality, observation-only tracking commits, durable status reduction, fail-closed checkpoint scans, validation-before-filter boundaries, no-write plan preflight, exact runtime/checkpoint links, context bundles, generated command plans, hparam launch/monitor/select/export, experiment monitoring, adaptive hparam loops, progress files, final-test unlock gates, and external-test locking policy"
     ],
     "workflow_scope": [
       "pretrain",
@@ -57,7 +57,6 @@
     "egs/ contains tracked example data scaffolding but is outside this branch-index coverage scope",
     "tracked visualization font binaries are noted at directory level, not indexed function-by-function",
     "__pycache__, .DS_Store, and ignored local artifacts are excluded",
-    "untracked workspaces such as index/ and new_index/ are excluded",
-    "product code outside doc/codex_index/branches/main/ was not modified"
+    "untracked workspaces such as index/ and new_index/ are excluded"
   ]
 }

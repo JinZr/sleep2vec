@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from agent_tools.plans import evaluate_recipe
-from agent_tools.recipes import load_recipe_with_base
+from agent_tools.recipes import load_recipe_with_base, load_yaml_file
 
 
 def _recipe_case(path: str, exit_code: int, status: str, fields: set[str] | None = None):
@@ -138,6 +138,29 @@ def test_load_recipe_with_base_resolves_relative_to_recipe_file(tmp_path: Path):
 
     assert recipe["_base_recipe"]["task"] == "finetune"
     assert recipe["inputs"]["label_name"] == "ahi"
+
+
+def test_load_yaml_file_rejects_duplicate_keys(tmp_path: Path):
+    path = tmp_path / "duplicate.yaml"
+    path.write_text("task: finetune\ntask: infer\n")
+
+    with pytest.raises(ValueError, match="duplicate key: task"):
+        load_yaml_file(path)
+
+
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ("{}\n", "non-empty mapping"),
+        ("node: &node\n  child: *node\n", "recursive YAML alias"),
+    ],
+)
+def test_load_yaml_file_rejects_empty_mapping_and_recursive_alias(tmp_path: Path, contents: str, message: str):
+    path = tmp_path / "invalid.yaml"
+    path.write_text(contents)
+
+    with pytest.raises(ValueError, match=message):
+        load_yaml_file(path)
 
 
 def test_recipe_cases_cover_checked_in_examples_and_templates():

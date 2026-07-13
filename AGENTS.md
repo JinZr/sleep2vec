@@ -84,13 +84,23 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 ## Agent Stop-And-Consult Policy
 Agents must not silently guess high-impact experiment decisions.
 
-Before generating runnable commands for preset preparation, finetuning, inference, evaluation, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor`, `agent_tools context`, or `agent_tools plan`.
+Before generating runnable commands for preset preparation, finetuning, inference, evaluation, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`. `agent_tools context` is diagnostic-only and does not authorize runnable commands.
 
 If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. Do not run training. Do not generate executable scripts. Do not evaluate external test data.
 
 Generated runtime commands must respect recipe `variant`; do not route `sleep2vec2` or `sleep2expert` recipes through root `sleep2vec` entrypoints.
 
 High-impact decisions include label selection, split policy, external-test locking, checkpoint selection, pretrained-backbone choice, preset regeneration, overwrite behavior, required channels, selection metric, metric direction, and hyper-parameter search budget.
+
+## Experiment Management Policy
+
+- Every new runnable recipe and plan must declare an `experiment` with `id`, `title`, `objective`, `root`, and `baseline`, plus a `step` with `id`, `phase`, and `purpose`.
+- Runnable plans must be written inside `experiment.root`. Use the workspace as the human entry point; keep heavyweight datasets, checkpoints, W&B files, and trainer logs in their canonical locations and record links to them.
+- Runs must have both a stable `run-NNN` id and a semantic parameter-derived name. Do not create new `trial_000`-style artifact names that require opening configs to understand.
+- Freeze the resolved recipe, generated config, launch command, and hashes before execution. Do not silently rewrite a planned run after launch.
+- Monitoring may update status and reports but must not start pending runs. Launching is an explicit action.
+- Stopping a run requires a recorded reason. Finalization requires no active runs and a non-empty final report.
+- This policy applies to new work. Do not migrate or rename historical experiment trees unless the user explicitly asks.
 
 ## Config Strictness Policy
 - Follow “let it crash” for model/data semantics: missing or inconsistent YAML fields that affect model shape, task semantics, or evaluation should raise immediately.

@@ -1,5 +1,15 @@
 name: sleep2stat_psg_yasa_microstructure_example
 task: sleep2stat
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: analyze-psg-yasa
+  phase: analyze
+  purpose: Run PSG YASA microstructure analysis.
 
 inputs:
   config: configs/sleep2stat/psg_yasa_microstructure_v02.yaml
