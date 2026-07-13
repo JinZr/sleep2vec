@@ -65,17 +65,21 @@ def select_hparam_candidates(
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
         validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
-    current_keys = {managed_run_key(run) for run in plan["runs"]}
     preserved = [
         row
         for row in existing_ranked
-        if managed_run_key(row) not in current_keys and artifacts.float_or_none(row.get("score")) is not None
+        if row.get("step_id") != step_id and artifacts.float_or_none(row.get("score")) is not None
     ]
-    prior_step_rows = [row for row in preserved if row.get("step_id") == step_id]
+    prior_step_rows = [
+        row
+        for row in existing_ranked
+        if row.get("step_id") == step_id and artifacts.float_or_none(row.get("score")) is not None
+    ]
     for row in prior_step_rows:
         if row.get("metric") != metric:
             raise ValueError("Existing ranking selection metric differs from the current recipe.")
     remaining_prior_keys = {managed_run_key(row) for row in prior_step_rows}
+    step_runs = []
     step_manifest = read_step_manifest(workspace, step_id)
     for registered_plan_dir in step_manifest["plans"]:
         registered_root = Path(str(registered_plan_dir))
@@ -96,14 +100,11 @@ def select_hparam_candidates(
             raise ValueError(f"Registered plan task differs from recipe.resolved.yaml: {registered_root}")
         if resolved_recipe.get("task") != "hparam_tune":
             continue
-        registered_runs = registered_plan.get("runs")
-        matched_keys = (
-            {managed_run_key(run) for run in registered_runs if managed_run_key(run) in remaining_prior_keys}
-            if isinstance(registered_runs, list)
-            else set()
-        )
         registered_plan = artifacts.read_hparam_plan(registered_root)
         registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        registered_step = registered_recipe.get("step") if isinstance(registered_recipe.get("step"), dict) else {}
+        if str(registered_step.get("id") or "") != step_id:
+            raise ValueError(f"Registered hparam plan belongs to a different step: {registered_root}")
         registered_evaluation = (
             registered_recipe.get("evaluation_policy")
             if isinstance(registered_recipe.get("evaluation_policy"), dict)
@@ -113,12 +114,14 @@ def select_hparam_candidates(
             raise ValueError("Existing ranking selection metric differs from the current recipe.")
         if registered_evaluation.get("selection_mode") != mode:
             raise ValueError("Existing ranking selection mode differs from the current recipe.")
-        remaining_prior_keys -= matched_keys
+        registered_runs = registered_plan["runs"]
+        step_runs.extend(registered_runs)
+        remaining_prior_keys -= {managed_run_key(run) for run in registered_runs}
     if remaining_prior_keys:
         raise ValueError("Existing ranking rows are not owned by a registered plan for this step.")
     rows = []
     unscored_rows = []
-    for run in plan["runs"]:
+    for run in step_runs:
         canonical = resolve_run_row(canonical_rows, run)
         if canonical is None:
             raise ValueError(f"Managed run is missing from run_manifest.tsv: {run['step_id']} / {run['run_id']}")
@@ -152,19 +155,11 @@ def select_hparam_candidates(
     )
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
-    current_ranked = ranked
-    validate_managed_run_rows(current_ranked, source="current ranking", cardinality="one_per_run")
-    step_ranked = [row for row in [*preserved, *current_ranked] if row.get("step_id") == step_id]
+    step_ranked = ranked
+    validate_managed_run_rows(step_ranked, source="current ranking", cardinality="one_per_run")
     if not step_ranked:
         raise ValueError(f"No valid {metric} scores are available for hparam selection.")
-    step_ranked = sorted(
-        step_ranked,
-        key=lambda row: artifacts.sortable_score(row.get("score"), reverse),
-        reverse=reverse,
-    )
-    for rank, row in enumerate(step_ranked, start=1):
-        row["rank"] = rank
-    all_ranked = [row for row in preserved if row.get("step_id") != step_id] + step_ranked
+    all_ranked = preserved + step_ranked
     write_rows(out, all_ranked)
     merge_run_manifest(
         workspace,

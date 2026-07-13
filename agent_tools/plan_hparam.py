@@ -92,14 +92,65 @@ def final_test_checkpoint_issues(
 
 def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     config_path = inputs.get("config")
     if not config_path:
         return []
     try:
         base_config = load_yaml(config_path)
+        base_data = base_config.get("data") if isinstance(base_config.get("data"), dict) else {}
+        base_finetune = base_config.get("finetune") if isinstance(base_config.get("finetune"), dict) else {}
+        base_task = base_finetune.get("task") if isinstance(base_finetune.get("task"), dict) else {}
+        data_backend = inputs.get("data_backend")
+        if data_backend in (None, ""):
+            data_backend = runtime.get("data_backend")
+        if data_backend in (None, ""):
+            data_backend = base_data.get("backend") or "npz"
+        selection_metric = evaluation.get("selection_metric")
+        if selection_metric in (None, ""):
+            selection_metric = base_task.get("monitor")
+        selection_mode = evaluation.get("selection_mode")
+        if selection_mode in (None, ""):
+            selection_mode = base_task.get("monitor_mod")
         for combo in hparam_combos(recipe):
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
+            data = run_config.get("data") if isinstance(run_config.get("data"), dict) else {}
+            finetune = run_config.get("finetune") if isinstance(run_config.get("finetune"), dict) else {}
+            task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
+            for field, (decision_value, config_value, config_field) in {
+                "data_backend": (
+                    data_backend,
+                    data.get("backend") or "npz",
+                    "data.backend",
+                ),
+                "selection_metric": (
+                    selection_metric,
+                    task.get("monitor"),
+                    "finetune.task.monitor",
+                ),
+                "selection_mode": (
+                    selection_mode,
+                    task.get("monitor_mod"),
+                    "finetune.task.monitor_mod",
+                ),
+            }.items():
+                if decision_value not in (None, "", "ASK_USER") and decision_value != config_value:
+                    return [
+                        DecisionIssue(
+                            DecisionStatus.FAIL,
+                            field,
+                            f"{field} decision differs from config {config_field} after hparam YAML overrides.",
+                            None,
+                            {
+                                "decision": decision_value,
+                                "config": config_value,
+                                "parameters": combo,
+                                "preflight_before_workspace": True,
+                            },
+                        )
+                    ]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         return [
             DecisionIssue(

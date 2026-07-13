@@ -623,6 +623,42 @@ def test_hparam_select_preserves_and_reranks_previous_plans_for_same_step(tmp_pa
     assert selections[-1]["selected_run_id"] == "run-000"
 
 
+def test_hparam_select_rebuilds_ranking_from_all_registered_plans(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plans = []
+    for index, score in enumerate((0.9, 0.8), start=1):
+        plan_dir = tmp_path / f"plan-{index}"
+        assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+        run = _first_run(plan_dir)
+        checkpoint_dir = Path(run["checkpoint_dir"])
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint = checkpoint_dir / f"epoch={index}.ckpt"
+        checkpoint.write_text("checkpoint")
+        (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "metrics": {"val_ahi_pearson": score},
+                    "best_model_path": str(checkpoint),
+                    "epoch": index,
+                }
+            )
+        )
+        plans.append((plan_dir, run))
+
+    hparam_selection.select_hparam_candidates(plans[1][0])
+
+    ranking = read_rows(_ranking_path(plans[1][0]))
+    assert [(row["run_id"], row["score"], row["rank"]) for row in ranking] == [
+        ("run-000", "0.9", "1"),
+        ("run-001", "0.8", "2"),
+    ]
+    canonical = read_rows(tmp_path / "run_manifest.tsv")
+    assert [(row["run_id"], row["score"], row["rank"]) for row in canonical] == [
+        ("run-000", "0.9", "1"),
+        ("run-001", "0.8", "2"),
+    ]
+
+
 def test_hparam_select_only_preflights_registered_plans_that_own_preserved_rankings(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     first_plan = tmp_path / "plan-1"
@@ -727,6 +763,41 @@ def test_hparam_select_rejects_registered_plan_task_drift_before_writing(tmp_pat
     with pytest.raises(ValueError, match="task|recipe.resolved.yaml"):
         hparam_selection.select_hparam_candidates(second_plan)
 
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_select_rejects_foreign_step_plan_before_writing(tmp_path: Path):
+    current_recipe = _hparam_recipe(tmp_path)
+    current_plan = tmp_path / "current-plan"
+    assert _run("plan", "--recipe", str(current_recipe), "--output-dir", str(current_plan)).returncode == 0
+
+    foreign_payload = yaml.safe_load(current_recipe.read_text())
+    foreign_payload["step"] = {
+        "id": "foreign-hparam-step",
+        "phase": "train",
+        "purpose": "Exercise a different hparam step.",
+    }
+    foreign_recipe = write_yaml(tmp_path / "foreign-tune.yaml", foreign_payload)
+    foreign_plan = tmp_path / "foreign-plan"
+    assert _run("plan", "--recipe", str(foreign_recipe), "--output-dir", str(foreign_plan)).returncode == 0
+
+    for plan_dir, score in ((current_plan, 0.9), (foreign_plan, 0.8)):
+        run = _first_run(plan_dir)
+        runtime_dir = Path(run["runtime_dir"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": score}}))
+
+    step_manifest_path = tmp_path / "steps" / "unit-hparam-tune" / "step.yaml"
+    step_manifest = yaml.safe_load(step_manifest_path.read_text())
+    step_manifest["plans"].append(str(foreign_plan.resolve()))
+    write_yaml(step_manifest_path, step_manifest)
+    ranking = _ranking_path(current_plan)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="different step"):
+        hparam_selection.select_hparam_candidates(current_plan)
+
+    assert not ranking.exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 

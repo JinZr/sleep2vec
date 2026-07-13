@@ -2414,6 +2414,80 @@ def test_hparam_yaml_parameter_updates_run_config(tmp_path: Path):
     assert run_config["finetune"]["task"]["output_dim"] == 31
 
 
+@pytest.mark.parametrize(
+    ("parameter", "value", "field"),
+    [
+        ("yaml:/data/backend", "kaldi", "data_backend"),
+        ("yaml:/finetune/task/monitor", "val_loss", "selection_metric"),
+        ("yaml:/finetune/task/monitor_mod", "min", "selection_mode"),
+    ],
+)
+def test_hparam_yaml_parameter_cannot_conflict_with_decision_contract(
+    tmp_path: Path,
+    parameter: str,
+    value: str,
+    field: str,
+):
+    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    output_dir = tmp_path / "plan"
+    manifest = tmp_path / "run_manifest.tsv"
+    manifest_before = manifest.read_bytes() if manifest.exists() else None
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"{field} decision differs from config" in result.stdout
+    assert not output_dir.exists()
+    if manifest_before is None:
+        assert not manifest.exists()
+    else:
+        assert manifest.read_bytes() == manifest_before
+    assert not (tmp_path / "events.jsonl").exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune" / "step.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "parameter", "value", "field"),
+    [
+        ("inputs", "data_backend", "yaml:/data/backend", "kaldi", "data_backend"),
+        (
+            "evaluation_policy",
+            "selection_metric",
+            "yaml:/finetune/task/monitor",
+            "val_loss",
+            "selection_metric",
+        ),
+    ],
+)
+def test_hparam_yaml_parameter_uses_base_contract_for_null_recipe_value(
+    tmp_path: Path,
+    section: str,
+    key: str,
+    parameter: str,
+    value: str,
+    field: str,
+):
+    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    payload = yaml.safe_load(recipe.read_text())
+    payload[section][key] = None
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+    manifest = tmp_path / "run_manifest.tsv"
+    manifest_before = manifest.read_bytes() if manifest.exists() else None
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"{field} decision differs from config" in result.stdout
+    assert not output_dir.exists()
+    if manifest_before is None:
+        assert not manifest.exists()
+    else:
+        assert manifest.read_bytes() == manifest_before
+    assert not (tmp_path / "events.jsonl").exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune" / "step.yaml").exists()
+
+
 def test_hparam_yaml_parameter_rejects_negative_list_index(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, parameters={"yaml:/model/channels/-1/input_dim": [9]})
     output_dir = tmp_path / "plan"
