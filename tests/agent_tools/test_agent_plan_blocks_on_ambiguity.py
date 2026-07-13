@@ -400,6 +400,7 @@ def test_hparam_user_decisions_freeze_one_effective_recipe(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"]["selection_metric"] = "val_wrong"
+    payload["decisions"]["selection_metric"] = {"value": "val_wrong", "source": "explicit_recipe"}
     write_yaml(recipe, payload)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
@@ -435,10 +436,15 @@ def test_hparam_user_decisions_freeze_one_effective_recipe(tmp_path: Path):
     assert effective["evaluation_policy"]["selection_metric"] == "val_ahi_pearson"
     assert effective["evaluation_policy"]["selection_split"] == "val"
     assert effective["_local_recipe"]["evaluation_policy"]["selection_metric"] == "val_wrong"
+    assert effective["decisions"]["selection_metric"]["value"] == "val_ahi_pearson"
+    assert effective["_local_recipe"]["decisions"]["selection_metric"]["value"] == "val_wrong"
     assert effective["search"] == {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [2e-6]}}
     assert effective["_local_recipe"]["search"] != effective["search"]
     assert "--lr 2e-06" in plan["runs"][0]["command"]
     assert resolved == {key: value for key, value in effective.items() if key != "_recipe_path"}
+    reloaded, _cfg, reloaded_report = plans.evaluate_recipe(plan_dir / "recipe.resolved.yaml")
+    assert reloaded_report.exit_code == 0
+    assert reloaded["evaluation_policy"]["selection_metric"] == "val_ahi_pearson"
 
 
 def test_hparam_user_selection_metric_rechecks_config_monitor(tmp_path: Path):
@@ -803,6 +809,73 @@ def test_plan_uses_user_decision_test_after_fit_in_command(tmp_path: Path):
 
     assert result.returncode == 0
     assert "--no-test-after-fit" in (output_dir / "run.sh").read_text()
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_plan_blocks_unresolved_recipe_label_before_workspace_mutation(tmp_path: Path, value: str | None):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["label_name"] = "raw-label"
+    payload["decisions"]["label_name"] = {"value": value, "source": "explicit_recipe"}
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "label_name decision is unresolved" in result.stdout
+    assert not output_dir.exists()
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_plan_materializes_recipe_decisions_before_rendering(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    raw_pretrained = tmp_path / "raw-pretrained.ckpt"
+    selected_pretrained = tmp_path / "selected-pretrained.ckpt"
+    raw_resume = tmp_path / "raw-resume.ckpt"
+    selected_resume = tmp_path / "selected-resume.ckpt"
+    for path in (raw_pretrained, selected_pretrained, raw_resume, selected_resume):
+        path.write_text("checkpoint")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"].update(
+        {
+            "label_name": "wrong-label",
+            "pretrained_backbone_path": str(raw_pretrained),
+            "ckpt_path": str(raw_resume),
+        }
+    )
+    payload["evaluation_policy"]["test_after_fit"] = True
+    payload["decisions"].update(
+        {
+            "label_name": {"value": "ahi", "source": "explicit_recipe"},
+            "pretrained_backbone_path": {
+                "value": str(selected_pretrained),
+                "source": "explicit_recipe",
+            },
+            "ckpt_path": {"value": str(selected_resume), "source": "explicit_recipe"},
+            "test_after_fit": {"value": False, "source": "explicit_recipe"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    script = (output_dir / "run.sh").read_text()
+    assert "--label-name ahi" in script
+    assert f"--pretrained-backbone-path {shlex_quote(str(selected_pretrained))}" in script
+    assert f"--ckpt-path {shlex_quote(str(selected_resume))}" in script
+    assert "--no-test-after-fit" in script
+    assert "wrong-label" not in script
+    assert str(raw_pretrained) not in script
+    assert str(raw_resume) not in script
+    effective = json.loads((output_dir / "plan.json").read_text())["recipe"]
+    assert effective["inputs"]["label_name"] == "ahi"
+    assert effective["inputs"]["pretrained_backbone_path"] == str(selected_pretrained)
+    assert effective["inputs"]["ckpt_path"] == str(selected_resume)
+    assert effective["evaluation_policy"]["test_after_fit"] is False
 
 
 def test_plan_blocks_user_decision_test_after_fit_when_finetune_lock_stays_resolved(tmp_path: Path):
@@ -1475,6 +1548,45 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     assert "--dry-run" in script
     assert f"--manifest-output {shlex_quote(str(manifest_output))}" in script
     assert "--no-write-sidecar-manifest" in script
+
+
+def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
+    base = write_finetune_recipe(tmp_path)
+    config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    index = tmp_path / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask,ah_event_mask,stage_mask\nx.npz,train,60,1,1,1\n")
+    recipe = _write_preset_recipe(
+        tmp_path,
+        config=config,
+        index=index,
+        preset={
+            "n_tokens": 128,
+            "split": ["train"],
+            "channels": ["stage5"],
+            "allow_missing_channels": True,
+            "min_channels": 1,
+            "overwrite": False,
+        },
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"].update(
+        {
+            "required_channels": {"value": ["ppg", "ahi"], "source": "explicit_recipe"},
+            "min_channels": {"value": 2, "source": "explicit_recipe"},
+            "overwrite_policy": {"value": True, "source": "explicit_recipe"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "preset-plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    script = (output_dir / "run.sh").read_text()
+    assert "--channels ppg ahi" in script
+    assert "--channels stage5" not in script
+    assert "--min-channels 2" in script
+    assert "--overwrite" in script
 
 
 @pytest.mark.parametrize(

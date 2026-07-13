@@ -139,6 +139,7 @@ def update_experiment_wandb(root: Path, *, entity: str, project: str, group: str
 def wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
     observations: dict[tuple[str, str], dict[str, Any]] = {}
+    wandb_run_ids: dict[tuple[str, str], str] = {}
     for row in wandb_rows:
         if "trial_id" in row:
             raise ValueError("Historical trial_id W&B evidence is unsupported.")
@@ -146,6 +147,15 @@ def wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict
         if existing is None:
             continue
         key = managed_run_key(existing)
+        incoming_wandb_run_id = str(row.get("wandb_run_id") or "")
+        known_wandb_run_id = wandb_run_ids.get(key) or str(existing.get("wandb_run_id") or "")
+        if incoming_wandb_run_id and known_wandb_run_id and incoming_wandb_run_id != known_wandb_run_id:
+            raise ValueError(
+                f"Ambiguous W&B runs for managed run {key[0]} / {key[1]}: "
+                f"{known_wandb_run_id} and {incoming_wandb_run_id}"
+            )
+        if incoming_wandb_run_id:
+            wandb_run_ids[key] = incoming_wandb_run_id
         update = {
             "step_id": key[0],
             "run_id": key[1],
@@ -164,12 +174,23 @@ def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[s
 def managed_metric_rows(run_rows: list[dict[str, Any]], metric_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
     rows = []
+    wandb_run_ids: dict[tuple[str, str], str] = {}
     for metric_row in metric_rows:
         if "trial_id" in metric_row:
             raise ValueError("Historical trial_id metric evidence is unsupported.")
         run_row = resolve_external_run_row(run_rows, metric_row)
         if run_row is None:
             continue
+        key = managed_run_key(run_row)
+        incoming_wandb_run_id = str(metric_row.get("wandb_run_id") or "")
+        known_wandb_run_id = wandb_run_ids.get(key) or str(run_row.get("wandb_run_id") or "")
+        if incoming_wandb_run_id and known_wandb_run_id and incoming_wandb_run_id != known_wandb_run_id:
+            raise ValueError(
+                f"Ambiguous W&B runs for managed run {key[0]} / {key[1]}: "
+                f"{known_wandb_run_id} and {incoming_wandb_run_id}"
+            )
+        if incoming_wandb_run_id:
+            wandb_run_ids[key] = incoming_wandb_run_id
         row = dict(metric_row)
         row.update(
             {
@@ -242,6 +263,18 @@ def monitor_run_row(
     remote: str | None = None,
 ) -> dict[str, Any]:
     previous = resolve_run_row(previous_rows, row) or {}
+    has_execution_evidence = any(
+        source.get(field) not in (None, "") for source in (row, previous) for field in ("pid_path", "state")
+    )
+    is_script_owned = any(source.get("script") not in (None, "") for source in (row, previous))
+    if (previous.get("status") or row.get("status")) == "running" and is_script_owned and not has_execution_evidence:
+        return {
+            "step_id": row["step_id"],
+            "run_id": row["run_id"],
+            "status": "running",
+            "health_status": "running",
+            "monitored_at": utc_now(),
+        }
     observation_row = dict(row)
     transport_override = bool(remote and not observation_row.get("host"))
     if transport_override:

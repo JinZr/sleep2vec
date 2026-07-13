@@ -37,10 +37,13 @@ from .models import REPO_ROOT, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 
-def _materialize_user_decisions(recipe: dict, user_decisions: dict) -> list[DecisionIssue]:
-    decision_values = {
-        field: raw.get("value") if isinstance(raw, dict) else raw for field, raw in user_decisions.items()
-    }
+def _materialize_decisions(
+    recipe: dict,
+    decisions: dict,
+    *,
+    user_supplied: bool = False,
+) -> list[DecisionIssue]:
+    decision_values = {field: raw.get("value") if isinstance(raw, dict) else raw for field, raw in decisions.items()}
     issues: list[DecisionIssue] = []
 
     if "task" in decision_values:
@@ -56,13 +59,13 @@ def _materialize_user_decisions(recipe: dict, user_decisions: dict) -> list[Deci
                     DecisionIssue(
                         DecisionStatus.FAIL,
                         "task",
-                        "Explicit user task conflicts with the recipe task.",
+                        "Explicit task decision conflicts with the recipe task.",
                         None,
                         {"recipe": recipe_task, "user": task, "preflight_before_workspace": True},
                     )
                 )
 
-    if "train_val_test_policy" in decision_values:
+    if user_supplied and "train_val_test_policy" in decision_values:
         selection_split = decision_values["train_val_test_policy"]
         if selection_split not in (None, "", "ASK_USER") and selection_split not in ("train", "val", "test"):
             issues.append(
@@ -87,7 +90,6 @@ def _materialize_user_decisions(recipe: dict, user_decisions: dict) -> list[Deci
         "eval_split": ("inputs", "eval_split"),
         "final_eval_config_path": ("inputs", "final_eval_config_path"),
         "preset_regeneration": ("preset", "regenerate"),
-        "required_channels": ("preset", "required_channels"),
         "min_channels": ("preset", "min_channels"),
         "hparam_search_space": ("search", "parameters"),
         "hparam_budget": ("search", "max_runs"),
@@ -96,8 +98,11 @@ def _materialize_user_decisions(recipe: dict, user_decisions: dict) -> list[Deci
     }
     if recipe.get("task") == "preset_prepare":
         canonical_fields["overwrite_policy"] = ("preset", "overwrite")
+        canonical_fields["required_channels"] = ("preset", "channels")
     else:
         canonical_fields["overwrite_policy"] = ("artifacts", "overwrite")
+        if user_supplied:
+            canonical_fields["required_channels"] = ("preset", "required_channels")
     if decision_values.get("train_val_test_policy") in ("train", "val", "test"):
         canonical_fields["train_val_test_policy"] = ("evaluation_policy", "selection_split")
 
@@ -105,10 +110,24 @@ def _materialize_user_decisions(recipe: dict, user_decisions: dict) -> list[Deci
         if field not in decision_values:
             continue
         value = decision_values[field]
-        if value in ("", "ASK_USER") or value is None and field != "pretrained_backbone_path":
+        if value == "ASK_USER":
+            continue
+        if value in (None, "") and not (field == "pretrained_backbone_path" and value is None):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    field,
+                    f"{field} decision is unresolved.",
+                    f"What value should {field} use?",
+                    {"value": value, "preflight_before_workspace": True},
+                )
+            )
             continue
         target = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
         recipe[section] = {**target, key: value}
+    if user_supplied:
+        recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+        recipe["decisions"] = {**recipe_decisions, **decisions}
     return issues
 
 
@@ -122,7 +141,9 @@ def evaluate_recipe(
         recipe["_recipe_path"] = str(source.resolve())
     policy = load_consultation_policy()
     user_decisions = load_user_decisions(user_decisions_path)
-    materialization_issues = _materialize_user_decisions(recipe, user_decisions)
+    recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+    materialization_issues = _materialize_decisions(recipe, recipe_decisions)
+    materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
 
     config_error = None
     try:
@@ -222,7 +243,9 @@ def build_context(
     }
     policy = load_consultation_policy()
     user_decisions = load_user_decisions(user_decisions_path)
-    materialization_issues = _materialize_user_decisions(recipe, user_decisions)
+    recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+    materialization_issues = _materialize_decisions(recipe, recipe_decisions)
+    materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
     effective_config = (recipe.get("inputs") or {}).get("config")
     cfg = config_summary(effective_config, variant=variant) if effective_config else None
     report = evaluate_consultation_gates(

@@ -7,13 +7,13 @@ Task recipes under `recipes/` bind one task to an experiment and step. The accep
 Planning produces one effective recipe:
 
 ```text
-recipe + explicit user decisions
+recipe fields + recipe decisions + explicit user decisions
   -> materialized recipe
   -> config summary and consultation
   -> frozen plan and resolved recipe
 ```
 
-Explicit decisions are written into existing canonical fields before config inspection and consultation are rerun. `plan.json` and `recipe.resolved.yaml` must contain the same complete effective recipe. Retained base/local recipe copies are source audit only; launch, selection, adaptive, and postprocess consumers read the effective recipe.
+Recipe decisions are written into existing canonical fields first, then explicit user decisions may override both the canonical fields and effective decision mapping before config inspection and consultation are rerun. Empty or null rendered decisions remain unresolved instead of falling back to older canonical values; explicit `pretrained_backbone_path: null` retains its established train-without-pretraining meaning. `plan.json` and `recipe.resolved.yaml` must contain the same complete effective recipe. Retained base/local recipe copies are source audit only; launch, selection, adaptive, and postprocess consumers read the effective recipe.
 
 Decision-file behavior and precedence belong to [user_decisions.md](user_decisions.md).
 

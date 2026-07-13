@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import ast
 import csv
+import fcntl
 import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
@@ -848,6 +850,73 @@ def test_concurrent_local_manifest_writers_preserve_distinct_runs(tmp_path: Path
 
     assert [process.wait(timeout=10) for process in processes] == [0, 0]
     assert {row["run_id"] for row in read_run_manifest(tmp_path)} == {"run-000", "run-001"}
+
+
+def test_concurrent_local_manifest_writer_holds_lock_through_projection(tmp_path: Path, monkeypatch):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    first_projection_started = threading.Event()
+    finish_first_projection = threading.Event()
+    first_projection_done = threading.Event()
+    second_lock_attempted = threading.Event()
+    local_lock = threading.Lock()
+    lock_violations = []
+    real_flock = fcntl.flock
+    real_write_run_matrix = experiment_workspace.write_run_matrix
+
+    def tracked_flock(_fd, operation):
+        if operation == fcntl.LOCK_EX:
+            if threading.current_thread().name == "second-merge":
+                if local_lock.acquire(blocking=False):
+                    if not first_projection_done.is_set():
+                        lock_violations.append("second writer acquired the lock before the first projection completed")
+                    second_lock_attempted.set()
+                    return
+                second_lock_attempted.set()
+            local_lock.acquire()
+        elif operation == fcntl.LOCK_UN:
+            local_lock.release()
+        else:
+            real_flock(_fd, operation)
+
+    def delayed_write_run_matrix(root, rows, *, remote=None):
+        if {row["run_id"] for row in rows} == {"run-000"}:
+            first_projection_started.set()
+            assert finish_first_projection.wait(timeout=5)
+            result = real_write_run_matrix(root, rows, remote=remote)
+            first_projection_done.set()
+            return result
+        return real_write_run_matrix(root, rows, remote=remote)
+
+    monkeypatch.setattr(experiment_workspace.fcntl, "flock", tracked_flock)
+    monkeypatch.setattr(experiment_workspace, "write_run_matrix", delayed_write_run_matrix)
+    errors = []
+
+    def merge(run_id):
+        try:
+            merge_run_manifest(
+                tmp_path,
+                [{"experiment_id": "unit", "step_id": "train", "run_id": run_id, "status": "planned"}],
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=merge, args=("run-000",), name="first-merge")
+    second = threading.Thread(target=merge, args=("run-001",), name="second-merge")
+    first.start()
+    assert first_projection_started.wait(timeout=5)
+    second.start()
+    assert second_lock_attempted.wait(timeout=5)
+    finish_first_projection.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert errors == []
+    assert lock_violations == []
+    with (tmp_path / "run_matrix.csv").open(newline="") as file_obj:
+        matrix = list(csv.DictReader(file_obj))
+    assert {row["run_id"] for row in matrix} == {"run-000", "run-001"}
 
 
 def test_concurrent_terminal_updates_use_the_existing_reducer(tmp_path: Path):

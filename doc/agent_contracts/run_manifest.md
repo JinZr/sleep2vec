@@ -25,6 +25,7 @@ The current vocabulary includes scheduled `planned`/`pending`, active `launched`
 - Active status cannot regress through stale `planned` or `pending` evidence.
 - `superseded` commits only when the freshly read canonical state is still `planned` or `pending`.
 - Monitoring preserves the existing finished-to-completed normalization.
+- Monitoring preserves a script-owned `running` state when neither PID nor W&B execution evidence exists; absence of those evidence sources is not process-exit evidence.
 
 All lifecycle callers reuse the same row reducer. They do not implement source-specific precedence.
 
@@ -33,6 +34,7 @@ All lifecycle callers reuse the same row reducer. They do not implement source-s
 Mutation-facing evidence must first resolve to a canonical managed row. Any supplied frozen field must agree before source-specific fields are allowlisted.
 
 - W&B evidence with an experiment id must match the workspace. Evidence without it may match only one unique runtime version.
+- Distinct W&B run ids resolving to the same managed run are ambiguous and fail before canonical state or managed metrics are written.
 - Workspace metrics, checkpoints, rankings, adaptive registries, and candidate tables prove scope through the validated workspace plus managed key.
 - Candidate and ranking tables are completely validated before other-step or earlier-plan rows are filtered.
 - Checkpoint evidence must be a direct regular child of the matched frozen checkpoint directory.
@@ -44,7 +46,7 @@ Foreign, unmatched, incomplete, or drifting evidence fails or remains in raw inv
 
 The workspace owner reads, reduces, and commits the complete canonical table.
 
-- Local commits hold a stable lock from canonical read through same-directory temporary write, `fsync`, and `os.replace`.
+- Local commits hold a stable lock from canonical read through same-directory temporary write, `fsync`, `os.replace`, and run-matrix projection.
 - SSH commits lock remotely, compare the expected digest, and conditionally replace a same-directory temporary file.
 - An SSH conflict causes a fresh read and merge, with at most three attempts. Exhausted conflicts fail without overwriting newer state.
 - New keys must carry the owning experiment id.

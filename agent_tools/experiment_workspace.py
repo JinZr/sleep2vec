@@ -717,11 +717,11 @@ def merge_run_manifest(
                 break
         else:
             raise RuntimeError(f"Canonical run manifest changed during three commit attempts: {path}")
+        write_run_matrix(root, committed, remote=remote)
     finally:
         if lock_file is not None:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             lock_file.close()
-    write_run_matrix(root, committed, remote=remote)
     return committed
 
 

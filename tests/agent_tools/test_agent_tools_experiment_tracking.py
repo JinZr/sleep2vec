@@ -506,6 +506,43 @@ def test_experiment_monitor_preserves_wandb_running_without_pid(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
+    "extra_fields",
+    [{}, {"pid": "12345"}, {"wandb_run_id": "wandb-1"}, {"pid": "12345", "wandb_run_id": "wandb-1"}],
+    ids=["no-extra-fields", "bare-pid", "bare-wandb-run-id", "bare-pid-and-wandb-run-id"],
+)
+def test_experiment_monitor_preserves_script_owned_running_without_execution_evidence(
+    tmp_path: Path, monkeypatch, extra_fields: dict[str, str]
+):
+    _initialize_workspace(tmp_path)
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-000",
+                "run_name": "lr-2e-6",
+                "version": "run_a",
+                "script": "/plan/run.sh",
+                "status": "running",
+                **extra_fields,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        run_evidence,
+        "status_row",
+        lambda *_args, **_kwargs: pytest.fail("script-owned runs must not use process inference"),
+    )
+
+    result = experiments.monitor_experiment(tmp_path)
+
+    assert result["runs"][0]["status"] == "running"
+    assert result["runs"][0]["health_status"] == "running"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
+
+
+@pytest.mark.parametrize(
     ("existing_status", "wandb_state", "expected_status"),
     [("stopped", "running", "stopped"), ("completed", "failed", "failed")],
 )
@@ -614,6 +651,42 @@ def test_wandb_without_experiment_id_uses_unique_version_instead_of_managed_key(
     )
 
     assert observations == [{"step_id": "step-b", "run_id": "run-000", "status": "running"}]
+
+
+def test_wandb_sync_rejects_multiple_attempts_for_one_managed_run_before_writes(tmp_path: Path, monkeypatch):
+    _initialize_workspace(tmp_path)
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\trun_name\tversion\tstatus\n"
+        "unit\ttrain-model\trun-000\tmanaged\tmanaged-v1\trunning\n"
+    )
+
+    class FakeRun:
+        url = ""
+        group = ""
+        created_at = "2026-01-01"
+        updated_at = "2026-01-02"
+        name = "managed-v1"
+        state = "running"
+        config = {"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000"}
+
+        def __init__(self, wandb_run_id: str, score: float):
+            self.id = wandb_run_id
+            self.summary = {"val_auroc": score}
+
+        def history(self, **_kwargs):
+            return []
+
+    monkeypatch.setattr(
+        experiment_tracking,
+        "wandb_runs",
+        lambda *_args: [FakeRun("wandb-attempt-1", 0.7), FakeRun("wandb-attempt-2", 0.8)],
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Ambiguous W&B runs for managed run train-model / run-000"):
+        experiments.sync_wandb_runs(tmp_path, entity="entity", project="project")
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 @pytest.mark.parametrize("foreign_first", [False, True])
