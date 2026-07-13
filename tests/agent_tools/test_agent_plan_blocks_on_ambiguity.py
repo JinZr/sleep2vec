@@ -836,7 +836,7 @@ def test_plan_normalizes_scalar_runtime_devices(tmp_path: Path):
         assert "--devices 1 0" not in script
 
 
-def test_finetune_plan_honors_runtime_wandb_mode_env(tmp_path: Path):
+def test_finetune_plan_honors_runtime_wandb_mode_cli(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["runtime"]["wandb_mode"] = "offline"
@@ -846,10 +846,12 @@ def test_finetune_plan_honors_runtime_wandb_mode_env(tmp_path: Path):
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    assert "WANDB_MODE=offline python -m sleep2vec.finetune" in (output_dir / "run.sh").read_text()
+    script = (output_dir / "run.sh").read_text()
+    assert "--wandb-mode offline" in script
+    assert "WANDB_MODE=" not in script
 
 
-def test_hparam_run_script_honors_base_runtime_wandb_mode_env(tmp_path: Path):
+def test_hparam_run_script_honors_base_runtime_wandb_mode_cli(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
@@ -861,7 +863,9 @@ def test_hparam_run_script_honors_base_runtime_wandb_mode_env(tmp_path: Path):
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    assert "WANDB_MODE=offline python -m sleep2vec.finetune" in Path(_first_run(output_dir)["script"]).read_text()
+    script = Path(_first_run(output_dir)["script"]).read_text()
+    assert "--wandb-mode offline" in script
+    assert "WANDB_MODE=" not in script
 
 
 def test_hparam_plan_and_launch_use_merged_effective_recipe(tmp_path: Path):

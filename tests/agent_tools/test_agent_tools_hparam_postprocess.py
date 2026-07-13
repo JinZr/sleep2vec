@@ -1138,6 +1138,34 @@ def test_hparam_export_logits_execute_uses_manifest_paths(tmp_path: Path, monkey
     assert Path(rows[0]["test_logits_path"]).exists()
 
 
+def test_hparam_export_logits_does_not_commit_manifest_after_execution_failure(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    selected = plan_dir / "selected.csv"
+    run = _first_run(plan_dir)
+    selected.write_text(
+        "step_id,run_id,rank,config,checkpoint_path\n"
+        f"unit-hparam-tune,run-000,1,{Path(run['config'])},{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
+    )
+    calls = []
+
+    def _fake_run_logit_export(recipe, **kwargs):
+        calls.append(kwargs)
+        if kwargs["eval_split"] == "test":
+            raise RuntimeError("test export failed")
+        Path(kwargs["output_path"]).write_text("label,logit\n0,-1.0\n1,1.0\n")
+
+    monkeypatch.setattr(hparam_postprocess, "_run_logit_export", _fake_run_logit_export)
+
+    with pytest.raises(RuntimeError, match="test export failed"):
+        hparam_postprocess.export_hparam_logits(plan_dir, selected, unlock_final_test=True, execute=True)
+
+    assert [call["eval_split"] for call in calls] == ["val", "test"]
+    assert Path(calls[0]["output_path"]).exists()
+    assert not (plan_dir / "logits_export_manifest.tsv").exists()
+
+
 def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=3)
     plan_dir = tmp_path / "plan"

@@ -253,7 +253,6 @@ def export_hparam_logits(
             )
         manifest_rows.append(manifest_row)
 
-    write_rows(manifest, manifest_rows)
     if execute:
         _execute_logit_exports(
             recipe,
@@ -335,6 +334,7 @@ def export_hparam_logits(
             + "\n",
             executable=True,
         )
+    write_rows(manifest, manifest_rows)
     return manifest
 
 

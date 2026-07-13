@@ -44,7 +44,7 @@ Common top-level fields:
 - `inputs`: paths and task-specific inputs.
 - `inputs.eval_split`: explicit split for inference/evaluation; use `ASK_USER` only when the agent must stop.
 - `inputs.final_eval_config_path`: selected config for unlocked final external-test evaluation when hparam search uses `yaml:/...` config overrides.
-- `runtime`: low-impact runtime knobs and CLI hyperparameters.
+- `runtime`: low-impact runtime knobs and CLI hyperparameters, including explicit `wandb_mode` for W&B-backed finetune variants.
 - `artifacts`: generated output paths and version names.
 - `execution`: optional hparam orchestration settings. Existing recipes may omit this and still generate local scripts only.
 - `adaptive`: optional append-only hparam workflow. Existing recipes may omit this and remain static validation-only tuning.
@@ -61,7 +61,8 @@ Common top-level fields:
 - `execution.gpu_pool`: GPU ids used by `agent_tools hparam-launch` for `CUDA_VISIBLE_DEVICES`.
 - `execution.gpus_per_run`: number of GPU ids assigned to each managed run.
 - `execution.max_concurrent`: maximum runs launched immediately by `hparam-launch --execute`.
-- `execution.conda_env`, `execution.wandb_project`, `execution.wandb_group`, and `execution.env`: runtime wrapper settings only; they do not change generated trainer configs. Logs and PID files are always co-located in the managed run directory.
+- `execution.wandb_project` and `execution.wandb_group`: emitted as explicit `--wandb-project` and `--wandb-group` values in generated W&B-backed hparam finetune commands; they do not rewrite the generated YAML config.
+- `execution.conda_env` and `execution.env`: runtime wrapper settings only. `execution.env` must not set `WANDB_PROJECT`, `WANDB_GROUP`, `WANDB_RUN_GROUP`, or `WANDB_MODE`; use the explicit fields above. Logs and PID files are always co-located in the managed run directory.
 - `adaptive.enabled`: when true, `agent_tools hparam-adaptive-*` commands create `adaptive/` ledgers and per-round plans without modifying old runs.
 - `adaptive.max_runs_total`: maximum number of registered runs across adaptive rounds.
 - `adaptive.objective_metric`: defaults to `test_auroc` for external-optimized tuning.

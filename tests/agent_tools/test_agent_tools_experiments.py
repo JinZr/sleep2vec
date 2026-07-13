@@ -416,6 +416,55 @@ def test_experiment_mutation_rejects_manifest_root_drift_without_writing(tmp_pat
     assert _workspace_files(tmp_path) == before
 
 
+@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
+def test_experiment_mutation_rejects_experiment_manifest_alias_before_writing(tmp_path: Path, monkeypatch, alias: str):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    manifest = tmp_path / "experiment.yaml"
+    outside = tmp_path.parent / f"{alias}_experiment.yaml"
+    outside.write_text(manifest.read_text())
+    manifest.unlink()
+    if alias == "symlink":
+        manifest.symlink_to(outside)
+    else:
+        os.link(outside, manifest)
+    observation_calls = []
+    monkeypatch.setattr(
+        experiments.tracking,
+        "experiment_run_rows",
+        lambda *_args, **_kwargs: observation_calls.append(True) or [],
+    )
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.monitor_experiment(tmp_path)
+
+    assert observation_calls == []
+    assert _workspace_files(tmp_path) == before
+
+
+def test_experiment_remote_mutation_preflights_manifest_before_reading_workspace_identity(monkeypatch):
+    root = Path("/wujidata/remote_run")
+    reads = []
+
+    def _reject_alias(root_arg, paths, *, remote=None):
+        assert root_arg == root
+        assert paths == [root / "experiment.yaml"]
+        assert remote == "baichuan3"
+        raise ValueError("Managed output paths must be independent regular files")
+
+    monkeypatch.setattr(experiments.exp_io, "validate_managed_output_paths", _reject_alias)
+    monkeypatch.setattr(
+        experiments.exp_io,
+        "read_text_at",
+        lambda *args, **kwargs: reads.append((args, kwargs)) or "",
+    )
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.monitor_experiment(root, remote="baichuan3")
+
+    assert reads == []
+
+
 def test_experiment_monitor_preflights_canonical_outputs_before_observation(tmp_path: Path, monkeypatch):
     experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
     experiment_io.write_rows_at(

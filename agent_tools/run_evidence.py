@@ -12,7 +12,7 @@ from typing import Any
 from . import run_artifacts as artifacts
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
 from .experiment_workspace import TERMINAL_STATUSES, merge_run_row
-from .manifests import utc_now
+from .manifests import read_json, utc_now
 from .progress import read_progress
 
 SSH_TIMEOUT_SECONDS = 10
@@ -104,12 +104,29 @@ def status_row(
             observed_status = "unknown_remote"
         else:
             observed_status = "failed" if log_failed else "finished"
+    # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
+    manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
+    checkpoints = [name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name]
+    observed_artifacts = runtime_artifacts(row)
+    if observed_artifacts is not None:
+        manifest, _manifest_data, checkpoints = observed_artifacts
+    observation = {
+        **row,
+        "status": observed_status,
+        "pid": pid or "",
+        "log_tail": log_tail(row.get("log_path"), row),
+        "run_manifest": str(manifest or ""),
+        "checkpoints": ";".join(checkpoints),
+        "monitored_at": utc_now(),
+    }
+    output = merge_run_row(previous, observation)
+    if health:
+        output.update(health_fields(run_dir, row, previous, pid, running_state, output["status"], checkpoints))
+    return output
+
+
+def runtime_artifacts(row: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]] | None:
     if is_remote_row(row):
-        # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
-        manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
-        checkpoints = [
-            name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name
-        ]
         script = """
 import json
 import os
@@ -118,7 +135,7 @@ import sys
 
 runtime_dir = sys.argv[1]
 checkpoint_dir = sys.argv[2]
-payload = {"run_manifest": "", "checkpoints": []}
+payload = {"run_manifest": "", "manifest": {}, "checkpoints": []}
 
 if runtime_dir:
     try:
@@ -157,24 +174,26 @@ if runtime_dir:
             print(f"Remote run manifest is corrupt: {manifest}", file=sys.stderr)
             raise SystemExit(1)
         payload["run_manifest"] = manifest
+        payload["manifest"] = manifest_payload
 
 if checkpoint_dir:
     try:
-        os.lstat(checkpoint_dir)
+        checkpoint_info = os.lstat(checkpoint_dir)
     except FileNotFoundError:
         pass
     except OSError as exc:
         print(exc, file=sys.stderr)
         raise SystemExit(1)
     else:
-        if not os.path.isdir(checkpoint_dir):
+        if stat.S_ISLNK(checkpoint_info.st_mode) or not stat.S_ISDIR(checkpoint_info.st_mode):
             print(f"Remote checkpoint path is not a directory: {checkpoint_dir}", file=sys.stderr)
             raise SystemExit(1)
         try:
             payload["checkpoints"] = sorted(
                 name
                 for name in os.listdir(checkpoint_dir)
-                if name.endswith(".ckpt") and os.path.isfile(os.path.join(checkpoint_dir, name))
+                if name.endswith(".ckpt")
+                and stat.S_ISREG(os.lstat(os.path.join(checkpoint_dir, name)).st_mode)
             )
         except OSError as exc:
             print(exc, file=sys.stderr)
@@ -195,27 +214,21 @@ sys.stdout.write(json.dumps(payload))
                 raise RuntimeError(f"SSH runtime artifact observation returned malformed output on {row['host']}.")
             if not isinstance(artifact_payload, dict) or not isinstance(artifact_payload.get("checkpoints"), list):
                 raise RuntimeError(f"SSH runtime artifact observation returned malformed output on {row['host']}.")
-            manifest = str(artifact_payload.get("run_manifest") or "")
-            checkpoints = [str(name) for name in artifact_payload["checkpoints"]]
-        elif result.returncode not in {124, 255}:
-            detail = result.stderr.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"SSH runtime artifact observation failed on {row['host']}: {detail}")
-    else:
-        manifest = artifacts.find_run_manifest(row)
-        checkpoints = artifacts.checkpoint_names(row)
-    observation = {
-        **row,
-        "status": observed_status,
-        "pid": pid or "",
-        "log_tail": log_tail(row.get("log_path"), row),
-        "run_manifest": str(manifest or ""),
-        "checkpoints": ";".join(checkpoints),
-        "monitored_at": utc_now(),
-    }
-    output = merge_run_row(previous, observation)
-    if health:
-        output.update(health_fields(run_dir, row, previous, pid, running_state, output["status"], checkpoints))
-    return output
+            manifest = artifact_payload.get("manifest", {})
+            if not isinstance(manifest, dict):
+                raise RuntimeError(f"SSH runtime artifact observation returned malformed output on {row['host']}.")
+            return (
+                str(artifact_payload.get("run_manifest") or ""),
+                manifest,
+                [str(name) for name in artifact_payload["checkpoints"]],
+            )
+        if result.returncode in {124, 255}:
+            return None
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"SSH runtime artifact observation failed on {row['host']}: {detail}")
+    manifest_path = artifacts.find_run_manifest(row)
+    manifest = read_json(manifest_path) if manifest_path else {}
+    return str(manifest_path or ""), manifest, artifacts.checkpoint_names(row)
 
 
 def read_pid(path: Any, row: dict[str, Any] | None = None) -> int | None:

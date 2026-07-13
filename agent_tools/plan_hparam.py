@@ -237,18 +237,18 @@ def write_hparam_plan(
             version,
             "--results-csv-path",
             plan_output_path(out, artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
-            *rendering.runtime_cli_args(runtime),
+            *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
             *rendering.finetune_input_cli_args(
                 inputs,
                 variant=str(recipe.get("variant")),
             ),
         ]
+        if recipe.get("variant") != "sex_age_baseline":
+            rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
+            rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
         if test_after_fit is not True:
             command_parts.append("--no-test-after-fit")
-        command = rendering.with_env(
-            rendering.render_command(command_parts),
-            rendering.runtime_env_vars(runtime),
-        )
+        command = rendering.render_command(command_parts)
         script_path = run_dir / "launch.sh"
         write_text(
             script_path,

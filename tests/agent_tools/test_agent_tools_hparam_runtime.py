@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
@@ -366,13 +367,69 @@ def test_hparam_launch_records_event_only_for_a_process_started_by_that_call(tmp
     assert [event["event_type"] for event in events].count("run_launched") == 1
 
 
+def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    entered = threading.Event()
+    release = threading.Event()
+    started = []
+    failures = []
+
+    def start(_execution, command):
+        started.append(command)
+        entered.set()
+        assert release.wait(timeout=5)
+        return "launched"
+
+    def launch():
+        try:
+            hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+        except Exception as exc:
+            failures.append(exc)
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", start)
+    first = threading.Thread(target=launch)
+    second = threading.Thread(target=launch)
+    first.start()
+    assert entered.wait(timeout=5)
+    second.start()
+    lock_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl, sys\n"
+                "with open(sys.argv[1], 'a+') as lock_file:\n"
+                "    try:\n"
+                "        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                "    except BlockingIOError:\n"
+                "        raise SystemExit(1)\n"
+                "raise SystemExit(0)\n"
+            ),
+            str(tmp_path / "run_manifest.tsv.lock"),
+        ],
+    )
+    assert lock_probe.returncode == 1
+    assert len(started) == 1
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert failures == []
+    assert len(started) == 1
+
+
 def test_hparam_launch_mirrors_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     real_merge = merge_run_manifest
 
-    def merge_after_wandb_update(root, rows):
-        real_merge(root, [{"step_id": "train-model", "run_id": "run-000", "status": "failed"}])
-        return real_merge(root, rows)
+    def merge_after_wandb_update(root, rows, **_kwargs):
+        kwargs = {"lock_held": True} if _kwargs.get("lock_held") else {}
+        real_merge(root, [{"step_id": "train-model", "run_id": "run-000", "status": "failed"}], **kwargs)
+        return real_merge(root, rows, **kwargs)
 
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_wandb_update)
     monkeypatch.setattr(hparam_runtime, "_start_process", lambda _execution, _command: "launched")
@@ -721,7 +778,7 @@ def test_hparam_stop_mirrors_the_status_committed_by_the_canonical_owner(tmp_pat
     merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": "running"}])
     real_merge = merge_run_manifest
 
-    def merge_after_wandb_update(root, rows):
+    def merge_after_wandb_update(root, rows, **_kwargs):
         real_merge(root, [{"step_id": "train-model", "run_id": "run-000", "status": "failed"}])
         return real_merge(root, rows)
 
@@ -924,7 +981,15 @@ def test_local_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypa
 
 @pytest.mark.parametrize(
     "failure",
-    ["runtime_dir_file", "symlink", "dangling_symlink", "directory", "bad_encoding", "bad_json"],
+    [
+        "runtime_dir_file",
+        "symlink",
+        "dangling_symlink",
+        "directory",
+        "bad_encoding",
+        "bad_json",
+        "checkpoint_dir_symlink",
+    ],
 )
 def test_remote_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypatch, failure: str):
     runtime_dir = tmp_path / "remote-runtime"
@@ -945,8 +1010,13 @@ def test_remote_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeyp
         manifest.mkdir()
     elif failure == "bad_encoding":
         manifest.write_bytes(b"\xff")
-    else:
+    elif failure == "bad_json":
         manifest.write_text("{")
+    else:
+        manifest.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
+        target = tmp_path / "checkpoint-target"
+        target.mkdir()
+        (runtime_dir / "checkpoints").symlink_to(target, target_is_directory=True)
     row = {
         "step_id": "train-model",
         "run_id": "run-000",
@@ -1062,11 +1132,29 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
     assert "(nohup env " in rows[0]["command"]
     assert "conda run --no-capture-output -n ywx" in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=6,7" in rows[0]["command"]
-    assert "WANDB_PROJECT=sleep2vec-unit-hparam" in rows[0]["command"]
+    assert "WANDB_PROJECT=" not in rows[0]["command"]
+    assert "WANDB_GROUP=" not in rows[0]["command"]
+    assert "WANDB_RUN_GROUP=" not in rows[0]["command"]
+    script = Path(rows[0]["script"]).read_text()
+    assert "--wandb-project sleep2vec-unit-hparam" in script
+    assert "--wandb-group unit" in script
     assert rows[0]["log_path"].endswith("runs/run-000--lr-1e-6/stdout.log")
     assert rows[0]["pid_path"].endswith("runs/run-000--lr-1e-6/pid")
     assert not (plan_dir / "logs").exists()
     assert not (plan_dir / "pids").exists()
+
+
+@pytest.mark.parametrize("env_name", ["WANDB_PROJECT", "WANDB_GROUP", "WANDB_RUN_GROUP", "WANDB_MODE"])
+def test_hparam_plan_rejects_wandb_environment_aliases(tmp_path: Path, env_name: str):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "env": {env_name: "unit"}},
+    )
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+
+    assert result.returncode == 1
+    assert f"execution.env.{env_name}" in result.stdout
 
 
 def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path, monkeypatch):
@@ -1463,7 +1551,7 @@ def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonica
     merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": "running"}])
     real_merge = merge_run_manifest
 
-    def merge_after_wandb_update(root, rows):
+    def merge_after_wandb_update(root, rows, **_kwargs):
         real_merge(root, [{"step_id": "train-model", "run_id": "run-000", "status": "failed"}])
         return real_merge(root, rows)
 

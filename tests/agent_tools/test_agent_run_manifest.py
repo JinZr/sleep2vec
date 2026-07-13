@@ -11,6 +11,28 @@ import types
 import pytest
 
 
+@pytest.mark.parametrize(
+    ("namespace", "default_project"),
+    [
+        ("sleep2vec", "sleep2vec-finetune"),
+        ("sleep2vec2", "sleep2vec2-finetune"),
+        ("sleep2expert", "sleep2expert-finetune"),
+    ],
+)
+def test_finetune_wandb_cli_contract(namespace: str, default_project: str):
+    source = (Path(__file__).resolve().parents[2] / namespace / "finetune.py").read_text()
+    for flag, help_text in [
+        ("--wandb-project", "W&B project name."),
+        ("--wandb-group", "W&B run group."),
+        ("--wandb-mode", "W&B run mode."),
+    ]:
+        assert f'parser.add_argument("{flag}", type=str, default=None, help="{help_text}")' in source
+    assert f'project=getattr(args, "wandb_project", None) or "{default_project}"' in source
+    assert 'group=getattr(args, "wandb_group", None),' in source
+    assert 'mode=getattr(args, "wandb_mode", None),' in source
+    assert 'if args.wandb_mode not in {"offline", "disabled"}:\n        wandb.login()' in source
+
+
 @pytest.fixture(scope="module")
 def training_runtime_dependencies():
     result = subprocess.run(
@@ -80,6 +102,9 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(
         monitor_mod="min",
         patience=1,
         print_diagnostics=False,
+        wandb_project="managed-hparam",
+        wandb_group="unit",
+        wandb_mode="offline",
     )
     config_bundle = types.SimpleNamespace(model={}, finetune={}, averaging={})
     logger_kwargs = {}
@@ -124,3 +149,6 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(
         finetune.supervised(args, config_bundle)
 
     assert logger_kwargs["name"] == args.version
+    assert logger_kwargs["project"] == args.wandb_project
+    assert logger_kwargs["group"] == args.wandb_group
+    assert logger_kwargs["mode"] == args.wandb_mode

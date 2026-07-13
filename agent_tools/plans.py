@@ -611,7 +611,7 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
             artifacts.get("version_name", recipe_name(recipe)),
             "--results-csv-path",
             artifacts.get("results_csv_path", "results/agent_results.csv"),
-            *rendering.runtime_cli_args(runtime),
+            *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
             *rendering.finetune_input_cli_args(
                 inputs,
                 variant=str(recipe.get("variant")),
@@ -619,7 +619,7 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
         ]
         if test_after_fit is False:
             pieces.append("--no-test-after-fit")
-        return [rendering.with_env(rendering.render_command(pieces), rendering.runtime_env_vars(runtime))]
+        return [rendering.render_command(pieces)]
     if task in {"infer", "evaluate"}:
         return [
             rendering.render_command(

@@ -111,9 +111,21 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
     for run in plan.get("runs", []):
         run_id = str(run["run_id"])
         version = str(run["version"])
-        manifest_path = artifacts.find_run_manifest(run)
-        manifest = read_json(manifest_path) if manifest_path else {}
         status = status_rows.get(managed_run_key(run), {})
+        artifact_row = {**run, **status}
+        observed_artifacts = evidence.runtime_artifacts(artifact_row)
+        if observed_artifacts is None:
+            manifest_path = str(status.get("run_manifest") or "")
+            manifest = {}
+            checkpoint_names = []
+        else:
+            manifest_path, manifest, checkpoint_names = observed_artifacts
+        checkpoint_dir = str(artifact_row.get("checkpoint_dir") or "")
+        checkpoint_path = (
+            artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, checkpoint_names)
+            if evidence.is_remote_row(artifact_row)
+            else artifacts.fixed_checkpoint_path(manifest, Path(checkpoint_dir))
+        )
         row = {
             "round": round_index,
             "experiment_id": run["experiment_id"],
@@ -123,11 +135,11 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
             "version": version,
             "external_optimized": True,
             "config": run.get("config", ""),
-            "checkpoint_path": artifacts.fixed_checkpoint_path(manifest, Path(run["checkpoint_dir"])),
+            "checkpoint_path": checkpoint_path,
             "run_manifest": str(manifest_path or ""),
-            "log_path": status.get("log_path", ""),
-            "log_failed": evidence.log_has_failure(status.get("log_path")),
-            "log_tail": evidence.log_tail(status.get("log_path"), lines=4),
+            "log_path": artifact_row.get("log_path", ""),
+            "log_failed": evidence.log_has_failure(artifact_row.get("log_path"), artifact_row),
+            "log_tail": evidence.log_tail(artifact_row.get("log_path"), artifact_row, lines=4),
         }
         row.update(managed_run_parameters(run))
         row.update(_manifest_metrics(manifest))
@@ -617,8 +629,11 @@ def _stop_bad_running_runs(root: Path, round_dir: Path, recipe: dict[str, Any]) 
         if row.get("status") != "running":
             continue
         should_stop = evidence.log_has_failure(row.get("log_path"), row)
-        manifest = artifacts.find_run_manifest(row)
-        data = read_json(manifest) if manifest else {}
+        data = {}
+        if not should_stop:
+            observed_artifacts = evidence.runtime_artifacts(row)
+            if observed_artifacts is not None:
+                _manifest_path, data, _checkpoint_names = observed_artifacts
         score = artifacts.metric_value(data, objective["metric"])
         if (
             not should_stop

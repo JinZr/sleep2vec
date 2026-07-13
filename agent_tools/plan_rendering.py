@@ -51,7 +51,7 @@ def list_value(value: Any) -> list[Any]:
     return [value]
 
 
-def runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
+def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> list[Any]:
     args: list[Any] = [
         "--devices",
         *[str(item) for item in list_value(runtime.get("devices", [0])) or [0]],
@@ -78,21 +78,9 @@ def runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
         ("ckpt_every_n_epochs", "--ckpt-every-n-epochs"),
     ]:
         append_option(args, flag, runtime.get(key))
+    if variant != "sex_age_baseline":
+        append_option(args, "--wandb-mode", runtime.get("wandb_mode"))
     return args
-
-
-def runtime_env_vars(runtime: dict[str, Any]) -> dict[str, Any]:
-    env: dict[str, Any] = {}
-    if runtime.get("wandb_mode") not in (None, "", "ASK_USER"):
-        env["WANDB_MODE"] = runtime["wandb_mode"]
-    return env
-
-
-def with_env(command: str, env: dict[str, Any]) -> str:
-    if not env:
-        return command
-    prefix = " ".join(f"{key}={shlex.quote(str(value))}" for key, value in sorted(env.items()))
-    return f"{prefix} {command}"
 
 
 def infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:

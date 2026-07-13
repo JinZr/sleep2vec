@@ -229,6 +229,9 @@ def test_sex_age_baseline_config_summary_reports_backend_and_variant(tmp_path: P
 def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _finetune_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["runtime"]["wandb_mode"] = "offline"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan")
 
@@ -237,6 +240,7 @@ def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path
     assert "python -m sex_age_baseline.finetune" in script
     assert "--pretrained-backbone-path" not in script
     assert "--inference-preset-path" not in script
+    assert "--wandb-mode" not in script
 
 
 def test_sex_age_baseline_preset_prepare_is_rejected(tmp_path: Path):
@@ -339,6 +343,9 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     for field in ("event_time_index", "is_event_index", "has_label_index"):
         Path(payload["finetune"]["survival"][field]).write_text("eid,d1,d2\n001,10,20\n002,30,40\n")
     base = _finetune_recipe(tmp_path, config)
+    base_payload = yaml.safe_load(base.read_text())
+    base_payload["runtime"]["wandb_mode"] = "offline"
+    base.write_text(yaml.safe_dump(base_payload, sort_keys=False))
     recipe = _write_yaml(
         tmp_path / "hparam_val_only.yaml",
         {
@@ -373,7 +380,9 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     assert report.exit_code == 0
     scripts = list((tmp_path / "plan-hparam-val-only" / "runs").glob("run-000--*/launch.sh"))
     assert len(scripts) == 1
-    assert "python -m sex_age_baseline.finetune" in scripts[0].read_text()
+    script = scripts[0].read_text()
+    assert "python -m sex_age_baseline.finetune" in script
+    assert "--wandb-mode" not in script
 
 
 def test_sex_age_baseline_finetune_blocks_invalid_metadata_values(tmp_path: Path):

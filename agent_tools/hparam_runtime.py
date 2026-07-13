@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import os
 from pathlib import Path
 import shlex
@@ -29,6 +30,25 @@ LAUNCH_TIMEOUT_SECONDS = 60
 
 
 def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
+    run_dir = Path(plan_dir).expanduser()
+    if not run_dir.is_absolute():
+        run_dir = run_dir.resolve()
+    plan = artifacts.read_hparam_plan(run_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    lock_path = workspace / "run_manifest.tsv.lock"
+    exp_io.validate_managed_output_paths(workspace, [lock_path])
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            return _launch_hparam_runs(run_dir, dry_run=dry_run, manifest_lock_held=True)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_lock_held: bool) -> Path:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -154,7 +174,7 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
                     slots -= 1
             elif row["status"] == "planned":
                 row["status"] = "pending"
-    committed = merge_run_manifest(workspace, rows)
+    committed = merge_run_manifest(workspace, rows, lock_held=manifest_lock_held)
     committed_by_key = {managed_run_key(row): row for row in committed}
     rows = [committed_by_key[managed_run_key(run)] for run in runs]
     write_rows(manifest, rows)
@@ -345,11 +365,6 @@ def _launch_command(
     gpus: list[Any],
 ) -> str:
     env = dict(execution.get("env") or {})
-    if execution.get("wandb_project"):
-        env["WANDB_PROJECT"] = execution["wandb_project"]
-    if execution.get("wandb_group"):
-        env["WANDB_RUN_GROUP"] = execution["wandb_group"]
-        env["WANDB_GROUP"] = execution["wandb_group"]
     if gpus:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(item) for item in gpus)
     run = ["bash", str(script)]

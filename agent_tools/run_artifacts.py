@@ -271,6 +271,31 @@ def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str
     return ""
 
 
+def fixed_checkpoint_path_from_names(
+    manifest: dict[str, Any], checkpoint_dir: str | Path, checkpoint_names: list[str]
+) -> str:
+    if checkpoint_dir in (None, ""):
+        return ""
+    checkpoint_dir = Path(str(checkpoint_dir))
+    names = {str(name) for name in checkpoint_names}
+    raw = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
+    if raw:
+        name = Path(str(raw)).name
+        if name.startswith("best-epoch="):
+            name = name.removeprefix("best-")
+        if name.startswith("epoch=") and name in names:
+            return str(checkpoint_dir / name)
+        epoch = epoch_number(manifest.get("epoch"))
+        if epoch is None:
+            return ""
+        for candidate in sorted(names):
+            if candidate.startswith("epoch=") and epoch_number_from_checkpoint_name(candidate) == epoch:
+                return str(checkpoint_dir / candidate)
+        return ""
+    epochs = sorted(name for name in names if name.startswith("epoch="))
+    return str(checkpoint_dir / epochs[-1]) if epochs else ""
+
+
 def checkpoint_names(run: dict[str, Any]) -> list[str]:
     if not run.get("checkpoint_dir"):
         return []

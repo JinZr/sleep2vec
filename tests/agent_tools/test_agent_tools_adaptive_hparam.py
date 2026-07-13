@@ -425,6 +425,70 @@ def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Pa
     assert "run_status_changed" not in [event["event_type"] for event in events]
 
 
+def test_adaptive_digest_reads_ssh_artifacts_and_logs_on_the_execution_host(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    plan = json.loads((round_dir / "plan.json").read_text())
+    run = plan["runs"][0]
+    workspace = Path(plan["recipe"]["experiment"]["root"])
+    merge_run_manifest(
+        workspace,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "status": "finished",
+                "target": "ssh",
+                "host": "unit-host",
+                "workdir": "/remote/workdir",
+                "gpus": "0",
+                "pid_path": "/remote/run.pid",
+                "log_path": "/remote/run.log",
+                "command": "remote-command",
+            }
+        ],
+    )
+    seen = []
+    manifest = {
+        "best_model_path": "/remote/workdir/log-finetune/version/checkpoints/best-epoch=3.ckpt",
+        "metrics": {"test_auroc": 0.73},
+    }
+
+    monkeypatch.setattr(adaptive_hparam, "monitor_hparam_runs", lambda _run_dir: None)
+    monkeypatch.setattr(
+        run_evidence,
+        "runtime_artifacts",
+        lambda row: seen.append(("artifacts", row))
+        or ("/remote/workdir/log-finetune/version/run_manifest.json", manifest, ["epoch=3.ckpt"]),
+    )
+    monkeypatch.setattr(
+        run_evidence,
+        "log_has_failure",
+        lambda path, row=None: seen.append(("failed", path, row)) or False,
+    )
+    monkeypatch.setattr(
+        run_evidence,
+        "log_tail",
+        lambda path, row=None, lines=8: seen.append(("tail", path, row, lines)) or "remote log",
+    )
+
+    digest = adaptive_hparam.digest_hparam_run(round_dir)
+
+    row = _read_table(digest)[0]
+    assert row["test_auroc"] == "0.73"
+    assert row["checkpoint_path"].endswith("/checkpoints/epoch=3.ckpt")
+    assert row["run_manifest"] == "/remote/workdir/log-finetune/version/run_manifest.json"
+    assert row["log_tail"] == "remote log"
+    artifact_row = next(entry[1] for entry in seen if entry[0] == "artifacts")
+    assert artifact_row["target"] == "ssh"
+    assert artifact_row["host"] == "unit-host"
+    log_rows = [entry[2] for entry in seen if entry[0] in {"failed", "tail"}]
+    assert all(row["target"] == "ssh" for row in log_rows)
+    assert all(row["host"] == "unit-host" for row in log_rows)
+
+
 def test_adaptive_digest_preflights_outputs_before_monitor(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"

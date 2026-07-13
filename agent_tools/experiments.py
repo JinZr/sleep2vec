@@ -338,12 +338,12 @@ def _target_root(run_dir: str | Path, remote: str | None) -> Path:
 
 
 def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
-    experiment_text = exp_io.read_text_at(root / "experiment.yaml", remote=remote)
+    manifest_path = root / "experiment.yaml"
+    exp_io.validate_managed_output_paths(root, [manifest_path], remote=remote)
+    experiment_text = exp_io.read_text_at(manifest_path, remote=remote)
     if not experiment_text:
         raise ValueError("experiment.yaml is missing. Initialize the experiment first.")
-    manifest = read_managed_yaml_mapping(
-        experiment_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
-    )
+    manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
     experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
     issues = experiment_metadata_issues(
         {

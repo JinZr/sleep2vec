@@ -641,7 +641,7 @@ def validate_frozen_run_update(
 
 
 def merge_run_manifest(
-    root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None
+    root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None, lock_held: bool = False
 ) -> list[dict[str, Any]]:
     root = Path(root)
     path = root / "run_manifest.tsv"
@@ -659,7 +659,7 @@ def merge_run_manifest(
     )
     validate_managed_run_rows(rows, source="incoming run manifest", cardinality="one_per_run")
     lock_file = None
-    if not remote:
+    if not remote and not lock_held:
         lock_file = lock_path.open("a+")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
     try:

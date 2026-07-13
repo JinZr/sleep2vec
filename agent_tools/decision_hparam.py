@@ -360,6 +360,23 @@ def _hparam_execution_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
                 {"env": execution.get("env")},
             )
         )
+    if isinstance(execution.get("env"), dict):
+        for env_name, field in {
+            "WANDB_PROJECT": "execution.wandb_project",
+            "WANDB_GROUP": "execution.wandb_group",
+            "WANDB_RUN_GROUP": "execution.wandb_group",
+            "WANDB_MODE": "runtime.wandb_mode",
+        }.items():
+            if env_name in execution["env"]:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        f"{env_name} is not supported in execution.env; use {field}.",
+                        None,
+                        {env_name: execution["env"][env_name]},
+                    )
+                )
     return issues
 
 
