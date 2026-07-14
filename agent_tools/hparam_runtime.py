@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from pathlib import Path
 import shlex
@@ -54,6 +55,58 @@ def launch_hparam_runs(
             )
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tuple[str, str]]) -> list[dict[str, Any]]:
+    run_dir = Path(plan_dir).expanduser()
+    if not run_dir.is_absolute():
+        run_dir = run_dir.resolve()
+    plan = artifacts.read_hparam_plan(run_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            workspace / "events.jsonl",
+            workspace / "reports" / "status.md",
+            run_dir / "launch_manifest.tsv",
+            run_dir / "run_status.tsv",
+        ],
+    )
+    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    expected_keys = {managed_run_key(run) for run in plan["runs"]}
+    if not started_keys.issubset(expected_keys):
+        raise ValueError("Interrupted launch evidence is outside the current hparam plan.")
+    rows = [canonical_by_key[managed_run_key(run)] for run in plan["runs"]]
+    write_rows(run_dir / "launch_manifest.tsv", rows)
+    write_rows(run_dir / "run_status.tsv", rows)
+    events_path = workspace / "events.jsonl"
+
+    def launched_event_keys() -> set[tuple[str, str]]:
+        if not events_path.exists():
+            return set()
+        keys = set()
+        for line in events_path.read_text().splitlines():
+            event = json.loads(line)
+            if event.get("event_type") == "run_launched":
+                keys.add((str(event.get("step_id") or ""), str(event.get("run_id") or "")))
+        return keys
+
+    launched_events = launched_event_keys()
+    for key in sorted(started_keys - launched_events):
+        try:
+            append_event(
+                workspace,
+                "run_launched",
+                {"step_id": key[0], "run_id": key[1], "gpus": canonical_by_key[key].get("gpus", "")},
+            )
+        except Exception:
+            if key not in launched_event_keys():
+                raise
+    write_status_report(workspace)
+    return rows
 
 
 def _launch_hparam_runs(
@@ -293,8 +346,19 @@ def _launch_hparam_runs(
                     row,
                     allow_execution_identity_fill=True,
                 )
+            key = managed_run_key(row)
+            committed = merge_run_manifest(workspace, [row], lock_held=manifest_lock_held)
+            committed_by_key = {managed_run_key(item): item for item in committed}
+            row.clear()
+            row.update(committed_by_key[key])
+            if row["status"] not in {"planned", "pending"}:
+                continue
             row["status"] = _start_process(execution, row["command"])
             row["launched_at"] = utc_now() if row["status"] == "launched" else ""
+            committed = merge_run_manifest(workspace, [row], lock_held=manifest_lock_held)
+            committed_by_key = {managed_run_key(item): item for item in committed}
+            row.clear()
+            row.update(committed_by_key[key])
             if row["status"] == "launched":
                 started_keys.add(managed_run_key(row))
                 if group_index is not None:

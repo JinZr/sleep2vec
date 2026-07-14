@@ -340,10 +340,17 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
     gpus_per_run = None
     if "gpus_per_run" in execution:
         try:
-            gpus_per_run = int(execution["gpus_per_run"])
-            if gpus_per_run <= 0:
+            raw_gpus_per_run = execution["gpus_per_run"]
+            gpus_per_run = int(raw_gpus_per_run)
+            if (
+                isinstance(raw_gpus_per_run, bool)
+                or gpus_per_run <= 0
+                or isinstance(raw_gpus_per_run, float)
+                and not raw_gpus_per_run.is_integer()
+            ):
                 raise ValueError
         except (TypeError, ValueError):
+            gpus_per_run = None
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,

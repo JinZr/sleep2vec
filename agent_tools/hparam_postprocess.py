@@ -545,9 +545,7 @@ def _selected_candidate_rows(
         derived = {field: value for field, value in row.items() if field not in candidate_parameters}
         validate_frozen_run_update(run, derived, require_checkpoint_ownership=True)
         managed_rows.append({**derived, **run})
-    if all_candidates:
-        return managed_rows, owner_plans_by_key
-    if type(top_k) is not int or top_k <= 0:
+    if not all_candidates and (type(top_k) is not int or top_k <= 0):
         raise ValueError("top_k must be a positive integer.")
     ranked_rows = []
     for index, row in enumerate(managed_rows):
@@ -564,6 +562,8 @@ def _selected_candidate_rows(
         ):
             raise ValueError(f"Selected candidate rank must be a positive integer: {row['step_id']} / {row['run_id']}")
         ranked_rows.append((int(numeric_rank), index, row))
+    if all_candidates:
+        return managed_rows, owner_plans_by_key
     selected = [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
     if not selected:
         raise ValueError("No selected candidates remain after rank/top_k filtering.")

@@ -859,6 +859,139 @@ def test_adaptive_step_commits_canonical_start_when_initial_launcher_raises(tmp_
     assert [event["event_type"] for event in events].count("launch_round") == 1
 
 
+def test_adaptive_step_reconciles_pid_after_initial_post_start_commit_failure(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    next_dir = workflow_dir / "adaptive" / "rounds" / "round_001"
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    starts = []
+
+    def start_with_pid(_execution, _command):
+        starts.append(True)
+        run = json.loads((next_dir / "plan.json").read_text())["runs"][0]
+        pid_path = Path(run["run_dir"]) / "pid"
+        pid_path.write_text(str(os.getpid()))
+        return "launched"
+
+    real_runtime_merge = hparam_runtime.merge_run_manifest
+    merge_calls = 0
+
+    def fail_post_start_commit(*args, **kwargs):
+        nonlocal merge_calls
+        merge_calls += 1
+        if merge_calls == 2:
+            raise RuntimeError("post-start canonical commit failed")
+        return real_runtime_merge(*args, **kwargs)
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
+
+    with pytest.raises(RuntimeError, match=r"launch failed.*already committed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    prospective = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
+    assert prospective["status"] == "launched"
+    assert prospective["target"] == "local"
+    assert prospective["pid"] == str(os.getpid())
+    assert prospective["pid_path"] == str(Path(prospective["run_dir"]) / "pid")
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert (
+        next(row["status"] for row in _read_table(next_dir / "launch_manifest.tsv") if row["run_id"] == "run-001")
+        == "launched"
+    )
+    assert (
+        next(row["status"] for row in _read_table(next_dir / "run_status.tsv") if row["run_id"] == "run-001")
+        == "launched"
+    )
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_launched") == 1
+
+    hparam_runtime.monitor_hparam_runs(next_dir)
+
+    monitored = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
+    assert monitored["status"] == "running"
+
+
+@pytest.mark.parametrize("recovery_failure", ["canonical", "mirrors"])
+def test_adaptive_step_blocks_retry_when_post_start_reconciliation_fails(
+    tmp_path: Path, monkeypatch, recovery_failure: str
+):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    next_dir = workflow_dir / "adaptive" / "rounds" / "round_001"
+    digest_calls = []
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "digest_hparam_run",
+        lambda round_dir: digest_calls.append(Path(round_dir)) or tmp_path / "digest.csv",
+    )
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    starts = []
+
+    def start_with_pid(_execution, _command):
+        starts.append(True)
+        run = json.loads((next_dir / "plan.json").read_text())["runs"][0]
+        (Path(run["run_dir"]) / "pid").write_text(str(os.getpid()))
+        return "launched"
+
+    real_runtime_merge = hparam_runtime.merge_run_manifest
+    runtime_merge_calls = 0
+
+    def fail_post_start_commit(*args, **kwargs):
+        nonlocal runtime_merge_calls
+        runtime_merge_calls += 1
+        if runtime_merge_calls == 2:
+            raise RuntimeError("post-start canonical commit failed")
+        return real_runtime_merge(*args, **kwargs)
+
+    real_adaptive_merge = adaptive_hparam.merge_run_manifest
+
+    def fail_reconciliation(root, rows, **kwargs):
+        if any(row.get("status") == "launched" and row.get("pid") for row in rows):
+            raise RuntimeError("canonical reconciliation failed")
+        return real_adaptive_merge(root, rows, **kwargs)
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
+    if recovery_failure == "canonical":
+        monkeypatch.setattr(adaptive_hparam, "merge_run_manifest", fail_reconciliation)
+        error = "launch evidence could not be committed"
+        expected_status = "planned"
+    else:
+        monkeypatch.setattr(
+            adaptive_hparam.hparam_runtime,
+            "reconcile_hparam_launch_artifacts",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("mirror reconciliation failed")),
+        )
+        error = "launch mirrors or events could not be reconciled"
+        expected_status = "launched"
+
+    with pytest.raises(RuntimeError, match=error):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    prospective = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
+    assert prospective["status"] == expected_status
+    assert prospective["target"] == "local"
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    digest_calls.clear()
+
+    assert adaptive_hparam.adaptive_step(workflow_dir, execute=False) == recipe
+    assert digest_calls == [workflow_dir / "adaptive" / "rounds" / "round_000"]
+    digest_calls.clear()
+
+    with pytest.raises(RuntimeError, match="Uncommitted adaptive launch evidence remains"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert digest_calls == []
+    assert starts == [True]
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
+    assert (
+        next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")["status"]
+        == expected_status
+    )
+
+
 @pytest.mark.parametrize("launch_status", ["launch_failed", "pending"])
 def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, monkeypatch, launch_status: str):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
@@ -950,6 +1083,48 @@ def test_zero_start_replacement_uses_a_fresh_round_on_the_next_step(tmp_path: Pa
     ]
     statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
     assert statuses == {"run-000": "superseded", "run-001": "launch_failed", "run-002": "launched"}
+
+
+@pytest.mark.parametrize("uncommitted_evidence", ["launch_failed_pid", "failed_status"])
+def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, monkeypatch, uncommitted_evidence: str):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    digest_calls = []
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "digest_hparam_run",
+        lambda round_dir: digest_calls.append(Path(round_dir)) or tmp_path / "digest.csv",
+    )
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    if uncommitted_evidence == "launch_failed_pid":
+        monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launch_failed")
+        error = "launch failed for run-001"
+    else:
+
+        def fail_with_terminal_status(run_dir, *, dry_run=True):
+            run = json.loads((Path(run_dir) / "plan.json").read_text())["runs"][0]
+            merge_run_manifest(
+                tmp_path,
+                [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "failed"}],
+            )
+            raise RuntimeError("launcher failed after terminal observation")
+
+        monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fail_with_terminal_status)
+        error = "launch failed"
+
+    with pytest.raises(RuntimeError, match=error):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    prospective = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
+    if uncommitted_evidence == "launch_failed_pid":
+        Path(prospective["pid_path"]).write_text(str(os.getpid()))
+    digest_calls.clear()
+
+    with pytest.raises(RuntimeError, match="Uncommitted adaptive launch evidence remains"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert digest_calls == []
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
 
 
 def test_build_failure_uses_a_fresh_round_on_the_next_step(tmp_path: Path, monkeypatch):
@@ -1454,6 +1629,103 @@ def test_adaptive_step_commits_canonical_start_when_drain_launcher_raises(tmp_pa
     assert adaptive_hparam._latest_round_index(workflow_dir) == 1
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("launch_round") == 1
+
+
+def test_adaptive_step_reconciles_pid_after_post_drain_commit_failure(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    next_dir = workflow_dir / "adaptive" / "rounds" / "round_001"
+    current_run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": current_run["step_id"], "run_id": current_run["run_id"], "status": "running"}],
+    )
+    calls = []
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_bad_running_run_keys",
+        lambda *_args: {adaptive_hparam.managed_run_key(current_run)},
+    )
+
+    def start_with_pid(_execution, _command):
+        run = json.loads((next_dir / "plan.json").read_text())["runs"][0]
+        (Path(run["run_dir"]) / "pid").write_text(str(os.getpid()))
+        return "launched"
+
+    real_runtime_merge = hparam_runtime.merge_run_manifest
+    runtime_merge_calls = 0
+
+    def fail_post_start_commit(*args, **kwargs):
+        nonlocal runtime_merge_calls
+        runtime_merge_calls += 1
+        if runtime_merge_calls == 2:
+            raise RuntimeError("post-start canonical commit failed")
+        return real_runtime_merge(*args, **kwargs)
+
+    def launch_after_drain(run_dir, *, dry_run=True):
+        calls.append("launch")
+        if calls.count("launch") == 1:
+            return Path(run_dir) / "launch_manifest.tsv"
+        return hparam_runtime.launch_hparam_runs(run_dir, dry_run=dry_run)
+
+    def fake_stop(run_dir, run_id, *, reason):
+        calls.append(f"stop:{run_id}")
+        merge_run_manifest(
+            tmp_path,
+            [
+                {
+                    "step_id": current_run["step_id"],
+                    "run_id": run_id,
+                    "status": "stopped",
+                    "stopped_at": manifests.utc_now(),
+                    "stop_reason": reason,
+                }
+            ],
+        )
+        return Path(run_dir) / "run_status.tsv"
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", launch_after_drain)
+    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+
+    with pytest.raises(RuntimeError, match=r"launch failed after the stop attempt.*already committed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    rows = _read_table(tmp_path / "run_manifest.tsv")
+    assert next(row["status"] for row in rows if row["run_id"] == current_run["run_id"]) == "stopped"
+    prospective = next(row for row in rows if row["run_id"] != current_run["run_id"])
+    assert prospective["status"] == "launched"
+    assert prospective["target"] == "local"
+    assert prospective["pid"] == str(os.getpid())
+    assert calls == ["launch", "stop:run-000", "launch"]
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert (
+        next(
+            row["status"]
+            for row in _read_table(next_dir / "launch_manifest.tsv")
+            if row["run_id"] != current_run["run_id"]
+        )
+        == "launched"
+    )
+    assert (
+        next(
+            row["status"] for row in _read_table(next_dir / "run_status.tsv") if row["run_id"] != current_run["run_id"]
+        )
+        == "launched"
+    )
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_launched") == 1
+
+    hparam_runtime.monitor_hparam_runs(next_dir)
+
+    monitored = next(
+        row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] != current_run["run_id"]
+    )
+    assert monitored["status"] == "running"
 
 
 def test_adaptive_step_second_handoff_failure_does_not_stop_third_bad_run(tmp_path: Path, monkeypatch):

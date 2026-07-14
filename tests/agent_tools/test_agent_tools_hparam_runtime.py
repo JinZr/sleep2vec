@@ -13,7 +13,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import hparam_runtime, manifests, run_artifacts, run_evidence
+from agent_tools import decision_hparam, hparam_runtime, manifests, run_artifacts, run_evidence
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
 
@@ -422,9 +422,112 @@ def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monke
     assert len(started) == 1
 
 
-def test_hparam_launch_mirrors_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
+def test_hparam_launch_commits_execution_identity_before_start(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
+    started = []
+
+    def start_after_identity_commit(_execution, command):
+        canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+        assert canonical["status"] == "planned"
+        assert canonical["target"] == "local"
+        assert canonical["command"] == command
+        assert canonical["pid_path"]
+        started.append(command)
+        return "launched"
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", start_after_identity_commit)
+
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    assert len(started) == 1
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
+
+
+def test_hparam_launch_does_not_start_when_identity_precommit_fails(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("identity precommit failed")),
+    )
+    monkeypatch.setattr(
+        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
+    )
+
+    with pytest.raises(RuntimeError, match="identity precommit failed"):
+        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    assert started == []
+
+
+def test_hparam_launch_preserves_first_commit_when_second_start_raises(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "planned"}, {"run_id": "run-001", "status": "planned"}],
+    )
+    plan_path = tmp_path / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["execution"]["max_concurrent"] = 2
+    plan_path.write_text(json.dumps(plan))
+    resolved_path = tmp_path / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved["execution"]["max_concurrent"] = 2
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    starts = 0
+
+    def fail_second_start(_execution, _command):
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            raise RuntimeError("second start failed")
+        return "launched"
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", fail_second_start)
+
+    with pytest.raises(RuntimeError, match="second start failed"):
+        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert rows["run-000"]["status"] == "launched"
+    assert rows["run-001"]["status"] == "planned"
+    assert rows["run-001"]["target"] == "local"
+
+
+def test_hparam_launch_artifact_reconciliation_never_starts_pending_runs_and_deduplicates_events(
+    tmp_path: Path, monkeypatch
+):
+    _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "launched"}, {"run_id": "run-001", "status": "pending"}],
+    )
+    real_append = hparam_runtime.append_event
+
+    def append_then_raise(*args, **kwargs):
+        real_append(*args, **kwargs)
+        raise RuntimeError("event report failed")
+
+    monkeypatch.setattr(hparam_runtime, "append_event", append_then_raise)
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("artifact reconciliation must not start a process")),
+    )
+
+    hparam_runtime.reconcile_hparam_launch_artifacts(tmp_path, {("train-model", "run-000")})
+    hparam_runtime.reconcile_hparam_launch_artifacts(tmp_path, {("train-model", "run-000")})
+
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_status.tsv")}
+    assert rows["run-000"]["status"] == "launched"
+    assert rows["run-001"]["status"] == "pending"
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_launched") == 1
+
+
+def test_hparam_launch_does_not_start_after_canonical_owner_commits_terminal_status(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     real_merge = merge_run_manifest
+    started = []
 
     def merge_after_wandb_update(root, rows, **_kwargs):
         kwargs = {"lock_held": True} if _kwargs.get("lock_held") else {}
@@ -432,15 +535,17 @@ def test_hparam_launch_mirrors_the_status_committed_by_the_canonical_owner(tmp_p
         return real_merge(root, rows, **kwargs)
 
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_wandb_update)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda _execution, _command: "launched")
+    monkeypatch.setattr(
+        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
+    )
 
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
     assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "failed"
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert [event["event_type"] for event in events].count("run_launched") == 1
+    assert started == []
+    assert not (tmp_path / "events.jsonl").exists()
 
 
 def test_hparam_launch_failure_does_not_record_launched_event(tmp_path: Path, monkeypatch):
@@ -1226,6 +1331,19 @@ def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspa
     assert message in planned.stdout
     assert not plan_dir.exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("gpus_per_run", [0, False, 0.5, 1.5, "0.5", "1.5"])
+def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
+    issues = decision_hparam._hparam_execution_issues(
+        {"gpu_pool": [0, 1], "gpus_per_run": gpus_per_run},
+        {},
+    )
+
+    assert len(issues) == 1
+    assert issues[0].field == "execution.gpus_per_run"
+    assert issues[0].status.value == "FAIL"
+    assert "must be a positive integer" in issues[0].message
 
 
 def test_hparam_runtime_rejects_gpus_per_run_without_a_physical_pool():

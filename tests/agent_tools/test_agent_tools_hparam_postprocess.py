@@ -654,8 +654,8 @@ def test_selected_candidates_keep_managed_same_step_rows_from_registered_plans(t
     second_run = second_plan["runs"][0]
 
     rows = [
-        {"step_id": first_run["step_id"], "run_id": first_run["run_id"], "rank": "1"},
-        {"step_id": second_run["step_id"], "run_id": second_run["run_id"], "rank": "2"},
+        {"step_id": first_run["step_id"], "run_id": first_run["run_id"], "rank": "2"},
+        {"step_id": second_run["step_id"], "run_id": second_run["run_id"], "rank": "1"},
     ]
     selected, _owner_plans = hparam_postprocess._selected_candidate_rows(
         rows,
@@ -665,7 +665,7 @@ def test_selected_candidates_keep_managed_same_step_rows_from_registered_plans(t
     top, _owner_plans = hparam_postprocess._selected_candidate_rows(rows, plan=second_plan)
 
     assert [row["run_id"] for row in selected] == [first_run["run_id"], second_run["run_id"]]
-    assert [row["run_id"] for row in top] == [first_run["run_id"]]
+    assert [row["run_id"] for row in top] == [second_run["run_id"]]
 
 
 def test_selected_candidates_rank_all_registered_plans_in_current_step(tmp_path: Path):
@@ -732,6 +732,43 @@ def test_selected_candidates_require_positive_integer_top_k(tmp_path: Path, top_
             plan=plan,
             top_k=top_k,
         )
+
+
+@pytest.mark.parametrize(
+    ("command", "selected_flag", "extra_args", "output_name"),
+    [
+        ("hparam-external-eval", "--selected", ["--unlock-final-test", "--all-candidates"], "external_eval.sh"),
+        ("hparam-export-logits", "--selected", ["--skip-test", "--all-candidates"], "logits_export_manifest.tsv"),
+        ("hparam-threshold", "--selected", [], "threshold_summary.csv"),
+        ("hparam-ensemble", "--candidates", [], "ensemble_summary.csv"),
+    ],
+)
+def test_all_candidate_postprocess_paths_require_rank(
+    tmp_path: Path,
+    command: str,
+    selected_flag: str,
+    extra_args: list[str],
+    output_name: str,
+):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    selected = tmp_path / "selected.csv"
+    selected.write_text("step_id,run_id\n" f"{run['step_id']},{run['run_id']}\n")
+
+    result = _run(
+        command,
+        "--run-dir",
+        str(plan_dir),
+        selected_flag,
+        str(selected),
+        *extra_args,
+    )
+
+    assert result.returncode == 1
+    assert "rank must be a positive integer" in result.stderr
+    assert not (plan_dir / output_name).exists()
 
 
 def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp_path: Path):
@@ -972,9 +1009,9 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
     pd.DataFrame({"label": [0, 1], "prob": [0.2, 0.8]}).to_csv(test_predictions, index=False)
     candidates = tmp_path / "step-candidates.csv"
     candidates.write_text(
-        "step_id,run_id,val_predictions_path,test_predictions_path\n"
-        f"{owner_run['step_id']},{owner_run['run_id']},{val_predictions},{test_predictions}\n"
-        f"{caller_run['step_id']},{caller_run['run_id']},{val_predictions},{test_predictions}\n"
+        "step_id,run_id,rank,val_predictions_path,test_predictions_path\n"
+        f"{owner_run['step_id']},{owner_run['run_id']},1,{val_predictions},{test_predictions}\n"
+        f"{caller_run['step_id']},{caller_run['run_id']},2,{val_predictions},{test_predictions}\n"
     )
 
     threshold = _run("hparam-threshold", "--run-dir", str(caller_plan_dir), "--selected", str(candidates))
@@ -1410,7 +1447,7 @@ def test_hparam_threshold_requires_validation_and_test_inputs(tmp_path: Path, he
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     selected = tmp_path / "selected.csv"
-    selected.write_text(f"step_id,run_id,{header}\n" f"{run['step_id']},{run['run_id']},{tmp_path / value}\n")
+    selected.write_text(f"step_id,run_id,rank,{header}\n" f"{run['step_id']},{run['run_id']},1,{tmp_path / value}\n")
 
     result = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
 
@@ -1433,7 +1470,8 @@ def test_hparam_threshold_rejects_prediction_files_without_samples(tmp_path: Pat
         val, test = test, val
     selected = tmp_path / "selected.csv"
     selected.write_text(
-        "step_id,run_id,val_predictions_path,test_predictions_path\n" f"{run['step_id']},{run['run_id']},{val},{test}\n"
+        "step_id,run_id,rank,val_predictions_path,test_predictions_path\n"
+        f"{run['step_id']},{run['run_id']},1,{val},{test}\n"
     )
 
     result = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
@@ -1461,10 +1499,10 @@ def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
     pd.DataFrame({"label": [0, 0, 1, 1], "prob": [0.8, 0.7, 0.2, 0.1]}).to_csv(test_c, index=False)
     selected = tmp_path / "selected.csv"
     selected.write_text(
-        "step_id,run_id,val_predictions_path,test_predictions_path\n"
-        f"unit-hparam-tune,run-000,{val_a},{test_a}\n"
-        f"unit-hparam-tune,run-001,{val_b},{test_b}\n"
-        f"unit-hparam-tune,run-002,{val_c},{test_c}\n"
+        "step_id,run_id,rank,val_predictions_path,test_predictions_path\n"
+        f"unit-hparam-tune,run-000,1,{val_a},{test_a}\n"
+        f"unit-hparam-tune,run-001,2,{val_b},{test_b}\n"
+        f"unit-hparam-tune,run-002,3,{val_c},{test_c}\n"
     )
 
     threshold = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
@@ -1570,11 +1608,11 @@ def test_hparam_threshold_and_ensemble_read_repo_prediction_csv_lists(tmp_path: 
     ).to_csv(test_custom, index=False)
     selected = tmp_path / "selected_repo_predictions.csv"
     selected.write_text(
-        "step_id,run_id,label_name,val_predictions_path,test_predictions_path\n"
-        f"unit-hparam-tune,run-000,,{val_seq},{test_seq}\n"
-        f"unit-hparam-tune,run-001,,{val_ahi},{test_ahi}\n"
-        f"unit-hparam-tune,run-002,,{val_logit},{test_logit}\n"
-        f"unit-hparam-tune,run-003,custom_label,{val_custom},{test_custom}\n"
+        "step_id,run_id,rank,label_name,val_predictions_path,test_predictions_path\n"
+        f"unit-hparam-tune,run-000,1,,{val_seq},{test_seq}\n"
+        f"unit-hparam-tune,run-001,2,,{val_ahi},{test_ahi}\n"
+        f"unit-hparam-tune,run-002,3,,{val_logit},{test_logit}\n"
+        f"unit-hparam-tune,run-003,4,custom_label,{val_custom},{test_custom}\n"
     )
 
     threshold = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))

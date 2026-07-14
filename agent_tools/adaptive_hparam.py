@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
+from . import experiment_io as exp_io, hparam_runtime, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
     append_event as _write_experiment_event,
     canonical_local_experiment_root,
@@ -201,6 +201,8 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    if execute:
+        _reject_unresolved_launch_attempts(root, workspace)
     next_round = _next_round_index(root)
     next_dir = _round_dir(root, next_round)
     targets = [workspace / "events.jsonl"]
@@ -256,12 +258,37 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
         try:
             launch_hparam_runs(next_dir, dry_run=False)
         except Exception as exc:
-            canonical_rows = read_run_manifest(workspace)
+            try:
+                canonical_rows, unresolved_launches, reconciled_starts = _reconcile_interrupted_launch(
+                    workspace, next_plan_keys
+                )
+            except Exception as reconcile_exc:
+                raise RuntimeError(
+                    f"Adaptive replacement launch failed and round {next_round:03d} launch evidence could not be "
+                    "committed. Prospective runs were not superseded; resolve the canonical launch state before retry."
+                ) from reconcile_exc
+            if unresolved_launches:
+                unresolved_ids = ", ".join(sorted(key[1] for key in unresolved_launches))
+                raise RuntimeError(
+                    f"Adaptive replacement launch failed and round {next_round:03d} has unresolved launch evidence "
+                    f"for {unresolved_ids}. Prospective runs were not superseded; resolve the launch state before "
+                    "retry."
+                ) from exc
             next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
             refreshed_started_keys = {
                 managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
             }
-            round_committed = bool(refreshed_started_keys - started_keys)
+            confirmed_starts = (refreshed_started_keys - started_keys) | reconciled_starts
+            if confirmed_starts:
+                try:
+                    canonical_rows = _finish_interrupted_launch(next_dir, workspace, confirmed_starts)
+                except Exception as reconcile_exc:
+                    raise RuntimeError(
+                        f"Adaptive replacement launch failed and round {next_round:03d} launch mirrors or events "
+                        "could not be reconciled. Prospective runs were not superseded; resolve the canonical launch "
+                        "state before retry."
+                    ) from reconcile_exc
+            round_committed = bool(confirmed_starts)
             if round_committed:
                 _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
                 superseded_current_keys = _supersede_pending_runs(root, round_dir)
@@ -339,7 +366,23 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
             try:
                 launch_hparam_runs(next_dir, dry_run=False)
             except Exception as exc:
-                canonical_rows = read_run_manifest(workspace)
+                try:
+                    canonical_rows, unresolved_launches, reconciled_starts = _reconcile_interrupted_launch(
+                        workspace, next_plan_keys
+                    )
+                except Exception as reconcile_exc:
+                    raise RuntimeError(
+                        f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}, and round "
+                        f"{next_round:03d} launch evidence could not be committed. Prospective runs were not "
+                        "superseded; resolve the canonical launch state before retry."
+                    ) from reconcile_exc
+                if unresolved_launches:
+                    unresolved_ids = ", ".join(sorted(key[1] for key in unresolved_launches))
+                    raise RuntimeError(
+                        f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}, and round "
+                        f"{next_round:03d} has unresolved launch evidence for {unresolved_ids}. Prospective runs were "
+                        "not superseded; resolve the launch state before retry."
+                    ) from exc
                 next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
                 refreshed_started_keys = {
                     managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
@@ -347,7 +390,17 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                 newly_launch_failed = {
                     managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
                 } - before_launch_failed
-                if refreshed_started_keys - before_launch and not round_committed:
+                confirmed_starts = (refreshed_started_keys - before_launch) | reconciled_starts
+                if confirmed_starts:
+                    try:
+                        canonical_rows = _finish_interrupted_launch(next_dir, workspace, confirmed_starts)
+                    except Exception as reconcile_exc:
+                        raise RuntimeError(
+                            f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}, and round "
+                            f"{next_round:03d} launch mirrors or events could not be reconciled. Prospective runs were "
+                            "not superseded; resolve the canonical launch state before retry."
+                        ) from reconcile_exc
+                if confirmed_starts and not round_committed:
                     _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
                     round_committed = True
                     superseded_current_keys = _supersede_pending_runs(root, round_dir)
@@ -593,6 +646,76 @@ def _resolve_workflow_round(path: Path) -> tuple[Path, Path, int]:
         workflow_root = Path(*parts[: parts.index("adaptive")]) if "adaptive" in parts else path
         return workflow_root, path, idx
     return path, path, 0
+
+
+def _reconcile_interrupted_launch(
+    workspace: Path, plan_keys: set[tuple[str, str]]
+) -> tuple[list[dict[str, Any]], set[tuple[str, str]], set[tuple[str, str]]]:
+    canonical_rows = read_run_manifest(workspace)
+    updates = []
+    unresolved = set()
+    reconciled = set()
+    for row in canonical_rows:
+        key = managed_run_key(row)
+        if key not in plan_keys or row.get("status") not in {"planned", "pending"}:
+            continue
+        if row.get("target") in (None, ""):
+            continue
+        try:
+            pid = evidence.read_pid(row.get("pid_path"), row)
+        except RuntimeError:
+            unresolved.add(key)
+            continue
+        if pid is not None:
+            reconciled.add(key)
+            updates.append(
+                {
+                    "step_id": row["step_id"],
+                    "run_id": row["run_id"],
+                    "status": "launched",
+                    "pid": pid,
+                    "launched_at": row.get("launched_at") or utc_now(),
+                }
+            )
+    if updates:
+        canonical_rows = merge_run_manifest(workspace, updates)
+    return canonical_rows, unresolved, reconciled
+
+
+def _finish_interrupted_launch(
+    round_dir: Path, workspace: Path, started_keys: set[tuple[str, str]]
+) -> list[dict[str, Any]]:
+    hparam_runtime.reconcile_hparam_launch_artifacts(round_dir, started_keys)
+    return read_run_manifest(workspace)
+
+
+def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
+    committed_rounds = _committed_round_indexes(root)
+    registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
+    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    unresolved = []
+    no_execution_statuses = {"planned", "pending", "launch_failed", "superseded"}
+    for registered in registry:
+        round_index = int(registered["round"])
+        if round_index in committed_rounds:
+            continue
+        row = canonical_by_key[managed_run_key(registered)]
+        status = str(row.get("status") or "")
+        pid = None
+        if row.get("target") not in (None, ""):
+            try:
+                pid = evidence.read_pid(row.get("pid_path"), row)
+            except RuntimeError:
+                unresolved.append((round_index, str(row["run_id"])))
+                continue
+        if pid is not None or status not in no_execution_statuses:
+            unresolved.append((round_index, str(row["run_id"])))
+    if unresolved:
+        detail = ", ".join(f"round {round_index:03d} {run_id}" for round_index, run_id in unresolved)
+        raise RuntimeError(
+            f"Uncommitted adaptive launch evidence remains for {detail}; resolve the canonical launch state before "
+            "creating another round."
+        )
 
 
 def _committed_round_indexes(root: Path) -> set[int]:
