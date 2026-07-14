@@ -989,6 +989,70 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
     assert _read_table(caller_plan_dir / "ensemble_summary.csv")[0]["n_models"] == "2"
 
 
+@pytest.mark.parametrize(
+    ("policy_field", "policy_value", "config_field", "expected_error"),
+    [
+        ("selection_metric", "val_loss", "monitor", "selection metric differs"),
+        ("selection_mode", "min", "monitor_mod", "selection mode differs"),
+    ],
+)
+def test_postprocess_rejects_same_step_selection_contract_drift_before_writing(
+    tmp_path: Path,
+    policy_field: str,
+    policy_value: str,
+    config_field: str,
+    expected_error: str,
+):
+    owner_recipe = _hparam_recipe(tmp_path)
+    owner_plan_dir = tmp_path / "owner-plan"
+    owner_result = _run("plan", "--recipe", str(owner_recipe), "--output-dir", str(owner_plan_dir))
+    assert owner_result.returncode == 0, owner_result.stderr
+    owner_run = _first_run(owner_plan_dir)
+    owner_checkpoint = Path(owner_run["checkpoint_dir"]) / "epoch=1.ckpt"
+    owner_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    owner_checkpoint.write_text("checkpoint")
+    (Path(owner_run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(owner_checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    selected = _run("hparam-select", "--run-dir", str(owner_plan_dir))
+    assert selected.returncode == 0, selected.stderr
+    ranking = _ranking_path(owner_plan_dir)
+
+    caller_recipe = _hparam_recipe(tmp_path)
+    caller_payload = yaml.safe_load(caller_recipe.read_text())
+    caller_payload["evaluation_policy"][policy_field] = policy_value
+    base_payload = yaml.safe_load(Path(caller_payload["base_recipe"]).read_text())
+    config_path = Path(base_payload["inputs"]["config"])
+    config_payload = yaml.safe_load(config_path.read_text())
+    config_payload["finetune"]["task"][config_field] = policy_value
+    write_yaml(config_path, config_payload)
+    write_yaml(caller_recipe, caller_payload)
+    caller_plan_dir = tmp_path / "caller-plan"
+    caller_result = _run("plan", "--recipe", str(caller_recipe), "--output-dir", str(caller_plan_dir))
+    assert caller_result.returncode == 0, caller_result.stderr
+
+    result = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(caller_plan_dir),
+        "--selected",
+        str(ranking),
+        "--unlock-final-test",
+    )
+
+    assert result.returncode == 1
+    assert expected_error in result.stderr
+    assert not (caller_plan_dir / "external_eval_configs").exists()
+    assert not (caller_plan_dir / "external_eval_manifest.tsv").exists()
+    assert not (caller_plan_dir / "external_eval.sh").exists()
+
+
 def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=2)
     payload = yaml.safe_load(recipe.read_text())

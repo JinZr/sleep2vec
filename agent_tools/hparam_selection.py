@@ -65,11 +65,14 @@ def select_hparam_candidates(
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
         validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
-    preserved = [
-        row
-        for row in existing_ranked
-        if row.get("step_id") != step_id and artifacts.float_or_none(row.get("score")) is not None
-    ]
+    for row in existing_ranked:
+        score = row.get("score")
+        if row.get("step_id") != step_id and (isinstance(score, bool) or artifacts.float_or_none(score) is None):
+            raise ValueError(
+                f"Existing ranking row for another step has an invalid score: "
+                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
+            )
+    preserved = [row for row in existing_ranked if row.get("step_id") != step_id]
     prior_step_rows = [
         row
         for row in existing_ranked

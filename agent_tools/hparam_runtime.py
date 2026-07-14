@@ -481,6 +481,8 @@ def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
     devices = _as_list(runtime.get("devices"))
     pool = _as_list(execution.get("gpu_pool")) or devices
     if not pool:
+        if "gpus_per_run" in execution:
+            raise ValueError("execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices.")
         return []
     if len({str(item) for item in pool}) != len(pool):
         raise ValueError("The effective GPU pool must not contain duplicate GPU identifiers.")

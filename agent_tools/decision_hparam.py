@@ -363,7 +363,20 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
     gpu_pool = execution.get("gpu_pool") if isinstance(execution.get("gpu_pool"), list) else None
     pool = list(gpu_pool) if gpu_pool else devices
     per_run = gpus_per_run if gpus_per_run is not None else len(devices) or 1
-    if pool and (gpus_per_run is not None or "gpus_per_run" not in execution):
+    if gpus_per_run is not None and not pool:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.gpus_per_run",
+                "execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices.",
+                None,
+                {
+                    "gpus_per_run": gpus_per_run,
+                    "preflight_before_workspace": True,
+                },
+            )
+        )
+    elif pool and (gpus_per_run is not None or "gpus_per_run" not in execution):
         pool_field = "execution.gpu_pool" if gpu_pool else "runtime.devices"
         if len({str(item) for item in pool}) != len(pool):
             issues.append(

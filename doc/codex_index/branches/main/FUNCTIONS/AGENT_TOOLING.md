@@ -212,7 +212,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path`
-- Purpose and contract: validate the current-format registered plan, non-completed experiment, all managed tables, every frozen config/script hash, canonical/mirror/report/event and per-run log/PID targets, plus the single-use frozen runtime/checkpoint roots before creating a run directory, starting any process, or writing launch state. Canonical status decides launch eligibility, local status is mirror-only, and launch rows contribute only the shared execution-evidence allowlist. SSH execute validates the same paths on the execution host; dry-run performs no remote output probe.
+- Purpose and contract: validate the current-format registered plan, non-completed experiment, all managed tables, every frozen config/script hash, canonical/mirror/report/event and per-run log/PID targets, plus the single-use frozen runtime/checkpoint roots before creating a run directory, starting any process, or writing launch state. `execution.gpus_per_run` requires a non-empty physical pool from `execution.gpu_pool` or `runtime.devices`; both consultation and runtime reject an unmanaged implicit pool. Canonical status decides launch eligibility, local status is mirror-only, and launch rows contribute only the shared execution-evidence allowlist. SSH execute validates the same paths on the execution host; dry-run performs no remote output probe.
 - Important inputs/outputs: plan directory and dry-run flag in; `launch_manifest.tsv` path out.
 - Side effects: creates log/PID directories, writes `launch_manifest.tsv` and `run_status.tsv`, and starts processes only when `dry_run=False`.
 - Key callers/callees: public facade for `hparam_runtime.launch_hparam_runs`, called by `agent_tools hparam-launch` and adaptive step; runtime helpers remain in `hparam_runtime`.
@@ -245,7 +245,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `select_hparam_candidates(run_dir: str | Path, metric: str | None = None, mode: str | None = None) -> Path`
-- Purpose and contract: rank runs by the validation metric and direction frozen in the recipe, require every runnable registered hparam plan in the same step to use that same selection contract, record fixed checkpoint paths, validate every existing experiment-wide ranking row against canonical ownership, replace only the current plan's managed keys, and rerank all preserved runs for the step. Explicit blocked-plan artifacts are skipped, while a runnable plan missing `plan.json` or a plan/resolved task mismatch fails. Ranking plus canonical matrix/event targets are preflighted before the first ranking or runtime-evidence read.
+- Purpose and contract: rank runs by the validation metric and direction frozen in the recipe, require every runnable registered hparam plan in the same step to use that same selection contract, record fixed checkpoint paths, validate every existing experiment-wide ranking row against canonical ownership, and rebuild the complete registered step ranking from finite scores. Unscored runs in the current step have canonical selection fields cleared; an existing invalid-score row from another step fails instead of being silently removed. Explicit blocked-plan artifacts are skipped, while a runnable plan missing `plan.json` or a plan/resolved task mismatch fails. Ranking plus canonical matrix/event targets are preflighted before the first ranking or runtime-evidence read.
 - Important inputs/outputs: run directory plus optional matching metric/mode assertions in; experiment `reports/ranking.csv` path out.
 - Side effects: reads plan and run manifests; writes ranking CSV and updates experiment manifests/events.
 - Key callers/callees: public facade for `hparam_selection.select_hparam_candidates`; uses canonical interpreters from `run_artifacts`.
@@ -267,7 +267,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `generate_external_eval(run_dir: str | Path, selected_csv: str | Path, *, unlock_final_test: bool, kaldi_data_root: str | None = None, kaldi_manifest: str | None = None, finetune_data_index: str | None = None, eval_split: str = "test", top_k: int = 1, all_candidates: bool = False) -> Path`
-- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate the complete candidate table against the workspace before filtering ownership-valid other-step or earlier same-step plan rows, require every checkpoint path to be a direct child of its frozen checkpoint directory, apply top-k to retained current-plan rows in numeric rank order when ranks are step-global, then preflight all configs/manifest/script outputs before creating locked final/external inference commands; frozen run fields come from the plan.
+- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate the complete candidate table against the workspace before filtering ownership-valid other-step or earlier same-step plan rows, require all registered owner plans in the step to share the caller's frozen selection metric and mode, require every checkpoint path to be a direct child of its frozen checkpoint directory, apply top-k in numeric rank order, then preflight all configs/manifest/script outputs before creating locked final/external inference commands; frozen run fields come from each candidate's owning plan.
 - Important inputs/outputs: hparam run directory, selected candidates, explicit unlock, optional replacement data paths, split, base runtime settings, selected-row `runtime.*` overrides, and candidate selection controls in; `external_eval.sh` path out.
 - Side effects: writes copied configs, `external_eval_manifest.tsv`, and executable shell script.
 - Key callers/callees: public facade for `hparam_postprocess.generate_external_eval`; uses `module_for_variant` and `plan_rendering.infer_runtime_cli_args`.
@@ -278,7 +278,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `export_hparam_logits(run_dir: str | Path, selected_csv: str | Path, *, unlock_final_test: bool, val_split: str = "val", test_split: str = "test", skip_test: bool = False, label_name: str | None = None, val_kaldi_data_root: str | None = None, val_kaldi_manifest: str | None = None, val_finetune_data_index: str | None = None, test_kaldi_data_root: str | None = None, test_kaldi_manifest: str | None = None, test_finetune_data_index: str | None = None, batch_size: int = 12, num_workers: int = 8, devices: list[int] | None = None, accelerator: str = "gpu", device: str = "cuda", precision: str = "bf16-mixed", seed: int = 4523, top_k: int = 1, all_candidates: bool = False, execute: bool = False) -> Path`
-- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate the complete candidate table plus checkpoint ownership before filtering ownership-valid other-step or earlier same-step plan rows, apply top-k to retained current-plan rows in numeric rank order when ranks are step-global, then preflight all configs/manifest/logits/script outputs before preparing or executing inference; frozen run fields come from the plan, and dry-run replay scripts persist absolute plan/candidate-table arguments with the repository cwd/PYTHONPATH bootstrap.
+- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate the complete candidate table plus checkpoint ownership before filtering ownership-valid other-step or earlier same-step plan rows, require all registered owner plans in the step to share the caller's frozen selection metric and mode, apply top-k in numeric rank order, then preflight all configs/manifest/logits/script outputs before preparing or executing inference; frozen run fields come from each candidate's owning plan, and dry-run replay scripts persist absolute plan/candidate-table arguments with the repository cwd/PYTHONPATH bootstrap.
 - Important inputs/outputs: selected candidates, split/data overrides, runtime controls, unlock/skip-test, and execution flag in; `logits_export_manifest.tsv` path out.
 - Side effects: writes copied configs and, for dry runs, a replay script plus manifest; with `execute=True`, runs inference commands and copies produced prediction CSVs to logits paths, then writes `logits_export_manifest.tsv` only after every requested split succeeds.
 - Key callers/callees: public facade for `hparam_postprocess.export_hparam_logits`, called by `agent_tools hparam-export-logits`.
@@ -289,7 +289,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> Path`
-- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate candidate ownership, then fit a binary F1 threshold on validation predictions/logits and apply it to test predictions/logits.
+- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate candidate ownership and same-step owner-plan selection contracts, then require both validation and test predictions/logits, fit a binary F1 threshold on validation data, and apply it to test data.
 - Important inputs/outputs: run directory and selected CSV in; `threshold_summary.csv` path out.
 - Side effects: reads prediction CSVs and writes threshold summary.
 - Key callers/callees: public facade for `hparam_postprocess.threshold_hparam_outputs`, called by `agent_tools hparam-threshold`.
@@ -300,7 +300,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `ensemble_hparam_outputs(run_dir: str | Path, candidates_csv: str | Path, *, search_combinations: bool = False, max_size: int | None = None, metric: str = "exploratory_test_auroc", mode: str = "max", top_k: int | None = None) -> Path`
-- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate candidate ownership, then average binary prediction probabilities across candidates belonging to that plan, optionally searching combinations.
+- Purpose and contract: canonicalize the local plan path, preflight the current managed hparam plan, validate candidate ownership and same-step owner-plan selection contracts, then average binary prediction probabilities across the retained registered-plan candidates, optionally searching combinations.
 - Important inputs/outputs: candidate CSV, combination controls, rank metric/mode, and top-k in; `ensemble_summary.csv` path out.
 - Side effects: reads prediction CSVs and writes ensemble summary.
 - Key callers/callees: public facade for `hparam_postprocess.ensemble_hparam_outputs`, called by `agent_tools hparam-ensemble`.
@@ -311,7 +311,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiment_workspace.py`
 - Signature: `canonical_local_experiment_root(raw: str | Path, base_dir: str | Path) -> Path`
-- Purpose and contract: produce the sole durable local experiment-root representation by expanding the user home, applying the caller-owned base directory to relative paths, and resolving the resulting absolute path. Recipe roots use the repository root as their base; experiment CLI roots use the caller's current working directory. SSH paths do not call this function and remain exact remote strings.
+- Purpose and contract: produce the sole durable local experiment-root representation by expanding the user home, applying the caller-owned base directory to relative paths, rejecting a direct or dangling symlink at the resulting root, and resolving the remaining absolute path. Symlinked parent components may resolve normally. Recipe roots use the repository root as their base; experiment CLI roots use the caller's current working directory. SSH paths do not call this function and remain exact remote strings.
 - Side effects: none beyond filesystem path resolution.
 - Reuse guidance: use at public local plan, experiment, and adaptive entry boundaries before persisting or comparing repository-owned management locators; do not add producer-specific normalization or apply it to user semantic input paths.
 
@@ -552,7 +552,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/adaptive_hparam.py`
 - Signature: `adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path`
-- Purpose and contract: perform one adaptive iteration: preflight deterministic outputs, monitor/digest, and suggest in preview mode; with `execute=True`, require the complete prospective replacement round to fit `max_rounds` and `max_runs_total` before stopping or superseding current runs, then plan and launch the next round.
+- Purpose and contract: perform one adaptive iteration: preflight deterministic outputs, monitor/digest, and suggest in preview mode; with `execute=True`, require the complete prospective replacement round to fit `max_rounds` and `max_runs_total`, plan and launch it, confirm at least one replacement run reached `launched`, and only then stop or supersede current runs. Failed planning, registration, launch, or launch confirmation leaves current runs unchanged.
 - Important inputs/outputs: workflow root and execute flag in; suggestion path out.
 - Side effects: writes digest/suggestion/events; only execute mode may stop or supersede runs, write a next-round plan, and launch runs.
 - Key callers/callees: called by `agent_tools hparam-adaptive-step` and adaptive loop.

@@ -608,6 +608,59 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
     assert any(row["step_id"] == "other-step" and row["run_id"] == "run-999" for row in rows)
 
 
+@pytest.mark.parametrize("score", ["", "not-a-number", float("nan"), float("inf"), True])
+def test_hparam_select_rejects_invalid_other_step_score_without_mutation(tmp_path: Path, score):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
+    other_checkpoint_dir = tmp_path / "other-checkpoints"
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "experiment_id": "unit-experiment",
+                "step_id": "other-step",
+                "run_id": "run-999",
+                "version": "other-version",
+                "checkpoint_dir": str(other_checkpoint_dir),
+                "status": "completed",
+            }
+        ],
+    )
+    ranking = _ranking_path(plan_dir)
+    write_rows(
+        ranking,
+        [
+            {
+                "experiment_id": "unit-experiment",
+                "step_id": "other-step",
+                "run_id": "run-999",
+                "version": "other-version",
+                "checkpoint_path": str(other_checkpoint_dir / "epoch=1.ckpt"),
+                "metric": "val_other",
+                "score": score,
+                "rank": 1,
+            }
+        ],
+    )
+    canonical = tmp_path / "run_manifest.tsv"
+    events = tmp_path / "events.jsonl"
+    ranking_before = ranking.read_bytes()
+    canonical_before = canonical.read_bytes()
+    events_before = events.read_bytes()
+
+    with pytest.raises(ValueError, match="another step has an invalid score"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert ranking.read_bytes() == ranking_before
+    assert canonical.read_bytes() == canonical_before
+    assert events.read_bytes() == events_before
+
+
 def test_hparam_select_rejects_unowned_preserved_checkpoint_before_writing(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

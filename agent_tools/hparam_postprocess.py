@@ -447,6 +447,9 @@ def _selected_candidate_rows(
 ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
     validate_managed_run_rows(rows, source="selected candidates", cardinality="many_per_run")
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    selection_metric = evaluation.get("selection_metric")
+    selection_mode = evaluation.get("selection_mode")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Selected candidates require a managed experiment workspace.")
@@ -481,6 +484,13 @@ def _selected_candidate_rows(
         owner_step = owner_recipe.get("step") if isinstance(owner_recipe.get("step"), dict) else {}
         if str(owner_step.get("id") or "") != step_id:
             raise ValueError(f"Registered hparam plan belongs to a different step: {registered_root}")
+        owner_evaluation = (
+            owner_recipe.get("evaluation_policy") if isinstance(owner_recipe.get("evaluation_policy"), dict) else {}
+        )
+        if owner_evaluation.get("selection_metric") != selection_metric:
+            raise ValueError("Existing ranking selection metric differs from the current recipe.")
+        if owner_evaluation.get("selection_mode") != selection_mode:
+            raise ValueError("Existing ranking selection mode differs from the current recipe.")
         for run in owner_plan["runs"]:
             key = managed_run_key(run)
             if key in owner_runs_by_key:

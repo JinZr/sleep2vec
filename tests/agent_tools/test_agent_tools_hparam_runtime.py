@@ -1206,6 +1206,36 @@ def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
     assert f"--devices {expected_devices} --precision" in command
 
 
+def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspace_creation(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "gpus_per_run": 2})
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["runtime"].pop("devices")
+    write_yaml(base_recipe, base_payload)
+    plan_dir = tmp_path / "plan"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    message = "execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices"
+    assert doctor.returncode == 1
+    assert message in doctor.stdout
+    assert planned.returncode == 1
+    assert message in planned.stdout
+    assert not plan_dir.exists()
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_runtime_rejects_gpus_per_run_without_a_physical_pool():
+    with pytest.raises(
+        ValueError,
+        match="execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices",
+    ):
+        hparam_runtime._gpu_groups({"execution": {"gpus_per_run": 2}})
+
+
 def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
         tmp_path,
