@@ -65,13 +65,24 @@ def select_hparam_candidates(
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
         validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
-    current_keys = {managed_run_key(run) for run in plan["runs"]}
-    preserved = [row for row in existing_ranked if managed_run_key(row) not in current_keys]
-    prior_step_rows = [row for row in preserved if row.get("step_id") == step_id]
+    for row in existing_ranked:
+        score = row.get("score")
+        if row.get("step_id") != step_id and (isinstance(score, bool) or artifacts.float_or_none(score) is None):
+            raise ValueError(
+                f"Existing ranking row for another step has an invalid score: "
+                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
+            )
+    preserved = [row for row in existing_ranked if row.get("step_id") != step_id]
+    prior_step_rows = [
+        row
+        for row in existing_ranked
+        if row.get("step_id") == step_id and artifacts.float_or_none(row.get("score")) is not None
+    ]
     for row in prior_step_rows:
         if row.get("metric") != metric:
             raise ValueError("Existing ranking selection metric differs from the current recipe.")
     remaining_prior_keys = {managed_run_key(row) for row in prior_step_rows}
+    step_runs = []
     step_manifest = read_step_manifest(workspace, step_id)
     for registered_plan_dir in step_manifest["plans"]:
         registered_root = Path(str(registered_plan_dir))
@@ -92,14 +103,11 @@ def select_hparam_candidates(
             raise ValueError(f"Registered plan task differs from recipe.resolved.yaml: {registered_root}")
         if resolved_recipe.get("task") != "hparam_tune":
             continue
-        registered_runs = registered_plan.get("runs")
-        matched_keys = (
-            {managed_run_key(run) for run in registered_runs if managed_run_key(run) in remaining_prior_keys}
-            if isinstance(registered_runs, list)
-            else set()
-        )
         registered_plan = artifacts.read_hparam_plan(registered_root)
         registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        registered_step = registered_recipe.get("step") if isinstance(registered_recipe.get("step"), dict) else {}
+        if str(registered_step.get("id") or "") != step_id:
+            raise ValueError(f"Registered hparam plan belongs to a different step: {registered_root}")
         registered_evaluation = (
             registered_recipe.get("evaluation_policy")
             if isinstance(registered_recipe.get("evaluation_policy"), dict)
@@ -109,11 +117,14 @@ def select_hparam_candidates(
             raise ValueError("Existing ranking selection metric differs from the current recipe.")
         if registered_evaluation.get("selection_mode") != mode:
             raise ValueError("Existing ranking selection mode differs from the current recipe.")
-        remaining_prior_keys -= matched_keys
+        registered_runs = registered_plan["runs"]
+        step_runs.extend(registered_runs)
+        remaining_prior_keys -= {managed_run_key(run) for run in registered_runs}
     if remaining_prior_keys:
         raise ValueError("Existing ranking rows are not owned by a registered plan for this step.")
     rows = []
-    for run in plan["runs"]:
+    unscored_rows = []
+    for run in step_runs:
         canonical = resolve_run_row(canonical_rows, run)
         if canonical is None:
             raise ValueError(f"Managed run is missing from run_manifest.tsv: {run['step_id']} / {run['run_id']}")
@@ -121,22 +132,24 @@ def select_hparam_candidates(
         manifest = read_json(manifest_path) if manifest_path else {}
         score = artifacts.metric_value(manifest, metric)
         ckpt = artifacts.fixed_checkpoint_path(manifest, Path(str(run["checkpoint_dir"])))
-        rows.append(
-            {
-                "step_id": run["step_id"],
-                "run_id": run["run_id"],
-                "run_name": run["run_name"],
-                "parameter_summary": run.get("parameter_summary", ""),
-                "version": run["version"],
-                "metric": metric,
-                "score": score,
-                "config": run.get("config"),
-                "checkpoint_path": ckpt,
-                "run_manifest": str(manifest_path or ""),
-                "status": canonical.get("status", ""),
-                **managed_run_parameters(run),
-            }
-        )
+        row = {
+            "step_id": run["step_id"],
+            "run_id": run["run_id"],
+            "run_name": run["run_name"],
+            "parameter_summary": run.get("parameter_summary", ""),
+            "version": run["version"],
+            "metric": metric,
+            "score": score,
+            "config": run.get("config"),
+            "checkpoint_path": ckpt,
+            "run_manifest": str(manifest_path or ""),
+            "status": canonical.get("status", ""),
+            **managed_run_parameters(run),
+        }
+        if isinstance(score, bool) or artifacts.float_or_none(score) is None:
+            unscored_rows.append(row)
+        else:
+            rows.append(row)
     reverse = mode == "max"
     ranked = sorted(
         rows,
@@ -145,17 +158,11 @@ def select_hparam_candidates(
     )
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
-    current_ranked = ranked
-    validate_managed_run_rows(current_ranked, source="current ranking", cardinality="one_per_run")
-    step_ranked = [row for row in [*preserved, *current_ranked] if row.get("step_id") == step_id]
-    step_ranked = sorted(
-        step_ranked,
-        key=lambda row: artifacts.sortable_score(row.get("score"), reverse),
-        reverse=reverse,
-    )
-    for rank, row in enumerate(step_ranked, start=1):
-        row["rank"] = rank
-    all_ranked = [row for row in preserved if row.get("step_id") != step_id] + step_ranked
+    step_ranked = ranked
+    validate_managed_run_rows(step_ranked, source="current ranking", cardinality="one_per_run")
+    if not step_ranked:
+        raise ValueError(f"No valid {metric} scores are available for hparam selection.")
+    all_ranked = preserved + step_ranked
     write_rows(out, all_ranked)
     merge_run_manifest(
         workspace,
@@ -170,6 +177,18 @@ def select_hparam_candidates(
                 "checkpoint_path": row.get("checkpoint_path"),
             }
             for row in step_ranked
+        ]
+        + [
+            {
+                "step_id": row.get("step_id"),
+                "run_id": row.get("run_id"),
+                "run_name": row.get("run_name"),
+                "metric": metric,
+                "score": "",
+                "rank": "",
+                "checkpoint_path": "",
+            }
+            for row in unscored_rows
         ],
     )
     append_event(
@@ -261,7 +280,8 @@ def _checkpoint_scan_rows(
         return rows
     score = artifacts.metric_value(manifest, metric)
     checkpoint = artifacts.fixed_checkpoint_path(manifest, Path(str(run["checkpoint_dir"])))
-    if score not in ("", None) and checkpoint:
+    valid_score = None if isinstance(score, bool) else artifacts.float_or_none(score)
+    if valid_score is not None and checkpoint:
         rows.append(
             {
                 "step_id": run["step_id"],
@@ -269,7 +289,7 @@ def _checkpoint_scan_rows(
                 "version": run["version"],
                 "config": run.get("config"),
                 "metric": metric,
-                "score": score,
+                "score": valid_score,
                 "epoch": manifest.get("epoch") or artifacts.epoch_from_checkpoint_name(Path(checkpoint).name),
                 "checkpoint_path": checkpoint,
                 "run_manifest": str(manifest_path or ""),
@@ -286,7 +306,8 @@ def _history_metric_rows(run_dir: Path, metric: str) -> list[tuple[int, float]]:
         if metric not in record:
             continue
         epoch = _history_epoch(record)
-        score = artifacts.float_or_none(record.get(metric))
+        raw_score = record.get(metric)
+        score = None if isinstance(raw_score, bool) else artifacts.float_or_none(raw_score)
         if epoch is not None and score is not None:
             by_epoch[epoch] = score
     return sorted(by_epoch.items())
@@ -311,7 +332,7 @@ def _history_records(run_dir: Path) -> list[dict[str, Any]]:
 
 def _history_epoch(record: dict[str, Any]) -> int | None:
     for key in ("epoch", "trainer/epoch", "current_epoch", "global_epoch"):
-        value = artifacts.float_or_none(record.get(key))
-        if value is not None:
-            return int(value)
+        epoch = artifacts.epoch_number(record.get(key))
+        if epoch is not None:
+            return epoch
     return None

@@ -13,7 +13,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import hparam_runtime, manifests, run_artifacts, run_evidence
+from agent_tools import decision_hparam, hparam_runtime, manifests, run_artifacts, run_evidence
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
 
@@ -422,9 +422,112 @@ def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monke
     assert len(started) == 1
 
 
-def test_hparam_launch_mirrors_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
+def test_hparam_launch_commits_execution_identity_before_start(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
+    started = []
+
+    def start_after_identity_commit(_execution, command):
+        canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+        assert canonical["status"] == "planned"
+        assert canonical["target"] == "local"
+        assert canonical["command"] == command
+        assert canonical["pid_path"]
+        started.append(command)
+        return "launched"
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", start_after_identity_commit)
+
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    assert len(started) == 1
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
+
+
+def test_hparam_launch_does_not_start_when_identity_precommit_fails(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("identity precommit failed")),
+    )
+    monkeypatch.setattr(
+        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
+    )
+
+    with pytest.raises(RuntimeError, match="identity precommit failed"):
+        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    assert started == []
+
+
+def test_hparam_launch_preserves_first_commit_when_second_start_raises(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "planned"}, {"run_id": "run-001", "status": "planned"}],
+    )
+    plan_path = tmp_path / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["execution"]["max_concurrent"] = 2
+    plan_path.write_text(json.dumps(plan))
+    resolved_path = tmp_path / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved["execution"]["max_concurrent"] = 2
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    starts = 0
+
+    def fail_second_start(_execution, _command):
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            raise RuntimeError("second start failed")
+        return "launched"
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", fail_second_start)
+
+    with pytest.raises(RuntimeError, match="second start failed"):
+        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert rows["run-000"]["status"] == "launched"
+    assert rows["run-001"]["status"] == "planned"
+    assert rows["run-001"]["target"] == "local"
+
+
+def test_hparam_launch_artifact_reconciliation_never_starts_pending_runs_and_deduplicates_events(
+    tmp_path: Path, monkeypatch
+):
+    _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "launched"}, {"run_id": "run-001", "status": "pending"}],
+    )
+    real_append = hparam_runtime.append_event
+
+    def append_then_raise(*args, **kwargs):
+        real_append(*args, **kwargs)
+        raise RuntimeError("event report failed")
+
+    monkeypatch.setattr(hparam_runtime, "append_event", append_then_raise)
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("artifact reconciliation must not start a process")),
+    )
+
+    hparam_runtime.reconcile_hparam_launch_artifacts(tmp_path, {("train-model", "run-000")})
+    hparam_runtime.reconcile_hparam_launch_artifacts(tmp_path, {("train-model", "run-000")})
+
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_status.tsv")}
+    assert rows["run-000"]["status"] == "launched"
+    assert rows["run-001"]["status"] == "pending"
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_launched") == 1
+
+
+def test_hparam_launch_does_not_start_after_canonical_owner_commits_terminal_status(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     real_merge = merge_run_manifest
+    started = []
 
     def merge_after_wandb_update(root, rows, **_kwargs):
         kwargs = {"lock_held": True} if _kwargs.get("lock_held") else {}
@@ -432,15 +535,17 @@ def test_hparam_launch_mirrors_the_status_committed_by_the_canonical_owner(tmp_p
         return real_merge(root, rows, **kwargs)
 
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_wandb_update)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda _execution, _command: "launched")
+    monkeypatch.setattr(
+        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
+    )
 
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
     assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "failed"
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert [event["event_type"] for event in events].count("run_launched") == 1
+    assert started == []
+    assert not (tmp_path / "events.jsonl").exists()
 
 
 def test_hparam_launch_failure_does_not_record_launched_event(tmp_path: Path, monkeypatch):
@@ -1099,8 +1204,9 @@ def test_find_run_manifest_distinguishes_missing_and_valid_regular_file(tmp_path
     assert run_artifacts.find_run_manifest(run) == manifest
 
 
-def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
+def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_slot(
     tmp_path: Path,
+    monkeypatch,
 ):
     recipe = _hparam_recipe(
         tmp_path,
@@ -1128,6 +1234,42 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
     assert rows[0]["host"] == "baichuan3"
     assert rows[0]["gpus"] == "6,7"
     assert "ssh baichuan3" in rows[0]["command"]
+    assert "CUDA_VISIBLE_DEVICES=6,7" in rows[0]["command"]
+    canonical = _read_table(tmp_path / "run_manifest.tsv")
+    assert canonical[0]["target"] == ""
+    assert canonical[0]["gpus"] == ""
+    assert canonical[0]["command"] == ""
+    status = _read_table(plan_dir / "run_status.tsv")
+    assert status[0]["target"] == ""
+    assert status[0]["gpus"] == ""
+    assert status[0]["command"] == ""
+    script = Path(rows[0]["script"]).read_text()
+    assert "--wandb-project sleep2vec-unit-hparam" in script
+    assert "--wandb-group unit" in script
+    assert not (plan_dir / "logs").exists()
+    assert not (plan_dir / "pids").exists()
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+
+    def validate_without_remote(root, paths, remote=None):
+        if remote is None:
+            return real_validate(root, paths)
+
+    started = []
+    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert rows[0]["status"] == "launched"
+    assert rows[0]["target"] == "ssh"
+    assert rows[0]["host"] == "baichuan3"
+    assert rows[0]["gpus"] == "6,7"
+    assert "ssh baichuan3" in rows[0]["command"]
     assert "mkdir -p" in rows[0]["command"]
     assert "(nohup env " in rows[0]["command"]
     assert "conda run --no-capture-output -n ywx" in rows[0]["command"]
@@ -1135,13 +1277,452 @@ def test_hparam_launch_dry_run_renders_ssh_conda_gpu_wandb_and_pid_paths(
     assert "WANDB_PROJECT=" not in rows[0]["command"]
     assert "WANDB_GROUP=" not in rows[0]["command"]
     assert "WANDB_RUN_GROUP=" not in rows[0]["command"]
-    script = Path(rows[0]["script"]).read_text()
-    assert "--wandb-project sleep2vec-unit-hparam" in script
-    assert "--wandb-group unit" in script
     assert rows[0]["log_path"].endswith("runs/run-000--lr-1e-6/stdout.log")
     assert rows[0]["pid_path"].endswith("runs/run-000--lr-1e-6/pid")
-    assert not (plan_dir / "logs").exists()
-    assert not (plan_dir / "pids").exists()
+    assert started == [rows[0]["command"]]
+
+
+@pytest.mark.parametrize(
+    ("execution", "runtime_devices", "expected_devices"),
+    [
+        ({"gpu_pool": [6, 7], "gpus_per_run": 2}, [0], "0 1"),
+        ({"gpu_pool": [6, 7], "gpus_per_run": 1}, [0, 1], "0"),
+        ({"gpus_per_run": 1}, [6, 7], "0"),
+    ],
+)
+def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
+    tmp_path: Path,
+    execution: dict,
+    runtime_devices,
+    expected_devices: str,
+):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), **execution})
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["runtime"]["devices"] = runtime_devices
+    write_yaml(base_recipe, base_payload)
+    plan_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    command = json.loads((plan_dir / "plan.json").read_text())["runs"][0]["command"]
+    assert f"--devices {expected_devices} --precision" in command
+
+
+def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspace_creation(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "gpus_per_run": 2})
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["runtime"].pop("devices")
+    write_yaml(base_recipe, base_payload)
+    plan_dir = tmp_path / "plan"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    message = "execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices"
+    assert doctor.returncode == 1
+    assert message in doctor.stdout
+    assert planned.returncode == 1
+    assert message in planned.stdout
+    assert not plan_dir.exists()
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("gpus_per_run", [0, False, 0.5, 1.5, "0.5", "1.5"])
+def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
+    issues = decision_hparam._hparam_execution_issues(
+        {"gpu_pool": [0, 1], "gpus_per_run": gpus_per_run},
+        {},
+    )
+
+    assert len(issues) == 1
+    assert issues[0].field == "execution.gpus_per_run"
+    assert issues[0].status.value == "FAIL"
+    assert "must be a positive integer" in issues[0].message
+
+
+def test_hparam_runtime_rejects_gpus_per_run_without_a_physical_pool():
+    with pytest.raises(
+        ValueError,
+        match="execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices",
+    ):
+        hparam_runtime._gpu_groups({"execution": {"gpus_per_run": 2}})
+
+
+def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1},
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 4
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6, 4e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert len(started) == 2
+    assert [row["gpus"] for row in rows] == ["0", "1", "", ""]
+    assert [row["status"] for row in rows] == ["launched", "launched", "pending", "pending"]
+    assert all(rows[index]["target"] == "" and rows[index]["command"] == "" for index in (2, 3))
+
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": rows[1]["step_id"], "run_id": rows[1]["run_id"], "status": "finished"}],
+    )
+    started.clear()
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert len(started) == 1
+    assert "CUDA_VISIBLE_DEVICES=1" in started[0]
+    assert [row["gpus"] for row in rows] == ["0", "1", "1", ""]
+    assert [row["status"] for row in rows] == ["missing_pid", "finished", "launched", "pending"]
+
+
+def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_is_unknown(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1},
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": runs[0]["step_id"], "run_id": runs[0]["run_id"], "status": "running"}],
+    )
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert [row["status"] for row in rows] == ["running", "pending"]
+    assert [row["gpus"] for row in rows] == ["", ""]
+    assert started == []
+
+
+def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is_unknown(tmp_path: Path, monkeypatch):
+    execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
+    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    first_run = json.loads((first_plan / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": first_run["step_id"],
+                "run_id": first_run["run_id"],
+                "status": "running",
+                "target": "local",
+            }
+        ],
+    )
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False)
+
+    row = _read_table(second_plan / "launch_manifest.tsv")[0]
+    assert row["status"] == "pending"
+    assert row["gpus"] == ""
+    assert started == []
+
+
+def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path, monkeypatch):
+    execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
+    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["search"]["max_runs"] = 2
+    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=True)
+    assert [row["gpus"] for row in _read_table(second_plan / "launch_manifest.tsv")] == ["0", "1"]
+    second_keys = {
+        (row["step_id"], row["run_id"]) for row in json.loads((second_plan / "plan.json").read_text())["runs"]
+    }
+    assert all(
+        row["target"] == "" and row["gpus"] == "" and row["command"] == ""
+        for row in _read_table(tmp_path / "run_manifest.tsv")
+        if (row["step_id"], row["run_id"]) in second_keys
+    )
+    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
+    started.clear()
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False)
+
+    rows = _read_table(second_plan / "launch_manifest.tsv")
+    assert len(started) == 1
+    assert "CUDA_VISIBLE_DEVICES=1" in started[0]
+    assert [row["gpus"] for row in rows] == ["1", ""]
+    assert [row["status"] for row in rows] == ["launched", "pending"]
+
+
+def test_hparam_launch_full_previous_plan_keeps_replacement_pending(tmp_path: Path, monkeypatch):
+    execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
+    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_payload = yaml.safe_load(first_recipe.read_text())
+    first_payload["search"]["max_runs"] = 2
+    first_payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    first_recipe.write_text(yaml.safe_dump(first_payload, sort_keys=False))
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["search"]["max_runs"] = 1
+    second_payload["search"]["parameters"]["runtime.lr"] = [3e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
+    first_rows = _read_table(first_plan / "launch_manifest.tsv")
+    assert [row["gpus"] for row in first_rows] == ["0", "1"]
+    started.clear()
+
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False)
+
+    row = _read_table(second_plan / "launch_manifest.tsv")[0]
+    assert row["status"] == "pending"
+    assert row["gpus"] == ""
+    assert started == []
+
+
+def test_hparam_launch_keeps_cpu_only_concurrency_plan_local(tmp_path: Path, monkeypatch):
+    execution = {"workdir": str(tmp_path)}
+    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_payload = yaml.safe_load(first_recipe.read_text())
+    first_payload["runtime"] = {"devices": []}
+    write_yaml(first_recipe, first_payload)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["search"]["max_runs"] = 2
+    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
+    started.clear()
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False)
+
+    rows = _read_table(second_plan / "launch_manifest.tsv")
+    assert len(started) == 1
+    assert [row["status"] for row in rows] == ["launched", "pending"]
+
+
+def test_hparam_launch_explicit_gpu_oversubscription_warns_and_balances_groups(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "workdir": str(tmp_path),
+            "gpu_pool": [0, 1],
+            "gpus_per_run": 1,
+            "max_concurrent": 4,
+        },
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 4
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6, 4e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr
+    assert "Status: WARN" in result.stdout
+    assert "GPU oversubscription is explicitly enabled" in result.stdout
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert len(started) == 4
+    assert [row["gpus"] for row in rows] == ["0", "1", "0", "1"]
+    assert {row["status"] for row in rows} == {"launched"}
+
+
+def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_group(tmp_path: Path, monkeypatch):
+    first_recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 2},
+    )
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["execution"] = {
+        "workdir": str(tmp_path),
+        "gpu_pool": [0, 1, 2],
+        "gpus_per_run": 1,
+        "max_concurrent": 4,
+    }
+    second_payload["search"]["max_runs"] = 4
+    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6, 4e-6, 5e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
+    started.clear()
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False)
+
+    rows = _read_table(second_plan / "launch_manifest.tsv")
+    assert len(started) == 3
+    assert "CUDA_VISIBLE_DEVICES=2" in started[0]
+    assert [row["gpus"] for row in rows] == ["2", "0", "1", ""]
+    assert [row["status"] for row in rows] == ["launched", "launched", "launched", "pending"]
+
+
+@pytest.mark.parametrize(
+    ("different_field", "expected_gpus", "expected_statuses"),
+    [
+        ("host", ["0", "1"], ["launched", "launched"]),
+        ("workdir", ["1", ""], ["launched", "pending"]),
+        ("local_host", ["1", ""], ["launched", "pending"]),
+    ],
+)
+def test_hparam_launch_scopes_active_gpu_load_by_target_and_ssh_host(
+    tmp_path: Path,
+    monkeypatch,
+    different_field: str,
+    expected_gpus: list[str],
+    expected_statuses: list[str],
+):
+    first_execution = {
+        "target": "ssh",
+        "host": "host-a",
+        "workdir": str(tmp_path / "remote-a"),
+        "gpu_pool": [0, 1],
+        "gpus_per_run": 1,
+    }
+    if different_field == "local_host":
+        first_execution["target"] = "local"
+        first_execution["host"] = "local-label-a"
+    second_execution = dict(first_execution)
+    if different_field == "host":
+        second_execution["host"] = "host-b"
+    elif different_field == "workdir":
+        second_execution["workdir"] = str(tmp_path / "remote-b")
+    else:
+        second_execution["host"] = "local-label-b"
+    first_recipe = _hparam_recipe(tmp_path, execution=first_execution)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["execution"] = second_execution
+    second_payload["search"]["max_runs"] = 2
+    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+
+    def validate_without_remote(root, paths, remote=None):
+        if remote is None:
+            return real_validate(root, paths)
+
+    started = []
+    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
+    started.clear()
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False)
+
+    rows = _read_table(second_plan / "launch_manifest.tsv")
+    assert len(started) == expected_statuses.count("launched")
+    assert [row["gpus"] for row in rows] == expected_gpus
+    assert [row["status"] for row in rows] == expected_statuses
+    if different_field in {"workdir", "local_host"}:
+        assert "CUDA_VISIBLE_DEVICES=1" in started[0]
+
+
+def test_hparam_plan_rejects_duplicate_gpu_assignments_within_a_run(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "gpu_pool": [0, 0], "gpus_per_run": 2},
+    )
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+
+    assert result.returncode == 1
+    assert "must not contain duplicate GPU identifiers" in result.stdout
 
 
 @pytest.mark.parametrize("env_name", ["WANDB_PROJECT", "WANDB_GROUP", "WANDB_RUN_GROUP", "WANDB_MODE"])
@@ -1271,7 +1852,7 @@ def test_hparam_ssh_launch_rejects_existing_remote_runtime_root_before_start(tmp
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
-def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path):
+def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
@@ -1281,13 +1862,21 @@ def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path):
     plan_dir = tmp_path / "plan"
 
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    result = _run("hparam-launch", "--plan-dir", str(plan_dir))
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
 
-    assert result.returncode == 0, result.stderr
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert rows[0]["gpus"] == "2"
+    assert "--devices 2 --precision" in Path(rows[0]["script"]).read_text()
     assert "(nohup env " in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=2" in rows[0]["command"]
+    assert started == [rows[0]["command"]]
 
 
 def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
@@ -1338,25 +1927,18 @@ def test_hparam_launch_does_not_retry_missing_pid(tmp_path: Path, monkeypatch):
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 2
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
-    payload["execution"] = {"max_concurrent": 1}
+    payload["execution"] = {"workdir": str(tmp_path), "max_concurrent": 1}
     recipe.write_text(yaml.safe_dump(payload))
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
-    rows[0]["status"] = "launched"
-    rows[1]["status"] = "pending"
-    manifests.write_rows(plan_dir / "launch_manifest.tsv", rows)
-    manifests.write_rows(plan_dir / "run_status.tsv", rows)
-    merge_run_manifest(
-        tmp_path,
-        [{"step_id": row["step_id"], "run_id": row["run_id"], "status": row["status"]} for row in rows],
-    )
     started = []
     monkeypatch.setattr(
         hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
     )
 
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    assert len(started) == 1
+    started.clear()
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert started == []

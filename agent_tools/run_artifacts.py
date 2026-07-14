@@ -238,29 +238,50 @@ def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str
     if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
         return ""
     resolved_dir = checkpoint_dir.resolve()
+    raw_epoch = manifest.get("epoch")
+    manifest_epoch = epoch_number(raw_epoch)
+    if raw_epoch not in (None, "") and manifest_epoch is None:
+        return ""
     raw = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
     if raw:
         path = Path(str(raw))
         if path.name.startswith("best-epoch="):
             fixed = checkpoint_dir / path.name.removeprefix("best-")
+            if manifest_epoch is not None and epoch_number_from_checkpoint_name(fixed.name) != manifest_epoch:
+                matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
+                return str(matched) if matched else ""
             # Lexical containment is insufficient when the checkpoint entry itself is an alias.
             if not fixed.is_symlink() and fixed.is_file() and fixed.resolve().parent == resolved_dir:
                 return str(fixed)
             matched = checkpoint_for_epoch_in_dir(checkpoint_dir, epoch_number_from_checkpoint_name(fixed.name))
             if matched:
                 return str(matched)
+            best = checkpoint_dir / path.name
+            if (
+                manifest_epoch is not None
+                and not best.is_symlink()
+                and best.is_file()
+                and best.resolve().parent == resolved_dir
+            ):
+                return str(best)
             return ""
         if path.name.startswith("epoch="):
             fixed = checkpoint_dir / path.name
+            if manifest_epoch is not None and epoch_number_from_checkpoint_name(fixed.name) != manifest_epoch:
+                matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
+                return str(matched) if matched else ""
             return (
                 str(fixed)
                 if not fixed.is_symlink() and fixed.is_file() and fixed.resolve().parent == resolved_dir
                 else ""
             )
-        matched = checkpoint_for_epoch_in_dir(checkpoint_dir, epoch_number(manifest.get("epoch")))
+        matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
         if matched:
             return str(matched)
         return ""
+    if manifest_epoch is not None:
+        matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
+        return str(matched) if matched else ""
     checkpoints = [
         path
         for path in sorted(checkpoint_dir.glob("epoch=*.ckpt"))
@@ -278,18 +299,38 @@ def fixed_checkpoint_path_from_names(
         return ""
     checkpoint_dir = Path(str(checkpoint_dir))
     names = {str(name) for name in checkpoint_names}
+    raw_epoch = manifest.get("epoch")
+    manifest_epoch = epoch_number(raw_epoch)
+    if raw_epoch not in (None, "") and manifest_epoch is None:
+        return ""
     raw = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
     if raw:
-        name = Path(str(raw)).name
-        if name.startswith("best-epoch="):
+        raw_name = Path(str(raw)).name
+        name = raw_name
+        if raw_name.startswith("best-epoch="):
             name = name.removeprefix("best-")
-        if name.startswith("epoch=") and name in names:
+        if (
+            name.startswith("epoch=")
+            and name in names
+            and (manifest_epoch is None or epoch_number_from_checkpoint_name(name) == manifest_epoch)
+        ):
             return str(checkpoint_dir / name)
-        epoch = epoch_number(manifest.get("epoch"))
-        if epoch is None:
+        if (
+            manifest_epoch is not None
+            and raw_name.startswith("best-epoch=")
+            and raw_name in names
+            and epoch_number_from_checkpoint_name(name) == manifest_epoch
+        ):
+            return str(checkpoint_dir / raw_name)
+        if manifest_epoch is None:
             return ""
         for candidate in sorted(names):
-            if candidate.startswith("epoch=") and epoch_number_from_checkpoint_name(candidate) == epoch:
+            if candidate.startswith("epoch=") and epoch_number_from_checkpoint_name(candidate) == manifest_epoch:
+                return str(checkpoint_dir / candidate)
+        return ""
+    if manifest_epoch is not None:
+        for candidate in sorted(names):
+            if candidate.startswith("epoch=") and epoch_number_from_checkpoint_name(candidate) == manifest_epoch:
                 return str(checkpoint_dir / candidate)
         return ""
     epochs = sorted(name for name in names if name.startswith("epoch="))
@@ -328,12 +369,15 @@ def epoch_from_checkpoint_name(name: str) -> str:
 
 
 def epoch_number(value: Any) -> int | None:
-    if value in (None, ""):
+    if isinstance(value, bool) or value in (None, ""):
         return None
     try:
-        return int(float(str(value)))
+        number = float(str(value))
     except ValueError:
         return None
+    if not math.isfinite(number) or not number.is_integer():
+        return None
+    return int(number)
 
 
 def epoch_number_from_checkpoint_name(name: str) -> int | None:

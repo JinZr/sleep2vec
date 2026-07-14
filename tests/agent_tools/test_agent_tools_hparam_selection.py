@@ -209,6 +209,29 @@ def test_hparam_select_preserves_zero_padded_epoch_checkpoint(tmp_path: Path):
     assert rows[0]["checkpoint_path"] == str(fixed)
 
 
+@pytest.mark.parametrize("score", [None, "not-a-number", float("nan"), float("inf"), True])
+def test_hparam_select_fails_without_any_valid_score_and_preserves_state(tmp_path: Path, score):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    if score is not None:
+        runtime_dir = Path(run["runtime_dir"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": score}}))
+    canonical = tmp_path / "run_manifest.tsv"
+    events = tmp_path / "events.jsonl"
+    canonical_before = canonical.read_bytes()
+    events_before = events.read_bytes()
+
+    with pytest.raises(ValueError, match="No valid val_ahi_pearson scores"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert not _ranking_path(plan_dir).exists()
+    assert canonical.read_bytes() == canonical_before
+    assert events.read_bytes() == events_before
+
+
 def test_hparam_select_uses_canonical_status_not_runtime_manifest_status(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -295,6 +318,32 @@ def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: 
     assert (plan_dir / "checkpoint_ranking.csv").read_text() == first_output
 
 
+@pytest.mark.parametrize(
+    "history_row",
+    [
+        {"epoch": 1, "val_auroc": True},
+        {"epoch": 1.5, "val_auroc": 0.8},
+    ],
+)
+def test_hparam_checkpoint_scan_excludes_invalid_history_score_or_epoch(tmp_path: Path, history_row: dict):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    history_dir = runtime_dir / "wandb" / "run-1" / "files"
+    checkpoint_dir.mkdir(parents=True)
+    history_dir.mkdir(parents=True)
+    (checkpoint_dir / "epoch=1.ckpt").write_text("checkpoint")
+    (history_dir / "wandb-history.jsonl").write_text(json.dumps(history_row) + "\n")
+    (runtime_dir / "run_manifest.json").write_text("{}\n")
+
+    ranking = hparam_selection.scan_hparam_checkpoints(plan_dir, "val_auroc", "max")
+
+    assert ranking.read_text() == "step_id,run_id\n"
+
+
 def test_hparam_checkpoint_scan_empty_output_remains_readable(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -305,6 +354,23 @@ def test_hparam_checkpoint_scan_empty_output_remains_readable(tmp_path: Path):
 
     assert first == second
     assert first.read_text() == "step_id,run_id\n"
+
+
+@pytest.mark.parametrize("score", ["not-a-number", float("nan"), float("inf"), True])
+def test_hparam_checkpoint_scan_excludes_invalid_manifest_scores(tmp_path: Path, score):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "epoch=1.ckpt").write_text("checkpoint")
+    (runtime_dir / "run_manifest.json").write_text(json.dumps({"epoch": 1, "metrics": {"val_auroc": score}}))
+
+    ranking = hparam_selection.scan_hparam_checkpoints(plan_dir, "val_auroc", "max")
+
+    assert ranking.read_text() == "step_id,run_id\n"
 
 
 def test_hparam_select_does_not_scan_unmanaged_runtime_directories(tmp_path: Path):
@@ -327,13 +393,17 @@ def test_hparam_select_does_not_scan_unmanaged_runtime_directories(tmp_path: Pat
             }
         )
     )
+    managed_runtime = Path(run["runtime_dir"])
+    managed_runtime.mkdir(parents=True, exist_ok=True)
+    managed_manifest = managed_runtime / "run_manifest.json"
+    managed_manifest.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
 
     result = _run("hparam-select", "--run-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     row = _read_table(_ranking_path(plan_dir))[0]
-    assert row["score"] == ""
-    assert row["run_manifest"] == ""
+    assert row["score"] == "0.7"
+    assert row["run_manifest"] == str(managed_manifest)
     assert row["checkpoint_path"] == ""
 
 
@@ -347,6 +417,74 @@ def test_fixed_checkpoint_does_not_escape_frozen_checkpoint_dir(tmp_path: Path):
     path = run_artifacts.fixed_checkpoint_path({"best_model_path": str(unmanaged), "epoch": 7}, checkpoint_dir)
 
     assert path == ""
+
+
+def test_fixed_checkpoint_requires_the_manifest_epoch_locally(tmp_path: Path):
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "epoch=2.ckpt").write_text("wrong epoch")
+
+    path = run_artifacts.fixed_checkpoint_path({"epoch": 1}, checkpoint_dir)
+
+    assert path == ""
+
+
+def test_fixed_checkpoint_requires_the_manifest_epoch_from_remote_names(tmp_path: Path):
+    checkpoint_dir = tmp_path / "remote" / "checkpoints"
+
+    path = run_artifacts.fixed_checkpoint_path_from_names(
+        {"epoch": 1},
+        checkpoint_dir,
+        ["epoch=2.ckpt", "last.ckpt"],
+    )
+
+    assert path == ""
+
+
+def test_fixed_checkpoint_accepts_same_epoch_best_only_locally_and_remotely(tmp_path: Path):
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "best-epoch=03.ckpt"
+    checkpoint.write_text("checkpoint")
+    manifest = {"best_model_path": str(checkpoint), "epoch": 3}
+
+    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == str(checkpoint)
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [checkpoint.name]) == str(
+        checkpoint
+    )
+
+
+def test_fixed_checkpoint_rejects_best_only_symlink(tmp_path: Path):
+    foreign = tmp_path / "foreign" / "best-epoch=03.ckpt"
+    foreign.parent.mkdir()
+    foreign.write_text("foreign")
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / foreign.name
+    checkpoint.symlink_to(foreign)
+
+    assert run_artifacts.fixed_checkpoint_path({"best_model_path": str(checkpoint), "epoch": 3}, checkpoint_dir) == ""
+
+
+def test_fixed_checkpoint_rejects_fractional_manifest_epoch_locally_and_remotely(tmp_path: Path):
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "epoch=2.ckpt"
+    checkpoint.write_text("checkpoint")
+    manifest = {"epoch": 2.5}
+
+    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == ""
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [checkpoint.name]) == ""
+
+
+@pytest.mark.parametrize("value", [2, 2.0, "2", "2.0"])
+def test_epoch_number_accepts_integer_values(value):
+    assert run_artifacts.epoch_number(value) == 2
+
+
+@pytest.mark.parametrize("value", [2.5, "2.5", float("nan"), float("inf"), True, "not-a-number"])
+def test_epoch_number_rejects_non_integer_values(value):
+    assert run_artifacts.epoch_number(value) is None
 
 
 @pytest.mark.parametrize("alias_kind", ["checkpoint", "checkpoint_dir"])
@@ -450,6 +588,10 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
     other_config = tmp_path / "other.yaml"
     other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
@@ -478,6 +620,8 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
                 "version": "other-version",
                 "config": str(other_config),
                 "checkpoint_path": str(other_checkpoint),
+                "metric": "val_other",
+                "score": 0.5,
                 "rank": 1,
             }
         ],
@@ -487,6 +631,59 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
 
     rows = read_rows(ranking)
     assert any(row["step_id"] == "other-step" and row["run_id"] == "run-999" for row in rows)
+
+
+@pytest.mark.parametrize("score", ["", "not-a-number", float("nan"), float("inf"), True])
+def test_hparam_select_rejects_invalid_other_step_score_without_mutation(tmp_path: Path, score):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
+    other_checkpoint_dir = tmp_path / "other-checkpoints"
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "experiment_id": "unit-experiment",
+                "step_id": "other-step",
+                "run_id": "run-999",
+                "version": "other-version",
+                "checkpoint_dir": str(other_checkpoint_dir),
+                "status": "completed",
+            }
+        ],
+    )
+    ranking = _ranking_path(plan_dir)
+    write_rows(
+        ranking,
+        [
+            {
+                "experiment_id": "unit-experiment",
+                "step_id": "other-step",
+                "run_id": "run-999",
+                "version": "other-version",
+                "checkpoint_path": str(other_checkpoint_dir / "epoch=1.ckpt"),
+                "metric": "val_other",
+                "score": score,
+                "rank": 1,
+            }
+        ],
+    )
+    canonical = tmp_path / "run_manifest.tsv"
+    events = tmp_path / "events.jsonl"
+    ranking_before = ranking.read_bytes()
+    canonical_before = canonical.read_bytes()
+    events_before = events.read_bytes()
+
+    with pytest.raises(ValueError, match="another step has an invalid score"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert ranking.read_bytes() == ranking_before
+    assert canonical.read_bytes() == canonical_before
+    assert events.read_bytes() == events_before
 
 
 def test_hparam_select_rejects_unowned_preserved_checkpoint_before_writing(tmp_path: Path):
@@ -590,10 +787,50 @@ def test_hparam_select_preserves_and_reranks_previous_plans_for_same_step(tmp_pa
     assert selections[-1]["selected_run_id"] == "run-000"
 
 
+def test_hparam_select_rebuilds_ranking_from_all_registered_plans(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plans = []
+    for index, score in enumerate((0.9, 0.8), start=1):
+        plan_dir = tmp_path / f"plan-{index}"
+        assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+        run = _first_run(plan_dir)
+        checkpoint_dir = Path(run["checkpoint_dir"])
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint = checkpoint_dir / f"epoch={index}.ckpt"
+        checkpoint.write_text("checkpoint")
+        (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "metrics": {"val_ahi_pearson": score},
+                    "best_model_path": str(checkpoint),
+                    "epoch": index,
+                }
+            )
+        )
+        plans.append((plan_dir, run))
+
+    hparam_selection.select_hparam_candidates(plans[1][0])
+
+    ranking = read_rows(_ranking_path(plans[1][0]))
+    assert [(row["run_id"], row["score"], row["rank"]) for row in ranking] == [
+        ("run-000", "0.9", "1"),
+        ("run-001", "0.8", "2"),
+    ]
+    canonical = read_rows(tmp_path / "run_manifest.tsv")
+    assert [(row["run_id"], row["score"], row["rank"]) for row in canonical] == [
+        ("run-000", "0.9", "1"),
+        ("run-001", "0.8", "2"),
+    ]
+
+
 def test_hparam_select_only_preflights_registered_plans_that_own_preserved_rankings(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     first_plan = tmp_path / "plan-1"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first_plan)).returncode == 0
+    first_run = _first_run(first_plan)
+    first_runtime = Path(first_run["runtime_dir"])
+    first_runtime.mkdir(parents=True, exist_ok=True)
+    (first_runtime / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.9}}))
     hparam_selection.select_hparam_candidates(first_plan)
 
     finetune_recipe = write_finetune_recipe(tmp_path)
@@ -606,6 +843,10 @@ def test_hparam_select_only_preflights_registered_plans_that_own_preserved_ranki
     recipe = _hparam_recipe(tmp_path)
     second_plan = tmp_path / "plan-2"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan)).returncode == 0
+    second_run = _first_run(second_plan)
+    second_runtime = Path(second_run["runtime_dir"])
+    second_runtime.mkdir(parents=True, exist_ok=True)
+    (second_runtime / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.8}}))
     strict_reads = []
     original_read_hparam_plan = hparam_selection.artifacts.read_hparam_plan
 
@@ -686,6 +927,41 @@ def test_hparam_select_rejects_registered_plan_task_drift_before_writing(tmp_pat
     with pytest.raises(ValueError, match="task|recipe.resolved.yaml"):
         hparam_selection.select_hparam_candidates(second_plan)
 
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_select_rejects_foreign_step_plan_before_writing(tmp_path: Path):
+    current_recipe = _hparam_recipe(tmp_path)
+    current_plan = tmp_path / "current-plan"
+    assert _run("plan", "--recipe", str(current_recipe), "--output-dir", str(current_plan)).returncode == 0
+
+    foreign_payload = yaml.safe_load(current_recipe.read_text())
+    foreign_payload["step"] = {
+        "id": "foreign-hparam-step",
+        "phase": "train",
+        "purpose": "Exercise a different hparam step.",
+    }
+    foreign_recipe = write_yaml(tmp_path / "foreign-tune.yaml", foreign_payload)
+    foreign_plan = tmp_path / "foreign-plan"
+    assert _run("plan", "--recipe", str(foreign_recipe), "--output-dir", str(foreign_plan)).returncode == 0
+
+    for plan_dir, score in ((current_plan, 0.9), (foreign_plan, 0.8)):
+        run = _first_run(plan_dir)
+        runtime_dir = Path(run["runtime_dir"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": score}}))
+
+    step_manifest_path = tmp_path / "steps" / "unit-hparam-tune" / "step.yaml"
+    step_manifest = yaml.safe_load(step_manifest_path.read_text())
+    step_manifest["plans"].append(str(foreign_plan.resolve()))
+    write_yaml(step_manifest_path, step_manifest)
+    ranking = _ranking_path(current_plan)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="different step"):
+        hparam_selection.select_hparam_candidates(current_plan)
+
+    assert not ranking.exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 

@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 from typing import Any
 
@@ -231,6 +232,36 @@ def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[dict[str, 
                 f"{row['step_id']} / {row['run_id']}"
             )
         validate_frozen_run_update(run, row, require_checkpoint_ownership=True)
+    previous_checkpoint_keys = {
+        managed_run_key(row) for row in previous_rows if row.get("checkpoint_path") not in (None, "")
+    }
+    for run in eligible_runs:
+        if managed_run_key(run) not in previous_checkpoint_keys:
+            continue
+        if remote:
+            try:
+                runtime_exists = exp_io.path_exists_at(run["runtime_dir"], remote=remote)
+                checkpoint_exists = exp_io.path_exists_at(run["checkpoint_dir"], remote=remote)
+            except RuntimeError as exc:
+                raise RuntimeError(f"SSH checkpoint scan failed on {remote}: {exc}") from exc
+            if not runtime_exists or not checkpoint_exists:
+                raise RuntimeError(
+                    f"SSH checkpoint scan found a missing frozen artifact directory with existing inventory on "
+                    f"{remote}: {run['step_id']} / {run['run_id']}"
+                )
+        else:
+            for field in ("runtime_dir", "checkpoint_dir"):
+                try:
+                    info = Path(str(run[field])).lstat()
+                except FileNotFoundError as exc:
+                    raise ValueError(
+                        f"Managed {field} is missing for a run with existing checkpoint inventory: "
+                        f"{run['step_id']} / {run['run_id']} / {run[field]}"
+                    ) from exc
+                if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                    raise ValueError(
+                        f"Managed {field} is not a directory: " f"{run['step_id']} / {run['run_id']} / {run[field]}"
+                    )
     if not eligible_runs:
         return []
     rows = _remote_checkpoint_rows(eligible_runs, remote) if remote else _local_checkpoint_rows(eligible_runs)
@@ -438,16 +469,28 @@ def write_rank_report(
 def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for run in runs:
+        runtime_dir = Path(str(run["runtime_dir"]))
         checkpoint_dir = Path(str(run["checkpoint_dir"]))
-        # Frozen checkpoint roots are authoritative; an absent root must not erase the prior inventory.
-        if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
+        try:
+            runtime_info = runtime_dir.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(runtime_info.st_mode) or not stat.S_ISDIR(runtime_info.st_mode):
             raise ValueError(
-                f"Managed checkpoint_dir is missing or is not a directory: "
-                f"{run['step_id']} / {run['run_id']} / {checkpoint_dir}"
+                f"Managed runtime_dir is not a directory: " f"{run['step_id']} / {run['run_id']} / {runtime_dir}"
+            )
+        try:
+            checkpoint_info = checkpoint_dir.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(checkpoint_info.st_mode) or not stat.S_ISDIR(checkpoint_info.st_mode):
+            raise ValueError(
+                f"Managed checkpoint_dir is not a directory: " f"{run['step_id']} / {run['run_id']} / {checkpoint_dir}"
             )
         manifest_path = artifacts.find_run_manifest(run)
         manifest = read_json(manifest_path) if manifest_path else {}
         best_path = artifacts.fixed_checkpoint_path(manifest, checkpoint_dir)
+        has_explicit_epoch = manifest.get("epoch") not in (None, "")
         for path in sorted(checkpoint_dir.glob("*.ckpt")):
             if not path.is_file() or path.is_symlink():
                 continue
@@ -463,7 +506,9 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "mtime": str(int(path.stat().st_mtime)),
                     "metric": "",
                     "value": "",
-                    "is_best_by_val": str(str(path) == best_path or path.name.startswith("best-")).lower(),
+                    "is_best_by_val": str(
+                        str(path) == best_path or (not has_explicit_epoch and path.name.startswith("best-"))
+                    ).lower(),
                     "is_last": str(path.name == "last.ckpt").lower(),
                 }
             )
@@ -473,10 +518,22 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> list[dict[str, Any]]:
     if not remote or not runs:
         return []
+    available_runs = []
+    for run in runs:
+        try:
+            if not exp_io.path_exists_at(run["runtime_dir"], remote=remote):
+                continue
+            if not exp_io.path_exists_at(run["checkpoint_dir"], remote=remote):
+                continue
+        except RuntimeError as exc:
+            raise RuntimeError(f"SSH checkpoint scan failed on {remote}: {exc}") from exc
+        available_runs.append(run)
+    if not available_runs:
+        return []
     runtime_roots = " ".join(
-        shlex.quote(str(run["runtime_dir"])) for run in runs if run.get("runtime_dir") not in (None, "")
+        shlex.quote(str(run["runtime_dir"])) for run in available_runs if run.get("runtime_dir") not in (None, "")
     )
-    roots = " ".join(shlex.quote(str(run["checkpoint_dir"])) for run in runs)
+    roots = " ".join(shlex.quote(str(run["checkpoint_dir"])) for run in available_runs)
     command = (
         (
             f"for runtime_root in {runtime_roots}; do "
@@ -506,7 +563,7 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH checkpoint scan failed on {remote}: {detail}")
-    runs_by_checkpoint_dir = {str(run["checkpoint_dir"]): run for run in runs}
+    runs_by_checkpoint_dir = {str(run["checkpoint_dir"]): run for run in available_runs}
     rows = {}
     for line in result.stdout.splitlines():
         if not line.strip():
@@ -538,7 +595,7 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
             "is_last": str(name == "last.ckpt").lower(),
         }
     checkpoint_rows = list(rows.values())
-    for run in runs:
+    for run in available_runs:
         manifest_path = str(run["runtime_dir"]).rstrip("/") + "/run_manifest.json"
         try:
             exp_io.validate_managed_output_paths(run["runtime_dir"], [manifest_path], remote=remote)
@@ -560,62 +617,36 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
         else:
             manifest = {}
         same_run = [row for row in checkpoint_rows if managed_run_key(row) == managed_run_key(run)]
-        by_name = {Path(str(row["checkpoint_path"])).name: row for row in same_run}
-        raw_best = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
-        best_path = ""
-        if raw_best:
-            best_name = Path(str(raw_best)).name
-            if best_name.startswith("best-epoch="):
-                fixed_name = best_name.removeprefix("best-")
-                matched = by_name.get(fixed_name)
-                if matched is None:
-                    epoch = artifacts.epoch_number_from_checkpoint_name(fixed_name)
-                    matched = next(
-                        (
-                            row
-                            for row in same_run
-                            if Path(str(row["checkpoint_path"])).name.startswith("epoch=")
-                            and artifacts.epoch_number(row.get("epoch")) == epoch
-                        ),
-                        None,
-                    )
-                best_path = str(matched["checkpoint_path"]) if matched is not None else ""
-            elif best_name.startswith("epoch="):
-                matched = by_name.get(best_name)
-                best_path = str(matched["checkpoint_path"]) if matched is not None else ""
-            else:
-                epoch = artifacts.epoch_number(manifest.get("epoch"))
-                matched = next(
-                    (
-                        row
-                        for row in same_run
-                        if Path(str(row["checkpoint_path"])).name.startswith("epoch=")
-                        and artifacts.epoch_number(row.get("epoch")) == epoch
-                    ),
-                    None,
-                )
-                best_path = str(matched["checkpoint_path"]) if matched is not None else ""
-        else:
-            # Match local fixed_checkpoint_path(): without a manifest declaration, use the last epoch checkpoint.
-            epochs = sorted(
-                (row for row in same_run if Path(str(row["checkpoint_path"])).name.startswith("epoch=")),
-                key=lambda row: str(row["checkpoint_path"]),
-            )
-            if epochs:
-                best_path = str(epochs[-1]["checkpoint_path"])
+        best_path = artifacts.fixed_checkpoint_path_from_names(
+            manifest,
+            run["checkpoint_dir"],
+            [Path(str(row["checkpoint_path"])).name for row in same_run],
+        )
+        has_explicit_epoch = manifest.get("epoch") not in (None, "")
         for row in same_run:
             name = Path(str(row["checkpoint_path"])).name
-            row["is_best_by_val"] = str(row["checkpoint_path"] == best_path or name.startswith("best-")).lower()
+            row["is_best_by_val"] = str(
+                row["checkpoint_path"] == best_path or (not has_explicit_epoch and name.startswith("best-"))
+            ).lower()
     return checkpoint_rows
 
 
 def _checkpoint_for_metric_row(row: dict[str, Any], checkpoints: list[dict[str, str]]) -> str:
-    epoch = artifacts.epoch_number(row.get("epoch"))
+    raw_epoch = row.get("epoch")
     key = managed_run_key(row)
     same_run = [item for item in checkpoints if managed_run_key(item) == key]
-    for item in same_run:
-        if artifacts.epoch_number(item.get("epoch")) == epoch:
-            return item.get("checkpoint_path", "")
+    if raw_epoch not in (None, ""):
+        try:
+            numeric_epoch = float(str(raw_epoch))
+        except ValueError:
+            return ""
+        if not math.isfinite(numeric_epoch) or not numeric_epoch.is_integer():
+            return ""
+        epoch = int(numeric_epoch)
+        for item in same_run:
+            if artifacts.epoch_number(item.get("epoch")) == epoch:
+                return item.get("checkpoint_path", "")
+        return ""
     best = [item for item in same_run if item.get("is_best_by_val") == "true"]
     if best:
         return best[0].get("checkpoint_path", "")

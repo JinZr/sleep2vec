@@ -176,14 +176,18 @@ def finetune_task_issues(
                     {"config_path": config_summary.get("config_path")},
                 )
             )
-    if "test_after_fit" not in evaluation:
+    test_after_fit_decision = decisions.get("test_after_fit")
+    test_after_fit = (
+        test_after_fit_decision.value if test_after_fit_decision is not None else evaluation.get("test_after_fit")
+    )
+    if type(test_after_fit) is not bool:
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
-                "test_after_fit policy is required for finetune command generation.",
+                "test_after_fit must be explicitly true or false for finetune command generation.",
                 "Should test evaluation run after fit for this task?",
-                {"evaluation_policy": evaluation},
+                {"value": test_after_fit, "evaluation_policy": evaluation},
             )
         )
     if "external_test_locked" not in evaluation:
@@ -227,7 +231,6 @@ def finetune_task_issues(
     if multilabel_issue is not None:
         issues.append(multilabel_issue)
     external_test_locked = evaluation.get("external_test_locked")
-    test_after_fit = evaluation.get("test_after_fit")
     if external_test_locked is True and test_after_fit is True:
         issues.append(
             DecisionIssue(

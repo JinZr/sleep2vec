@@ -532,7 +532,7 @@ def test_hparam_tune_blocks_when_selection_metric_conflicts_with_config(tmp_path
         cwd=Path.cwd(),
     )
 
-    assert result.returncode == 2
+    assert result.returncode == 1
     assert "differs from config" in result.stdout
 
 

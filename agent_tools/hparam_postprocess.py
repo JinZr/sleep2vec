@@ -19,11 +19,13 @@ from .experiment_workspace import (
     experiment_root,
     managed_run_key,
     managed_run_parameters,
+    read_managed_yaml_mapping,
     read_run_manifest,
+    read_step_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
 )
-from .manifests import read_rows, write_rows, write_text
+from .manifests import read_json, read_rows, write_rows, write_text
 from .models import REPO_ROOT, module_for_variant
 from .plan_rendering import infer_runtime_cli_args, render_command
 
@@ -44,10 +46,7 @@ def generate_external_eval(
         raise ValueError("hparam-external-eval requires --unlock-final-test.")
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     plan = artifacts.read_hparam_plan(root)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    rows = _selected_candidate_rows(
+    rows, owner_plans = _selected_candidate_rows(
         read_rows(selected_csv, require_managed_identity=True),
         plan=plan,
         top_k=top_k,
@@ -70,6 +69,11 @@ def generate_external_eval(
     commands = []
     manifest_rows = []
     for row, target_config, checkpoint_path in zip(rows, config_paths, checkpoint_paths, strict=True):
+        owner_plan = owner_plans[managed_run_key(row)]
+        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        variant = str(recipe.get("variant"))
         source_config = Path(str(row["config"]))
         _copy_config_with_data_paths(
             source_config,
@@ -86,7 +90,7 @@ def generate_external_eval(
             [
                 "python",
                 "-m",
-                module_for_variant(str(recipe.get("variant")), "infer"),
+                module_for_variant(variant, "infer"),
                 "--config",
                 str(target_config),
                 "--ckpt-path",
@@ -98,11 +102,19 @@ def generate_external_eval(
                 *infer_runtime_cli_args(runtime),
             ]
         )
-        commands.append(command)
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
+        command_root = shlex.quote(str(run_cwd))
+        script_command = (
+            f"(cd {command_root} && export PYTHONPATH={command_root}${{PYTHONPATH:+:$PYTHONPATH}} && " f"{command})"
+        )
+        commands.append(script_command)
         manifest_rows.append({**row, "external_config": str(target_config), "external_command": command})
     write_rows(manifest_path, manifest_rows)
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
+    first_owner = owner_plans[managed_run_key(rows[0])]
+    first_recipe = first_owner.get("recipe") if isinstance(first_owner.get("recipe"), dict) else {}
+    first_execution = first_recipe.get("execution") if isinstance(first_recipe.get("execution"), dict) else {}
+    run_cwd = Path(str(first_execution.get("workdir") or REPO_ROOT))
     write_text(
         script_path,
         "\n".join(_external_script_lines(commands, run_cwd)) + "\n",
@@ -142,13 +154,7 @@ def export_hparam_logits(
 
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     plan = artifacts.read_hparam_plan(root)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    resolved_label = label_name or inputs.get("label_name")
-    if not resolved_label:
-        raise ValueError("hparam-export-logits requires --label-name when the hparam plan has no label_name.")
-
-    rows = _selected_candidate_rows(
+    rows, owner_plans = _selected_candidate_rows(
         read_rows(selected_csv, require_managed_identity=True),
         plan=plan,
         top_k=top_k,
@@ -166,6 +172,15 @@ def export_hparam_logits(
         checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
         if not checkpoint_path:
             raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
+        owner_plan = owner_plans[managed_run_key(row)]
+        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        resolved_label = label_name or inputs.get("label_name")
+        if not resolved_label:
+            raise ValueError(
+                f"hparam-export-logits requires --label-name when the owning hparam plan has no label_name: "
+                f"{row['step_id']} / {row['run_id']}"
+            )
         candidate = _candidate_id(row)
         paths = {
             "val_config": config_dir / f"{candidate}_{index:03d}_{val_split}.yaml",
@@ -178,7 +193,7 @@ def export_hparam_logits(
                     "test_logits_path": output_dir / f"{candidate}_{index:03d}_{test_split}_logits.csv",
                 }
             )
-        prepared.append((row, checkpoint_path, paths))
+        prepared.append((row, checkpoint_path, paths, recipe, resolved_label))
         output_paths.extend(paths.values())
     # Configs, manifests, and inference targets are one managed mutation boundary.
     exp_io.validate_managed_output_paths(root, output_paths)
@@ -186,7 +201,7 @@ def export_hparam_logits(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_rows = []
-    for row, checkpoint_path, paths in prepared:
+    for row, checkpoint_path, paths, recipe, resolved_label in prepared:
         source_config = Path(str(row["config"]))
         val_config = paths["val_config"]
         _copy_config_with_data_paths(
@@ -255,8 +270,8 @@ def export_hparam_logits(
 
     if execute:
         _execute_logit_exports(
-            recipe,
             manifest_rows,
+            owner_plans,
             batch_size=batch_size,
             num_workers=num_workers,
             devices=devices,
@@ -341,7 +356,7 @@ def export_hparam_logits(
 def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> Path:
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     plan = artifacts.read_hparam_plan(root)
-    selected_rows = _selected_candidate_rows(
+    selected_rows, _owner_plans = _selected_candidate_rows(
         read_rows(selected_csv, require_managed_identity=True), plan=plan, all_candidates=True
     )
     out = root / "threshold_summary.csv"
@@ -351,10 +366,18 @@ def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> P
         val_path = _first_value(row, ["val_predictions_path", "val_logits_path"])
         test_path = _first_value(row, ["test_predictions_path", "test_logits_path"])
         if not val_path or not test_path:
-            continue
+            raise ValueError(
+                f"Selected candidate must define validation and test predictions/logits: "
+                f"{row['step_id']} / {row['run_id']}"
+            )
         label_name = _first_value(row, ["label_name", "target_name", "target_label"])
         val = _read_binary_predictions(val_path, label_name=label_name)
         test = _read_binary_predictions(test_path, label_name=label_name)
+        if not val["y"] or not test["y"]:
+            raise ValueError(
+                f"Selected candidate validation and test predictions/logits must contain samples: "
+                f"{row['step_id']} / {row['run_id']}"
+            )
         threshold = _best_f1_threshold(val["y"], val["p"])
         val_metrics = _binary_metrics(val["y"], val["p"], threshold)
         test_metrics = _binary_metrics(test["y"], test["p"], threshold)
@@ -386,7 +409,7 @@ def ensemble_hparam_outputs(
 ) -> Path:
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     plan = artifacts.read_hparam_plan(root)
-    rows = _selected_candidate_rows(
+    rows, _owner_plans = _selected_candidate_rows(
         read_rows(candidates_csv, require_managed_identity=True), plan=plan, all_candidates=True
     )
     out = root / "ensemble_summary.csv"
@@ -421,46 +444,92 @@ def _selected_candidate_rows(
     plan: dict[str, Any],
     top_k: int = 1,
     all_candidates: bool = False,
-) -> list[dict[str, str]]:
-    plan_steps = {str(run.get("step_id") or "") for run in plan.get("runs", [])}
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
     validate_managed_run_rows(rows, source="selected candidates", cardinality="many_per_run")
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    selection_metric = evaluation.get("selection_metric")
+    selection_mode = evaluation.get("selection_mode")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Selected candidates require a managed experiment workspace.")
+    step = recipe.get("step") if isinstance(recipe.get("step"), dict) else {}
+    step_id = str(step.get("id") or "")
     workspace_by_key = {managed_run_key(run): run for run in read_run_manifest(workspace)}
-    runs_by_key = {managed_run_key(run): run for run in plan.get("runs", [])}
-    has_same_step_previous_plan = False
+
+    owner_runs_by_key = {}
+    owner_plans_by_key = {}
+    step_manifest = read_step_manifest(workspace, step_id)
+    for registered_plan_dir in step_manifest["plans"]:
+        registered_root = Path(str(registered_plan_dir))
+        registered_plan_path = registered_root / "plan.json"
+        resolved_recipe_path = registered_root / "recipe.resolved.yaml"
+        if not registered_plan_path.exists():
+            blocked_path = registered_root / "plan.blocked.md"
+            if blocked_path.is_file() and not blocked_path.is_symlink() and not resolved_recipe_path.exists():
+                continue
+            raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
+        registered_plan = read_json(registered_plan_path)
+        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        resolved_recipe = read_managed_yaml_mapping(
+            resolved_recipe_path.read_text(),
+            source=f"Frozen registered recipe {resolved_recipe_path}",
+        )
+        if registered_recipe.get("task") != resolved_recipe.get("task"):
+            raise ValueError(f"Registered plan task differs from recipe.resolved.yaml: {registered_root}")
+        if resolved_recipe.get("task") != "hparam_tune":
+            continue
+        owner_plan = artifacts.read_hparam_plan(registered_root)
+        owner_recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
+        owner_step = owner_recipe.get("step") if isinstance(owner_recipe.get("step"), dict) else {}
+        if str(owner_step.get("id") or "") != step_id:
+            raise ValueError(f"Registered hparam plan belongs to a different step: {registered_root}")
+        owner_evaluation = (
+            owner_recipe.get("evaluation_policy") if isinstance(owner_recipe.get("evaluation_policy"), dict) else {}
+        )
+        if owner_evaluation.get("selection_metric") != selection_metric:
+            raise ValueError("Existing ranking selection metric differs from the current recipe.")
+        if owner_evaluation.get("selection_mode") != selection_mode:
+            raise ValueError("Existing ranking selection mode differs from the current recipe.")
+        for run in owner_plan["runs"]:
+            key = managed_run_key(run)
+            if key in owner_runs_by_key:
+                raise ValueError(f"Managed run is owned by multiple registered hparam plans: {key[0]} / {key[1]}")
+            owner_runs_by_key[key] = run
+            owner_plans_by_key[key] = owner_plan
+
     for row in rows:
         key = managed_run_key(row)
         managed = workspace_by_key.get(key)
         if managed is None:
-            if str(row.get("step_id") or "") in plan_steps:
+            if str(row.get("step_id") or "") == step_id:
                 raise ValueError(
-                    f"Selected candidate is not managed by the current hparam plan: {row['step_id']} / {row['run_id']}"
+                    f"Selected candidate is not managed by a registered hparam plan for the current step: "
+                    f"{row['step_id']} / {row['run_id']}"
                 )
             raise ValueError(
                 f"Selected candidate is not managed by the experiment workspace: {row['step_id']} / {row['run_id']}"
             )
         candidate_parameters = managed_run_parameters(row)
-        if str(row.get("step_id") or "") in plan_steps and key not in runs_by_key:
-            has_same_step_previous_plan = True
         ownership_evidence = (
             {field: value for field, value in row.items() if field not in candidate_parameters}
-            if key in runs_by_key
+            if key in owner_runs_by_key
             else row
         )
         # A selected checkpoint is external evidence and must belong to its frozen managed run.
         validate_frozen_run_update(managed, ownership_evidence, require_checkpoint_ownership=True)
-    rows = [row for row in rows if managed_run_key(row) in runs_by_key]
+    rows = [row for row in rows if str(row.get("step_id") or "") == step_id]
     if not rows:
-        raise ValueError(f"No selected candidates match the current hparam step: {', '.join(sorted(plan_steps))}")
+        raise ValueError(f"No selected candidates match the current hparam step: {step_id}")
     managed_rows = []
     for row in rows:
         key = managed_run_key(row)
-        run = runs_by_key.get(key)
+        run = owner_runs_by_key.get(key)
         if run is None:
-            raise ValueError(f"Selected candidate is not managed by the current hparam plan: {key[0]} / {key[1]}")
+            raise ValueError(
+                f"Selected candidate is not managed by a registered hparam plan for the current step: "
+                f"{key[0]} / {key[1]}"
+            )
         candidate_parameters = managed_run_parameters(row)
         plan_parameters = managed_run_parameters(run)
         extra_parameters = sorted(set(candidate_parameters) - set(plan_parameters))
@@ -476,37 +545,29 @@ def _selected_candidate_rows(
         derived = {field: value for field, value in row.items() if field not in candidate_parameters}
         validate_frozen_run_update(run, derived, require_checkpoint_ownership=True)
         managed_rows.append({**derived, **run})
-    if all_candidates:
-        return managed_rows
-    if has_same_step_previous_plan:
-        ranked_rows = []
-        for index, row in enumerate(managed_rows):
-            rank = row.get("rank")
-            if rank in (None, ""):
-                ranked_rows.append((-math.inf, index, row))
-                continue
-            try:
-                ranked_rows.append((int(float(rank)), index, row))
-            except ValueError:
-                continue
-        selected = [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
-        if not selected:
-            raise ValueError("No selected candidates remain after rank/top_k filtering.")
-        return selected
-    selected = []
-    for row in managed_rows:
+    if not all_candidates and (type(top_k) is not int or top_k <= 0):
+        raise ValueError("top_k must be a positive integer.")
+    ranked_rows = []
+    for index, row in enumerate(managed_rows):
         rank = row.get("rank")
-        if rank in (None, ""):
-            selected.append(row)
-            continue
         try:
-            if int(float(rank)) <= top_k:
-                selected.append(row)
-        except ValueError:
-            continue
+            numeric_rank = float(rank)
+        except (TypeError, ValueError):
+            numeric_rank = math.nan
+        if (
+            isinstance(rank, bool)
+            or not math.isfinite(numeric_rank)
+            or not numeric_rank.is_integer()
+            or numeric_rank <= 0
+        ):
+            raise ValueError(f"Selected candidate rank must be a positive integer: {row['step_id']} / {row['run_id']}")
+        ranked_rows.append((int(numeric_rank), index, row))
+    if all_candidates:
+        return managed_rows, owner_plans_by_key
+    selected = [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
     if not selected:
         raise ValueError("No selected candidates remain after rank/top_k filtering.")
-    return selected
+    return selected, owner_plans_by_key
 
 
 def _copy_config_with_data_paths(
@@ -549,10 +610,11 @@ def _infer_command(
     precision: str,
     seed: int,
 ) -> str:
+    variant = str(recipe.get("variant"))
     command = [
         "python",
         "-m",
-        module_for_variant(str(recipe.get("variant")), "infer"),
+        module_for_variant(variant, "infer"),
         "--config",
         str(config),
         "--ckpt-path",
@@ -580,8 +642,8 @@ def _infer_command(
 
 
 def _execute_logit_exports(
-    recipe: dict[str, Any],
     rows: list[dict[str, Any]],
+    owner_plans: dict[tuple[str, str], dict[str, Any]],
     *,
     batch_size: int,
     num_workers: int,
@@ -594,6 +656,8 @@ def _execute_logit_exports(
 ) -> None:
     splits = ["val"] if skip_test else ["val", "test"]
     for row in rows:
+        owner_plan = owner_plans[managed_run_key(row)]
+        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
         for split in splits:
             _run_logit_export(
                 recipe,
@@ -628,7 +692,8 @@ def _run_logit_export(
     precision: str,
     seed: int,
 ) -> None:
-    infer_mod = importlib.import_module(module_for_variant(str(recipe.get("variant")), "infer"))
+    variant = str(recipe.get("variant"))
+    infer_mod = importlib.import_module(module_for_variant(variant, "infer"))
     args = SimpleNamespace(
         config=config,
         ckpt_path=checkpoint_path,

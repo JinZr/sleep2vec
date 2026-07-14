@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from pathlib import Path
 import shlex
@@ -29,7 +30,11 @@ from .models import REPO_ROOT
 LAUNCH_TIMEOUT_SECONDS = 60
 
 
-def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
+def launch_hparam_runs(
+    plan_dir: str | Path,
+    *,
+    dry_run: bool = True,
+) -> Path:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -43,12 +48,73 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     with lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            return _launch_hparam_runs(run_dir, dry_run=dry_run, manifest_lock_held=True)
+            return _launch_hparam_runs(
+                run_dir,
+                dry_run=dry_run,
+                manifest_lock_held=True,
+            )
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_lock_held: bool) -> Path:
+def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tuple[str, str]]) -> list[dict[str, Any]]:
+    run_dir = Path(plan_dir).expanduser()
+    if not run_dir.is_absolute():
+        run_dir = run_dir.resolve()
+    plan = artifacts.read_hparam_plan(run_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            workspace / "events.jsonl",
+            workspace / "reports" / "status.md",
+            run_dir / "launch_manifest.tsv",
+            run_dir / "run_status.tsv",
+        ],
+    )
+    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    expected_keys = {managed_run_key(run) for run in plan["runs"]}
+    if not started_keys.issubset(expected_keys):
+        raise ValueError("Interrupted launch evidence is outside the current hparam plan.")
+    rows = [canonical_by_key[managed_run_key(run)] for run in plan["runs"]]
+    write_rows(run_dir / "launch_manifest.tsv", rows)
+    write_rows(run_dir / "run_status.tsv", rows)
+    events_path = workspace / "events.jsonl"
+
+    def launched_event_keys() -> set[tuple[str, str]]:
+        if not events_path.exists():
+            return set()
+        keys = set()
+        for line in events_path.read_text().splitlines():
+            event = json.loads(line)
+            if event.get("event_type") == "run_launched":
+                keys.add((str(event.get("step_id") or ""), str(event.get("run_id") or "")))
+        return keys
+
+    launched_events = launched_event_keys()
+    for key in sorted(started_keys - launched_events):
+        try:
+            append_event(
+                workspace,
+                "run_launched",
+                {"step_id": key[0], "run_id": key[1], "gpus": canonical_by_key[key].get("gpus", "")},
+            )
+        except Exception:
+            if key not in launched_event_keys():
+                raise
+    write_status_report(workspace)
+    return rows
+
+
+def _launch_hparam_runs(
+    plan_dir: str | Path,
+    *,
+    dry_run: bool = True,
+    manifest_lock_held: bool,
+) -> Path:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -76,7 +142,11 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     runs = plan["runs"]
     target = str(execution.get("target", "local") or "local")
-    max_concurrent = int(execution.get("max_concurrent") or len(runs) or 1)
+    gpu_groups = _gpu_groups(recipe)
+    max_concurrent = int(execution["max_concurrent"]) if "max_concurrent" in execution else max(len(gpu_groups), 1)
+    if max_concurrent <= 0:
+        raise ValueError("execution.max_concurrent must be a positive integer.")
+    allow_gpu_oversubscription = bool(gpu_groups) and max_concurrent > len(gpu_groups)
     expected_keys = {managed_run_key(run) for run in runs}
     manifest = run_dir / "launch_manifest.tsv"
     status_path = run_dir / "run_status.tsv"
@@ -94,19 +164,84 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
         observation.update({"step_id": key[0], "run_id": key[1], "status": previous.get("status", "")})
         refreshed[key] = evidence.status_row(run_dir, observation, previous, health=False)
     active_statuses = {"launched", "running", "unknown_remote", "missing_pid"}
-    active = sum(row.get("status") in active_statuses for row in refreshed.values())
+    current_host = str(execution.get("host") or "") if target == "ssh" else ""
+    gpu_group_values = [{str(item) for item in group} for group in gpu_groups]
+    current_gpu_pool = set().union(*gpu_group_values) if gpu_group_values else set()
+    other_active_gpu_sets = []
+    unknown_other_active = 0
+    for key, row in workspace_by_key.items():
+        if not gpu_groups or key in expected_keys or row.get("status") not in active_statuses:
+            continue
+        row_target = str(row.get("target") or "")
+        if not row_target:
+            unknown_other_active += 1
+            continue
+        if row_target != target:
+            continue
+        if target == "ssh":
+            row_host = str(row.get("host") or "")
+            if not row_host:
+                unknown_other_active += 1
+                continue
+            if row_host != current_host:
+                continue
+        assigned = {part.strip() for part in str(row.get("gpus") or "").split(",") if part.strip()}
+        if not assigned:
+            unknown_other_active += 1
+            continue
+        if not assigned.intersection(current_gpu_pool):
+            continue
+        other_active_gpu_sets.append(assigned)
+    active = (
+        sum(row.get("status") in active_statuses for row in refreshed.values())
+        + len(other_active_gpu_sets)
+        + unknown_other_active
+    )
     slots = max(max_concurrent - active, 0)
+    gpu_group_by_value = {",".join(str(item) for item in group): index for index, group in enumerate(gpu_groups)}
+    active_gpu_loads = [unknown_other_active] * len(gpu_groups)
+    for assigned in other_active_gpu_sets:
+        for group_index, group in enumerate(gpu_group_values):
+            if assigned.intersection(group):
+                active_gpu_loads[group_index] += 1
+    assigned_group_by_key = {}
+    for key, previous in refreshed.items():
+        assigned = ",".join(part.strip() for part in str(previous.get("gpus") or "").split(",") if part.strip())
+        if not assigned:
+            if previous.get("status") in active_statuses:
+                for group_index in range(len(gpu_groups)):
+                    active_gpu_loads[group_index] += 1
+            continue
+        group_index = gpu_group_by_value.get(assigned)
+        if group_index is None:
+            raise ValueError(f"Frozen GPUs are not one configured GPU group for {key[0]} / {key[1]}: {assigned}")
+        assigned_group_by_key[key] = group_index
+        if previous.get("status") in active_statuses:
+            active_gpu_loads[group_index] += 1
     rows = []
-    for index, run in enumerate(runs):
+    launch_identity_by_key = {}
+    for run in runs:
         key = managed_run_key(run)
         run_id = str(run["run_id"])
         script = Path(str(run["script"]))
-        gpus = _assigned_gpus(recipe, index)
+        previous = refreshed.get(key, {})
         semantic_run_dir = Path(str(run.get("run_dir") or script.parent))
         log_path = semantic_run_dir / "stdout.log"
         pid_path = semantic_run_dir / "pid"
-        command = _launch_command(execution, script, log_path, pid_path, gpus)
-        previous = refreshed.get(key, {})
+        launch_identity_by_key[key] = {
+            "target": target,
+            "host": execution.get("host", ""),
+            "workdir": execution.get("workdir") or str(REPO_ROOT),
+            "gpus": "",
+            "log_path": str(log_path),
+            "pid_path": str(pid_path),
+            "command": "",
+        }
+        execution_identity = (
+            {field: previous.get(field, "") for field in launch_identity_by_key[key]}
+            if previous.get("target") not in (None, "")
+            else {field: "" for field in launch_identity_by_key[key]}
+        )
         status = previous.get("status") or "planned"
         launched_at = previous.get("launched_at", "")
         row = {
@@ -123,13 +258,7 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
             "run_dir": str(semantic_run_dir),
             "runtime_dir": run["runtime_dir"],
             "checkpoint_dir": run["checkpoint_dir"],
-            "target": execution.get("target", "local"),
-            "host": execution.get("host", ""),
-            "workdir": execution.get("workdir") or str(REPO_ROOT),
-            "gpus": ",".join(str(item) for item in gpus),
-            "log_path": str(log_path),
-            "pid_path": str(pid_path),
-            "command": command,
+            **execution_identity,
             "status": status,
             "launched_at": launched_at,
         }
@@ -143,7 +272,11 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
             row,
             allow_execution_identity_fill=True,
         )
-    run_output_paths = [Path(str(row[field])) for row in rows for field in ("log_path", "pid_path")]
+    run_output_paths = [
+        Path(str(launch_identity_by_key[managed_run_key(row)][field]))
+        for row in rows
+        for field in ("log_path", "pid_path")
+    ]
     if target == "ssh":
         if not dry_run:
             exp_io.validate_managed_output_paths(
@@ -164,22 +297,124 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
         for row in rows:
             Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
     started_keys = set()
-    if not dry_run:
+    if dry_run:
+        preview_gpu_loads = list(active_gpu_loads)
         for row in rows:
-            if row["status"] in {"planned", "pending"} and slots > 0:
-                row["status"] = _start_process(execution, row["command"])
-                row["launched_at"] = utc_now() if row["status"] == "launched" else ""
-                if row["status"] == "launched":
-                    started_keys.add(managed_run_key(row))
-                    slots -= 1
-            elif row["status"] == "planned":
+            if row["status"] not in {"planned", "pending"} or row.get("target") not in (None, ""):
+                continue
+            group_index = (
+                min(range(len(gpu_groups)), key=lambda index: (preview_gpu_loads[index], index)) if gpu_groups else None
+            )
+            gpus = list(gpu_groups[group_index]) if group_index is not None else []
+            identity = dict(launch_identity_by_key[managed_run_key(row)])
+            identity["gpus"] = ",".join(str(item) for item in gpus)
+            identity["command"] = _launch_command(
+                execution,
+                Path(str(row["script"])),
+                identity["log_path"],
+                identity["pid_path"],
+                gpus,
+            )
+            row.update(identity)
+            validate_frozen_run_update(
+                workspace_by_key[managed_run_key(row)],
+                row,
+                allow_execution_identity_fill=True,
+            )
+            if group_index is not None:
+                preview_gpu_loads[group_index] += 1
+    else:
+        launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in {"planned", "pending"}]
+        while launchable and slots > 0:
+            eligible = []
+            for index, row in launchable:
+                frozen_group_index = assigned_group_by_key.get(managed_run_key(row))
+                if frozen_group_index is not None:
+                    group_indexes = [frozen_group_index]
+                elif gpu_groups:
+                    group_indexes = list(range(len(gpu_groups)))
+                else:
+                    group_indexes = [None]
+                for group_index in group_indexes:
+                    load = active_gpu_loads[group_index] if group_index is not None else 0
+                    if group_index is not None and not allow_gpu_oversubscription and load >= 1:
+                        continue
+                    eligible.append((load, index, row, group_index))
+            if not eligible:
+                break
+            _load, index, row, group_index = min(
+                eligible,
+                key=lambda item: (item[0], item[1], item[3] if item[3] is not None else -1),
+            )
+            launchable = [
+                (candidate_index, candidate) for candidate_index, candidate in launchable if candidate_index != index
+            ]
+            if row.get("target") in (None, ""):
+                gpus = list(gpu_groups[group_index]) if group_index is not None else []
+                identity = dict(launch_identity_by_key[managed_run_key(row)])
+                identity["gpus"] = ",".join(str(item) for item in gpus)
+                identity["command"] = _launch_command(
+                    execution,
+                    Path(str(row["script"])),
+                    identity["log_path"],
+                    identity["pid_path"],
+                    gpus,
+                )
+                row.update(identity)
+                validate_frozen_run_update(
+                    workspace_by_key[managed_run_key(row)],
+                    row,
+                    allow_execution_identity_fill=True,
+                )
+            key = managed_run_key(row)
+            committed = merge_run_manifest(workspace, [row], lock_held=manifest_lock_held)
+            committed_by_key = {managed_run_key(item): item for item in committed}
+            row.clear()
+            row.update(committed_by_key[key])
+            if row["status"] not in {"planned", "pending"}:
+                continue
+            row["status"] = _start_process(execution, row["command"])
+            row["launched_at"] = utc_now() if row["status"] == "launched" else ""
+            committed = merge_run_manifest(workspace, [row], lock_held=manifest_lock_held)
+            committed_by_key = {managed_run_key(item): item for item in committed}
+            row.clear()
+            row.update(committed_by_key[key])
+            if row["status"] == "launched":
+                started_keys.add(managed_run_key(row))
+                if group_index is not None:
+                    active_gpu_loads[group_index] += 1
+                slots -= 1
+        for _index, row in launchable:
+            if row["status"] == "planned":
                 row["status"] = "pending"
-    committed = merge_run_manifest(workspace, rows, lock_held=manifest_lock_held)
-    committed_by_key = {managed_run_key(row): row for row in committed}
-    rows = [committed_by_key[managed_run_key(run)] for run in runs]
-    write_rows(manifest, rows)
-    write_rows(status_path, rows)
+    commit_rows = []
     for row in rows:
+        committed_row = dict(row)
+        if dry_run and workspace_by_key[managed_run_key(row)].get("target") in (None, ""):
+            committed_row.update({field: "" for field in EXECUTION_IDENTITY_FIELDS})
+        commit_rows.append(committed_row)
+    committed = merge_run_manifest(workspace, commit_rows, lock_held=manifest_lock_held)
+    committed_by_key = {managed_run_key(row): row for row in committed}
+    committed_rows = [committed_by_key[managed_run_key(run)] for run in runs]
+    if dry_run:
+        preview_by_key = {managed_run_key(row): row for row in rows}
+        launch_rows = []
+        for committed_row in committed_rows:
+            preview = preview_by_key[managed_run_key(committed_row)]
+            if committed_row.get("target") in (None, ""):
+                launch_rows.append(
+                    {
+                        **committed_row,
+                        **{field: preview.get(field, "") for field in EXECUTION_IDENTITY_FIELDS},
+                    }
+                )
+            else:
+                launch_rows.append(committed_row)
+    else:
+        launch_rows = committed_rows
+    write_rows(manifest, launch_rows)
+    write_rows(status_path, committed_rows)
+    for row in committed_rows:
         if managed_run_key(row) in started_keys:
             append_event(
                 workspace,
@@ -337,16 +572,25 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     return status_path
 
 
-def _assigned_gpus(recipe: dict[str, Any], run_index: int) -> list[Any]:
+def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     devices = _as_list(runtime.get("devices"))
     pool = _as_list(execution.get("gpu_pool")) or devices
     if not pool:
+        if "gpus_per_run" in execution:
+            raise ValueError("execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices.")
         return []
-    per_run = int(execution.get("gpus_per_run") or len(devices) or 1)
-    start = (run_index * per_run) % len(pool)
-    return [pool[(start + offset) % len(pool)] for offset in range(per_run)]
+    if len({str(item) for item in pool}) != len(pool):
+        raise ValueError("The effective GPU pool must not contain duplicate GPU identifiers.")
+    per_run = int(execution["gpus_per_run"]) if "gpus_per_run" in execution else len(devices) or 1
+    if per_run <= 0:
+        raise ValueError("execution.gpus_per_run must be a positive integer.")
+    if per_run > len(pool):
+        raise ValueError("execution.gpus_per_run cannot exceed the effective GPU pool size.")
+    if len(pool) % per_run != 0:
+        raise ValueError("The effective GPU pool must divide evenly into disjoint per-run GPU groups.")
+    return [pool[index : index + per_run] for index in range(0, len(pool), per_run)]
 
 
 def _as_list(value: Any) -> list[Any]:

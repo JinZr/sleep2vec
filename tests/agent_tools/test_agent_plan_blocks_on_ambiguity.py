@@ -241,6 +241,23 @@ def test_plan_with_unresolved_experiment_metadata_does_not_write_output(tmp_path
     assert not output_dir.exists()
 
 
+@pytest.mark.parametrize("section", ["experiment", "step"])
+def test_plan_rejects_non_string_workspace_ids_before_creating_workspace(tmp_path: Path, section: str):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = tmp_path / "workspace"
+    payload["experiment"]["root"] = str(workspace)
+    payload[section]["id"] = 123
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plans" / "first"))
+
+    assert result.returncode == 1
+    assert f"{section}.id must be a string" in result.stdout
+    assert not workspace.exists()
+
+
 def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path: Path):
     source = tmp_path / "source"
     recipe = write_finetune_recipe(source, include_label=False)
@@ -469,8 +486,8 @@ def test_hparam_user_selection_metric_rechecks_config_monitor(tmp_path: Path):
         str(plan_dir),
     )
 
-    assert result.returncode == 2
-    assert "selection_metric differs" in result.stdout
+    assert result.returncode == 1
+    assert "selection_metric decision differs" in result.stdout
     assert not (plan_dir / "runs").exists()
 
 
@@ -497,9 +514,9 @@ def test_resolved_hparam_user_config_rechecks_base_consultation(tmp_path: Path):
         str(tmp_path / "plan"),
     )
 
-    assert result.returncode == 2
-    assert "selection_metric differs" in result.stdout
-    assert (tmp_path / "plan" / "plan.blocked.md").exists()
+    assert result.returncode == 1
+    assert "selection_metric decision differs" in result.stdout
+    assert not (tmp_path / "plan").exists()
     assert not (tmp_path / "plan" / "runs").exists()
 
 
@@ -809,6 +826,78 @@ def test_plan_uses_user_decision_test_after_fit_in_command(tmp_path: Path):
 
     assert result.returncode == 0
     assert "--no-test-after-fit" in (output_dir / "run.sh").read_text()
+
+
+@pytest.mark.parametrize("value", [None, "", "ASK_USER", "false", 0, 1, [], {}])
+def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: object):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"test_after_fit": {"value": value, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "test_after_fit must be explicitly true or false" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "config_field"),
+    [
+        ("data_backend", "kaldi", "data.backend"),
+        ("selection_metric", "val_loss", "finetune.task.monitor"),
+        ("selection_mode", "min", "finetune.task.monitor_mod"),
+    ],
+)
+def test_plan_fails_when_decision_differs_from_runtime_config(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    config_field: str,
+):
+    recipe = write_finetune_recipe(tmp_path)
+    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    config_before = config.read_bytes()
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {field: {"value": value, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"{field} decision differs from config {config_field}" in result.stdout
+    assert config.read_bytes() == config_before
+    assert not (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("data_backend", "npz"),
+        ("selection_metric", "val_ahi_pearson"),
+        ("selection_mode", "max"),
+    ],
+)
+def test_plan_allows_decision_matching_runtime_config(tmp_path: Path, field: str, value: str):
+    recipe = write_finetune_recipe(tmp_path)
+    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    config_before = config.read_bytes()
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {field: {"value": value, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert config.read_bytes() == config_before
+    assert (output_dir / "run.sh").exists()
 
 
 @pytest.mark.parametrize("value", [None, ""])
@@ -1398,6 +1487,33 @@ def test_context_without_workspace_writes_blocked_script(tmp_path: Path):
     assert (output_dir / "commands.blocked.sh").exists()
     assert not (output_dir / "commands.sh").exists()
     assert not (output_dir / "validation.sh").exists()
+
+
+def test_context_rejects_symlink_output_root_before_writing(tmp_path: Path):
+    target = tmp_path / "context-target"
+    target.mkdir()
+    output_dir = tmp_path / "context-alias"
+    output_dir.symlink_to(target, target_is_directory=True)
+
+    report = plans.build_context(task="pretrain", variant="sleep2vec", config=None, output_dir=output_dir)
+
+    assert report.exit_code == 1
+    assert any(issue.field == "output_artifacts" for issue in report.blocking_issues())
+    assert list(target.iterdir()) == []
+
+
+def test_plan_rejects_symlink_output_root_before_writing(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    target = tmp_path / "plan-target"
+    target.mkdir()
+    output_dir = tmp_path / "plan-alias"
+    output_dir.symlink_to(target, target_is_directory=True)
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "must not be a symlink" in result.stderr
+    assert list(target.iterdir()) == []
 
 
 def test_missing_variant_blocks_command_generation(tmp_path: Path):
@@ -2078,6 +2194,61 @@ def test_hparam_relative_workdir_fails_before_workspace_creation(tmp_path: Path)
     assert not output_dir.exists()
 
 
+def test_remote_deferred_config_must_be_locally_freezable_before_single_run_workspace_creation(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"].update({"config": "/remote/config.yaml", "data_backend": "npz"})
+    payload["execution"] = {
+        "target": "ssh",
+        "host": "unit-host",
+        "path_context": "remote",
+        "path_validation": "defer",
+    }
+    payload["decisions"]["required_channels"] = {
+        "value": ["ppg", "ahi", "stage5"],
+        "source": "explicit_recipe",
+    }
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "Config cannot be frozen from a local file" in result.stdout
+    assert not output_dir.exists()
+    assert not (tmp_path / "steps" / "unit-finetune").exists()
+    assert not (tmp_path / "events.jsonl").exists()
+
+
+def test_remote_deferred_config_must_be_locally_freezable_before_hparam_workspace_creation(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["inputs"].update({"config": "/remote/config.yaml", "data_backend": "npz"})
+    base_payload["decisions"]["required_channels"] = {
+        "value": ["ppg", "ahi", "stage5"],
+        "source": "explicit_recipe",
+    }
+    base_recipe.write_text(yaml.safe_dump(base_payload))
+    payload["execution"] = {
+        "target": "ssh",
+        "host": "unit-host",
+        "path_context": "remote",
+        "path_validation": "defer",
+    }
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "Config cannot be frozen from a local file" in result.stdout
+    assert not output_dir.exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
+    assert not (tmp_path / "events.jsonl").exists()
+
+
 def test_collect_runs_only_reads_managed_manifest_paths(tmp_path: Path):
     runtime_dir = tmp_path / "runtime" / "run-000"
     runtime_dir.mkdir(parents=True)
@@ -2340,6 +2511,204 @@ def test_hparam_yaml_parameter_updates_run_config(tmp_path: Path):
     assert result.returncode == 0
     run_config = yaml.safe_load(Path(_first_run(output_dir)["config"]).read_text())
     assert run_config["finetune"]["task"]["output_dim"] == 31
+
+
+@pytest.mark.parametrize(
+    ("parameter", "section", "field", "value", "config_path"),
+    [
+        ("yaml:/data/backend", "inputs", "data_backend", "kaldi", ("data", "backend")),
+        (
+            "yaml:/finetune/task/monitor",
+            "evaluation_policy",
+            "selection_metric",
+            "val_override",
+            ("finetune", "task", "monitor"),
+        ),
+        (
+            "yaml:/finetune/task/monitor_mod",
+            "evaluation_policy",
+            "selection_mode",
+            "min",
+            ("finetune", "task", "monitor_mod"),
+        ),
+    ],
+)
+def test_hparam_yaml_override_can_match_explicit_decision_when_base_differs(
+    tmp_path: Path,
+    parameter: str,
+    section: str,
+    field: str,
+    value: str,
+    config_path: tuple[str, ...],
+):
+    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    payload = yaml.safe_load(recipe.read_text())
+    payload[section][field] = value
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert doctor.returncode == 0, doctor.stderr or doctor.stdout
+    assert result.returncode == 0, result.stderr or result.stdout
+    run_config = yaml.safe_load(Path(_first_run(output_dir)["config"]).read_text())
+    configured = run_config
+    for key in config_path:
+        configured = configured[key]
+    assert configured == value
+
+
+def test_hparam_yaml_backend_override_rejects_any_combo_conflicting_with_explicit_decision(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        parameters={"yaml:/data/backend": ["kaldi", "npz"]},
+        max_runs=2,
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["data_backend"] = "kaldi"
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert doctor.returncode == 1
+    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in doctor.stdout
+    assert result.returncode == 1
+    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in result.stdout
+    assert not output_dir.exists()
+
+
+def test_hparam_backend_decision_must_match_base_without_yaml_override(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["data_backend"] = "kaldi"
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert doctor.returncode == 1
+    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in doctor.stdout
+    assert result.returncode == 1
+    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in result.stdout
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value", "field"),
+    [
+        ("yaml:/data/backend", "kaldi", "data_backend"),
+        ("yaml:/finetune/task/monitor", "val_loss", "selection_metric"),
+        ("yaml:/finetune/task/monitor_mod", "min", "selection_mode"),
+    ],
+)
+def test_hparam_yaml_parameter_cannot_conflict_with_decision_contract(
+    tmp_path: Path,
+    parameter: str,
+    value: str,
+    field: str,
+):
+    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    output_dir = tmp_path / "plan"
+    manifest = tmp_path / "run_manifest.tsv"
+    manifest_before = manifest.read_bytes() if manifest.exists() else None
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"{field} decision differs from config" in result.stdout
+    assert not output_dir.exists()
+    if manifest_before is None:
+        assert not manifest.exists()
+    else:
+        assert manifest.read_bytes() == manifest_before
+    assert not (tmp_path / "events.jsonl").exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune" / "step.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "recipe_value", "parameter", "value", "expected_message"),
+    [
+        (
+            "inputs",
+            "data_backend",
+            None,
+            "yaml:/data/backend",
+            "kaldi",
+            "data_backend decision differs from config",
+        ),
+        (
+            "evaluation_policy",
+            "selection_metric",
+            None,
+            "runtime.lr",
+            1e-6,
+            "selection_metric must be a non-empty value",
+        ),
+        (
+            "evaluation_policy",
+            "selection_metric",
+            "",
+            "runtime.lr",
+            1e-6,
+            "selection_metric must be a non-empty value",
+        ),
+    ],
+)
+def test_hparam_yaml_parameter_handles_empty_recipe_semantics(
+    tmp_path: Path,
+    section: str,
+    key: str,
+    recipe_value: object,
+    parameter: str,
+    value: object,
+    expected_message: str,
+):
+    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    payload = yaml.safe_load(recipe.read_text())
+    payload[section][key] = recipe_value
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+    manifest = tmp_path / "run_manifest.tsv"
+    manifest_before = manifest.read_bytes() if manifest.exists() else None
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert expected_message in result.stdout
+    assert not output_dir.exists()
+    if manifest_before is None:
+        assert not manifest.exists()
+    else:
+        assert manifest.read_bytes() == manifest_before
+    assert not (tmp_path / "events.jsonl").exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune" / "step.yaml").exists()
+
+
+def test_hparam_yaml_parameter_rejects_ask_user_backend_after_null_input(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, parameters={"yaml:/data/backend": ["kaldi"]})
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["data_backend"] = None
+    payload.setdefault("runtime", {})["data_backend"] = "ASK_USER"
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+    manifest = tmp_path / "run_manifest.tsv"
+    manifest_before = manifest.read_bytes() if manifest.exists() else None
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "data_backend must be resolved before hparam YAML overrides" in result.stdout
+    assert not output_dir.exists()
+    if manifest_before is None:
+        assert not manifest.exists()
+    else:
+        assert manifest.read_bytes() == manifest_before
+    assert not (tmp_path / "events.jsonl").exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune" / "step.yaml").exists()
 
 
 def test_hparam_yaml_parameter_rejects_negative_list_index(tmp_path: Path):

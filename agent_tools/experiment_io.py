@@ -185,6 +185,17 @@ def reject(path):
     print(f"Managed output paths must be independent regular files: {path}", file=sys.stderr)
     raise SystemExit(2)
 
+try:
+    root_info = os.lstat(root)
+except FileNotFoundError:
+    pass
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+else:
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        reject(root)
+
 for raw_target in targets:
     target = os.path.abspath(raw_target)
     try:
@@ -246,6 +257,13 @@ for raw_target in targets:
         return
 
     root_path = Path(os.path.abspath(root))
+    try:
+        root_info = os.lstat(root_path)
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+            raise ValueError(f"Managed output paths must be independent regular files: {root_path}")
     seen_paths = set()
     seen_inodes = set()
     for raw_target in paths:

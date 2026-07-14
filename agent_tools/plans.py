@@ -161,6 +161,48 @@ def evaluate_recipe(
         policy,
     )
     report = _append_issues(report, materialization_issues)
+    if (
+        recipe.get("task") != "hparam_tune"
+        and cfg is not None
+        and cfg.get("is_finetune") is True
+        and not cfg.get("blocking_issues")
+    ):
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        finetune_task = cfg.get("finetune", {}).get("task", {})
+        config_contracts = {
+            "data_backend": (
+                inputs.get("data_backend", runtime.get("data_backend")),
+                cfg.get("data_backend"),
+                "data.backend",
+            ),
+            "selection_metric": (
+                evaluation.get("selection_metric"),
+                finetune_task.get("monitor"),
+                "finetune.task.monitor",
+            ),
+            "selection_mode": (
+                evaluation.get("selection_mode"),
+                finetune_task.get("monitor_mod"),
+                "finetune.task.monitor_mod",
+            ),
+        }
+        contract_issues = []
+        for field, (decision_value, config_value, config_field) in config_contracts.items():
+            if decision_value in (None, "", "ASK_USER"):
+                continue
+            if decision_value != config_value:
+                contract_issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        field,
+                        f"{field} decision differs from config {config_field}.",
+                        None,
+                        {"decision": decision_value, "config": config_value},
+                    )
+                )
+        report = _append_issues(report, contract_issues)
     raw_config_decision = user_decisions.get("config")
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
@@ -204,6 +246,13 @@ def evaluate_recipe(
                 ],
             )
     report = _append_issues(report, context.index_summary_issues(recipe, cfg))
+    if (
+        recipe.get("task") == "hparam_tune"
+        and cfg is not None
+        and cfg.get("is_finetune") is True
+        and not cfg.get("blocking_issues")
+    ):
+        report = _append_issues(report, hparam.hparam_yaml_override_issues(recipe))
     return recipe, cfg, report
 
 
@@ -484,8 +533,37 @@ def preflight_plan(
                 report,
                 [DecisionIssue(DecisionStatus.FAIL, "experiment.root", workspace_issue, None, {})],
             )
-    if report.exit_code == 0 and recipe.get("task") == "hparam_tune":
-        report = _append_issues(report, hparam.hparam_yaml_override_issues(recipe))
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    source_config = inputs.get("config")
+    if source_config not in (None, "", "ASK_USER"):
+        source_path = resolve_repo_path(source_config)
+        try:
+            config_is_freezable = source_path is not None and source_path.is_file()
+            if config_is_freezable:
+                source_path.read_text()
+        except (OSError, UnicodeError):
+            config_is_freezable = False
+        if not config_is_freezable:
+            blocking_config_issue = next(
+                (issue for issue in report.blocking_issues() if issue.field == "config"),
+                None,
+            )
+            if blocking_config_issue is not None and blocking_config_issue.status == DecisionStatus.FAIL:
+                blocking_config_issue.message = f"Config cannot be frozen from a local file: {source_config}"
+                blocking_config_issue.evidence["preflight_before_workspace"] = True
+            else:
+                report = _append_issues(
+                    report,
+                    [
+                        DecisionIssue(
+                            DecisionStatus.FAIL,
+                            "config",
+                            f"Config cannot be frozen from a local file: {source_config}",
+                            None,
+                            {"config": str(source_config), "preflight_before_workspace": True},
+                        )
+                    ],
+                )
     if report.exit_code == 0 and recipe.get("task") == "hparam_tune":
         report = _append_issues(
             report,
@@ -640,7 +718,7 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
                 variant=str(recipe.get("variant")),
             ),
         ]
-        if test_after_fit is False:
+        if test_after_fit is False or evaluation.get("external_test_locked") is True:
             pieces.append("--no-test-after-fit")
         return [rendering.render_command(pieces)]
     if task in {"infer", "evaluate"}:

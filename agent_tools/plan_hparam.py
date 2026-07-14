@@ -92,14 +92,84 @@ def final_test_checkpoint_issues(
 
 def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    selection_metric = evaluation.get("selection_metric")
+    if "selection_metric" in evaluation and selection_metric in (None, ""):
+        return [
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "selection_metric",
+                "selection_metric must be a non-empty value for hparam planning.",
+                None,
+                {"selection_metric": selection_metric, "preflight_before_workspace": True},
+            )
+        ]
     config_path = inputs.get("config")
     if not config_path:
         return []
     try:
         base_config = load_yaml(config_path)
+        base_data = base_config.get("data") if isinstance(base_config.get("data"), dict) else {}
+        data_backend = inputs.get("data_backend")
+        if data_backend in (None, ""):
+            data_backend = runtime.get("data_backend")
+        if data_backend in (None, ""):
+            data_backend = base_data.get("backend") or "npz"
+        selection_mode = evaluation.get("selection_mode")
+        for field, decision_value in {
+            "data_backend": data_backend,
+            "selection_metric": selection_metric,
+            "selection_mode": selection_mode,
+        }.items():
+            if decision_value == "ASK_USER":
+                return [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        field,
+                        f"{field} must be resolved before hparam YAML overrides.",
+                        None,
+                        {"decision": decision_value, "preflight_before_workspace": True},
+                    )
+                ]
         for combo in hparam_combos(recipe):
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
+            data = run_config.get("data") if isinstance(run_config.get("data"), dict) else {}
+            finetune = run_config.get("finetune") if isinstance(run_config.get("finetune"), dict) else {}
+            task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
+            for field, (decision_value, config_value, config_field) in {
+                "data_backend": (
+                    data_backend,
+                    data.get("backend") or "npz",
+                    "data.backend",
+                ),
+                "selection_metric": (
+                    selection_metric,
+                    task.get("monitor"),
+                    "finetune.task.monitor",
+                ),
+                "selection_mode": (
+                    selection_mode,
+                    task.get("monitor_mod"),
+                    "finetune.task.monitor_mod",
+                ),
+            }.items():
+                if decision_value not in (None, "") and decision_value != config_value:
+                    return [
+                        DecisionIssue(
+                            DecisionStatus.FAIL,
+                            field,
+                            f"{field} decision differs from config {config_field} after hparam YAML overrides.",
+                            None,
+                            {
+                                "decision": decision_value,
+                                "config": config_value,
+                                "parameters": combo,
+                                "preflight_before_workspace": True,
+                            },
+                        )
+                    ]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         return [
             DecisionIssue(
@@ -225,6 +295,13 @@ def write_hparam_plan(
             yaml.safe_dump(run_config, file_obj)
         version = identity["version"]
         runtime = {**runtime_defaults, **runtime_overrides}
+        if execution.get("gpu_pool") or "gpus_per_run" in execution:
+            gpus_per_run = (
+                int(execution["gpus_per_run"])
+                if "gpus_per_run" in execution
+                else len(rendering.list_value(runtime_defaults.get("devices"))) or 1
+            )
+            runtime["devices"] = list(range(gpus_per_run))
         command_parts = [
             "python",
             "-m",
