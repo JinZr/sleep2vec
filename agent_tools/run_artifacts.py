@@ -256,6 +256,14 @@ def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str
             matched = checkpoint_for_epoch_in_dir(checkpoint_dir, epoch_number_from_checkpoint_name(fixed.name))
             if matched:
                 return str(matched)
+            best = checkpoint_dir / path.name
+            if (
+                manifest_epoch is not None
+                and not best.is_symlink()
+                and best.is_file()
+                and best.resolve().parent == resolved_dir
+            ):
+                return str(best)
             return ""
         if path.name.startswith("epoch="):
             fixed = checkpoint_dir / path.name
@@ -297,8 +305,9 @@ def fixed_checkpoint_path_from_names(
         return ""
     raw = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
     if raw:
-        name = Path(str(raw)).name
-        if name.startswith("best-epoch="):
+        raw_name = Path(str(raw)).name
+        name = raw_name
+        if raw_name.startswith("best-epoch="):
             name = name.removeprefix("best-")
         if (
             name.startswith("epoch=")
@@ -306,6 +315,13 @@ def fixed_checkpoint_path_from_names(
             and (manifest_epoch is None or epoch_number_from_checkpoint_name(name) == manifest_epoch)
         ):
             return str(checkpoint_dir / name)
+        if (
+            manifest_epoch is not None
+            and raw_name.startswith("best-epoch=")
+            and raw_name in names
+            and epoch_number_from_checkpoint_name(name) == manifest_epoch
+        ):
+            return str(checkpoint_dir / raw_name)
         if manifest_epoch is None:
             return ""
         for candidate in sorted(names):

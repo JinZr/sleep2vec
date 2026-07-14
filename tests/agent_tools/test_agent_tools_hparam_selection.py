@@ -441,6 +441,31 @@ def test_fixed_checkpoint_requires_the_manifest_epoch_from_remote_names(tmp_path
     assert path == ""
 
 
+def test_fixed_checkpoint_accepts_same_epoch_best_only_locally_and_remotely(tmp_path: Path):
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "best-epoch=03.ckpt"
+    checkpoint.write_text("checkpoint")
+    manifest = {"best_model_path": str(checkpoint), "epoch": 3}
+
+    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == str(checkpoint)
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [checkpoint.name]) == str(
+        checkpoint
+    )
+
+
+def test_fixed_checkpoint_rejects_best_only_symlink(tmp_path: Path):
+    foreign = tmp_path / "foreign" / "best-epoch=03.ckpt"
+    foreign.parent.mkdir()
+    foreign.write_text("foreign")
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / foreign.name
+    checkpoint.symlink_to(foreign)
+
+    assert run_artifacts.fixed_checkpoint_path({"best_model_path": str(checkpoint), "epoch": 3}, checkpoint_dir) == ""
+
+
 def test_fixed_checkpoint_rejects_fractional_manifest_epoch_locally_and_remotely(tmp_path: Path):
     checkpoint_dir = tmp_path / "managed" / "checkpoints"
     checkpoint_dir.mkdir(parents=True)

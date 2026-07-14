@@ -1113,6 +1113,40 @@ def test_local_checkpoint_scan_prefers_manifest_epoch_over_best_filename(tmp_pat
     }
 
 
+def test_local_checkpoint_scan_keeps_same_epoch_best_only_fallback(tmp_path: Path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    checkpoint = checkpoint_dir / "best-epoch=03.ckpt"
+    checkpoint.write_text("checkpoint")
+    (tmp_path / "run_manifest.json").write_text(json.dumps({"best_model_path": str(checkpoint), "epoch": 3}))
+    runs = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "managed-v1",
+            "runtime_dir": str(tmp_path),
+            "checkpoint_dir": str(checkpoint_dir),
+        }
+    ]
+
+    rows = experiment_tracking._local_checkpoint_rows(runs)
+
+    assert rows[0]["is_best_by_val"] == "true"
+    assert experiment_tracking._checkpoint_for_metric_row(
+        {"step_id": "train-model", "run_id": "run-000", "epoch": ""}, rows
+    ) == str(checkpoint)
+    assert experiment_tracking._checkpoint_for_metric_row(
+        {"step_id": "train-model", "run_id": "run-000", "epoch": 3}, rows
+    ) == str(checkpoint)
+    assert (
+        experiment_tracking._checkpoint_for_metric_row(
+            {"step_id": "train-model", "run_id": "run-000", "epoch": 4}, rows
+        )
+        == ""
+    )
+
+
 def test_experiment_monitor_does_not_advance_planned_run_from_local_mirror(tmp_path: Path):
     _initialize_workspace(tmp_path)
     (tmp_path / "run_manifest.tsv").write_text(

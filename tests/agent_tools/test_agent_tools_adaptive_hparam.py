@@ -811,7 +811,8 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
 
     old = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert old["status"] == "pending"
-    assert calls == []
+    expected_calls = [] if failure_stage == "build" else ["supersede"]
+    assert calls == expected_calls
     assert adaptive_hparam._latest_round_index(workflow_dir) == 0
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "launch_round" not in [event["event_type"] for event in events]
@@ -843,7 +844,10 @@ def test_adaptive_step_commits_canonical_start_when_initial_launcher_raises(tmp_
 
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", launch_then_raise)
 
-    with pytest.raises(RuntimeError, match=r"launch failed.*already committed"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"launch failed.*already committed.*Superseded current pending runs: run-000",
+    ):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     rows = _read_table(tmp_path / "run_manifest.tsv")
@@ -894,7 +898,7 @@ def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, mon
 
     old = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert old["status"] == "pending"
-    assert calls == []
+    assert calls == ["supersede"]
     assert adaptive_hparam._latest_round_index(workflow_dir) == 0
     assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 2
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
@@ -912,8 +916,122 @@ def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, mon
         adaptive_hparam._workflow(workflow_dir)
 
 
+def test_zero_start_replacement_uses_a_fresh_round_on_the_next_step(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=2)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    launch_statuses = iter(["launch_failed", "launched"])
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: next(launch_statuses))
+
+    with pytest.raises(RuntimeError, match=r"launch failed.*was not committed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    first_attempt = workflow_dir / "adaptive" / "rounds" / "round_001"
+    assert first_attempt.exists()
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    first_attempt_bytes = {
+        path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
+    }
+
+    adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    second_attempt = workflow_dir / "adaptive" / "rounds" / "round_002"
+    assert second_attempt.exists()
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 2
+    assert {
+        path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
+    } == first_attempt_bytes
+    registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
+    assert [row["round_dir"] for row in registry] == [
+        str(workflow_dir / "adaptive" / "rounds" / "round_000"),
+        str(first_attempt),
+        str(second_attempt),
+    ]
+    statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert statuses == {"run-000": "superseded", "run-001": "launch_failed", "run-002": "launched"}
+
+
+def test_build_failure_uses_a_fresh_round_on_the_next_step(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=2)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    build_plan = adaptive_hparam.build_plan
+    build_calls = 0
+
+    def fail_first_build(**kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        if build_calls == 1:
+            raise RuntimeError("build failed")
+        return build_plan(**kwargs)
+
+    monkeypatch.setattr(adaptive_hparam, "build_plan", fail_first_build)
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    first_attempt = workflow_dir / "adaptive" / "rounds" / "round_001"
+    first_attempt_bytes = {
+        path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
+    }
+
+    adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
+    assert {
+        path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
+    } == first_attempt_bytes
+    registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
+    assert [row["round"] for row in registry] == ["0", "2"]
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 2
+
+
+def test_registry_failure_supersedes_the_plan_and_next_step_uses_a_fresh_round(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=2)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    append_registry = adaptive_hparam._append_registry_rows
+    append_calls = 0
+
+    def fail_first_append(*args):
+        nonlocal append_calls
+        append_calls += 1
+        if append_calls == 1:
+            raise RuntimeError("registry failed")
+        return append_registry(*args)
+
+    monkeypatch.setattr(adaptive_hparam, "_append_registry_rows", fail_first_append)
+
+    with pytest.raises(RuntimeError, match="registry failed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    first_attempt = workflow_dir / "adaptive" / "rounds" / "round_001"
+    first_attempt_bytes = {
+        path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
+    }
+    assert _read_table(tmp_path / "run_manifest.tsv")[1]["status"] == "superseded"
+
+    adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    second_attempt = workflow_dir / "adaptive" / "rounds" / "round_002"
+    assert second_attempt.exists()
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 2
+    assert {
+        path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
+    } == first_attempt_bytes
+    registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
+    assert [row["round"] for row in registry] == ["0", "2"]
+    statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert statuses == {"run-000": "superseded", "run-001": "superseded", "run-002": "launched"}
+
+
 @pytest.mark.parametrize("launcher_raises", [False, True])
-def test_adaptive_step_mixed_initial_launch_failure_does_not_commit_or_stop(
+def test_adaptive_step_mixed_initial_launch_failure_commits_the_live_replacement(
     tmp_path: Path, monkeypatch, launcher_raises: bool
 ):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
@@ -964,7 +1082,7 @@ def test_adaptive_step_mixed_initial_launch_failure_does_not_commit_or_stop(
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
 
-    with pytest.raises(RuntimeError, match=r"launch failed.*was not committed"):
+    with pytest.raises(RuntimeError, match=r"launch failed.*already committed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     current_by_id = {
@@ -974,7 +1092,9 @@ def test_adaptive_step_mixed_initial_launch_failure_does_not_commit_or_stop(
     }
     assert [current_by_id[f"run-{index:03d}"]["status"] for index in range(2)] == ["running", "running"]
     assert calls == ["launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    prospective = [row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] not in current_by_id]
+    assert {row["status"] for row in prospective} == {"launch_failed", "launched"}
 
 
 def test_hparam_count_does_not_materialize_search_values():
@@ -1186,6 +1306,13 @@ def test_adaptive_step_zero_start_after_drain_keeps_old_round_authoritative(tmp_
     }
     assert current_by_id["run-000"]["status"] == "stopped"
     assert current_by_id["run-001"]["status"] == "running"
+    next_runs = json.loads((workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").read_text())["runs"]
+    next_statuses = {
+        row["run_id"]: row["status"]
+        for row in _read_table(tmp_path / "run_manifest.tsv")
+        if row["run_id"] in {run["run_id"] for run in next_runs}
+    }
+    assert set(next_statuses.values()) == {"superseded"}
     assert calls == ["launch", "stop:run-000", "launch"]
     assert adaptive_hparam._latest_round_index(workflow_dir) == 0
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
@@ -1254,7 +1381,7 @@ def test_adaptive_step_mixed_launch_failure_after_drain_stops_no_additional_run(
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
 
-    with pytest.raises(RuntimeError, match=r"launch failed.*was not committed"):
+    with pytest.raises(RuntimeError, match=r"launch failed.*already committed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     current_by_id = {
@@ -1264,7 +1391,7 @@ def test_adaptive_step_mixed_launch_failure_after_drain_stops_no_additional_run(
     }
     assert [current_by_id[f"run-{index:03d}"]["status"] for index in range(2)] == ["stopped", "running"]
     assert calls == ["launch", "stop:run-000", "launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
 
 
 def test_adaptive_step_commits_canonical_start_when_drain_launcher_raises(tmp_path: Path, monkeypatch):
@@ -1497,6 +1624,13 @@ def test_adaptive_step_stop_failure_does_not_relaunch_or_stop_another_run(
         expected_first_status,
         "running",
     ]
+    next_runs = json.loads((workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").read_text())["runs"]
+    next_statuses = {
+        row["run_id"]: row["status"]
+        for row in _read_table(tmp_path / "run_manifest.tsv")
+        if row["run_id"] in {run["run_id"] for run in next_runs}
+    }
+    assert set(next_statuses.values()) == {"superseded"}
     assert adaptive_hparam._latest_round_index(workflow_dir) == 0
 
 
