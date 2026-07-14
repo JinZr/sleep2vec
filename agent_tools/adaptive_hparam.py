@@ -434,7 +434,10 @@ def _latest_round_index(root: Path) -> int:
     recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
     workspace = experiment_root(recipe)
     events_path = workspace / "events.jsonl" if workspace is not None else None
-    if events_path is None or not events_path.exists():
+    if events_path is None:
+        return 0
+    exp_io.validate_managed_output_paths(workspace, [events_path])
+    if not events_path.exists():
         return 0
     committed = []
     for line in events_path.read_text().splitlines():

@@ -818,9 +818,7 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
 
 
 @pytest.mark.parametrize("launch_status", ["launch_failed", "pending"])
-def test_adaptive_step_keeps_current_runs_when_replacement_starts_nothing(
-    tmp_path: Path, monkeypatch, launch_status: str
-):
+def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, monkeypatch, launch_status: str):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
@@ -858,6 +856,17 @@ def test_adaptive_step_keeps_current_runs_when_replacement_starts_nothing(
     assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 2
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "launch_round" not in [event["event_type"] for event in events]
+    next_round_dir = workflow_dir / "adaptive" / "rounds" / "round_001"
+    forged_events = workflow_dir / "forged-events.jsonl"
+    forged_events.write_text(
+        json.dumps({"event_type": "launch_round", "round": 1, "round_dir": str(next_round_dir)}) + "\n"
+    )
+    events_path = tmp_path / "events.jsonl"
+    events_path.unlink()
+    events_path.symlink_to(forged_events)
+
+    with pytest.raises(ValueError, match="Managed output"):
+        adaptive_hparam._workflow(workflow_dir)
 
 
 def test_hparam_count_does_not_materialize_search_values():
