@@ -1394,6 +1394,75 @@ def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group
     assert [row["status"] for row in rows] == ["missing_pid", "finished", "launched", "pending"]
 
 
+def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_is_unknown(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1},
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": runs[0]["step_id"], "run_id": runs[0]["run_id"], "status": "running"}],
+    )
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    assert [row["status"] for row in rows] == ["running", "pending"]
+    assert [row["gpus"] for row in rows] == ["", ""]
+    assert started == []
+
+
+def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is_unknown(tmp_path: Path, monkeypatch):
+    execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
+    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    first_run = json.loads((first_plan / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": first_run["step_id"],
+                "run_id": first_run["run_id"],
+                "status": "running",
+                "target": "local",
+            }
+        ],
+    )
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False)
+
+    row = _read_table(second_plan / "launch_manifest.tsv")[0]
+    assert row["status"] == "pending"
+    assert row["gpus"] == ""
+    assert started == []
+
+
 def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)

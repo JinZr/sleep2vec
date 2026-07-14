@@ -168,21 +168,38 @@ def _launch_hparam_runs(
     gpu_group_values = [{str(item) for item in group} for group in gpu_groups]
     current_gpu_pool = set().union(*gpu_group_values) if gpu_group_values else set()
     other_active_gpu_sets = []
+    unknown_other_active = 0
     for key, row in workspace_by_key.items():
         if not gpu_groups or key in expected_keys or row.get("status") not in active_statuses:
             continue
-        if str(row.get("target") or "") != target:
+        row_target = str(row.get("target") or "")
+        if not row_target:
+            unknown_other_active += 1
             continue
-        if target == "ssh" and str(row.get("host") or "") != current_host:
+        if row_target != target:
             continue
+        if target == "ssh":
+            row_host = str(row.get("host") or "")
+            if not row_host:
+                unknown_other_active += 1
+                continue
+            if row_host != current_host:
+                continue
         assigned = {part.strip() for part in str(row.get("gpus") or "").split(",") if part.strip()}
+        if not assigned:
+            unknown_other_active += 1
+            continue
         if not assigned.intersection(current_gpu_pool):
             continue
         other_active_gpu_sets.append(assigned)
-    active = sum(row.get("status") in active_statuses for row in refreshed.values()) + len(other_active_gpu_sets)
+    active = (
+        sum(row.get("status") in active_statuses for row in refreshed.values())
+        + len(other_active_gpu_sets)
+        + unknown_other_active
+    )
     slots = max(max_concurrent - active, 0)
     gpu_group_by_value = {",".join(str(item) for item in group): index for index, group in enumerate(gpu_groups)}
-    active_gpu_loads = [0] * len(gpu_groups)
+    active_gpu_loads = [unknown_other_active] * len(gpu_groups)
     for assigned in other_active_gpu_sets:
         for group_index, group in enumerate(gpu_group_values):
             if assigned.intersection(group):
@@ -191,6 +208,9 @@ def _launch_hparam_runs(
     for key, previous in refreshed.items():
         assigned = ",".join(part.strip() for part in str(previous.get("gpus") or "").split(",") if part.strip())
         if not assigned:
+            if previous.get("status") in active_statuses:
+                for group_index in range(len(gpu_groups)):
+                    active_gpu_loads[group_index] += 1
             continue
         group_index = gpu_group_by_value.get(assigned)
         if group_index is None:

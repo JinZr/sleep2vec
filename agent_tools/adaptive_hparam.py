@@ -222,21 +222,10 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     budget_exhausted = execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count)
     if execute and not budget_exhausted:
         round_recipe = _write_round_recipe(load_recipe_with_base(suggestion), suggestion, next_dir, next_round)
-        try:
-            report = build_plan(recipe_path=round_recipe, output_dir=next_dir)
-        except Exception:
-            if (next_dir / "plan.json").exists():
-                _supersede_pending_runs(root, next_dir)
-            raise
+        report = build_plan(recipe_path=round_recipe, output_dir=next_dir)
         if report.exit_code != 0:
-            if (next_dir / "plan.json").exists():
-                _supersede_pending_runs(root, next_dir)
             raise RuntimeError(f"Round {next_round:03d} plan failed with exit code {report.exit_code}.")
-        try:
-            _append_registry_rows(root, next_round, next_dir)
-        except Exception:
-            _supersede_pending_runs(root, next_dir)
-            raise
+        _append_registry_rows(root, next_round, next_dir)
         current_plan = artifacts.read_hparam_plan(round_dir)
         bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
         ordered_bad_run_keys = [
@@ -292,13 +281,12 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
             if round_committed:
                 _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
                 superseded_current_keys = _supersede_pending_runs(root, round_dir)
-            else:
-                _supersede_pending_runs(root, next_dir)
             committed = "is already committed" if round_committed else "was not committed"
             superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
             raise RuntimeError(
                 f"Adaptive replacement launch failed; round {next_round:03d} {committed}. "
-                f"Confirmed stopped current runs: none. Superseded current pending runs: {superseded_ids}."
+                f"Confirmed stopped current runs: none. Superseded current pending runs: {superseded_ids}. "
+                f"Prospective run states were preserved at {next_dir}."
             ) from exc
         canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
@@ -317,13 +305,12 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
             superseded_current_keys = _supersede_pending_runs(root, round_dir)
         if newly_launch_failed:
             failed_ids = ", ".join(sorted(key[1] for key in newly_launch_failed))
-            if not round_committed:
-                _supersede_pending_runs(root, next_dir)
             committed = "is already committed" if round_committed else "was not committed"
             superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
             raise RuntimeError(
                 f"Adaptive replacement launch failed for {failed_ids}; round {next_round:03d} {committed}. "
-                f"Confirmed stopped current runs: none. Superseded current pending runs: {superseded_ids}."
+                f"Confirmed stopped current runs: none. Superseded current pending runs: {superseded_ids}. "
+                f"Prospective run states were preserved at {next_dir}."
             )
         stopped_run_keys: list[tuple[str, str]] = []
 
@@ -342,15 +329,14 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                 canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
                 if canonical_by_key[run_key].get("status") == "stopped" and run_key not in stopped_run_keys:
                     stopped_run_keys.append(run_key)
-                if not round_committed:
-                    _supersede_pending_runs(root, next_dir)
                 committed = "is already committed" if round_committed else "was not committed"
                 stopped_ids = ", ".join(key[1] for key in stopped_run_keys) or "none"
                 superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
                 raise RuntimeError(
                     f"Adaptive replacement failed while stopping {run_key[1]}; round {next_round:03d} "
                     f"{committed}. Confirmed stopped current runs: {stopped_ids}. "
-                    f"Superseded current pending runs: {superseded_ids}."
+                    f"Superseded current pending runs: {superseded_ids}. "
+                    f"Prospective run states were preserved at {next_dir}."
                 ) from exc
             if stopped:
                 stopped_run_keys.extend(stopped)
@@ -404,8 +390,6 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                     _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
                     round_committed = True
                     superseded_current_keys = _supersede_pending_runs(root, round_dir)
-                elif not round_committed:
-                    _supersede_pending_runs(root, next_dir)
                 committed = "is already committed" if round_committed else "was not committed"
                 stopped_ids = ", ".join(key[1] for key in stopped_run_keys) or "none"
                 superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
@@ -413,7 +397,8 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                     f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}; "
                     f"round {next_round:03d} "
                     f"{committed}. Confirmed stopped current runs: {stopped_ids}. "
-                    f"Superseded current pending runs: {superseded_ids}."
+                    f"Superseded current pending runs: {superseded_ids}. "
+                    f"Prospective run states were preserved at {next_dir}."
                 ) from exc
             canonical_rows = read_run_manifest(workspace)
             next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
@@ -430,19 +415,16 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                 superseded_current_keys = _supersede_pending_runs(root, round_dir)
             if newly_launch_failed:
                 failed_ids = ", ".join(sorted(key[1] for key in newly_launch_failed))
-                if not round_committed:
-                    _supersede_pending_runs(root, next_dir)
                 committed = "is already committed" if round_committed else "was not committed"
                 stopped_ids = ", ".join(key[1] for key in stopped_run_keys) or "none"
                 superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
                 raise RuntimeError(
                     f"Adaptive replacement launch failed for {failed_ids} after the stop attempt for {run_key[1]}; "
                     f"round {next_round:03d} {committed}. Confirmed stopped current runs: {stopped_ids}. "
-                    f"Superseded current pending runs: {superseded_ids}."
+                    f"Superseded current pending runs: {superseded_ids}. "
+                    f"Prospective run states were preserved at {next_dir}."
                 )
             if not newly_started:
-                if not round_committed:
-                    _supersede_pending_runs(root, next_dir)
                 statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
                 committed = "is already committed" if round_committed else "was not committed"
                 stopped_ids = ", ".join(key[1] for key in stopped_run_keys) or "none"
@@ -452,16 +434,15 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                     f"Round {next_round:03d} started no additional runs after {stop_attempt} "
                     f"(statuses: {statuses}); the round {committed}. Confirmed stopped current runs: {stopped_ids}. "
                     f"Superseded current pending runs: {superseded_ids}. "
-                    f"The registered replacement attempt remains at {next_dir}."
+                    f"Prospective run states were preserved at {next_dir}."
                 )
             retirement_credit += len(newly_started)
 
         if not round_committed:
-            _supersede_pending_runs(root, next_dir)
             statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
             raise RuntimeError(
                 f"Round {next_round:03d} started no runs (statuses: {statuses}); the round was not committed and "
-                f"current runs were not retired. The registered replacement attempt remains at {next_dir}."
+                f"current runs were not retired. Prospective run states were preserved at {next_dir}."
             )
     elif budget_exhausted:
         _append_event(
