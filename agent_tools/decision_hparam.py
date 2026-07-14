@@ -199,29 +199,6 @@ def hparam_tune_issues(
         issues.append(
             needs_issue("final_eval_unlock", "Final test evaluation requires manual unlock policy.", high_impact)
         )
-    finetune_task = config_summary.get("finetune", {}).get("task", {}) if config_summary else {}
-    if evaluation.get("selection_metric") and finetune_task.get("monitor"):
-        if evaluation["selection_metric"] != finetune_task["monitor"]:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "selection_metric",
-                    "Hparam selection_metric differs from config finetune.task.monitor.",
-                    question_for(high_impact, "selection_metric"),
-                    {"recipe": evaluation["selection_metric"], "config": finetune_task["monitor"]},
-                )
-            )
-    if evaluation.get("selection_mode") and finetune_task.get("monitor_mod"):
-        if evaluation["selection_mode"] != finetune_task["monitor_mod"]:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "selection_mode",
-                    "Hparam selection_mode differs from config finetune.task.monitor_mod.",
-                    question_for(high_impact, "selection_mode"),
-                    {"recipe": evaluation["selection_mode"], "config": finetune_task["monitor_mod"]},
-                )
-            )
     return issues
 
 

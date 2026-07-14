@@ -487,7 +487,7 @@ def test_hparam_user_selection_metric_rechecks_config_monitor(tmp_path: Path):
     )
 
     assert result.returncode == 1
-    assert "selection_metric differs" in result.stdout
+    assert "selection_metric decision differs" in result.stdout
     assert not (plan_dir / "runs").exists()
 
 
@@ -515,8 +515,8 @@ def test_resolved_hparam_user_config_rechecks_base_consultation(tmp_path: Path):
     )
 
     assert result.returncode == 1
-    assert "selection_metric differs" in result.stdout
-    assert (tmp_path / "plan" / "plan.blocked.md").exists()
+    assert "selection_metric decision differs" in result.stdout
+    assert not (tmp_path / "plan").exists()
     assert not (tmp_path / "plan" / "runs").exists()
 
 
@@ -2511,6 +2511,90 @@ def test_hparam_yaml_parameter_updates_run_config(tmp_path: Path):
     assert result.returncode == 0
     run_config = yaml.safe_load(Path(_first_run(output_dir)["config"]).read_text())
     assert run_config["finetune"]["task"]["output_dim"] == 31
+
+
+@pytest.mark.parametrize(
+    ("parameter", "section", "field", "value", "config_path"),
+    [
+        ("yaml:/data/backend", "inputs", "data_backend", "kaldi", ("data", "backend")),
+        (
+            "yaml:/finetune/task/monitor",
+            "evaluation_policy",
+            "selection_metric",
+            "val_override",
+            ("finetune", "task", "monitor"),
+        ),
+        (
+            "yaml:/finetune/task/monitor_mod",
+            "evaluation_policy",
+            "selection_mode",
+            "min",
+            ("finetune", "task", "monitor_mod"),
+        ),
+    ],
+)
+def test_hparam_yaml_override_can_match_explicit_decision_when_base_differs(
+    tmp_path: Path,
+    parameter: str,
+    section: str,
+    field: str,
+    value: str,
+    config_path: tuple[str, ...],
+):
+    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    payload = yaml.safe_load(recipe.read_text())
+    payload[section][field] = value
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert doctor.returncode == 0, doctor.stderr or doctor.stdout
+    assert result.returncode == 0, result.stderr or result.stdout
+    run_config = yaml.safe_load(Path(_first_run(output_dir)["config"]).read_text())
+    configured = run_config
+    for key in config_path:
+        configured = configured[key]
+    assert configured == value
+
+
+def test_hparam_yaml_backend_override_rejects_any_combo_conflicting_with_explicit_decision(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        parameters={"yaml:/data/backend": ["kaldi", "npz"]},
+        max_runs=2,
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["data_backend"] = "kaldi"
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert doctor.returncode == 1
+    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in doctor.stdout
+    assert result.returncode == 1
+    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in result.stdout
+    assert not output_dir.exists()
+
+
+def test_hparam_backend_decision_must_match_base_without_yaml_override(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["data_backend"] = "kaldi"
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert doctor.returncode == 1
+    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in doctor.stdout
+    assert result.returncode == 1
+    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in result.stdout
+    assert not output_dir.exists()
 
 
 @pytest.mark.parametrize(

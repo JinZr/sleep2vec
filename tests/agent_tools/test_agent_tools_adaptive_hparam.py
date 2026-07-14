@@ -11,7 +11,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, hparam_runtime, manifests, run_evidence
+from agent_tools import adaptive_hparam, experiments, hparam_runtime, manifests, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 
 
@@ -1056,15 +1056,24 @@ def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, mon
         adaptive_hparam._workflow(workflow_dir)
 
 
-def test_zero_start_replacement_uses_a_fresh_round_on_the_next_step(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    ("first_status", "abandoned_status"),
+    [("pending", "superseded"), ("launch_failed", "launch_failed")],
+)
+def test_zero_start_replacement_uses_a_fresh_round_on_the_next_step(
+    tmp_path: Path, monkeypatch, first_status: str, abandoned_status: str
+):
     recipe = _adaptive_recipe(tmp_path, max_rounds=2)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    launch_statuses = iter(["launch_failed", "launched"])
+    launch_statuses = iter([first_status, "launched"])
     monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: next(launch_statuses))
 
-    with pytest.raises(RuntimeError, match=r"launch failed.*was not committed"):
+    expected_error = (
+        r"started no runs.*was not committed" if first_status == "pending" else r"launch failed.*was not committed"
+    )
+    with pytest.raises(RuntimeError, match=expected_error):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     first_attempt = workflow_dir / "adaptive" / "rounds" / "round_001"
@@ -1089,10 +1098,37 @@ def test_zero_start_replacement_uses_a_fresh_round_on_the_next_step(tmp_path: Pa
         str(second_attempt),
     ]
     statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
-    assert statuses == {"run-000": "superseded", "run-001": "launch_failed", "run-002": "launched"}
+    assert statuses == {"run-000": "superseded", "run-001": abandoned_status, "run-002": "launched"}
 
 
-@pytest.mark.parametrize("uncommitted_evidence", ["launch_failed_pid", "failed_status"])
+def test_superseded_abandoned_run_still_consumes_registered_run_budget(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["max_runs_total"] = 2
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "pending")
+
+    with pytest.raises(RuntimeError, match=r"started no runs.*was not committed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert adaptive_hparam.adaptive_step(workflow_dir, execute=True) == recipe
+    registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
+    assert [row["round"] for row in registry] == ["0", "1"]
+    assert len(registry) == 2
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
+    statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert statuses == {"run-000": "planned", "run-001": "superseded"}
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["event_type"] == "adaptive_budget_exhausted"
+
+
+@pytest.mark.parametrize(
+    "uncommitted_evidence",
+    ["launch_failed_pid", "pid_read_error", "uncertain_status", "failed_status"],
+)
 def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, monkeypatch, uncommitted_evidence: str):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
@@ -1103,7 +1139,7 @@ def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, mon
         lambda round_dir: digest_calls.append(Path(round_dir)) or tmp_path / "digest.csv",
     )
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    if uncommitted_evidence == "launch_failed_pid":
+    if uncommitted_evidence in {"launch_failed_pid", "pid_read_error"}:
         monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launch_failed")
         error = "launch failed for run-001"
     else:
@@ -1112,9 +1148,15 @@ def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, mon
             run = json.loads((Path(run_dir) / "plan.json").read_text())["runs"][0]
             merge_run_manifest(
                 tmp_path,
-                [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "failed"}],
+                [
+                    {
+                        "step_id": run["step_id"],
+                        "run_id": run["run_id"],
+                        "status": "unknown_remote" if uncommitted_evidence == "uncertain_status" else "failed",
+                    }
+                ],
             )
-            raise RuntimeError("launcher failed after terminal observation")
+            raise RuntimeError("launcher failed after execution observation")
 
         monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fail_with_terminal_status)
         error = "launch failed"
@@ -1125,6 +1167,45 @@ def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, mon
     prospective = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
     if uncommitted_evidence == "launch_failed_pid":
         Path(prospective["pid_path"]).write_text(str(os.getpid()))
+    elif uncommitted_evidence == "pid_read_error":
+        monkeypatch.setattr(
+            adaptive_hparam.evidence,
+            "read_pid",
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("PID read uncertain")),
+        )
+    digest_calls.clear()
+
+    with pytest.raises(RuntimeError, match="Uncommitted adaptive launch evidence remains"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert digest_calls == []
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
+
+
+def test_adaptive_step_blocks_uncommitted_active_status(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    digest_calls = []
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "digest_hparam_run",
+        lambda round_dir: digest_calls.append(Path(round_dir)) or tmp_path / "digest.csv",
+    )
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_append_registry_rows",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("registry failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="registry failed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    abandoned = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": abandoned["step_id"], "run_id": abandoned["run_id"], "status": "running"}],
+    )
     digest_calls.clear()
 
     with pytest.raises(RuntimeError, match="Uncommitted adaptive launch evidence remains"):
@@ -1171,6 +1252,8 @@ def test_build_failure_uses_a_fresh_round_on_the_next_step(tmp_path: Path, monke
     registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
     assert [row["round"] for row in registry] == ["0", "2"]
     assert adaptive_hparam._latest_round_index(workflow_dir) == 2
+    statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert statuses == {"run-000": "superseded", "run-001": "superseded", "run-002": "launched"}
 
 
 def test_registry_failure_preserves_the_plan_and_next_step_uses_a_fresh_round(tmp_path: Path, monkeypatch):
@@ -1211,7 +1294,57 @@ def test_registry_failure_preserves_the_plan_and_next_step_uses_a_fresh_round(tm
     registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
     assert [row["round"] for row in registry] == ["0", "2"]
     statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
-    assert statuses == {"run-000": "superseded", "run-001": "planned", "run-002": "launched"}
+    assert statuses == {"run-000": "superseded", "run-001": "superseded", "run-002": "launched"}
+    launched = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-002")
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": launched["step_id"], "run_id": launched["run_id"], "status": "completed"}],
+    )
+    report = tmp_path / "final-report.md"
+    report.write_text("# Final\n\nAdaptive tuning completed.\n")
+
+    assert experiments.finalize_experiment(tmp_path, report) == tmp_path / "reports" / "final.md"
+
+
+def test_abandoned_supersede_race_blocks_before_fresh_round(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    append_registry = adaptive_hparam._append_registry_rows
+    append_calls = 0
+
+    def fail_first_append(*args):
+        nonlocal append_calls
+        append_calls += 1
+        if append_calls == 1:
+            raise RuntimeError("registry failed")
+        return append_registry(*args)
+
+    monkeypatch.setattr(adaptive_hparam, "_append_registry_rows", fail_first_append)
+    with pytest.raises(RuntimeError, match="registry failed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    abandoned = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
+    real_merge = merge_run_manifest
+
+    def merge_after_launch(root, rows):
+        real_merge(
+            root,
+            [{"step_id": abandoned["step_id"], "run_id": abandoned["run_id"], "status": "running"}],
+        )
+        return real_merge(root, rows)
+
+    monkeypatch.setattr(adaptive_hparam, "merge_run_manifest", merge_after_launch)
+
+    with pytest.raises(RuntimeError, match="state changed before supersede"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
+    assert (
+        next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")["status"]
+        == "running"
+    )
 
 
 @pytest.mark.parametrize("launcher_raises", [False, True])

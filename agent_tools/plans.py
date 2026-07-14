@@ -161,7 +161,12 @@ def evaluate_recipe(
         policy,
     )
     report = _append_issues(report, materialization_issues)
-    if cfg is not None and cfg.get("is_finetune") is True and not cfg.get("blocking_issues"):
+    if (
+        recipe.get("task") != "hparam_tune"
+        and cfg is not None
+        and cfg.get("is_finetune") is True
+        and not cfg.get("blocking_issues")
+    ):
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
@@ -241,6 +246,13 @@ def evaluate_recipe(
                 ],
             )
     report = _append_issues(report, context.index_summary_issues(recipe, cfg))
+    if (
+        recipe.get("task") == "hparam_tune"
+        and cfg is not None
+        and cfg.get("is_finetune") is True
+        and not cfg.get("blocking_issues")
+    ):
+        report = _append_issues(report, hparam.hparam_yaml_override_issues(recipe))
     return recipe, cfg, report
 
 
@@ -552,8 +564,6 @@ def preflight_plan(
                         )
                     ],
                 )
-    if report.exit_code == 0 and recipe.get("task") == "hparam_tune":
-        report = _append_issues(report, hparam.hparam_yaml_override_issues(recipe))
     if report.exit_code == 0 and recipe.get("task") == "hparam_tune":
         report = _append_issues(
             report,

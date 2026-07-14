@@ -674,28 +674,77 @@ def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
     committed_rounds = _committed_round_indexes(root)
     registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
-    unresolved = []
-    no_execution_statuses = {"planned", "pending", "launch_failed", "superseded"}
+    registered_by_round: dict[int, set[tuple[str, str]]] = {}
     for registered in registry:
         round_index = int(registered["round"])
-        if round_index in committed_rounds:
+        if round_index not in committed_rounds:
+            registered_by_round.setdefault(round_index, set()).add(managed_run_key(registered))
+    round_dirs = {
+        int(path.name.removeprefix("round_")): path
+        for path in (root / "adaptive" / "rounds").glob("round_*")
+        if path.name.removeprefix("round_").isdigit() and int(path.name.removeprefix("round_")) not in committed_rounds
+    }
+    for round_index in registered_by_round:
+        round_dirs.setdefault(round_index, _round_dir(root, round_index))
+    unresolved = []
+    abandoned = []
+    for round_index, round_dir in sorted(round_dirs.items()):
+        plan_path = round_dir / "plan.json"
+        if not plan_path.exists() and round_index not in registered_by_round:
             continue
-        row = canonical_by_key[managed_run_key(registered)]
-        status = str(row.get("status") or "")
-        pid = None
-        if row.get("target") not in (None, ""):
-            try:
-                pid = evidence.read_pid(row.get("pid_path"), row)
-            except RuntimeError:
+        plan = artifacts.read_hparam_plan(round_dir)
+        run_keys = set(registered_by_round.get(round_index, set()))
+        run_keys.update(managed_run_key(run) for run in plan.get("runs", []))
+        for run_key in sorted(run_keys):
+            row = canonical_by_key.get(run_key)
+            if row is None:
+                raise ValueError(f"Uncommitted adaptive run is missing from the canonical manifest: {run_key}")
+            status = str(row.get("status") or "")
+            pid = row.get("pid")
+            if row.get("target") not in (None, ""):
+                try:
+                    pid = evidence.read_pid(row.get("pid_path"), row) or pid
+                except RuntimeError:
+                    unresolved.append((round_index, str(row["run_id"])))
+                    continue
+            if pid not in (None, "") or status not in {"planned", "pending", "launch_failed", "superseded"}:
                 unresolved.append((round_index, str(row["run_id"])))
                 continue
-        if pid is not None or status not in no_execution_statuses:
-            unresolved.append((round_index, str(row["run_id"])))
+            if status in {"planned", "pending"}:
+                abandoned.append((round_index, row))
     if unresolved:
         detail = ", ".join(f"round {round_index:03d} {run_id}" for round_index, run_id in unresolved)
         raise RuntimeError(
             f"Uncommitted adaptive launch evidence remains for {detail}; resolve the canonical launch state before "
             "creating another round."
+        )
+    if not abandoned:
+        return
+    committed = merge_run_manifest(
+        workspace,
+        [
+            {"step_id": row["step_id"], "run_id": row["run_id"], "status": "superseded"}
+            for _round_index, row in abandoned
+        ],
+    )
+    committed_by_key = {managed_run_key(row): row for row in committed}
+    unchanged = [
+        (round_index, row)
+        for round_index, row in abandoned
+        if committed_by_key[managed_run_key(row)].get("status") != "superseded"
+    ]
+    if unchanged:
+        detail = ", ".join(f"round {round_index:03d} {row['run_id']}" for round_index, row in unchanged)
+        raise RuntimeError(f"Uncommitted adaptive launch state changed before supersede: {detail}")
+    for round_index, row in abandoned:
+        _append_event(
+            root,
+            "supersede_pending_run",
+            {
+                "round_dir": str(_round_dir(root, round_index)),
+                "run_id": row["run_id"],
+                "status": row["status"],
+            },
         )
 
 
