@@ -534,7 +534,17 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         )
     if previous.get("status") in TERMINAL_STATUSES:
         raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
-    pid = evidence.read_pid(previous.get("pid_path"), previous)
+    remote_host = str(previous["host"]) if previous.get("target") == "ssh" else None
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [previous["pid_path"]],
+        remote=remote_host,
+    )
+    pid = evidence.read_pid(
+        previous.get("pid_path"),
+        previous,
+        expected_script=previous["script"],
+    )
     if pid is None:
         raise ValueError(f"No recorded PID for run_id: {run_id}")
     if previous.get("target") == "ssh":

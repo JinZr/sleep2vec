@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-14
+
+- Closed the supported `runtime`, hparam `adaptive`, `adaptive.replacement`, and `adaptive.suggest` recipe fields in the existing decision owners so typos fail consultation before workspace mutation.
+- Required `hparam-stop` to preflight the canonical PID file as an independent regular file and verify that its live process command ends with the frozen `bash <absolute-run-script>` invocation before local or SSH signaling.
+- Refreshed the main-branch index metadata and tracked-file counts, and corrected the stale `evaluate_consultation_gates` signature.
+
 ## 2026-07-13
 
 - Made local status tables non-authoritative, limited adaptive supersede to canonical `planned/pending`, and added combination coverage for launch, monitor, stop, and adaptive races.

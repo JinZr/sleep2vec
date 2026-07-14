@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import stat
 import subprocess
 import time
 from typing import Any
@@ -231,21 +232,31 @@ sys.stdout.write(json.dumps(payload))
     return str(manifest_path or ""), manifest, artifacts.checkpoint_names(row)
 
 
-def read_pid(path: Any, row: dict[str, Any] | None = None) -> int | None:
+def read_pid(
+    path: Any,
+    row: dict[str, Any] | None = None,
+    *,
+    expected_script: str | Path | None = None,
+) -> int | None:
     if not path:
         return None
     if is_remote_row(row):
         script = f"""
 import os
+import stat
 import sys
 
 path = sys.argv[1]
 try:
-    os.lstat(path)
+    info = os.lstat(path)
 except FileNotFoundError:
     raise SystemExit({REMOTE_MISSING_RETURN_CODE})
 except OSError as exc:
     print(exc, file=sys.stderr)
+    raise SystemExit(1)
+
+if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+    print(f"PID file is not an independent regular file: {{path}}", file=sys.stderr)
     raise SystemExit(1)
 
 try:
@@ -268,7 +279,15 @@ except (OSError, UnicodeError) as exc:
     else:
         pid_path = Path(str(path))
         try:
-            if not pid_path.exists() and not pid_path.is_symlink():
+            info = os.lstat(pid_path)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise RuntimeError(f"PID file read failed: {path}") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise RuntimeError(f"PID file is not an independent regular file: {path}")
+        try:
+            if not pid_path.exists():
                 return None
             text = pid_path.read_text().strip()
         except (OSError, UnicodeError) as exc:
@@ -279,7 +298,25 @@ except (OSError, UnicodeError) as exc:
         raise RuntimeError(f"PID file is empty or invalid: {path}") from exc
     if pid <= 0:
         raise RuntimeError(f"PID file is empty or invalid: {path}")
+    if expected_script is not None:
+        _require_process_script(pid, expected_script, row)
     return pid
+
+
+def _require_process_script(pid: int, expected_script: str | Path, row: dict[str, Any] | None) -> None:
+    script_path = Path(str(expected_script))
+    if not script_path.is_absolute():
+        raise RuntimeError(f"Frozen run script is not absolute: {expected_script}")
+    result = run_row_command(row or {}, f"ps -ww -p {pid} -o args=")
+    if result.returncode != 0 or not result.stdout.strip():
+        location = f" on {row['host']}" if is_remote_row(row) else ""
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"Cannot verify PID {pid} process identity{location}: {detail}")
+    process_args = result.stdout.rstrip("\r\n")
+    expected_suffix = f"bash {script_path}"
+    prefix = process_args[: -len(expected_suffix)] if process_args.endswith(expected_suffix) else ""
+    if not process_args.endswith(expected_suffix) or (prefix and prefix[-1] not in {" ", "/"}):
+        raise RuntimeError(f"PID {pid} process identity does not match frozen script: {script_path}")
 
 
 def process_running(row: dict[str, Any], pid: int | None) -> bool | None:

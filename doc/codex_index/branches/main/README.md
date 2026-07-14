@@ -5,8 +5,8 @@ This directory is the branch-scoped engineering manual for `main`. Use it before
 ## Branch Scope
 
 - Branch: `main`
-- Last refresh commit: `e5d8f614012aa115557634d06397b09146624e82`
-- Last refresh at: `2026-07-12T15:14:28Z`
+- Last refresh commit: `4efddb9dc65acdf8cc71fb98295120397267fc2c`
+- Last refresh at: `2026-07-14T13:10:06Z`
 - Mode: `refresh`
 
 ## Purpose
@@ -43,12 +43,12 @@ Tracked files indexed from this branch:
 - `sleep2vec_moe/`: 0 tracked files
 - `sleep2vec_hires/`: 0 tracked files
 - `configs/`: 106 tracked files
-- `tests/`: 108 tracked files
+- `tests/`: 110 tracked files
 - `utils/`: 8 tracked files
 - `agent_tools/`: 33 tracked files
 - `skills/`: 37 tracked files
 - `recipes/`: 27 tracked files
-- `agent_policies/` and `doc/agent_contracts/`: 10 tracked files
+- `agent_policies/` and `doc/agent_contracts/`: 9 tracked files
 
 ## Coverage Boundaries
 

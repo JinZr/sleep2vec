@@ -327,7 +327,7 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
         "status_row",
         lambda _root, row, previous, health=False: merge_run_row(previous, row),
     )
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
+    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
     monkeypatch.setattr(hparam_runtime.os, "kill", lambda _pid, _signal: None)
     started = []
     monkeypatch.setattr(
@@ -684,7 +684,13 @@ def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monke
     )
     before_launch = (tmp_path / "launch_manifest.tsv").read_bytes()
     before_status = (tmp_path / "run_status.tsv").read_bytes()
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
+    )
+    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
     monkeypatch.setattr(
         hparam_runtime.subprocess,
         "run",
@@ -708,6 +714,12 @@ def test_remote_stop_pid_probe_failure_has_no_side_effects(tmp_path: Path, monke
     merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": "running"}])
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     calls = []
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
+    )
 
     def fake_pid_read(_row, command):
         if failure == "permission":
@@ -747,16 +759,12 @@ def test_hparam_stop_rejects_nonpositive_pid_before_kill(tmp_path: Path, monkeyp
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-@pytest.mark.parametrize("failure", ["directory", "invalid_utf8", "os_error", "dangling_symlink"])
+@pytest.mark.parametrize("failure", ["invalid_utf8", "os_error"])
 def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, monkeypatch, failure: str):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     pid_path = Path(rows[0]["pid_path"])
-    if failure == "directory":
-        pid_path.mkdir()
-    elif failure == "invalid_utf8":
+    if failure == "invalid_utf8":
         pid_path.write_bytes(b"\xff")
-    elif failure == "dangling_symlink":
-        pid_path.symlink_to(tmp_path / "missing.pid")
     else:
         pid_path.write_text("123")
         original_read_text = Path.read_text
@@ -776,6 +784,208 @@ def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, mo
 
     assert killed == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("failure", ["directory", "symlink", "dangling_symlink", "hardlink", "fifo"])
+def test_hparam_stop_rejects_unsafe_local_pid_topology_before_read_or_kill(tmp_path: Path, monkeypatch, failure: str):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    pid_path = Path(rows[0]["pid_path"])
+    target = tmp_path / "outside.pid"
+    if failure == "directory":
+        pid_path.mkdir()
+    elif failure == "symlink":
+        target.write_text("123")
+        pid_path.symlink_to(target)
+    elif failure == "dangling_symlink":
+        pid_path.symlink_to(target)
+    elif failure == "hardlink":
+        target.write_text("123")
+        pid_path.hardlink_to(target)
+    else:
+        os.mkfifo(pid_path)
+    calls = []
+    monkeypatch.setattr(run_evidence, "read_pid", lambda *_args, **_kwargs: calls.append("read"))
+    monkeypatch.setattr(hparam_runtime.os, "kill", lambda *_args: calls.append("kill"))
+
+    with pytest.raises(ValueError, match="Managed output"):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unsafe PID topology")
+
+    assert calls == []
+
+
+def test_hparam_stop_rejects_unsafe_remote_pid_topology_before_read_or_signal(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
+    )
+    calls = []
+
+    def reject_remote(_root, _paths, *, remote=None):
+        if remote:
+            calls.append(("preflight", remote))
+            raise ValueError("Managed output paths must be independent regular files: /remote/run.pid")
+
+    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", reject_remote)
+    monkeypatch.setattr(run_evidence, "read_pid", lambda *_args, **_kwargs: calls.append("read"))
+    monkeypatch.setattr(hparam_runtime.subprocess, "run", lambda *_args, **_kwargs: calls.append("signal"))
+
+    with pytest.raises(ValueError, match="Managed output"):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unsafe remote PID topology")
+
+    assert calls == [("preflight", "unit-host")]
+
+
+@pytest.mark.parametrize(
+    "process_args",
+    [
+        "bash {script}",
+        "/bin/bash {script}",
+        "conda run --no-capture-output -n exp bash {script}",
+        "env CUDA_VISIBLE_DEVICES=0 conda run --no-capture-output -n exp bash {script}",
+    ],
+)
+def test_hparam_stop_accepts_current_launcher_process_shapes(tmp_path: Path, monkeypatch, process_args: str):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    Path(rows[0]["pid_path"]).write_text("123")
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda _row, command: (
+            subprocess.CompletedProcess(
+                [],
+                0,
+                process_args.format(script=rows[0]["script"]) + "\n",
+                "",
+            )
+            if command == "ps -ww -p 123 -o args="
+            else (_ for _ in ()).throw(AssertionError(command))
+        ),
+    )
+    killed = []
+    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="matched frozen script")
+
+    assert killed == [(123, hparam_runtime.signal.SIGTERM)]
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
+
+
+def test_hparam_stop_accepts_frozen_script_path_with_spaces(tmp_path: Path, monkeypatch):
+    root = tmp_path / "experiment with spaces"
+    root.mkdir()
+    rows = _write_runtime_rows(root, [{"run_id": "run-000", "status": "running"}])
+    Path(rows[0]["pid_path"]).write_text("123")
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda _row, command: (
+            subprocess.CompletedProcess([], 0, f"/bin/bash {rows[0]['script']}\n", "")
+            if command == "ps -ww -p 123 -o args="
+            else (_ for _ in ()).throw(AssertionError(command))
+        ),
+    )
+    killed = []
+    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    hparam_runtime.stop_hparam_run(root, "run-000", reason="matched spaced frozen script")
+
+    assert killed == [(123, hparam_runtime.signal.SIGTERM)]
+    assert _read_table(root / "run_manifest.tsv")[0]["status"] == "stopped"
+
+
+@pytest.mark.parametrize("process_args", ["python unrelated_job.py", "fakebash {script}"])
+def test_hparam_stop_rejects_stale_pid_for_unrelated_local_process_before_signal_or_commit(
+    tmp_path: Path, monkeypatch, process_args: str
+):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    Path(rows[0]["pid_path"]).write_text("123")
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda _row, command: (
+            subprocess.CompletedProcess([], 0, process_args.format(script=rows[0]["script"]) + "\n", "")
+            if command == "ps -ww -p 123 -o args="
+            else (_ for _ in ()).throw(AssertionError(command))
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(hparam_runtime.os, "kill", lambda *_args: calls.append("signal"))
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("commit"))
+
+    with pytest.raises(RuntimeError, match="does not match frozen script"):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="stale PID")
+
+    assert calls == []
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+
+
+def test_hparam_stop_matches_frozen_script_on_ssh_before_remote_signal(tmp_path: Path, monkeypatch):
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
+    )
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
+    )
+
+    def remote_evidence(_row, command):
+        if "os.lstat" in command:
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        if command == "ps -ww -p 123 -o args=":
+            return subprocess.CompletedProcess(
+                [],
+                0,
+                f"conda run --no-capture-output -n exp bash {rows[0]['script']}\n",
+                "",
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", remote_evidence)
+    signals = []
+    monkeypatch.setattr(
+        hparam_runtime.subprocess,
+        "run",
+        lambda command, **_kwargs: signals.append(command) or subprocess.CompletedProcess(command, 0),
+    )
+
+    hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="matched remote frozen script")
+
+    assert signals == [["ssh", "unit-host", "kill -TERM 123"]]
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
+
+
+def test_hparam_stop_rejects_stale_pid_for_unrelated_ssh_process_before_signal_or_commit(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
+    )
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
+    )
+
+    def remote_evidence(_row, command):
+        if "os.lstat" in command:
+            return subprocess.CompletedProcess([], 0, "123\n", "")
+        if command == "ps -ww -p 123 -o args=":
+            return subprocess.CompletedProcess([], 0, "python unrelated_job.py\n", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", remote_evidence)
+    calls = []
+    monkeypatch.setattr(hparam_runtime.subprocess, "run", lambda *_args, **_kwargs: calls.append("signal"))
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("commit"))
+
+    with pytest.raises(RuntimeError, match="does not match frozen script"):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="stale remote PID")
+
+    assert calls == []
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "finished", "launch_failed", "stopped", "superseded"])
@@ -838,7 +1048,7 @@ def test_hparam_stop_rejects_dangling_status_manifest_before_kill_or_write(tmp_p
 def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     killed = []
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
+    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
     monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
@@ -867,7 +1077,7 @@ def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path
     target.hardlink_to(tmp_path / "run_manifest.tsv")
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     killed = []
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
+    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
     monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     with pytest.raises(ValueError, match="Managed output"):
@@ -888,7 +1098,7 @@ def test_hparam_stop_mirrors_the_status_committed_by_the_canonical_owner(tmp_pat
         return real_merge(root, rows)
 
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_wandb_update)
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row: 123)
+    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
     monkeypatch.setattr(hparam_runtime.os, "kill", lambda _pid, _signal: None)
 
     hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
@@ -920,7 +1130,7 @@ def test_hparam_stop_ignores_execution_identity_drift_in_projection(
     rows[0][field] = changed
     manifests.write_rows(tmp_path / "launch_manifest.tsv", rows)
     calls = []
-    monkeypatch.setattr(run_evidence, "read_pid", lambda *_args: calls.append("pid") or 123)
+    monkeypatch.setattr(run_evidence, "read_pid", lambda *_args, **_kwargs: calls.append("pid") or 123)
     monkeypatch.setattr(hparam_runtime.os, "kill", lambda *_args: calls.append("kill"))
     monkeypatch.setattr(hparam_runtime.subprocess, "run", lambda *_args, **_kwargs: calls.append("ssh"))
 

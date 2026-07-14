@@ -163,6 +163,45 @@ def test_load_yaml_file_rejects_empty_mapping_and_recursive_alias(tmp_path: Path
         load_yaml_file(path)
 
 
+def test_recipe_rejects_unknown_runtime_field(tmp_path: Path):
+    payload = load_yaml_file("recipes/examples/tiny_fixture_finetune.yaml")
+    payload["runtime"]["lrr"] = payload["runtime"].pop("lr")
+    path = tmp_path / "finetune.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    _recipe, _cfg, report = evaluate_recipe(path)
+
+    assert report.exit_code == 1
+    assert "runtime.lrr" in {issue.field for issue in report.blocking_issues()}
+
+
+@pytest.mark.parametrize(
+    ("adaptive", "field"),
+    [
+        ({"enabled": False, "poll_second": 1}, "adaptive.poll_second"),
+        (
+            {"enabled": False, "replacement": {"grace_epoch": 1}},
+            "adaptive.replacement.grace_epoch",
+        ),
+        (
+            {"enabled": False, "suggest": {"stratgey": "best_neighborhood"}},
+            "adaptive.suggest.stratgey",
+        ),
+    ],
+)
+def test_recipe_rejects_unknown_adaptive_fields(tmp_path: Path, adaptive: dict, field: str):
+    payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
+    payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
+    payload["adaptive"] = adaptive
+    path = tmp_path / "hparam.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    _recipe, _cfg, report = evaluate_recipe(path)
+
+    assert report.exit_code == 1
+    assert field in {issue.field for issue in report.blocking_issues()}
+
+
 def test_recipe_cases_cover_checked_in_examples_and_templates():
     expected = [
         str(path)
