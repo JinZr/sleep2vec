@@ -1316,17 +1316,7 @@ def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path,
     assert [row["status"] for row in rows] == ["launched", "pending"]
 
 
-@pytest.mark.parametrize(
-    ("replacement_index", "expected_gpu", "expected_status"),
-    [(None, "", "pending"), (1, "1", "launched")],
-)
-def test_hparam_launch_handoff_uses_only_the_releasable_gpu_group(
-    tmp_path: Path,
-    monkeypatch,
-    replacement_index: int | None,
-    expected_gpu: str,
-    expected_status: str,
-):
+def test_hparam_launch_full_previous_plan_keeps_replacement_pending(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)
     first_payload = yaml.safe_load(first_recipe.read_text())
@@ -1353,100 +1343,8 @@ def test_hparam_launch_handoff_uses_only_the_releasable_gpu_group(
     first_rows = _read_table(first_plan / "launch_manifest.tsv")
     assert [row["gpus"] for row in first_rows] == ["0", "1"]
     started.clear()
-    retiring_keys = (
-        {(first_rows[replacement_index]["step_id"], first_rows[replacement_index]["run_id"])}
-        if replacement_index is not None
-        else set()
-    )
 
-    hparam_runtime.launch_hparam_runs(
-        second_plan,
-        dry_run=False,
-        retiring_run_keys=retiring_keys,
-    )
-
-    row = _read_table(second_plan / "launch_manifest.tsv")[0]
-    assert row["gpus"] == expected_gpu
-    assert row["status"] == expected_status
-    assert len(started) == (1 if expected_status == "launched" else 0)
-    if started:
-        assert "CUDA_VISIBLE_DEVICES=1" in started[0]
-
-
-def test_hparam_launch_handoff_requires_an_exact_gpu_group_match(tmp_path: Path, monkeypatch):
-    first_recipe = _hparam_recipe(
-        tmp_path,
-        execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1},
-    )
-    first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
-    second_payload = yaml.safe_load(first_recipe.read_text())
-    second_payload["execution"]["gpus_per_run"] = 2
-    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6]
-    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
-    second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
-    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
-    first_row = _read_table(first_plan / "launch_manifest.tsv")[0]
-    started.clear()
-
-    hparam_runtime.launch_hparam_runs(
-        second_plan,
-        dry_run=False,
-        retiring_run_keys={(first_row["step_id"], first_row["run_id"])},
-    )
-
-    row = _read_table(second_plan / "launch_manifest.tsv")[0]
-    assert row["status"] == "pending"
-    assert row["gpus"] == ""
-    assert started == []
-
-
-def test_hparam_launch_handoff_rejects_a_group_that_remains_busy(tmp_path: Path, monkeypatch):
-    first_recipe = _hparam_recipe(
-        tmp_path,
-        execution={
-            "workdir": str(tmp_path),
-            "gpu_pool": [0, 1],
-            "gpus_per_run": 1,
-            "max_concurrent": 3,
-        },
-    )
-    first_payload = yaml.safe_load(first_recipe.read_text())
-    first_payload["search"]["max_runs"] = 3
-    first_payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6]
-    first_recipe.write_text(yaml.safe_dump(first_payload, sort_keys=False))
-    first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
-    second_payload = yaml.safe_load(first_recipe.read_text())
-    second_payload["execution"].pop("max_concurrent")
-    second_payload["search"]["max_runs"] = 1
-    second_payload["search"]["parameters"]["runtime.lr"] = [4e-6]
-    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
-    second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
-    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
-    first_rows = _read_table(first_plan / "launch_manifest.tsv")
-    assert [row["gpus"] for row in first_rows] == ["0", "1", "0"]
-    started.clear()
-
-    hparam_runtime.launch_hparam_runs(
-        second_plan,
-        dry_run=False,
-        retiring_run_keys={(first_rows[0]["step_id"], first_rows[0]["run_id"])},
-    )
+    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False)
 
     row = _read_table(second_plan / "launch_manifest.tsv")[0]
     assert row["status"] == "pending"
