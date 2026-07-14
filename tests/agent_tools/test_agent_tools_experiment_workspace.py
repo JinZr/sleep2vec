@@ -1149,6 +1149,18 @@ def test_canonical_local_experiment_root_rejects_root_symlink(tmp_path: Path, da
         canonical_local_experiment_root(alias, tmp_path)
 
 
+@pytest.mark.parametrize("dangling", [False, True])
+def test_canonical_local_experiment_root_rejects_root_symlink_after_dot_normalization(tmp_path: Path, dangling: bool):
+    target = tmp_path / "target"
+    if not dangling:
+        target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        canonical_local_experiment_root(tmp_path / "missing" / ".." / "alias", tmp_path)
+
+
 def test_experiment_init_rejects_local_symlink_root_before_writing(tmp_path: Path):
     target = tmp_path / "target"
     target.mkdir()

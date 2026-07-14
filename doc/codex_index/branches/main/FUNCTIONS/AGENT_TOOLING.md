@@ -311,7 +311,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/experiment_workspace.py`
 - Signature: `canonical_local_experiment_root(raw: str | Path, base_dir: str | Path) -> Path`
-- Purpose and contract: produce the sole durable local experiment-root representation by expanding the user home, applying the caller-owned base directory to relative paths, rejecting a direct or dangling symlink at the resulting root, and resolving the remaining absolute path. Symlinked parent components may resolve normally. Recipe roots use the repository root as their base; experiment CLI roots use the caller's current working directory. SSH paths do not call this function and remain exact remote strings.
+- Purpose and contract: produce the sole durable local experiment-root representation by expanding the user home, applying the caller-owned base directory to relative paths, lexically collapsing `.` and `..`, rejecting a direct or dangling symlink at the resulting root, and resolving the remaining absolute path. Symlinked parent components may resolve normally. Recipe roots use the repository root as their base; experiment CLI roots use the caller's current working directory. SSH paths do not call this function and remain exact remote strings.
 - Side effects: none beyond filesystem path resolution.
 - Reuse guidance: use at public local plan, experiment, and adaptive entry boundaries before persisting or comparing repository-owned management locators; do not add producer-specific normalization or apply it to user semantic input paths.
 
@@ -552,7 +552,7 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/adaptive_hparam.py`
 - Signature: `adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path`
-- Purpose and contract: perform one adaptive iteration: preflight deterministic outputs, monitor/digest, and suggest in preview mode; with `execute=True`, require the complete prospective replacement round to fit `max_rounds` and `max_runs_total`, plan and launch it, confirm at least one replacement run reached `launched`, and only then stop or supersede current runs. Failed planning, registration, launch, or launch confirmation leaves current runs unchanged.
+- Purpose and contract: perform one adaptive iteration: preflight deterministic outputs, monitor/digest, and suggest in preview mode; with `execute=True`, require the complete prospective replacement round to fit `max_rounds` and `max_runs_total`, plan and launch it, then commit the round with the existing `launch_round` event only after the launcher returns and at least one replacement run has started. Current runs are stopped or superseded only after that commit. Failed planning, registration, launch, or zero-start confirmation leaves the prior round current; partial output is not repaired or treated as committed.
 - Important inputs/outputs: workflow root and execute flag in; suggestion path out.
 - Side effects: writes digest/suggestion/events; only execute mode may stop or supersede runs, write a next-round plan, and launch runs.
 - Key callers/callees: called by `agent_tools hparam-adaptive-step` and adaptive loop.

@@ -812,7 +812,7 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
     old = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert old["status"] == "pending"
     assert calls == []
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "launch_round" not in [event["event_type"] for event in events]
 
@@ -854,7 +854,7 @@ def test_adaptive_step_keeps_current_runs_when_replacement_starts_nothing(
     old = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert old["status"] == "pending"
     assert calls == []
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
     assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 2
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "launch_round" not in [event["event_type"] for event in events]
@@ -894,6 +894,7 @@ def test_adaptive_step_execute_stops_bad_running_run_through_recorded_manifest(t
     )
     stopped = []
     call_order = []
+    real_append_event = adaptive_hparam._append_event
 
     def fake_launch(run_dir, *, dry_run=True):
         call_order.append("launch")
@@ -911,13 +912,20 @@ def test_adaptive_step_execute_stops_bad_running_run_through_recorded_manifest(t
         stopped.append((Path(run_dir), run_id))
         return Path(run_dir) / "run_status.tsv"
 
+    def record_launch_round(root, event_type, payload):
+        if event_type == "launch_round":
+            call_order.append("commit")
+        real_append_event(root, event_type, payload)
+
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_hparam, "_append_event", record_launch_round)
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     assert stopped == [(round_dir, "run-000")]
-    assert call_order == ["launch", "stop"]
+    assert call_order == ["launch", "commit", "stop"]
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
     assert "stop_bad_running_run" in (tmp_path / "events.jsonl").read_text()
 
 

@@ -202,14 +202,14 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
-    next_dir = _round_dir(root, current_round + 1)
+    next_round = current_round + 1
+    next_dir = _round_dir(root, next_round)
     targets = [workspace / "events.jsonl"]
     if execute:
         targets.extend([root / "adaptive" / "run_registry.tsv", next_dir / "round_recipe.yaml"])
     exp_io.validate_managed_output_paths(workspace, targets)
     digest = digest_hparam_run(round_dir)
     suggestion = suggest_next_round(root)
-    next_round = current_round + 1
     next_recipe, _, preflight = preflight_plan(recipe_path=suggestion, output_dir=next_dir)
     if preflight.exit_code != 0:
         raise RuntimeError(f"Round {next_round:03d} plan failed preflight with exit code {preflight.exit_code}.")
@@ -228,16 +228,16 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
         launch_hparam_runs(next_dir, dry_run=False)
         next_plan_keys = {managed_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
         launch_rows = [row for row in read_run_manifest(workspace) if managed_run_key(row) in next_plan_keys]
-        started = any(row.get("status") == "launched" for row in launch_rows)
+        started = any(row.get("status") in {"launched", "running"} for row in launch_rows)
         if not started:
             statuses = ", ".join(sorted({str(row.get("status") or "") for row in launch_rows})) or "none"
             raise RuntimeError(
                 f"Round {next_round:03d} started no runs (statuses: {statuses}); current runs were not retired. "
                 f"The registered replacement round remains at {next_dir}."
             )
+        _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
         _stop_bad_running_runs(root, round_dir, recipe)
         _supersede_pending_runs(root, round_dir)
-        _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
     elif budget_exhausted:
         _append_event(
             root,
@@ -424,10 +424,26 @@ def _resolve_workflow_round(path: Path) -> tuple[Path, Path, int]:
 
 
 def _latest_round_index(root: Path) -> int:
-    rounds = sorted((root / "adaptive" / "rounds").glob("round_*"))
-    if not rounds:
+    registry_path = root / "adaptive" / "run_registry.tsv"
+    if not registry_path.exists():
         return 0
-    return int(rounds[-1].name.split("_")[-1])
+    registry = read_rows(registry_path, require_managed_identity=True)
+    registered_rounds = {int(row["round"]) for row in registry}
+    initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
+    recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    events_path = workspace / "events.jsonl" if workspace is not None else None
+    if events_path is None or not events_path.exists():
+        return 0
+    committed = []
+    for line in events_path.read_text().splitlines():
+        event = json.loads(line)
+        if event.get("event_type") != "launch_round":
+            continue
+        round_index = int(event["round"])
+        if round_index in registered_rounds and event.get("round_dir") == str(_round_dir(root, round_index)):
+            committed.append(round_index)
+    return max(committed, default=0)
 
 
 def _round_dir(root: Path, index: int) -> Path:

@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -164,6 +165,7 @@ def canonical_local_experiment_root(raw: str | Path, base_dir: str | Path) -> Pa
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = Path(base_dir).expanduser() / path
+    path = Path(os.path.normpath(path))
     if path.is_symlink():
         raise ValueError(f"Local experiment root must not be a symlink: {path}")
     return path.resolve()
