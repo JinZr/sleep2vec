@@ -295,6 +295,13 @@ def write_hparam_plan(
             yaml.safe_dump(run_config, file_obj)
         version = identity["version"]
         runtime = {**runtime_defaults, **runtime_overrides}
+        if execution.get("gpu_pool") or "gpus_per_run" in execution:
+            gpus_per_run = (
+                int(execution["gpus_per_run"])
+                if "gpus_per_run" in execution
+                else len(rendering.list_value(runtime_defaults.get("devices"))) or 1
+            )
+            runtime["devices"] = list(range(gpus_per_run))
         command_parts = [
             "python",
             "-m",

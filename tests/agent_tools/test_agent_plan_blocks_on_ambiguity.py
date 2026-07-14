@@ -241,6 +241,23 @@ def test_plan_with_unresolved_experiment_metadata_does_not_write_output(tmp_path
     assert not output_dir.exists()
 
 
+@pytest.mark.parametrize("section", ["experiment", "step"])
+def test_plan_rejects_non_string_workspace_ids_before_creating_workspace(tmp_path: Path, section: str):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = tmp_path / "workspace"
+    payload["experiment"]["root"] = str(workspace)
+    payload[section]["id"] = 123
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plans" / "first"))
+
+    assert result.returncode == 1
+    assert f"{section}.id must be a string" in result.stdout
+    assert not workspace.exists()
+
+
 def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path: Path):
     source = tmp_path / "source"
     recipe = write_finetune_recipe(source, include_label=False)

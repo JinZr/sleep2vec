@@ -86,14 +86,23 @@ def experiment_metadata_issues(recipe: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
     experiment_id = experiment.get("id")
-    if experiment_id not in (None, "", "ASK_USER") and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", str(experiment_id)):
-        issues.append(
-            {
-                "status": "FAIL",
-                "field": "experiment.id",
-                "message": "experiment.id must use lowercase letters, digits, hyphens, and underscores.",
-            }
-        )
+    if experiment_id not in (None, "", "ASK_USER"):
+        if not isinstance(experiment_id, str):
+            issues.append(
+                {
+                    "status": "FAIL",
+                    "field": "experiment.id",
+                    "message": "experiment.id must be a string.",
+                }
+            )
+        elif not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", experiment_id):
+            issues.append(
+                {
+                    "status": "FAIL",
+                    "field": "experiment.id",
+                    "message": "experiment.id must use lowercase letters, digits, hyphens, and underscores.",
+                }
+            )
     if not isinstance(step, dict):
         issues.append(
             {
@@ -115,14 +124,23 @@ def experiment_metadata_issues(recipe: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
     step_id = step.get("id")
-    if step_id not in (None, "", "ASK_USER") and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", str(step_id)):
-        issues.append(
-            {
-                "status": "FAIL",
-                "field": "step.id",
-                "message": "step.id must use lowercase letters, digits, hyphens, and underscores.",
-            }
-        )
+    if step_id not in (None, "", "ASK_USER"):
+        if not isinstance(step_id, str):
+            issues.append(
+                {
+                    "status": "FAIL",
+                    "field": "step.id",
+                    "message": "step.id must be a string.",
+                }
+            )
+        elif not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", step_id):
+            issues.append(
+                {
+                    "status": "FAIL",
+                    "field": "step.id",
+                    "message": "step.id must use lowercase letters, digits, hyphens, and underscores.",
+                }
+            )
     phase = step.get("phase")
     if phase not in (None, "", "ASK_USER") and phase not in PHASES:
         issues.append(

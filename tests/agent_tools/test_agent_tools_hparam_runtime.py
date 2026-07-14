@@ -1177,6 +1177,35 @@ def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_
     assert started == [rows[0]["command"]]
 
 
+@pytest.mark.parametrize(
+    ("execution", "runtime_devices", "expected_devices"),
+    [
+        ({"gpu_pool": [6, 7], "gpus_per_run": 2}, [0], "0 1"),
+        ({"gpu_pool": [6, 7], "gpus_per_run": 1}, [0, 1], "0"),
+        ({"gpus_per_run": 1}, [6, 7], "0"),
+    ],
+)
+def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
+    tmp_path: Path,
+    execution: dict,
+    runtime_devices,
+    expected_devices: str,
+):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), **execution})
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["runtime"]["devices"] = runtime_devices
+    write_yaml(base_recipe, base_payload)
+    plan_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    command = json.loads((plan_dir / "plan.json").read_text())["runs"][0]["command"]
+    assert f"--devices {expected_devices} --precision" in command
+
+
 def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
         tmp_path,
@@ -1591,6 +1620,7 @@ def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatc
 
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert rows[0]["gpus"] == "2"
+    assert "--devices 2 --precision" in Path(rows[0]["script"]).read_text()
     assert "(nohup env " in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=2" in rows[0]["command"]
     assert started == [rows[0]["command"]]

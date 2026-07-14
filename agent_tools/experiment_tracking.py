@@ -490,6 +490,7 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         manifest_path = artifacts.find_run_manifest(run)
         manifest = read_json(manifest_path) if manifest_path else {}
         best_path = artifacts.fixed_checkpoint_path(manifest, checkpoint_dir)
+        has_explicit_epoch = manifest.get("epoch") not in (None, "")
         for path in sorted(checkpoint_dir.glob("*.ckpt")):
             if not path.is_file() or path.is_symlink():
                 continue
@@ -505,7 +506,9 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "mtime": str(int(path.stat().st_mtime)),
                     "metric": "",
                     "value": "",
-                    "is_best_by_val": str(str(path) == best_path or path.name.startswith("best-")).lower(),
+                    "is_best_by_val": str(
+                        str(path) == best_path or (not has_explicit_epoch and path.name.startswith("best-"))
+                    ).lower(),
                     "is_last": str(path.name == "last.ckpt").lower(),
                 }
             )
@@ -614,52 +617,17 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
         else:
             manifest = {}
         same_run = [row for row in checkpoint_rows if managed_run_key(row) == managed_run_key(run)]
-        by_name = {Path(str(row["checkpoint_path"])).name: row for row in same_run}
-        raw_best = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
-        best_path = ""
-        if raw_best:
-            best_name = Path(str(raw_best)).name
-            if best_name.startswith("best-epoch="):
-                fixed_name = best_name.removeprefix("best-")
-                matched = by_name.get(fixed_name)
-                if matched is None:
-                    epoch = artifacts.epoch_number_from_checkpoint_name(fixed_name)
-                    matched = next(
-                        (
-                            row
-                            for row in same_run
-                            if Path(str(row["checkpoint_path"])).name.startswith("epoch=")
-                            and artifacts.epoch_number(row.get("epoch")) == epoch
-                        ),
-                        None,
-                    )
-                best_path = str(matched["checkpoint_path"]) if matched is not None else ""
-            elif best_name.startswith("epoch="):
-                matched = by_name.get(best_name)
-                best_path = str(matched["checkpoint_path"]) if matched is not None else ""
-            else:
-                epoch = artifacts.epoch_number(manifest.get("epoch"))
-                matched = next(
-                    (
-                        row
-                        for row in same_run
-                        if Path(str(row["checkpoint_path"])).name.startswith("epoch=")
-                        and artifacts.epoch_number(row.get("epoch")) == epoch
-                    ),
-                    None,
-                )
-                best_path = str(matched["checkpoint_path"]) if matched is not None else ""
-        else:
-            # Match local fixed_checkpoint_path(): without a manifest declaration, use the last epoch checkpoint.
-            epochs = sorted(
-                (row for row in same_run if Path(str(row["checkpoint_path"])).name.startswith("epoch=")),
-                key=lambda row: str(row["checkpoint_path"]),
-            )
-            if epochs:
-                best_path = str(epochs[-1]["checkpoint_path"])
+        best_path = artifacts.fixed_checkpoint_path_from_names(
+            manifest,
+            run["checkpoint_dir"],
+            [Path(str(row["checkpoint_path"])).name for row in same_run],
+        )
+        has_explicit_epoch = manifest.get("epoch") not in (None, "")
         for row in same_run:
             name = Path(str(row["checkpoint_path"])).name
-            row["is_best_by_val"] = str(row["checkpoint_path"] == best_path or name.startswith("best-")).lower()
+            row["is_best_by_val"] = str(
+                row["checkpoint_path"] == best_path or (not has_explicit_epoch and name.startswith("best-"))
+            ).lower()
     return checkpoint_rows
 
 

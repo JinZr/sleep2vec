@@ -50,6 +50,22 @@ def test_experiment_init_creates_manifest(tmp_path: Path):
     assert (tmp_path / "run_manifest.tsv").read_text() == "step_id\trun_id\n"
 
 
+def test_experiment_init_rejects_non_string_id_before_writing(tmp_path: Path):
+    root = tmp_path / "workspace"
+    spec = tmp_path / "numeric_id.yaml"
+    spec.write_text(
+        "id: 123\n"
+        "title: Unit experiment\n"
+        "objective: Exercise experiment workspace contracts.\n"
+        "baseline: {type: none}\n"
+    )
+
+    with pytest.raises(ValueError, match="experiment.id must be a string"):
+        experiments.init_experiment(root, spec)
+
+    assert not root.exists()
+
+
 def test_experiment_init_and_mutation_share_canonical_relative_root(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     root = (tmp_path / "workspace").resolve()

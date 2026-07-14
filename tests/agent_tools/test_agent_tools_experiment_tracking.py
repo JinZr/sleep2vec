@@ -1086,6 +1086,33 @@ def test_experiment_checkpoint_scan_ignores_checkpoint_named_directories(tmp_pat
     assert experiment_tracking._local_checkpoint_rows(runs) == []
 
 
+def test_local_checkpoint_scan_prefers_manifest_epoch_over_best_filename(tmp_path: Path):
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    mismatched_best = checkpoint_dir / "best-epoch=01.ckpt"
+    matching_epoch = checkpoint_dir / "epoch=02.ckpt"
+    mismatched_best.write_text("checkpoint")
+    matching_epoch.write_text("checkpoint")
+    (tmp_path / "run_manifest.json").write_text(json.dumps({"best_model_path": str(mismatched_best), "epoch": 2}))
+    runs = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "managed-v1",
+            "runtime_dir": str(tmp_path),
+            "checkpoint_dir": str(checkpoint_dir),
+        }
+    ]
+
+    rows = experiment_tracking._local_checkpoint_rows(runs)
+
+    assert {row["checkpoint_path"]: row["is_best_by_val"] for row in rows} == {
+        str(mismatched_best): "false",
+        str(matching_epoch): "true",
+    }
+
+
 def test_experiment_monitor_does_not_advance_planned_run_from_local_mirror(tmp_path: Path):
     _initialize_workspace(tmp_path)
     (tmp_path / "run_manifest.tsv").write_text(
@@ -1553,7 +1580,8 @@ def test_experiment_wandb_sync_writes_blocked_report(tmp_path: Path, monkeypatch
     assert (tmp_path / "reports" / "wandb_blocked.md").exists()
 
 
-def test_experiment_remote_checkpoint_index_uses_runtime_manifest_best_path(monkeypatch):
+@pytest.mark.parametrize(("manifest_epoch", "expected_best"), [(None, "one"), (2, "two"), (3, None)])
+def test_experiment_remote_checkpoint_index_respects_manifest_epoch(monkeypatch, manifest_epoch, expected_best):
     root = Path("/remote/workspace")
     checkpoint_one = "/remote/runtime/run_a/checkpoints/epoch=01-step=10.ckpt"
     checkpoint_two = "/remote/runtime/run_a/checkpoints/epoch=02-step=20.ckpt"
@@ -1581,7 +1609,10 @@ def test_experiment_remote_checkpoint_index_uses_runtime_manifest_best_path(monk
         if name == "run_manifest.tsv":
             return run_manifest
         if name == "run_manifest.json":
-            return json.dumps({"best_model_path": checkpoint_one, "epoch": 1})
+            manifest = {"best_model_path": checkpoint_one}
+            if manifest_epoch is not None:
+                manifest["epoch"] = manifest_epoch
+            return json.dumps(manifest)
         return ""
 
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
@@ -1618,8 +1649,8 @@ def test_experiment_remote_checkpoint_index_uses_runtime_manifest_best_path(monk
 
     assert result == root / "checkpoint_manifest.tsv"
     assert {row["checkpoint_path"]: row["is_best_by_val"] for row in writes["checkpoint_manifest.tsv"]} == {
-        checkpoint_one: "true",
-        checkpoint_two: "false",
+        checkpoint_one: str(expected_best == "one").lower(),
+        checkpoint_two: str(expected_best == "two").lower(),
     }
 
 
