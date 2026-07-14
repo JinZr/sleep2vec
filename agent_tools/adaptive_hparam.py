@@ -225,7 +225,8 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
         if report.exit_code != 0:
             raise RuntimeError(f"Round {next_round:03d} plan failed with exit code {report.exit_code}.")
         _append_registry_rows(root, next_round, next_dir)
-        launch_hparam_runs(next_dir, dry_run=False)
+        retiring_keys = _bad_running_run_keys(root, round_dir, recipe)
+        launch_hparam_runs(next_dir, dry_run=False, retiring_run_keys=retiring_keys)
         next_plan_keys = {managed_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
         launch_rows = [row for row in read_run_manifest(workspace) if managed_run_key(row) in next_plan_keys]
         started = any(row.get("status") in {"launched", "running"} for row in launch_rows)
@@ -236,7 +237,7 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                 f"The registered replacement round remains at {next_dir}."
             )
         _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
-        _stop_bad_running_runs(root, round_dir, recipe)
+        _stop_bad_running_runs(root, round_dir, recipe, run_keys=retiring_keys)
         _supersede_pending_runs(root, round_dir)
     elif budget_exhausted:
         _append_event(
@@ -633,11 +634,11 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> None:
         )
 
 
-def _stop_bad_running_runs(root: Path, round_dir: Path, recipe: dict[str, Any]) -> None:
+def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -> set[tuple[str, str]]:
     adaptive = _adaptive(recipe)
     replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
     if not replacement.get("enabled", True) or not replacement.get("allow_running_stop", False):
-        return
+        return set()
     objective = _objective(root, recipe)
     incumbent = _latest_incumbent_score(root)
     margin = float(replacement.get("kill_margin") or 0.0)
@@ -647,8 +648,10 @@ def _stop_bad_running_runs(root: Path, round_dir: Path, recipe: dict[str, Any]) 
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     plan_keys = {managed_run_key(run) for run in plan["runs"]}
+    bad_keys = set()
     for row in read_run_manifest(workspace):
-        if managed_run_key(row) not in plan_keys:
+        key = managed_run_key(row)
+        if key not in plan_keys:
             continue
         if row.get("status") != "running":
             continue
@@ -671,8 +674,30 @@ def _stop_bad_running_runs(root: Path, round_dir: Path, recipe: dict[str, Any]) 
             except (TypeError, ValueError):
                 should_stop = False
         if should_stop:
-            stop_hparam_run(round_dir, str(row["run_id"]), reason="adaptive replacement")
-            _append_event(root, "stop_bad_running_run", {"round_dir": str(round_dir), "run_id": row["run_id"]})
+            bad_keys.add(key)
+    return bad_keys
+
+
+def _stop_bad_running_runs(
+    root: Path,
+    round_dir: Path,
+    recipe: dict[str, Any],
+    *,
+    run_keys: set[tuple[str, str]] | None = None,
+) -> None:
+    keys = _bad_running_run_keys(root, round_dir, recipe) if run_keys is None else run_keys
+    if not keys:
+        return
+    plan = artifacts.read_hparam_plan(round_dir)
+    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(plan_recipe)
+    if workspace is None:
+        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    for row in read_run_manifest(workspace):
+        if managed_run_key(row) not in keys or row.get("status") != "running":
+            continue
+        stop_hparam_run(round_dir, str(row["run_id"]), reason="adaptive replacement")
+        _append_event(root, "stop_bad_running_run", {"round_dir": str(round_dir), "run_id": row["run_id"]})
 
 
 def _grace_satisfied(row: dict[str, Any], manifest: dict[str, Any], replacement: dict[str, Any]) -> bool:

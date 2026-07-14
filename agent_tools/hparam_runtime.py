@@ -29,7 +29,12 @@ from .models import REPO_ROOT
 LAUNCH_TIMEOUT_SECONDS = 60
 
 
-def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
+def launch_hparam_runs(
+    plan_dir: str | Path,
+    *,
+    dry_run: bool = True,
+    retiring_run_keys: set[tuple[str, str]] | None = None,
+) -> Path:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -43,12 +48,23 @@ def launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path:
     with lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            return _launch_hparam_runs(run_dir, dry_run=dry_run, manifest_lock_held=True)
+            return _launch_hparam_runs(
+                run_dir,
+                dry_run=dry_run,
+                manifest_lock_held=True,
+                retiring_run_keys=retiring_run_keys,
+            )
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_lock_held: bool) -> Path:
+def _launch_hparam_runs(
+    plan_dir: str | Path,
+    *,
+    dry_run: bool = True,
+    manifest_lock_held: bool,
+    retiring_run_keys: set[tuple[str, str]] | None = None,
+) -> Path:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -57,6 +73,7 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    retiring_keys = set(retiring_run_keys or ())
     exp_io.validate_managed_output_paths(
         workspace,
         [
@@ -102,6 +119,7 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
     gpu_group_values = [{str(item) for item in group} for group in gpu_groups]
     current_gpu_pool = set().union(*gpu_group_values) if gpu_group_values else set()
     other_active_gpu_sets = []
+    retiring_group_indexes = []
     for key, row in workspace_by_key.items():
         if not gpu_groups or key in expected_keys or row.get("status") not in active_statuses:
             continue
@@ -113,14 +131,25 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
         if not assigned.intersection(current_gpu_pool):
             continue
         other_active_gpu_sets.append(assigned)
+        if key in retiring_keys:
+            matched_groups = [index for index, group in enumerate(gpu_group_values) if assigned == group]
+            if len(matched_groups) == 1:
+                retiring_group_indexes.append(matched_groups[0])
     active = sum(row.get("status") in active_statuses for row in refreshed.values()) + len(other_active_gpu_sets)
     slots = max(max_concurrent - active, 0)
     gpu_group_by_value = {",".join(str(item) for item in group): index for index, group in enumerate(gpu_groups)}
     active_gpu_loads = [0] * len(gpu_groups)
+    retiring_gpu_loads = [0] * len(gpu_groups)
     for assigned in other_active_gpu_sets:
         for group_index, group in enumerate(gpu_group_values):
             if assigned.intersection(group):
                 active_gpu_loads[group_index] += 1
+    for group_index in retiring_group_indexes:
+        retiring_gpu_loads[group_index] += 1
+    handoff_groups = {group_index for group_index, load in enumerate(retiring_gpu_loads) if load > 0}
+    handoff = not dry_run and bool(handoff_groups) and slots == 0
+    if handoff:
+        slots = 1
     assigned_group_by_key = {}
     for key, previous in refreshed.items():
         assigned = ",".join(part.strip() for part in str(previous.get("gpus") or "").split(",") if part.strip())
@@ -251,14 +280,22 @@ def _launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, manifest_
                     group_indexes = [None]
                 for group_index in group_indexes:
                     load = active_gpu_loads[group_index] if group_index is not None else 0
-                    if group_index is not None and not allow_gpu_oversubscription and load >= 1:
+                    if handoff and group_index not in handoff_groups:
                         continue
-                    eligible.append((load, index, row, group_index))
+                    post_retirement_load = (
+                        load - retiring_gpu_loads[group_index] if handoff and group_index is not None else load
+                    )
+                    if group_index is not None and not allow_gpu_oversubscription:
+                        if handoff and post_retirement_load >= 1:
+                            continue
+                        if not handoff and load >= 1:
+                            continue
+                    eligible.append((post_retirement_load, load, index, row, group_index))
             if not eligible:
                 break
-            _load, index, row, group_index = min(
+            _post_retirement_load, _load, index, row, group_index = min(
                 eligible,
-                key=lambda item: (item[0], item[1], item[3] if item[3] is not None else -1),
+                key=lambda item: (item[0], item[1], item[2], item[4] if item[4] is not None else -1),
             )
             launchable = [
                 (candidate_index, candidate) for candidate_index, candidate in launchable if candidate_index != index
