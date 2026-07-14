@@ -316,6 +316,7 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     row = list(csv.DictReader((plan_dir / "launch_manifest.tsv").open(), delimiter="\t"))[0]
     pid_path = Path(row["pid_path"])
     pid_path.write_text("123")
+    monkeypatch.setattr(hparam_runtime.evidence, "read_pid", lambda *_args, **_kwargs: 123)
     monkeypatch.setattr(hparam_runtime.os, "kill", lambda _pid, _signal: None)
 
     with pytest.raises(ValueError, match="reason"):

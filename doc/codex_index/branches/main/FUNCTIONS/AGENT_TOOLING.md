@@ -16,9 +16,9 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 ## `agent_tools.decisions.evaluate_consultation_gates`
 
 - File: `agent_tools/decisions.py`
-- Signature: `evaluate_consultation_gates(task: str | None, recipe: dict | None, config_summary: dict | None, cli_args: dict | None, policy: dict, approved_defaults: dict) -> DecisionReport`
-- Purpose and contract: enforce stop-and-consult policy for high-impact recipe and runtime decisions, including variantless `sleep2stat` gates, survival sidecar gates, and final-test unlock/checkpoint gates.
-- Important inputs/outputs: task, recipe, config summary, CLI/user decisions, policy, and defaults in; `DecisionReport` with resolved decisions, issues, status, and exit-code semantics out.
+- Signature: `evaluate_consultation_gates(task: str | None, recipe: dict | None, config_summary: dict | None, cli_args: dict | None, policy: dict, *, require_experiment: bool = True) -> DecisionReport`
+- Purpose and contract: enforce stop-and-consult policy for high-impact recipe and runtime decisions, including variantless `sleep2stat` gates, survival sidecar gates, and final-test unlock/checkpoint gates. Supported `runtime` fields are closed in this facade, while `decision_hparam` closes hparam `adaptive`, `adaptive.replacement`, and `adaptive.suggest`; unknown fields fail consultation before workspace mutation instead of being silently ignored by command rendering.
+- Important inputs/outputs: task, recipe, config summary, CLI/user decisions, policy, and the experiment-requirement switch in; `DecisionReport` with resolved decisions, issues, status, and exit-code semantics out.
 - Side effects: none.
 - Key callers/callees: called by `agent_tools.plans.evaluate_recipe` and `build_context`; delegates path checks to `decision_paths`, task rules to `decision_rules`, and tuning rules to `decision_hparam`, while keeping source resolution and base-finetune recursion in the facade.
 - Reuse guidance: use this before generating runnable preset, finetune, inference, evaluation, hparam, or sleep2stat commands.
@@ -208,6 +208,16 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 - Key callers/callees: used by hparam runtime and experiment tracking; delegates checkpoint interpretation to `run_artifacts`.
 - Reuse guidance: use for observed run state instead of applying status updates outside the shared reducer.
 
+## `agent_tools.run_evidence.read_pid`
+
+- File: `agent_tools/run_evidence.py`
+- Signature: `read_pid(path: Any, row: dict[str, Any] | None = None, *, expected_script: str | Path | None = None) -> int | None`
+- Purpose and contract: read local or SSH PID evidence only from an independent regular file. Missing files return `None`; symlinks, hard links, directories, invalid content, and uncertain remote reads fail closed. When `expected_script` is supplied by stop, the live process command must end with a boundary-safe `bash <frozen-absolute-script>` invocation; exact paths containing spaces remain valid.
+- Side effects: reads one local or remote PID file and, when identity is required, runs one bounded local or remote `ps` probe.
+- Key callers/callees: monitoring uses PID content and liveness evidence; `hparam_runtime.stop_hparam_run` additionally supplies the canonical frozen script before signaling.
+- Reuse guidance: use this owner for PID evidence; do not read PID files or infer process ownership in command handlers.
+- Duplication-risk notes: PID topology still passes through `experiment_io.validate_managed_output_paths` at mutation boundaries; do not replace either check with command-line substring killing.
+
 ## `agent_tools.hparam.launch_hparam_runs`
 
 - File: `agent_tools/hparam.py`
@@ -241,11 +251,11 @@ This catalog covers the reusable functions behind `python -m agent_tools`. The t
 
 - File: `agent_tools/hparam.py`
 - Signature: `stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path`
-- Purpose and contract: preflight every canonical/mirror/report/event output target, validate launch execution evidence against the immutable canonical execution identity, ignore launch values when choosing target/host/PID, fail before PID access or writes when canonical is terminal, otherwise terminate the canonical PID and reduce one `stopped` observation with its non-empty reason.
+- Purpose and contract: preflight every canonical/mirror/report/event output target plus the canonical PID target, validate launch execution evidence against the immutable canonical execution identity, ignore launch values when choosing target/host/PID, and fail before PID access or writes when canonical is terminal. The PID target must be an independent regular file, and the live local or SSH process command must end with the boundary-safe frozen `bash <absolute-run-script>` invocation before the canonical PID is signaled and one `stopped` observation with its non-empty reason is reduced.
 - Important inputs/outputs: run directory, run id, and reason in; updated `run_status.tsv` path out.
 - Side effects: after a successful signal, writes the same reduced final row to canonical status, the local status mirror, and the launch mirror, then appends one experiment event.
 - Key callers/callees: public facade for `hparam_runtime.stop_hparam_run`, called by `agent_tools hparam-stop` and adaptive replacement logic.
-- Reuse guidance: use this for run termination so PID provenance is checked first.
+- Reuse guidance: use this for run termination so PID topology, provenance, and process identity are checked first.
 - Duplication-risk notes: do not kill arbitrary command-line matches outside the manifest.
 
 ## `agent_tools.hparam.select_hparam_candidates`

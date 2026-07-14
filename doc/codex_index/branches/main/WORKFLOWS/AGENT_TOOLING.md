@@ -4,6 +4,8 @@
 
 Generate agent context bundles, validate task recipes, enforce stop-and-consult policy, and create safe command plans around the existing canonical runtime entrypoints.
 
+Recipe consultation treats supported `runtime` fields and hparam `adaptive`, `adaptive.replacement`, and `adaptive.suggest` fields as closed sets, so unknown keys fail before workspace mutation instead of being ignored while renderers apply defaults. `hparam-stop` also preflights the canonical PID target locally or on the SSH host, rejects non-independent regular files, and requires the live process command to end with the boundary-safe frozen `bash <absolute-run-script>` invocation before signaling or committing `stopped`.
+
 ## Entry Commands
 
 - `python -m agent_tools skills --list`

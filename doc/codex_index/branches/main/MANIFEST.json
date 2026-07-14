@@ -1,7 +1,7 @@
 {
   "branch": "main",
-  "commit": "e5d8f614012aa115557634d06397b09146624e82",
-  "generated_at": "2026-07-12T15:14:28Z",
+  "commit": "4efddb9dc65acdf8cc71fb98295120397267fc2c",
+  "generated_at": "2026-07-14T13:10:06Z",
   "mode": "refresh",
   "coverage": {
     "tracked_file_counts": {
@@ -14,12 +14,12 @@
       "sleep2vec_moe": 0,
       "sleep2vec_hires": 0,
       "configs": 106,
-      "tests": 108,
+      "tests": 110,
       "utils": 8,
       "agent_tools": 33,
       "skills": 37,
       "recipes": 27,
-      "agent_policy_and_contract_docs": 10
+      "agent_policy_and_contract_docs": 9
     },
     "function_catalog_scope": [
       "config parsing, built-in task semantics, LoRA/DoRA adapter settings, and run-artifact persistence",

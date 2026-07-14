@@ -25,6 +25,35 @@ __all__ = [
 ]
 
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
+_RUNTIME_FIELDS = {
+    "accelerator",
+    "accumulate_grad_batches",
+    "avg_ckpt_dir",
+    "avg_ckpts",
+    "batch_size",
+    "check_val_every_n_epoch",
+    "ckpt_every_n_epochs",
+    "data_backend",
+    "device",
+    "devices",
+    "dry_run",
+    "epochs",
+    "gradient_clip_val",
+    "limit_records",
+    "lr",
+    "num_workers",
+    "patience",
+    "plot_adjust_covariates",
+    "plot_cohort_after_run",
+    "plot_group_column",
+    "plot_stage_source",
+    "precision",
+    "seed",
+    "summarize_after_run",
+    "wandb_mode",
+    "warmup_steps",
+    "weight_decay",
+}
 
 
 def evaluate_consultation_gates(
@@ -97,6 +126,18 @@ def evaluate_consultation_gates(
                 "sex_age_baseline does not support preset_prepare.",
                 None,
                 {"variant": variant, "task": task_value},
+            )
+        )
+
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    for field in sorted(set(runtime) - _RUNTIME_FIELDS):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                f"runtime.{field}",
+                f"Unknown runtime field: {field}.",
+                None,
+                {field: runtime[field], "preflight_before_workspace": True},
             )
         )
 

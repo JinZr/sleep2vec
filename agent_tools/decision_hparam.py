@@ -30,6 +30,26 @@ _HPARAM_EVALUATION_FIELDS = {
     "final_test_unlocked",
     "require_manual_unlock_for_final_test",
 }
+_HPARAM_ADAPTIVE_FIELDS = {
+    "enabled",
+    "max_rounds",
+    "max_runs_total",
+    "objective_metric",
+    "objective_mode",
+    "poll_seconds",
+    "replacement",
+    "round_size",
+    "suggest",
+    "test_feedback_for_selection",
+}
+_HPARAM_ADAPTIVE_REPLACEMENT_FIELDS = {
+    "allow_running_stop",
+    "enabled",
+    "grace_epochs",
+    "grace_minutes",
+    "kill_margin",
+}
+_HPARAM_ADAPTIVE_SUGGEST_FIELDS = {"strategy"}
 
 
 def hparam_tune_issues(
@@ -440,6 +460,16 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     if not adaptive:
         return issues
+    for field in sorted(set(adaptive) - _HPARAM_ADAPTIVE_FIELDS - {"max_trials_total"}):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                f"adaptive.{field}",
+                f"Unknown adaptive field: {field}.",
+                None,
+                {field: adaptive[field], "preflight_before_workspace": True},
+            )
+        )
     if "max_trials_total" in adaptive:
         issues.append(
             DecisionIssue(
@@ -448,6 +478,50 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
                 "adaptive.max_trials_total is no longer supported; use adaptive.max_runs_total.",
                 None,
                 {"max_trials_total": adaptive.get("max_trials_total")},
+            )
+        )
+    replacement_value = adaptive.get("replacement")
+    replacement = replacement_value if isinstance(replacement_value, dict) else {}
+    if replacement_value is not None and not isinstance(replacement_value, dict):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "adaptive.replacement",
+                "adaptive.replacement must be a mapping.",
+                None,
+                {"replacement": replacement_value, "preflight_before_workspace": True},
+            )
+        )
+    for field in sorted(set(replacement) - _HPARAM_ADAPTIVE_REPLACEMENT_FIELDS):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                f"adaptive.replacement.{field}",
+                f"Unknown adaptive replacement field: {field}.",
+                None,
+                {field: replacement[field], "preflight_before_workspace": True},
+            )
+        )
+    suggest_value = adaptive.get("suggest")
+    suggest = suggest_value if isinstance(suggest_value, dict) else {}
+    if suggest_value is not None and not isinstance(suggest_value, dict):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "adaptive.suggest",
+                "adaptive.suggest must be a mapping.",
+                None,
+                {"suggest": suggest_value, "preflight_before_workspace": True},
+            )
+        )
+    for field in sorted(set(suggest) - _HPARAM_ADAPTIVE_SUGGEST_FIELDS):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                f"adaptive.suggest.{field}",
+                f"Unknown adaptive suggest field: {field}.",
+                None,
+                {field: suggest[field], "preflight_before_workspace": True},
             )
         )
     if adaptive.get("enabled") is not True:
@@ -494,7 +568,6 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
                     {adaptive_field: adaptive.get(adaptive_field)},
                 )
             )
-    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
     if replacement and replacement.get("kill_margin") is not None:
         try:
             if float(replacement["kill_margin"]) < 0:
