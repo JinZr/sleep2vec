@@ -311,7 +311,8 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    hparam.launch_hparam_runs(plan_dir, dry_run=True)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda _execution, _command: "launched")
+    hparam.launch_hparam_runs(plan_dir, dry_run=False)
     row = list(csv.DictReader((plan_dir / "launch_manifest.tsv").open(), delimiter="\t"))[0]
     pid_path = Path(row["pid_path"])
     pid_path.write_text("123")
@@ -1134,6 +1135,71 @@ def test_canonical_local_experiment_root_resolves_aliases(tmp_path: Path):
     root = canonical_local_experiment_root(alias_parent / "nested" / ".." / "workspace", tmp_path)
 
     assert root == (real_parent / "workspace").resolve()
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_canonical_local_experiment_root_rejects_root_symlink(tmp_path: Path, dangling: bool):
+    target = tmp_path / "target"
+    if not dangling:
+        target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        canonical_local_experiment_root(alias, tmp_path)
+
+
+def test_experiment_init_rejects_local_symlink_root_before_writing(tmp_path: Path):
+    target = tmp_path / "target"
+    target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    spec = tmp_path / "experiment-spec.yaml"
+    spec.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {
+                    "id": "unit",
+                    "title": "Unit experiment",
+                    "objective": "Exercise experiment workspace contracts.",
+                    "root": str(alias),
+                    "baseline": {"type": "none", "rationale": "Unit fixture."},
+                }
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        experiments.init_experiment(alias, spec)
+
+    assert list(target.iterdir()) == []
+
+
+def test_remote_output_validation_checks_root_itself_before_targets(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            2,
+            "",
+            "Managed output paths must be independent regular files: /remote/workspace",
+        )
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="/remote/workspace"):
+        experiment_io.validate_managed_output_paths(
+            "/remote/workspace",
+            ["/remote/workspace/experiment.yaml"],
+            remote="unit-host",
+        )
+
+    command, kwargs = calls[0]
+    assert command[:2] == ["ssh", "unit-host"]
+    assert command[-1].index("os.lstat(root)") < command[-1].index("for raw_target in targets")
+    assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize(

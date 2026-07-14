@@ -277,7 +277,8 @@ def _checkpoint_scan_rows(
         return rows
     score = artifacts.metric_value(manifest, metric)
     checkpoint = artifacts.fixed_checkpoint_path(manifest, Path(str(run["checkpoint_dir"])))
-    if score not in ("", None) and checkpoint:
+    valid_score = None if isinstance(score, bool) else artifacts.float_or_none(score)
+    if valid_score is not None and checkpoint:
         rows.append(
             {
                 "step_id": run["step_id"],
@@ -285,7 +286,7 @@ def _checkpoint_scan_rows(
                 "version": run["version"],
                 "config": run.get("config"),
                 "metric": metric,
-                "score": score,
+                "score": valid_score,
                 "epoch": manifest.get("epoch") or artifacts.epoch_from_checkpoint_name(Path(checkpoint).name),
                 "checkpoint_path": checkpoint,
                 "run_manifest": str(manifest_path or ""),
@@ -302,7 +303,8 @@ def _history_metric_rows(run_dir: Path, metric: str) -> list[tuple[int, float]]:
         if metric not in record:
             continue
         epoch = _history_epoch(record)
-        score = artifacts.float_or_none(record.get(metric))
+        raw_score = record.get(metric)
+        score = None if isinstance(raw_score, bool) else artifacts.float_or_none(raw_score)
         if epoch is not None and score is not None:
             by_epoch[epoch] = score
     return sorted(by_epoch.items())
@@ -327,7 +329,7 @@ def _history_records(run_dir: Path) -> list[dict[str, Any]]:
 
 def _history_epoch(record: dict[str, Any]) -> int | None:
     for key in ("epoch", "trainer/epoch", "current_epoch", "global_epoch"):
-        value = artifacts.float_or_none(record.get(key))
-        if value is not None:
-            return int(value)
+        epoch = artifacts.epoch_number(record.get(key))
+        if epoch is not None:
+            return epoch
     return None

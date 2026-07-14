@@ -220,15 +220,23 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     # Retiring current runs is allowed only when the complete replacement round fits the remaining budget.
     budget_exhausted = execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count)
     if execute and not budget_exhausted:
-        _stop_bad_running_runs(root, round_dir, recipe)
-        _supersede_pending_runs(root, round_dir)
-    if execute and not budget_exhausted:
         round_recipe = _write_round_recipe(load_recipe_with_base(suggestion), suggestion, next_dir, next_round)
         report = build_plan(recipe_path=round_recipe, output_dir=next_dir)
         if report.exit_code != 0:
             raise RuntimeError(f"Round {next_round:03d} plan failed with exit code {report.exit_code}.")
         _append_registry_rows(root, next_round, next_dir)
         launch_hparam_runs(next_dir, dry_run=False)
+        next_plan_keys = {managed_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
+        launch_rows = [row for row in read_run_manifest(workspace) if managed_run_key(row) in next_plan_keys]
+        started = any(row.get("status") == "launched" for row in launch_rows)
+        if not started:
+            statuses = ", ".join(sorted({str(row.get("status") or "") for row in launch_rows})) or "none"
+            raise RuntimeError(
+                f"Round {next_round:03d} started no runs (statuses: {statuses}); current runs were not retired. "
+                f"The registered replacement round remains at {next_dir}."
+            )
+        _stop_bad_running_runs(root, round_dir, recipe)
+        _supersede_pending_runs(root, round_dir)
         _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
     elif budget_exhausted:
         _append_event(

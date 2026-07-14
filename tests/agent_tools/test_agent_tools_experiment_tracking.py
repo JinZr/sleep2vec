@@ -246,20 +246,23 @@ def test_experiment_checkpoint_preflight_rejects_previous_rows_outside_eligible_
     assert checkpoint_manifest.read_bytes() == original_manifest
 
 
-@pytest.mark.parametrize("checkpoint_kind", ["missing", "file", "symlink"])
+@pytest.mark.parametrize("directory_name", ["runtime", "checkpoint"])
+@pytest.mark.parametrize("directory_kind", ["file", "symlink"])
 def test_experiment_checkpoint_scan_rejects_invalid_declared_directory_without_rewriting(
-    tmp_path: Path, checkpoint_kind: str
+    tmp_path: Path, directory_name: str, directory_kind: str
 ):
     _initialize_workspace(tmp_path)
     runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir()
     checkpoint_dir = runtime_dir / "checkpoints"
-    if checkpoint_kind == "file":
-        checkpoint_dir.write_text("not a directory")
-    elif checkpoint_kind == "symlink":
-        target = tmp_path / "external-checkpoints"
+    invalid_dir = runtime_dir if directory_name == "runtime" else checkpoint_dir
+    if directory_name == "checkpoint":
+        runtime_dir.mkdir()
+    if directory_kind == "file":
+        invalid_dir.write_text("not a directory")
+    else:
+        target = tmp_path / f"external-{directory_name}"
         target.mkdir()
-        checkpoint_dir.symlink_to(target, target_is_directory=True)
+        invalid_dir.symlink_to(target, target_is_directory=True)
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\truntime_dir\tcheckpoint_dir\n"
         f"unit\ttrain-model\trun-000\tmanaged-v1\t{runtime_dir}\t{checkpoint_dir}\n"
@@ -271,8 +274,82 @@ def test_experiment_checkpoint_scan_rejects_invalid_declared_directory_without_r
     before = checkpoint_manifest.read_bytes()
 
     with pytest.raises(
-        ValueError, match="checkpoint_dir is missing or is not a directory|not a regular managed checkpoint"
+        ValueError,
+        match="runtime_dir is not a directory|checkpoint_dir is not a directory|not a regular managed checkpoint",
     ):
+        experiments.index_checkpoints(tmp_path)
+
+    assert checkpoint_manifest.read_bytes() == before
+
+
+@pytest.mark.parametrize("missing_path", ["runtime", "checkpoint"])
+def test_experiment_checkpoint_scan_skips_uncreated_directories_and_indexes_other_runs(
+    tmp_path: Path, missing_path: str
+):
+    _initialize_workspace(tmp_path)
+    missing_runtime = tmp_path / "runtime-missing"
+    missing_checkpoint = missing_runtime / "checkpoints"
+    if missing_path == "checkpoint":
+        missing_runtime.mkdir()
+    ready_runtime = tmp_path / "runtime-ready"
+    ready_checkpoint = ready_runtime / "checkpoints"
+    ready_checkpoint.mkdir(parents=True)
+    checkpoint = ready_checkpoint / "epoch=01-step=10.ckpt"
+    checkpoint.write_text("checkpoint")
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-000",
+                "version": "missing-v1",
+                "runtime_dir": str(missing_runtime),
+                "checkpoint_dir": str(missing_checkpoint),
+            },
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-001",
+                "version": "ready-v1",
+                "runtime_dir": str(ready_runtime),
+                "checkpoint_dir": str(ready_checkpoint),
+            },
+        ],
+    )
+
+    experiments.index_checkpoints(tmp_path)
+
+    rows = _read_table(tmp_path / "checkpoint_manifest.tsv")
+    assert [(row["run_id"], row["checkpoint_path"]) for row in rows] == [("run-001", str(checkpoint))]
+
+
+def test_experiment_checkpoint_scan_preserves_existing_inventory_when_directory_disappears(tmp_path: Path):
+    _initialize_workspace(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    checkpoint_dir = runtime_dir / "checkpoints"
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-000",
+                "version": "managed-v1",
+                "runtime_dir": str(runtime_dir),
+                "checkpoint_dir": str(checkpoint_dir),
+            }
+        ],
+    )
+    checkpoint_manifest = tmp_path / "checkpoint_manifest.tsv"
+    checkpoint_manifest.write_text(
+        "experiment_id\tstep_id\trun_id\tversion\tcheckpoint_path\n"
+        f"unit\ttrain-model\trun-000\tmanaged-v1\t{checkpoint_dir / 'epoch=01.ckpt'}\n"
+    )
+    before = checkpoint_manifest.read_bytes()
+
+    with pytest.raises(ValueError, match="existing checkpoint inventory"):
         experiments.index_checkpoints(tmp_path)
 
     assert checkpoint_manifest.read_bytes() == before
@@ -1512,7 +1589,13 @@ def test_experiment_remote_checkpoint_index_uses_runtime_manifest_best_path(monk
     monkeypatch.setattr(
         experiment_io,
         "path_exists_at",
-        lambda path, remote=None: Path(path).name in {"run_manifest.tsv", "run_manifest.json"},
+        lambda path, remote=None: str(path)
+        in {
+            "/remote/workspace/run_manifest.tsv",
+            "/remote/runtime/run_a",
+            "/remote/runtime/run_a/checkpoints",
+            "/remote/runtime/run_a/run_manifest.json",
+        },
     )
     monkeypatch.setattr(experiment_io, "read_rows_at", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
@@ -1538,6 +1621,90 @@ def test_experiment_remote_checkpoint_index_uses_runtime_manifest_best_path(monk
         checkpoint_one: "true",
         checkpoint_two: "false",
     }
+
+
+def test_remote_checkpoint_scan_skips_confirmed_missing_run_and_indexes_other_runs(monkeypatch):
+    missing = {
+        "experiment_id": "unit",
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "version": "missing",
+        "runtime_dir": "/remote/runtime/missing",
+        "checkpoint_dir": "/remote/runtime/missing/checkpoints",
+    }
+    ready = {
+        "experiment_id": "unit",
+        "step_id": "train-model",
+        "run_id": "run-001",
+        "version": "ready",
+        "runtime_dir": "/remote/runtime/ready",
+        "checkpoint_dir": "/remote/runtime/ready/checkpoints",
+    }
+    checkpoint = "/remote/runtime/ready/checkpoints/epoch=01.ckpt"
+    commands = []
+
+    def fake_exists(path, *, remote=None):
+        return str(path) in {ready["runtime_dir"], ready["checkpoint_dir"]}
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, f"{checkpoint}\t123.0\n", "")
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", fake_exists)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_io, "read_text_at", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(experiment_tracking.subprocess, "run", fake_run)
+
+    rows = experiment_tracking._remote_checkpoint_rows([missing, ready], "unit-host")
+
+    assert [(row["run_id"], row["checkpoint_path"]) for row in rows] == [("run-001", checkpoint)]
+    command, kwargs = commands[0]
+    assert missing["checkpoint_dir"] not in command[-1]
+    assert ready["checkpoint_dir"] in command[-1]
+    assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+
+
+def test_remote_checkpoint_scan_preserves_inventory_when_directory_disappears(monkeypatch):
+    root = Path("/remote/workspace")
+    run = {
+        "experiment_id": "unit",
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "version": "managed-v1",
+        "runtime_dir": "/remote/runtime/run-000",
+        "checkpoint_dir": "/remote/runtime/run-000/checkpoints",
+    }
+    previous = {
+        **run,
+        "checkpoint_path": "/remote/runtime/run-000/checkpoints/epoch=01.ckpt",
+    }
+    monkeypatch.setattr(
+        experiment_io,
+        "read_rows_at",
+        lambda path, **_kwargs: [previous] if Path(path).name == "checkpoint_manifest.tsv" else [],
+    )
+    monkeypatch.setattr(experiment_tracking, "read_run_manifest", lambda *_args, **_kwargs: [run])
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(RuntimeError, match="missing frozen artifact directory with existing inventory"):
+        experiment_tracking.checkpoint_rows(root, remote="unit-host")
+
+
+def test_remote_checkpoint_scan_propagates_path_probe_errors(monkeypatch):
+    run = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "runtime_dir": "/remote/runtime/run-000",
+        "checkpoint_dir": "/remote/runtime/run-000/checkpoints",
+    }
+    monkeypatch.setattr(
+        experiment_io,
+        "path_exists_at",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("permission denied")),
+    )
+
+    with pytest.raises(RuntimeError, match="SSH checkpoint scan failed.*permission denied"):
+        experiment_tracking._remote_checkpoint_rows([run], "unit-host")
 
 
 @pytest.mark.parametrize(
@@ -1625,7 +1792,12 @@ def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path
     monkeypatch.setattr(
         experiment_io,
         "path_exists_at",
-        lambda path, remote=None: Path(path).name == "run_manifest.tsv"
+        lambda path, remote=None: str(path)
+        in {
+            str(tmp_path / "run_manifest.tsv"),
+            "/remote/runtime/run_a",
+            "/remote/runtime/run_a/checkpoints",
+        }
         or (failure == "empty_manifest" and Path(path).name == "run_manifest.json"),
     )
     monkeypatch.setattr(

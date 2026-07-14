@@ -206,7 +206,7 @@ def test_adaptive_init_preflights_round_recipe_before_workspace_mutation(tmp_pat
     assert not (workflow_dir / "adaptive" / "workflow.json").exists()
 
 
-def test_adaptive_management_paths_are_canonical_across_alias_entries(tmp_path: Path):
+def test_adaptive_init_rejects_symlink_root_before_writing(tmp_path: Path):
     source = tmp_path / "source"
     recipe = _adaptive_recipe(source)
     real_root = tmp_path / "real-workflow"
@@ -216,37 +216,11 @@ def test_adaptive_management_paths_are_canonical_across_alias_entries(tmp_path: 
     payload["experiment"]["root"] = str(real_root)
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    initialized = adaptive_hparam.init_adaptive_workflow(recipe, alias_root)
+    with pytest.raises(ValueError, match="experiment root must not be a symlink"):
+        adaptive_hparam.init_adaptive_workflow(recipe, alias_root)
 
-    assert initialized == real_root
-    workflow = json.loads((real_root / "adaptive" / "workflow.json").read_text())
-    assert workflow["root"] == str(real_root)
-    assert workflow["recipe_path"] == str(recipe.resolve())
-    registry = _read_table(real_root / "adaptive" / "run_registry.tsv")
-    for field in ("round_dir", "config", "script"):
-        assert Path(registry[0][field]).is_absolute()
-        assert Path(registry[0][field]).resolve().is_relative_to(real_root)
-    round_recipe = yaml.safe_load((real_root / "adaptive" / "rounds" / "round_000" / "round_recipe.yaml").read_text())
-    assert round_recipe["experiment"]["root"] == str(real_root)
-    assert Path(round_recipe["base_recipe"]).is_absolute()
-
-    _write_fake_manifest(real_root)
-    digest = adaptive_hparam.digest_hparam_run(alias_root)
-    suggestion = adaptive_hparam.suggest_next_round(alias_root)
-    stepped = adaptive_hparam.adaptive_step(alias_root)
-    looped = adaptive_hparam.adaptive_loop(alias_root)
-
-    for path in (digest, suggestion, stepped, looped):
-        assert path.is_absolute()
-        assert path.resolve().is_relative_to(real_root)
-    suggested = yaml.safe_load(suggestion.read_text())
-    assert suggested["experiment"]["root"] == str(real_root)
-    assert Path(suggested["base_recipe"]).is_absolute()
-    events = [json.loads(line) for line in (real_root / "events.jsonl").read_text().splitlines()]
-    for event in events:
-        for field in ("path", "recipe_path", "round_dir", "digest", "suggestion"):
-            if event.get(field):
-                assert Path(event[field]).is_absolute()
+    assert alias_root.is_symlink()
+    assert not real_root.exists()
 
 
 def test_adaptive_workflow_root_drift_fails_before_suggestion_write(tmp_path: Path):
@@ -567,7 +541,6 @@ def test_execute_supersedes_canonical_pending_run_and_prevents_old_round_launch(
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
-    launch_before = _read_table(round_dir / "launch_manifest.tsv")[0]
     merge_run_manifest(
         tmp_path,
         [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "pending"}],
@@ -575,10 +548,21 @@ def test_execute_supersedes_canonical_pending_run_and_prevents_old_round_launch(
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
     manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
     launched_rounds = []
+    old_status_at_launch = []
 
     def fake_launch(run_dir, *, dry_run=True):
         launched_rounds.append((Path(run_dir), dry_run))
-        return Path(run_dir) / "launch_manifest.tsv"
+        old_status_at_launch.append(
+            next(row["status"] for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+        )
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        next_runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in next_runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in next_runs],
+        )
+        return launch_manifest
 
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: digest)
@@ -589,9 +573,8 @@ def test_execute_supersedes_canonical_pending_run_and_prevents_old_round_launch(
     assert _read_table(round_dir / "run_status.tsv")[0]["status"] == "superseded"
     launch_after = _read_table(round_dir / "launch_manifest.tsv")[0]
     assert launch_after["status"] == "superseded"
-    for field in ("target", "host", "workdir", "gpus", "log_path", "pid_path", "command"):
-        assert launch_after[field] == launch_before[field]
     assert launched_rounds == [(workflow_dir / "adaptive" / "rounds" / "round_001", False)]
+    assert old_status_at_launch == ["pending"]
     events_path = tmp_path / "events.jsonl"
     before = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert [event["event_type"] for event in before].count("supersede_pending_run") == 1
@@ -728,7 +711,14 @@ def test_adaptive_step_execute_resolves_relative_base_recipe_for_next_round(tmp_
 
     def fake_launch(run_dir, *, dry_run=True):
         launched.append((Path(run_dir), dry_run))
-        return Path(run_dir) / "launch_manifest.tsv"
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        next_runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in next_runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in next_runs],
+        )
+        return launch_manifest
 
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
 
@@ -778,6 +768,98 @@ def test_adaptive_step_preflights_next_round_before_stop_or_supersede(tmp_path: 
         assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
 
 
+@pytest.mark.parametrize("failure_stage", ["build", "registry", "launch"])
+def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
+    tmp_path: Path, monkeypatch, failure_stage: str
+):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "pending"}],
+    )
+    calls = []
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args: calls.append("stop"))
+    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+
+    if failure_stage == "build":
+        monkeypatch.setattr(
+            adaptive_hparam,
+            "build_plan",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("build failed")),
+        )
+    elif failure_stage == "registry":
+        monkeypatch.setattr(
+            adaptive_hparam,
+            "_append_registry_rows",
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("registry failed")),
+        )
+    else:
+        monkeypatch.setattr(
+            adaptive_hparam,
+            "launch_hparam_runs",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("launch failed")),
+        )
+
+    with pytest.raises(RuntimeError, match=f"{failure_stage} failed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    old = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert old["status"] == "pending"
+    assert calls == []
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert "launch_round" not in [event["event_type"] for event in events]
+
+
+@pytest.mark.parametrize("launch_status", ["launch_failed", "pending"])
+def test_adaptive_step_keeps_current_runs_when_replacement_starts_nothing(
+    tmp_path: Path, monkeypatch, launch_status: str
+):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "pending"}],
+    )
+    calls = []
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args: calls.append("stop"))
+    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+
+    def fake_launch(run_dir, *, dry_run=True):
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        next_runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": launch_status} for row in next_runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": launch_status} for row in next_runs],
+        )
+        return launch_manifest
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+
+    with pytest.raises(RuntimeError, match=rf"started no runs \(statuses: {launch_status}\)"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    old = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert old["status"] == "pending"
+    assert calls == []
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 2
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert "launch_round" not in [event["event_type"] for event in events]
+
+
 def test_hparam_count_does_not_materialize_search_values():
     recipe = {
         "search": {
@@ -795,29 +877,47 @@ def test_adaptive_step_execute_stops_bad_running_run_through_recorded_manifest(t
     recipe = _adaptive_recipe(tmp_path, max_rounds=2)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
-    _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    hparam_runtime.launch_hparam_runs(round_dir, dry_run=False)
+    _write_fake_manifest(workflow_dir, score=0.73)
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     launch = _read_table(round_dir / "launch_manifest.tsv")[0]
     pid_path = Path(launch["pid_path"])
     log_path = Path(launch["log_path"])
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(os.getpid()))
     log_path.write_text("Traceback\nRuntimeError: failed\n")
-    manifests.write_rows(
-        round_dir / "launch_manifest.tsv",
-        [{**launch, "status": "launched"}],
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "running"}],
     )
     stopped = []
+    call_order = []
+
+    def fake_launch(run_dir, *, dry_run=True):
+        call_order.append("launch")
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        next_runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in next_runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in next_runs],
+        )
+        return launch_manifest
 
     def fake_stop(run_dir, run_id, *, reason):
+        call_order.append("stop")
         stopped.append((Path(run_dir), run_id))
         return Path(run_dir) / "run_status.tsv"
 
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     assert stopped == [(round_dir, "run-000")]
+    assert call_order == ["launch", "stop"]
     assert "stop_bad_running_run" in (tmp_path / "events.jsonl").read_text()
 
 

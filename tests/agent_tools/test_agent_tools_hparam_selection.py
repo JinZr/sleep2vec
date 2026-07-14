@@ -318,6 +318,32 @@ def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: 
     assert (plan_dir / "checkpoint_ranking.csv").read_text() == first_output
 
 
+@pytest.mark.parametrize(
+    "history_row",
+    [
+        {"epoch": 1, "val_auroc": True},
+        {"epoch": 1.5, "val_auroc": 0.8},
+    ],
+)
+def test_hparam_checkpoint_scan_excludes_invalid_history_score_or_epoch(tmp_path: Path, history_row: dict):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    history_dir = runtime_dir / "wandb" / "run-1" / "files"
+    checkpoint_dir.mkdir(parents=True)
+    history_dir.mkdir(parents=True)
+    (checkpoint_dir / "epoch=1.ckpt").write_text("checkpoint")
+    (history_dir / "wandb-history.jsonl").write_text(json.dumps(history_row) + "\n")
+    (runtime_dir / "run_manifest.json").write_text("{}\n")
+
+    ranking = hparam_selection.scan_hparam_checkpoints(plan_dir, "val_auroc", "max")
+
+    assert ranking.read_text() == "step_id,run_id\n"
+
+
 def test_hparam_checkpoint_scan_empty_output_remains_readable(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -328,6 +354,23 @@ def test_hparam_checkpoint_scan_empty_output_remains_readable(tmp_path: Path):
 
     assert first == second
     assert first.read_text() == "step_id,run_id\n"
+
+
+@pytest.mark.parametrize("score", ["not-a-number", float("nan"), float("inf"), True])
+def test_hparam_checkpoint_scan_excludes_invalid_manifest_scores(tmp_path: Path, score):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    runtime_dir = Path(run["runtime_dir"])
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "epoch=1.ckpt").write_text("checkpoint")
+    (runtime_dir / "run_manifest.json").write_text(json.dumps({"epoch": 1, "metrics": {"val_auroc": score}}))
+
+    ranking = hparam_selection.scan_hparam_checkpoints(plan_dir, "val_auroc", "max")
+
+    assert ranking.read_text() == "step_id,run_id\n"
 
 
 def test_hparam_select_does_not_scan_unmanaged_runtime_directories(tmp_path: Path):
@@ -374,6 +417,49 @@ def test_fixed_checkpoint_does_not_escape_frozen_checkpoint_dir(tmp_path: Path):
     path = run_artifacts.fixed_checkpoint_path({"best_model_path": str(unmanaged), "epoch": 7}, checkpoint_dir)
 
     assert path == ""
+
+
+def test_fixed_checkpoint_requires_the_manifest_epoch_locally(tmp_path: Path):
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "epoch=2.ckpt").write_text("wrong epoch")
+
+    path = run_artifacts.fixed_checkpoint_path({"epoch": 1}, checkpoint_dir)
+
+    assert path == ""
+
+
+def test_fixed_checkpoint_requires_the_manifest_epoch_from_remote_names(tmp_path: Path):
+    checkpoint_dir = tmp_path / "remote" / "checkpoints"
+
+    path = run_artifacts.fixed_checkpoint_path_from_names(
+        {"epoch": 1},
+        checkpoint_dir,
+        ["epoch=2.ckpt", "last.ckpt"],
+    )
+
+    assert path == ""
+
+
+def test_fixed_checkpoint_rejects_fractional_manifest_epoch_locally_and_remotely(tmp_path: Path):
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "epoch=2.ckpt"
+    checkpoint.write_text("checkpoint")
+    manifest = {"epoch": 2.5}
+
+    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == ""
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [checkpoint.name]) == ""
+
+
+@pytest.mark.parametrize("value", [2, 2.0, "2", "2.0"])
+def test_epoch_number_accepts_integer_values(value):
+    assert run_artifacts.epoch_number(value) == 2
+
+
+@pytest.mark.parametrize("value", [2.5, "2.5", float("nan"), float("inf"), True, "not-a-number"])
+def test_epoch_number_rejects_non_integer_values(value):
+    assert run_artifacts.epoch_number(value) is None
 
 
 @pytest.mark.parametrize("alias_kind", ["checkpoint", "checkpoint_dir"])

@@ -146,6 +146,8 @@ def canonical_local_experiment_root(raw: str | Path, base_dir: str | Path) -> Pa
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = Path(base_dir).expanduser() / path
+    if path.is_symlink():
+        raise ValueError(f"Local experiment root must not be a symlink: {path}")
     return path.resolve()
 
 

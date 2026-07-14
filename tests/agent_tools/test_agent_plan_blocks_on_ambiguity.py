@@ -1472,6 +1472,33 @@ def test_context_without_workspace_writes_blocked_script(tmp_path: Path):
     assert not (output_dir / "validation.sh").exists()
 
 
+def test_context_rejects_symlink_output_root_before_writing(tmp_path: Path):
+    target = tmp_path / "context-target"
+    target.mkdir()
+    output_dir = tmp_path / "context-alias"
+    output_dir.symlink_to(target, target_is_directory=True)
+
+    report = plans.build_context(task="pretrain", variant="sleep2vec", config=None, output_dir=output_dir)
+
+    assert report.exit_code == 1
+    assert any(issue.field == "output_artifacts" for issue in report.blocking_issues())
+    assert list(target.iterdir()) == []
+
+
+def test_plan_rejects_symlink_output_root_before_writing(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    target = tmp_path / "plan-target"
+    target.mkdir()
+    output_dir = tmp_path / "plan-alias"
+    output_dir.symlink_to(target, target_is_directory=True)
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "must not be a symlink" in result.stderr
+    assert list(target.iterdir()) == []
+
+
 def test_missing_variant_blocks_command_generation(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -2148,6 +2175,61 @@ def test_hparam_relative_workdir_fails_before_workspace_creation(tmp_path: Path)
     assert result.returncode == 1
     assert "execution.workdir must be an absolute path" in result.stdout
     assert not output_dir.exists()
+
+
+def test_remote_deferred_config_must_be_locally_freezable_before_single_run_workspace_creation(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"].update({"config": "/remote/config.yaml", "data_backend": "npz"})
+    payload["execution"] = {
+        "target": "ssh",
+        "host": "unit-host",
+        "path_context": "remote",
+        "path_validation": "defer",
+    }
+    payload["decisions"]["required_channels"] = {
+        "value": ["ppg", "ahi", "stage5"],
+        "source": "explicit_recipe",
+    }
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "Config cannot be frozen from a local file" in result.stdout
+    assert not output_dir.exists()
+    assert not (tmp_path / "steps" / "unit-finetune").exists()
+    assert not (tmp_path / "events.jsonl").exists()
+
+
+def test_remote_deferred_config_must_be_locally_freezable_before_hparam_workspace_creation(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["inputs"].update({"config": "/remote/config.yaml", "data_backend": "npz"})
+    base_payload["decisions"]["required_channels"] = {
+        "value": ["ppg", "ahi", "stage5"],
+        "source": "explicit_recipe",
+    }
+    base_recipe.write_text(yaml.safe_dump(base_payload))
+    payload["execution"] = {
+        "target": "ssh",
+        "host": "unit-host",
+        "path_context": "remote",
+        "path_validation": "defer",
+    }
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "Config cannot be frozen from a local file" in result.stdout
+    assert not output_dir.exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
+    assert not (tmp_path / "events.jsonl").exists()
 
 
 def test_collect_runs_only_reads_managed_manifest_paths(tmp_path: Path):
