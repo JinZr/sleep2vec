@@ -217,11 +217,7 @@ def evaluate_consultation_gates(
                 {"variant": variant},
             )
         )
-    if (
-        task_adapter is not None
-        and isinstance(variant, str)
-        and variant in task_adapter.unsupported_variants
-    ):
+    if task_adapter is not None and isinstance(variant, str) and variant in task_adapter.unsupported_variants:
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
