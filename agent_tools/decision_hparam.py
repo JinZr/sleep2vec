@@ -473,9 +473,7 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
     if gpus_per_run is not None or "gpus_per_run" not in execution:
         invalid_gpu_pool = "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list)
         gpu_execution = (
-            {key: value for key, value in execution.items() if key != "gpu_pool"}
-            if invalid_gpu_pool
-            else execution
+            {key: value for key, value in execution.items() if key != "gpu_pool"} if invalid_gpu_pool else execution
         )
         _groups, gpu_issues = gpu_rules.gpu_group_plan(gpu_execution, runtime, max_concurrent=max_concurrent)
         issues.extend(

@@ -409,12 +409,8 @@ def _drain_bad_runs(
         if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
             continue
         before_launch = state.started_keys
-        before_launch_failed = {
-            managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
-        }
-        _launch_with_recovery(
-            root, workspace, state, round_dir, attempt_run_id=run_key[1], before_launch=before_launch
-        )
+        before_launch_failed = {managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"}
+        _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=run_key[1], before_launch=before_launch)
         canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
         state.started_keys = {

@@ -424,9 +424,7 @@ def _parse_run_manifest(text: str, path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def validate_existing_experiment_manifest(
-    existing_text: str, experiment: dict[str, Any], root: Path
-) -> dict[str, Any]:
+def validate_existing_experiment_manifest(existing_text: str, experiment: dict[str, Any], root: Path) -> dict[str, Any]:
     existing = read_managed_yaml_mapping(
         existing_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
     )
