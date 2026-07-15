@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .experiment_workspace import (
     experiment_metadata_issues,
@@ -158,6 +158,50 @@ def read_hparam_plan(run_dir: Path) -> dict[str, Any]:
     for run in runs:
         verify_run_snapshot(run)
     return plan
+
+
+def iter_registered_hparam_plans(
+    workspace: Path,
+    step_id: str,
+    *,
+    selection_metric: Any,
+    selection_mode: Any,
+) -> Iterator[tuple[Path, dict[str, Any]]]:
+    step_manifest = read_step_manifest(workspace, step_id)
+    for registered_plan_dir in step_manifest["plans"]:
+        registered_root = Path(str(registered_plan_dir))
+        registered_plan_path = registered_root / "plan.json"
+        resolved_recipe_path = registered_root / "recipe.resolved.yaml"
+        if not registered_plan_path.exists():
+            blocked_path = registered_root / "plan.blocked.md"
+            if blocked_path.is_file() and not blocked_path.is_symlink() and not resolved_recipe_path.exists():
+                continue
+            raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
+        registered_plan = read_json(registered_plan_path)
+        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        resolved_recipe = read_managed_yaml_mapping(
+            resolved_recipe_path.read_text(),
+            source=f"Frozen registered recipe {resolved_recipe_path}",
+        )
+        if registered_recipe.get("task") != resolved_recipe.get("task"):
+            raise ValueError(f"Registered plan task differs from recipe.resolved.yaml: {registered_root}")
+        if resolved_recipe.get("task") != "hparam_tune":
+            continue
+        registered_plan = read_hparam_plan(registered_root)
+        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        registered_step = registered_recipe.get("step") if isinstance(registered_recipe.get("step"), dict) else {}
+        if str(registered_step.get("id") or "") != step_id:
+            raise ValueError(f"Registered hparam plan belongs to a different step: {registered_root}")
+        registered_evaluation = (
+            registered_recipe.get("evaluation_policy")
+            if isinstance(registered_recipe.get("evaluation_policy"), dict)
+            else {}
+        )
+        if registered_evaluation.get("selection_metric") != selection_metric:
+            raise ValueError("Existing ranking selection metric differs from the current recipe.")
+        if registered_evaluation.get("selection_mode") != selection_mode:
+            raise ValueError("Existing ranking selection mode differs from the current recipe.")
+        yield registered_root, registered_plan
 
 
 def validate_run_rows(

@@ -12,9 +12,7 @@ from .experiment_workspace import (
     managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
-    read_managed_yaml_mapping,
     read_run_manifest,
-    read_step_manifest,
     resolve_run_row,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -83,40 +81,9 @@ def select_hparam_candidates(
             raise ValueError("Existing ranking selection metric differs from the current recipe.")
     remaining_prior_keys = {managed_run_key(row) for row in prior_step_rows}
     step_runs = []
-    step_manifest = read_step_manifest(workspace, step_id)
-    for registered_plan_dir in step_manifest["plans"]:
-        registered_root = Path(str(registered_plan_dir))
-        registered_plan_path = registered_root / "plan.json"
-        resolved_recipe_path = registered_root / "recipe.resolved.yaml"
-        if not registered_plan_path.exists():
-            blocked_path = registered_root / "plan.blocked.md"
-            if blocked_path.is_file() and not blocked_path.is_symlink() and not resolved_recipe_path.exists():
-                continue
-            raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
-        registered_plan = read_json(registered_plan_path)
-        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
-        resolved_recipe = read_managed_yaml_mapping(
-            resolved_recipe_path.read_text(),
-            source=f"Frozen registered recipe {resolved_recipe_path}",
-        )
-        if registered_recipe.get("task") != resolved_recipe.get("task"):
-            raise ValueError(f"Registered plan task differs from recipe.resolved.yaml: {registered_root}")
-        if resolved_recipe.get("task") != "hparam_tune":
-            continue
-        registered_plan = artifacts.read_hparam_plan(registered_root)
-        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
-        registered_step = registered_recipe.get("step") if isinstance(registered_recipe.get("step"), dict) else {}
-        if str(registered_step.get("id") or "") != step_id:
-            raise ValueError(f"Registered hparam plan belongs to a different step: {registered_root}")
-        registered_evaluation = (
-            registered_recipe.get("evaluation_policy")
-            if isinstance(registered_recipe.get("evaluation_policy"), dict)
-            else {}
-        )
-        if registered_evaluation.get("selection_metric") != metric:
-            raise ValueError("Existing ranking selection metric differs from the current recipe.")
-        if registered_evaluation.get("selection_mode") != mode:
-            raise ValueError("Existing ranking selection mode differs from the current recipe.")
+    for registered_root, registered_plan in artifacts.iter_registered_hparam_plans(
+        workspace, step_id, selection_metric=metric, selection_mode=mode
+    ):
         registered_runs = registered_plan["runs"]
         step_runs.extend(registered_runs)
         remaining_prior_keys -= {managed_run_key(run) for run in registered_runs}
