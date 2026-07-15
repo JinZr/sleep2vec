@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
+from . import experiment_io as exp_io, gpu_rules, run_artifacts as artifacts, run_evidence as evidence, transport
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     TERMINAL_STATUSES,
@@ -890,17 +890,8 @@ def _run_execution_command(execution: dict[str, Any], command: list[str]) -> sub
         env_prefix = " ".join(f"{key}={_sh(value)}" for key, value in sorted(env.items()))
         run_command = f"env {env_prefix} {run_command}"
     run_command = f"cd {_sh(workdir)} && {run_command}"
-    argv = (
-        ["ssh", str(execution["host"]), run_command]
-        if execution.get("target", "local") == "ssh"
-        else ["bash", "-lc", run_command]
-    )
-    return subprocess.run(
-        argv,
-        text=True,
-        capture_output=True,
-        timeout=LAUNCH_TIMEOUT_SECONDS,
-    )
+    host = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
+    return transport.run_shell(host, run_command, timeout=LAUNCH_TIMEOUT_SECONDS)
 
 
 def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool = False) -> Path:
@@ -1026,9 +1017,11 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     if pid is None:
         raise ValueError(f"No recorded PID for run_id: {run_id}")
     if previous.get("target") == "ssh":
-        result = subprocess.run(
-            ["ssh", previous["host"], f"kill -TERM {pid}"],
+        result = transport.run_ssh(
+            previous["host"],
+            f"kill -TERM {pid}",
             check=False,
+            capture_output=False,
             timeout=evidence.SSH_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
@@ -1063,30 +1056,14 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
 def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    devices = _as_list(runtime.get("devices"))
-    pool = _as_list(execution.get("gpu_pool")) or devices
-    if not pool:
-        if "gpus_per_run" in execution:
-            raise ValueError("execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices.")
-        return []
-    if len({str(item) for item in pool}) != len(pool):
-        raise ValueError("The effective GPU pool must not contain duplicate GPU identifiers.")
-    per_run = int(execution["gpus_per_run"]) if "gpus_per_run" in execution else len(devices) or 1
-    if per_run <= 0:
-        raise ValueError("execution.gpus_per_run must be a positive integer.")
-    if per_run > len(pool):
-        raise ValueError("execution.gpus_per_run cannot exceed the effective GPU pool size.")
-    if len(pool) % per_run != 0:
-        raise ValueError("The effective GPU pool must divide evenly into disjoint per-run GPU groups.")
-    return [pool[index : index + per_run] for index in range(0, len(pool), per_run)]
+    groups, issues = gpu_rules.gpu_group_plan(execution, runtime)
+    errors = [issue for issue in issues if not issue.warning]
+    if errors:
+        raise ValueError(errors[0].message)
+    return groups
 
 
-def _as_list(value: Any) -> list[Any]:
-    if value in (None, "", "ASK_USER"):
-        return []
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return [value]
+_as_list = gpu_rules.as_device_list
 
 
 def _launch_command(
@@ -1180,5 +1157,4 @@ def _start_process(execution: dict[str, Any], command: str) -> str:
     return "launched" if result.returncode == 0 else "launch_failed"
 
 
-def _sh(value: Any) -> str:
-    return shlex.quote(str(value))
+_sh = transport.sh
