@@ -49,12 +49,10 @@ from .recipes import load_consultation_policy, load_recipe_with_base, load_user_
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
 _TASK_RECIPE_FIELDS = {
-    "finetune": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
     "hparam_tune": _COMMON_RECIPE_FIELDS
     | {"adaptive", "artifacts", "base_recipe", "evaluation_policy", "execution", "inputs", "runtime", "search"},
 }
 _ARTIFACT_FIELDS = {
-    "finetune": {"overwrite", "results_csv_path", "version_name"},
     "hparam_tune": {"overwrite", "results_csv_path"},
 }
 
@@ -666,7 +664,8 @@ def build_plan(
         runtime_recipe.setdefault("artifacts", {})["version_name"] = version
         runtime_cfg = config_summary(config_path, variant=recipe.get("variant"))
         commands = _commands_for_recipe(runtime_recipe, runtime_cfg)
-        runtime_dir = REPO_ROOT / "log-finetune" / version if task == "finetune" else None
+        run_adapter = get_adapter(task)
+        runtime_dir = run_adapter.managed_runtime_dir(runtime_recipe, version) if run_adapter is not None else None
         checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
         artifacts_path = run_dir / "artifacts.json"
         run = {
@@ -875,33 +874,6 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.commands(recipe, cfg)
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    if task == "finetune":
-        test_after_fit = evaluation.get("test_after_fit")
-        pieces = [
-            "python",
-            "-m",
-            rendering.variant_module(recipe, "finetune"),
-            "--config",
-            inputs.get("config"),
-            "--label-name",
-            inputs.get("label_name"),
-            "--version-name",
-            artifacts.get("version_name", recipe_name(recipe)),
-            "--results-csv-path",
-            artifacts.get("results_csv_path", "results/agent_results.csv"),
-            *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
-            *rendering.finetune_input_cli_args(
-                inputs,
-                variant=str(recipe.get("variant")),
-            ),
-        ]
-        if test_after_fit is False or evaluation.get("external_test_locked") is True:
-            pieces.append("--no-test-after-fit")
-        return [rendering.render_command(pieces)]
     return []
 
 

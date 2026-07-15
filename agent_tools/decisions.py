@@ -5,7 +5,6 @@ from typing import Any
 from . import (
     decision_hparam as hparam_rules,
     decision_paths as paths,
-    decision_rules as rules,
     plan_rendering as rendering,
 )
 from .adapters import all_adapters, get_adapter
@@ -33,14 +32,13 @@ __all__ = [
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
 _DECISION_ENTRY_FIELDS = {"meaning", "question", "rationale", "source", "value"}
 _EXTRA_DECISION_TASKS = {
-    "ckpt_path": {"finetune", "hparam_tune"},
-    "config": {"finetune", "hparam_tune"},
+    "ckpt_path": {"hparam_tune"},
+    "config": {"hparam_tune"},
     "data_backend": {"hparam_tune"},
-    "external_test_locked": {"finetune"},
     "final_eval_config_path": {"hparam_tune"},
     "pretrained_backbone_path": {"hparam_tune"},
     "required_channels": {"hparam_tune"},
-    "test_after_fit": {"finetune", "hparam_tune"},
+    "test_after_fit": {"hparam_tune"},
 }
 
 
@@ -104,11 +102,6 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.runtime_fields(variant)
-    if task == "finetune":
-        fields = rendering.FINETUNE_RUNTIME_FIELDS
-        if variant == "sex_age_baseline":
-            fields = fields - {"wandb_mode"}
-        return fields
     if task == "hparam_tune":
         return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
     union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
@@ -304,6 +297,7 @@ def evaluate_consultation_gates(
             required_input_paths=task_adapter.required_input_paths(recipe) if task_adapter else None,
             requires_survival_sidecars=task_adapter.requires_survival_sidecars if task_adapter else None,
             preset_path_recipe_field=task_adapter.preset_path_recipe_field if task_adapter else None,
+            validates_dataset_paths=task_adapter.validates_dataset_paths if task_adapter else False,
         )
     )
     if task_adapter is not None:
@@ -461,8 +455,6 @@ def _task_specific_issues(
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.task_issues(recipe, config_summary, decisions, high_impact)
-    if task == "finetune":
-        return rules.finetune_task_issues(recipe, config_summary, decisions, high_impact)
     if task == "hparam_tune":
         return hparam_rules.hparam_tune_issues(recipe, config_summary, decisions, high_impact)
     return []
