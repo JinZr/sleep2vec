@@ -346,7 +346,7 @@ def hparam_script_lines(
         "set -euo pipefail",
         "",
         f"cd {root}",
-        f"export PYTHONPATH={root}${{PYTHONPATH:+:$PYTHONPATH}}",
+        f"export PYTHONPATH={root}",
         "",
         "# Agent policy status: PASS",
         "# This script was generated only after consultation gates passed.",

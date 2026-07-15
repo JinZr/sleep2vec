@@ -180,10 +180,20 @@ This catalog covers the reusable contract-bearing entrypoints behind `python -m 
 - **Reuse guidance:** use instead of recreating shell bootstrap or terminal-state handling.
 - **Duplication risk:** custom wrappers may lose the original runtime failure or replay terminal runs.
 
+### `agent_tools.plan_hparam.freeze_hparam_execution`
+
+- **File/signature:** `agent_tools/plan_hparam.py`; `freeze_hparam_execution(recipe: dict) -> dict`.
+- **Purpose/contract:** deep-copy a hparam recipe and freeze only its target Python command and full runtime commit. Canonical local-manager defaults are resolved here; explicit non-manager identity is enforced here.
+- **Inputs/outputs:** effective hparam recipe; copied recipe with normalized `execution.python` and `execution.runtime_commit`.
+- **Side effects:** reads manager repository identity only when a canonical-local commit default is required; performs no writes.
+- **Callers/callees:** `write_hparam_plan` and adaptive initialization.
+- **Reuse guidance:** reuse this owner wherever a new hparam workflow first establishes execution identity. Adaptive later rounds must carry the round-000 identity rather than resolving defaults again.
+- **Duplication risk:** independent identity freezing can bind later rounds to a different interpreter or manager HEAD.
+
 ### `agent_tools.plan_hparam.write_hparam_plan`
 
 - **File/signature:** `agent_tools/plan_hparam.py`; `write_hparam_plan(recipe: dict, out: Path, *, unlock_final_test: bool) -> None`.
-- **Purpose/contract:** expand the finite search grid, apply runtime/YAML overrides, freeze per-run config and launch script hashes, create stable/semantic identities, register rows, and emit validation/final-test artifacts.
+- **Purpose/contract:** expand the finite search grid, apply runtime/YAML overrides, reuse `freeze_hparam_execution`, freeze per-run config/script hashes, create stable/semantic identities, register rows, and emit validation/final-test artifacts. Only a local `REPO_ROOT` target without a conda wrapper receives manager-interpreter/HEAD defaults; every other target must provide both identity fields explicitly.
 - **Inputs/outputs:** preflight-approved hparam recipe, plan directory, unlock state; frozen plan tree.
 - **Side effects:** writes configs/scripts/plan/recipe artifacts and commits managed run rows/events.
 - **Callers/callees:** only `plans.build_plan`; uses rendering, config loaders, identity/workspace owners, and final-test helpers.
@@ -318,13 +328,23 @@ This catalog covers the reusable contract-bearing entrypoints behind `python -m 
 
 ### `agent_tools.hparam_runtime.launch_hparam_runs`
 
-- **File/signature:** `agent_tools/hparam_runtime.py`; `launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True) -> Path`.
-- **Purpose/contract:** validate the frozen plan, serialize launch against the canonical manifest, assign declared GPU groups, and either prepare launch evidence or start the planned scripts.
+- **File/signature:** `agent_tools/hparam_runtime.py`; `launch_hparam_runs(plan_dir: str | Path, *, dry_run: bool = True, fail_on_missing_pid_blocker: bool = False) -> Path`.
+- **Purpose/contract:** validate the frozen plan, serialize launch against the canonical manifest, refresh relevant observable cross-plan capacity blockers, assign declared GPU groups, and either prepare launch evidence or start one eligible wave. Execute mode rejects plans without frozen Python/commit identity, requires the target module origin inside the verified repository, parses every frozen argv with that module's `argparse` parser, and verifies or revalidates the normalized plan-local execution snapshot. Immediately before `nohup`, the same target wrapper rechecks Python/version, commit, repository/host/module identity, untracked or ignored importable code, and the run's script/config hashes. It does not probe the snapshot when no run is eligible; queue callers can request failure on an external `missing_pid` capacity blocker.
 - **Inputs/outputs:** plan directory and dry-run switch; launch manifest path.
-- **Side effects:** writes launch/status evidence and events; execute mode starts processes and commits observations.
+- **Side effects:** writes launch/status evidence and events; execute mode may commit relevant cross-plan status observations before starting processes.
 - **Callers/callees:** hparam facade/CLI and adaptive execution; calls `read_hparam_plan`, process start, and canonical state owners.
 - **Reuse guidance:** use the public export rather than invoking scripts directly.
 - **Duplication risk:** unmanaged launch skips GPU accounting, atomic launch reconciliation, and durable identity.
+
+### `agent_tools.hparam_runtime.run_hparam_queue`
+
+- **File/signature:** `agent_tools/hparam_runtime.py`; `run_hparam_queue(plan_dir: str | Path, *, dry_run: bool = True, poll_seconds: float = 60) -> Path`.
+- **Purpose/contract:** provide the explicit full-plan scheduling action without changing monitor semantics; dry-run performs one launch preview, while execute composes observation with the locked launch owner until every current-plan run is terminal. It refreshes relevant cross-plan capacity blockers through that owner and fails explicitly on `missing_pid` in either the current plan or an external blocker because neither can make automatic progress.
+- **Inputs/outputs:** plan directory, dry-run switch, and positive polling interval; launch preview or final status table path.
+- **Side effects:** execute mode may sleep, start successive run waves, and produce the same canonical/evidence updates as `launch_hparam_runs`.
+- **Callers/callees:** hparam facade/CLI and generated `run_all.sh`; calls `read_hparam_plan`, `monitor_hparam_runs`, `launch_hparam_runs`, and canonical manifest reads.
+- **Reuse guidance:** use when the authorized intent is to finish the complete static queue; use `launch_hparam_runs` for one wave and `monitor_hparam_runs` for observation only.
+- **Duplication risk:** external shell loops can omit target snapshot checks, mishandle terminal states, or accidentally turn monitor into a scheduler.
 
 ### `agent_tools.hparam_runtime.monitor_hparam_runs`
 
@@ -441,17 +461,17 @@ This catalog covers the reusable contract-bearing entrypoints behind `python -m 
 ### `agent_tools.adaptive_hparam.init_adaptive_workflow`
 
 - **File/signature:** `agent_tools/adaptive_hparam.py`; `init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path`.
-- **Purpose/contract:** validate adaptive settings/budget, preflight round zero before mutation, preserve the hparam local overlay when writing round recipes, build its managed plan, and initialize workflow/registry/docs.
+- **Purpose/contract:** validate adaptive settings/budget, preflight round zero before mutation, freeze round-zero Python/commit identity once through `freeze_hparam_execution`, preserve the hparam local overlay when writing the managed plan, and initialize workflow/registry/docs with only those two fields as workflow identity.
 - **Inputs/outputs:** recipe and workflow root; canonical root.
 - **Side effects:** after successful preflight, writes adaptive workflow and round artifacts plus workspace state/events.
-- **Callers/callees:** CLI; composes recipe loading, `preflight_plan`, `build_plan`, and workspace owners.
+- **Callers/callees:** CLI; composes recipe loading, `preflight_plan`, `freeze_hparam_execution`, `build_plan`, and workspace owners.
 - **Reuse guidance:** use rather than creating round directories manually.
 - **Duplication risk:** mutation before round-zero preflight leaves invalid partial workflows.
 
 ### `agent_tools.adaptive_hparam.adaptive_step`
 
 - **File/signature:** `agent_tools/adaptive_hparam.py`; `adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path`.
-- **Purpose/contract:** preflight the mutable source before digest mutation, digest current evidence, generate and preflight the suggested overlay, then in execute mode respect total budget and replacement ordering before planning/launching it.
+- **Purpose/contract:** preflight the mutable source before digest mutation, overlay and enforce the workflow's frozen Python/commit identity while preserving current non-identity execution fields, digest current evidence, generate and preflight the suggested overlay, then in execute mode respect total budget and replacement ordering before planning/launching it.
 - **Inputs/outputs:** workflow root and execute switch; latest/next round path.
 - **Side effects:** writes digests/suggestions/events; execute mode may stop/supersede runs, create a plan, and launch.
 - **Callers/callees:** CLI and `adaptive_loop`; composes existing hparam, plan, evidence, and workspace owners.

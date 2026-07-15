@@ -4,6 +4,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,17 @@ import yaml
 from agent_tools import decision_hparam, hparam_runtime, manifests, run_artifacts, run_evidence
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
+from agent_tools.models import REPO_ROOT
+
+_REAL_VALIDATED_EXECUTION_SNAPSHOT = hparam_runtime._validated_execution_snapshot
+_RUNTIME_COMMIT = subprocess.run(
+    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
+).stdout.strip()
+
+
+@pytest.fixture(autouse=True)
+def _stub_execution_snapshot_preflight(monkeypatch):
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -24,6 +36,15 @@ def _run(*args: str) -> subprocess.CompletedProcess:
 
 def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
     base = write_finetune_recipe(tmp_path)
+    execution_payload = dict(execution) if execution is not None else {"workdir": str(tmp_path)}
+    manager_runtime = (
+        str(execution_payload.get("target", "local") or "local") == "local"
+        and execution_payload.get("workdir") in (None, "", str(REPO_ROOT))
+        and execution_payload.get("conda_env") in (None, "")
+    )
+    if not manager_runtime:
+        execution_payload.setdefault("python", sys.executable)
+        execution_payload.setdefault("runtime_commit", _RUNTIME_COMMIT)
     return write_yaml(
         tmp_path / "tune.yaml",
         {
@@ -36,7 +57,7 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
                 "max_runs": 1,
                 "parameters": {"runtime.lr": [1e-6]},
             },
-            "execution": execution if execution is not None else {"workdir": str(tmp_path)},
+            "execution": execution_payload,
             "evaluation_policy": {
                 "selection_metric": "val_ahi_pearson",
                 "selection_mode": "max",
@@ -66,6 +87,53 @@ def _read_table(path: Path) -> list[dict[str, str]]:
     delimiter = "\t" if path.suffix == ".tsv" else ","
     with path.open(newline="") as file_obj:
         return list(csv.DictReader(file_obj, delimiter=delimiter))
+
+
+def _set_execution_probe(
+    monkeypatch,
+    plan_dir: Path,
+    *,
+    commit: str | None = None,
+    missing_options: set[str] | None = None,
+    parse_error: str | None = None,
+) -> list[str]:
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    command = shlex.split(plan["runs"][0]["command"])
+    module = command[command.index("-m") + 1]
+    options = {token for token in command if token.startswith("--")} - set(missing_options or set())
+    runtime_commit = commit or plan["recipe"]["execution"]["runtime_commit"]
+    calls = []
+
+    def run_probe(_execution, probe_command):
+        if len(probe_command) > 2 and "runtime_hostname" in probe_command[2]:
+            calls.append("identity")
+            return subprocess.CompletedProcess(
+                probe_command,
+                0,
+                json.dumps(
+                    {
+                        "python": "/runtime/bin/python",
+                        "python_version": "3.10.0",
+                        "runtime_commit": runtime_commit,
+                        "runtime_repo_root": "/runtime/repo",
+                        "runtime_hostname": "runtime-host",
+                        "module": module,
+                        "module_origin": f"/runtime/repo/{module.replace('.', '/')}.py",
+                    }
+                ),
+                "",
+            )
+        calls.append("parse")
+        evidence = json.dumps({"supported_options": sorted(options), "cli_options_sha256": "digest"})
+        return subprocess.CompletedProcess(
+            probe_command,
+            2 if parse_error else 0,
+            "" if parse_error else f"AGENT_CLI_PREFLIGHT={evidence}\n",
+            parse_error or "",
+        )
+
+    monkeypatch.setattr(hparam_runtime, "_run_execution_command", run_probe)
+    return calls
 
 
 def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
@@ -1556,6 +1624,21 @@ def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     assert "must be a positive integer" in issues[0].message
 
 
+@pytest.mark.parametrize(
+    ("execution", "field"),
+    [
+        ({"python": ""}, "execution.python"),
+        ({"runtime_commit": "abc123"}, "execution.runtime_commit"),
+    ],
+)
+def test_hparam_execution_rejects_invalid_runtime_identity(execution, field):
+    issues = decision_hparam._hparam_execution_issues(execution, {})
+
+    assert len(issues) == 1
+    assert issues[0].field == field
+    assert issues[0].status.value == "FAIL"
+
+
 def test_hparam_runtime_rejects_gpus_per_run_without_a_physical_pool():
     with pytest.raises(
         ValueError,
@@ -1604,6 +1687,518 @@ def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group
     assert [row["status"] for row in rows] == ["missing_pid", "finished", "launched", "pending"]
 
 
+def test_hparam_run_queue_dry_run_returns_after_one_preview(tmp_path: Path, monkeypatch):
+    calls = []
+    manifest = tmp_path / "launch_manifest.tsv"
+    monkeypatch.setattr(
+        hparam_runtime,
+        "launch_hparam_runs",
+        lambda plan_dir, *, dry_run: calls.append((Path(plan_dir), dry_run)) or manifest,
+    )
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda _seconds: pytest.fail("dry-run must not sleep"))
+
+    result = hparam_runtime.run_hparam_queue(tmp_path / "plan")
+
+    assert result == manifest
+    assert calls == [((tmp_path / "plan").resolve(), True)]
+
+
+def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "max_concurrent": 1})
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 3
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    started = []
+    sleeps = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+    monkeypatch.setattr(
+        hparam_runtime.evidence,
+        "status_row",
+        lambda _root, observation, previous, *, health: {**previous, **observation, "status": "finished"},
+    )
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    status_path = hparam_runtime.run_hparam_queue(plan_dir, dry_run=False, poll_seconds=0.25)
+
+    assert status_path == plan_dir / "run_status.tsv"
+    assert len(started) == 3
+    assert sleeps == [0.25, 0.25, 0.25]
+    assert {row["status"] for row in _read_table(status_path)} == {"finished"}
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert sum(event["event_type"] == "run_status_changed" for event in events) == 3
+
+
+def test_hparam_run_queue_returns_terminal_plan_without_monitor_or_launch(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "finished"}])
+    assert not (plan_dir / "run_status.tsv").exists()
+    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no monitor"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+
+    assert hparam_runtime.run_hparam_queue(plan_dir, dry_run=False) == plan_dir / "run_status.tsv"
+    assert _read_table(plan_dir / "run_status.tsv")[0]["status"] == "finished"
+
+
+def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "missing_pid"}],
+    )
+    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no monitor"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
+
+    with pytest.raises(RuntimeError, match="cannot advance.*missing_pid"):
+        hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+
+
+def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "running"}])
+    (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
+    observations = iter(["running", "finished"])
+    monkeypatch.setattr(
+        hparam_runtime.evidence,
+        "status_row",
+        lambda _root, observation, previous, *, health: {
+            **previous,
+            **observation,
+            "status": next(observations),
+        },
+    )
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("terminal queue must not sleep"))
+
+    hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    transitions = [event for event in events if event["event_type"] == "run_status_changed"]
+    assert [(event["from"], event["to"]) for event in transitions] == [("running", "finished")]
+
+
+def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path: Path, monkeypatch):
+    execution = {"workdir": str(tmp_path), "gpu_pool": [0], "gpus_per_run": 1}
+    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
+    first_run = json.loads((first_plan / "plan.json").read_text())["runs"][0]
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    second_run = json.loads((second_plan / "plan.json").read_text())["runs"][0]
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime.evidence,
+        "status_row",
+        lambda _root, observation, previous, *, health: {
+            **previous,
+            **observation,
+            "status": "finished" if previous["run_id"] == first_run["run_id"] else previous["status"],
+        },
+    )
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launch_failed",
+    )
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("queue should make progress"))
+
+    hparam_runtime.run_hparam_queue(second_plan, dry_run=False)
+
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert rows[first_run["run_id"]]["status"] == "finished"
+    assert rows[second_run["run_id"]]["status"] == "launch_failed"
+    assert len(started) == 1
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert any(
+        event["event_type"] == "run_status_changed"
+        and event["run_id"] == first_run["run_id"]
+        and event["to"] == "finished"
+        for event in events
+    )
+
+
+def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_plan(tmp_path: Path, monkeypatch):
+    execution = {"workdir": str(tmp_path), "gpu_pool": [0], "gpus_per_run": 1}
+    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False)
+    first_run = json.loads((first_plan / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": first_run["step_id"], "run_id": first_run["run_id"], "status": "missing_pid"}],
+    )
+
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6]
+    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    monkeypatch.setattr(
+        hparam_runtime.evidence,
+        "status_row",
+        lambda _root, observation, previous, *, health: {**previous, **observation},
+    )
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("blocked queue must not start"))
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("blocked queue must not sleep"))
+
+    with pytest.raises(RuntimeError, match=f"{first_run['run_id']} has status missing_pid"):
+        hparam_runtime.run_hparam_queue(second_plan, dry_run=False)
+
+
+def test_hparam_launch_freezes_verified_execution_target_before_start(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    calls = _set_execution_probe(monkeypatch, plan_dir)
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, _command: calls.append("start") or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    snapshot = json.loads((plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_text())
+    assert calls == ["identity", "parse", "start"]
+    assert snapshot["python"] == "/runtime/bin/python"
+    assert (
+        snapshot["runtime_commit"]
+        == json.loads((plan_dir / "plan.json").read_text())["recipe"]["execution"]["runtime_commit"]
+    )
+    assert snapshot["runtime_hostname"] == "runtime-host"
+    assert snapshot["module"] == "sleep2vec.finetune"
+    assert set(snapshot["required_options"]).issubset(snapshot["supported_options"])
+    assert not list(plan_dir.glob(f".{hparam_runtime.EXECUTION_SNAPSHOT_NAME}.*"))
+
+
+def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    for payload in (plan["recipe"], resolved):
+        payload["execution"].pop("python")
+        payload["execution"].pop("runtime_commit")
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_run_execution_command",
+        lambda *_args, **_kwargs: pytest.fail("legacy plan must fail before target probing"),
+    )
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("legacy plan must not start"))
+
+    with pytest.raises(ValueError, match="lacks execution.python or execution.runtime_commit; create a new plan"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert not (plan_dir / "launch_manifest.tsv").exists()
+    assert not (plan_dir / "run_status.tsv").exists()
+
+
+def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(hparam_runtime.subprocess, "run", run)
+    workdir = "/runtime checkout"
+
+    hparam_runtime._run_execution_command(
+        {"workdir": workdir, "conda_env": "runtime", "env": {"TOKEN": "value"}},
+        ["/runtime/bin/python", "-c", "pass"],
+    )
+
+    argv, kwargs = calls[0]
+    assert argv[:2] == ["bash", "-lc"]
+    shell = argv[2]
+    assert shell.index(f"cd {shlex.quote(workdir)}") < shell.index("conda run")
+    assert "export PYTHONPATH=" in shell
+    assert "${PYTHONPATH" not in shell
+    assert "TOKEN=value" in shell
+    assert kwargs["timeout"] == hparam_runtime.LAUNCH_TIMEOUT_SECONDS
+
+
+def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_nohup(tmp_path: Path):
+    script = tmp_path / "launch.sh"
+    config = tmp_path / "config.yaml"
+    script.write_text("#!/usr/bin/env bash\ntrue\n")
+    config.write_text("value: 1\n")
+    snapshot = {
+        "python": "/runtime/bin/python",
+        "python_version": "3.10.0",
+        "runtime_commit": "a" * 40,
+        "runtime_repo_root": "/runtime/repo",
+        "runtime_hostname": "runtime-host",
+        "module": "sleep2vec.finetune",
+        "module_origin": "/runtime/repo/sleep2vec/finetune.py",
+    }
+    command = hparam_runtime._launch_command(
+        {"workdir": str(tmp_path), "python": "/runtime/bin/python", "runtime_commit": "a" * 40},
+        script,
+        tmp_path / "stdout.log",
+        tmp_path / "pid",
+        [],
+        execution_snapshot=snapshot,
+        config_path=config,
+        script_sha256=file_sha256(script),
+        config_sha256=file_sha256(config),
+    )
+
+    assert "Target runtime identity changed before process start" in command
+    assert "Frozen run artifact changed before process start" in command
+    assert str(script) in command
+    assert str(config) in command
+    assert command.index("Target runtime identity changed before process start") < command.index("nohup")
+
+
+def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
+    repo = tmp_path / "runtime-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "runtime_cli.py").write_text(
+        "import argparse\n"
+        "if __name__ == '__main__':\n"
+        "    parser = argparse.ArgumentParser()\n"
+        "    parser.add_argument('--value', choices=['ok'], required=True)\n"
+        "    parser.parse_args()\n"
+    )
+    (repo / ".gitignore").write_text("*.log\n.codex-tmp/\n")
+    subprocess.run(["git", "add", "runtime_cli.py", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"],
+        cwd=repo,
+        check=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    artifact_dir = repo / "experiment" / "plan"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "plan.json").write_text("{}\n")
+    config = artifact_dir / "config.yaml"
+    config.write_text("value: ok\n")
+    (repo / "dataset.csv").write_text("value\nok\n")
+    ignored_tools = repo / ".codex-tmp"
+    ignored_tools.mkdir()
+    (ignored_tools / "tool.py").write_text("raise RuntimeError('not importable from the runtime root')\n")
+    command = f"{shlex.quote(sys.executable)} -m runtime_cli --value ok"
+    script = artifact_dir / "launch.sh"
+    script.write_text(f"#!/usr/bin/env bash\n{command}\n")
+
+    snapshot = hparam_runtime._inspect_execution_target(
+        {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
+        [{"run_id": "run-000", "script": str(script), "command": command}],
+    )
+
+    assert snapshot["runtime_commit"] == commit
+    assert snapshot["runtime_repo_root"] == str(repo)
+    assert snapshot["module_origin"] == str(repo / "runtime_cli.py")
+    assert "--value" in snapshot["supported_options"]
+    launch = hparam_runtime._launch_command(
+        {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
+        script,
+        artifact_dir / "stdout.log",
+        artifact_dir / "pid",
+        [],
+        execution_snapshot=snapshot,
+        config_path=config,
+        script_sha256=file_sha256(script),
+        config_sha256=file_sha256(config),
+    )
+    config.write_text("value: changed\n")
+
+    config_result = subprocess.run(["bash", "-lc", launch], text=True, capture_output=True)
+
+    assert config_result.returncode != 0
+    assert "Frozen run artifact changed before process start" in config_result.stderr
+    assert not (artifact_dir / "pid").exists()
+    config.write_text("value: ok\n")
+    script.write_text(script.read_text() + "# changed\n")
+
+    script_result = subprocess.run(["bash", "-lc", launch], text=True, capture_output=True)
+
+    assert script_result.returncode != 0
+    assert "Frozen run artifact changed before process start" in script_result.stderr
+    assert not (artifact_dir / "pid").exists()
+
+
+def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_path: Path):
+    repo = tmp_path / "runtime-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "README.md").write_text("fixture\n")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"],
+        cwd=repo,
+        check=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    script = repo / "launch.sh"
+    command = f"{shlex.quote(sys.executable)} -m pytest --help"
+    script.write_text(f"#!/usr/bin/env bash\n{command}\n")
+
+    with pytest.raises(RuntimeError, match="module is outside the verified repository"):
+        hparam_runtime._inspect_execution_target(
+            {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
+            [{"run_id": "run-000", "script": str(script), "command": command}],
+        )
+
+
+def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(tmp_path), "wandb_project": "unit", "wandb_group": "runtime-preflight"},
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["runtime"]["wandb_mode"] = "online"
+    write_yaml(base_recipe, base_payload)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    _set_execution_probe(monkeypatch, plan_dir, missing_options={"--wandb-mode"})
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match=r"does not accept planned options: --wandb-mode"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert started == []
+    assert all(path.read_bytes() == content for path, content in before.items())
+    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert not (plan_dir / "launch_manifest.tsv").exists()
+    assert not (plan_dir / "run_status.tsv").exists()
+    row = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert row["status"] == "planned"
+    assert row.get("target", "") == ""
+
+
+def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    calls = _set_execution_probe(monkeypatch, plan_dir, parse_error="invalid choice: bf16-mixed")
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("must not start"))
+
+    with pytest.raises(ValueError, match="rejected frozen arguments.*invalid choice"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == ["identity", "parse"]
+    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
+
+
+def test_hparam_launch_rejects_unintended_first_runtime_commit(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "runtime_commit": "a" * 40})
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    calls = _set_execution_probe(monkeypatch, plan_dir, commit="b" * 40)
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("must not start"))
+
+    with pytest.raises(ValueError, match="expected a{40}, observed b{40}"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == ["identity"]
+    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+
+
+def test_hparam_launch_rejects_execution_snapshot_drift_before_next_wave(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "max_concurrent": 1})
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    _set_execution_probe(monkeypatch, plan_dir)
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    first = _read_table(plan_dir / "launch_manifest.tsv")[0]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": first["step_id"], "run_id": first["run_id"], "status": "finished"}],
+    )
+    _set_execution_probe(monkeypatch, plan_dir, commit="b" * 40)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Target runtime commit differs"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert len(started) == 1
+    assert all(path.read_bytes() == content for path, content in before.items())
+
+
+def test_hparam_launch_rejects_partially_executed_plan_without_snapshot(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    calls = _set_execution_probe(monkeypatch, plan_dir)
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+
+    with pytest.raises(ValueError, match="after a hparam run has started"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == []
+    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+
+
 def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_is_unknown(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
         tmp_path,
@@ -1619,6 +2214,12 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_
     merge_run_manifest(
         tmp_path,
         [{"step_id": runs[0]["step_id"], "run_id": runs[0]["run_id"], "status": "running"}],
+    )
+    (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_validated_execution_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("full capacity must not probe"),
     )
     started = []
     monkeypatch.setattr(
@@ -1825,12 +2426,14 @@ def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_g
     assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
 
     second_payload = yaml.safe_load(first_recipe.read_text())
-    second_payload["execution"] = {
-        "workdir": str(tmp_path),
-        "gpu_pool": [0, 1, 2],
-        "gpus_per_run": 1,
-        "max_concurrent": 4,
-    }
+    second_payload["execution"].update(
+        {
+            "workdir": str(tmp_path),
+            "gpu_pool": [0, 1, 2],
+            "gpus_per_run": 1,
+            "max_concurrent": 4,
+        }
+    )
     second_payload["search"]["max_runs"] = 4
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6, 4e-6, 5e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
@@ -1873,6 +2476,8 @@ def test_hparam_launch_scopes_active_gpu_load_by_target_and_ssh_host(
         "target": "ssh",
         "host": "host-a",
         "workdir": str(tmp_path / "remote-a"),
+        "python": sys.executable,
+        "runtime_commit": _RUNTIME_COMMIT,
         "gpu_pool": [0, 1],
         "gpus_per_run": 1,
     }
@@ -1935,8 +2540,8 @@ def test_hparam_plan_rejects_duplicate_gpu_assignments_within_a_run(tmp_path: Pa
     assert "must not contain duplicate GPU identifiers" in result.stdout
 
 
-@pytest.mark.parametrize("env_name", ["WANDB_PROJECT", "WANDB_GROUP", "WANDB_RUN_GROUP", "WANDB_MODE"])
-def test_hparam_plan_rejects_wandb_environment_aliases(tmp_path: Path, env_name: str):
+@pytest.mark.parametrize("env_name", ["PYTHONPATH", "WANDB_PROJECT", "WANDB_GROUP", "WANDB_RUN_GROUP", "WANDB_MODE"])
+def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_name: str):
     recipe = _hparam_recipe(
         tmp_path,
         execution={"workdir": str(tmp_path), "env": {env_name: "unit"}},
@@ -2137,7 +2742,7 @@ def test_hparam_launch_does_not_retry_missing_pid(tmp_path: Path, monkeypatch):
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 2
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
-    payload["execution"] = {"workdir": str(tmp_path), "max_concurrent": 1}
+    payload["execution"].update({"workdir": str(tmp_path), "max_concurrent": 1})
     recipe.write_text(yaml.safe_dump(payload))
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0

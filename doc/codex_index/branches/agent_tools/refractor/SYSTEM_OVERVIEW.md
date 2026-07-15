@@ -48,7 +48,7 @@ hparam_runtime / experiments / adaptive_hparam
 
 `evaluate_recipe` and `preflight_plan` are the reusable read-only boundaries. `build_plan` may initialize a workspace only after preflight has established enough ownership and safety. Issues marked as pre-workspace, unresolved experiment/step metadata, invalid workdirs, and managed-output topology failures must return before creating directories or files.
 
-`doctor --output-dir` is diagnostic and may write question artifacts. `context` writes a diagnostic bundle but does not authorize runnable work. `plan`, hparam launch, experiment lifecycle commands, and adaptive execution are mutation surfaces.
+`doctor --output-dir` is diagnostic and may write question artifacts. `context` writes a diagnostic bundle but does not authorize runnable work. `plan`, hparam launch/queue, experiment lifecycle commands, and adaptive execution are mutation surfaces.
 
 ## Workspace and Identity
 
@@ -63,6 +63,7 @@ hparam_runtime / experiments / adaptive_hparam
 - `preset_prepare` renders the existing preprocessing preset CLI.
 - `finetune`, `infer`, and `evaluate` route through the package selected by `variant`.
 - `hparam_tune` freezes a finite set of per-run configs and launch scripts before any launch.
+- Planning freezes the target Python command and expected Git commit. Only a local `REPO_ROOT` target without a conda wrapper may use manager-interpreter/HEAD defaults; SSH, separate-workdir, and conda-wrapped targets require explicit identity. The first eligible hparam execute verifies isolated imports, repository-owned module origin, host identity, clean worktree, exact commit, the normalized `argparse` option set, and every frozen CLI argv. Each actual start repeats identity/import checks through the same wrapper and verifies the run's frozen script/config hashes immediately before `nohup`. Plans that predate frozen identity must be recreated. `hparam-run-queue` composes monitor observations with the locked launch owner, which also refreshes relevant cross-plan capacity blockers and fails queue mode on `missing_pid` blockers.
 - `sleep2stat` is variantless and routes through `python -m sleep2stat` commands.
 - Supported variant modules are selected in `models.module_for_variant` and `plan_rendering.variant_module`.
 

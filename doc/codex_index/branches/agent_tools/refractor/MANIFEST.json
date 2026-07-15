@@ -1,12 +1,12 @@
 {
   "branch": "agent_tools/refractor",
-  "commit": "40b8b7b811a68369e739e9d2f717651652853ace",
-  "generated_at": "2026-07-14T19:18:04Z",
-  "mode": "initialize-branch",
+  "commit": "faefcc7f3d46cf3739ff53dd89d8749ba9d93b9e",
+  "generated_at": "2026-07-15T05:03:08Z",
+  "mode": "repair",
   "baseline": {
     "branch": "main",
     "commit": "40b8b7b811a68369e739e9d2f717651652853ace",
-    "relationship": "identical tracked source at generation time"
+    "relationship": "branch is one commit ahead at refresh time"
   },
   "coverage": {
     "focus": [
@@ -45,9 +45,9 @@
       "canonical experiment workspace identity and lifecycle state",
       "local and SSH managed-artifact I/O and topology validation",
       "frozen hparam plan, runtime manifest, PID, log, checkpoint, and progress evidence",
-      "hparam launch, monitoring, stopping, selection, and postprocessing",
+      "hparam target identity freezing, repository-owned module origins, normalized execution snapshots, same-wrapper pre-start identity and artifact guards, cross-plan capacity refresh, explicit queue draining, monitoring, stopping, selection, and postprocessing",
       "experiment W&B sync, checkpoint indexing, monitoring, ranking, and finalization",
-      "adaptive hparam rounds and machine-readable progress",
+      "adaptive hparam rounds with round-zero Python/commit identity and later source-controlled operational execution fields",
       "config, index, preset, repository, and skill summaries"
     ],
     "workflow_scope": [
@@ -55,9 +55,9 @@
       "base/local/effective recipe closure and zero-side-effect failure",
       "diagnostic context generation",
       "recipe preflight and command plan generation",
-      "managed hparam planning, launch, monitoring, stop, selection, and external evaluation",
+      "managed hparam planning with canonical-local identity defaults and explicit non-manager identity, module-origin-bound target snapshots, same-wrapper pre-start verification, cross-plan capacity refresh, full-queue execution, monitoring, stop, selection, and external evaluation",
       "managed experiment initialization, step registration, tracking, ranking, and finalization",
-      "adaptive hparam initialization and round progression",
+      "adaptive hparam initialization, one-time round-zero execution identity freezing, and round progression with mutable operational settings",
       "sleep2stat recipe routing through the existing sleep2stat CLI"
     ]
   },

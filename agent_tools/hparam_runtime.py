@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shlex
 import signal
 import subprocess
+import tempfile
+import time
 from typing import Any
 
 import yaml
@@ -24,16 +28,122 @@ from .experiment_workspace import (
     validate_frozen_run_update,
     write_status_report,
 )
-from .manifests import utc_now, write_rows
+from .manifests import read_json, utc_now, write_rows
 from .models import REPO_ROOT
 
 LAUNCH_TIMEOUT_SECONDS = 60
+EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
+_RUNTIME_IDENTITY_SCRIPT = """
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import socket
+import subprocess
+import sys
+
+module = sys.argv[1]
+expected = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+artifacts = json.loads(sys.argv[3]) if len(sys.argv) > 3 else []
+commit = subprocess.run(["git", "rev-parse", "HEAD"], text=True, capture_output=True)
+repo_root = subprocess.run(["git", "rev-parse", "--show-toplevel"], text=True, capture_output=True)
+dirty = subprocess.run(
+    ["git", "status", "--porcelain", "--untracked-files=no"],
+    text=True,
+    capture_output=True,
+)
+untracked_code = subprocess.run(
+    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
+    text=True,
+    capture_output=True,
+)
+ignored_code = subprocess.run(
+    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
+    text=True,
+    capture_output=True,
+)
+if (
+    commit.returncode != 0
+    or repo_root.returncode != 0
+    or dirty.returncode != 0
+    or untracked_code.returncode != 0
+    or ignored_code.returncode != 0
+):
+    print(
+        commit.stderr or repo_root.stderr or dirty.stderr or untracked_code.stderr or ignored_code.stderr,
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if dirty.stdout.strip():
+    print("Target runtime has tracked worktree changes; launch requires a clean commit.", file=sys.stderr)
+    raise SystemExit(2)
+
+def importable_code(output):
+    paths = []
+    for raw in output.splitlines():
+        path = Path(raw)
+        module_name = path.name.split(".", 1)[0]
+        if module_name.isidentifier() and all(part.isidentifier() for part in path.parts[:-1]):
+            paths.append(raw)
+    return paths
+
+if importable_code(untracked_code.stdout) or importable_code(ignored_code.stdout):
+    print(
+        "Target runtime has untracked or ignored Python code; launch requires commit-defined import roots.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+runtime_repo_root = Path(repo_root.stdout.strip()).resolve()
+spec = importlib.util.find_spec(module)
+origin = Path(spec.origin).resolve() if spec is not None and spec.origin else None
+if origin is None:
+    print(f"Target runtime module has no file origin: {module}", file=sys.stderr)
+    raise SystemExit(2)
+try:
+    origin.relative_to(runtime_repo_root)
+except ValueError:
+    print(f"Target runtime module is outside the verified repository: {origin}", file=sys.stderr)
+    raise SystemExit(2)
+payload = {
+    "python": sys.executable,
+    "python_version": sys.version.split()[0],
+    "runtime_commit": commit.stdout.strip(),
+    "runtime_repo_root": str(runtime_repo_root),
+    "runtime_hostname": socket.gethostname(),
+    "module": module,
+    "module_origin": str(origin),
+}
+identity_fields = (
+    "python",
+    "python_version",
+    "runtime_commit",
+    "runtime_repo_root",
+    "runtime_hostname",
+    "module",
+    "module_origin",
+)
+changed = [field for field in identity_fields if expected and payload[field] != expected.get(field)]
+if changed:
+    print("Target runtime identity changed before process start: " + ", ".join(changed), file=sys.stderr)
+    raise SystemExit(2)
+for artifact in artifacts:
+    path = Path(artifact["path"])
+    if path.is_symlink() or not path.is_file():
+        print(f"Frozen run artifact is not an independent file: {path}", file=sys.stderr)
+        raise SystemExit(2)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != artifact["sha256"]:
+        print(f"Frozen run artifact changed before process start: {path}", file=sys.stderr)
+        raise SystemExit(2)
+print(json.dumps(payload, sort_keys=True))
+""".strip()
 
 
 def launch_hparam_runs(
     plan_dir: str | Path,
     *,
     dry_run: bool = True,
+    fail_on_missing_pid_blocker: bool = False,
 ) -> Path:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
@@ -52,9 +162,62 @@ def launch_hparam_runs(
                 run_dir,
                 dry_run=dry_run,
                 manifest_lock_held=True,
+                fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
             )
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def run_hparam_queue(
+    plan_dir: str | Path,
+    *,
+    dry_run: bool = True,
+    poll_seconds: float = 60,
+) -> Path:
+    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
+        raise ValueError("poll_seconds must be positive.")
+    run_dir = Path(plan_dir).expanduser()
+    if not run_dir.is_absolute():
+        run_dir = run_dir.resolve()
+    if dry_run:
+        return launch_hparam_runs(run_dir, dry_run=True)
+
+    plan = artifacts.read_hparam_plan(run_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    expected_keys = {managed_run_key(run) for run in plan["runs"]}
+    status_path = run_dir / "run_status.tsv"
+    exp_io.validate_managed_output_paths(workspace, [status_path])
+    while True:
+        rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+        if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
+            write_rows(status_path, [rows_by_key[managed_run_key(run)] for run in plan["runs"]])
+            return status_path
+        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
+        if missing_pid:
+            step_id, run_id = missing_pid[0]
+            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
+
+        monitor_hparam_runs(run_dir)
+        rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+        if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
+            return status_path
+        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
+        if missing_pid:
+            step_id, run_id = missing_pid[0]
+            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
+
+        launch_hparam_runs(run_dir, dry_run=False, fail_on_missing_pid_blocker=True)
+        rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+        if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
+            return status_path
+        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
+        if missing_pid:
+            step_id, run_id = missing_pid[0]
+            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
+        time.sleep(poll_seconds)
 
 
 def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -73,6 +236,7 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
             workspace / "reports" / "status.md",
             run_dir / "launch_manifest.tsv",
             run_dir / "run_status.tsv",
+            run_dir / EXECUTION_SNAPSHOT_NAME,
         ],
     )
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
@@ -114,6 +278,7 @@ def _launch_hparam_runs(
     *,
     dry_run: bool = True,
     manifest_lock_held: bool,
+    fail_on_missing_pid_blocker: bool,
 ) -> Path:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
@@ -133,6 +298,7 @@ def _launch_hparam_runs(
             workspace / "reports" / "status.md",
             run_dir / "launch_manifest.tsv",
             run_dir / "run_status.tsv",
+            run_dir / EXECUTION_SNAPSHOT_NAME,
         ],
     )
     experiment_manifest = yaml.safe_load((workspace / "experiment.yaml").read_text()) or {}
@@ -151,7 +317,20 @@ def _launch_hparam_runs(
     manifest = run_dir / "launch_manifest.tsv"
     status_path = run_dir / "run_status.tsv"
     workspace_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    snapshot_path = run_dir / EXECUTION_SNAPSHOT_NAME
+    if (
+        not dry_run
+        and not snapshot_path.exists()
+        and any(
+            workspace_by_key[managed_run_key(run)].get("target") not in (None, "")
+            or workspace_by_key[managed_run_key(run)].get("status") not in {"planned", "pending"}
+            for run in runs
+        )
+    ):
+        # Fail closed before probing when the durable execution marker is missing.
+        _validated_execution_snapshot(run_dir, execution, runs, workspace_by_key)
     refreshed = {}
+    observed_status_changes = {}
     for key in expected_keys:
         previous = workspace_by_key.get(key)
         if previous is None:
@@ -163,13 +342,17 @@ def _launch_hparam_runs(
         observation = {field: previous[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in previous}
         observation.update({"step_id": key[0], "run_id": key[1], "status": previous.get("status", "")})
         refreshed[key] = evidence.status_row(run_dir, observation, previous, health=False)
+        if refreshed[key].get("status") != previous.get("status"):
+            observed_status_changes[key] = (previous.get("status"), refreshed[key].get("status"))
     active_statuses = {"launched", "running", "unknown_remote", "missing_pid"}
     current_host = str(execution.get("host") or "") if target == "ssh" else ""
     gpu_group_values = [{str(item) for item in group} for group in gpu_groups]
     current_gpu_pool = set().union(*gpu_group_values) if gpu_group_values else set()
     other_active_gpu_sets = []
     unknown_other_active = 0
-    for key, row in workspace_by_key.items():
+    external_status_changes = {}
+    external_missing_pid = []
+    for key, row in list(workspace_by_key.items()):
         if not gpu_groups or key in expected_keys or row.get("status") not in active_statuses:
             continue
         row_target = str(row.get("target") or "")
@@ -186,12 +369,45 @@ def _launch_hparam_runs(
             if row_host != current_host:
                 continue
         assigned = {part.strip() for part in str(row.get("gpus") or "").split(",") if part.strip()}
+        if assigned and not assigned.intersection(current_gpu_pool):
+            continue
+        observable = all(
+            row.get(field) not in (None, "")
+            for field in ("target", "workdir", "pid_path", "log_path", "command", "script")
+        )
+        if not dry_run and observable:
+            observation = {field: row[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in row}
+            observation.update({"step_id": key[0], "run_id": key[1], "status": row.get("status", "")})
+            observed = evidence.status_row(run_dir, observation, row, health=False)
+            if observed.get("status") != row.get("status"):
+                external_status_changes[key] = (row.get("status"), observed.get("status"))
+                workspace_by_key[key] = observed
+                row = observed
+            if row.get("status") not in active_statuses:
+                continue
+        if row.get("status") == "missing_pid":
+            external_missing_pid.append(key)
         if not assigned:
             unknown_other_active += 1
             continue
-        if not assigned.intersection(current_gpu_pool):
-            continue
         other_active_gpu_sets.append(assigned)
+    if external_status_changes:
+        committed = merge_run_manifest(
+            workspace,
+            [workspace_by_key[key] for key in external_status_changes],
+            lock_held=manifest_lock_held,
+        )
+        workspace_by_key = {managed_run_key(row): row for row in committed}
+        for key, (before, after) in external_status_changes.items():
+            append_event(
+                workspace,
+                "run_status_changed",
+                {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
+            )
+        write_status_report(workspace)
+    if not dry_run and fail_on_missing_pid_blocker and external_missing_pid:
+        step_id, run_id = sorted(external_missing_pid)[0]
+        raise RuntimeError(f"Hparam launch capacity is blocked because {step_id} / {run_id} has status missing_pid.")
     active = (
         sum(row.get("status") in active_statuses for row in refreshed.values())
         + len(other_active_gpu_sets)
@@ -286,13 +502,50 @@ def _launch_hparam_runs(
             )
     else:
         exp_io.validate_managed_output_paths(workspace, run_output_paths)
+    execution_snapshot = None
     if not dry_run:
         launchable = [row for row in rows if row["status"] in {"planned", "pending"}]
-        runtime_roots = [Path(str(row[field])) for row in launchable for field in ("runtime_dir", "checkpoint_dir")]
-        runtime_root = Path(str(execution.get("workdir") or REPO_ROOT))
-        remote_host = str(execution["host"]) if target == "ssh" else None
-        # Trainer artifact directories are single-use; aliases or prior contents must fail before any start.
-        exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote_host)
+        has_launch_candidate = False
+        if slots > 0:
+            for row in launchable:
+                frozen_group_index = assigned_group_by_key.get(managed_run_key(row))
+                if frozen_group_index is not None:
+                    group_indexes = [frozen_group_index]
+                elif gpu_groups:
+                    group_indexes = list(range(len(gpu_groups)))
+                else:
+                    group_indexes = [None]
+                if any(
+                    group_index is None or allow_gpu_oversubscription or active_gpu_loads[group_index] < 1
+                    for group_index in group_indexes
+                ):
+                    has_launch_candidate = True
+                    break
+        if has_launch_candidate:
+            runtime_roots = [Path(str(row[field])) for row in launchable for field in ("runtime_dir", "checkpoint_dir")]
+            runtime_root = Path(str(execution.get("workdir") or REPO_ROOT))
+            remote_host = str(execution["host"]) if target == "ssh" else None
+            # Trainer artifact directories are single-use; aliases or prior contents must fail before any start.
+            exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote_host)
+            execution_snapshot, write_execution_snapshot = _validated_execution_snapshot(
+                run_dir,
+                execution,
+                runs,
+                workspace_by_key,
+            )
+            if write_execution_snapshot:
+                snapshot_path = run_dir / EXECUTION_SNAPSHOT_NAME
+                payload = (json.dumps(execution_snapshot, indent=2, sort_keys=True) + "\n").encode()
+                descriptor, temporary = tempfile.mkstemp(prefix=f".{snapshot_path.name}.", dir=snapshot_path.parent)
+                try:
+                    with os.fdopen(descriptor, "wb") as file_obj:
+                        file_obj.write(payload)
+                        file_obj.flush()
+                        os.fsync(file_obj.fileno())
+                    os.replace(temporary, snapshot_path)
+                except BaseException:
+                    Path(temporary).unlink(missing_ok=True)
+                    raise
     if target != "ssh":
         for row in rows:
             Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
@@ -359,6 +612,10 @@ def _launch_hparam_runs(
                     identity["log_path"],
                     identity["pid_path"],
                     gpus,
+                    execution_snapshot=execution_snapshot,
+                    config_path=Path(str(row["config"])),
+                    script_sha256=str(row["script_sha256"]),
+                    config_sha256=str(row["config_sha256"]),
                 )
                 row.update(identity)
                 validate_frozen_run_update(
@@ -415,7 +672,20 @@ def _launch_hparam_runs(
     write_rows(manifest, launch_rows)
     write_rows(status_path, committed_rows)
     for row in committed_rows:
-        if managed_run_key(row) in started_keys:
+        key = managed_run_key(row)
+        if key in observed_status_changes:
+            before, after = observed_status_changes[key]
+            append_event(
+                workspace,
+                "run_status_changed",
+                {
+                    "step_id": row["step_id"],
+                    "run_id": row["run_id"],
+                    "from": before,
+                    "to": after,
+                },
+            )
+        if key in started_keys:
             append_event(
                 workspace,
                 "run_launched",
@@ -423,6 +693,214 @@ def _launch_hparam_runs(
             )
     write_status_report(workspace)
     return manifest
+
+
+def _validated_execution_snapshot(
+    run_dir: Path,
+    execution: dict[str, Any],
+    runs: list[dict[str, Any]],
+    workspace_by_key: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[dict[str, Any], bool]:
+    snapshot_path = run_dir / EXECUTION_SNAPSHOT_NAME
+    if snapshot_path.exists():
+        frozen = read_json(snapshot_path)
+        if not isinstance(frozen, dict):
+            raise ValueError(f"Execution snapshot must be a mapping: {snapshot_path}")
+        actual = _inspect_execution_target(execution, runs)
+        if frozen != actual:
+            changed = sorted(key for key in set(frozen) | set(actual) if frozen.get(key) != actual.get(key))
+            raise ValueError(f"Frozen execution snapshot changed: {', '.join(changed)}")
+        return actual, False
+
+    for run in runs:
+        row = workspace_by_key[managed_run_key(run)]
+        if row.get("target") not in (None, "") or row.get("status") not in {"planned", "pending"}:
+            raise ValueError(
+                "Cannot establish an execution snapshot after a hparam run has started; create a new plan."
+            )
+    actual = _inspect_execution_target(execution, runs)
+    return actual, True
+
+
+def _inspect_execution_target(execution: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
+    modules = set()
+    python_commands = set()
+    planned_argv = []
+    required_options = set()
+    for run in runs:
+        command = str(run.get("command") or "")
+        if command not in Path(str(run["script"])).read_text().splitlines():
+            raise ValueError(f"Frozen hparam command differs from its launch script: {run['run_id']}")
+        tokens = shlex.split(command)
+        try:
+            module_flag_index = tokens.index("-m")
+            module_index = module_flag_index + 1
+            modules.add(tokens[module_index])
+        except (IndexError, ValueError) as exc:
+            raise ValueError(f"Frozen hparam command has no Python module: {run['run_id']}") from exc
+        if module_flag_index != 1:
+            raise ValueError(f"Frozen hparam command has an unsupported Python invocation: {run['run_id']}")
+        python_commands.add(tokens[0])
+        planned_argv.append({"run_id": str(run["run_id"]), "args": tokens[module_index + 1 :]})
+        required_options.update(token for token in tokens[module_index + 1 :] if token.startswith("--"))
+    if len(modules) != 1:
+        raise ValueError("A hparam plan must use exactly one target runtime module.")
+    if len(python_commands) != 1:
+        raise ValueError("A hparam plan must use exactly one target Python command.")
+    module = next(iter(modules))
+    python_command = next(iter(python_commands))
+    expected_python = execution.get("python")
+    expected_commit = execution.get("runtime_commit")
+    if expected_python in (None, "") or expected_commit in (None, ""):
+        raise ValueError("Frozen hparam plan lacks execution.python or execution.runtime_commit; create a new plan.")
+    if python_command != str(expected_python):
+        raise ValueError("Frozen hparam commands differ from execution.python.")
+
+    identity_result = _run_execution_command(execution, [python_command, "-c", _RUNTIME_IDENTITY_SCRIPT, module])
+    if identity_result.returncode != 0:
+        detail = (
+            identity_result.stderr.strip()
+            or identity_result.stdout.strip()
+            or f"exit code {identity_result.returncode}"
+        )
+        raise RuntimeError(f"Target execution identity preflight failed: {detail}")
+    try:
+        identity = json.loads(identity_result.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("Target execution identity preflight returned malformed JSON.") from exc
+    if not isinstance(identity, dict) or any(
+        identity.get(field) in (None, "")
+        for field in (
+            "python",
+            "python_version",
+            "runtime_commit",
+            "runtime_repo_root",
+            "runtime_hostname",
+            "module",
+            "module_origin",
+        )
+    ):
+        raise ValueError("Target execution identity preflight returned incomplete evidence.")
+    if identity["runtime_commit"] != str(expected_commit):
+        raise ValueError(
+            "Target runtime commit differs from the frozen plan: "
+            f"expected {expected_commit}, observed {identity['runtime_commit']}."
+        )
+
+    parser_script = """
+import argparse
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import runpy
+import sys
+
+module = sys.argv[1]
+planned_argv = json.loads(sys.argv[2])
+expected_origin = sys.argv[3]
+spec = importlib.util.find_spec(module)
+origin = str(Path(spec.origin).resolve()) if spec is not None and spec.origin else ""
+if origin != expected_origin:
+    print("Target runtime module origin changed before argparse validation.", file=sys.stderr)
+    raise SystemExit(2)
+original_parse_args = argparse.ArgumentParser.parse_args
+
+class ArgumentsValidated(Exception):
+    pass
+
+def validate(self, args=None, namespace=None):
+    for planned in planned_argv:
+        try:
+            original_parse_args(self, planned["args"], namespace)
+        except SystemExit:
+            print("Frozen argv rejected for " + planned["run_id"], file=sys.stderr)
+            raise
+    supported_options = sorted({option for action in self._actions for option in action.option_strings})
+    normalized = json.dumps(supported_options, separators=(",", ":"))
+    evidence = {
+        "supported_options": supported_options,
+        "cli_options_sha256": hashlib.sha256(normalized.encode()).hexdigest(),
+    }
+    print("AGENT_CLI_PREFLIGHT=" + json.dumps(evidence, sort_keys=True))
+    raise ArgumentsValidated
+
+argparse.ArgumentParser.parse_args = validate
+sys.argv = [module, *planned_argv[0]["args"]]
+try:
+    runpy.run_module(module, run_name="__main__")
+except ArgumentsValidated:
+    raise SystemExit(0)
+print("Target runtime did not validate arguments through argparse.", file=sys.stderr)
+raise SystemExit(2)
+""".strip()
+    parse_result = _run_execution_command(
+        execution,
+        [python_command, "-c", parser_script, module, json.dumps(planned_argv), identity["module_origin"]],
+    )
+    if parse_result.returncode != 0:
+        detail = parse_result.stderr.strip() or parse_result.stdout.strip() or f"exit code {parse_result.returncode}"
+        raise ValueError(f"Target runtime rejected frozen arguments: {detail}")
+    marker = "AGENT_CLI_PREFLIGHT="
+    evidence_lines = [line.removeprefix(marker) for line in parse_result.stdout.splitlines() if line.startswith(marker)]
+    if len(evidence_lines) != 1:
+        raise ValueError("Target runtime CLI preflight returned malformed evidence.")
+    try:
+        cli_evidence = json.loads(evidence_lines[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError("Target runtime CLI preflight returned malformed evidence.") from exc
+    supported_options = set(cli_evidence.get("supported_options") or []) if isinstance(cli_evidence, dict) else set()
+    missing_options = sorted(required_options - supported_options)
+    if missing_options:
+        raise ValueError(f"Target runtime CLI {module} does not accept planned options: {', '.join(missing_options)}")
+    cli_options_sha256 = cli_evidence.get("cli_options_sha256") if isinstance(cli_evidence, dict) else None
+    if not isinstance(cli_options_sha256, str) or not cli_options_sha256:
+        raise ValueError("Target runtime CLI preflight returned malformed evidence.")
+    execution_env = execution.get("env") if isinstance(execution.get("env"), dict) else {}
+    return {
+        "target": str(execution.get("target", "local") or "local"),
+        "host": str(execution.get("host") or ""),
+        "workdir": str(execution.get("workdir") or REPO_ROOT),
+        "conda_env": str(execution.get("conda_env") or ""),
+        "python_command": python_command,
+        "expected_runtime_commit": str(expected_commit),
+        "execution_env_sha256": hashlib.sha256(
+            json.dumps(execution_env, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        **identity,
+        "module": module,
+        "required_options": sorted(required_options),
+        "supported_options": sorted(supported_options),
+        "cli_options_sha256": cli_options_sha256,
+        "validated_argv_sha256": hashlib.sha256(
+            json.dumps(planned_argv, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+
+
+def _run_execution_command(execution: dict[str, Any], command: list[str]) -> subprocess.CompletedProcess:
+    workdir = str(execution.get("workdir") or REPO_ROOT)
+    inner = f"export PYTHONPATH={_sh(workdir)} && " + " ".join(_sh(part) for part in command)
+    run = ["bash", "-c", inner]
+    if execution.get("conda_env"):
+        run = ["conda", "run", "--no-capture-output", "-n", str(execution["conda_env"]), *run]
+    run_command = " ".join(_sh(part) for part in run)
+    env = dict(execution.get("env") or {})
+    if env:
+        env_prefix = " ".join(f"{key}={_sh(value)}" for key, value in sorted(env.items()))
+        run_command = f"env {env_prefix} {run_command}"
+    run_command = f"cd {_sh(workdir)} && {run_command}"
+    argv = (
+        ["ssh", str(execution["host"]), run_command]
+        if execution.get("target", "local") == "ssh"
+        else ["bash", "-lc", run_command]
+    )
+    return subprocess.run(
+        argv,
+        text=True,
+        capture_output=True,
+        timeout=LAUNCH_TIMEOUT_SECONDS,
+    )
 
 
 def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool = False) -> Path:
@@ -617,35 +1095,69 @@ def _launch_command(
     log_path: str | Path,
     pid_path: str | Path,
     gpus: list[Any],
+    *,
+    execution_snapshot: dict[str, Any] | None = None,
+    config_path: Path | None = None,
+    script_sha256: str | None = None,
+    config_sha256: str | None = None,
 ) -> str:
+    workdir = str(execution.get("workdir") or REPO_ROOT)
     env = dict(execution.get("env") or {})
     if gpus:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(item) for item in gpus)
     run = ["bash", str(script)]
+    verification = None
+    if execution_snapshot is not None:
+        if config_path is None or not script_sha256 or not config_sha256:
+            raise ValueError("Verified launch requires frozen script and config hashes.")
+        artifacts = [
+            {"path": str(script), "sha256": script_sha256},
+            {"path": str(config_path), "sha256": config_sha256},
+        ]
+        verification_inner = (
+            "export PYTHONPATH="
+            + _sh(workdir)
+            + " && "
+            + " ".join(
+                _sh(part)
+                for part in (
+                    execution["python"],
+                    "-c",
+                    _RUNTIME_IDENTITY_SCRIPT,
+                    execution_snapshot["module"],
+                    json.dumps(execution_snapshot, sort_keys=True),
+                    json.dumps(artifacts, sort_keys=True),
+                )
+            )
+        )
+        verification = ["bash", "-c", verification_inner]
     if execution.get("conda_env"):
-        run = [
+        wrapper = [
             "conda",
             "run",
             "--no-capture-output",
             "-n",
             str(execution["conda_env"]),
-            *run,
         ]
+        run = [*wrapper, *run]
+        if verification is not None:
+            verification = [*wrapper, *verification]
     run_command = " ".join(_sh(part) for part in run)
+    verification_command = " ".join(_sh(part) for part in verification) if verification is not None else ""
     if env:
         env_prefix = " ".join(f"{key}={_sh(value)}" for key, value in sorted(env.items()))
         run_command = f"env {env_prefix} {run_command}"
-    workdir = execution.get("workdir") or str(REPO_ROOT)
+        if verification_command:
+            verification_command = f"env {env_prefix} {verification_command}"
+    guard = f"{verification_command} >/dev/null && " if verification_command else ""
     if execution.get("target", "local") == "ssh":
         mkdir = f"mkdir -p {_sh(_parent_path(log_path))} {_sh(_parent_path(pid_path))}"
         inner = (
-            f"{mkdir} && cd {_sh(workdir)} && "
+            f"{mkdir} && cd {_sh(workdir)} && {guard}"
             f"(nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"
         )
         return f"ssh {_sh(execution['host'])} {_sh(inner)}"
-    inner = (
-        f"cd {_sh(workdir)} && (nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"  # noqa: E501
-    )
+    inner = f"cd {_sh(workdir)} && {guard}" f"(nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"
     return inner
 
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import multilabel_sidecar_issue
+from .models import REPO_ROOT
 
 _HPARAM_EXECUTION_FIELDS = {
     "target",
@@ -17,6 +19,8 @@ _HPARAM_EXECUTION_FIELDS = {
     "gpus_per_run",
     "env",
     "conda_env",
+    "python",
+    "runtime_commit",
     "wandb_project",
     "wandb_group",
 }
@@ -351,6 +355,48 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
                 {"workdir": workdir},
             )
         )
+    python = execution.get("python")
+    if python not in (None, "ASK_USER") and (not isinstance(python, str) or not python.strip()):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.python",
+                "execution.python must be a non-empty command or path when set.",
+                None,
+                {"python": python},
+            )
+        )
+    runtime_commit = execution.get("runtime_commit")
+    if runtime_commit not in (None, "ASK_USER") and (
+        not isinstance(runtime_commit, str) or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", runtime_commit) is None
+    ):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.runtime_commit",
+                "execution.runtime_commit must be a full Git commit hash when set.",
+                None,
+                {"runtime_commit": runtime_commit},
+            )
+        )
+    manager_runtime = (
+        target == "local" and workdir in (None, "", str(REPO_ROOT)) and execution.get("conda_env") in (None, "")
+    )
+    if not manager_runtime:
+        for field, question in (
+            ("python", "What Python command or absolute path should the target runtime use?"),
+            ("runtime_commit", "What full Git commit hash should the target runtime use?"),
+        ):
+            if field not in execution or execution.get(field) in (None, "ASK_USER"):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.NEEDS_USER_INPUT,
+                        f"execution.{field}",
+                        f"execution.{field} must be explicit when the target runtime is not local REPO_ROOT.",
+                        question,
+                        {"target": target, "workdir": workdir, "conda_env": execution.get("conda_env")},
+                    )
+                )
     if execution.get("path_context") not in (None, "local", "remote"):
         issues.append(
             DecisionIssue(
@@ -500,7 +546,29 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
             )
         )
     if isinstance(execution.get("env"), dict):
+        for env_name, value in execution["env"].items():
+            if not isinstance(env_name, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name) is None:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        "execution.env keys must be POSIX environment variable names.",
+                        None,
+                        {"name": env_name},
+                    )
+                )
+            if not isinstance(value, (str, int, float, bool)):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        "execution.env values must be scalar strings, numbers, or booleans.",
+                        None,
+                        {"value": value},
+                    )
+                )
         for env_name, field in {
+            "PYTHONPATH": "execution.workdir",
             "WANDB_PROJECT": "execution.wandb_project",
             "WANDB_GROUP": "execution.wandb_group",
             "WANDB_RUN_GROUP": "execution.wandb_group",

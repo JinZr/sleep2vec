@@ -22,6 +22,7 @@ from .hparam import (
     generate_external_eval,
     launch_hparam_runs,
     monitor_hparam_runs,
+    run_hparam_queue,
     scan_hparam_checkpoints,
     select_hparam_candidates,
     stop_hparam_run,
@@ -114,6 +115,14 @@ def _build_parser() -> argparse.ArgumentParser:
     launch_mode.add_argument("--dry-run", action="store_true", default=True)
     launch_mode.add_argument("--execute", action="store_true")
     launch.set_defaults(func=_cmd_hparam_launch)
+
+    run_queue = sub.add_parser("hparam-run-queue")
+    run_queue.add_argument("--plan-dir", required=True)
+    run_queue_mode = run_queue.add_mutually_exclusive_group()
+    run_queue_mode.add_argument("--dry-run", action="store_true", default=True)
+    run_queue_mode.add_argument("--execute", action="store_true")
+    run_queue.add_argument("--poll-seconds", type=float, default=60)
+    run_queue.set_defaults(func=_cmd_hparam_run_queue)
 
     monitor = sub.add_parser("hparam-monitor")
     monitor.add_argument("--run-dir", required=True)
@@ -360,6 +369,16 @@ def _cmd_collect_runs(args: argparse.Namespace) -> int:
 def _cmd_hparam_launch(args: argparse.Namespace) -> int:
     manifest = launch_hparam_runs(args.plan_dir, dry_run=not args.execute)
     print(f"Wrote {manifest}")
+    return 0
+
+
+def _cmd_hparam_run_queue(args: argparse.Namespace) -> int:
+    status = run_hparam_queue(
+        args.plan_dir,
+        dry_run=not args.execute,
+        poll_seconds=args.poll_seconds,
+    )
+    print(f"Wrote {status}")
     return 0
 
 

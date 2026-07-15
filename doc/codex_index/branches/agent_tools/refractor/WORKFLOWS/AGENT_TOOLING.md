@@ -51,17 +51,22 @@ Primary tests: plan-atomicity, recipe command rendering, CLI contract, experimen
 
 ### Plan compilation
 
-1. `plan_hparam.hparam_combos` expands the declared finite search space.
-2. YAML-pointer overrides are validated against the source config before per-run configs are written.
-3. Every run receives stable `run-NNN` identity, semantic name, version, frozen config, launch script, hashes, runtime/checkpoint directories, and managed parameters. Hparam `inputs.ckpt_path` belongs only to final evaluation and is not rendered into these tuning commands.
-4. The plan, resolved recipe/base source, launch/final-eval artifacts, and canonical manifest rows are written before execution.
+1. `plan_hparam.freeze_hparam_execution` requires explicit `execution.python` and full `execution.runtime_commit` for SSH targets, separate local workdirs, and conda-wrapped targets. Only a local `REPO_ROOT` target without a conda wrapper may omit them and freeze the manager interpreter and manager repository HEAD.
+2. `plan_hparam.hparam_combos` expands the declared finite search space.
+3. YAML-pointer overrides are validated against the source config before per-run configs are written.
+4. Every run receives stable `run-NNN` identity, semantic name, version, frozen config, launch script, hashes, runtime/checkpoint directories, and managed parameters. Hparam `inputs.ckpt_path` belongs only to final evaluation and is not rendered into these tuning commands.
+5. The plan, resolved recipe/base source, launch/final-eval artifacts, and canonical manifest rows are written before execution.
 
 ### Launch
 
 1. `hparam_runtime.launch_hparam_runs` first calls `run_artifacts.read_hparam_plan`.
 2. It locks the canonical manifest, validates the complete launch output topology, and derives GPU groups from frozen execution settings.
-3. Dry-run records replayable launch evidence; execute mode starts exact frozen scripts.
-4. Interrupted launch artifacts are reconciled against known started run keys and canonical state.
+3. Dry-run records replayable launch evidence without probing Python, Git, SSH runtime capabilities, or creating an execution snapshot.
+4. The first execute with an eligible slot probes the matching target wrapper, isolated workdir import root, Python/version, target hostname, runtime repository root, clean worktree, exact commit, repository-owned module origin, normalized `argparse` option set, explicit environment digest, and every frozen argv vector before `execution_snapshot.json` is atomically written or any run execution identity/process is committed. Argparse validation requires the same resolved module origin; rendered CLI text is not snapshot evidence.
+5. Later eligible launch waves re-probe and require exact snapshot equality. Immediately before every `nohup`, the same target/env/conda/PYTHONPATH wrapper rechecks Python/version, commit, repository root, hostname, module origin, untracked or ignored importable code, and that run's script/config hashes. Plans without frozen Python/commit identity must be recreated. A missing snapshot may be established only before any run has committed an execution target or advanced beyond `planned`/`pending`; a full-capacity wave does not probe it.
+6. Before computing capacity, execute-mode launch refreshes observable active rows from other plans that share the relevant target, SSH host, and GPU pool, commits status transitions, and excludes blockers that became terminal.
+7. `run_hparam_queue` is a separate explicit action: dry-run performs one preview; execute records monitor-owned status transitions, calls the same locked launch owner, exits only when all current-plan runs are terminal, and fails on non-retriable `missing_pid` in either the current plan or a relevant cross-plan capacity blocker.
+8. Interrupted launch artifacts are reconciled against known started run keys and canonical state.
 
 ### Monitor and stop
 
@@ -70,7 +75,7 @@ Primary tests: plan-atomicity, recipe command rendering, CLI contract, experimen
 3. Observations are written plan-locally and committed through `merge_run_manifest`.
 4. `stop_hparam_run` requires a non-empty reason and uses `read_pid(..., expected_script=...)` before signaling.
 
-Contract: `run_manifest.tsv` is durable state. `launch_manifest.tsv` and `run_status.tsv` are plan-local evidence, not competing state authorities. Historical `trial_*` formats are read-only.
+Contract: `run_manifest.tsv` is durable state. `launch_manifest.tsv`, `run_status.tsv`, and `execution_snapshot.json` are plan-local evidence, not competing state authorities. Monitor remains observation-only. Historical `trial_*` formats are read-only and current-format plans that predate frozen execution identity are recreated, not upgraded in place.
 
 Primary tests: hparam runtime, run-artifact, run-evidence, experiment-workspace, and remote evidence tests.
 
@@ -114,15 +119,15 @@ Primary tests: local/remote experiment lifecycle, workspace, tracking, W&B owner
 ## 7. Adaptive Hparam Workflow
 
 1. `init_adaptive_workflow` validates adaptive settings and budget, then calls `preflight_plan` for round 000 before creating workflow artifacts.
-2. After passing preflight, it writes a legal hparam local overlay rather than a flattened base/effective recipe, creates round 000 through `build_plan`, and writes `adaptive/workflow.json`, the run registry, README, and events.
-3. `adaptive_step` and standalone suggestion first preflight the current mutable source before digest, event, or suggestion mutation.
+2. After passing preflight, it calls `freeze_hparam_execution` once, writes a legal hparam local overlay rather than a flattened base/effective recipe, creates round 000 through `build_plan`, and stores only the resolved Python/commit pair as `adaptive/workflow.json.execution_identity` alongside the registry, README, and events.
+3. `adaptive_step` and standalone suggestion first preflight the current mutable source before digest, event, or suggestion mutation, reject an explicitly conflicting Python/commit pair, and overlay the round-000 identity. Other execution fields remain source-controlled, allowing preflight-approved capacity, GPU, environment, and similar operational changes in later round plans.
 4. `digest_hparam_run` monitors the current round, records managed metrics/checkpoint/log evidence, and updates the incumbent table.
 5. `suggest_next_round` ranks finite objective values, preflights the generated local overlay through a temporary authored recipe, and only then writes the suggestion plus rationale.
 6. `adaptive_step` preflights the complete next round before execute-mode replacement actions.
 7. Only when the replacement round fits remaining budget may execute mode stop/supersede eligible current runs, build/register the next plan, and launch it.
 8. `adaptive_loop` repeats steps until budget or no-progress termination; dry-run stops after one step.
 
-Contract: adaptive code composes existing plan, hparam, evidence, and workspace owners. It must not maintain a second canonical status table or retire current work before a viable replacement round is validated.
+Contract: adaptive code composes existing plan, hparam, evidence, and workspace owners. Python/commit identity is workflow-stable from round 000, while other execution settings are frozen independently by each immutable round plan. Adaptive code must not maintain a second canonical status table or retire current work before a viable replacement round is validated.
 
 Primary tests: adaptive workflow plus hparam runtime, selection, preflight, and workspace tests.
 

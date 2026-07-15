@@ -5,9 +5,9 @@ This directory is the branch-scoped engineering manual for `agent_tools/refracto
 ## Branch Scope
 
 - Branch: `agent_tools/refractor`
-- Indexed commit: `40b8b7b811a68369e739e9d2f717651652853ace`
-- Generated at: `2026-07-14T19:18:04Z`
-- Mode: `initialize-branch`
+- Indexed commit: `faefcc7f3d46cf3739ff53dd89d8749ba9d93b9e`
+- Generated at: `2026-07-15T05:03:08Z`
+- Mode: `repair`
 - Detailed scope: `agent_tools/` and its contracts in `recipes/`, `skills/`, `agent_policies/`, `doc/agent_contracts/`, and `tests/agent_tools/`
 - Context-only scope: the model, preprocessing, variant, and `sleep2stat` entrypoints invoked by generated commands
 
@@ -24,13 +24,13 @@ This directory is the branch-scoped engineering manual for `agent_tools/refracto
 
 - `recipes.py` loads authored YAML and base-recipe overlays and rejects authored internal metadata.
 - `decision_*` modules own consultation, task-specific field closure, and decision rules; `decisions.py` aggregates task-aware runtime and decision-name closure.
-- `plan_*` modules own context, rendering, hparam compilation, and preflight; `plans.py` owns top-level/artifact closure and source-layer dispatch without adding a schema facade.
+- `plan_*` modules own context, rendering, reusable hparam execution-identity freezing, plan compilation, and preflight; `plans.py` owns top-level/artifact closure and source-layer dispatch without adding a schema facade.
 - `experiment_workspace.py` owns canonical workspace identity and `run_manifest.tsv` state.
 - `experiment_io.py` owns local/SSH reads, writes, and managed-output topology checks.
 - `run_artifacts.py` and `run_evidence.py` own frozen-plan/runtime evidence validation.
-- `hparam_*` modules own launch, observation, selection, and postprocessing; `hparam.py` only re-exports public operations.
+- `hparam_*` modules own launch, cross-plan capacity refresh, explicit queue draining, verified execution snapshots and pre-start guards, observation, selection, and postprocessing; `hparam.py` only re-exports public operations.
 - `experiment_tracking.py` builds observations and reports; `experiments.py` exposes public lifecycle commands.
-- `adaptive_hparam.py` composes existing plan, hparam, and workspace owners for round-based tuning.
+- `adaptive_hparam.py` composes existing plan, hparam, and workspace owners, keeping round-000 Python/commit identity stable while later operational settings remain source-controlled.
 
 ## Coverage Boundaries
 

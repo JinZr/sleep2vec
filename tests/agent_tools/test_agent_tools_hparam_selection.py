@@ -13,6 +13,11 @@ import yaml
 from agent_tools import hparam_selection, run_artifacts
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.manifests import read_rows, write_rows
+from agent_tools.models import REPO_ROOT
+
+_RUNTIME_COMMIT = subprocess.run(
+    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
+).stdout.strip()
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -36,6 +41,15 @@ def _hparam_recipe(
     base_payload["evaluation_policy"]["selection_metric"] = selection_metric
     base_payload["evaluation_policy"]["selection_mode"] = selection_mode
     write_yaml(base, base_payload)
+    execution_payload = dict(execution) if execution is not None else {"workdir": str(tmp_path)}
+    manager_runtime = (
+        str(execution_payload.get("target", "local") or "local") == "local"
+        and execution_payload.get("workdir") in (None, "", str(REPO_ROOT))
+        and execution_payload.get("conda_env") in (None, "")
+    )
+    if not manager_runtime:
+        execution_payload.setdefault("python", sys.executable)
+        execution_payload.setdefault("runtime_commit", _RUNTIME_COMMIT)
     return write_yaml(
         tmp_path / "tune.yaml",
         {
@@ -48,7 +62,7 @@ def _hparam_recipe(
                 "max_runs": 1,
                 "parameters": {"runtime.lr": [1e-6]},
             },
-            "execution": execution if execution is not None else {"workdir": str(tmp_path)},
+            "execution": execution_payload,
             "evaluation_policy": {
                 "selection_metric": selection_metric,
                 "selection_mode": selection_mode,

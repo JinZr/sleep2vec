@@ -20,7 +20,7 @@
 | Read strict local/remote tables | `experiment_io.read_rows_at` | Separate SSH TSV parsers |
 | Consume a frozen hparam plan | `run_artifacts.read_hparam_plan` | Reading `plan.json` alone or trusting mutable recipe input |
 | Locate runtime evidence | `run_artifacts.find_run_manifest` and `run_evidence` | Recursive artifact discovery or log-name inference |
-| Launch/monitor/stop hparam runs | public exports in `hparam.py` | Invoking private launch shell fragments from callers |
+| Launch/drain/monitor/stop hparam runs | `launch_hparam_runs`, `run_hparam_queue`, `monitor_hparam_runs`, and `stop_hparam_run` from `hparam.py` | Invoking private launch shell fragments or adding scheduling to monitor |
 | Manage experiment lifecycle | public functions in `experiments.py` | Mutating `experiment.yaml` or tables directly |
 | Compose adaptive rounds | `adaptive_hparam` | A separate tuning registry or plan compiler |
 | Expose long-running progress | `progress.write_progress` / `read_progress` | New status filenames or unbounded remote log polling |
@@ -50,6 +50,10 @@
 - `run_manifest.tsv` is canonical. Writers produce source-allowlisted observations and commit through `merge_run_manifest`; reports and matrices use the returned canonical rows.
 - Verify ownership before filtering external evidence. W&B, checkpoint, metrics, ranking, adaptive registry, and status rows must match a managed `(step_id, run_id)` and frozen fields.
 - `read_hparam_plan` validates plan, recipe, workspace, row identity, frozen paths, and hashes. Every hparam mutator must cross it.
+- `plan_hparam.freeze_hparam_execution` is the reusable target-identity owner. Only a local `REPO_ROOT` target without a conda wrapper may default to the manager interpreter and manager HEAD; SSH, separate-workdir, and conda-wrapped targets must author Python and full commit identity.
+- Adaptive initialization calls that owner once, stores only Python/commit as workflow identity, and overlays them onto later mutable source recipes. Do not freeze capacity, GPU, environment, or other operational execution fields at workflow scope, and do not resolve manager HEAD again for later rounds.
+- `run_hparam_queue` is the explicit full-plan scheduler and composes observation with repeated locked launch waves. Keep `monitor_hparam_runs` observation-only. Execute-mode launch owns `execution_snapshot.json`, probes only for an eligible launch, and must bind the planned Python/commit and exact CLI argv to a module origin inside the verified repository. Each actual start must reuse the same target wrapper to recheck identity/import safety plus the selected run's script/config hashes immediately before `nohup`. Plans missing frozen identity or a post-start snapshot are recreated rather than upgraded.
+- Capacity accounting across plans belongs to the locked launch owner. It refreshes relevant observable blockers before slot calculation; queue mode requests explicit failure when a current or cross-plan blocker is `missing_pid` instead of adding an external polling loop.
 - `read_pid` can prove process identity against the frozen script. Stop operations must not signal a PID inferred only from a filename.
 
 ## Duplication Traps

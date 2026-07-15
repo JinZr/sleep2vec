@@ -3,13 +3,13 @@
 ## Comparison Point
 
 - Branch: `agent_tools/refractor`
-- Branch commit: `40b8b7b811a68369e739e9d2f717651652853ace`
+- Branch commit: `faefcc7f3d46cf3739ff53dd89d8749ba9d93b9e`
 - Local `main` commit at generation time: `40b8b7b811a68369e739e9d2f717651652853ace`
-- Ahead/behind: `0 / 0`
+- Ahead/behind: `1 / 0`
 
 ## Code Delta
 
-There is no tracked code delta from local `main` at this initialization point. `git diff main...HEAD` is empty. This branch index therefore records the same committed implementation while giving agent tooling a dedicated, branch-resolvable handbook location before further work.
+The branch is one commit ahead of local `main`. That commit closes authored recipe fields in their existing owners, preserves hparam source-layer semantics, and strengthens adaptive preflight ordering. The current refresh also indexes the working-tree queue-drain and verified-target snapshot changes being validated on this branch.
 
 ## Index Delta
 
@@ -17,9 +17,10 @@ The existing `main` index manifest still identifies an earlier refresh commit. T
 
 ## Stale or Removed Entries
 
-- No stale branch-specific symbols existed because this is a new index.
+- Removed stale rendered-CLI snapshot wording; current runtime evidence binds normalized supported options and exact validated argv vectors to a module origin inside the verified repository, then repeats identity/import and frozen artifact checks immediately before process start.
 - No code symbols were removed relative to local `main`.
 - Historical `trial_*` experiment artifacts remain explicitly read-only in current code and are not documented as supported management APIs.
+- Current-format plans without frozen Python/commit identity, and already-started plans without an execution snapshot, have no compatibility upgrade path and must be recreated.
 
 ## Refresh Rule
 

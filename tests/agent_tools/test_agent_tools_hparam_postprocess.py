@@ -17,6 +17,10 @@ from agent_tools import cli, hparam_postprocess
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.models import REPO_ROOT
 
+_RUNTIME_COMMIT = subprocess.run(
+    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
+).stdout.strip()
+
 
 def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
@@ -30,6 +34,15 @@ def _hparam_recipe(
     variant: str = "sleep2vec",
 ) -> Path:
     base = write_finetune_recipe(tmp_path, variant=variant)
+    execution_payload = dict(execution or {})
+    manager_runtime = (
+        str(execution_payload.get("target", "local") or "local") == "local"
+        and execution_payload.get("workdir") in (None, "", str(REPO_ROOT))
+        and execution_payload.get("conda_env") in (None, "")
+    )
+    if not manager_runtime:
+        execution_payload.setdefault("python", sys.executable)
+        execution_payload.setdefault("runtime_commit", _RUNTIME_COMMIT)
     return write_yaml(
         tmp_path / "tune.yaml",
         {
@@ -42,7 +55,7 @@ def _hparam_recipe(
                 "max_runs": run_count,
                 "parameters": {"runtime.lr": [1e-6 * (index + 1) for index in range(run_count)]},
             },
-            "execution": execution or {},
+            "execution": execution_payload,
             "evaluation_policy": {
                 "selection_metric": "val_ahi_pearson",
                 "selection_mode": "max",
@@ -87,7 +100,11 @@ def test_hparam_external_eval_uses_run_runtime_from_candidate_ranking(tmp_path: 
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["parameters"] = {"runtime.batch_size": [48]}
-    payload["execution"] = {"workdir": str(tmp_path)}
+    payload["execution"] = {
+        "workdir": str(tmp_path),
+        "python": sys.executable,
+        "runtime_commit": _RUNTIME_COMMIT,
+    }
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())
     base_payload["runtime"]["batch_size"] = 32

@@ -20,6 +20,7 @@ SUBCOMMANDS = {
     "plan",
     "collect-runs",
     "hparam-launch",
+    "hparam-run-queue",
     "hparam-monitor",
     "progress",
     "experiment-init",
@@ -73,11 +74,11 @@ def _actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
     return {action.dest: action for action in parser._actions if action.option_strings}
 
 
-def test_cli_has_exactly_31_subcommands():
+def test_cli_has_exactly_32_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == SUBCOMMANDS
-    assert len(subcommands) == 31
+    assert len(subcommands) == 32
 
 
 def test_plan_cli_contract():
@@ -111,6 +112,20 @@ def test_hparam_launch_cli_contract():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["hparam-launch", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
+
+
+def test_hparam_run_queue_cli_contract():
+    parser, subcommands = _parser_contract()
+    actions = _actions(subcommands["hparam-run-queue"])
+    args = parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir"])
+
+    assert {name for name, action in actions.items() if action.required} == {"plan_dir"}
+    assert args.dry_run is True
+    assert args.execute is False
+    assert args.poll_seconds == 60
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
 
 
 def test_hparam_export_logits_cli_delegates_writes_to_postprocess(tmp_path: Path, monkeypatch, capsys):

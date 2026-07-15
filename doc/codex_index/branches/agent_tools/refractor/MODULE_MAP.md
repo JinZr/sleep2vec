@@ -17,7 +17,7 @@
 | Local/remote I/O | `experiment_io.py` | Local/SSH reads and writes, strict tables, atomic replacement, output path topology, event append | Workspace and experiment lifecycle |
 | Frozen/runtime evidence | `run_artifacts.py`, `run_evidence.py` | Validate hparam plans and run rows; inspect exact runtime manifests, PIDs, logs, progress, GPUs, checkpoints | Hparam, adaptive, experiment tracking |
 | Hparam facade | `hparam.py` | Re-export supported public hparam operations only | CLI |
-| Hparam owners | `hparam_runtime.py`, `hparam_selection.py`, `hparam_postprocess.py` | Launch/monitor/stop, candidate/checkpoint selection, final evaluation/logit/threshold/ensemble outputs | CLI, adaptive |
+| Hparam owners | `hparam_runtime.py`, `hparam_selection.py`, `hparam_postprocess.py` | Launch/explicit queue/verified target snapshot/monitor/stop, candidate/checkpoint selection, final evaluation/logit/threshold/ensemble outputs | CLI, adaptive |
 | Experiment facade | `experiments.py` | Initialize/register/finalize/sync/index/monitor/rank public commands | CLI |
 | Experiment observations | `experiment_tracking.py` | W&B, checkpoint, metric, monitor, ranking observations and reports | `experiments.py` |
 | Adaptive workflow | `adaptive_hparam.py` | Compose plans, monitoring, selection evidence, budget, replacement, and round registry | CLI |
@@ -64,7 +64,7 @@ Leaf responsibility modules should not import their public facades. In particula
 | Run identity or lifecycle state | `experiment_workspace.py` | all hparam/experiment/adaptive consumers |
 | Local/SSH artifact safety | `experiment_io.py` | workspace and remote-I/O tests |
 | Runtime evidence or process identity | `run_artifacts.py` / `run_evidence.py` | monitor, stop, adaptive, experiment tests |
-| Hparam launch/stop/monitor | `hparam_runtime.py` | frozen-plan and run-evidence tests |
+| Hparam launch/queue/stop/monitor | `hparam_runtime.py` | frozen-plan, target-preflight, queue-drain, and run-evidence tests |
 | Candidate selection/checkpoint ranking | `hparam_selection.py` | experiment tracking and postprocess consumers |
 | W&B/checkpoint observations | `experiment_tracking.py` | `experiments.py` and ownership tests |
 | Adaptive round ordering/budget | `adaptive_hparam.py` | preflight, hparam runtime, workspace tests |
