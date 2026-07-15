@@ -8,6 +8,9 @@ from typing import Any
 import yaml
 
 from . import (
+    decision_hparam as hparam_rules,
+    decision_paths as path_rules,
+    decision_rules as task_rules,
     experiment_io as exp_io,
     plan_context as context,
     plan_hparam as hparam,
@@ -16,7 +19,14 @@ from . import (
     run_artifacts as artifacts,
 )
 from .configs import config_summary
-from .decisions import DecisionIssue, DecisionReport, DecisionStatus, evaluate_consultation_gates, merge_status
+from .decisions import (
+    DecisionIssue,
+    DecisionReport,
+    DecisionStatus,
+    consultation_contract_issues,
+    evaluate_consultation_gates,
+    merge_status,
+)
 from .experiment_workspace import (
     append_event,
     canonical_local_experiment_root,
@@ -35,6 +45,159 @@ from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import REPO_ROOT, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
+
+_COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
+_TASK_RECIPE_FIELDS = {
+    "preset_prepare": _COMMON_RECIPE_FIELDS | {"execution", "inputs", "preset"},
+    "finetune": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
+    "infer": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
+    "evaluate": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
+    "hparam_tune": _COMMON_RECIPE_FIELDS
+    | {"adaptive", "artifacts", "base_recipe", "evaluation_policy", "execution", "inputs", "runtime", "search"},
+    "sleep2stat": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
+}
+_ARTIFACT_FIELDS = {
+    "finetune": {"overwrite", "results_csv_path", "version_name"},
+    "infer": {"overwrite"},
+    "evaluate": {"overwrite"},
+    "hparam_tune": {"overwrite", "results_csv_path"},
+    "sleep2stat": {"overwrite", "run_dir"},
+}
+
+
+def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) -> list[DecisionIssue]:
+    has_layers = isinstance(recipe.get("_base_recipe"), dict) and isinstance(recipe.get("_local_recipe"), dict)
+    task_owner = recipe["_local_recipe"] if has_layers else recipe
+    recipe_task = task_owner.get("task")
+    recipe_decisions = task_owner.get("decisions") if isinstance(task_owner.get("decisions"), dict) else {}
+    effective_task = recipe_task
+    if effective_task in (None, "", "ASK_USER"):
+        effective_task = _decision_value(recipe_decisions.get("task"))
+    if effective_task in (None, "", "ASK_USER"):
+        effective_task = _decision_value(user_decisions.get("task"))
+    issues: list[DecisionIssue] = []
+    if has_layers:
+        base_recipe = recipe["_base_recipe"]
+        local_recipe = recipe["_local_recipe"]
+        local_task = local_recipe.get("task")
+        if local_task in (None, "", "ASK_USER"):
+            local_task = effective_task
+        if local_task in (None, "", "ASK_USER"):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "task",
+                    "Task is missing from the hparam recipe owner.",
+                    "Which task should this recipe use?",
+                    {"source_layer": "local", "preflight_before_workspace": True},
+                )
+            )
+        local_contract_task = "hparam_tune" if local_task in (None, "", "ASK_USER") else str(local_task)
+        sources = [
+            (base_recipe, "finetune", "base"),
+            (local_recipe, local_contract_task, "local"),
+        ]
+    else:
+        sources = [(recipe, str(effective_task or ""), "effective")]
+
+    if has_layers and base_recipe.get("task") not in (None, "", "ASK_USER", "finetune"):
+        issues.append(
+            _recipe_contract_issue(
+                "task",
+                "Hparam base recipe must use task=finetune.",
+                base_recipe.get("task"),
+                "base",
+            )
+        )
+    for source_recipe, task, source_layer in sources:
+        issues.extend(_source_recipe_contract_issues(source_recipe, task, policy, source_layer))
+    issues.extend(
+        consultation_contract_issues(
+            str(effective_task) if effective_task not in (None, "") else None,
+            {"decisions": user_decisions},
+            policy,
+            source_layer="user",
+        )
+    )
+    return issues
+
+
+def _source_recipe_contract_issues(
+    recipe: dict,
+    task: str,
+    policy: dict,
+    source_layer: str,
+) -> list[DecisionIssue]:
+    if task not in _TASK_RECIPE_FIELDS:
+        return []
+    allowed_top_level = _TASK_RECIPE_FIELDS.get(task, set().union(*_TASK_RECIPE_FIELDS.values()))
+    issues = [
+        _recipe_contract_issue(
+            str(field),
+            f"Unknown recipe field for task={task or 'unresolved'}: {field}.",
+            recipe[field],
+            source_layer,
+        )
+        for field in sorted(set(recipe) - allowed_top_level)
+        if not str(field).startswith("_")
+    ]
+    for issue in experiment_metadata_issues(recipe, require_values=False, source_layer=source_layer):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus(issue["status"]),
+                issue["field"],
+                issue["message"],
+                issue.get("question"),
+                issue.get("evidence", {}),
+            )
+        )
+    issues.extend(consultation_contract_issues(task or None, recipe, policy, source_layer=source_layer))
+    if task == "hparam_tune":
+        issues.extend(hparam_rules.hparam_recipe_contract_issues(recipe, source_layer=source_layer))
+    else:
+        issues.extend(task_rules.task_recipe_contract_issues(task, recipe, source_layer=source_layer))
+        issues.extend(path_rules.execution_contract_issues(recipe, source_layer=source_layer))
+    issues.extend(_artifact_contract_issues(task, recipe, source_layer))
+    return issues
+
+
+def _artifact_contract_issues(task: str, recipe: dict, source_layer: str) -> list[DecisionIssue]:
+    if "artifacts" not in recipe:
+        return []
+    artifacts_value = recipe["artifacts"]
+    if not isinstance(artifacts_value, dict):
+        return [
+            _recipe_contract_issue(
+                "artifacts",
+                "artifacts must be a mapping.",
+                artifacts_value,
+                source_layer,
+            )
+        ]
+    allowed_fields = _ARTIFACT_FIELDS.get(task, set())
+    return [
+        _recipe_contract_issue(
+            f"artifacts.{field}",
+            f"Unknown artifacts field for task={task}: {field}.",
+            artifacts_value[field],
+            source_layer,
+        )
+        for field in sorted(set(artifacts_value) - allowed_fields)
+    ]
+
+
+def _recipe_contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        field,
+        message,
+        None,
+        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
+    )
+
+
+def _decision_value(raw: Any) -> Any:
+    return raw.get("value") if isinstance(raw, dict) else raw
 
 
 def _materialize_decisions(
@@ -89,7 +252,6 @@ def _materialize_decisions(
         "ckpt_path": ("inputs", "ckpt_path"),
         "eval_split": ("inputs", "eval_split"),
         "final_eval_config_path": ("inputs", "final_eval_config_path"),
-        "preset_regeneration": ("preset", "regenerate"),
         "min_channels": ("preset", "min_channels"),
         "hparam_search_space": ("search", "parameters"),
         "hparam_budget": ("search", "max_runs"),
@@ -101,8 +263,6 @@ def _materialize_decisions(
         canonical_fields["required_channels"] = ("preset", "channels")
     else:
         canonical_fields["overwrite_policy"] = ("artifacts", "overwrite")
-        if user_supplied:
-            canonical_fields["required_channels"] = ("preset", "required_channels")
     if decision_values.get("train_val_test_policy") in ("train", "val", "test"):
         canonical_fields["train_val_test_policy"] = ("evaluation_policy", "selection_split")
 
@@ -141,7 +301,27 @@ def evaluate_recipe(
         recipe["_recipe_path"] = str(source.resolve())
     policy = load_consultation_policy()
     user_decisions = load_user_decisions(user_decisions_path)
+    contract_issues = _recipe_contract_issues(recipe, user_decisions, policy)
+    if contract_issues:
+        return (
+            recipe,
+            None,
+            DecisionReport(
+                status=merge_status(contract_issues),
+                issues=contract_issues,
+                decisions={},
+            ),
+        )
     recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else None
+    if local_recipe is not None:
+        local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
+        recipe_decisions = dict(recipe_decisions)
+        if "task" in local_decisions:
+            recipe_decisions["task"] = local_decisions["task"]
+        else:
+            recipe_decisions.pop("task", None)
+        recipe["decisions"] = recipe_decisions
     materialization_issues = _materialize_decisions(recipe, recipe_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
 
@@ -162,18 +342,48 @@ def evaluate_recipe(
     )
     report = _append_issues(report, materialization_issues)
     if (
+        recipe.get("task") in {"finetune", "hparam_tune"}
+        and cfg is not None
+        and cfg.get("is_finetune") is True
+        and not cfg.get("blocking_issues")
+    ):
+        required_channels = user_decisions.get("required_channels", recipe_decisions.get("required_channels"))
+        required_channels_value = _decision_value(required_channels)
+        config_required_channels = (cfg.get("preset_build") or {}).get("required_channels")
+        if (
+            required_channels is not None
+            and required_channels_value not in (None, "", "ASK_USER")
+            and config_required_channels is not None
+            and required_channels_value != config_required_channels
+        ):
+            report = _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "required_channels",
+                        "required_channels decision differs from config preset_build.required_channels.",
+                        None,
+                        {
+                            "decision": required_channels_value,
+                            "config": config_required_channels,
+                            "preflight_before_workspace": True,
+                        },
+                    )
+                ],
+            )
+    if (
         recipe.get("task") != "hparam_tune"
         and cfg is not None
         and cfg.get("is_finetune") is True
         and not cfg.get("blocking_issues")
     ):
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
         finetune_task = cfg.get("finetune", {}).get("task", {})
         config_contracts = {
             "data_backend": (
-                inputs.get("data_backend", runtime.get("data_backend")),
+                inputs.get("data_backend"),
                 cfg.get("data_backend"),
                 "data.backend",
             ),
@@ -292,6 +502,14 @@ def build_context(
     }
     policy = load_consultation_policy()
     user_decisions = load_user_decisions(user_decisions_path)
+    contract_issues = consultation_contract_issues(
+        task,
+        {"decisions": user_decisions},
+        policy,
+        source_layer="user",
+    )
+    if contract_issues:
+        return DecisionReport(status=merge_status(contract_issues), issues=contract_issues, decisions={})
     recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
     materialization_issues = _materialize_decisions(recipe, recipe_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))

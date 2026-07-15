@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import multilabel_sidecar_issue
+from .models import REPO_ROOT
 
 _HPARAM_EXECUTION_FIELDS = {
     "target",
@@ -17,6 +19,8 @@ _HPARAM_EXECUTION_FIELDS = {
     "gpus_per_run",
     "env",
     "conda_env",
+    "python",
+    "runtime_commit",
     "wandb_project",
     "wandb_group",
 }
@@ -50,6 +54,90 @@ _HPARAM_ADAPTIVE_REPLACEMENT_FIELDS = {
     "kill_margin",
 }
 _HPARAM_ADAPTIVE_SUGGEST_FIELDS = {"strategy"}
+_HPARAM_INPUT_FIELDS = {
+    "ckpt_path",
+    "config",
+    "data_backend",
+    "final_eval_config_path",
+    "inference_preset_path",
+    "label_name",
+    "override_dataset_names",
+    "pretrained_backbone_path",
+}
+_HPARAM_SEARCH_FIELDS = {"max_runs", "max_trials", "method", "parameters"}
+
+
+def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
+    for section, allowed_fields in {
+        "inputs": _HPARAM_INPUT_FIELDS,
+        "search": _HPARAM_SEARCH_FIELDS,
+        "evaluation_policy": _HPARAM_EVALUATION_FIELDS,
+        "execution": _HPARAM_EXECUTION_FIELDS | {"gpus_per_trial", "log_dir", "pid_dir"},
+    }.items():
+        if section not in recipe:
+            continue
+        value = recipe[section]
+        if not isinstance(value, dict):
+            issues.append(_contract_issue(section, f"{section} must be a mapping.", value, source_layer))
+            continue
+        for field in sorted(set(value) - allowed_fields):
+            issues.append(
+                _contract_issue(
+                    f"{section}.{field}",
+                    f"Unknown hparam {section} field: {field}.",
+                    value[field],
+                    source_layer,
+                )
+            )
+
+    if "adaptive" not in recipe:
+        return issues
+    adaptive = recipe["adaptive"]
+    if not isinstance(adaptive, dict):
+        issues.append(_contract_issue("adaptive", "adaptive must be a mapping.", adaptive, source_layer))
+        return issues
+    for field in sorted(set(adaptive) - _HPARAM_ADAPTIVE_FIELDS - {"max_trials_total"}):
+        issues.append(
+            _contract_issue(
+                f"adaptive.{field}",
+                f"Unknown adaptive field: {field}.",
+                adaptive[field],
+                source_layer,
+            )
+        )
+    for section, allowed_fields in {
+        "replacement": _HPARAM_ADAPTIVE_REPLACEMENT_FIELDS,
+        "suggest": _HPARAM_ADAPTIVE_SUGGEST_FIELDS,
+    }.items():
+        if section not in adaptive:
+            continue
+        value = adaptive[section]
+        if not isinstance(value, dict):
+            issues.append(
+                _contract_issue(f"adaptive.{section}", f"adaptive.{section} must be a mapping.", value, source_layer)
+            )
+            continue
+        for field in sorted(set(value) - allowed_fields):
+            issues.append(
+                _contract_issue(
+                    f"adaptive.{section}.{field}",
+                    f"Unknown adaptive {section} field: {field}.",
+                    value[field],
+                    source_layer,
+                )
+            )
+    return issues
+
+
+def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        field,
+        message,
+        None,
+        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
+    )
 
 
 def hparam_tune_issues(
@@ -58,7 +146,7 @@ def hparam_tune_issues(
     decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
+    issues = hparam_recipe_contract_issues(recipe, source_layer="effective")
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
@@ -70,16 +158,6 @@ def hparam_tune_issues(
         local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
     )
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
-    for field in sorted(set(evaluation) - _HPARAM_EVALUATION_FIELDS):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                f"evaluation_policy.{field}",
-                f"Unknown hparam evaluation_policy field: {field}.",
-                None,
-                {field: evaluation[field], "preflight_before_workspace": True},
-            )
-        )
     if config_summary:
         for issue in config_summary.get("blocking_issues", []):
             issues.append(
@@ -224,17 +302,6 @@ def hparam_tune_issues(
 
 def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any]) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
-    legacy_fields = {"gpus_per_trial", "log_dir", "pid_dir"}
-    for field in sorted(set(execution) - _HPARAM_EXECUTION_FIELDS - legacy_fields):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                f"execution.{field}",
-                f"Unknown hparam execution field: {field}.",
-                None,
-                {field: execution[field], "preflight_before_workspace": True},
-            )
-        )
     if "gpus_per_trial" in execution:
         issues.append(
             DecisionIssue(
@@ -288,6 +355,48 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
                 {"workdir": workdir},
             )
         )
+    python = execution.get("python")
+    if python not in (None, "ASK_USER") and (not isinstance(python, str) or not python.strip()):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.python",
+                "execution.python must be a non-empty command or path when set.",
+                None,
+                {"python": python},
+            )
+        )
+    runtime_commit = execution.get("runtime_commit")
+    if runtime_commit not in (None, "ASK_USER") and (
+        not isinstance(runtime_commit, str) or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", runtime_commit) is None
+    ):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.runtime_commit",
+                "execution.runtime_commit must be a full Git commit hash when set.",
+                None,
+                {"runtime_commit": runtime_commit},
+            )
+        )
+    manager_runtime = (
+        target == "local" and workdir in (None, "", str(REPO_ROOT)) and execution.get("conda_env") in (None, "")
+    )
+    if not manager_runtime:
+        for field, question in (
+            ("python", "What Python command or absolute path should the target runtime use?"),
+            ("runtime_commit", "What full Git commit hash should the target runtime use?"),
+        ):
+            if field not in execution or execution.get(field) in (None, "ASK_USER"):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.NEEDS_USER_INPUT,
+                        f"execution.{field}",
+                        f"execution.{field} must be explicit when the target runtime is not local REPO_ROOT.",
+                        question,
+                        {"target": target, "workdir": workdir, "conda_env": execution.get("conda_env")},
+                    )
+                )
     if execution.get("path_context") not in (None, "local", "remote"):
         issues.append(
             DecisionIssue(
@@ -437,7 +546,29 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
             )
         )
     if isinstance(execution.get("env"), dict):
+        for env_name, value in execution["env"].items():
+            if not isinstance(env_name, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name) is None:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        "execution.env keys must be POSIX environment variable names.",
+                        None,
+                        {"name": env_name},
+                    )
+                )
+            if not isinstance(value, (str, int, float, bool)):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        "execution.env values must be scalar strings, numbers, or booleans.",
+                        None,
+                        {"value": value},
+                    )
+                )
         for env_name, field in {
+            "PYTHONPATH": "execution.workdir",
             "WANDB_PROJECT": "execution.wandb_project",
             "WANDB_GROUP": "execution.wandb_group",
             "WANDB_RUN_GROUP": "execution.wandb_group",
@@ -460,16 +591,6 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     if not adaptive:
         return issues
-    for field in sorted(set(adaptive) - _HPARAM_ADAPTIVE_FIELDS - {"max_trials_total"}):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                f"adaptive.{field}",
-                f"Unknown adaptive field: {field}.",
-                None,
-                {field: adaptive[field], "preflight_before_workspace": True},
-            )
-        )
     if "max_trials_total" in adaptive:
         issues.append(
             DecisionIssue(
@@ -480,50 +601,7 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
                 {"max_trials_total": adaptive.get("max_trials_total")},
             )
         )
-    replacement_value = adaptive.get("replacement")
-    replacement = replacement_value if isinstance(replacement_value, dict) else {}
-    if replacement_value is not None and not isinstance(replacement_value, dict):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "adaptive.replacement",
-                "adaptive.replacement must be a mapping.",
-                None,
-                {"replacement": replacement_value, "preflight_before_workspace": True},
-            )
-        )
-    for field in sorted(set(replacement) - _HPARAM_ADAPTIVE_REPLACEMENT_FIELDS):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                f"adaptive.replacement.{field}",
-                f"Unknown adaptive replacement field: {field}.",
-                None,
-                {field: replacement[field], "preflight_before_workspace": True},
-            )
-        )
-    suggest_value = adaptive.get("suggest")
-    suggest = suggest_value if isinstance(suggest_value, dict) else {}
-    if suggest_value is not None and not isinstance(suggest_value, dict):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "adaptive.suggest",
-                "adaptive.suggest must be a mapping.",
-                None,
-                {"suggest": suggest_value, "preflight_before_workspace": True},
-            )
-        )
-    for field in sorted(set(suggest) - _HPARAM_ADAPTIVE_SUGGEST_FIELDS):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                f"adaptive.suggest.{field}",
-                f"Unknown adaptive suggest field: {field}.",
-                None,
-                {field: suggest[field], "preflight_before_workspace": True},
-            )
-        )
+    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
     if adaptive.get("enabled") is not True:
         return issues
     objective = str(adaptive.get("objective_metric") or "test_auroc")

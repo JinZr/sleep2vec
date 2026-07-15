@@ -33,12 +33,9 @@ execution:
   target: local
   path_context: local
   path_validation: local
-  env: {}
 
 evaluation_policy:
   external_test_locked: true
-  split_usage: descriptive_qc_statistics_only
-  forbid_threshold_or_cleaning_rule_selection_on_test: true
 
 decisions:
   task:

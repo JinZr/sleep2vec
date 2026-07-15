@@ -14,6 +14,11 @@ from agent_tools import experiments, plans
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import collect_runs
+from agent_tools.run_artifacts import read_hparam_plan
+
+_RUNTIME_COMMIT = subprocess.run(
+    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
+).stdout.strip()
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -88,7 +93,6 @@ def _survival_recipe_with_missing_sidecar_key(tmp_path: Path) -> tuple[Path, Pat
             "selection_metric": "val_loss",
             "selection_mode": "min",
             "selection_split": "val",
-            "final_eval_split": "test",
             "external_test_locked": True,
             "test_after_fit": False,
         },
@@ -459,8 +463,7 @@ def test_hparam_user_decisions_freeze_one_effective_recipe(tmp_path: Path):
     assert effective["_local_recipe"]["search"] != effective["search"]
     assert "--lr 2e-06" in plan["runs"][0]["command"]
     assert resolved == {key: value for key, value in effective.items() if key != "_recipe_path"}
-    reloaded, _cfg, reloaded_report = plans.evaluate_recipe(plan_dir / "recipe.resolved.yaml")
-    assert reloaded_report.exit_code == 0
+    reloaded = read_hparam_plan(plan_dir)["recipe"]
     assert reloaded["evaluation_policy"]["selection_metric"] == "val_ahi_pearson"
 
 
@@ -672,6 +675,8 @@ def test_hparam_plan_skips_remote_deferred_survival_index_summary(tmp_path: Path
                 "host": "baichuan3",
                 "path_context": "remote",
                 "path_validation": "defer",
+                "python": sys.executable,
+                "runtime_commit": _RUNTIME_COMMIT,
             },
             "decisions": {
                 "task": {"value": "hparam_tune", "source": "explicit_recipe"},
@@ -793,6 +798,36 @@ def test_unlock_final_test_with_explicit_ckpt_generates_final_script(tmp_path: P
     assert shlex_quote(str(ckpt)) in script
     assert "This script evaluates the configured final test split." in script
     assert "Run commands do not evaluate the external test split." not in script
+
+
+def test_unlock_final_test_uses_hparam_user_decision_checkpoint(tmp_path: Path):
+    ckpt = tmp_path / "selected model.ckpt"
+    ckpt.write_text("checkpoint")
+    recipe = _hparam_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"ckpt_path": {"value": str(ckpt), "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "unlocked"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+        "--unlock-final-test",
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert shlex_quote(str(ckpt)) in (output_dir / "final_external_test.sh").read_text()
+    plan = json.loads((output_dir / "plan.json").read_text())
+    assert plan["recipe"]["inputs"]["ckpt_path"] == str(ckpt)
+    launch_script = Path(plan["runs"][0]["script"]).read_text()
+    assert "--ckpt-path" not in launch_script
+    assert str(ckpt) not in launch_script
 
 
 def test_plan_uses_user_decision_label_name_in_command(tmp_path: Path):
@@ -1189,8 +1224,8 @@ def test_infer_preset_path_does_not_skip_survival_sidecar_checks(tmp_path: Path)
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert result.returncode == 2
-    assert "survival_sidecars" in result.stdout
+    assert result.returncode == 1
+    assert "inputs.preset_path" in result.stdout
     assert not (output_dir / "run.sh").exists()
 
 
@@ -1703,6 +1738,9 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
     assert "--channels stage5" not in script
     assert "--min-channels 2" in script
     assert "--overwrite" in script
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    assert "regenerate" not in resolved["preset"]
+    assert resolved["decisions"]["preset_regeneration"]["value"] is True
 
 
 @pytest.mark.parametrize(
@@ -2162,7 +2200,11 @@ def test_hparam_workdir_is_verbatim_run_cwd_for_all_generated_scripts(tmp_path: 
     recipe = _hparam_recipe(tmp_path, ckpt_path=checkpoint)
     payload = yaml.safe_load(recipe.read_text())
     run_cwd = tmp_path / "runtime cwd"
-    payload["execution"] = {"workdir": str(run_cwd)}
+    payload["execution"] = {
+        "workdir": str(run_cwd),
+        "python": sys.executable,
+        "runtime_commit": _RUNTIME_COMMIT,
+    }
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
@@ -2173,11 +2215,89 @@ def test_hparam_workdir_is_verbatim_run_cwd_for_all_generated_scripts(tmp_path: 
     expected_runtime = run_cwd / "log-finetune" / run["version"]
     assert run["runtime_dir"] == str(expected_runtime)
     expected_cwd = f"cd {shlex_quote(str(run_cwd))}"
-    expected_pythonpath = f"export PYTHONPATH={shlex_quote(str(run_cwd))}${{PYTHONPATH:+:$PYTHONPATH}}"
-    for script in (Path(run["script"]), output_dir / "run_all.sh", output_dir / "final_external_test.sh"):
+    expected_pythonpath = f"export PYTHONPATH={shlex_quote(str(run_cwd))}"
+    for script in (Path(run["script"]), output_dir / "final_external_test.sh"):
         text = script.read_text()
         assert expected_cwd in text
         assert expected_pythonpath in text
+    run_all_text = (output_dir / "run_all.sh").read_text()
+    assert f"cd {shlex_quote(str(REPO_ROOT))}" in run_all_text
+    assert f"export PYTHONPATH={shlex_quote(str(REPO_ROOT))}" in run_all_text
+    assert expected_cwd not in run_all_text
+    assert "${PYTHONPATH:+:$PYTHONPATH}" not in run_all_text
+
+
+def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload.setdefault("execution", {}).update({"python": "/runtime/bin/python3", "runtime_commit": "A" * 40})
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr
+    plan = json.loads((output_dir / "plan.json").read_text())
+    assert plan["recipe"]["execution"]["python"] == "/runtime/bin/python3"
+    assert plan["recipe"]["execution"]["runtime_commit"] == "a" * 40
+    assert plan["runs"][0]["command"].startswith("/runtime/bin/python3 -m ")
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    assert resolved["execution"]["runtime_commit"] == "a" * 40
+
+
+@pytest.mark.parametrize(
+    "execution",
+    [
+        {"workdir": "/separate/runtime"},
+        {"target": "ssh", "host": "runtime-host", "workdir": "/remote/runtime"},
+        {"conda_env": "runtime"},
+    ],
+)
+def test_hparam_plan_requires_explicit_identity_for_non_manager_runtime_before_plan_write(
+    tmp_path: Path, execution: dict
+):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = execution
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "execution.python" in result.stdout
+    assert "execution.runtime_commit" in result.stdout
+    assert not (output_dir / "plan.json").exists()
+    assert not (output_dir / "recipe.resolved.yaml").exists()
+    assert not (output_dir / "run_all.sh").exists()
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"BAD-NAME": "value"}, "POSIX environment variable names"),
+        ({"NESTED": ["value"]}, "scalar strings, numbers, or booleans"),
+    ],
+)
+def test_hparam_plan_rejects_unsafe_execution_environment_before_plan_write(tmp_path: Path, env: dict, message: str):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = {
+        "workdir": "/separate/runtime",
+        "python": "/runtime/bin/python",
+        "runtime_commit": "a" * 40,
+        "env": env,
+    }
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert message in result.stdout
+    assert not (output_dir / "plan.json").exists()
+    assert not (output_dir / "recipe.resolved.yaml").exists()
+    assert not (output_dir / "run_all.sh").exists()
 
 
 def test_hparam_relative_workdir_fails_before_workspace_creation(tmp_path: Path):
@@ -2368,8 +2488,8 @@ def test_hparam_run_all_rejects_tampered_leaf_before_execution(tmp_path: Path):
     assert result.returncode == 0
     run_all_text = (output_dir / "run_all.sh").read_text()
     assert (
-        f"python -m agent_tools hparam-launch --plan-dir {shlex_quote(str(output_dir.resolve()))} --execute"
-        in run_all_text
+        f"{shlex_quote(sys.executable)} -m agent_tools hparam-run-queue "
+        f"--plan-dir {shlex_quote(str(output_dir.resolve()))} --execute" in run_all_text
     )
     Path(_first_run(output_dir)["script"]).write_text(
         f"#!/usr/bin/env bash\nset -euo pipefail\nprintf ok > {shlex_quote(str(marker))}\n"
@@ -2701,7 +2821,7 @@ def test_hparam_yaml_parameter_rejects_ask_user_backend_after_null_input(tmp_pat
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
-    assert "data_backend must be resolved before hparam YAML overrides" in result.stdout
+    assert "runtime.data_backend" in result.stdout
     assert not output_dir.exists()
     if manifest_before is None:
         assert not manifest.exists()

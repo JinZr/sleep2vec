@@ -7,6 +7,37 @@ from typing import Any
 from .decision_models import DecisionIssue, DecisionStatus
 from .models import REPO_ROOT
 
+_EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target"}
+
+
+def execution_contract_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
+    if "execution" not in recipe:
+        return []
+    execution = recipe["execution"]
+    if not isinstance(execution, dict):
+        return [_execution_contract_issue("execution", "execution must be a mapping.", execution, source_layer)]
+    issues = []
+    for field in sorted(set(execution) - _EXECUTION_FIELDS):
+        issues.append(
+            _execution_contract_issue(
+                f"execution.{field}",
+                f"Unknown execution field for this task: {field}.",
+                execution[field],
+                source_layer,
+            )
+        )
+    return issues
+
+
+def _execution_contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        field,
+        message,
+        None,
+        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
+    )
+
 
 def _config_data(config_summary: dict | None) -> dict[str, Any]:
     data = config_summary.get("data") if isinstance(config_summary, dict) else {}

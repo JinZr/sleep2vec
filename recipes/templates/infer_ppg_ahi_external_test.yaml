@@ -25,7 +25,6 @@ runtime:
 
 evaluation_policy:
   external_test_locked: true
-  final_eval_split: test
   final_test_unlocked: false
 
 decisions:

@@ -4,7 +4,7 @@ from .hparam_postprocess import (
     generate_external_eval,
     threshold_hparam_outputs,
 )
-from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
+from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, run_hparam_queue, stop_hparam_run
 from .hparam_selection import scan_hparam_checkpoints, select_hparam_candidates
 
 __all__ = [
@@ -13,6 +13,7 @@ __all__ = [
     "generate_external_eval",
     "launch_hparam_runs",
     "monitor_hparam_runs",
+    "run_hparam_queue",
     "scan_hparam_checkpoints",
     "select_hparam_candidates",
     "stop_hparam_run",

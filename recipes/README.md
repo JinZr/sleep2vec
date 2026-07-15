@@ -2,6 +2,8 @@
 
 Recipes are declarative task cards for agent tooling. They are safe to read and validate without importing the ML runtime.
 
+Recipes use a closed, task-aware contract. Unknown or task-inapplicable fields fail before config loading and before a managed workspace is created; the authoritative allowlists are documented in `recipes/schemas/task_recipe.schema.md`.
+
 `recipes/templates/` contains editable templates with placeholder or site-local paths that may require user input.
 `recipes/examples/` contains tiny fixture recipes that should pass consultation gates in a clean checkout.
 

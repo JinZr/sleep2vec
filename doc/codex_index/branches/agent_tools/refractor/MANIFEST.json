@@ -1,0 +1,81 @@
+{
+  "branch": "agent_tools/refractor",
+  "commit": "faefcc7f3d46cf3739ff53dd89d8749ba9d93b9e",
+  "generated_at": "2026-07-15T05:03:08Z",
+  "mode": "repair",
+  "baseline": {
+    "branch": "main",
+    "commit": "40b8b7b811a68369e739e9d2f717651652853ace",
+    "relationship": "branch is one commit ahead at refresh time"
+  },
+  "coverage": {
+    "focus": [
+      "agent_tools",
+      "recipes",
+      "skills",
+      "agent_policies",
+      "doc/agent_contracts",
+      "tests/agent_tools"
+    ],
+    "tracked_file_counts": {
+      "sleep2vec": 87,
+      "data": 10,
+      "preprocess": 7,
+      "sleep2vec2": 111,
+      "sleep2expert": 116,
+      "sleep2stat": 30,
+      "sleep2vec_moe": 0,
+      "sleep2vec_hires": 0,
+      "configs": 106,
+      "tests": 111,
+      "utils": 8,
+      "agent_tools": 33,
+      "skills": 37,
+      "recipes": 27,
+      "agent_policies": 2,
+      "doc_agent_contracts": 7
+    },
+    "function_catalog_scope": [
+      "CLI dispatch and status-to-exit-code mapping",
+      "recipe loading, base-recipe overlay, and user-decision input",
+      "source-aware authored recipe and user-decision field closure before config or workspace mutation",
+      "consultation decisions and task-specific policy gates",
+      "read-only recipe evaluation and no-write plan preflight",
+      "variant-aware command rendering and frozen plan generation",
+      "canonical experiment workspace identity and lifecycle state",
+      "local and SSH managed-artifact I/O and topology validation",
+      "frozen hparam plan, runtime manifest, PID, log, checkpoint, and progress evidence",
+      "hparam target identity freezing, repository-owned module origins, normalized execution snapshots, same-wrapper pre-start identity and artifact guards, cross-plan capacity refresh, explicit queue draining, monitoring, stopping, selection, and postprocessing",
+      "experiment W&B sync, checkpoint indexing, monitoring, ranking, and finalization",
+      "adaptive hparam rounds with round-zero Python/commit identity and later source-controlled operational execution fields",
+      "config, index, preset, repository, and skill summaries"
+    ],
+    "workflow_scope": [
+      "doctor and user-decision consultation",
+      "base/local/effective recipe closure and zero-side-effect failure",
+      "diagnostic context generation",
+      "recipe preflight and command plan generation",
+      "managed hparam planning with canonical-local identity defaults and explicit non-manager identity, module-origin-bound target snapshots, same-wrapper pre-start verification, cross-plan capacity refresh, full-queue execution, monitoring, stop, selection, and external evaluation",
+      "managed experiment initialization, step registration, tracking, ranking, and finalization",
+      "adaptive hparam initialization, one-time round-zero execution identity freezing, and round progression with mutable operational settings",
+      "sleep2stat recipe routing through the existing sleep2stat CLI"
+    ]
+  },
+  "required_outputs": [
+    "README.md",
+    "MANIFEST.json",
+    "SYSTEM_OVERVIEW.md",
+    "MODULE_MAP.md",
+    "REUSE_GUIDE.md",
+    "CHANGELOG.md",
+    "DELTA_FROM_MAIN.md",
+    "FUNCTIONS/AGENT_TOOLING.md",
+    "WORKFLOWS/AGENT_TOOLING.md"
+  ],
+  "exclusions": [
+    "Product model, data, preprocessing, variant, and sleep2stat internals are context-only in this narrowed index",
+    "AGENTS.md is referenced for ownership policy but is not duplicated",
+    "Generated recipes, workspaces, W&B state, remote state, caches, and ignored artifacts are not sources of truth",
+    "sleep2vec_moe and sleep2vec_hires have no tracked files on this branch"
+  ]
+}

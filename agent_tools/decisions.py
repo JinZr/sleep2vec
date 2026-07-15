@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import decision_hparam as hparam_rules, decision_paths as paths, decision_rules as rules
+from . import (
+    decision_hparam as hparam_rules,
+    decision_paths as paths,
+    decision_rules as rules,
+    plan_rendering as rendering,
+)
 from .decision_models import (
     DecisionIssue,
     DecisionReport,
@@ -25,35 +30,118 @@ __all__ = [
 ]
 
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
-_RUNTIME_FIELDS = {
-    "accelerator",
-    "accumulate_grad_batches",
-    "avg_ckpt_dir",
-    "avg_ckpts",
-    "batch_size",
-    "check_val_every_n_epoch",
-    "ckpt_every_n_epochs",
-    "data_backend",
-    "device",
-    "devices",
-    "dry_run",
-    "epochs",
-    "gradient_clip_val",
-    "limit_records",
-    "lr",
-    "num_workers",
-    "patience",
-    "plot_adjust_covariates",
-    "plot_cohort_after_run",
-    "plot_group_column",
-    "plot_stage_source",
-    "precision",
-    "seed",
-    "summarize_after_run",
-    "wandb_mode",
-    "warmup_steps",
-    "weight_decay",
+_DECISION_ENTRY_FIELDS = {"meaning", "question", "rationale", "source", "value"}
+_EXTRA_DECISION_TASKS = {
+    "ckpt_path": {"finetune", "hparam_tune"},
+    "config": {"evaluate", "finetune", "hparam_tune", "infer", "preset_prepare", "sleep2stat"},
+    "data_backend": {"hparam_tune"},
+    "external_test_locked": {"finetune", "infer", "evaluate", "sleep2stat"},
+    "final_eval_config_path": {"hparam_tune"},
+    "final_eval_unlock": {"infer"},
+    "pretrained_backbone_path": {"evaluate", "hparam_tune", "infer"},
+    "required_channels": {"hparam_tune"},
+    "test_after_fit": {"finetune", "hparam_tune"},
 }
+
+
+def consultation_contract_issues(
+    task: str | None,
+    recipe: dict,
+    policy: dict,
+    *,
+    source_layer: str,
+) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
+    runtime_value = recipe.get("runtime")
+    if "runtime" in recipe:
+        if not isinstance(runtime_value, dict):
+            issues.append(_contract_issue("runtime", "runtime must be a mapping.", runtime_value, source_layer))
+        else:
+            allowed_runtime = _runtime_fields_for_task(task, recipe.get("variant"))
+            for field in sorted(set(runtime_value) - allowed_runtime):
+                issues.append(
+                    _contract_issue(
+                        f"runtime.{field}",
+                        f"Unknown runtime field for task={task}: {field}.",
+                        runtime_value[field],
+                        source_layer,
+                    )
+                )
+
+    decisions_value = recipe.get("decisions")
+    if "decisions" not in recipe:
+        return issues
+    if not isinstance(decisions_value, dict):
+        issues.append(_contract_issue("decisions", "decisions must be a mapping.", decisions_value, source_layer))
+        return issues
+    allowed_decisions = _decision_fields_for_task(task, policy)
+    for field, value in decisions_value.items():
+        if field not in allowed_decisions:
+            issues.append(
+                _contract_issue(
+                    f"decisions.{field}",
+                    f"Decision field is not supported for task={task}: {field}.",
+                    value,
+                    source_layer,
+                )
+            )
+            continue
+        if not isinstance(value, dict):
+            continue
+        for entry_field in sorted(set(value) - _DECISION_ENTRY_FIELDS):
+            issues.append(
+                _contract_issue(
+                    f"decisions.{field}.{entry_field}",
+                    f"Unknown decision entry field: {entry_field}.",
+                    value[entry_field],
+                    source_layer,
+                )
+            )
+    return issues
+
+
+def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
+    if task == "finetune":
+        fields = rendering.FINETUNE_RUNTIME_FIELDS
+        if variant == "sex_age_baseline":
+            fields = fields - {"wandb_mode"}
+        return fields
+    if task in {"infer", "evaluate"}:
+        return rendering.INFER_RUNTIME_FIELDS
+    if task == "hparam_tune":
+        return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
+    if task == "sleep2stat":
+        return rendering.SLEEP2STAT_RUNTIME_FIELDS
+    if task == "preset_prepare":
+        return frozenset()
+    return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS | rendering.SLEEP2STAT_RUNTIME_FIELDS
+
+
+def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
+    task_scope = {task}
+    if task == "hparam_tune":
+        task_scope.add("finetune")
+    allowed = {
+        str(item["id"])
+        for item in policy.get("high_impact_fields", [])
+        if isinstance(item, dict)
+        and "id" in item
+        and (task is None or task_scope.intersection(item.get("required_for_tasks", [])))
+    }
+    for field, tasks in _EXTRA_DECISION_TASKS.items():
+        if task is None or task in tasks:
+            allowed.add(field)
+    return allowed
+
+
+def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        field,
+        message,
+        None,
+        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
+    )
 
 
 def evaluate_consultation_gates(
@@ -129,17 +217,7 @@ def evaluate_consultation_gates(
             )
         )
 
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    for field in sorted(set(runtime) - _RUNTIME_FIELDS):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                f"runtime.{field}",
-                f"Unknown runtime field: {field}.",
-                None,
-                {field: runtime[field], "preflight_before_workspace": True},
-            )
-        )
+    issues.extend(consultation_contract_issues(str(task_value), recipe, policy, source_layer="effective"))
 
     if require_experiment:
         metadata_recipe = recipe
@@ -297,7 +375,6 @@ _MISSING = _Missing()
 
 def _recipe_field_value(field: str, recipe: dict) -> Any:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
@@ -309,7 +386,7 @@ def _recipe_field_value(field: str, recipe: dict) -> Any:
     mapping = {
         "task": recipe.get("task", _MISSING),
         "label_name": inputs.get("label_name", _MISSING),
-        "data_backend": inputs.get("data_backend", runtime.get("data_backend", _MISSING)),
+        "data_backend": inputs.get("data_backend", _MISSING),
         "train_val_test_policy": evaluation.get("selection_split", _MISSING),
         "external_test_locked": evaluation.get("external_test_locked", _MISSING),
         "selection_metric": evaluation.get("selection_metric", _MISSING),
@@ -319,7 +396,6 @@ def _recipe_field_value(field: str, recipe: dict) -> Any:
         "ckpt_path": inputs.get("ckpt_path", _MISSING),
         "eval_split": inputs.get("eval_split", _MISSING),
         "final_eval_config_path": inputs.get("final_eval_config_path", _MISSING),
-        "preset_regeneration": preset.get("regenerate", _MISSING),
         "overwrite_policy": artifacts.get("overwrite", preset.get("overwrite", _MISSING)),
         "required_channels": preset.get("required_channels", preset.get("channels", _MISSING)),
         "min_channels": preset.get("min_channels", _MISSING),
@@ -388,18 +464,24 @@ def _base_finetune_issues(
     local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
     base_gate = {key: value for key, value in recipe.items() if not key.startswith("_")}
     base_gate["task"] = "finetune"
+    if isinstance(base_gate.get("runtime"), dict):
+        finetune_runtime = _runtime_fields_for_task("finetune", recipe.get("variant"))
+        base_gate["runtime"] = {
+            field: value for field, value in base_gate["runtime"].items() if field in finetune_runtime
+        }
 
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     base_decisions = dict(base_recipe.get("decisions") or {})
+    finetune_decisions = _decision_fields_for_task("finetune", policy)
     for decision_field, value in local_decisions.items():
-        if decision_field != "task" and decision_field not in base_decisions:
+        if decision_field in finetune_decisions and decision_field not in base_decisions:
             base_decisions[decision_field] = value
     base_gate["decisions"] = base_decisions
 
     base_cli_args = dict(cli_args)
     if isinstance(base_cli_args.get("user_decisions"), dict):
         base_cli_args["user_decisions"] = {
-            field: value for field, value in base_cli_args["user_decisions"].items() if field != "task"
+            field: value for field, value in base_cli_args["user_decisions"].items() if field in finetune_decisions
         }
     report = evaluate_consultation_gates(
         "finetune",

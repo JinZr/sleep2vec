@@ -31,9 +31,6 @@ preset:
   output_template: data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle
   overwrite: false
 
-validation:
-  dry_run_first: true
-
 decisions:
   task:
     value: preset_prepare

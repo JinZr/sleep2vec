@@ -36,10 +36,8 @@ evaluation_policy:
   selection_metric: val_loss
   selection_mode: min
   selection_split: val
-  final_eval_split: test
   external_test_locked: true
   test_after_fit: false
-  require_manual_unlock_for_final_test: true
 
 decisions:
   task:

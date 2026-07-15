@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from itertools import product
 from pathlib import Path
+import sys
 from typing import Any
 
 import yaml
@@ -22,6 +23,7 @@ from .experiment_workspace import (
 )
 from .manifests import write_json, write_text
 from .models import REPO_ROOT
+from .repo import repo_summary
 
 
 def final_test_unlocked(evaluation: dict, unlock_final_test: bool = False) -> bool:
@@ -92,7 +94,6 @@ def final_test_checkpoint_issues(
 
 def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
     if "selection_metric" in evaluation and selection_metric in (None, ""):
@@ -112,8 +113,6 @@ def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
         base_config = load_yaml(config_path)
         base_data = base_config.get("data") if isinstance(base_config.get("data"), dict) else {}
         data_backend = inputs.get("data_backend")
-        if data_backend in (None, ""):
-            data_backend = runtime.get("data_backend")
         if data_backend in (None, ""):
             data_backend = base_data.get("backend") or "npz"
         selection_mode = evaluation.get("selection_mode")
@@ -259,6 +258,32 @@ def json_pointer_parts(pointer: str) -> list[str]:
     return [part.replace("~1", "/").replace("~0", "~") for part in pointer.split("/")[1:]]
 
 
+def freeze_hparam_execution(recipe: dict) -> dict:
+    recipe = copy.deepcopy(recipe)
+    execution = dict(recipe.get("execution")) if isinstance(recipe.get("execution"), dict) else {}
+    manager_runtime = (
+        str(execution.get("target", "local") or "local") == "local"
+        and execution.get("workdir") in (None, "", str(REPO_ROOT))
+        and execution.get("conda_env") in (None, "")
+    )
+    if execution.get("python") in (None, "", "ASK_USER"):
+        if not manager_runtime:
+            raise ValueError("execution.python must be explicit when the target runtime is not local REPO_ROOT.")
+        execution["python"] = sys.executable
+    if execution.get("runtime_commit") in (None, "", "ASK_USER"):
+        if not manager_runtime:
+            raise ValueError(
+                "execution.runtime_commit must be explicit when the target runtime is not local REPO_ROOT."
+            )
+        repository = repo_summary().get("git") or {}
+        if not repository.get("available") or not repository.get("commit"):
+            raise ValueError("Cannot freeze the target runtime commit because the manager repository is unavailable.")
+        execution["runtime_commit"] = repository["commit"]
+    execution["runtime_commit"] = str(execution["runtime_commit"]).lower()
+    recipe["execution"] = execution
+    return recipe
+
+
 def write_hparam_plan(
     recipe: dict,
     out: Path,
@@ -268,11 +293,13 @@ def write_hparam_plan(
     out = out.expanduser()
     if not out.is_absolute():
         out = out.resolve()
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    recipe = freeze_hparam_execution(recipe)
+    execution = recipe["execution"]
     run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
     if not run_cwd.is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    run_inputs = {key: value for key, value in inputs.items() if key != "ckpt_path"}
     runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     source_config_path = inputs.get("config")
@@ -303,7 +330,7 @@ def write_hparam_plan(
             )
             runtime["devices"] = list(range(gpus_per_run))
         command_parts = [
-            "python",
+            execution["python"],
             "-m",
             rendering.variant_module(recipe, "finetune"),
             "--config",
@@ -316,7 +343,7 @@ def write_hparam_plan(
             plan_output_path(out, artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
             *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
             *rendering.finetune_input_cli_args(
-                inputs,
+                run_inputs,
                 variant=str(recipe.get("variant")),
             ),
         ]
@@ -382,11 +409,11 @@ def write_hparam_plan(
             rendering.hparam_script_lines(
                 [
                     rendering.render_command(
-                        ["python", "-m", "agent_tools", "hparam-launch", "--plan-dir", out, "--execute"]
+                        [sys.executable, "-m", "agent_tools", "hparam-run-queue", "--plan-dir", out, "--execute"]
                     )
                 ],
                 test_after_fit=test_after_fit is True,
-                run_cwd=run_cwd,
+                run_cwd=REPO_ROOT,
             )
         )
         + "\n",
@@ -454,7 +481,7 @@ def write_hparam_plan(
         final_config_path = resolved_final_eval_config_path(recipe, source_config_path)
         final_command = rendering.render_command(
             [
-                "python",
+                execution["python"],
                 "-m",
                 rendering.variant_module(recipe, "infer"),
                 "--config",

@@ -5,12 +5,13 @@ from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, hparam_runtime, run_artifacts as artifacts, run_evidence as evidence
+from . import experiment_io as exp_io, hparam_runtime, plan_hparam, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
     append_event as _write_experiment_event,
     canonical_local_experiment_root,
@@ -29,6 +30,8 @@ from .models import resolve_repo_path
 from .plans import build_plan, preflight_plan
 from .recipes import load_recipe_with_base, recipe_name
 
+_EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
+
 
 def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path:
     root = canonical_local_experiment_root(output_dir, Path.cwd())
@@ -43,7 +46,9 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
     round_dir = adaptive_dir / "rounds" / "round_000"
     _, _, preflight = preflight_plan(recipe_path=recipe_path, output_dir=round_dir)
     if preflight.exit_code != 0:
-        raise RuntimeError(f"Round 000 plan failed preflight with exit code {preflight.exit_code}.")
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in preflight.blocking_issues())
+        raise RuntimeError(f"Round 000 plan failed preflight with exit code {preflight.exit_code}: {details}")
+    recipe = plan_hparam.freeze_hparam_execution(recipe)
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -68,6 +73,7 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
         raise RuntimeError(f"Round 000 plan failed with exit code {report.exit_code}.")
     workflow = {
         "recipe_path": str(recipe_path),
+        "execution_identity": {field: recipe["execution"][field] for field in _EXECUTION_IDENTITY_FIELDS},
         "root": str(root),
         "external_optimized": True,
         "objective_metric": _adaptive(recipe).get("objective_metric", "test_auroc"),
@@ -156,8 +162,15 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
 def suggest_next_round(workflow_dir: str | Path) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
-    recipe = load_recipe_with_base(workflow["recipe_path"])
     next_round = _next_round_index(root)
+    next_dir = _round_dir(root, next_round)
+    recipe, _, source_preflight = preflight_plan(recipe_path=workflow["recipe_path"], output_dir=next_dir)
+    if source_preflight.exit_code != 0:
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
+        raise RuntimeError(
+            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
+        )
+    recipe = _with_workflow_execution(recipe, workflow)
     digest = _latest_digest(root)
     rows = read_rows(digest)
     objective = _objective(root, recipe)
@@ -175,7 +188,8 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
         _append_event(root, "suggest_blocked", {"round": next_round, "reason": "no_scored_runs"})
         raise ValueError(f"No digest rows with finite {objective['metric']} are available for suggestion.")
     best = ranked[0]
-    suggested = copy.deepcopy(recipe)
+    source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    suggested = copy.deepcopy(source)
     suggested_root = experiment_root(suggested)
     if suggested_root is not None:
         suggested["experiment"]["root"] = str(suggested_root)
@@ -184,8 +198,18 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
     suggested["search"]["max_runs"] = int(_adaptive(recipe).get("round_size") or _hparam_count(suggested))
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
+    candidate_payload = _strip_internal_recipe_keys(suggested)
+    with TemporaryDirectory(prefix="agent-tools-adaptive-") as temp_dir:
+        candidate_path = Path(temp_dir) / "suggested.yaml"
+        candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
+        _, _, candidate_preflight = preflight_plan(recipe_path=candidate_path, output_dir=next_dir)
+    if candidate_preflight.exit_code != 0:
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues())
+        raise RuntimeError(
+            f"Adaptive suggestion failed preflight with exit code {candidate_preflight.exit_code}: {details}"
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
-    out.write_text(yaml.safe_dump(_strip_internal_recipe_keys(suggested), sort_keys=False))
+    out.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
     rationale = _suggestion_rationale(next_round, objective, best, suggested["search"]["parameters"])
     write_text(out_dir / f"round_{next_round:03d}.md", rationale)
     _append_event(root, "suggest", {"round": next_round, "path": str(out), "best_run": best.get("run_id")})
@@ -195,7 +219,15 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
 def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
-    recipe = load_recipe_with_base(workflow["recipe_path"])
+    next_round = _next_round_index(root)
+    next_dir = _round_dir(root, next_round)
+    recipe, _, source_preflight = preflight_plan(recipe_path=workflow["recipe_path"], output_dir=next_dir)
+    if source_preflight.exit_code != 0:
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
+        raise RuntimeError(
+            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
+        )
+    recipe = _with_workflow_execution(recipe, workflow)
     current_round = _latest_round_index(root)
     round_dir = _round_dir(root, current_round)
     workspace = experiment_root(recipe)
@@ -203,8 +235,6 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
     if execute:
         _reject_unresolved_launch_attempts(root, workspace)
-    next_round = _next_round_index(root)
-    next_dir = _round_dir(root, next_round)
     targets = [workspace / "events.jsonl"]
     if execute:
         targets.extend([root / "adaptive" / "run_registry.tsv", next_dir / "round_recipe.yaml"])
@@ -524,6 +554,13 @@ def _workflow(root: Path) -> dict[str, Any]:
     recipe_path = Path(str(workflow.get("recipe_path") or ""))
     if not recipe_path.is_absolute():
         raise ValueError(f"Adaptive workflow recipe_path must be absolute: {path}")
+    execution_identity = workflow.get("execution_identity")
+    if (
+        not isinstance(execution_identity, dict)
+        or set(execution_identity) != set(_EXECUTION_IDENTITY_FIELDS)
+        or any(execution_identity.get(field) in (None, "") for field in _EXECUTION_IDENTITY_FIELDS)
+    ):
+        raise ValueError(f"Adaptive workflow lacks frozen execution identity: {path}")
     legacy_registry = root / "adaptive" / "trial_registry.tsv"
     if legacy_registry.exists():
         raise ValueError(f"Legacy adaptive registry is read-only and cannot be managed: {legacy_registry}")
@@ -536,6 +573,9 @@ def _workflow(root: Path) -> dict[str, Any]:
     round_dir = _round_dir(root, round_index)
     plan = artifacts.read_hparam_plan(round_dir)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    plan_execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    if any(plan_execution.get(field) != execution_identity[field] for field in _EXECUTION_IDENTITY_FIELDS):
+        raise ValueError(f"Adaptive workflow execution identity differs from the current round plan: {round_dir}")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -566,7 +606,12 @@ def _write_round_recipe(
     recipe: dict[str, Any], source_recipe_path: str | Path, round_dir: Path, round_index: int
 ) -> Path:
     round_dir.mkdir(parents=True, exist_ok=True)
-    copied = _strip_internal_recipe_keys(copy.deepcopy(recipe))
+    source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    copied = _strip_internal_recipe_keys(copy.deepcopy(source))
+    if isinstance(recipe.get("execution"), dict):
+        execution = dict(copied.get("execution")) if isinstance(copied.get("execution"), dict) else {}
+        execution.update({field: recipe["execution"][field] for field in _EXECUTION_IDENTITY_FIELDS})
+        copied["execution"] = execution
     copied_root = experiment_root(copied)
     if copied_root is not None:
         copied["experiment"]["root"] = str(copied_root)
@@ -593,6 +638,37 @@ def _resolve_base_recipe(recipe_path: str | Path, base_recipe: str | Path) -> Pa
 
 def _strip_internal_recipe_keys(recipe: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in recipe.items() if not str(key).startswith("_")}
+
+
+def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
+    frozen = workflow.get("execution_identity")
+    if (
+        not isinstance(frozen, dict)
+        or set(frozen) != set(_EXECUTION_IDENTITY_FIELDS)
+        or any(frozen.get(field) in (None, "") for field in _EXECUTION_IDENTITY_FIELDS)
+    ):
+        raise ValueError("Adaptive workflow lacks frozen execution identity.")
+    current = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    for field in _EXECUTION_IDENTITY_FIELDS:
+        value = current.get(field)
+        expected = frozen[field]
+        if value in (None, "", "ASK_USER"):
+            continue
+        if field == "runtime_commit" and isinstance(value, str) and isinstance(expected, str):
+            value = value.lower()
+            expected = expected.lower()
+        if value != expected:
+            raise ValueError(f"Adaptive source execution.{field} differs from the frozen workflow.")
+    execution = dict(current)
+    execution.update(copy.deepcopy(frozen))
+    recipe["execution"] = execution
+    if isinstance(recipe.get("_local_recipe"), dict):
+        local = copy.deepcopy(recipe["_local_recipe"])
+        local_execution = dict(local.get("execution")) if isinstance(local.get("execution"), dict) else {}
+        local_execution.update(copy.deepcopy(frozen))
+        local["execution"] = local_execution
+        recipe["_local_recipe"] = local
+    return recipe
 
 
 def _append_registry_rows(root: Path, round_index: int, round_dir: Path) -> None:
