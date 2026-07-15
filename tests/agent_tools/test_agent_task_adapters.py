@@ -2,9 +2,12 @@
 
 These freeze the pilot's acceptance criteria: registered adapters stay in
 sync with the kernel's variant table, and kernel modules stay free of
-adapter-owned task names (one whitelisted re-export in configs.py).
+adapter-owned task names outside of imports from the adapters package
+(layer 2 importing layer 1 is the allowed direction, and those import
+statements necessarily contain the task name in the module path).
 """
 
+import ast
 from pathlib import Path
 
 from agent_tools.adapters import all_adapters, get_adapter
@@ -19,18 +22,20 @@ KERNEL_MODULES = (
     "plan_rendering.py",
     "configs.py",
 )
-# configs.py keeps a re-export because tests import
-# agent_tools.configs.sleep2stat_config_summary; it goes away once every
-# task is an adapter.
-WHITELISTED_LINES = {
-    ("configs.py", "from .adapters.sleep2stat import sleep2stat_config_summary"),
-}
 
 
 def _kernel_dir() -> Path:
     import agent_tools
 
     return Path(agent_tools.__file__).parent
+
+
+def _adapter_import_lines(tree: ast.Module) -> set[int]:
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("adapters"):
+            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return lines
 
 
 def test_registry_resolves_sleep2stat():
@@ -48,13 +53,14 @@ def test_requires_variant_matches_variantless_tasks():
 
 def test_kernel_modules_do_not_name_adapter_tasks():
     kernel_dir = _kernel_dir()
-    offending: list[tuple[str, int, str]] = []
     task_names = {adapter.task for adapter in all_adapters()}
+    offending: list[tuple[str, int, str]] = []
     for module_name in KERNEL_MODULES:
-        for line_number, line in enumerate((kernel_dir / module_name).read_text().splitlines(), start=1):
-            for task_name in task_names:
-                if task_name in line and (module_name, line.strip().split("  #")[0].strip()) not in {
-                    (module, text) for module, text in WHITELISTED_LINES
-                }:
-                    offending.append((module_name, line_number, line.strip()))
+        source = (kernel_dir / module_name).read_text()
+        import_lines = _adapter_import_lines(ast.parse(source, module_name))
+        for line_number, line in enumerate(source.splitlines(), start=1):
+            if line_number in import_lines:
+                continue
+            if any(task_name in line for task_name in task_names):
+                offending.append((module_name, line_number, line.strip()))
     assert offending == [], f"adapter task names leaked into kernel modules: {offending}"
