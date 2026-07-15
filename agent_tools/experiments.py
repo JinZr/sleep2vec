@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -11,18 +10,19 @@ from .experiment_workspace import (
     TERMINAL_STATUSES,
     canonical_local_experiment_root,
     experiment_metadata_issues,
-    initialize_run_manifest,
+    experiment_readme_text,
     managed_run_key,
     merge_run_manifest,
     merge_step_manifest,
     read_managed_yaml_mapping,
     read_run_manifest,
     read_step_manifest,
+    validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
+    write_initial_experiment_manifest,
 )
 from .manifests import utc_now
-from .models import json_ready
 
 
 def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str | None = None) -> Path:
@@ -49,15 +49,7 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
     manifest = root / "experiment_manifest.tsv"
     rows = []
     if existing_text:
-        existing = read_managed_yaml_mapping(
-            existing_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
-        )
-        existing_experiment = existing.get("experiment") if isinstance(existing, dict) else None
-        if not isinstance(existing_experiment, dict) or existing_experiment.get("id") != experiment["id"]:
-            raise ValueError(f"Experiment root belongs to a different experiment: {root}")
-        for field in ("title", "objective", "root", "baseline"):
-            if existing_experiment.get(field) != experiment.get(field):
-                raise ValueError(f"experiment.{field} differs from the existing experiment manifest.")
+        validate_existing_experiment_manifest(existing_text, experiment, root)
         _managed_rows(root, remote=remote)
         rows = exp_io.read_rows_at(manifest, remote=remote, strict=True)
     exp_io.validate_managed_output_paths(
@@ -73,12 +65,9 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
     )
     exp_io.mkdir_experiment_dirs(root, remote=remote)
     if not existing_text:
-        exp_io.write_text_at(
-            root / "experiment.yaml", yaml.safe_dump({"experiment": experiment}, sort_keys=False), remote=remote
-        )
-        initialize_run_manifest(root, remote=remote)
+        write_initial_experiment_manifest(root, experiment, remote=remote)
         exp_io.append_event_at(root, "experiment_initialized", {"experiment_id": experiment["id"]}, remote=remote)
-    exp_io.write_text_at(root / "README.md", _experiment_readme(experiment), remote=remote)
+    exp_io.write_text_at(root / "README.md", experiment_readme_text(experiment), remote=remote)
     if rows:
         row = rows[0]
         row.update(
@@ -390,18 +379,3 @@ def _validate_evidence_rows(
         if managed is None:
             raise ValueError(f"{source} contains a run outside the canonical manifest.")
         validate_frozen_run_update(managed, row, require_checkpoint_ownership=True)
-
-
-def _experiment_readme(experiment: dict[str, Any]) -> str:
-    baseline = json.dumps(json_ready(experiment.get("baseline")), ensure_ascii=False, sort_keys=True)
-    return (
-        f"# {experiment['title']}\n\n"
-        f"Experiment id: `{experiment['id']}`\n\n"
-        f"## Objective\n\n{experiment['objective']}\n\n"
-        f"## Baseline\n\n{baseline}\n\n"
-        "## Navigation\n\n"
-        "- `steps/`: preparation, training, evaluation, and analysis steps\n"
-        "- `run_manifest.tsv`: current run state and settings\n"
-        "- `events.jsonl`: append-only history\n"
-        "- `reports/`: run matrix, status, ranking, and final report\n"
-    )
