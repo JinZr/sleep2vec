@@ -8,7 +8,7 @@ import yaml
 
 from .adapters import all_adapters
 from .adapters.sleep2stat import sleep2stat_config_summary  # noqa: F401 -- test-frozen import path
-from .models import repo_relative, resolve_repo_path
+from .models import CONFIG_FINETUNE_SECTION, repo_relative, resolve_repo_path
 
 BUILTIN_LABELS = ("stage3", "stage4", "stage5", "ahi", "sex", "age")
 
@@ -218,14 +218,14 @@ def sex_age_baseline_config_summary(
             "data_backend": None,
             "model": {"name": "sex_age_mlp", "features": []},
             "data": {},
-            "finetune": {},
+            CONFIG_FINETUNE_SECTION: {},
             "preset_build": {},
             "plausible_labels": [],
             "warnings": [],
             "blocking_issues": [str(exc)],
         }
 
-    raw_finetune = data.get("finetune") if isinstance(data.get("finetune"), dict) else {}
+    raw_finetune = data.get(CONFIG_FINETUNE_SECTION) if isinstance(data.get(CONFIG_FINETUNE_SECTION), dict) else {}
     raw_task = raw_finetune.get("task") if isinstance(raw_finetune.get("task"), dict) else {}
     survival = _survival_summary(
         raw_finetune,
@@ -282,7 +282,7 @@ def sex_age_baseline_config_summary(
             "key_column": cfg.data.key_column,
             "deduplicate_by_key": cfg.data.deduplicate_by_key,
         },
-        "finetune": finetune_summary,
+        CONFIG_FINETUNE_SECTION: finetune_summary,
         "preset_build": {},
         "plausible_labels": [],
         "warnings": [],
@@ -310,7 +310,7 @@ def config_summary(
         )
     model = data.get("model") if isinstance(data.get("model"), dict) else {}
     data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
-    finetune = data.get("finetune") if isinstance(data.get("finetune"), dict) else {}
+    finetune = data.get(CONFIG_FINETUNE_SECTION) if isinstance(data.get(CONFIG_FINETUNE_SECTION), dict) else {}
     task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
     survival = _survival_summary(finetune, task, validate_local_paths=validate_survival_local_paths)
     preset_build = data.get("preset_build") if isinstance(data.get("preset_build"), dict) else {}
@@ -420,7 +420,7 @@ def config_summary(
             "kaldi_data_root": data_block.get("kaldi_data_root"),
             "kaldi_manifest": data_block.get("kaldi_manifest"),
         },
-        "finetune": finetune_summary,
+        CONFIG_FINETUNE_SECTION: finetune_summary,
         "preset_build": {
             "required_channels": preset_build.get("required_channels"),
             "min_channels": preset_build.get("min_channels"),

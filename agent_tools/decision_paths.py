@@ -6,7 +6,7 @@ from typing import Any
 
 from . import transport
 from .decision_models import DecisionIssue, DecisionStatus
-from .models import REPO_ROOT
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT
 
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target"}
 
@@ -46,7 +46,7 @@ def _config_data(config_summary: dict | None) -> dict[str, Any]:
 
 
 def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
-    finetune = config_summary.get("finetune") if isinstance(config_summary, dict) else {}
+    finetune = config_summary.get(CONFIG_FINETUNE_SECTION) if isinstance(config_summary, dict) else {}
     return finetune if isinstance(finetune, dict) else {}
 
 

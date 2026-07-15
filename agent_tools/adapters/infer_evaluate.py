@@ -62,6 +62,7 @@ class InferEvaluateAdapter(TaskAdapter):
     artifact_fields = frozenset({"overwrite"})
     contract_sections = {"inputs": _INPUT_FIELDS, "evaluation_policy": _EVALUATION_FIELDS}
     preset_path_recipe_field = "inference_preset_path"
+    validates_dataset_paths = True
 
     def __init__(self, task: str, extra_decision_fields: frozenset[str]) -> None:
         self.task = task

@@ -19,7 +19,7 @@ from .decision_models import (
     question_for,
 )
 from .experiment_workspace import experiment_metadata_issues
-from .models import SUPPORTED_VARIANTS, task_requires_variant
+from .models import CONFIG_FINETUNE_SECTION, SUPPORTED_VARIANTS, task_requires_variant
 
 __all__ = [
     "DecisionIssue",
@@ -120,7 +120,7 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
 def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
     task_scope = {task}
     if task == "hparam_tune":
-        task_scope.add("finetune")
+        task_scope.add(hparam_rules.HPARAM_BASE_TASK)
     allowed = {
         str(item["id"])
         for item in policy.get("high_impact_fields", [])
@@ -430,7 +430,7 @@ def _config_field_value(field: str, config_summary: dict | None) -> Any:
     if not config_summary:
         return _MISSING
     data = config_summary.get("data", {})
-    finetune_task = config_summary.get("finetune", {}).get("task", {})
+    finetune_task = config_summary.get(CONFIG_FINETUNE_SECTION, {}).get("task", {})
     preset_build = config_summary.get("preset_build", {})
     mapping = {
         "data_backend": config_summary.get("data_backend"),
@@ -479,16 +479,16 @@ def _base_finetune_issues(
         return []
     local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
     base_gate = {key: value for key, value in recipe.items() if not key.startswith("_")}
-    base_gate["task"] = "finetune"
+    base_gate["task"] = hparam_rules.HPARAM_BASE_TASK
     if isinstance(base_gate.get("runtime"), dict):
-        finetune_runtime = _runtime_fields_for_task("finetune", recipe.get("variant"))
+        finetune_runtime = _runtime_fields_for_task(hparam_rules.HPARAM_BASE_TASK, recipe.get("variant"))
         base_gate["runtime"] = {
             field: value for field, value in base_gate["runtime"].items() if field in finetune_runtime
         }
 
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     base_decisions = dict(base_recipe.get("decisions") or {})
-    finetune_decisions = _decision_fields_for_task("finetune", policy)
+    finetune_decisions = _decision_fields_for_task(hparam_rules.HPARAM_BASE_TASK, policy)
     for decision_field, value in local_decisions.items():
         if decision_field in finetune_decisions and decision_field not in base_decisions:
             base_decisions[decision_field] = value
@@ -500,7 +500,7 @@ def _base_finetune_issues(
             field: value for field, value in base_cli_args["user_decisions"].items() if field in finetune_decisions
         }
     report = evaluate_consultation_gates(
-        "finetune",
+        hparam_rules.HPARAM_BASE_TASK,
         base_gate,
         config_summary,
         base_cli_args,

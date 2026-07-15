@@ -6,6 +6,15 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SUPPORTED_VARIANTS = ("sleep2vec", "sleep2vec2", "sleep2expert", "sex_age_baseline")
 VARIANTLESS_TASKS = {"sleep2stat"}
+# Domain-config schema section name. Shares its spelling with the finetune
+# task name but is config vocabulary, not task dispatch (the adapter leak
+# guard matches raw task-name constants, so kernel modules read the section
+# through this constant).
+CONFIG_FINETUNE_SECTION = "finetune"
+
+
+def recipe_name(recipe: dict[str, Any]) -> str:
+    return str(recipe.get("name") or Path(str(recipe.get("_recipe_path", "recipe"))).stem)
 
 
 def task_requires_variant(task: str | None) -> bool:

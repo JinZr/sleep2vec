@@ -9,7 +9,7 @@ from .configs import config_summary, load_yaml
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .decision_paths import path_context, path_validation
 from .index_csv import index_summary
-from .models import coerce_list, resolve_repo_path
+from .models import CONFIG_FINETUNE_SECTION, coerce_list, resolve_repo_path
 from .presets import preset_summary
 from .skills import list_skills
 
@@ -48,7 +48,7 @@ def survival_validation_paths(config_data: dict | None) -> list[Any]:
     if not isinstance(config_data, dict):
         return []
     data = config_data.get("data") if isinstance(config_data.get("data"), dict) else {}
-    finetune = config_data.get("finetune") if isinstance(config_data.get("finetune"), dict) else {}
+    finetune = config_data.get(CONFIG_FINETUNE_SECTION) if isinstance(config_data.get(CONFIG_FINETUNE_SECTION), dict) else {}
     survival = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
     multilabel = finetune.get("multilabel") if isinstance(finetune.get("multilabel"), dict) else {}
     paths = [data.get("finetune_data_index"), data.get("finetune_preset_path")]
@@ -92,7 +92,7 @@ def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
         cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi"
     )
     preset_path = effective_preset_path(recipe, cfg)
-    finetune = (cfg or {}).get("finetune") or {}
+    finetune = (cfg or {}).get(CONFIG_FINETUNE_SECTION) or {}
     task_type = (finetune.get("task") or {}).get("type")
     label_sidecars_valid = False
     if task_type == "survival":
@@ -131,7 +131,7 @@ def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any
         if override is not None:
             return override
     if task in {"finetune", "hparam_tune"}:
-        split_values = finetune_loaded_split_values(recipe)
+        split_values = rendering.finetune_loaded_split_values(recipe)
         if effective_preset_path(recipe, cfg) not in (None, ""):
             return [], config, split_values
         data = (cfg or {}).get("data") or {}
@@ -142,31 +142,6 @@ def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any
         data = cfg.get("data") or {}
         paths = coerce_list(data.get("finetune_data_index"))
     return paths, config, []
-
-
-def finetune_loaded_split_values(recipe: dict) -> list[str]:
-    task = recipe.get("task")
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-
-    splits: list[str] = []
-    if loads_train_val(runtime.get("epochs", 30)):
-        splits.extend(["train", "val"])
-
-    test_after_fit = evaluation.get("test_after_fit")
-    if task == "hparam_tune":
-        if test_after_fit is True:
-            splits.append("test")
-    elif test_after_fit is not False:
-        splits.append("test")
-    return splits
-
-
-def loads_train_val(epochs: Any) -> bool:
-    try:
-        return int(epochs) > 0
-    except (TypeError, ValueError):
-        return True
 
 
 def index_summary_issues(

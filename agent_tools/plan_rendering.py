@@ -108,6 +108,31 @@ def append_bool_option(args: list[Any], value: Any, true_flag: str, false_flag: 
         args.append(false_flag)
 
 
+def loads_train_val(epochs: Any) -> bool:
+    try:
+        return int(epochs) > 0
+    except (TypeError, ValueError):
+        return True
+
+
+def finetune_loaded_split_values(recipe: dict) -> list[str]:
+    task = recipe.get("task")
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+
+    splits: list[str] = []
+    if loads_train_val(runtime.get("epochs", 30)):
+        splits.extend(["train", "val"])
+
+    test_after_fit = evaluation.get("test_after_fit")
+    if task == "hparam_tune":
+        if test_after_fit is True:
+            splits.append("test")
+    elif test_after_fit is not False:
+        splits.append("test")
+    return splits
+
+
 def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> list[Any]:
     args: list[Any] = [
         "--devices",

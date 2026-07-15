@@ -44,7 +44,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, resolve_repo_path
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
@@ -102,13 +102,13 @@ def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) ->
             )
         local_contract_task = "hparam_tune" if local_task in (None, "", "ASK_USER") else str(local_task)
         sources = [
-            (base_recipe, "finetune", "base"),
+            (base_recipe, hparam_rules.HPARAM_BASE_TASK, "base"),
             (local_recipe, local_contract_task, "local"),
         ]
     else:
         sources = [(recipe, str(effective_task or ""), "effective")]
 
-    if has_layers and base_recipe.get("task") not in (None, "", "ASK_USER", "finetune"):
+    if has_layers and base_recipe.get("task") not in (None, "", "ASK_USER", hparam_rules.HPARAM_BASE_TASK):
         issues.append(
             _recipe_contract_issue(
                 "task",
@@ -387,7 +387,7 @@ def evaluate_recipe(
     ):
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-        finetune_task = cfg.get("finetune", {}).get("task", {})
+        finetune_task = cfg.get(CONFIG_FINETUNE_SECTION, {}).get("task", {})
         config_contracts = {
             "data_backend": (
                 inputs.get("data_backend"),
