@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
 import json
 import math
@@ -274,8 +274,8 @@ class _ReplacementState:
     launch_failed_keys: set[tuple[str, str]]
     round_committed: bool = False
     retirement_credit: int = 0
-    superseded_current_keys: list[tuple[str, str]] = field(default_factory=list)
-    stopped_run_keys: list[tuple[str, str]] = field(default_factory=list)
+    superseded_current_keys: list[tuple[str, str]] = dataclass_field(default_factory=list)
+    stopped_run_keys: list[tuple[str, str]] = dataclass_field(default_factory=list)
 
 
 def _commit_round(root: Path, round_dir: Path, state: _ReplacementState) -> None:

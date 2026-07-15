@@ -14,7 +14,11 @@ from typing import Any
 from . import transport
 from .manifests import read_rows, utc_now, write_rows, write_text
 from .models import json_ready
-from .transport import REMOTE_CONFLICT_RETURN_CODE, REMOTE_MISSING_RETURN_CODE, SSH_TIMEOUT_SECONDS
+from .transport import (  # noqa: F401 -- SSH_TIMEOUT_SECONDS re-exported for existing importers/tests
+    REMOTE_CONFLICT_RETURN_CODE,
+    REMOTE_MISSING_RETURN_CODE,
+    SSH_TIMEOUT_SECONDS,
+)
 
 
 def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
