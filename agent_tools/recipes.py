@@ -4,7 +4,11 @@ from pathlib import Path
 from typing import Any
 
 from .experiment_workspace import read_managed_yaml_mapping
-from .models import recipe_name, repo_relative, resolve_repo_path  # noqa: F401 -- recipe_name re-exported for existing importers
+from .models import (  # noqa: F401 -- recipe_name re-exported for existing importers
+    recipe_name,
+    repo_relative,
+    resolve_repo_path,
+)
 
 
 def load_yaml_file(path: str | Path) -> dict[str, Any]:
@@ -78,5 +82,3 @@ def _resolve_base_recipe_path(base_path: str | Path, recipe_path: Path | None) -
     if recipe_relative.exists():
         return recipe_relative
     return base_path
-
-

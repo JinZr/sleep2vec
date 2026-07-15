@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import (
-    decision_hparam as hparam_rules,
-    decision_paths as paths,
-    plan_rendering as rendering,
-)
+from . import decision_hparam as hparam_rules, decision_paths as paths, plan_rendering as rendering
 from .adapters import all_adapters, get_adapter
 from .decision_models import (
     DecisionIssue,
