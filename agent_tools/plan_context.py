@@ -48,7 +48,9 @@ def survival_validation_paths(config_data: dict | None) -> list[Any]:
     if not isinstance(config_data, dict):
         return []
     data = config_data.get("data") if isinstance(config_data.get("data"), dict) else {}
-    finetune = config_data.get(CONFIG_FINETUNE_SECTION) if isinstance(config_data.get(CONFIG_FINETUNE_SECTION), dict) else {}
+    finetune = (
+        config_data.get(CONFIG_FINETUNE_SECTION) if isinstance(config_data.get(CONFIG_FINETUNE_SECTION), dict) else {}
+    )
     survival = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
     multilabel = finetune.get("multilabel") if isinstance(finetune.get("multilabel"), dict) else {}
     paths = [data.get("finetune_data_index"), data.get("finetune_preset_path")]
