@@ -878,57 +878,13 @@ def _wandb_summary_for_run(run_dir: Path) -> dict[str, Any]:
 
 def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
     task = recipe.get("task")
+    adapter = get_adapter(task)
+    if adapter is not None:
+        return adapter.commands(recipe, cfg)
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    if task == "sleep2stat":
-        config = inputs.get("config")
-        run_dir = rendering.sleep2stat_config_run_dir(cfg)
-        if not run_dir:
-            return []
-        commands = [
-            rendering.render_command(["python", "-m", "sleep2stat", "validate-config", "--config", config]),
-        ]
-        if rendering.sleep2stat_has_yasa_stage(cfg):
-            commands.append(
-                rendering.render_command(
-                    ["python", "-m", "sleep2stat", "validate-config", "--config", config]
-                    + rendering.sleep2stat_record_check_args(recipe)
-                )
-            )
-        commands.append(
-            rendering.render_command(
-                [
-                    "python",
-                    "-m",
-                    "sleep2stat",
-                    "run",
-                    "--config",
-                    config,
-                    *rendering.sleep2stat_runtime_args(recipe),
-                ]
-            )
-        )
-        if runtime.get("summarize_after_run", True) and not runtime.get("dry_run"):
-            commands.append(rendering.render_command(["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]))
-        if runtime.get("plot_cohort_after_run") is True and not runtime.get("dry_run"):
-            plot_cmd = [
-                "python",
-                "-m",
-                "sleep2stat",
-                "plot-cohort",
-                "--run-dir",
-                run_dir,
-                "--group-column",
-                runtime.get("plot_group_column", "source"),
-            ]
-            plot_stage_source = runtime.get("plot_stage_source")
-            if plot_stage_source not in (None, ""):
-                plot_cmd.extend(["--stage-source", str(plot_stage_source)])
-            rendering.append_list_option(plot_cmd, "--adjust-covariates", runtime.get("plot_adjust_covariates"))
-            commands.append(rendering.render_command(plot_cmd))
-        return commands
     if task == "finetune":
         test_after_fit = evaluation.get("test_after_fit")
         pieces = [

@@ -5,8 +5,46 @@ from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..decision_paths import path_context, path_validation, validate_input_path
-from ..models import REPO_ROOT, repo_relative, resolve_repo_path
+from ..models import REPO_ROOT, coerce_list, repo_relative, resolve_repo_path
+from ..plan_rendering import append_bool_option, append_list_option, append_option, render_command
 from .base import TaskAdapter
+
+
+def sleep2stat_config_run_dir(cfg: dict | None) -> str | None:
+    if not cfg or not cfg.get("is_sleep2stat"):
+        return None
+    value = ((cfg.get("sleep2stat") or {}).get("run") or {}).get("output_dir")
+    return str(value) if value not in (None, "") else None
+
+
+def sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    args: list[Any] = []
+    append_list_option(args, "--split", inputs.get("split"))
+    append_option(args, "--device", runtime.get("device"))
+    append_option(args, "--num-workers", runtime.get("num_workers"))
+    append_option(args, "--batch-size", runtime.get("batch_size"))
+    append_option(args, "--limit-records", runtime.get("limit_records"))
+    append_bool_option(args, runtime.get("dry_run"), "--dry-run")
+    return args
+
+
+def sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    args: list[Any] = ["--check-records"]
+    append_list_option(args, "--split", inputs.get("split"))
+    append_option(args, "--limit-records", runtime.get("limit_records"))
+    return args
+
+
+def sleep2stat_has_yasa_stage(cfg: dict | None) -> bool:
+    sleep2stat = (cfg or {}).get("sleep2stat") or {}
+    for analyzer in sleep2stat.get("analyzers", []):
+        if analyzer.get("enabled") is not False and analyzer.get("type") == "yasa_stage":
+            return True
+    return False
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -309,6 +347,110 @@ class Sleep2statAdapter(TaskAdapter):
                 if issue is not None:
                     issues.append(issue)
         return issues
+
+    def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        config = inputs.get("config")
+        run_dir = sleep2stat_config_run_dir(config_summary)
+        if not run_dir:
+            return []
+        commands = [
+            render_command(["python", "-m", "sleep2stat", "validate-config", "--config", config]),
+        ]
+        if sleep2stat_has_yasa_stage(config_summary):
+            commands.append(
+                render_command(
+                    ["python", "-m", "sleep2stat", "validate-config", "--config", config]
+                    + sleep2stat_record_check_args(recipe)
+                )
+            )
+        commands.append(
+            render_command(
+                [
+                    "python",
+                    "-m",
+                    "sleep2stat",
+                    "run",
+                    "--config",
+                    config,
+                    *sleep2stat_runtime_args(recipe),
+                ]
+            )
+        )
+        if runtime.get("summarize_after_run", True) and not runtime.get("dry_run"):
+            commands.append(render_command(["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]))
+        if runtime.get("plot_cohort_after_run") is True and not runtime.get("dry_run"):
+            plot_cmd = [
+                "python",
+                "-m",
+                "sleep2stat",
+                "plot-cohort",
+                "--run-dir",
+                run_dir,
+                "--group-column",
+                runtime.get("plot_group_column", "source"),
+            ]
+            plot_stage_source = runtime.get("plot_stage_source")
+            if plot_stage_source not in (None, ""):
+                plot_cmd.extend(["--stage-source", str(plot_stage_source)])
+            append_list_option(plot_cmd, "--adjust-covariates", runtime.get("plot_adjust_covariates"))
+            commands.append(render_command(plot_cmd))
+        return commands
+
+    def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        commands = []
+        if inputs.get("config"):
+            commands.append(
+                render_command(["python", "-m", "sleep2stat", "validate-config", "--config", inputs["config"]])
+            )
+            commands.append(render_command(["python", "utils/check_configs.py", inputs["config"]]))
+        commands.append(render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
+        return commands
+
+    def expected_artifacts(
+        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+    ) -> list[dict[str, str]]:
+        cfg = config_summary
+        run_dir = sleep2stat_config_run_dir(cfg)
+        if not run_dir:
+            return []
+        sleep2stat = cfg.get("sleep2stat") if cfg else {}
+        outputs = (sleep2stat or {}).get("outputs") or {}
+        compression = outputs.get("compression", "gzip")
+        global_tables = outputs.get("global_tables") or {}
+        event_suffix = ".csv.gz" if compression == "gzip" else ".csv"
+        expected = [
+            {"name": "sleep2stat config snapshot", "path": f"{run_dir}/config.yaml"},
+            {"name": "sleep2stat CLI args", "path": f"{run_dir}/cli_args.yaml"},
+            {"name": "sleep2stat run manifest", "path": f"{run_dir}/run_manifest.json"},
+            {"name": "sleep2stat record manifest", "path": f"{run_dir}/record_manifest.csv"},
+            {"name": "sleep2stat progress", "path": f"{run_dir}/status/progress.json"},
+            {"name": "sleep2stat model summary", "path": f"{run_dir}/tables/model_summary.csv"},
+            {"name": "sleep2stat analyzer summary", "path": f"{run_dir}/tables/analyzer_summary.csv"},
+            {"name": "sleep2stat per-record events", "path": f"{run_dir}/per_record/<record_id>/events{event_suffix}"},
+            {"name": "sleep2stat per-record night stats", "path": f"{run_dir}/per_record/<record_id>/night_stats.json"},
+            {
+                "name": "sleep2stat per-record result manifest",
+                "path": f"{run_dir}/per_record/<record_id>/result_manifest.csv",
+            },
+            {"name": "sleep2stat optional per-record arrays", "path": f"{run_dir}/per_record/<record_id>/arrays.npz"},
+        ]
+        if global_tables.get("night_stats", True):
+            expected.append({"name": "sleep2stat night stats", "path": f"{run_dir}/tables/night_stats.csv"})
+        for table in ("epoch_alignment", "second_alignment", "event_alignment"):
+            if global_tables.get(table, False):
+                expected.append({"name": f"sleep2stat {table}", "path": f"{run_dir}/tables/{table}{event_suffix}"})
+        return expected
+
+    def index_summary_inputs_override(
+        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+    ) -> tuple[list[Any], Any, list[Any]] | None:
+        if config_summary and config_summary.get("is_sleep2stat"):
+            data = (config_summary.get("sleep2stat") or {}).get("data") or {}
+            return coerce_list(data.get("index")), None, []
+        return None
 
 
 SLEEP2STAT_ADAPTER = Sleep2statAdapter()
