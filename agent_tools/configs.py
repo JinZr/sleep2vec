@@ -7,9 +7,7 @@ from typing import Any
 import yaml
 
 from .adapters import all_adapters
-from .adapters.sleep2stat import (  # noqa: F401 -- test-frozen import path
-    sleep2stat_config_summary,
-)
+from .adapters.sleep2stat import sleep2stat_config_summary  # noqa: F401 -- test-frozen import path
 from .models import repo_relative, resolve_repo_path
 
 BUILTIN_LABELS = ("stage3", "stage4", "stage5", "ahi", "sex", "age")
