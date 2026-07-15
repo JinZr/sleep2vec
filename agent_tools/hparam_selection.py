@@ -118,13 +118,7 @@ def select_hparam_candidates(
         else:
             rows.append(row)
     reverse = mode == "max"
-    ranked = sorted(
-        rows,
-        key=lambda row: artifacts.sortable_score(row.get("score"), reverse),
-        reverse=reverse,
-    )
-    for rank, row in enumerate(ranked, start=1):
-        row["rank"] = rank
+    ranked = artifacts.assign_ranks(rows, key="score", reverse=reverse)
     step_ranked = ranked
     validate_managed_run_rows(step_ranked, source="current ranking", cardinality="one_per_run")
     if not step_ranked:
@@ -198,15 +192,7 @@ def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_
         manifest = read_json(manifest_path) if manifest_path else {}
         rows.extend(_checkpoint_scan_rows(run, metric, manifest_path, manifest))
     reverse = mode == "max"
-    ranked = sorted(
-        rows,
-        key=lambda row: artifacts.sortable_score(row.get("score"), reverse),
-        reverse=reverse,
-    )
-    if top_k is not None:
-        ranked = ranked[:top_k]
-    for rank, row in enumerate(ranked, start=1):
-        row["rank"] = rank
+    ranked = artifacts.assign_ranks(rows, key="score", reverse=reverse, top_k=top_k)
     validate_managed_run_rows(ranked, source="checkpoint ranking", cardinality="many_per_run")
     if ranked:
         write_rows(out, ranked)

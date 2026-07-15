@@ -442,3 +442,26 @@ def sortable_score(value: Any, reverse: bool) -> float:
     except (TypeError, ValueError):
         return -math.inf if reverse else math.inf
     return score
+
+
+def assign_ranks(
+    rows: list[dict[str, Any]],
+    *,
+    key: str,
+    reverse: bool,
+    top_k: int | None = None,
+    rank_metric: str | None = None,
+) -> list[dict[str, Any]]:
+    """Sort rows by their metric value and write 1-based ranks in place.
+
+    Sorting is stable (ties keep their input order). top_k truncates before
+    ranks are assigned, so ranks stay contiguous from 1. The input list is
+    not reordered; the returned list is the sorted (and truncated) view."""
+    ranked = sorted(rows, key=lambda row: sortable_score(row.get(key), reverse), reverse=reverse)
+    if top_k is not None:
+        ranked = ranked[:top_k]
+    for rank, row in enumerate(ranked, start=1):
+        row["rank"] = rank
+        if rank_metric is not None:
+            row["rank_metric"] = rank_metric
+    return ranked

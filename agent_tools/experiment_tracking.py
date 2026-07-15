@@ -382,9 +382,7 @@ def rank_candidates(
     ranked = _best_rows(rows, mode=mode)
     for row in ranked:
         row["checkpoint_path"] = _checkpoint_for_metric_row(row, checkpoints)
-    ranked = sorted(ranked, key=lambda row: artifacts.sortable_score(row.get("score"), reverse), reverse=reverse)
-    for rank, row in enumerate(ranked, start=1):
-        row["rank"] = rank
+    ranked = artifacts.assign_ranks(ranked, key="score", reverse=reverse)
     validate_managed_run_rows(ranked, source="experiment ranking", cardinality="one_per_run")
     return ranked
 
