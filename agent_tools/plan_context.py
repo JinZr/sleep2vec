@@ -8,7 +8,7 @@ from .configs import config_summary, load_yaml
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .decision_paths import path_context, path_validation
 from .index_csv import index_summary
-from .models import resolve_repo_path
+from .models import coerce_list, resolve_repo_path
 from .presets import preset_summary
 from .skills import list_skills
 
@@ -132,24 +132,24 @@ def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any
     config = inputs.get("config")
     if cfg and cfg.get("is_sleep2stat"):
         data = (cfg.get("sleep2stat") or {}).get("data") or {}
-        return rendering.list_value(data.get("index")), None, []
+        return coerce_list(data.get("index")), None, []
     if task == "preset_prepare":
         preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
-        return rendering.list_value(inputs.get("index")), config, rendering.list_value(preset.get("split"))
+        return coerce_list(inputs.get("index")), config, coerce_list(preset.get("split"))
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
         if task in {"infer", "evaluate"}:
-            split_values = rendering.list_value(inputs.get("eval_split"))
+            split_values = coerce_list(inputs.get("eval_split"))
         else:
             split_values = finetune_loaded_split_values(recipe)
         if effective_preset_path(recipe, cfg) not in (None, ""):
             return [], config, split_values
         data = (cfg or {}).get("data") or {}
-        return rendering.list_value(data.get("finetune_data_index")), config, split_values
+        return coerce_list(data.get("finetune_data_index")), config, split_values
 
-    paths = rendering.list_value(inputs.get("index"))
+    paths = coerce_list(inputs.get("index"))
     if not paths and cfg:
         data = cfg.get("data") or {}
-        paths = rendering.list_value(data.get("finetune_data_index"))
+        paths = coerce_list(data.get("finetune_data_index"))
     return paths, config, []
 
 

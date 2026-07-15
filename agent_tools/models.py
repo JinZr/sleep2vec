@@ -18,6 +18,14 @@ def module_for_variant(variant: str, entrypoint: str) -> str:
     return f"{variant}.{entrypoint}"
 
 
+def coerce_list(value: Any) -> list[Any]:
+    if value in (None, "", "ASK_USER"):
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
 def json_ready(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)

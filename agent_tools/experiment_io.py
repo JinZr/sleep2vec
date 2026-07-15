@@ -12,7 +12,7 @@ import tempfile
 from typing import Any
 
 from . import transport
-from .manifests import read_rows, utc_now, write_rows, write_text
+from .manifests import read_rows, utc_now, validate_managed_header, write_rows, write_text
 from .models import json_ready
 from .transport import (  # noqa: F401 -- SSH_TIMEOUT_SECONDS re-exported for existing importers/tests
     REMOTE_CONFLICT_RETURN_CODE,
@@ -126,17 +126,7 @@ def read_rows_at(
         if len(fieldnames) != len(set(fieldnames)):
             raise ValueError(f"Strict table has duplicate header fields: {path}")
     if require_managed_identity:
-        if "trial_id" in fieldnames:
-            raise ValueError(
-                f"Historical managed table fields are read-only; Historical trial_id fields are unsupported: {path}"
-            )
-        if any(field.startswith("param.") for field in fieldnames):
-            raise ValueError(f"Historical parameter fields are read-only: {path}")
-        missing = [field for field in ("step_id", "run_id") if field not in fieldnames]
-        if missing:
-            raise ValueError(
-                f"Managed table header must define step_id and run_id; missing {', '.join(missing)}: {path}"
-            )
+        validate_managed_header(fieldnames, path)
     try:
         rows = list(reader)
     except csv.Error as exc:

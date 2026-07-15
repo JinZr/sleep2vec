@@ -5,7 +5,7 @@ import shlex
 import sys
 from typing import Any
 
-from .models import REPO_ROOT, module_for_variant
+from .models import REPO_ROOT, coerce_list, module_for_variant
 
 _FINETUNE_RUNTIME_DEFAULTS = (
     ("precision", "--precision", "bf16-mixed"),
@@ -123,18 +123,10 @@ def append_bool_option(args: list[Any], value: Any, true_flag: str, false_flag: 
         args.append(false_flag)
 
 
-def list_value(value: Any) -> list[Any]:
-    if value in (None, "", "ASK_USER"):
-        return []
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return [value]
-
-
 def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> list[Any]:
     args: list[Any] = [
         "--devices",
-        *[str(item) for item in list_value(runtime.get("devices", [0])) or [0]],
+        *[str(item) for item in coerce_list(runtime.get("devices", [0])) or [0]],
     ]
     for key, flag, default in _FINETUNE_RUNTIME_DEFAULTS:
         args.extend([flag, runtime.get(key, default)])
@@ -148,7 +140,7 @@ def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> 
 def infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
     args: list[Any] = [
         "--devices",
-        *[str(item) for item in list_value(runtime.get("devices", [0])) or [0]],
+        *[str(item) for item in coerce_list(runtime.get("devices", [0])) or [0]],
     ]
     for key, flag, default in _INFER_RUNTIME_DEFAULTS:
         args.extend([flag, runtime.get(key, default)])

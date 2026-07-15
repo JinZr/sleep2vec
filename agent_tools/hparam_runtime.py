@@ -1063,9 +1063,6 @@ def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
     return groups
 
 
-_as_list = gpu_rules.as_device_list
-
-
 def _launch_command(
     execution: dict[str, Any],
     script: Path,

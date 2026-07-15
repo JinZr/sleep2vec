@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from agent_tools import experiment_io
+from agent_tools import experiment_io, manifests
 
 
 @pytest.mark.parametrize(
@@ -190,6 +190,45 @@ def test_managed_table_reader_accepts_current_header_only_table(tmp_path: Path):
     path.write_text("step_id\trun_id\n")
 
     assert experiment_io.read_rows_at(path, require_managed_identity=True) == []
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [
+        pytest.param(lambda path: manifests.read_rows(path, require_managed_identity=True), id="read_rows"),
+        pytest.param(lambda path: experiment_io.read_rows_at(path, require_managed_identity=True), id="read_rows_at"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("header", "message"),
+    [
+        pytest.param(
+            "trial_id\tstep_id\trun_id\n",
+            "Historical managed table fields are read-only; Historical trial_id fields are unsupported: {path}",
+            id="trial_id",
+        ),
+        pytest.param(
+            "step_id\trun_id\tparam.lr\n",
+            "Historical parameter fields are read-only: {path}",
+            id="param_prefix",
+        ),
+        pytest.param(
+            "experiment_id\n",
+            "Managed table header must define step_id and run_id; missing step_id, run_id: {path}",
+            id="missing_identity",
+        ),
+    ],
+)
+def test_managed_header_contract_messages_are_identical_across_readers(
+    tmp_path: Path, reader, header: str, message: str
+):
+    path = tmp_path / "run_status.tsv"
+    path.write_text(header)
+
+    with pytest.raises(ValueError) as excinfo:
+        reader(path)
+
+    assert str(excinfo.value) == message.format(path=path)
 
 
 @pytest.mark.parametrize(

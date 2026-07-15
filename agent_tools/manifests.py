@@ -21,6 +21,18 @@ def write_json(path: str | Path, payload: Any) -> None:
     target.write_text(json.dumps(json_ready(payload), indent=2, sort_keys=True) + "\n")
 
 
+def validate_managed_header(fieldnames: list[str], path: str | Path) -> None:
+    if "trial_id" in fieldnames:
+        raise ValueError(
+            f"Historical managed table fields are read-only; Historical trial_id fields are unsupported: {path}"
+        )
+    if any(field.startswith("param.") for field in fieldnames):
+        raise ValueError(f"Historical parameter fields are read-only: {path}")
+    missing = [field for field in ("step_id", "run_id") if field not in fieldnames]
+    if missing:
+        raise ValueError(f"Managed table header must define step_id and run_id; missing {', '.join(missing)}: {path}")
+
+
 def read_rows(path: str | Path, *, require_managed_identity: bool = False) -> list[dict[str, str]]:
     table = Path(path)
     if not table.exists() and not table.is_symlink():
@@ -34,18 +46,7 @@ def read_rows(path: str | Path, *, require_managed_identity: bool = False) -> li
                 raise ValueError(f"Managed table has no header: {table}")
             if len(fieldnames) != len(set(fieldnames)):
                 raise ValueError(f"Managed table has duplicate header fields: {table}")
-            if "trial_id" in fieldnames:
-                raise ValueError(
-                    "Historical managed table fields are read-only; "
-                    f"Historical trial_id fields are unsupported: {table}"
-                )
-            if any(field.startswith("param.") for field in fieldnames):
-                raise ValueError(f"Historical parameter fields are read-only: {table}")
-            missing = [field for field in ("step_id", "run_id") if field not in fieldnames]
-            if missing:
-                raise ValueError(
-                    f"Managed table header must define step_id and run_id; missing {', '.join(missing)}: {table}"
-                )
+            validate_managed_header(fieldnames, table)
         rows = list(reader)
     if require_managed_identity and any(None in row or any(value is None for value in row.values()) for row in rows):
         raise ValueError(f"Managed table has a non-rectangular row: {table}")

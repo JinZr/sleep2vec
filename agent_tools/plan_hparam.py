@@ -22,7 +22,7 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import write_json, write_text
-from .models import REPO_ROOT
+from .models import REPO_ROOT, coerce_list
 from .repo import repo_summary
 
 
@@ -326,7 +326,7 @@ def write_hparam_plan(
             gpus_per_run = (
                 int(execution["gpus_per_run"])
                 if "gpus_per_run" in execution
-                else len(rendering.list_value(runtime_defaults.get("devices"))) or 1
+                else len(coerce_list(runtime_defaults.get("devices"))) or 1
             )
             runtime["devices"] = list(range(gpus_per_run))
         command_parts = [

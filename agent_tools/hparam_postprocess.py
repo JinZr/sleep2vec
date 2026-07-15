@@ -420,16 +420,7 @@ def ensemble_hparam_outputs(
             for combo in combinations(usable, size):
                 summary.append(_ensemble_summary_row(list(combo)))
         reverse = mode == "max"
-        summary = sorted(
-            summary,
-            key=lambda row: artifacts.sortable_score(row.get(metric), reverse),
-            reverse=reverse,
-        )
-        if top_k is not None:
-            summary = summary[:top_k]
-        for rank, row in enumerate(summary, start=1):
-            row["rank"] = rank
-            row["rank_metric"] = metric
+        summary = artifacts.assign_ranks(summary, key=metric, reverse=reverse, top_k=top_k, rank_metric=metric)
     elif usable:
         summary.append(_ensemble_summary_row(usable))
     write_rows(out, summary)
