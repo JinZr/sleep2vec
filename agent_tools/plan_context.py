@@ -130,11 +130,8 @@ def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any
         override = adapter.index_summary_inputs_override(recipe, cfg)
         if override is not None:
             return override
-    if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
-        if task in {"infer", "evaluate"}:
-            split_values = coerce_list(inputs.get("eval_split"))
-        else:
-            split_values = finetune_loaded_split_values(recipe)
+    if task in {"finetune", "hparam_tune"}:
+        split_values = finetune_loaded_split_values(recipe)
         if effective_preset_path(recipe, cfg) not in (None, ""):
             return [], config, split_values
         data = (cfg or {}).get("data") or {}
@@ -205,8 +202,10 @@ def context_preset_summary(recipe: dict, cfg: dict | None) -> dict | None:
 def effective_preset_path(recipe: dict, cfg: dict | None) -> Any:
     task = recipe.get("task")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    if task in {"infer", "evaluate"}:
-        preset_path = inputs.get("inference_preset_path")
+    adapter = get_adapter(task)
+    recipe_field = adapter.preset_path_recipe_field if adapter is not None else None
+    if recipe_field is not None:
+        preset_path = inputs.get(recipe_field)
         if preset_path not in (None, "", "ASK_USER"):
             return preset_path
     if task in {"finetune", "hparam_tune", "infer", "evaluate"} and cfg:

@@ -54,8 +54,6 @@ def _effective_preset_path(
     task: str, recipe: dict, config_summary: dict | None, recipe_field: str | None = None
 ) -> tuple[str, Any]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    if recipe_field is None and task in {"infer", "evaluate"}:
-        recipe_field = "inference_preset_path"
     if recipe_field is not None:
         value = inputs.get(recipe_field)
         if value not in (None, "", "ASK_USER"):
@@ -203,10 +201,6 @@ def path_issues(
     if inputs.get("config"):
         required_paths.append(("config", inputs.get("config")))
     required_paths.extend(required_input_paths or [])
-    if task in {"infer", "evaluate"}:
-        ckpt_path = inputs.get("ckpt_path")
-        if ckpt_path not in (None, "", "ASK_USER"):
-            required_paths.append(("ckpt_path", ckpt_path))
     if task == "finetune":
         for input_field in ("pretrained_backbone_path", "ckpt_path"):
             if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":

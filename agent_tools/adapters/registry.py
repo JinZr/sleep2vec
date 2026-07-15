@@ -8,11 +8,13 @@ from .base import TaskAdapter
 # Registration order is the probing order for config-shape claims
 # (index_summary_inputs_override / matches_config_data): config-probing
 # adapters must precede task-keyed ones.
+from .infer_evaluate import EVALUATE_ADAPTER, INFER_ADAPTER
 from .preset_prepare import PRESET_PREPARE_ADAPTER
 from .sleep2stat import SLEEP2STAT_ADAPTER
 
 TASK_ADAPTERS: dict[str, TaskAdapter] = {
-    adapter.task: adapter for adapter in (SLEEP2STAT_ADAPTER, PRESET_PREPARE_ADAPTER)
+    adapter.task: adapter
+    for adapter in (SLEEP2STAT_ADAPTER, PRESET_PREPARE_ADAPTER, INFER_ADAPTER, EVALUATE_ADAPTER)
 }
 
 
