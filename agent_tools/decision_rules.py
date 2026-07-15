@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import plan_rendering as rendering
+from .adapters import get_adapter
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from .decision_paths import multilabel_sidecar_issue, sleep2stat_existing_run_dir_issue, survival_sidecar_issue
 
@@ -29,23 +30,27 @@ _INPUT_FIELDS = {
         "override_dataset_names",
         "pretrained_backbone_path",
     },
-    "sleep2stat": {"config", "split"},
 }
 _EVALUATION_FIELDS = {
     "finetune": {"external_test_locked", "selection_metric", "selection_mode", "selection_split", "test_after_fit"},
     "infer": {"external_test_locked", "final_test_unlocked"},
     "evaluate": {"external_test_locked", "final_test_unlocked"},
-    "sleep2stat": {"external_test_locked"},
 }
 
 
 def task_recipe_contract_issues(task: str, recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
-    sections = {
-        "inputs": _INPUT_FIELDS.get(task),
-        "evaluation_policy": _EVALUATION_FIELDS.get(task),
-        "preset": rendering.PRESET_FIELDS if task == "preset_prepare" else None,
-    }
+    adapter = get_adapter(task)
+    if adapter is not None:
+        sections = {
+            section: adapter.contract_sections.get(section) for section in ("inputs", "evaluation_policy", "preset")
+        }
+    else:
+        sections = {
+            "inputs": _INPUT_FIELDS.get(task),
+            "evaluation_policy": _EVALUATION_FIELDS.get(task),
+            "preset": rendering.PRESET_FIELDS if task == "preset_prepare" else None,
+        }
     for section, allowed_fields in sections.items():
         if section not in recipe or allowed_fields is None:
             continue

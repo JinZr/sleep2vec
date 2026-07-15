@@ -8,6 +8,7 @@ from . import (
     decision_rules as rules,
     plan_rendering as rendering,
 )
+from .adapters import all_adapters, get_adapter
 from .decision_models import (
     DecisionIssue,
     DecisionReport,
@@ -33,9 +34,9 @@ _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_reci
 _DECISION_ENTRY_FIELDS = {"meaning", "question", "rationale", "source", "value"}
 _EXTRA_DECISION_TASKS = {
     "ckpt_path": {"finetune", "hparam_tune"},
-    "config": {"evaluate", "finetune", "hparam_tune", "infer", "preset_prepare", "sleep2stat"},
+    "config": {"evaluate", "finetune", "hparam_tune", "infer", "preset_prepare"},
     "data_backend": {"hparam_tune"},
-    "external_test_locked": {"finetune", "infer", "evaluate", "sleep2stat"},
+    "external_test_locked": {"finetune", "infer", "evaluate"},
     "final_eval_config_path": {"hparam_tune"},
     "final_eval_unlock": {"infer"},
     "pretrained_backbone_path": {"evaluate", "hparam_tune", "infer"},
@@ -101,6 +102,9 @@ def consultation_contract_issues(
 
 
 def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
+    adapter = get_adapter(task)
+    if adapter is not None:
+        return adapter.runtime_fields(variant)
     if task == "finetune":
         fields = rendering.FINETUNE_RUNTIME_FIELDS
         if variant == "sex_age_baseline":
@@ -110,11 +114,12 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
         return rendering.INFER_RUNTIME_FIELDS
     if task == "hparam_tune":
         return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
-    if task == "sleep2stat":
-        return rendering.SLEEP2STAT_RUNTIME_FIELDS
     if task == "preset_prepare":
         return frozenset()
-    return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS | rendering.SLEEP2STAT_RUNTIME_FIELDS
+    union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
+    for registered in all_adapters():
+        union = union | registered.runtime_fields(variant)
+    return union
 
 
 def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
@@ -131,6 +136,13 @@ def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
     for field, tasks in _EXTRA_DECISION_TASKS.items():
         if task is None or task in tasks:
             allowed.add(field)
+    if task is None:
+        for adapter in all_adapters():
+            allowed |= adapter.extra_decision_fields
+    else:
+        adapter = get_adapter(task)
+        if adapter is not None:
+            allowed |= adapter.extra_decision_fields
     return allowed
 
 
@@ -201,7 +213,7 @@ def evaluate_consultation_gates(
             DecisionIssue(
                 DecisionStatus.FAIL,
                 "variant",
-                "task=sleep2stat must omit variant or set it to null; sleep2stat is not a model variant.",
+                f"task={task_value} must omit variant or set it to null; {task_value} is not a model variant.",
                 None,
                 {"variant": variant},
             )

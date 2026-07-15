@@ -119,9 +119,36 @@ def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
     }
 
 
+SLEEP2STAT_RUNTIME_FIELDS = frozenset(
+    {
+        "batch_size",
+        "device",
+        "dry_run",
+        "limit_records",
+        "num_workers",
+        "plot_adjust_covariates",
+        "plot_cohort_after_run",
+        "plot_group_column",
+        "plot_stage_source",
+        "summarize_after_run",
+    }
+)
+
+
 class Sleep2statAdapter(TaskAdapter):
     task = "sleep2stat"
     requires_variant = False
+
+    recipe_extra_fields = frozenset({"artifacts", "evaluation_policy", "execution", "inputs", "runtime"})
+    artifact_fields = frozenset({"overwrite", "run_dir"})
+    contract_sections = {
+        "inputs": frozenset({"config", "split"}),
+        "evaluation_policy": frozenset({"external_test_locked"}),
+    }
+    extra_decision_fields = frozenset({"config", "external_test_locked"})
+
+    def runtime_fields(self, variant: Any) -> frozenset[str]:
+        return SLEEP2STAT_RUNTIME_FIELDS
 
     def matches_config_data(self, data: dict[str, Any]) -> bool:
         return {"run", "data", "signals", "analyzers", "reducers", "outputs"}.issubset(set(data))

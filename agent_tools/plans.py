@@ -44,6 +44,7 @@ from .experiment_workspace import (
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import REPO_ROOT, coerce_list, resolve_repo_path
+from .adapters import get_adapter
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
@@ -54,15 +55,27 @@ _TASK_RECIPE_FIELDS = {
     "evaluate": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
     "hparam_tune": _COMMON_RECIPE_FIELDS
     | {"adaptive", "artifacts", "base_recipe", "evaluation_policy", "execution", "inputs", "runtime", "search"},
-    "sleep2stat": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
 }
 _ARTIFACT_FIELDS = {
     "finetune": {"overwrite", "results_csv_path", "version_name"},
     "infer": {"overwrite"},
     "evaluate": {"overwrite"},
     "hparam_tune": {"overwrite", "results_csv_path"},
-    "sleep2stat": {"overwrite", "run_dir"},
 }
+
+
+def _recipe_fields_for_task(task: str) -> set[str] | None:
+    adapter = get_adapter(task)
+    if adapter is not None:
+        return _COMMON_RECIPE_FIELDS | adapter.recipe_extra_fields
+    return _TASK_RECIPE_FIELDS.get(task)
+
+
+def _artifact_fields_for_task(task: str) -> set[str]:
+    adapter = get_adapter(task)
+    if adapter is not None:
+        return set(adapter.artifact_fields)
+    return _ARTIFACT_FIELDS.get(task, set())
 
 
 def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) -> list[DecisionIssue]:
@@ -128,9 +141,9 @@ def _source_recipe_contract_issues(
     policy: dict,
     source_layer: str,
 ) -> list[DecisionIssue]:
-    if task not in _TASK_RECIPE_FIELDS:
+    allowed_top_level = _recipe_fields_for_task(task)
+    if allowed_top_level is None:
         return []
-    allowed_top_level = _TASK_RECIPE_FIELDS.get(task, set().union(*_TASK_RECIPE_FIELDS.values()))
     issues = [
         _recipe_contract_issue(
             str(field),
@@ -174,7 +187,7 @@ def _artifact_contract_issues(task: str, recipe: dict, source_layer: str) -> lis
                 source_layer,
             )
         ]
-    allowed_fields = _ARTIFACT_FIELDS.get(task, set())
+    allowed_fields = _artifact_fields_for_task(task)
     return [
         _recipe_contract_issue(
             f"artifacts.{field}",

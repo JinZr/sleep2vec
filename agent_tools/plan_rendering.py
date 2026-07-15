@@ -72,21 +72,6 @@ PRESET_FIELDS = frozenset(
     }
 )
 
-SLEEP2STAT_RUNTIME_FIELDS = frozenset(
-    {
-        "batch_size",
-        "device",
-        "dry_run",
-        "limit_records",
-        "num_workers",
-        "plot_adjust_covariates",
-        "plot_cohort_after_run",
-        "plot_group_column",
-        "plot_stage_source",
-        "summarize_after_run",
-    }
-)
-
 
 def variant_module(recipe: dict, entrypoint: str) -> str:
     return module_for_variant(str(recipe.get("variant")), entrypoint)
