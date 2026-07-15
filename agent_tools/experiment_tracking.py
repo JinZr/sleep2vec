@@ -6,12 +6,11 @@ import json
 import math
 from pathlib import Path
 import re
-import shlex
 import stat
 import subprocess
 from typing import Any
 
-from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
+from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence, transport
 from .experiment_workspace import (
     managed_run_key,
     merge_run_row,
@@ -531,9 +530,9 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
     if not available_runs:
         return []
     runtime_roots = " ".join(
-        shlex.quote(str(run["runtime_dir"])) for run in available_runs if run.get("runtime_dir") not in (None, "")
+        transport.sh(run["runtime_dir"]) for run in available_runs if run.get("runtime_dir") not in (None, "")
     )
-    roots = " ".join(shlex.quote(str(run["checkpoint_dir"])) for run in available_runs)
+    roots = " ".join(transport.sh(run["checkpoint_dir"]) for run in available_runs)
     command = (
         (
             f"for runtime_root in {runtime_roots}; do "
@@ -552,12 +551,7 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
         "done"
     )
     try:
-        result = subprocess.run(
-            ["ssh", remote, command],
-            text=True,
-            capture_output=True,
-            timeout=exp_io.SSH_TIMEOUT_SECONDS,
-        )
+        result = transport.run_ssh(remote, command, text=True)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"SSH checkpoint scan timed out on {remote}") from exc
     if result.returncode != 0:
