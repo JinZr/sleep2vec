@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
+import subprocess  # noqa: F401 -- tests patch progress.subprocess.run (stdlib global)
 import time
 from typing import Any
 
+from . import transport
 from .models import json_ready
 
 PROGRESS_RELATIVE_PATH = Path("status") / "progress.json"
@@ -77,12 +78,7 @@ def read_progress(
     path = progress_path(run_dir)
     if remote:
         try:
-            result = subprocess.run(
-                ["ssh", remote, f"cat {_sh(path)}"],
-                text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-            )
+            result = transport.run_shell(remote, f"cat {_sh(path)}", timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             return {
                 "status": "unknown_remote",
@@ -144,10 +140,7 @@ def format_progress(data: dict[str, Any]) -> str:
     return "\n".join(parts) + "\n"
 
 
-def _sh(value: Any) -> str:
-    import shlex
-
-    return shlex.quote(str(value))
+_sh = transport.sh
 
 
 def _invalid_progress(path: Path, remote: str | None, message: str) -> dict[str, Any]:

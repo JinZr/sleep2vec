@@ -19,13 +19,11 @@ from .experiment_workspace import (
     experiment_root,
     managed_run_key,
     managed_run_parameters,
-    read_managed_yaml_mapping,
     read_run_manifest,
-    read_step_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
 )
-from .manifests import read_json, read_rows, write_rows, write_text
+from .manifests import read_rows, write_rows, write_text
 from .models import REPO_ROOT, module_for_variant
 from .plan_rendering import infer_runtime_cli_args, render_command
 
@@ -459,38 +457,9 @@ def _selected_candidate_rows(
 
     owner_runs_by_key = {}
     owner_plans_by_key = {}
-    step_manifest = read_step_manifest(workspace, step_id)
-    for registered_plan_dir in step_manifest["plans"]:
-        registered_root = Path(str(registered_plan_dir))
-        registered_plan_path = registered_root / "plan.json"
-        resolved_recipe_path = registered_root / "recipe.resolved.yaml"
-        if not registered_plan_path.exists():
-            blocked_path = registered_root / "plan.blocked.md"
-            if blocked_path.is_file() and not blocked_path.is_symlink() and not resolved_recipe_path.exists():
-                continue
-            raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
-        registered_plan = read_json(registered_plan_path)
-        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
-        resolved_recipe = read_managed_yaml_mapping(
-            resolved_recipe_path.read_text(),
-            source=f"Frozen registered recipe {resolved_recipe_path}",
-        )
-        if registered_recipe.get("task") != resolved_recipe.get("task"):
-            raise ValueError(f"Registered plan task differs from recipe.resolved.yaml: {registered_root}")
-        if resolved_recipe.get("task") != "hparam_tune":
-            continue
-        owner_plan = artifacts.read_hparam_plan(registered_root)
-        owner_recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
-        owner_step = owner_recipe.get("step") if isinstance(owner_recipe.get("step"), dict) else {}
-        if str(owner_step.get("id") or "") != step_id:
-            raise ValueError(f"Registered hparam plan belongs to a different step: {registered_root}")
-        owner_evaluation = (
-            owner_recipe.get("evaluation_policy") if isinstance(owner_recipe.get("evaluation_policy"), dict) else {}
-        )
-        if owner_evaluation.get("selection_metric") != selection_metric:
-            raise ValueError("Existing ranking selection metric differs from the current recipe.")
-        if owner_evaluation.get("selection_mode") != selection_mode:
-            raise ValueError("Existing ranking selection mode differs from the current recipe.")
+    for registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
+        workspace, step_id, selection_metric=selection_metric, selection_mode=selection_mode
+    ):
         for run in owner_plan["runs"]:
             key = managed_run_key(run)
             if key in owner_runs_by_key:

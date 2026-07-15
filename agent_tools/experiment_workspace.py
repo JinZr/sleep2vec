@@ -424,6 +424,26 @@ def _parse_run_manifest(text: str, path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def validate_existing_experiment_manifest(existing_text: str, experiment: dict[str, Any], root: Path) -> dict[str, Any]:
+    existing = read_managed_yaml_mapping(
+        existing_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
+    )
+    existing_experiment = existing.get("experiment") if isinstance(existing, dict) else None
+    if not isinstance(existing_experiment, dict) or existing_experiment.get("id") != experiment.get("id"):
+        raise ValueError(f"Experiment root belongs to a different experiment: {root}")
+    for field in ("title", "objective", "root", "baseline"):
+        if existing_experiment.get(field) != experiment.get(field):
+            raise ValueError(f"experiment.{field} differs from the existing experiment manifest.")
+    return existing
+
+
+def write_initial_experiment_manifest(root: Path, experiment: dict[str, Any], *, remote: str | None = None) -> None:
+    exp_io.write_text_at(
+        root / "experiment.yaml", yaml.safe_dump({"experiment": experiment}, sort_keys=False), remote=remote
+    )
+    initialize_run_manifest(root, remote=remote)
+
+
 def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) -> tuple[Path, Path]:
     root = experiment_root(recipe)
     if root is None:
@@ -437,15 +457,7 @@ def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) 
     manifest_path = root / "experiment.yaml"
     manifest_exists = manifest_path.exists()
     if manifest_exists:
-        existing = read_managed_yaml_mapping(
-            manifest_path.read_text(), source=f"Managed experiment manifest {manifest_path}"
-        )
-        existing_experiment = existing.get("experiment") if isinstance(existing, dict) else None
-        if not isinstance(existing_experiment, dict) or existing_experiment.get("id") != experiment.get("id"):
-            raise ValueError(f"Experiment root belongs to a different experiment: {root}")
-        for field in ("title", "objective", "root", "baseline"):
-            if existing_experiment.get(field) != experiment.get(field):
-                raise ValueError(f"experiment.{field} differs from the existing experiment manifest.")
+        validate_existing_experiment_manifest(manifest_path.read_text(), experiment, root)
         for row in read_run_manifest(root):
             if row["experiment_id"] != experiment["id"]:
                 raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")
@@ -473,8 +485,7 @@ def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) 
     step_dir = root / "steps" / str(step["id"])
     step_dir.mkdir(parents=True, exist_ok=True)
     if not manifest_exists:
-        manifest_path.write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
-        initialize_run_manifest(root)
+        write_initial_experiment_manifest(root, experiment)
         append_event(root, "experiment_initialized", {"experiment_id": experiment["id"]})
     if merged_step_payload != existing_step_payload:
         step_manifest.write_text(yaml.safe_dump(merged_step_payload, sort_keys=False))
@@ -851,7 +862,7 @@ def write_status_report(root: str | Path) -> Path:
     return path
 
 
-def _write_readme(root: Path, experiment: dict[str, Any]) -> None:
+def experiment_readme_text(experiment: dict[str, Any]) -> str:
     baseline = experiment.get("baseline")
     baseline_text = json.dumps(json_ready(baseline), ensure_ascii=False, sort_keys=True)
     lines = [
@@ -874,7 +885,11 @@ def _write_readme(root: Path, experiment: dict[str, Any]) -> None:
         "- `events.jsonl`: append-only experiment history",
         "- `reports/`: human-readable status, run matrix, ranking, and final report",
     ]
-    (root / "README.md").write_text("\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
+
+
+def _write_readme(root: Path, experiment: dict[str, Any]) -> None:
+    (root / "README.md").write_text(experiment_readme_text(experiment))
 
 
 def _parameter_field(key: str) -> str:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
+import subprocess  # noqa: F401 -- tests patch decision_paths.subprocess.run (stdlib global)
 from typing import Any
 
+from . import transport
 from .decision_models import DecisionIssue, DecisionStatus
 from .models import REPO_ROOT
 
@@ -298,7 +299,7 @@ def validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: 
                 None,
                 {"path": str(raw_path)},
             )
-        result = subprocess.run(["ssh", str(host), f"test -e {_sh(raw_path)}"], text=True, capture_output=True)
+        result = transport.run_ssh(str(host), f"test -e {_sh(raw_path)}", text=True, timeout=None)
         if result.returncode != 0:
             return DecisionIssue(
                 DecisionStatus.FAIL,
@@ -367,10 +368,7 @@ def _execution(recipe: dict) -> dict[str, Any]:
     return recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
 
 
-def _sh(value: Any) -> str:
-    import shlex
-
-    return shlex.quote(str(value))
+_sh = transport.sh
 
 
 def _looks_like_placeholder_path(value: Any) -> bool:

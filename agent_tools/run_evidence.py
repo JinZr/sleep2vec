@@ -4,19 +4,18 @@ import calendar
 import json
 import os
 from pathlib import Path
-import shlex
 import stat
 import subprocess
 import time
 from typing import Any
 
-from . import run_artifacts as artifacts
+from . import run_artifacts as artifacts, transport
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
 from .experiment_workspace import TERMINAL_STATUSES, merge_run_row
 from .manifests import read_json, utc_now
 from .progress import read_progress
+from .transport import SSH_TIMEOUT_SECONDS
 
-SSH_TIMEOUT_SECONDS = 10
 RUN_EVIDENCE_FIELDS = {
     "target",
     "host",
@@ -204,9 +203,11 @@ sys.stdout.write(json.dumps(payload))
 """
         result = run_row_command(
             row,
-            "python3 -c "
-            f"{shlex.quote(script)} {shlex.quote(str(row.get('runtime_dir') or ''))} "
-            f"{shlex.quote(str(row.get('checkpoint_dir') or ''))}",
+            transport.remote_python_command(
+                script,
+                str(row.get("runtime_dir") or ""),
+                str(row.get("checkpoint_dir") or ""),
+            ),
         )
         if result.returncode == 0:
             try:
@@ -268,7 +269,7 @@ except (OSError, UnicodeError) as exc:
 """
         result = run_row_command(
             row or {},
-            f"python3 -c {shlex.quote(script)} {shlex.quote(str(path))}",
+            transport.remote_python_command(script, str(path)),
         )
         if result.returncode == REMOTE_MISSING_RETURN_CODE:
             return None
@@ -364,7 +365,7 @@ sys.stdout.write("".join(lines[-100:]))
 """
         result = run_row_command(
             row or {},
-            f"python3 -c {shlex.quote(script)} {shlex.quote(str(path))}",
+            transport.remote_python_command(script, str(path)),
         )
         if result.returncode == REMOTE_MISSING_RETURN_CODE:
             return False
@@ -391,7 +392,7 @@ def log_tail(path: Any, row: dict[str, Any] | None = None, lines: int = 8) -> st
     if not path:
         return ""
     if is_remote_row(row):
-        result = run_row_command(row or {}, f"tail -n {int(lines)} {shlex.quote(str(path))}")
+        result = run_row_command(row or {}, f"tail -n {int(lines)} {transport.sh(path)}")
         return result.stdout.strip() if result.returncode == 0 else ""
     log_path = Path(str(path))
     if not log_path.exists():
@@ -502,7 +503,7 @@ def log_age_seconds(path: Any, row: dict[str, Any]) -> int | None:
     if not path:
         return None
     if is_remote_row(row):
-        quoted = shlex.quote(str(path))
+        quoted = transport.sh(path)
         result = run_row_command(
             row,
             f"now=$(date +%s); m=$(stat -c %Y {quoted} 2>/dev/null) || exit 1; echo $((now-m))",
@@ -589,23 +590,8 @@ def progress_age_seconds(progress: dict[str, Any]) -> int | None:
 
 
 def run_row_command(row: dict[str, Any], command: str) -> subprocess.CompletedProcess:
-    try:
-        if is_remote_row(row):
-            return subprocess.run(
-                ["ssh", str(row["host"]), command],
-                text=True,
-                capture_output=True,
-                timeout=SSH_TIMEOUT_SECONDS,
-            )
-        return subprocess.run(
-            ["bash", "-lc", command],
-            text=True,
-            capture_output=True,
-            timeout=SSH_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        args = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
-        return subprocess.CompletedProcess(args, 124, "", f"timed out after {SSH_TIMEOUT_SECONDS}s")
+    host = str(row["host"]) if is_remote_row(row) else None
+    return transport.run_shell(host, command, timeout=SSH_TIMEOUT_SECONDS, swallow_timeout=True)
 
 
 def is_remote_row(row: dict[str, Any] | None) -> bool:

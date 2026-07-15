@@ -6,31 +6,26 @@ import io
 import json
 import os
 from pathlib import Path
-import shlex
 import stat
-import subprocess
+import subprocess  # noqa: F401 -- tests patch experiment_io.subprocess.run (stdlib global)
 import tempfile
 from typing import Any
 
+from . import transport
 from .manifests import read_rows, utc_now, write_rows, write_text
 from .models import json_ready
-
-SSH_TIMEOUT_SECONDS = 10
-REMOTE_MISSING_RETURN_CODE = 44
-REMOTE_CONFLICT_RETURN_CODE = 45
+from .transport import (  # noqa: F401 -- SSH_TIMEOUT_SECONDS re-exported for existing importers/tests
+    REMOTE_CONFLICT_RETURN_CODE,
+    REMOTE_MISSING_RETURN_CODE,
+    SSH_TIMEOUT_SECONDS,
+)
 
 
 def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
     dirs = [root / "reports", root / "wandb" / "history"]
     if remote:
-        command = "mkdir -p " + " ".join(shlex.quote(str(path)) for path in dirs)
-        subprocess.run(
-            ["ssh", remote, command],
-            check=True,
-            text=True,
-            capture_output=True,
-            timeout=SSH_TIMEOUT_SECONDS,
-        )
+        command = "mkdir -p " + " ".join(transport.sh(path) for path in dirs)
+        transport.run_ssh(remote, command, text=True, check=True)
         return
     for path in dirs:
         path.mkdir(parents=True, exist_ok=True)
@@ -59,15 +54,10 @@ except OSError as exc:
 if entries:
     print("nonempty")
 """
-    result = subprocess.run(
-        [
-            "ssh",
-            remote,
-            f"python3 -c {shlex.quote(script)} {shlex.quote(str(root))}",
-        ],
+    result = transport.run_ssh(
+        remote,
+        transport.remote_python_command(script, str(root)),
         text=True,
-        capture_output=True,
-        timeout=SSH_TIMEOUT_SECONDS,
     )
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
         return False
@@ -93,15 +83,10 @@ except OSError as exc:
     print(exc, file=sys.stderr)
     raise SystemExit(1)
 """
-    result = subprocess.run(
-        [
-            "ssh",
-            remote,
-            f"python3 -c {shlex.quote(script)} {shlex.quote(str(path))}",
-        ],
+    result = transport.run_ssh(
+        remote,
+        transport.remote_python_command(script, str(path)),
         text=True,
-        capture_output=True,
-        timeout=SSH_TIMEOUT_SECONDS,
     )
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
         return False
@@ -243,11 +228,10 @@ for raw_target in targets:
     seen_inodes.add(inode)
 """
         payload = json.dumps([str(root), *(str(path) for path in paths)])
-        result = subprocess.run(
-            ["ssh", remote, f"python3 -c {shlex.quote(script)} {shlex.quote(payload)}"],
+        result = transport.run_ssh(
+            remote,
+            transport.remote_python_command(script, payload),
             text=True,
-            capture_output=True,
-            timeout=SSH_TIMEOUT_SECONDS,
         )
         if result.returncode == 2:
             raise ValueError(result.stderr.strip() or "Managed output paths must be independent regular files.")
@@ -329,15 +313,7 @@ except (OSError, UnicodeError) as exc:
     print(exc, file=sys.stderr)
     raise SystemExit(1)
 """
-    result = subprocess.run(
-        [
-            "ssh",
-            remote,
-            f"python3 -c {shlex.quote(script)} {shlex.quote(str(path))}",
-        ],
-        capture_output=True,
-        timeout=SSH_TIMEOUT_SECONDS,
-    )
+    result = transport.run_ssh(remote, transport.remote_python_command(script, str(path)))
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
         return ""
     if result.returncode != 0:
@@ -366,14 +342,12 @@ def write_text_at(path: str | Path, text: str, *, remote: str | None = None) -> 
         write_text(path, text)
         return
     target = Path(str(path))
-    command = f"mkdir -p {shlex.quote(str(target.parent))} && cat > {shlex.quote(str(target))}"
-    subprocess.run(
-        ["ssh", remote, command],
+    transport.run_ssh(
+        remote,
+        transport.remote_write_command(target),
         input=text,
         text=True,
-        capture_output=True,
         check=True,
-        timeout=SSH_TIMEOUT_SECONDS,
     )
 
 
@@ -444,15 +418,10 @@ with open(lock_path, "a+") as lock_file:
             pass
         raise
 """
-    result = subprocess.run(
-        [
-            "ssh",
-            remote,
-            f"python3 -c {shlex.quote(script)} {shlex.quote(str(target))} {shlex.quote(expected_sha256)}",
-        ],
+    result = transport.run_ssh(
+        remote,
+        transport.remote_python_command(script, str(target), expected_sha256),
         input=payload,
-        capture_output=True,
-        timeout=SSH_TIMEOUT_SECONDS,
     )
     if result.returncode == REMOTE_CONFLICT_RETURN_CODE:
         return False
@@ -477,12 +446,11 @@ def append_event_at(
         with path.open("a") as file_obj:
             file_obj.write(row)
         return
-    command = f"mkdir -p {shlex.quote(str(path.parent))} && cat >> {shlex.quote(str(path))}"
-    subprocess.run(
-        ["ssh", remote, command],
+    command = transport.remote_append_command(path)
+    transport.run_ssh(
+        remote,
+        command,
         input=row,
         text=True,
-        capture_output=True,
         check=True,
-        timeout=SSH_TIMEOUT_SECONDS,
     )

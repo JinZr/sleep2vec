@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from . import gpu_rules
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import multilabel_sidecar_issue
 from .models import REPO_ROOT
@@ -466,75 +467,25 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
                     {"gpus_per_run": execution.get("gpus_per_run")},
                 )
             )
-    devices_value = runtime.get("devices")
-    if devices_value in (None, "", "ASK_USER"):
-        devices = []
-    elif isinstance(devices_value, (list, tuple)):
-        devices = list(devices_value)
-    else:
-        devices = [devices_value]
-    gpu_pool = execution.get("gpu_pool") if isinstance(execution.get("gpu_pool"), list) else None
-    pool = list(gpu_pool) if gpu_pool else devices
-    per_run = gpus_per_run if gpus_per_run is not None else len(devices) or 1
-    if gpus_per_run is not None and not pool:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.gpus_per_run",
-                "execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices.",
-                None,
-                {
-                    "gpus_per_run": gpus_per_run,
-                    "preflight_before_workspace": True,
-                },
-            )
+    # An invalid (non-list) gpu_pool already failed above; drop it so the shared rules
+    # fall back to runtime.devices, matching the previous inline behaviour. An invalid
+    # gpus_per_run skips the pool rules entirely (type failure already reported).
+    if gpus_per_run is not None or "gpus_per_run" not in execution:
+        invalid_gpu_pool = "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list)
+        gpu_execution = (
+            {key: value for key, value in execution.items() if key != "gpu_pool"} if invalid_gpu_pool else execution
         )
-    elif pool and (gpus_per_run is not None or "gpus_per_run" not in execution):
-        pool_field = "execution.gpu_pool" if gpu_pool else "runtime.devices"
-        if len({str(item) for item in pool}) != len(pool):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    pool_field,
-                    f"{pool_field} must not contain duplicate GPU identifiers.",
-                    None,
-                    {"gpu_pool": pool},
-                )
+        _groups, gpu_issues = gpu_rules.gpu_group_plan(gpu_execution, runtime, max_concurrent=max_concurrent)
+        issues.extend(
+            DecisionIssue(
+                DecisionStatus.WARN if issue.warning else DecisionStatus.FAIL,
+                issue.field,
+                issue.message,
+                None,
+                issue.evidence,
             )
-        elif per_run > len(pool):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "execution.gpus_per_run",
-                    "execution.gpus_per_run cannot exceed the effective GPU pool size.",
-                    None,
-                    {"gpus_per_run": per_run, "gpu_pool": pool},
-                )
-            )
-        elif len(pool) % per_run != 0:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "execution.gpus_per_run",
-                    "The effective GPU pool must divide evenly into disjoint per-run GPU groups.",
-                    None,
-                    {"gpus_per_run": per_run, "gpu_pool": pool},
-                )
-            )
-        elif max_concurrent is not None and max_concurrent > len(pool) // per_run:
-            group_count = len(pool) // per_run
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.WARN,
-                    "execution.max_concurrent",
-                    (
-                        f"execution.max_concurrent={max_concurrent} exceeds the {group_count} available GPU "
-                        "group(s); GPU oversubscription is explicitly enabled."
-                    ),
-                    None,
-                    {"max_concurrent": max_concurrent, "gpu_group_count": group_count},
-                )
-            )
+            for issue in gpu_issues
+        )
     if "env" in execution and not isinstance(execution["env"], dict):
         issues.append(
             DecisionIssue(
