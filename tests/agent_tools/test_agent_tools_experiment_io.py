@@ -196,9 +196,7 @@ def test_managed_table_reader_accepts_current_header_only_table(tmp_path: Path):
     "reader",
     [
         pytest.param(lambda path: manifests.read_rows(path, require_managed_identity=True), id="read_rows"),
-        pytest.param(
-            lambda path: experiment_io.read_rows_at(path, require_managed_identity=True), id="read_rows_at"
-        ),
+        pytest.param(lambda path: experiment_io.read_rows_at(path, require_managed_identity=True), id="read_rows_at"),
     ],
 )
 @pytest.mark.parametrize(
