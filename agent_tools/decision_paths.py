@@ -233,30 +233,6 @@ def path_issues(
                     issues.append(issue)
     _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary)
     _append_remote_multilabel_sidecar_issues(issues, task, recipe, config_summary)
-    if task == "sleep2stat" and config_summary and config_summary.get("is_sleep2stat"):
-        sleep2stat = config_summary.get("sleep2stat") or {}
-        data = sleep2stat.get("data") or {}
-        for data_field in ("index", "kaldi_data_root", "kaldi_manifest"):
-            value = data.get(data_field)
-            if value:
-                issue = validate_input_path(recipe, f"sleep2stat.data.{data_field}", value, configured=True)
-                if issue is not None:
-                    issues.append(issue)
-        for analyzer in sleep2stat.get("analyzers", []):
-            if analyzer.get("enabled") is False:
-                continue
-            for analyzer_field in ("config", "ckpt_path"):
-                value = analyzer.get(analyzer_field)
-                if not value or _looks_like_placeholder_path(value):
-                    continue
-                issue = validate_input_path(
-                    recipe,
-                    f"sleep2stat.analyzer.{analyzer.get('name')}.{analyzer_field}",
-                    value,
-                    configured=True,
-                )
-                if issue is not None:
-                    issues.append(issue)
     return issues
 
 
@@ -324,25 +300,6 @@ def validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: 
     )
 
 
-def sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIssue | None:
-    context = path_context(recipe, raw_path)
-    validation = path_validation(recipe, context)
-    if context != "local" or validation in {"remote", "ssh"}:
-        return None
-    path = Path(str(raw_path)).expanduser()
-    if not path.is_absolute():
-        path = REPO_ROOT / path
-    if not path.exists() or (path.is_dir() and not any(path.iterdir())):
-        return None
-    return DecisionIssue(
-        DecisionStatus.NEEDS_USER_INPUT,
-        "sleep2stat.run.output_dir",
-        "sleep2stat run.output_dir already exists and is not empty; sleep2stat run directories are single-use.",
-        "Use a fresh run.output_dir or manually clear the existing directory before generating commands.",
-        {"path": str(raw_path), "resolved_path": str(path)},
-    )
-
-
 def _path_label(configured: bool) -> str:
     return "Configured input" if configured else "Required input"
 
@@ -369,14 +326,3 @@ def _execution(recipe: dict) -> dict[str, Any]:
 
 
 _sh = transport.sh
-
-
-def _looks_like_placeholder_path(value: Any) -> bool:
-    text = str(value).strip()
-    lowered = text.lower()
-    return (
-        lowered in {"", "ask_user", "none", "null", "todo", "tbd", "placeholder"}
-        or text.startswith("/path/to")
-        or text.startswith("<")
-        or "ASK_USER" in text
-    )

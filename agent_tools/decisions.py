@@ -301,6 +301,9 @@ def evaluate_consultation_gates(
         issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
     issues.extend(paths.path_issues(str(task_value), recipe, config_summary))
+    task_adapter = get_adapter(str(task_value))
+    if task_adapter is not None:
+        issues.extend(task_adapter.configured_input_issues(recipe, config_summary))
     if _output_paths_missing(recipe):
         issues.append(
             DecisionIssue(
@@ -451,8 +454,9 @@ def _task_specific_issues(
     decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
-    if task == "sleep2stat":
-        return rules.sleep2stat_issues(recipe, config_summary, high_impact)
+    adapter = get_adapter(task)
+    if adapter is not None:
+        return adapter.task_issues(recipe, config_summary, decisions, high_impact)
     if task == "preset_prepare":
         return rules.preset_prepare_issues(recipe, config_summary, high_impact)
     if task == "finetune":

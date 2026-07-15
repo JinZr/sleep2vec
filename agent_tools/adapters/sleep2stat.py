@@ -3,8 +3,37 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..models import repo_relative, resolve_repo_path
+from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
+from ..decision_paths import path_context, path_validation, validate_input_path
+from ..models import REPO_ROOT, repo_relative, resolve_repo_path
 from .base import TaskAdapter
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value in (None, "", []):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIssue | None:
+    context = path_context(recipe, raw_path)
+    validation = path_validation(recipe, context)
+    if context != "local" or validation in {"remote", "ssh"}:
+        return None
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    if not path.exists() or (path.is_dir() and not any(path.iterdir())):
+        return None
+    return DecisionIssue(
+        DecisionStatus.NEEDS_USER_INPUT,
+        "sleep2stat.run.output_dir",
+        "sleep2stat run.output_dir already exists and is not empty; sleep2stat run directories are single-use.",
+        "Use a fresh run.output_dir or manually clear the existing directory before generating commands.",
+        {"path": str(raw_path), "resolved_path": str(path)},
+    )
 
 
 def _looks_like_placeholder_path(value: str | Path | None) -> bool:
@@ -155,6 +184,131 @@ class Sleep2statAdapter(TaskAdapter):
 
     def config_summary(self, config_path: str | Path) -> dict[str, Any]:
         return sleep2stat_config_summary(config_path)
+
+    def task_issues(
+        self,
+        recipe: dict[str, Any],
+        config_summary: dict[str, Any] | None,
+        decisions: dict[str, ResolvedDecision],
+        high_impact: dict[str, dict[str, Any]],
+    ) -> list[DecisionIssue]:
+        issues: list[DecisionIssue] = []
+        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+
+        if not inputs.get("config"):
+            issues.append(needs_issue("config", "sleep2stat requires inputs.config.", high_impact))
+            return issues
+        if not config_summary or not config_summary.get("is_sleep2stat"):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "config",
+                    "task=sleep2stat requires a sleep2stat config.",
+                    None,
+                    {"config_summary": config_summary},
+                )
+            )
+            return issues
+        for message in config_summary.get("blocking_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "sleep2stat_config",
+                    message,
+                    "Please fix the sleep2stat config before the agent generates commands.",
+                    {"config_path": config_summary.get("config_path")},
+                )
+            )
+        sleep2stat = config_summary.get("sleep2stat") or {}
+        cfg_run = sleep2stat.get("run") or {}
+        cfg_data = sleep2stat.get("data") or {}
+        recipe_run_dir = (recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}).get("run_dir")
+        config_run_dir = cfg_run.get("output_dir")
+        if recipe_run_dir and config_run_dir and str(recipe_run_dir) != str(config_run_dir):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "artifacts.run_dir",
+                    (
+                        "Recipe artifacts.run_dir differs from sleep2stat config run.output_dir. "
+                        "The sleep2stat CLI uses config run.output_dir, so commands would target the wrong directory."
+                    ),
+                    (
+                        "Should artifacts.run_dir be changed to match config run.output_dir, or should the "
+                        "sleep2stat config run.output_dir be changed?"
+                    ),
+                    {"recipe": recipe_run_dir, "config": config_run_dir},
+                )
+            )
+        if config_run_dir:
+            existing_run_dir_issue = sleep2stat_existing_run_dir_issue(recipe, config_run_dir)
+            if existing_run_dir_issue is not None:
+                issues.append(existing_run_dir_issue)
+        effective_split = _as_list(inputs.get("split") or cfg_data.get("split"))
+        if not effective_split:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "sleep2stat_split_policy",
+                    "sleep2stat split is not explicit in recipe or config.",
+                    "Which split(s) should sleep2stat process?",
+                    {"recipe_split": inputs.get("split"), "config_split": cfg_data.get("split")},
+                )
+            )
+        external_test_locked = evaluation.get("external_test_locked")
+        if "test" in {str(value) for value in effective_split} and external_test_locked is not True:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "external_test_locked",
+                    "sleep2stat is configured for test split, but external_test_locked is not explicitly true.",
+                    "Is this test split external/locked, and should outputs be descriptive-only?",
+                    {"effective_split": effective_split, "external_test_locked": external_test_locked},
+                )
+            )
+        for message in config_summary.get("agent_risk_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    "sleep2stat_config",
+                    message,
+                    "Please provide a concrete path, adjust path context, or disable the analyzer.",
+                    {"config_path": config_summary.get("config_path")},
+                )
+            )
+        return issues
+
+    def configured_input_issues(
+        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+    ) -> list[DecisionIssue]:
+        issues: list[DecisionIssue] = []
+        if not config_summary or not config_summary.get("is_sleep2stat"):
+            return issues
+        sleep2stat = config_summary.get("sleep2stat") or {}
+        data = sleep2stat.get("data") or {}
+        for data_field in ("index", "kaldi_data_root", "kaldi_manifest"):
+            value = data.get(data_field)
+            if value:
+                issue = validate_input_path(recipe, f"sleep2stat.data.{data_field}", value, configured=True)
+                if issue is not None:
+                    issues.append(issue)
+        for analyzer in sleep2stat.get("analyzers", []):
+            if analyzer.get("enabled") is False:
+                continue
+            for analyzer_field in ("config", "ckpt_path"):
+                value = analyzer.get(analyzer_field)
+                if not value or _looks_like_placeholder_path(value):
+                    continue
+                issue = validate_input_path(
+                    recipe,
+                    f"sleep2stat.analyzer.{analyzer.get('name')}.{analyzer_field}",
+                    value,
+                    configured=True,
+                )
+                if issue is not None:
+                    issues.append(issue)
+        return issues
 
 
 SLEEP2STAT_ADAPTER = Sleep2statAdapter()
