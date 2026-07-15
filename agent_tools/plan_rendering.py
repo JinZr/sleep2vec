@@ -7,6 +7,86 @@ from typing import Any
 
 from .models import REPO_ROOT, module_for_variant
 
+_FINETUNE_RUNTIME_DEFAULTS = (
+    ("precision", "--precision", "bf16-mixed"),
+    ("epochs", "--epochs", 30),
+    ("batch_size", "--batch-size", 12),
+    ("num_workers", "--num-workers", 8),
+    ("lr", "--lr", 1e-6),
+    ("weight_decay", "--weight-decay", 1e-5),
+)
+_FINETUNE_RUNTIME_OPTIONS = (
+    ("device", "--device"),
+    ("warmup_steps", "--warmup-steps"),
+    ("gradient_clip_val", "--gradient-clip-val"),
+    ("accumulate_grad_batches", "--accumulate-grad-batches"),
+    ("patience", "--patience"),
+    ("check_val_every_n_epoch", "--check-val-every-n-epoch"),
+    ("ckpt_every_n_epochs", "--ckpt-every-n-epochs"),
+)
+FINETUNE_RUNTIME_FIELDS = frozenset(
+    {"devices", "wandb_mode", *(key for key, _flag, _default in _FINETUNE_RUNTIME_DEFAULTS)}
+    | {key for key, _flag in _FINETUNE_RUNTIME_OPTIONS}
+)
+
+_INFER_RUNTIME_DEFAULTS = (
+    ("precision", "--precision", "bf16-mixed"),
+    ("batch_size", "--batch-size", 12),
+    ("num_workers", "--num-workers", 8),
+    ("lr", "--lr", 1e-6),
+    ("weight_decay", "--weight-decay", 1e-5),
+)
+_INFER_RUNTIME_OPTIONS = (
+    ("accelerator", "--accelerator"),
+    ("device", "--device"),
+    ("avg_ckpts", "--avg-ckpts"),
+    ("avg_ckpt_dir", "--avg-ckpt-dir"),
+    ("seed", "--seed"),
+    ("wandb_mode", "--wandb-mode"),
+)
+INFER_RUNTIME_FIELDS = frozenset(
+    {"devices", *(key for key, _flag, _default in _INFER_RUNTIME_DEFAULTS)}
+    | {key for key, _flag in _INFER_RUNTIME_OPTIONS}
+)
+
+PRESET_FIELDS = frozenset(
+    {
+        "allow_missing_channels",
+        "batch_size",
+        "channels",
+        "dry_run",
+        "include_no_metadata",
+        "include_overlap_eval_splits",
+        "manifest_output",
+        "mask_rate",
+        "meta_data_names",
+        "min_channels",
+        "n_tokens",
+        "num_workers",
+        "output_template",
+        "overwrite",
+        "shuffle",
+        "split",
+        "stride_tokens",
+        "write_sidecar_manifest",
+    }
+)
+
+SLEEP2STAT_RUNTIME_FIELDS = frozenset(
+    {
+        "batch_size",
+        "device",
+        "dry_run",
+        "limit_records",
+        "num_workers",
+        "plot_adjust_covariates",
+        "plot_cohort_after_run",
+        "plot_group_column",
+        "plot_stage_source",
+        "summarize_after_run",
+    }
+)
+
 
 def variant_module(recipe: dict, entrypoint: str) -> str:
     return module_for_variant(str(recipe.get("variant")), entrypoint)
@@ -55,28 +135,10 @@ def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> 
     args: list[Any] = [
         "--devices",
         *[str(item) for item in list_value(runtime.get("devices", [0])) or [0]],
-        "--precision",
-        runtime.get("precision", "bf16-mixed"),
-        "--epochs",
-        runtime.get("epochs", 30),
-        "--batch-size",
-        runtime.get("batch_size", 12),
-        "--num-workers",
-        runtime.get("num_workers", 8),
-        "--lr",
-        runtime.get("lr", 1e-6),
-        "--weight-decay",
-        runtime.get("weight_decay", 1e-5),
     ]
-    for key, flag in [
-        ("device", "--device"),
-        ("warmup_steps", "--warmup-steps"),
-        ("gradient_clip_val", "--gradient-clip-val"),
-        ("accumulate_grad_batches", "--accumulate-grad-batches"),
-        ("patience", "--patience"),
-        ("check_val_every_n_epoch", "--check-val-every-n-epoch"),
-        ("ckpt_every_n_epochs", "--ckpt-every-n-epochs"),
-    ]:
+    for key, flag, default in _FINETUNE_RUNTIME_DEFAULTS:
+        args.extend([flag, runtime.get(key, default)])
+    for key, flag in _FINETUNE_RUNTIME_OPTIONS:
         append_option(args, flag, runtime.get(key))
     if variant != "sex_age_baseline":
         append_option(args, "--wandb-mode", runtime.get("wandb_mode"))
@@ -87,25 +149,10 @@ def infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
     args: list[Any] = [
         "--devices",
         *[str(item) for item in list_value(runtime.get("devices", [0])) or [0]],
-        "--precision",
-        runtime.get("precision", "bf16-mixed"),
-        "--batch-size",
-        runtime.get("batch_size", 12),
-        "--num-workers",
-        runtime.get("num_workers", 8),
-        "--lr",
-        runtime.get("lr", 1e-6),
-        "--weight-decay",
-        runtime.get("weight_decay", 1e-5),
     ]
-    for key, flag in [
-        ("accelerator", "--accelerator"),
-        ("device", "--device"),
-        ("avg_ckpts", "--avg-ckpts"),
-        ("avg_ckpt_dir", "--avg-ckpt-dir"),
-        ("seed", "--seed"),
-        ("wandb_mode", "--wandb-mode"),
-    ]:
+    for key, flag, default in _INFER_RUNTIME_DEFAULTS:
+        args.extend([flag, runtime.get(key, default)])
+    for key, flag in _INFER_RUNTIME_OPTIONS:
         append_option(args, flag, runtime.get(key))
     return args
 

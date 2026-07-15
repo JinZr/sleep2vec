@@ -241,6 +241,27 @@ def test_adaptive_workflow_root_drift_fails_before_suggestion_write(tmp_path: Pa
     assert (tmp_path / "events.jsonl").read_bytes() == events
 
 
+def test_adaptive_suggest_rejects_source_contract_drift_before_writing(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_run"] = 1
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+
+    result = _run("hparam-suggest", "--workflow-dir", str(workflow_dir))
+
+    assert result.returncode == 1
+    assert "search.max_run" in result.stdout + result.stderr
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
+
+
 def test_adaptive_relative_recipe_locator_fails_before_suggestion_write(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
@@ -509,6 +530,24 @@ def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path):
     assert (tmp_path / "events.jsonl").read_bytes() == events_before
 
 
+def test_adaptive_suggest_preflights_generated_candidate_before_writing(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+    monkeypatch.setattr(adaptive_hparam, "_suggest_parameters", lambda *_args: {"runtime.unsupported": [1]})
+
+    with pytest.raises(RuntimeError, match="Adaptive suggestion failed preflight"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
+
+
 def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_round(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
@@ -766,6 +805,25 @@ def test_adaptive_step_preflights_next_round_before_stop_or_supersede(tmp_path: 
 
         assert calls == []
         assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+
+
+def test_adaptive_step_rejects_source_contract_drift_before_digest(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_run"] = 1
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+    calls = []
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda *_args: calls.append("digest"))
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda *_args: calls.append("suggest"))
+
+    with pytest.raises(RuntimeError, match="Adaptive source recipe failed preflight"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=False)
+
+    assert calls == []
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
 
 
 @pytest.mark.parametrize("failure_stage", ["build", "registry", "launch"])

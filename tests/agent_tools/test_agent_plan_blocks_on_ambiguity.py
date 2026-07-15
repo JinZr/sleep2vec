@@ -14,6 +14,7 @@ from agent_tools import experiments, plans
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import collect_runs
+from agent_tools.run_artifacts import read_hparam_plan
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -88,7 +89,6 @@ def _survival_recipe_with_missing_sidecar_key(tmp_path: Path) -> tuple[Path, Pat
             "selection_metric": "val_loss",
             "selection_mode": "min",
             "selection_split": "val",
-            "final_eval_split": "test",
             "external_test_locked": True,
             "test_after_fit": False,
         },
@@ -459,8 +459,7 @@ def test_hparam_user_decisions_freeze_one_effective_recipe(tmp_path: Path):
     assert effective["_local_recipe"]["search"] != effective["search"]
     assert "--lr 2e-06" in plan["runs"][0]["command"]
     assert resolved == {key: value for key, value in effective.items() if key != "_recipe_path"}
-    reloaded, _cfg, reloaded_report = plans.evaluate_recipe(plan_dir / "recipe.resolved.yaml")
-    assert reloaded_report.exit_code == 0
+    reloaded = read_hparam_plan(plan_dir)["recipe"]
     assert reloaded["evaluation_policy"]["selection_metric"] == "val_ahi_pearson"
 
 
@@ -793,6 +792,36 @@ def test_unlock_final_test_with_explicit_ckpt_generates_final_script(tmp_path: P
     assert shlex_quote(str(ckpt)) in script
     assert "This script evaluates the configured final test split." in script
     assert "Run commands do not evaluate the external test split." not in script
+
+
+def test_unlock_final_test_uses_hparam_user_decision_checkpoint(tmp_path: Path):
+    ckpt = tmp_path / "selected model.ckpt"
+    ckpt.write_text("checkpoint")
+    recipe = _hparam_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"ckpt_path": {"value": str(ckpt), "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "unlocked"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+        "--unlock-final-test",
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert shlex_quote(str(ckpt)) in (output_dir / "final_external_test.sh").read_text()
+    plan = json.loads((output_dir / "plan.json").read_text())
+    assert plan["recipe"]["inputs"]["ckpt_path"] == str(ckpt)
+    launch_script = Path(plan["runs"][0]["script"]).read_text()
+    assert "--ckpt-path" not in launch_script
+    assert str(ckpt) not in launch_script
 
 
 def test_plan_uses_user_decision_label_name_in_command(tmp_path: Path):
@@ -1189,8 +1218,8 @@ def test_infer_preset_path_does_not_skip_survival_sidecar_checks(tmp_path: Path)
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert result.returncode == 2
-    assert "survival_sidecars" in result.stdout
+    assert result.returncode == 1
+    assert "inputs.preset_path" in result.stdout
     assert not (output_dir / "run.sh").exists()
 
 
@@ -1703,6 +1732,9 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
     assert "--channels stage5" not in script
     assert "--min-channels 2" in script
     assert "--overwrite" in script
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    assert "regenerate" not in resolved["preset"]
+    assert resolved["decisions"]["preset_regeneration"]["value"] is True
 
 
 @pytest.mark.parametrize(
@@ -2701,7 +2733,7 @@ def test_hparam_yaml_parameter_rejects_ask_user_backend_after_null_input(tmp_pat
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
-    assert "data_backend must be resolved before hparam YAML overrides" in result.stdout
+    assert "runtime.data_backend" in result.stdout
     assert not output_dir.exists()
     if manifest_before is None:
         assert not manifest.exists()

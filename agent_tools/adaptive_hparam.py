@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 from typing import Any
 
@@ -43,7 +44,8 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
     round_dir = adaptive_dir / "rounds" / "round_000"
     _, _, preflight = preflight_plan(recipe_path=recipe_path, output_dir=round_dir)
     if preflight.exit_code != 0:
-        raise RuntimeError(f"Round 000 plan failed preflight with exit code {preflight.exit_code}.")
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in preflight.blocking_issues())
+        raise RuntimeError(f"Round 000 plan failed preflight with exit code {preflight.exit_code}: {details}")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -156,8 +158,14 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
 def suggest_next_round(workflow_dir: str | Path) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
-    recipe = load_recipe_with_base(workflow["recipe_path"])
     next_round = _next_round_index(root)
+    next_dir = _round_dir(root, next_round)
+    recipe, _, source_preflight = preflight_plan(recipe_path=workflow["recipe_path"], output_dir=next_dir)
+    if source_preflight.exit_code != 0:
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
+        raise RuntimeError(
+            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
+        )
     digest = _latest_digest(root)
     rows = read_rows(digest)
     objective = _objective(root, recipe)
@@ -175,7 +183,8 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
         _append_event(root, "suggest_blocked", {"round": next_round, "reason": "no_scored_runs"})
         raise ValueError(f"No digest rows with finite {objective['metric']} are available for suggestion.")
     best = ranked[0]
-    suggested = copy.deepcopy(recipe)
+    source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    suggested = copy.deepcopy(source)
     suggested_root = experiment_root(suggested)
     if suggested_root is not None:
         suggested["experiment"]["root"] = str(suggested_root)
@@ -184,8 +193,18 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
     suggested["search"]["max_runs"] = int(_adaptive(recipe).get("round_size") or _hparam_count(suggested))
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
+    candidate_payload = _strip_internal_recipe_keys(suggested)
+    with TemporaryDirectory(prefix="agent-tools-adaptive-") as temp_dir:
+        candidate_path = Path(temp_dir) / "suggested.yaml"
+        candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
+        _, _, candidate_preflight = preflight_plan(recipe_path=candidate_path, output_dir=next_dir)
+    if candidate_preflight.exit_code != 0:
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues())
+        raise RuntimeError(
+            f"Adaptive suggestion failed preflight with exit code {candidate_preflight.exit_code}: {details}"
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
-    out.write_text(yaml.safe_dump(_strip_internal_recipe_keys(suggested), sort_keys=False))
+    out.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
     rationale = _suggestion_rationale(next_round, objective, best, suggested["search"]["parameters"])
     write_text(out_dir / f"round_{next_round:03d}.md", rationale)
     _append_event(root, "suggest", {"round": next_round, "path": str(out), "best_run": best.get("run_id")})
@@ -195,7 +214,14 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
 def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
-    recipe = load_recipe_with_base(workflow["recipe_path"])
+    next_round = _next_round_index(root)
+    next_dir = _round_dir(root, next_round)
+    recipe, _, source_preflight = preflight_plan(recipe_path=workflow["recipe_path"], output_dir=next_dir)
+    if source_preflight.exit_code != 0:
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
+        raise RuntimeError(
+            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
+        )
     current_round = _latest_round_index(root)
     round_dir = _round_dir(root, current_round)
     workspace = experiment_root(recipe)
@@ -203,8 +229,6 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
     if execute:
         _reject_unresolved_launch_attempts(root, workspace)
-    next_round = _next_round_index(root)
-    next_dir = _round_dir(root, next_round)
     targets = [workspace / "events.jsonl"]
     if execute:
         targets.extend([root / "adaptive" / "run_registry.tsv", next_dir / "round_recipe.yaml"])
@@ -566,7 +590,8 @@ def _write_round_recipe(
     recipe: dict[str, Any], source_recipe_path: str | Path, round_dir: Path, round_index: int
 ) -> Path:
     round_dir.mkdir(parents=True, exist_ok=True)
-    copied = _strip_internal_recipe_keys(copy.deepcopy(recipe))
+    source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    copied = _strip_internal_recipe_keys(copy.deepcopy(source))
     copied_root = experiment_root(copied)
     if copied_root is not None:
         copied["experiment"]["root"] = str(copied_root)

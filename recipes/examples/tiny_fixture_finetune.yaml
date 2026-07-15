@@ -41,8 +41,6 @@ evaluation_policy:
   selection_split: val
   external_test_locked: true
   test_after_fit: false
-  final_eval_split: test
-  require_manual_unlock_for_final_test: true
 
 decisions:
   task:

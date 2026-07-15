@@ -28,7 +28,6 @@ runtime:
   weight_decay: 1.0e-4
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
-  wandb_mode: offline
 
 artifacts:
   version_name: sex-age-multilabel-agent-example
@@ -39,10 +38,8 @@ evaluation_policy:
   selection_metric: val_macro_auroc
   selection_mode: max
   selection_split: val
-  final_eval_split: test
   external_test_locked: true
   test_after_fit: false
-  require_manual_unlock_for_final_test: true
 
 decisions:
   task:

@@ -130,7 +130,7 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
     for field in ("id", "phase", "purpose", "inputs", "outputs"):
         if step.get(field) in (None, "", "ASK_USER"):
             raise ValueError(f"step.{field} is required.")
-    issues = experiment_metadata_issues({"experiment": experiment, "step": step})
+    issues = experiment_metadata_issues({"experiment": experiment, "step": step}, allow_step_io=True)
     if issues:
         raise ValueError("; ".join(issue["message"] for issue in issues))
     path = root / "steps" / str(step["id"]) / "step.yaml"

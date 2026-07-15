@@ -92,7 +92,6 @@ def final_test_checkpoint_issues(
 
 def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
     if "selection_metric" in evaluation and selection_metric in (None, ""):
@@ -112,8 +111,6 @@ def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
         base_config = load_yaml(config_path)
         base_data = base_config.get("data") if isinstance(base_config.get("data"), dict) else {}
         data_backend = inputs.get("data_backend")
-        if data_backend in (None, ""):
-            data_backend = runtime.get("data_backend")
         if data_backend in (None, ""):
             data_backend = base_data.get("backend") or "npz"
         selection_mode = evaluation.get("selection_mode")
@@ -273,6 +270,7 @@ def write_hparam_plan(
     if not run_cwd.is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    run_inputs = {key: value for key, value in inputs.items() if key != "ckpt_path"}
     runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     source_config_path = inputs.get("config")
@@ -316,7 +314,7 @@ def write_hparam_plan(
             plan_output_path(out, artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
             *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
             *rendering.finetune_input_cli_args(
-                inputs,
+                run_inputs,
                 variant=str(recipe.get("variant")),
             ),
         ]

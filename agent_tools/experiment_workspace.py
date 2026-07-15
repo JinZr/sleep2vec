@@ -63,67 +63,120 @@ MANAGED_RUN_PATH_FIELDS = {
 }
 
 
-def experiment_metadata_issues(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+def experiment_metadata_issues(
+    recipe: dict[str, Any],
+    *,
+    require_values: bool = True,
+    source_layer: str | None = None,
+    allow_step_io: bool = False,
+) -> list[dict[str, Any]]:
     experiment = recipe.get("experiment")
     step = recipe.get("step")
     issues = []
+    contract_evidence = {"preflight_before_workspace": True}
+    if source_layer is not None:
+        contract_evidence["source_layer"] = source_layer
     if not isinstance(experiment, dict):
-        return [
-            {
-                "status": "NEEDS_USER_INPUT",
-                "field": "experiment",
-                "message": "Recipe is not bound to an experiment workspace.",
-                "question": "What experiment id, title, objective, root, and baseline should own this task?",
-            }
-        ]
-    for field in ("id", "title", "objective", "root", "baseline"):
-        if experiment.get(field) in (None, "", "ASK_USER"):
+        if experiment is not None:
+            issues.append(
+                {
+                    "status": "FAIL",
+                    "field": "experiment",
+                    "message": "experiment must be a mapping.",
+                    "evidence": {**contract_evidence, "value": experiment},
+                }
+            )
+        elif require_values:
             issues.append(
                 {
                     "status": "NEEDS_USER_INPUT",
+                    "field": "experiment",
+                    "message": "Recipe is not bound to an experiment workspace.",
+                    "question": "What experiment id, title, objective, root, and baseline should own this task?",
+                }
+            )
+    else:
+        for field in sorted(set(experiment) - {"id", "title", "objective", "root", "baseline"}):
+            issues.append(
+                {
+                    "status": "FAIL",
                     "field": f"experiment.{field}",
-                    "message": f"experiment.{field} is not explicitly resolved.",
-                    "question": f"What should experiment.{field} be for this task?",
+                    "message": f"Unknown experiment field: {field}.",
+                    "evidence": {**contract_evidence, field: experiment[field]},
                 }
             )
-    experiment_id = experiment.get("id")
-    if experiment_id not in (None, "", "ASK_USER"):
-        if not isinstance(experiment_id, str):
-            issues.append(
-                {
-                    "status": "FAIL",
-                    "field": "experiment.id",
-                    "message": "experiment.id must be a string.",
-                }
-            )
-        elif not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", experiment_id):
-            issues.append(
-                {
-                    "status": "FAIL",
-                    "field": "experiment.id",
-                    "message": "experiment.id must use lowercase letters, digits, hyphens, and underscores.",
-                }
-            )
+        if require_values:
+            for field in ("id", "title", "objective", "root", "baseline"):
+                if experiment.get(field) in (None, "", "ASK_USER"):
+                    issues.append(
+                        {
+                            "status": "NEEDS_USER_INPUT",
+                            "field": f"experiment.{field}",
+                            "message": f"experiment.{field} is not explicitly resolved.",
+                            "question": f"What should experiment.{field} be for this task?",
+                        }
+                    )
+        experiment_id = experiment.get("id")
+        if experiment_id not in (None, "", "ASK_USER"):
+            if not isinstance(experiment_id, str):
+                issues.append(
+                    {
+                        "status": "FAIL",
+                        "field": "experiment.id",
+                        "message": "experiment.id must be a string.",
+                    }
+                )
+            elif not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", experiment_id):
+                issues.append(
+                    {
+                        "status": "FAIL",
+                        "field": "experiment.id",
+                        "message": "experiment.id must use lowercase letters, digits, hyphens, and underscores.",
+                    }
+                )
     if not isinstance(step, dict):
+        if step is not None:
+            issues.append(
+                {
+                    "status": "FAIL",
+                    "field": "step",
+                    "message": "step must be a mapping.",
+                    "evidence": {**contract_evidence, "value": step},
+                }
+            )
+        elif require_values:
+            issues.append(
+                {
+                    "status": "NEEDS_USER_INPUT",
+                    "field": "step",
+                    "message": "Recipe does not define its experiment step.",
+                    "question": "What step id, phase, and purpose should describe this task?",
+                }
+            )
+        return issues
+    step_fields = {"id", "phase", "purpose"}
+    if allow_step_io:
+        step_fields.update({"inputs", "outputs"})
+    for field in sorted(set(step) - step_fields):
         issues.append(
             {
-                "status": "NEEDS_USER_INPUT",
-                "field": "step",
-                "message": "Recipe does not define its experiment step.",
-                "question": "What step id, phase, and purpose should describe this task?",
+                "status": "FAIL",
+                "field": f"step.{field}",
+                "message": f"Unknown step field: {field}.",
+                "evidence": {**contract_evidence, field: step[field]},
             }
         )
-        return issues
-    for field in ("id", "phase", "purpose"):
-        if step.get(field) in (None, "", "ASK_USER"):
-            issues.append(
-                {
-                    "status": "NEEDS_USER_INPUT",
-                    "field": f"step.{field}",
-                    "message": f"step.{field} is not explicitly resolved.",
-                    "question": f"What should step.{field} be for this task?",
-                }
-            )
+    if require_values:
+        for field in ("id", "phase", "purpose"):
+            if step.get(field) in (None, "", "ASK_USER"):
+                issues.append(
+                    {
+                        "status": "NEEDS_USER_INPUT",
+                        "field": f"step.{field}",
+                        "message": f"step.{field} is not explicitly resolved.",
+                        "question": f"What should step.{field} be for this task?",
+                    }
+                )
     step_id = step.get("id")
     if step_id not in (None, "", "ASK_USER"):
         if not isinstance(step_id, str):

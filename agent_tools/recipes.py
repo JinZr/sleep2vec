@@ -16,6 +16,9 @@ def load_yaml_file(path: str | Path) -> dict[str, Any]:
 
 def load_recipe(path: str | Path) -> dict[str, Any]:
     recipe = load_yaml_file(path)
+    reserved = sorted(str(key) for key in recipe if str(key).startswith("_"))
+    if reserved:
+        raise ValueError(f"Recipe cannot define reserved internal field(s): {', '.join(reserved)}")
     recipe["_recipe_path"] = repo_relative(resolve_repo_path(path))
     return recipe
 
@@ -26,8 +29,10 @@ def load_recipe_with_base(path: str | Path) -> dict[str, Any]:
         raise FileNotFoundError("Path is required.")
     recipe = load_recipe(recipe_path)
     base_path = recipe.get("base_recipe")
-    if not base_path:
+    if base_path in (None, ""):
         return recipe
+    if not isinstance(base_path, (str, Path)):
+        raise ValueError("base_recipe must be a path string.")
     base = load_recipe(_resolve_base_recipe_path(base_path, recipe_path))
     merged = _deep_merge(base, recipe)
     merged["_base_recipe"] = base
@@ -43,6 +48,9 @@ def load_user_decisions(path: str | Path | None) -> dict[str, Any]:
     decisions = data.get("decisions")
     if not isinstance(decisions, dict):
         raise ValueError(f"User-decision file must contain a decisions mapping: {resolve_repo_path(path)}")
+    unknown = sorted(set(data) - {"decisions"})
+    if unknown:
+        raise ValueError(f"Unknown user-decision file field(s): {', '.join(str(field) for field in unknown)}")
     return decisions
 
 

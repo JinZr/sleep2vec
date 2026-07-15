@@ -236,7 +236,6 @@ def test_plan_blocks_missing_experiment_metadata(tmp_path: Path):
     payload = yaml.safe_load(recipe.read_text())
     payload.pop("experiment")
     payload.pop("step")
-    payload["_allow_unmanaged_context"] = True
     recipe.write_text(yaml.safe_dump(payload))
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))

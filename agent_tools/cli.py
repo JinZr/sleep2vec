@@ -336,7 +336,7 @@ def _cmd_context(args: argparse.Namespace) -> int:
         variant=args.variant,
         user_decisions_path=args.user_decisions,
     )
-    print(f"Status: {report.status.value}")
+    print(report_text(report))
     return report.exit_code
 
 

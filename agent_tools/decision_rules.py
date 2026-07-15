@@ -2,8 +2,77 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import plan_rendering as rendering
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from .decision_paths import multilabel_sidecar_issue, sleep2stat_existing_run_dir_issue, survival_sidecar_issue
+
+_INPUT_FIELDS = {
+    "preset_prepare": {"config", "dataset_name", "index"},
+    "finetune": {"ckpt_path", "config", "data_backend", "label_name", "pretrained_backbone_path"},
+    "infer": {
+        "ckpt_path",
+        "config",
+        "data_backend",
+        "eval_split",
+        "inference_preset_path",
+        "label_name",
+        "override_dataset_names",
+        "pretrained_backbone_path",
+    },
+    "evaluate": {
+        "ckpt_path",
+        "config",
+        "data_backend",
+        "eval_split",
+        "inference_preset_path",
+        "label_name",
+        "override_dataset_names",
+        "pretrained_backbone_path",
+    },
+    "sleep2stat": {"config", "split"},
+}
+_EVALUATION_FIELDS = {
+    "finetune": {"external_test_locked", "selection_metric", "selection_mode", "selection_split", "test_after_fit"},
+    "infer": {"external_test_locked", "final_test_unlocked"},
+    "evaluate": {"external_test_locked", "final_test_unlocked"},
+    "sleep2stat": {"external_test_locked"},
+}
+
+
+def task_recipe_contract_issues(task: str, recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
+    sections = {
+        "inputs": _INPUT_FIELDS.get(task),
+        "evaluation_policy": _EVALUATION_FIELDS.get(task),
+        "preset": rendering.PRESET_FIELDS if task == "preset_prepare" else None,
+    }
+    for section, allowed_fields in sections.items():
+        if section not in recipe or allowed_fields is None:
+            continue
+        value = recipe[section]
+        if not isinstance(value, dict):
+            issues.append(_contract_issue(section, f"{section} must be a mapping.", value, source_layer))
+            continue
+        for field in sorted(set(value) - allowed_fields):
+            issues.append(
+                _contract_issue(
+                    f"{section}.{field}",
+                    f"Unknown {section} field for task={task}: {field}.",
+                    value[field],
+                    source_layer,
+                )
+            )
+    return issues
+
+
+def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        field,
+        message,
+        None,
+        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
+    )
 
 
 def sleep2stat_issues(

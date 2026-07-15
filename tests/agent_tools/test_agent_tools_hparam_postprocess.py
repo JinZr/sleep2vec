@@ -821,7 +821,6 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     base_payload["runtime"].update(
         {
             "devices": [6, 7],
-            "accelerator": "cpu",
             "device": "cpu",
             "batch_size": 32,
             "num_workers": 2,
@@ -829,6 +828,8 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
         }
     )
     write_yaml(base_recipe, base_payload)
+    payload["runtime"] = {"accelerator": "cpu"}
+    write_yaml(recipe, payload)
     base_config = Path(base_payload["inputs"]["config"])
     base_config_payload = yaml.safe_load(base_config.read_text())
     stale_preset = tmp_path / "stale_preset.pkl"
