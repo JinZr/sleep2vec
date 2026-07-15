@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import math
@@ -264,6 +265,186 @@ def _not_superseded_launch_error(
     return RuntimeError(f"{body} Prospective runs were not superseded; resolve the {scope} before retry.")
 
 
+@dataclass
+class _ReplacementState:
+    next_round: int
+    next_dir: Path
+    next_plan_keys: set[tuple[str, str]]
+    started_keys: set[tuple[str, str]]
+    launch_failed_keys: set[tuple[str, str]]
+    round_committed: bool = False
+    retirement_credit: int = 0
+    superseded_current_keys: list[tuple[str, str]] = field(default_factory=list)
+    stopped_run_keys: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _commit_round(root: Path, round_dir: Path, state: _ReplacementState) -> None:
+    """Commit the replacement round. Order is an invariant: the launch_round event
+    lands first, then the committed flag flips, and only then are the current
+    round's pending runs superseded -- never before a replacement start is confirmed."""
+    _append_event(root, "launch_round", {"round": state.next_round, "round_dir": str(state.next_dir)})
+    state.round_committed = True
+    state.superseded_current_keys = _supersede_pending_runs(root, round_dir)
+
+
+def _launch_with_recovery(
+    root: Path,
+    workspace: Path,
+    state: _ReplacementState,
+    round_dir: Path,
+    *,
+    attempt_run_id: str | None,
+    before_launch: set[tuple[str, str]],
+) -> None:
+    """One launch_hparam_runs attempt plus the interrupted-launch recovery block:
+    reconcile -> reject unresolved -> finish mirrors -> commit confirmed starts ->
+    raise the family A/B failure. Recovery steps run in that order (invariant)."""
+    try:
+        launch_hparam_runs(state.next_dir, dry_run=False)
+    except Exception as exc:
+        try:
+            canonical_rows, unresolved_launches, reconciled_starts = _reconcile_interrupted_launch(
+                workspace, state.next_plan_keys
+            )
+        except Exception as reconcile_exc:
+            raise _not_superseded_launch_error(
+                "commit", state.next_round, attempt_run_id=attempt_run_id
+            ) from reconcile_exc
+        if unresolved_launches:
+            unresolved_ids = ", ".join(sorted(key[1] for key in unresolved_launches))
+            raise _not_superseded_launch_error(
+                "unresolved", state.next_round, attempt_run_id=attempt_run_id, unresolved_ids=unresolved_ids
+            ) from exc
+        next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+        refreshed_started_keys = {
+            managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
+        }
+        confirmed_starts = (refreshed_started_keys - before_launch) | reconciled_starts
+        if confirmed_starts:
+            try:
+                _finish_interrupted_launch(state.next_dir, workspace, confirmed_starts)
+            except Exception as reconcile_exc:
+                raise _not_superseded_launch_error(
+                    "mirrors", state.next_round, attempt_run_id=attempt_run_id
+                ) from reconcile_exc
+        if confirmed_starts and not state.round_committed:
+            _commit_round(root, round_dir, state)
+        if attempt_run_id is None:
+            lead = (
+                f"Adaptive replacement launch failed; round {state.next_round:03d} "
+                f"{_committed_phrase(state.round_committed)}."
+            )
+        else:
+            lead = (
+                f"Adaptive replacement launch failed after the stop attempt for {attempt_run_id}; "
+                f"round {state.next_round:03d} "
+                f"{_committed_phrase(state.round_committed)}."
+            )
+        raise RuntimeError(
+            f"{lead} " + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
+        ) from exc
+
+
+def _launch_initial_replacement(
+    root: Path, workspace: Path, state: _ReplacementState, round_dir: Path
+) -> list[dict[str, Any]]:
+    before_launch = state.started_keys
+    _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=None, before_launch=before_launch)
+    canonical_rows = read_run_manifest(workspace)
+    next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+    refreshed_started_keys = {
+        managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
+    }
+    newly_launch_failed = {
+        managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
+    } - state.launch_failed_keys
+    state.retirement_credit = len(refreshed_started_keys - before_launch)
+    state.started_keys = refreshed_started_keys
+    if state.retirement_credit:
+        _commit_round(root, round_dir, state)
+    if newly_launch_failed:
+        failed_ids = ", ".join(sorted(key[1] for key in newly_launch_failed))
+        raise RuntimeError(
+            f"Adaptive replacement launch failed for {failed_ids}; round {state.next_round:03d} "
+            f"{_committed_phrase(state.round_committed)}. "
+            + _preserved_tail([], state.superseded_current_keys, state.next_dir)
+        )
+    return next_round_rows
+
+
+def _drain_bad_runs(
+    root: Path,
+    workspace: Path,
+    state: _ReplacementState,
+    round_dir: Path,
+    recipe: dict[str, Any],
+    ordered_bad_run_keys: list[tuple[str, str]],
+    next_round_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    bad_index = 0
+    while bad_index < len(ordered_bad_run_keys):
+        canonical_rows = read_run_manifest(workspace)
+        next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+        pending = any(row.get("status") in {"planned", "pending"} for row in next_round_rows)
+        if state.retirement_credit <= 0 and not pending:
+            break
+        run_key = ordered_bad_run_keys[bad_index]
+        bad_index += 1
+        try:
+            stopped = _stop_bad_running_runs(root, round_dir, recipe, run_keys={run_key})
+        except Exception as exc:
+            canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+            if canonical_by_key[run_key].get("status") == "stopped" and run_key not in state.stopped_run_keys:
+                state.stopped_run_keys.append(run_key)
+            raise RuntimeError(
+                f"Adaptive replacement failed while stopping {run_key[1]}; round {state.next_round:03d} "
+                f"{_committed_phrase(state.round_committed)}. "
+                + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
+            ) from exc
+        if stopped:
+            state.stopped_run_keys.extend(stopped)
+            state.retirement_credit -= len(stopped)
+        canonical_rows = read_run_manifest(workspace)
+        next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+        if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
+            continue
+        before_launch = state.started_keys
+        before_launch_failed = {
+            managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
+        }
+        _launch_with_recovery(
+            root, workspace, state, round_dir, attempt_run_id=run_key[1], before_launch=before_launch
+        )
+        canonical_rows = read_run_manifest(workspace)
+        next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+        state.started_keys = {
+            managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
+        }
+        newly_launch_failed = {
+            managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
+        } - before_launch_failed
+        newly_started = state.started_keys - before_launch
+        if newly_started and not state.round_committed:
+            _commit_round(root, round_dir, state)
+        if newly_launch_failed:
+            failed_ids = ", ".join(sorted(key[1] for key in newly_launch_failed))
+            raise RuntimeError(
+                f"Adaptive replacement launch failed for {failed_ids} after the stop attempt for {run_key[1]}; "
+                f"round {state.next_round:03d} {_committed_phrase(state.round_committed)}. "
+                + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
+            )
+        if not newly_started:
+            statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
+            stop_attempt = f"stopping {run_key[1]}" if stopped else f"the stop attempt for {run_key[1]}"
+            raise RuntimeError(
+                f"Round {state.next_round:03d} started no additional runs after {stop_attempt} "
+                f"(statuses: {statuses}); the round {_committed_phrase(state.round_committed)}. "
+                + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
+            )
+        state.retirement_credit += len(newly_started)
+    return next_round_rows
+
+
 def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
@@ -311,174 +492,27 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
         ]
         next_plan_keys = {managed_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
         canonical_rows = read_run_manifest(workspace)
-        started_keys = {
-            managed_run_key(row)
-            for row in canonical_rows
-            if managed_run_key(row) in next_plan_keys and row.get("status") in {"launched", "running"}
-        }
-        launch_failed_keys = {
-            managed_run_key(row)
-            for row in canonical_rows
-            if managed_run_key(row) in next_plan_keys and row.get("status") == "launch_failed"
-        }
-        superseded_current_keys: list[tuple[str, str]] = []
-        try:
-            launch_hparam_runs(next_dir, dry_run=False)
-        except Exception as exc:
-            try:
-                canonical_rows, unresolved_launches, reconciled_starts = _reconcile_interrupted_launch(
-                    workspace, next_plan_keys
-                )
-            except Exception as reconcile_exc:
-                raise _not_superseded_launch_error("commit", next_round) from reconcile_exc
-            if unresolved_launches:
-                unresolved_ids = ", ".join(sorted(key[1] for key in unresolved_launches))
-                raise _not_superseded_launch_error("unresolved", next_round, unresolved_ids=unresolved_ids) from exc
-            next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
-            refreshed_started_keys = {
-                managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
-            }
-            confirmed_starts = (refreshed_started_keys - started_keys) | reconciled_starts
-            if confirmed_starts:
-                try:
-                    canonical_rows = _finish_interrupted_launch(next_dir, workspace, confirmed_starts)
-                except Exception as reconcile_exc:
-                    raise _not_superseded_launch_error("mirrors", next_round) from reconcile_exc
-            round_committed = bool(confirmed_starts)
-            if round_committed:
-                _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
-                superseded_current_keys = _supersede_pending_runs(root, round_dir)
-            raise RuntimeError(
-                f"Adaptive replacement launch failed; round {next_round:03d} {_committed_phrase(round_committed)}. "
-                + _preserved_tail([], superseded_current_keys, next_dir)
-            ) from exc
-        canonical_rows = read_run_manifest(workspace)
-        next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
-        refreshed_started_keys = {
-            managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
-        }
-        newly_launch_failed = {
-            managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
-        } - launch_failed_keys
-        retirement_credit = len(refreshed_started_keys - started_keys)
-        started_keys = refreshed_started_keys
-        round_committed = False
-        if retirement_credit:
-            _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
-            round_committed = True
-            superseded_current_keys = _supersede_pending_runs(root, round_dir)
-        if newly_launch_failed:
-            failed_ids = ", ".join(sorted(key[1] for key in newly_launch_failed))
-            raise RuntimeError(
-                f"Adaptive replacement launch failed for {failed_ids}; round {next_round:03d} "
-                f"{_committed_phrase(round_committed)}. "
-                + _preserved_tail([], superseded_current_keys, next_dir)
-            )
-        stopped_run_keys: list[tuple[str, str]] = []
+        state = _ReplacementState(
+            next_round=next_round,
+            next_dir=next_dir,
+            next_plan_keys=next_plan_keys,
+            started_keys={
+                managed_run_key(row)
+                for row in canonical_rows
+                if managed_run_key(row) in next_plan_keys and row.get("status") in {"launched", "running"}
+            },
+            launch_failed_keys={
+                managed_run_key(row)
+                for row in canonical_rows
+                if managed_run_key(row) in next_plan_keys and row.get("status") == "launch_failed"
+            },
+        )
+        next_round_rows = _launch_initial_replacement(root, workspace, state, round_dir)
+        next_round_rows = _drain_bad_runs(
+            root, workspace, state, round_dir, recipe, ordered_bad_run_keys, next_round_rows
+        )
 
-        bad_index = 0
-        while bad_index < len(ordered_bad_run_keys):
-            canonical_rows = read_run_manifest(workspace)
-            next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
-            pending = any(row.get("status") in {"planned", "pending"} for row in next_round_rows)
-            if retirement_credit <= 0 and not pending:
-                break
-            run_key = ordered_bad_run_keys[bad_index]
-            bad_index += 1
-            try:
-                stopped = _stop_bad_running_runs(root, round_dir, recipe, run_keys={run_key})
-            except Exception as exc:
-                canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
-                if canonical_by_key[run_key].get("status") == "stopped" and run_key not in stopped_run_keys:
-                    stopped_run_keys.append(run_key)
-                raise RuntimeError(
-                    f"Adaptive replacement failed while stopping {run_key[1]}; round {next_round:03d} "
-                    f"{_committed_phrase(round_committed)}. "
-                    + _preserved_tail(stopped_run_keys, superseded_current_keys, next_dir)
-                ) from exc
-            if stopped:
-                stopped_run_keys.extend(stopped)
-                retirement_credit -= len(stopped)
-            canonical_rows = read_run_manifest(workspace)
-            next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
-            if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
-                continue
-            before_launch = started_keys
-            before_launch_failed = {
-                managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
-            }
-            try:
-                launch_hparam_runs(next_dir, dry_run=False)
-            except Exception as exc:
-                try:
-                    canonical_rows, unresolved_launches, reconciled_starts = _reconcile_interrupted_launch(
-                        workspace, next_plan_keys
-                    )
-                except Exception as reconcile_exc:
-                    raise _not_superseded_launch_error(
-                        "commit", next_round, attempt_run_id=run_key[1]
-                    ) from reconcile_exc
-                if unresolved_launches:
-                    unresolved_ids = ", ".join(sorted(key[1] for key in unresolved_launches))
-                    raise _not_superseded_launch_error(
-                        "unresolved", next_round, attempt_run_id=run_key[1], unresolved_ids=unresolved_ids
-                    ) from exc
-                next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
-                refreshed_started_keys = {
-                    managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
-                }
-                newly_launch_failed = {
-                    managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
-                } - before_launch_failed
-                confirmed_starts = (refreshed_started_keys - before_launch) | reconciled_starts
-                if confirmed_starts:
-                    try:
-                        canonical_rows = _finish_interrupted_launch(next_dir, workspace, confirmed_starts)
-                    except Exception as reconcile_exc:
-                        raise _not_superseded_launch_error(
-                            "mirrors", next_round, attempt_run_id=run_key[1]
-                        ) from reconcile_exc
-                if confirmed_starts and not round_committed:
-                    _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
-                    round_committed = True
-                    superseded_current_keys = _supersede_pending_runs(root, round_dir)
-                raise RuntimeError(
-                    f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}; "
-                    f"round {next_round:03d} "
-                    f"{_committed_phrase(round_committed)}. "
-                    + _preserved_tail(stopped_run_keys, superseded_current_keys, next_dir)
-                ) from exc
-            canonical_rows = read_run_manifest(workspace)
-            next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
-            started_keys = {
-                managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
-            }
-            newly_launch_failed = {
-                managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
-            } - before_launch_failed
-            newly_started = started_keys - before_launch
-            if newly_started and not round_committed:
-                _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
-                round_committed = True
-                superseded_current_keys = _supersede_pending_runs(root, round_dir)
-            if newly_launch_failed:
-                failed_ids = ", ".join(sorted(key[1] for key in newly_launch_failed))
-                raise RuntimeError(
-                    f"Adaptive replacement launch failed for {failed_ids} after the stop attempt for {run_key[1]}; "
-                    f"round {next_round:03d} {_committed_phrase(round_committed)}. "
-                    + _preserved_tail(stopped_run_keys, superseded_current_keys, next_dir)
-                )
-            if not newly_started:
-                statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
-                stop_attempt = f"stopping {run_key[1]}" if stopped else f"the stop attempt for {run_key[1]}"
-                raise RuntimeError(
-                    f"Round {next_round:03d} started no additional runs after {stop_attempt} "
-                    f"(statuses: {statuses}); the round {_committed_phrase(round_committed)}. "
-                    + _preserved_tail(stopped_run_keys, superseded_current_keys, next_dir)
-                )
-            retirement_credit += len(newly_started)
-
-        if not round_committed:
+        if not state.round_committed:
             statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
             raise RuntimeError(
                 f"Round {next_round:03d} started no runs (statuses: {statuses}); the round was not committed and "
