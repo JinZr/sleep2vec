@@ -31,7 +31,7 @@ from .hparam import (
 from .index_csv import index_summary
 from .markdown import report_text
 from .models import json_ready
-from .plans import build_context, build_plan, collect_runs, evaluate_recipe, prepare_doctor_report, write_doctor_outputs
+from .plans import build_context, build_plan, collect_runs, evaluate_recipe, write_doctor_outputs
 from .presets import preset_summary
 from .progress import format_progress, read_progress
 from .repo import repo_summary
@@ -330,7 +330,6 @@ def _cmd_preset_summary(args: argparse.Namespace) -> int:
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
     recipe, _cfg, report = evaluate_recipe(args.recipe, args.user_decisions)
-    report = prepare_doctor_report(args.output_dir, recipe, report)
     print(report_text(report))
     write_doctor_outputs(args.output_dir, recipe, report)
     return report.exit_code

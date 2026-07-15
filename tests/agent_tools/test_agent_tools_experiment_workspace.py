@@ -31,7 +31,6 @@ from agent_tools.experiment_workspace import (
     read_step_manifest,
     resolve_external_run_row,
     resolve_run_row,
-    run_evidence_key,
     semantic_run_name,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -396,15 +395,6 @@ def test_merge_run_manifest_rejects_new_run_owned_by_a_different_experiment(tmp_
 )
 def test_managed_run_key_uses_step_and_run_identity(row: dict, expected: tuple[str, str] | None):
     assert managed_run_key(row) == expected
-
-
-def test_run_evidence_key_uses_version_only_without_managed_identity():
-    assert run_evidence_key({"step_id": "step-a", "run_id": "run-000", "version": "shared"}) == (
-        "managed",
-        "step-a",
-        "run-000",
-    )
-    assert run_evidence_key({"run_id": "legacy", "version": "shared"}) == ("external", "shared")
 
 
 def test_resolve_run_row_prefers_managed_identity_over_duplicate_version():

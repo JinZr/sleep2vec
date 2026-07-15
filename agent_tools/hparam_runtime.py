@@ -190,33 +190,32 @@ def run_hparam_queue(
     expected_keys = {managed_run_key(run) for run in plan["runs"]}
     status_path = run_dir / "run_status.tsv"
     exp_io.validate_managed_output_paths(workspace, [status_path])
-    while True:
+
+    def queue_state() -> tuple[dict[tuple[str, str], dict[str, Any]], bool]:
         rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
+            return rows_by_key, True
+        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
+        if missing_pid:
+            step_id, run_id = missing_pid[0]
+            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
+        return rows_by_key, False
+
+    while True:
+        rows_by_key, done = queue_state()
+        if done:
             write_rows(status_path, [rows_by_key[managed_run_key(run)] for run in plan["runs"]])
             return status_path
-        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
-        if missing_pid:
-            step_id, run_id = missing_pid[0]
-            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
 
         monitor_hparam_runs(run_dir)
-        rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
-        if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
+        _, done = queue_state()
+        if done:
             return status_path
-        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
-        if missing_pid:
-            step_id, run_id = missing_pid[0]
-            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
 
         launch_hparam_runs(run_dir, dry_run=False, fail_on_missing_pid_blocker=True)
-        rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
-        if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
+        _, done = queue_state()
+        if done:
             return status_path
-        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
-        if missing_pid:
-            step_id, run_id = missing_pid[0]
-            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
         time.sleep(poll_seconds)
 
 

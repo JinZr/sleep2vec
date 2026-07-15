@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
+from .decision_models import contract_issue as _contract_issue
 from .decision_paths import multilabel_sidecar_issue
 from .models import REPO_ROOT
 
@@ -128,16 +129,6 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                 )
             )
     return issues
-
-
-def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        field,
-        message,
-        None,
-        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
-    )
 
 
 def hparam_tune_issues(

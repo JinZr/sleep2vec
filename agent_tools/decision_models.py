@@ -46,7 +46,6 @@ class ResolvedDecision:
     field: str
     value: Any
     source: str
-    confidence: str
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
@@ -76,4 +75,14 @@ def needs_issue(
         message,
         question_for(high_impact, field),
         evidence or {},
+    )
+
+
+def contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        field,
+        message,
+        None,
+        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
     )

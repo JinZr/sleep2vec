@@ -551,14 +551,6 @@ def validate_managed_run_rows(rows: list[dict[str, Any]], *, source: str, cardin
         seen.add(key)
 
 
-def run_evidence_key(row: dict[str, Any]) -> tuple[str, ...] | None:
-    managed_key = managed_run_key(row)
-    if managed_key is not None:
-        return ("managed", *managed_key)
-    external_id = str(row.get("version") or "")
-    return ("external", external_id) if external_id else None
-
-
 def resolve_run_row(rows: list[dict[str, Any]], evidence: dict[str, Any]) -> dict[str, Any] | None:
     key = managed_run_key(evidence)
     if key is not None:

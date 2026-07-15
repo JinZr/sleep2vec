@@ -17,6 +17,7 @@ from .decision_models import (
     needs_issue,
     question_for,
 )
+from .decision_models import contract_issue as _contract_issue
 from .experiment_workspace import experiment_metadata_issues
 from .models import SUPPORTED_VARIANTS, task_requires_variant
 
@@ -132,16 +133,6 @@ def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
         if task is None or task in tasks:
             allowed.add(field)
     return allowed
-
-
-def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        field,
-        message,
-        None,
-        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
-    )
 
 
 def evaluate_consultation_gates(
@@ -329,9 +320,9 @@ def _resolve_decision(
     if field in user_decisions:
         return _decision_from_mapping(field, user_decisions[field], "explicit_user")
     if task_override not in (None, "") and field == "task":
-        return ResolvedDecision(field, task_override, "explicit_cli", "high", {"task": task_override})
+        return ResolvedDecision(field, task_override, "explicit_cli", {"task": task_override})
     if field in cli_args and cli_args[field] not in (None, ""):
-        return ResolvedDecision(field, cli_args[field], "explicit_cli", "high", {"cli": cli_args[field]})
+        return ResolvedDecision(field, cli_args[field], "explicit_cli", {"cli": cli_args[field]})
 
     recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
     if field in recipe_decisions:
@@ -339,20 +330,16 @@ def _resolve_decision(
 
     recipe_value = _recipe_field_value(field, recipe)
     if recipe_value is not _MISSING:
-        return ResolvedDecision(field, recipe_value, "explicit_recipe", "high", {"recipe": recipe_value})
+        return ResolvedDecision(field, recipe_value, "explicit_recipe", {"recipe": recipe_value})
 
     config_value = _config_field_value(field, config_summary)
     if config_value is not _MISSING:
-        source = "explicit_config"
-        if field in {"selection_metric", "selection_mode"}:
-            source = "explicit_config"
-        return ResolvedDecision(field, config_value, source, "medium", {"config": config_value})
+        return ResolvedDecision(field, config_value, "explicit_config", {"config": config_value})
 
     return ResolvedDecision(
         field,
         None,
         "missing",
-        "none",
         {"cli": "missing", "recipe": "missing", "config": "missing"},
     )
 
@@ -362,8 +349,8 @@ def _decision_from_mapping(field: str, raw: Any, fallback_source: str) -> Resolv
         value = raw.get("value")
         source = raw.get("source") or fallback_source
         evidence = {key: value for key, value in raw.items() if key != "value"}
-        return ResolvedDecision(field, value, source, "high", evidence)
-    return ResolvedDecision(field, raw, fallback_source, "high", {"value": raw})
+        return ResolvedDecision(field, value, source, evidence)
+    return ResolvedDecision(field, raw, fallback_source, {"value": raw})
 
 
 class _Missing:

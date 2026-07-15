@@ -5,6 +5,7 @@ import subprocess
 from typing import Any
 
 from .decision_models import DecisionIssue, DecisionStatus
+from .decision_models import contract_issue as _execution_contract_issue
 from .models import REPO_ROOT
 
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target"}
@@ -27,16 +28,6 @@ def execution_contract_issues(recipe: dict, *, source_layer: str) -> list[Decisi
             )
         )
     return issues
-
-
-def _execution_contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        field,
-        message,
-        None,
-        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
-    )
 
 
 def _config_data(config_summary: dict | None) -> dict[str, Any]:

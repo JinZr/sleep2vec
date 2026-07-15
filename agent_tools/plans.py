@@ -19,6 +19,7 @@ from . import (
     run_artifacts as artifacts,
 )
 from .configs import config_summary
+from .decision_models import contract_issue as _recipe_contract_issue
 from .decisions import (
     DecisionIssue,
     DecisionReport,
@@ -184,16 +185,6 @@ def _artifact_contract_issues(task: str, recipe: dict, source_layer: str) -> lis
         )
         for field in sorted(set(artifacts_value) - allowed_fields)
     ]
-
-
-def _recipe_contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        field,
-        message,
-        None,
-        {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
-    )
 
 
 def _decision_value(raw: Any) -> Any:
@@ -470,10 +461,6 @@ def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
     out = Path(output_dir)
     write_json(out / "questions.json", {"questions": questions_payload(report)})
     write_text(out / "questions.md", questions_markdown(report))
-
-
-def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> DecisionReport:
-    return report
 
 
 def write_doctor_outputs(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> None:
