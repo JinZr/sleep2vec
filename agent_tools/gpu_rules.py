@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple
 
+from .models import coerce_list
+
 
 class GpuRuleIssue(NamedTuple):
     code: str
@@ -11,22 +13,14 @@ class GpuRuleIssue(NamedTuple):
     evidence: dict[str, Any]
 
 
-def as_device_list(value: Any) -> list[Any]:
-    if value in (None, "", "ASK_USER"):
-        return []
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return [value]
-
-
 def gpu_group_plan(
     execution: dict[str, Any],
     runtime: dict[str, Any],
     *,
     max_concurrent: int | None = None,
 ) -> tuple[list[list[Any]], list[GpuRuleIssue]]:
-    devices = as_device_list(runtime.get("devices"))
-    pool = as_device_list(execution.get("gpu_pool")) or devices
+    devices = coerce_list(runtime.get("devices"))
+    pool = coerce_list(execution.get("gpu_pool")) or devices
     if not pool:
         if "gpus_per_run" in execution:
             try:
@@ -44,7 +38,7 @@ def gpu_group_plan(
             ]
         return [], []
     if len({str(item) for item in pool}) != len(pool):
-        pool_field = "execution.gpu_pool" if as_device_list(execution.get("gpu_pool")) else "runtime.devices"
+        pool_field = "execution.gpu_pool" if coerce_list(execution.get("gpu_pool")) else "runtime.devices"
         return [], [
             GpuRuleIssue(
                 "duplicate_pool",

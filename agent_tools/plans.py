@@ -43,7 +43,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, resolve_repo_path
+from .models import REPO_ROOT, coerce_list, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
@@ -974,13 +974,13 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
                     "--config",
                     inputs.get("config"),
                     "--index",
-                    *rendering.list_value(inputs.get("index")),
+                    *coerce_list(inputs.get("index")),
                     "--dataset-name",
                     inputs.get("dataset_name"),
                     "--n-tokens",
                     preset.get("n_tokens"),
                     "--split",
-                    *rendering.list_value(preset.get("split")),
+                    *coerce_list(preset.get("split")),
                     *rendering.preset_cli_args(preset),
                 ]
             )
