@@ -95,9 +95,7 @@ class TaskAdapter:
         None means use the generic path."""
         return None
 
-    def expected_artifacts(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
-    ) -> list[dict[str, str]]:
+    def expected_artifacts(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[dict[str, str]]:
         """Expected output artifacts for context/plan documents."""
         return []
 

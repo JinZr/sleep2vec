@@ -409,9 +409,7 @@ class Sleep2statAdapter(TaskAdapter):
         commands.append(render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
         return commands
 
-    def expected_artifacts(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
-    ) -> list[dict[str, str]]:
+    def expected_artifacts(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[dict[str, str]]:
         cfg = config_summary
         run_dir = sleep2stat_config_run_dir(cfg)
         if not run_dir:

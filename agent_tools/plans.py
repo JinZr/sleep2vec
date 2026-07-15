@@ -18,6 +18,7 @@ from . import (
     repo as repo_tools,
     run_artifacts as artifacts,
 )
+from .adapters import get_adapter
 from .configs import config_summary
 from .decisions import (
     DecisionIssue,
@@ -44,7 +45,6 @@ from .experiment_workspace import (
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import REPO_ROOT, coerce_list, resolve_repo_path
-from .adapters import get_adapter
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
