@@ -29,12 +29,6 @@ class TaskAdapter:
     with safe defaults ([] / None / False means "fall back to the kernel's
     generic path"). Kernel dispatch points resolve the adapter through
     adapters.registry and never hard-code task names.
-
-    Reserved for a future migration (documented, not implemented):
-    required_input_paths(recipe) -> list[tuple[str, Any]] -- finetune's
-    required pretrained/ckpt path checks (decision_paths.path_issues head)
-    will be parameterised through decisions.py because decision_paths cannot
-    import the registry.
     """
 
     #: Registry key; must equal the recipe's ``task`` value.
@@ -53,6 +47,21 @@ class TaskAdapter:
     #: Decision fields allowed beyond the consultation policy's
     #: required_for_tasks entries.
     extra_decision_fields: frozenset[str] = frozenset()
+    #: Decision field -> (recipe section, field) materialization target.
+    #: Only declared fields are (re)targeted; kernel defaults (e.g.
+    #: overwrite_policy -> (artifacts, overwrite)) apply otherwise.
+    decision_recipe_targets: Mapping[str, tuple[str, str]] = {}
+    #: Variants rejected with FAIL "{variant} does not support {task}.".
+    unsupported_variants: frozenset[str] = frozenset()
+    #: True/False forces the survival-sidecar requirement for this task;
+    #: None keeps the kernel's own inference (decision_paths).
+    requires_survival_sidecars: bool | None = None
+
+    def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
+        """Task-specific required input paths, validated by
+        decision_paths.path_issues; passed through decisions.py because
+        decision_paths cannot import the registry."""
+        return []
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         """Allowed ``runtime.*`` fields; variant-sensitive for some tasks."""

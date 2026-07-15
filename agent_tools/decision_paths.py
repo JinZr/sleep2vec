@@ -66,8 +66,10 @@ def survival_sidecar_issue(
     task: str,
     recipe: dict,
     config_summary: dict | None,
+    *,
+    required: bool | None = None,
 ) -> DecisionIssue | None:
-    if not _requires_survival_sidecars(task, recipe, config_summary):
+    if not _requires_survival_sidecars(task, recipe, config_summary, required):
         return None
     survival = _config_finetune(config_summary).get("survival")
     if not isinstance(survival, dict) or not survival.get("issues"):
@@ -106,12 +108,14 @@ def multilabel_sidecar_issue(
     )
 
 
-def _requires_survival_sidecars(task: str, recipe: dict, config_summary: dict | None) -> bool:
+def _requires_survival_sidecars(
+    task: str, recipe: dict, config_summary: dict | None, required: bool | None = None
+) -> bool:
     task_cfg = _config_finetune(config_summary).get("task")
     if not isinstance(task_cfg, dict) or task_cfg.get("type") != "survival":
         return False
-    if task == "preset_prepare":
-        return True
+    if required is not None:
+        return required
     if config_summary and config_summary.get("variant_guess") == "sex_age_baseline":
         return task in {"finetune", "hparam_tune", "infer", "evaluate"}
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
@@ -132,8 +136,9 @@ def _append_remote_survival_sidecar_issues(
     task: str,
     recipe: dict,
     config_summary: dict | None,
+    required: bool | None = None,
 ) -> None:
-    if not _requires_survival_sidecars(task, recipe, config_summary):
+    if not _requires_survival_sidecars(task, recipe, config_summary, required):
         return
     survival = _config_finetune(config_summary).get("survival")
     if not isinstance(survival, dict):
@@ -177,15 +182,16 @@ def path_issues(
     task: str,
     recipe: dict,
     config_summary: dict | None,
+    *,
+    required_input_paths: list[tuple[str, Any]] | None = None,
+    requires_survival_sidecars: bool | None = None,
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     required_paths: list[tuple[str, Any]] = []
     if inputs.get("config"):
         required_paths.append(("config", inputs.get("config")))
-    if task == "preset_prepare":
-        for path in inputs.get("index") or []:
-            required_paths.append(("index", path))
+    required_paths.extend(required_input_paths or [])
     if task in {"infer", "evaluate"}:
         ckpt_path = inputs.get("ckpt_path")
         if ckpt_path not in (None, "", "ASK_USER"):
@@ -231,7 +237,7 @@ def path_issues(
                 issue = validate_input_path(recipe, data_field, value, configured=True)
                 if issue is not None:
                     issues.append(issue)
-    _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary)
+    _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary, requires_survival_sidecars)
     _append_remote_multilabel_sidecar_issues(issues, task, recipe, config_summary)
     return issues
 

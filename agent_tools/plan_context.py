@@ -130,9 +130,6 @@ def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any
         override = adapter.index_summary_inputs_override(recipe, cfg)
         if override is not None:
             return override
-    if task == "preset_prepare":
-        preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
-        return coerce_list(inputs.get("index")), config, coerce_list(preset.get("split"))
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
         if task in {"infer", "evaluate"}:
             split_values = coerce_list(inputs.get("eval_split"))

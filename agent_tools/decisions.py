@@ -34,7 +34,7 @@ _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_reci
 _DECISION_ENTRY_FIELDS = {"meaning", "question", "rationale", "source", "value"}
 _EXTRA_DECISION_TASKS = {
     "ckpt_path": {"finetune", "hparam_tune"},
-    "config": {"evaluate", "finetune", "hparam_tune", "infer", "preset_prepare"},
+    "config": {"evaluate", "finetune", "hparam_tune", "infer"},
     "data_backend": {"hparam_tune"},
     "external_test_locked": {"finetune", "infer", "evaluate"},
     "final_eval_config_path": {"hparam_tune"},
@@ -114,8 +114,6 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
         return rendering.INFER_RUNTIME_FIELDS
     if task == "hparam_tune":
         return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
-    if task == "preset_prepare":
-        return frozenset()
     union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
     for registered in all_adapters():
         union = union | registered.runtime_fields(variant)
@@ -196,6 +194,7 @@ def evaluate_consultation_gates(
             )
         )
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
+    task_adapter = get_adapter(str(task_value))
     variant = recipe.get("variant")
     if task_requires_variant(str(task_value)):
         if variant not in SUPPORTED_VARIANTS:
@@ -218,12 +217,12 @@ def evaluate_consultation_gates(
                 {"variant": variant},
             )
         )
-    if task_value == "preset_prepare" and variant == "sex_age_baseline":
+    if task_adapter is not None and isinstance(variant, str) and variant in task_adapter.unsupported_variants:
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
                 "variant",
-                "sex_age_baseline does not support preset_prepare.",
+                f"{variant} does not support {task_value}.",
                 None,
                 {"variant": variant, "task": task_value},
             )
@@ -300,8 +299,15 @@ def evaluate_consultation_gates(
     if str(task_value) == "hparam_tune":
         issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
-    issues.extend(paths.path_issues(str(task_value), recipe, config_summary))
-    task_adapter = get_adapter(str(task_value))
+    issues.extend(
+        paths.path_issues(
+            str(task_value),
+            recipe,
+            config_summary,
+            required_input_paths=task_adapter.required_input_paths(recipe) if task_adapter else None,
+            requires_survival_sidecars=task_adapter.requires_survival_sidecars if task_adapter else None,
+        )
+    )
     if task_adapter is not None:
         issues.extend(task_adapter.configured_input_issues(recipe, config_summary))
     if _output_paths_missing(recipe):
@@ -457,8 +463,6 @@ def _task_specific_issues(
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.task_issues(recipe, config_summary, decisions, high_impact)
-    if task == "preset_prepare":
-        return rules.preset_prepare_issues(recipe, config_summary, high_impact)
     if task == "finetune":
         return rules.finetune_task_issues(recipe, config_summary, decisions, high_impact)
     if task == "hparam_tune":

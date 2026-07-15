@@ -157,6 +157,53 @@ jobs:
           sys.exit(subprocess.run(command).returncode)
           PY
 
+  agent_tools_kernel_tests:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.core_tests == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-agent-tools.txt
+            .github/workflows/unit_tests.yml
+            pyproject.toml
+
+      - name: Install agent tool test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-agent-tools.txt
+
+      # The agent_tools kernel must stay importable and fully testable without
+      # any domain package (torch, lightning, wandb, sleep2stat, ...). The
+      # ignored domain-facing test files need those packages in their own
+      # environment; test_agent_tools_recipes.py is owned by the
+      # agent_tools_recipe_tests job above. The deselected hparam cases assert
+      # generated scripts whose frozen-identity preflight imports the variant
+      # module (and thus torch) in the invoking python.
+      - name: Run agent tools kernel tests
+        run: |
+          pytest -q tests/agent_tools \
+            --ignore=tests/agent_tools/test_agent_run_manifest.py \
+            --ignore=tests/agent_tools/test_agent_tools_sleep2stat.py \
+            --ignore=tests/agent_tools/test_agent_sex_age_baseline.py \
+            --ignore=tests/agent_tools/test_agent_tools_recipes.py \
+            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_model_variant_controls_generated_hparam_module" \
+            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked" \
+            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_unlock_final_test_with_explicit_ckpt_generates_final_script"
+
   unit_tests:
     needs: detect_changes
     if: needs.detect_changes.outputs.core_tests == 'true'
