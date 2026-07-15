@@ -8,7 +8,9 @@ from .base import TaskAdapter
 # Registration order is the probing order for config-shape claims
 # (index_summary_inputs_override / matches_config_data): config-probing
 # adapters must precede task-keyed ones.
-TASK_ADAPTERS: dict[str, TaskAdapter] = {}
+from .sleep2stat import SLEEP2STAT_ADAPTER
+
+TASK_ADAPTERS: dict[str, TaskAdapter] = {adapter.task: adapter for adapter in (SLEEP2STAT_ADAPTER,)}
 
 
 def get_adapter(task: Any) -> TaskAdapter | None:
