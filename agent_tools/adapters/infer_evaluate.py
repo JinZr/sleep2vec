@@ -3,11 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from ..decision_paths import (
-    multilabel_sidecar_issue,
-    sex_age_pretrained_backbone_issue,
-    survival_sidecar_issue,
-)
+from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
 from ..models import coerce_list
 from ..plan_rendering import (
     INFER_RUNTIME_FIELDS,

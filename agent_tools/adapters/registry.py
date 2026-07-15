@@ -13,8 +13,7 @@ from .preset_prepare import PRESET_PREPARE_ADAPTER
 from .sleep2stat import SLEEP2STAT_ADAPTER
 
 TASK_ADAPTERS: dict[str, TaskAdapter] = {
-    adapter.task: adapter
-    for adapter in (SLEEP2STAT_ADAPTER, PRESET_PREPARE_ADAPTER, INFER_ADAPTER, EVALUATE_ADAPTER)
+    adapter.task: adapter for adapter in (SLEEP2STAT_ADAPTER, PRESET_PREPARE_ADAPTER, INFER_ADAPTER, EVALUATE_ADAPTER)
 }
 
 
