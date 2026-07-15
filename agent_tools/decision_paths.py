@@ -116,8 +116,6 @@ def _requires_survival_sidecars(
         return False
     if required is not None:
         return required
-    if task == "preset_prepare":
-        return True
     if config_summary and config_summary.get("variant_guess") == "sex_age_baseline":
         return task in {"finetune", "hparam_tune", "infer", "evaluate"}
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
@@ -194,9 +192,6 @@ def path_issues(
     if inputs.get("config"):
         required_paths.append(("config", inputs.get("config")))
     required_paths.extend(required_input_paths or [])
-    if task == "preset_prepare":
-        for path in inputs.get("index") or []:
-            required_paths.append(("index", path))
     if task in {"infer", "evaluate"}:
         ckpt_path = inputs.get("ckpt_path")
         if ckpt_path not in (None, "", "ASK_USER"):

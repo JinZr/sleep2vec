@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import plan_rendering as rendering
 from .adapters import get_adapter
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from .decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
 
 _INPUT_FIELDS = {
-    "preset_prepare": {"config", "dataset_name", "index"},
     "finetune": {"ckpt_path", "config", "data_backend", "label_name", "pretrained_backbone_path"},
     "infer": {
         "ckpt_path",
@@ -49,7 +47,7 @@ def task_recipe_contract_issues(task: str, recipe: dict, *, source_layer: str) -
         sections = {
             "inputs": _INPUT_FIELDS.get(task),
             "evaluation_policy": _EVALUATION_FIELDS.get(task),
-            "preset": rendering.PRESET_FIELDS if task == "preset_prepare" else None,
+            "preset": None,
         }
     for section, allowed_fields in sections.items():
         if section not in recipe or allowed_fields is None:
@@ -78,60 +76,6 @@ def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> 
         None,
         {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
     )
-
-
-def preset_prepare_issues(
-    recipe: dict, config_summary: dict | None, high_impact: dict[str, dict[str, Any]]
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
-
-    for input_field, value in {
-        "index": inputs.get("index"),
-        "dataset_name": inputs.get("dataset_name"),
-        "split": preset.get("split"),
-        "n_tokens": preset.get("n_tokens"),
-        "allow_missing_channels": preset.get("allow_missing_channels"),
-    }.items():
-        if value in (None, "", []):
-            issues.append(
-                needs_issue(
-                    input_field,
-                    f"{input_field} is required for preset preparation.",
-                    high_impact,
-                    {"recipe": value},
-                )
-            )
-    if preset.get("allow_missing_channels") is True and preset.get("min_channels") is None:
-        issues.append(
-            needs_issue("min_channels", "min_channels is required when missing channels are allowed.", high_impact)
-        )
-    if recipe.get("variant") in {"sleep2vec2", "sleep2expert"}:
-        if preset.get("manifest_output") not in (None, ""):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "manifest_output",
-                    f"{recipe['variant']} preset preparation does not support manifest_output.",
-                    None,
-                    {"variant": recipe["variant"]},
-                )
-            )
-        if "write_sidecar_manifest" in preset:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "write_sidecar_manifest",
-                    f"{recipe['variant']} preset preparation does not support write_sidecar_manifest.",
-                    None,
-                    {"variant": recipe["variant"]},
-                )
-            )
-    survival_issue = survival_sidecar_issue("preset_prepare", recipe, config_summary)
-    if survival_issue is not None:
-        issues.append(survival_issue)
-    return issues
 
 
 def finetune_task_issues(

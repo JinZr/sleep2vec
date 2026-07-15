@@ -34,7 +34,7 @@ _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_reci
 _DECISION_ENTRY_FIELDS = {"meaning", "question", "rationale", "source", "value"}
 _EXTRA_DECISION_TASKS = {
     "ckpt_path": {"finetune", "hparam_tune"},
-    "config": {"evaluate", "finetune", "hparam_tune", "infer", "preset_prepare"},
+    "config": {"evaluate", "finetune", "hparam_tune", "infer"},
     "data_backend": {"hparam_tune"},
     "external_test_locked": {"finetune", "infer", "evaluate"},
     "final_eval_config_path": {"hparam_tune"},
@@ -114,8 +114,6 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
         return rendering.INFER_RUNTIME_FIELDS
     if task == "hparam_tune":
         return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
-    if task == "preset_prepare":
-        return frozenset()
     union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
     for registered in all_adapters():
         union = union | registered.runtime_fields(variant)
@@ -229,16 +227,6 @@ def evaluate_consultation_gates(
                 DecisionStatus.FAIL,
                 "variant",
                 f"{variant} does not support {task_value}.",
-                None,
-                {"variant": variant, "task": task_value},
-            )
-        )
-    if task_value == "preset_prepare" and variant == "sex_age_baseline":
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "variant",
-                "sex_age_baseline does not support preset_prepare.",
                 None,
                 {"variant": variant, "task": task_value},
             )
@@ -479,8 +467,6 @@ def _task_specific_issues(
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.task_issues(recipe, config_summary, decisions, high_impact)
-    if task == "preset_prepare":
-        return rules.preset_prepare_issues(recipe, config_summary, high_impact)
     if task == "finetune":
         return rules.finetune_task_issues(recipe, config_summary, decisions, high_impact)
     if task == "hparam_tune":

@@ -44,12 +44,11 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, coerce_list, resolve_repo_path
+from .models import REPO_ROOT, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
 _TASK_RECIPE_FIELDS = {
-    "preset_prepare": _COMMON_RECIPE_FIELDS | {"execution", "inputs", "preset"},
     "finetune": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
     "infer": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
     "evaluate": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
@@ -275,9 +274,6 @@ def _materialize_decisions(
     adapter = get_adapter(recipe.get("task"))
     if adapter is not None:
         canonical_fields.update(adapter.decision_recipe_targets)
-    elif recipe.get("task") == "preset_prepare":
-        canonical_fields["overwrite_policy"] = ("preset", "overwrite")
-        canonical_fields["required_channels"] = ("preset", "channels")
     if decision_values.get("train_val_test_policy") in ("train", "val", "test"):
         canonical_fields["train_val_test_policy"] = ("evaluation_policy", "selection_split")
 
@@ -930,32 +926,6 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
                 ]
             )
         ]
-    if task == "preset_prepare":
-        preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
-        preset_script = {
-            "sleep2vec": "preprocess/save_dataset_presets.py",
-            "sleep2vec2": "sleep2vec2/preprocess/save_dataset_presets.py",
-            "sleep2expert": "sleep2expert/preprocess/save_dataset_presets.py",
-        }[str(recipe.get("variant"))]
-        return [
-            rendering.render_command(
-                [
-                    "python",
-                    preset_script,
-                    "--config",
-                    inputs.get("config"),
-                    "--index",
-                    *coerce_list(inputs.get("index")),
-                    "--dataset-name",
-                    inputs.get("dataset_name"),
-                    "--n-tokens",
-                    preset.get("n_tokens"),
-                    "--split",
-                    *coerce_list(preset.get("split")),
-                    *rendering.preset_cli_args(preset),
-                ]
-            )
-        ]
     return []
 
 
@@ -984,12 +954,10 @@ def _has_output_artifact_issue(report: DecisionReport) -> bool:
 
 
 def _overwrite_policy(recipe: dict) -> Any:
+    section, key = "artifacts", "overwrite"
     adapter = get_adapter(recipe.get("task"))
     if adapter is not None:
-        section, key = adapter.decision_recipe_targets.get("overwrite_policy", ("artifacts", "overwrite"))
-    else:
-        section = "preset" if recipe.get("task") == "preset_prepare" else "artifacts"
-        key = "overwrite"
+        section, key = adapter.decision_recipe_targets.get("overwrite_policy", (section, key))
     owner = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
     return owner.get(key)
 
