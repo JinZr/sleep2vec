@@ -60,6 +60,14 @@ class TaskAdapter:
     #: (e.g. inference_preset_path); None means the task has no
     #: recipe-level preset override and the kernel's config fallback applies.
     preset_path_recipe_field: str | None = None
+    #: True enables path_issues' dataset-source existence checks (npz
+    #: effective preset/index; sex_age kaldi data root/manifest).
+    validates_dataset_paths: bool = False
+
+    def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
+        """Externally-managed runtime directory for a planned managed run;
+        None means the kernel records empty runtime/checkpoint dirs."""
+        return None
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         """Task-specific required input paths, validated by

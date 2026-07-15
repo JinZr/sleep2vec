@@ -2,12 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import (
-    decision_hparam as hparam_rules,
-    decision_paths as paths,
-    decision_rules as rules,
-    plan_rendering as rendering,
-)
+from . import decision_hparam as hparam_rules, decision_paths as paths, plan_rendering as rendering
 from .adapters import all_adapters, get_adapter
 from .decision_models import (
     DecisionIssue,
@@ -19,7 +14,7 @@ from .decision_models import (
     question_for,
 )
 from .experiment_workspace import experiment_metadata_issues
-from .models import SUPPORTED_VARIANTS, task_requires_variant
+from .models import CONFIG_FINETUNE_SECTION, SUPPORTED_VARIANTS, task_requires_variant
 
 __all__ = [
     "DecisionIssue",
@@ -33,14 +28,13 @@ __all__ = [
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
 _DECISION_ENTRY_FIELDS = {"meaning", "question", "rationale", "source", "value"}
 _EXTRA_DECISION_TASKS = {
-    "ckpt_path": {"finetune", "hparam_tune"},
-    "config": {"finetune", "hparam_tune"},
+    "ckpt_path": {"hparam_tune"},
+    "config": {"hparam_tune"},
     "data_backend": {"hparam_tune"},
-    "external_test_locked": {"finetune"},
     "final_eval_config_path": {"hparam_tune"},
     "pretrained_backbone_path": {"hparam_tune"},
     "required_channels": {"hparam_tune"},
-    "test_after_fit": {"finetune", "hparam_tune"},
+    "test_after_fit": {"hparam_tune"},
 }
 
 
@@ -104,11 +98,6 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.runtime_fields(variant)
-    if task == "finetune":
-        fields = rendering.FINETUNE_RUNTIME_FIELDS
-        if variant == "sex_age_baseline":
-            fields = fields - {"wandb_mode"}
-        return fields
     if task == "hparam_tune":
         return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
     union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
@@ -120,7 +109,7 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
 def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
     task_scope = {task}
     if task == "hparam_tune":
-        task_scope.add("finetune")
+        task_scope.add(hparam_rules.HPARAM_BASE_TASK)
     allowed = {
         str(item["id"])
         for item in policy.get("high_impact_fields", [])
@@ -304,6 +293,7 @@ def evaluate_consultation_gates(
             required_input_paths=task_adapter.required_input_paths(recipe) if task_adapter else None,
             requires_survival_sidecars=task_adapter.requires_survival_sidecars if task_adapter else None,
             preset_path_recipe_field=task_adapter.preset_path_recipe_field if task_adapter else None,
+            validates_dataset_paths=task_adapter.validates_dataset_paths if task_adapter else False,
         )
     )
     if task_adapter is not None:
@@ -430,7 +420,7 @@ def _config_field_value(field: str, config_summary: dict | None) -> Any:
     if not config_summary:
         return _MISSING
     data = config_summary.get("data", {})
-    finetune_task = config_summary.get("finetune", {}).get("task", {})
+    finetune_task = config_summary.get(CONFIG_FINETUNE_SECTION, {}).get("task", {})
     preset_build = config_summary.get("preset_build", {})
     mapping = {
         "data_backend": config_summary.get("data_backend"),
@@ -461,8 +451,6 @@ def _task_specific_issues(
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.task_issues(recipe, config_summary, decisions, high_impact)
-    if task == "finetune":
-        return rules.finetune_task_issues(recipe, config_summary, decisions, high_impact)
     if task == "hparam_tune":
         return hparam_rules.hparam_tune_issues(recipe, config_summary, decisions, high_impact)
     return []
@@ -479,16 +467,16 @@ def _base_finetune_issues(
         return []
     local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
     base_gate = {key: value for key, value in recipe.items() if not key.startswith("_")}
-    base_gate["task"] = "finetune"
+    base_gate["task"] = hparam_rules.HPARAM_BASE_TASK
     if isinstance(base_gate.get("runtime"), dict):
-        finetune_runtime = _runtime_fields_for_task("finetune", recipe.get("variant"))
+        finetune_runtime = _runtime_fields_for_task(hparam_rules.HPARAM_BASE_TASK, recipe.get("variant"))
         base_gate["runtime"] = {
             field: value for field, value in base_gate["runtime"].items() if field in finetune_runtime
         }
 
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     base_decisions = dict(base_recipe.get("decisions") or {})
-    finetune_decisions = _decision_fields_for_task("finetune", policy)
+    finetune_decisions = _decision_fields_for_task(hparam_rules.HPARAM_BASE_TASK, policy)
     for decision_field, value in local_decisions.items():
         if decision_field in finetune_decisions and decision_field not in base_decisions:
             base_decisions[decision_field] = value
@@ -500,7 +488,7 @@ def _base_finetune_issues(
             field: value for field, value in base_cli_args["user_decisions"].items() if field in finetune_decisions
         }
     report = evaluate_consultation_gates(
-        "finetune",
+        hparam_rules.HPARAM_BASE_TASK,
         base_gate,
         config_summary,
         base_cli_args,

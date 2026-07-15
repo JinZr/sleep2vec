@@ -6,7 +6,7 @@ from typing import Any
 
 from . import transport
 from .decision_models import DecisionIssue, DecisionStatus
-from .models import REPO_ROOT
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT
 
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target"}
 
@@ -46,7 +46,7 @@ def _config_data(config_summary: dict | None) -> dict[str, Any]:
 
 
 def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
-    finetune = config_summary.get("finetune") if isinstance(config_summary, dict) else {}
+    finetune = config_summary.get(CONFIG_FINETUNE_SECTION) if isinstance(config_summary, dict) else {}
     return finetune if isinstance(finetune, dict) else {}
 
 
@@ -194,6 +194,7 @@ def path_issues(
     required_input_paths: list[tuple[str, Any]] | None = None,
     requires_survival_sidecars: bool | None = None,
     preset_path_recipe_field: str | None = None,
+    validates_dataset_paths: bool = False,
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
@@ -201,20 +202,13 @@ def path_issues(
     if inputs.get("config"):
         required_paths.append(("config", inputs.get("config")))
     required_paths.extend(required_input_paths or [])
-    if task == "finetune":
-        for input_field in ("pretrained_backbone_path", "ckpt_path"):
-            if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
-                continue
-            value = inputs.get(input_field)
-            if value not in (None, "", "ASK_USER"):
-                required_paths.append((input_field, value))
 
     for path_field, raw_path in required_paths:
         issue = validate_input_path(recipe, path_field, raw_path, configured=False)
         if issue is not None:
             issues.append(issue)
 
-    if task in {"finetune", "infer", "evaluate"} and config_summary and config_summary.get("data_backend") == "npz":
+    if validates_dataset_paths and config_summary and config_summary.get("data_backend") == "npz":
         data = _config_data(config_summary)
         preset_field, preset_path = _effective_preset_path(task, recipe, config_summary, preset_path_recipe_field)
         if preset_path not in (None, ""):
@@ -230,7 +224,7 @@ def path_issues(
                 if issue is not None:
                     issues.append(issue)
     if (
-        task in {"finetune", "infer", "evaluate"}
+        validates_dataset_paths
         and config_summary
         and config_summary.get("variant_guess") == "sex_age_baseline"
         and config_summary.get("data_backend") == "kaldi"
@@ -313,11 +307,8 @@ def validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: 
     )
 
 
-def sex_age_pretrained_backbone_issue(
-    task: str,
-    recipe: dict,
-) -> DecisionIssue | None:
-    if recipe.get("variant") != "sex_age_baseline" or task not in {"finetune", "infer", "evaluate"}:
+def sex_age_pretrained_backbone_issue(recipe: dict) -> DecisionIssue | None:
+    if recipe.get("variant") != "sex_age_baseline":
         return None
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     value = inputs.get("pretrained_backbone_path")

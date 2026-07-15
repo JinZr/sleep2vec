@@ -15,6 +15,11 @@ from ..plan_rendering import (
 from .base import TaskAdapter
 
 _INFER_EVALUATE_TASKS = frozenset({"infer", "evaluate"})
+# Byte-compat guard for sex_age_pretrained_backbone_issue: the pre-adapter
+# kernel gated this helper on the recipe's own task string being one of the
+# model tasks (a finetune recipe dispatched as infer still produced the
+# issue; a task-less recipe did not).
+_SEX_AGE_PRETRAINED_GUARD_TASKS = frozenset({"finetune", "infer", "evaluate"})
 
 _INPUT_FIELDS = frozenset(
     {
@@ -62,6 +67,7 @@ class InferEvaluateAdapter(TaskAdapter):
     artifact_fields = frozenset({"overwrite"})
     contract_sections = {"inputs": _INPUT_FIELDS, "evaluation_policy": _EVALUATION_FIELDS}
     preset_path_recipe_field = "inference_preset_path"
+    validates_dataset_paths = True
 
     def __init__(self, task: str, extra_decision_fields: frozenset[str]) -> None:
         self.task = task
@@ -113,9 +119,10 @@ class InferEvaluateAdapter(TaskAdapter):
                     {"inputs": inputs},
                 )
             )
-        pretrained_issue = sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe)
-        if pretrained_issue is not None:
-            issues.append(pretrained_issue)
+        if str(recipe.get("task")) in _SEX_AGE_PRETRAINED_GUARD_TASKS:
+            pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
+            if pretrained_issue is not None:
+                issues.append(pretrained_issue)
         override_issue = sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
         if override_issue is not None:
             issues.append(override_issue)
