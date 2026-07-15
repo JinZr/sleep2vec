@@ -34,12 +34,11 @@ _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_reci
 _DECISION_ENTRY_FIELDS = {"meaning", "question", "rationale", "source", "value"}
 _EXTRA_DECISION_TASKS = {
     "ckpt_path": {"finetune", "hparam_tune"},
-    "config": {"evaluate", "finetune", "hparam_tune", "infer"},
+    "config": {"finetune", "hparam_tune"},
     "data_backend": {"hparam_tune"},
-    "external_test_locked": {"finetune", "infer", "evaluate"},
+    "external_test_locked": {"finetune"},
     "final_eval_config_path": {"hparam_tune"},
-    "final_eval_unlock": {"infer"},
-    "pretrained_backbone_path": {"evaluate", "hparam_tune", "infer"},
+    "pretrained_backbone_path": {"hparam_tune"},
     "required_channels": {"hparam_tune"},
     "test_after_fit": {"finetune", "hparam_tune"},
 }
@@ -110,8 +109,6 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
         if variant == "sex_age_baseline":
             fields = fields - {"wandb_mode"}
         return fields
-    if task in {"infer", "evaluate"}:
-        return rendering.INFER_RUNTIME_FIELDS
     if task == "hparam_tune":
         return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
     union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
@@ -306,6 +303,7 @@ def evaluate_consultation_gates(
             config_summary,
             required_input_paths=task_adapter.required_input_paths(recipe) if task_adapter else None,
             requires_survival_sidecars=task_adapter.requires_survival_sidecars if task_adapter else None,
+            preset_path_recipe_field=task_adapter.preset_path_recipe_field if task_adapter else None,
         )
     )
     if task_adapter is not None:
@@ -467,8 +465,6 @@ def _task_specific_issues(
         return rules.finetune_task_issues(recipe, config_summary, decisions, high_impact)
     if task == "hparam_tune":
         return hparam_rules.hparam_tune_issues(recipe, config_summary, decisions, high_impact)
-    if task in {"infer", "evaluate"}:
-        return rules.infer_evaluate_issues(recipe, config_summary, decisions, high_impact)
     return []
 
 

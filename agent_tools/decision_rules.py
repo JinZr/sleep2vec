@@ -4,35 +4,13 @@ from typing import Any
 
 from .adapters import get_adapter
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from .decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
+from .decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
 
 _INPUT_FIELDS = {
     "finetune": {"ckpt_path", "config", "data_backend", "label_name", "pretrained_backbone_path"},
-    "infer": {
-        "ckpt_path",
-        "config",
-        "data_backend",
-        "eval_split",
-        "inference_preset_path",
-        "label_name",
-        "override_dataset_names",
-        "pretrained_backbone_path",
-    },
-    "evaluate": {
-        "ckpt_path",
-        "config",
-        "data_backend",
-        "eval_split",
-        "inference_preset_path",
-        "label_name",
-        "override_dataset_names",
-        "pretrained_backbone_path",
-    },
 }
 _EVALUATION_FIELDS = {
     "finetune": {"external_test_locked", "selection_metric", "selection_mode", "selection_split", "test_after_fit"},
-    "infer": {"external_test_locked", "final_test_unlocked"},
-    "evaluate": {"external_test_locked", "final_test_unlocked"},
 }
 
 
@@ -146,7 +124,7 @@ def finetune_task_issues(
                     {"config": data},
                 )
             )
-    pretrained_issue = _sex_age_pretrained_backbone_issue("finetune", recipe)
+    pretrained_issue = sex_age_pretrained_backbone_issue("finetune", recipe)
     if pretrained_issue is not None:
         issues.append(pretrained_issue)
     survival_issue = survival_sidecar_issue("finetune", recipe, config_summary)
@@ -167,89 +145,3 @@ def finetune_task_issues(
             )
         )
     return issues
-
-
-def infer_evaluate_issues(
-    recipe: dict,
-    config_summary: dict | None,
-    decisions: dict[str, ResolvedDecision],
-    high_impact: dict[str, dict[str, Any]],
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-
-    if config_summary:
-        for issue in config_summary.get("blocking_issues", []):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "config",
-                    issue,
-                    "Please fix the config before the agent generates commands.",
-                    {"config_path": config_summary.get("config_path")},
-                )
-            )
-    if inputs.get("eval_split") == "test":
-        if evaluation.get("final_test_unlocked") is not True:
-            issues.append(
-                needs_issue("final_eval_unlock", "Test evaluation requires explicit final unlock.", high_impact)
-            )
-    if not inputs.get("eval_split"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "eval_split",
-                "eval_split is required for inference/evaluation.",
-                "Which split should be evaluated?",
-                {"inputs": inputs},
-            )
-        )
-    pretrained_issue = _sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe)
-    if pretrained_issue is not None:
-        issues.append(pretrained_issue)
-    override_issue = _sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
-    if override_issue is not None:
-        issues.append(override_issue)
-    survival_issue = survival_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
-    if survival_issue is not None:
-        issues.append(survival_issue)
-    multilabel_issue = multilabel_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
-    if multilabel_issue is not None:
-        issues.append(multilabel_issue)
-    return issues
-
-
-def _sex_age_pretrained_backbone_issue(
-    task: str,
-    recipe: dict,
-) -> DecisionIssue | None:
-    if recipe.get("variant") != "sex_age_baseline" or task not in {"finetune", "infer", "evaluate"}:
-        return None
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    value = inputs.get("pretrained_backbone_path")
-    if value in (None, "", "ASK_USER"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        "pretrained_backbone_path",
-        "sex_age_baseline does not support pretrained_backbone_path.",
-        None,
-        {"variant": "sex_age_baseline", "pretrained_backbone_path": value},
-    )
-
-
-def _sex_age_override_dataset_names_issue(task: str, recipe: dict) -> DecisionIssue | None:
-    if recipe.get("variant") != "sex_age_baseline" or task not in {"infer", "evaluate"}:
-        return None
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    value = inputs.get("override_dataset_names")
-    if value in (None, "", "ASK_USER"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        "override_dataset_names",
-        "sex_age_baseline does not support override_dataset_names.",
-        None,
-        {"variant": "sex_age_baseline", "override_dataset_names": value},
-    )

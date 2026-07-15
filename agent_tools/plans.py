@@ -50,15 +50,11 @@ from .recipes import load_consultation_policy, load_recipe_with_base, load_user_
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
 _TASK_RECIPE_FIELDS = {
     "finetune": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
-    "infer": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
-    "evaluate": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
     "hparam_tune": _COMMON_RECIPE_FIELDS
     | {"adaptive", "artifacts", "base_recipe", "evaluation_policy", "execution", "inputs", "runtime", "search"},
 }
 _ARTIFACT_FIELDS = {
     "finetune": {"overwrite", "results_csv_path", "version_name"},
-    "infer": {"overwrite"},
-    "evaluate": {"overwrite"},
     "hparam_tune": {"overwrite", "results_csv_path"},
 }
 
@@ -906,26 +902,6 @@ def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
         if test_after_fit is False or evaluation.get("external_test_locked") is True:
             pieces.append("--no-test-after-fit")
         return [rendering.render_command(pieces)]
-    if task in {"infer", "evaluate"}:
-        return [
-            rendering.render_command(
-                [
-                    "python",
-                    "-m",
-                    rendering.variant_module(recipe, "infer"),
-                    "--config",
-                    inputs.get("config"),
-                    "--ckpt-path",
-                    inputs.get("ckpt_path"),
-                    "--label-name",
-                    inputs.get("label_name"),
-                    "--eval-split",
-                    inputs.get("eval_split"),
-                    *rendering.infer_runtime_cli_args(runtime),
-                    *rendering.infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
-                ]
-            )
-        ]
     return []
 
 
