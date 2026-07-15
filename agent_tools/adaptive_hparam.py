@@ -216,6 +216,54 @@ def suggest_next_round(workflow_dir: str | Path) -> Path:
     return out
 
 
+def _ids_or_none(keys: list[tuple[str, str]]) -> str:
+    return ", ".join(key[1] for key in keys) or "none"
+
+
+def _committed_phrase(round_committed: bool) -> str:
+    return "is already committed" if round_committed else "was not committed"
+
+
+def _preserved_tail(
+    stopped_run_keys: list[tuple[str, str]],
+    superseded_current_keys: list[tuple[str, str]],
+    next_dir: Path,
+) -> str:
+    stopped_ids = _ids_or_none(stopped_run_keys)
+    superseded_ids = _ids_or_none(superseded_current_keys)
+    return (
+        f"Confirmed stopped current runs: {stopped_ids}. "
+        f"Superseded current pending runs: {superseded_ids}. "
+        f"Prospective run states were preserved at {next_dir}."
+    )
+
+
+def _not_superseded_launch_error(
+    kind: str,
+    next_round: int,
+    *,
+    attempt_run_id: str | None = None,
+    unresolved_ids: str = "",
+) -> RuntimeError:
+    if attempt_run_id is None:
+        lead = f"Adaptive replacement launch failed and round {next_round:03d}"
+    else:
+        lead = (
+            f"Adaptive replacement launch failed after the stop attempt for {attempt_run_id}, and round "
+            f"{next_round:03d}"
+        )
+    if kind == "commit":
+        body = f"{lead} launch evidence could not be committed."
+        scope = "canonical launch state"
+    elif kind == "unresolved":
+        body = f"{lead} has unresolved launch evidence for {unresolved_ids}."
+        scope = "launch state"
+    else:  # kind == "mirrors"
+        body = f"{lead} launch mirrors or events could not be reconciled."
+        scope = "canonical launch state"
+    return RuntimeError(f"{body} Prospective runs were not superseded; resolve the {scope} before retry.")
+
+
 def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
@@ -282,17 +330,10 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                     workspace, next_plan_keys
                 )
             except Exception as reconcile_exc:
-                raise RuntimeError(
-                    f"Adaptive replacement launch failed and round {next_round:03d} launch evidence could not be "
-                    "committed. Prospective runs were not superseded; resolve the canonical launch state before retry."
-                ) from reconcile_exc
+                raise _not_superseded_launch_error("commit", next_round) from reconcile_exc
             if unresolved_launches:
                 unresolved_ids = ", ".join(sorted(key[1] for key in unresolved_launches))
-                raise RuntimeError(
-                    f"Adaptive replacement launch failed and round {next_round:03d} has unresolved launch evidence "
-                    f"for {unresolved_ids}. Prospective runs were not superseded; resolve the launch state before "
-                    "retry."
-                ) from exc
+                raise _not_superseded_launch_error("unresolved", next_round, unresolved_ids=unresolved_ids) from exc
             next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
             refreshed_started_keys = {
                 managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
@@ -302,21 +343,14 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                 try:
                     canonical_rows = _finish_interrupted_launch(next_dir, workspace, confirmed_starts)
                 except Exception as reconcile_exc:
-                    raise RuntimeError(
-                        f"Adaptive replacement launch failed and round {next_round:03d} launch mirrors or events "
-                        "could not be reconciled. Prospective runs were not superseded; resolve the canonical launch "
-                        "state before retry."
-                    ) from reconcile_exc
+                    raise _not_superseded_launch_error("mirrors", next_round) from reconcile_exc
             round_committed = bool(confirmed_starts)
             if round_committed:
                 _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
                 superseded_current_keys = _supersede_pending_runs(root, round_dir)
-            committed = "is already committed" if round_committed else "was not committed"
-            superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
             raise RuntimeError(
-                f"Adaptive replacement launch failed; round {next_round:03d} {committed}. "
-                f"Confirmed stopped current runs: none. Superseded current pending runs: {superseded_ids}. "
-                f"Prospective run states were preserved at {next_dir}."
+                f"Adaptive replacement launch failed; round {next_round:03d} {_committed_phrase(round_committed)}. "
+                + _preserved_tail([], superseded_current_keys, next_dir)
             ) from exc
         canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
@@ -335,12 +369,10 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
             superseded_current_keys = _supersede_pending_runs(root, round_dir)
         if newly_launch_failed:
             failed_ids = ", ".join(sorted(key[1] for key in newly_launch_failed))
-            committed = "is already committed" if round_committed else "was not committed"
-            superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
             raise RuntimeError(
-                f"Adaptive replacement launch failed for {failed_ids}; round {next_round:03d} {committed}. "
-                f"Confirmed stopped current runs: none. Superseded current pending runs: {superseded_ids}. "
-                f"Prospective run states were preserved at {next_dir}."
+                f"Adaptive replacement launch failed for {failed_ids}; round {next_round:03d} "
+                f"{_committed_phrase(round_committed)}. "
+                + _preserved_tail([], superseded_current_keys, next_dir)
             )
         stopped_run_keys: list[tuple[str, str]] = []
 
@@ -359,14 +391,10 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                 canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
                 if canonical_by_key[run_key].get("status") == "stopped" and run_key not in stopped_run_keys:
                     stopped_run_keys.append(run_key)
-                committed = "is already committed" if round_committed else "was not committed"
-                stopped_ids = ", ".join(key[1] for key in stopped_run_keys) or "none"
-                superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
                 raise RuntimeError(
                     f"Adaptive replacement failed while stopping {run_key[1]}; round {next_round:03d} "
-                    f"{committed}. Confirmed stopped current runs: {stopped_ids}. "
-                    f"Superseded current pending runs: {superseded_ids}. "
-                    f"Prospective run states were preserved at {next_dir}."
+                    f"{_committed_phrase(round_committed)}. "
+                    + _preserved_tail(stopped_run_keys, superseded_current_keys, next_dir)
                 ) from exc
             if stopped:
                 stopped_run_keys.extend(stopped)
@@ -387,17 +415,13 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                         workspace, next_plan_keys
                     )
                 except Exception as reconcile_exc:
-                    raise RuntimeError(
-                        f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}, and round "
-                        f"{next_round:03d} launch evidence could not be committed. Prospective runs were not "
-                        "superseded; resolve the canonical launch state before retry."
+                    raise _not_superseded_launch_error(
+                        "commit", next_round, attempt_run_id=run_key[1]
                     ) from reconcile_exc
                 if unresolved_launches:
                     unresolved_ids = ", ".join(sorted(key[1] for key in unresolved_launches))
-                    raise RuntimeError(
-                        f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}, and round "
-                        f"{next_round:03d} has unresolved launch evidence for {unresolved_ids}. Prospective runs were "
-                        "not superseded; resolve the launch state before retry."
+                    raise _not_superseded_launch_error(
+                        "unresolved", next_round, attempt_run_id=run_key[1], unresolved_ids=unresolved_ids
                     ) from exc
                 next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
                 refreshed_started_keys = {
@@ -411,24 +435,18 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                     try:
                         canonical_rows = _finish_interrupted_launch(next_dir, workspace, confirmed_starts)
                     except Exception as reconcile_exc:
-                        raise RuntimeError(
-                            f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}, and round "
-                            f"{next_round:03d} launch mirrors or events could not be reconciled. Prospective runs were "
-                            "not superseded; resolve the canonical launch state before retry."
+                        raise _not_superseded_launch_error(
+                            "mirrors", next_round, attempt_run_id=run_key[1]
                         ) from reconcile_exc
                 if confirmed_starts and not round_committed:
                     _append_event(root, "launch_round", {"round": next_round, "round_dir": str(next_dir)})
                     round_committed = True
                     superseded_current_keys = _supersede_pending_runs(root, round_dir)
-                committed = "is already committed" if round_committed else "was not committed"
-                stopped_ids = ", ".join(key[1] for key in stopped_run_keys) or "none"
-                superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
                 raise RuntimeError(
                     f"Adaptive replacement launch failed after the stop attempt for {run_key[1]}; "
                     f"round {next_round:03d} "
-                    f"{committed}. Confirmed stopped current runs: {stopped_ids}. "
-                    f"Superseded current pending runs: {superseded_ids}. "
-                    f"Prospective run states were preserved at {next_dir}."
+                    f"{_committed_phrase(round_committed)}. "
+                    + _preserved_tail(stopped_run_keys, superseded_current_keys, next_dir)
                 ) from exc
             canonical_rows = read_run_manifest(workspace)
             next_round_rows = [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
@@ -445,26 +463,18 @@ def adaptive_step(workflow_dir: str | Path, *, execute: bool = False) -> Path:
                 superseded_current_keys = _supersede_pending_runs(root, round_dir)
             if newly_launch_failed:
                 failed_ids = ", ".join(sorted(key[1] for key in newly_launch_failed))
-                committed = "is already committed" if round_committed else "was not committed"
-                stopped_ids = ", ".join(key[1] for key in stopped_run_keys) or "none"
-                superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
                 raise RuntimeError(
                     f"Adaptive replacement launch failed for {failed_ids} after the stop attempt for {run_key[1]}; "
-                    f"round {next_round:03d} {committed}. Confirmed stopped current runs: {stopped_ids}. "
-                    f"Superseded current pending runs: {superseded_ids}. "
-                    f"Prospective run states were preserved at {next_dir}."
+                    f"round {next_round:03d} {_committed_phrase(round_committed)}. "
+                    + _preserved_tail(stopped_run_keys, superseded_current_keys, next_dir)
                 )
             if not newly_started:
                 statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
-                committed = "is already committed" if round_committed else "was not committed"
-                stopped_ids = ", ".join(key[1] for key in stopped_run_keys) or "none"
-                superseded_ids = ", ".join(key[1] for key in superseded_current_keys) or "none"
                 stop_attempt = f"stopping {run_key[1]}" if stopped else f"the stop attempt for {run_key[1]}"
                 raise RuntimeError(
                     f"Round {next_round:03d} started no additional runs after {stop_attempt} "
-                    f"(statuses: {statuses}); the round {committed}. Confirmed stopped current runs: {stopped_ids}. "
-                    f"Superseded current pending runs: {superseded_ids}. "
-                    f"Prospective run states were preserved at {next_dir}."
+                    f"(statuses: {statuses}); the round {_committed_phrase(round_committed)}. "
+                    + _preserved_tail(stopped_run_keys, superseded_current_keys, next_dir)
                 )
             retirement_credit += len(newly_started)
 
