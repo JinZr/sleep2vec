@@ -18,6 +18,7 @@ from . import (
     repo as repo_tools,
     run_artifacts as artifacts,
 )
+from .adapters import get_adapter
 from .configs import config_summary
 from .decisions import (
     DecisionIssue,
@@ -54,15 +55,27 @@ _TASK_RECIPE_FIELDS = {
     "evaluate": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
     "hparam_tune": _COMMON_RECIPE_FIELDS
     | {"adaptive", "artifacts", "base_recipe", "evaluation_policy", "execution", "inputs", "runtime", "search"},
-    "sleep2stat": _COMMON_RECIPE_FIELDS | {"artifacts", "evaluation_policy", "execution", "inputs", "runtime"},
 }
 _ARTIFACT_FIELDS = {
     "finetune": {"overwrite", "results_csv_path", "version_name"},
     "infer": {"overwrite"},
     "evaluate": {"overwrite"},
     "hparam_tune": {"overwrite", "results_csv_path"},
-    "sleep2stat": {"overwrite", "run_dir"},
 }
+
+
+def _recipe_fields_for_task(task: str) -> set[str] | None:
+    adapter = get_adapter(task)
+    if adapter is not None:
+        return _COMMON_RECIPE_FIELDS | adapter.recipe_extra_fields
+    return _TASK_RECIPE_FIELDS.get(task)
+
+
+def _artifact_fields_for_task(task: str) -> set[str]:
+    adapter = get_adapter(task)
+    if adapter is not None:
+        return set(adapter.artifact_fields)
+    return _ARTIFACT_FIELDS.get(task, set())
 
 
 def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) -> list[DecisionIssue]:
@@ -128,9 +141,9 @@ def _source_recipe_contract_issues(
     policy: dict,
     source_layer: str,
 ) -> list[DecisionIssue]:
-    if task not in _TASK_RECIPE_FIELDS:
+    allowed_top_level = _recipe_fields_for_task(task)
+    if allowed_top_level is None:
         return []
-    allowed_top_level = _TASK_RECIPE_FIELDS.get(task, set().union(*_TASK_RECIPE_FIELDS.values()))
     issues = [
         _recipe_contract_issue(
             str(field),
@@ -174,7 +187,7 @@ def _artifact_contract_issues(task: str, recipe: dict, source_layer: str) -> lis
                 source_layer,
             )
         ]
-    allowed_fields = _ARTIFACT_FIELDS.get(task, set())
+    allowed_fields = _artifact_fields_for_task(task)
     return [
         _recipe_contract_issue(
             f"artifacts.{field}",
@@ -865,57 +878,13 @@ def _wandb_summary_for_run(run_dir: Path) -> dict[str, Any]:
 
 def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
     task = recipe.get("task")
+    adapter = get_adapter(task)
+    if adapter is not None:
+        return adapter.commands(recipe, cfg)
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    if task == "sleep2stat":
-        config = inputs.get("config")
-        run_dir = rendering.sleep2stat_config_run_dir(cfg)
-        if not run_dir:
-            return []
-        commands = [
-            rendering.render_command(["python", "-m", "sleep2stat", "validate-config", "--config", config]),
-        ]
-        if rendering.sleep2stat_has_yasa_stage(cfg):
-            commands.append(
-                rendering.render_command(
-                    ["python", "-m", "sleep2stat", "validate-config", "--config", config]
-                    + rendering.sleep2stat_record_check_args(recipe)
-                )
-            )
-        commands.append(
-            rendering.render_command(
-                [
-                    "python",
-                    "-m",
-                    "sleep2stat",
-                    "run",
-                    "--config",
-                    config,
-                    *rendering.sleep2stat_runtime_args(recipe),
-                ]
-            )
-        )
-        if runtime.get("summarize_after_run", True) and not runtime.get("dry_run"):
-            commands.append(rendering.render_command(["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]))
-        if runtime.get("plot_cohort_after_run") is True and not runtime.get("dry_run"):
-            plot_cmd = [
-                "python",
-                "-m",
-                "sleep2stat",
-                "plot-cohort",
-                "--run-dir",
-                run_dir,
-                "--group-column",
-                runtime.get("plot_group_column", "source"),
-            ]
-            plot_stage_source = runtime.get("plot_stage_source")
-            if plot_stage_source not in (None, ""):
-                plot_cmd.extend(["--stage-source", str(plot_stage_source)])
-            rendering.append_list_option(plot_cmd, "--adjust-covariates", runtime.get("plot_adjust_covariates"))
-            commands.append(rendering.render_command(plot_cmd))
-        return commands
     if task == "finetune":
         test_after_fit = evaluation.get("test_after_fit")
         pieces = [

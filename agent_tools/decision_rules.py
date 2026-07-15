@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from . import plan_rendering as rendering
+from .adapters import get_adapter
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from .decision_paths import multilabel_sidecar_issue, sleep2stat_existing_run_dir_issue, survival_sidecar_issue
+from .decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
 
 _INPUT_FIELDS = {
     "preset_prepare": {"config", "dataset_name", "index"},
@@ -29,23 +30,27 @@ _INPUT_FIELDS = {
         "override_dataset_names",
         "pretrained_backbone_path",
     },
-    "sleep2stat": {"config", "split"},
 }
 _EVALUATION_FIELDS = {
     "finetune": {"external_test_locked", "selection_metric", "selection_mode", "selection_split", "test_after_fit"},
     "infer": {"external_test_locked", "final_test_unlocked"},
     "evaluate": {"external_test_locked", "final_test_unlocked"},
-    "sleep2stat": {"external_test_locked"},
 }
 
 
 def task_recipe_contract_issues(task: str, recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
-    sections = {
-        "inputs": _INPUT_FIELDS.get(task),
-        "evaluation_policy": _EVALUATION_FIELDS.get(task),
-        "preset": rendering.PRESET_FIELDS if task == "preset_prepare" else None,
-    }
+    adapter = get_adapter(task)
+    if adapter is not None:
+        sections = {
+            section: adapter.contract_sections.get(section) for section in ("inputs", "evaluation_policy", "preset")
+        }
+    else:
+        sections = {
+            "inputs": _INPUT_FIELDS.get(task),
+            "evaluation_policy": _EVALUATION_FIELDS.get(task),
+            "preset": rendering.PRESET_FIELDS if task == "preset_prepare" else None,
+        }
     for section, allowed_fields in sections.items():
         if section not in recipe or allowed_fields is None:
             continue
@@ -73,99 +78,6 @@ def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> 
         None,
         {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
     )
-
-
-def sleep2stat_issues(
-    recipe: dict,
-    config_summary: dict | None,
-    high_impact: dict[str, dict[str, Any]],
-) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-
-    if not inputs.get("config"):
-        issues.append(needs_issue("config", "sleep2stat requires inputs.config.", high_impact))
-        return issues
-    if not config_summary or not config_summary.get("is_sleep2stat"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "config",
-                "task=sleep2stat requires a sleep2stat config.",
-                None,
-                {"config_summary": config_summary},
-            )
-        )
-        return issues
-    for message in config_summary.get("blocking_issues", []):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "sleep2stat_config",
-                message,
-                "Please fix the sleep2stat config before the agent generates commands.",
-                {"config_path": config_summary.get("config_path")},
-            )
-        )
-    sleep2stat = config_summary.get("sleep2stat") or {}
-    cfg_run = sleep2stat.get("run") or {}
-    cfg_data = sleep2stat.get("data") or {}
-    recipe_run_dir = (recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}).get("run_dir")
-    config_run_dir = cfg_run.get("output_dir")
-    if recipe_run_dir and config_run_dir and str(recipe_run_dir) != str(config_run_dir):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "artifacts.run_dir",
-                (
-                    "Recipe artifacts.run_dir differs from sleep2stat config run.output_dir. "
-                    "The sleep2stat CLI uses config run.output_dir, so commands would target the wrong directory."
-                ),
-                (
-                    "Should artifacts.run_dir be changed to match config run.output_dir, or should the "
-                    "sleep2stat config run.output_dir be changed?"
-                ),
-                {"recipe": recipe_run_dir, "config": config_run_dir},
-            )
-        )
-    if config_run_dir:
-        existing_run_dir_issue = sleep2stat_existing_run_dir_issue(recipe, config_run_dir)
-        if existing_run_dir_issue is not None:
-            issues.append(existing_run_dir_issue)
-    effective_split = _as_list(inputs.get("split") or cfg_data.get("split"))
-    if not effective_split:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "sleep2stat_split_policy",
-                "sleep2stat split is not explicit in recipe or config.",
-                "Which split(s) should sleep2stat process?",
-                {"recipe_split": inputs.get("split"), "config_split": cfg_data.get("split")},
-            )
-        )
-    external_test_locked = evaluation.get("external_test_locked")
-    if "test" in {str(value) for value in effective_split} and external_test_locked is not True:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "external_test_locked",
-                "sleep2stat is configured for test split, but external_test_locked is not explicitly true.",
-                "Is this test split external/locked, and should outputs be descriptive-only?",
-                {"effective_split": effective_split, "external_test_locked": external_test_locked},
-            )
-        )
-    for message in config_summary.get("agent_risk_issues", []):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "sleep2stat_config",
-                message,
-                "Please provide a concrete path, adjust path context, or disable the analyzer.",
-                {"config_path": config_summary.get("config_path")},
-            )
-        )
-    return issues
 
 
 def preset_prepare_issues(
@@ -397,11 +309,3 @@ def _sex_age_override_dataset_names_issue(task: str, recipe: dict) -> DecisionIs
         None,
         {"variant": "sex_age_baseline", "override_dataset_names": value},
     )
-
-
-def _as_list(value: Any) -> list[Any]:
-    if value in (None, "", []):
-        return []
-    if isinstance(value, (list, tuple, set)):
-        return list(value)
-    return [value]

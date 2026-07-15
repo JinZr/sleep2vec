@@ -72,21 +72,6 @@ PRESET_FIELDS = frozenset(
     }
 )
 
-SLEEP2STAT_RUNTIME_FIELDS = frozenset(
-    {
-        "batch_size",
-        "device",
-        "dry_run",
-        "limit_records",
-        "num_workers",
-        "plot_adjust_covariates",
-        "plot_cohort_after_run",
-        "plot_group_column",
-        "plot_stage_source",
-        "summarize_after_run",
-    }
-)
-
 
 def variant_module(recipe: dict, entrypoint: str) -> str:
     return module_for_variant(str(recipe.get("variant")), entrypoint)
@@ -200,43 +185,6 @@ def preset_cli_args(preset: dict[str, Any]) -> list[Any]:
         "--no-write-sidecar-manifest",
     )
     return args
-
-
-def sleep2stat_config_run_dir(cfg: dict | None) -> str | None:
-    if not cfg or not cfg.get("is_sleep2stat"):
-        return None
-    value = ((cfg.get("sleep2stat") or {}).get("run") or {}).get("output_dir")
-    return str(value) if value not in (None, "") else None
-
-
-def sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    args: list[Any] = []
-    append_list_option(args, "--split", inputs.get("split"))
-    append_option(args, "--device", runtime.get("device"))
-    append_option(args, "--num-workers", runtime.get("num_workers"))
-    append_option(args, "--batch-size", runtime.get("batch_size"))
-    append_option(args, "--limit-records", runtime.get("limit_records"))
-    append_bool_option(args, runtime.get("dry_run"), "--dry-run")
-    return args
-
-
-def sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    args: list[Any] = ["--check-records"]
-    append_list_option(args, "--split", inputs.get("split"))
-    append_option(args, "--limit-records", runtime.get("limit_records"))
-    return args
-
-
-def sleep2stat_has_yasa_stage(cfg: dict | None) -> bool:
-    sleep2stat = (cfg or {}).get("sleep2stat") or {}
-    for analyzer in sleep2stat.get("analyzers", []):
-        if analyzer.get("enabled") is not False and analyzer.get("type") == "yasa_stage":
-            return True
-    return False
 
 
 def script_lines(
