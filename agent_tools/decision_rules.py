@@ -4,7 +4,7 @@ from typing import Any
 
 from .adapters import get_adapter
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from .decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
+from .decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
 
 _INPUT_FIELDS = {
     "finetune": {"ckpt_path", "config", "data_backend", "label_name", "pretrained_backbone_path"},
@@ -146,7 +146,7 @@ def finetune_task_issues(
                     {"config": data},
                 )
             )
-    pretrained_issue = _sex_age_pretrained_backbone_issue("finetune", recipe)
+    pretrained_issue = sex_age_pretrained_backbone_issue("finetune", recipe)
     if pretrained_issue is not None:
         issues.append(pretrained_issue)
     survival_issue = survival_sidecar_issue("finetune", recipe, config_summary)
@@ -205,7 +205,7 @@ def infer_evaluate_issues(
                 {"inputs": inputs},
             )
         )
-    pretrained_issue = _sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe)
+    pretrained_issue = sex_age_pretrained_backbone_issue(str(recipe.get("task")), recipe)
     if pretrained_issue is not None:
         issues.append(pretrained_issue)
     override_issue = _sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
@@ -218,25 +218,6 @@ def infer_evaluate_issues(
     if multilabel_issue is not None:
         issues.append(multilabel_issue)
     return issues
-
-
-def _sex_age_pretrained_backbone_issue(
-    task: str,
-    recipe: dict,
-) -> DecisionIssue | None:
-    if recipe.get("variant") != "sex_age_baseline" or task not in {"finetune", "infer", "evaluate"}:
-        return None
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    value = inputs.get("pretrained_backbone_path")
-    if value in (None, "", "ASK_USER"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        "pretrained_backbone_path",
-        "sex_age_baseline does not support pretrained_backbone_path.",
-        None,
-        {"variant": "sex_age_baseline", "pretrained_backbone_path": value},
-    )
 
 
 def _sex_age_override_dataset_names_issue(task: str, recipe: dict) -> DecisionIssue | None:

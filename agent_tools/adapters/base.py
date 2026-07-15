@@ -56,6 +56,10 @@ class TaskAdapter:
     #: True/False forces the survival-sidecar requirement for this task;
     #: None keeps the kernel's own inference (decision_paths).
     requires_survival_sidecars: bool | None = None
+    #: Recipe inputs field holding this task's preset path override
+    #: (e.g. inference_preset_path); None means the task has no
+    #: recipe-level preset override and the kernel's config fallback applies.
+    preset_path_recipe_field: str | None = None
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         """Task-specific required input paths, validated by

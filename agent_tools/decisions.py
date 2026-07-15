@@ -306,6 +306,7 @@ def evaluate_consultation_gates(
             config_summary,
             required_input_paths=task_adapter.required_input_paths(recipe) if task_adapter else None,
             requires_survival_sidecars=task_adapter.requires_survival_sidecars if task_adapter else None,
+            preset_path_recipe_field=task_adapter.preset_path_recipe_field if task_adapter else None,
         )
     )
     if task_adapter is not None:

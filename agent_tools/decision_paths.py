@@ -50,12 +50,16 @@ def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
     return finetune if isinstance(finetune, dict) else {}
 
 
-def _effective_preset_path(task: str, recipe: dict, config_summary: dict | None) -> tuple[str, Any]:
+def _effective_preset_path(
+    task: str, recipe: dict, config_summary: dict | None, recipe_field: str | None = None
+) -> tuple[str, Any]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    if task in {"infer", "evaluate"}:
-        value = inputs.get("inference_preset_path")
+    if recipe_field is None and task in {"infer", "evaluate"}:
+        recipe_field = "inference_preset_path"
+    if recipe_field is not None:
+        value = inputs.get(recipe_field)
         if value not in (None, "", "ASK_USER"):
-            return "inference_preset_path", value
+            return recipe_field, value
     value = _config_data(config_summary).get("finetune_preset_path")
     if task in {"finetune", "hparam_tune", "infer", "evaluate"} and value not in (None, "", "ASK_USER"):
         return "finetune_preset_path", value
@@ -68,8 +72,9 @@ def survival_sidecar_issue(
     config_summary: dict | None,
     *,
     required: bool | None = None,
+    preset_path_recipe_field: str | None = None,
 ) -> DecisionIssue | None:
-    if not _requires_survival_sidecars(task, recipe, config_summary, required):
+    if not _requires_survival_sidecars(task, recipe, config_summary, required, preset_path_recipe_field):
         return None
     survival = _config_finetune(config_summary).get("survival")
     if not isinstance(survival, dict) or not survival.get("issues"):
@@ -109,7 +114,11 @@ def multilabel_sidecar_issue(
 
 
 def _requires_survival_sidecars(
-    task: str, recipe: dict, config_summary: dict | None, required: bool | None = None
+    task: str,
+    recipe: dict,
+    config_summary: dict | None,
+    required: bool | None = None,
+    preset_path_recipe_field: str | None = None,
 ) -> bool:
     task_cfg = _config_finetune(config_summary).get("task")
     if not isinstance(task_cfg, dict) or task_cfg.get("type") != "survival":
@@ -119,7 +128,7 @@ def _requires_survival_sidecars(
     if config_summary and config_summary.get("variant_guess") == "sex_age_baseline":
         return task in {"finetune", "hparam_tune", "infer", "evaluate"}
     if task in {"finetune", "hparam_tune", "infer", "evaluate"}:
-        _field, preset_path = _effective_preset_path(task, recipe, config_summary)
+        _field, preset_path = _effective_preset_path(task, recipe, config_summary, preset_path_recipe_field)
         return preset_path in (None, "")
     return False
 
@@ -137,8 +146,9 @@ def _append_remote_survival_sidecar_issues(
     recipe: dict,
     config_summary: dict | None,
     required: bool | None = None,
+    preset_path_recipe_field: str | None = None,
 ) -> None:
-    if not _requires_survival_sidecars(task, recipe, config_summary, required):
+    if not _requires_survival_sidecars(task, recipe, config_summary, required, preset_path_recipe_field):
         return
     survival = _config_finetune(config_summary).get("survival")
     if not isinstance(survival, dict):
@@ -185,6 +195,7 @@ def path_issues(
     *,
     required_input_paths: list[tuple[str, Any]] | None = None,
     requires_survival_sidecars: bool | None = None,
+    preset_path_recipe_field: str | None = None,
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
@@ -211,7 +222,7 @@ def path_issues(
 
     if task in {"finetune", "infer", "evaluate"} and config_summary and config_summary.get("data_backend") == "npz":
         data = _config_data(config_summary)
-        preset_field, preset_path = _effective_preset_path(task, recipe, config_summary)
+        preset_field, preset_path = _effective_preset_path(task, recipe, config_summary, preset_path_recipe_field)
         if preset_path not in (None, ""):
             issue = validate_input_path(
                 recipe, preset_field, preset_path, configured=preset_field == "finetune_preset_path"
@@ -237,7 +248,9 @@ def path_issues(
                 issue = validate_input_path(recipe, data_field, value, configured=True)
                 if issue is not None:
                     issues.append(issue)
-    _append_remote_survival_sidecar_issues(issues, task, recipe, config_summary, requires_survival_sidecars)
+    _append_remote_survival_sidecar_issues(
+        issues, task, recipe, config_summary, requires_survival_sidecars, preset_path_recipe_field
+    )
     _append_remote_multilabel_sidecar_issues(issues, task, recipe, config_summary)
     return issues
 
@@ -303,6 +316,25 @@ def validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: 
         f"{_path_label(configured)} path does not exist: {raw_path}",
         None,
         {"path": str(raw_path), "path_context": "local", "path_validation": validation},
+    )
+
+
+def sex_age_pretrained_backbone_issue(
+    task: str,
+    recipe: dict,
+) -> DecisionIssue | None:
+    if recipe.get("variant") != "sex_age_baseline" or task not in {"finetune", "infer", "evaluate"}:
+        return None
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    value = inputs.get("pretrained_backbone_path")
+    if value in (None, "", "ASK_USER"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "pretrained_backbone_path",
+        "sex_age_baseline does not support pretrained_backbone_path.",
+        None,
+        {"variant": "sex_age_baseline", "pretrained_backbone_path": value},
     )
 
 
