@@ -271,11 +271,13 @@ def _materialize_decisions(
         "final_eval_unlock": ("evaluation_policy", "final_test_unlocked"),
         "test_after_fit": ("evaluation_policy", "test_after_fit"),
     }
-    if recipe.get("task") == "preset_prepare":
+    canonical_fields["overwrite_policy"] = ("artifacts", "overwrite")
+    adapter = get_adapter(recipe.get("task"))
+    if adapter is not None:
+        canonical_fields.update(adapter.decision_recipe_targets)
+    elif recipe.get("task") == "preset_prepare":
         canonical_fields["overwrite_policy"] = ("preset", "overwrite")
         canonical_fields["required_channels"] = ("preset", "channels")
-    else:
-        canonical_fields["overwrite_policy"] = ("artifacts", "overwrite")
     if decision_values.get("train_val_test_policy") in ("train", "val", "test"):
         canonical_fields["train_val_test_policy"] = ("evaluation_policy", "selection_split")
 
@@ -982,9 +984,14 @@ def _has_output_artifact_issue(report: DecisionReport) -> bool:
 
 
 def _overwrite_policy(recipe: dict) -> Any:
-    section = "preset" if recipe.get("task") == "preset_prepare" else "artifacts"
+    adapter = get_adapter(recipe.get("task"))
+    if adapter is not None:
+        section, key = adapter.decision_recipe_targets.get("overwrite_policy", ("artifacts", "overwrite"))
+    else:
+        section = "preset" if recipe.get("task") == "preset_prepare" else "artifacts"
+        key = "overwrite"
     owner = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
-    return owner.get("overwrite")
+    return owner.get(key)
 
 
 def _guard_existing_outputs(

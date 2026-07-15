@@ -196,6 +196,7 @@ def evaluate_consultation_gates(
             )
         )
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
+    task_adapter = get_adapter(str(task_value))
     variant = recipe.get("variant")
     if task_requires_variant(str(task_value)):
         if variant not in SUPPORTED_VARIANTS:
@@ -216,6 +217,20 @@ def evaluate_consultation_gates(
                 f"task={task_value} must omit variant or set it to null; {task_value} is not a model variant.",
                 None,
                 {"variant": variant},
+            )
+        )
+    if (
+        task_adapter is not None
+        and isinstance(variant, str)
+        and variant in task_adapter.unsupported_variants
+    ):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "variant",
+                f"{variant} does not support {task_value}.",
+                None,
+                {"variant": variant, "task": task_value},
             )
         )
     if task_value == "preset_prepare" and variant == "sex_age_baseline":
@@ -300,8 +315,15 @@ def evaluate_consultation_gates(
     if str(task_value) == "hparam_tune":
         issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
-    issues.extend(paths.path_issues(str(task_value), recipe, config_summary))
-    task_adapter = get_adapter(str(task_value))
+    issues.extend(
+        paths.path_issues(
+            str(task_value),
+            recipe,
+            config_summary,
+            required_input_paths=task_adapter.required_input_paths(recipe) if task_adapter else None,
+            requires_survival_sidecars=task_adapter.requires_survival_sidecars if task_adapter else None,
+        )
+    )
     if task_adapter is not None:
         issues.extend(task_adapter.configured_input_issues(recipe, config_summary))
     if _output_paths_missing(recipe):
