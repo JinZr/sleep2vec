@@ -386,8 +386,14 @@ def _agent_suggestion_payload(
     if suggested_root is not None:
         suggested["experiment"]["root"] = str(suggested_root)
     suggested["name"] = f"{recipe_name(recipe)}_adaptive_round_{target_round:03d}"
-    suggested.setdefault("search", {})["parameters"] = validated["parameters"]
-    suggested["search"]["max_runs"] = validated["max_runs"]
+    search = suggested.setdefault("search", {})
+    if "configurations" in validated:
+        search.pop("parameters", None)
+        search["configurations"] = validated["configurations"]
+    else:
+        search.pop("configurations", None)
+        search["parameters"] = validated["parameters"]
+    search["max_runs"] = validated["max_runs"]
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
     return _strip_internal_recipe_keys(suggested)
@@ -404,10 +410,13 @@ def _agent_suggestion_rationale(validated: dict[str, Any]) -> str:
         "",
         validated["rationale"],
         "",
-        "## Parameters",
-        "",
     ]
-    lines.extend(f"- {key}: {value}" for key, value in validated["parameters"].items())
+    if "configurations" in validated:
+        lines.extend(["## Configurations", ""])
+        lines.extend(f"- point {index}: {point}" for index, point in enumerate(validated["configurations"]))
+    else:
+        lines.extend(["## Parameters", ""])
+        lines.extend(f"- {key}: {value}" for key, value in validated["parameters"].items())
     return "\n".join(lines) + "\n"
 
 

@@ -23,6 +23,7 @@ _PROPOSAL_FIELDS = {
     "request_id",
     "target_round",
     "parameters",
+    "configurations",
     "evidence_run_ids",
     "rationale",
     "proposer",
@@ -141,8 +142,10 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
     snapshot = validate_proposal_input(proposal_input)
     if not isinstance(proposal, Mapping):
         raise ValueError("Proposal must be a mapping.")
-    required = _PROPOSAL_FIELDS - {"proposer"}
+    required = _PROPOSAL_FIELDS - {"proposer", "parameters", "configurations"}
     _validate_closed_fields(proposal, required, _PROPOSAL_FIELDS, "Proposal")
+    if ("parameters" in proposal) == ("configurations" in proposal):
+        raise ValueError("Proposal must contain exactly one of parameters or configurations.")
     _validate_json_value(proposal, "Proposal")
     if type(proposal["schema_version"]) is not int or proposal["schema_version"] != 1:
         raise ValueError("Proposal schema_version must be 1.")
@@ -152,38 +155,24 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
     if type(proposal["target_round"]) is not int or proposal["target_round"] != input_payload["target_round"]:
         raise ValueError("Proposal target_round does not match the bound input snapshot.")
 
-    parameters = proposal["parameters"]
-    if not isinstance(parameters, Mapping):
-        raise ValueError("Proposal parameters must be a mapping.")
     envelopes = input_payload["parameter_envelopes"]
-    missing = sorted(set(envelopes) - set(parameters))
-    unknown = sorted(set(parameters) - set(envelopes))
-    if missing or unknown:
-        detail = []
-        if missing:
-            detail.append(f"missing: {', '.join(missing)}")
-        if unknown:
-            detail.append(f"unknown: {', '.join(unknown)}")
-        raise ValueError(f"Proposal parameter keys must exactly match the input snapshot ({'; '.join(detail)}).")
-
-    normalized_parameters: dict[str, list[Any]] = {}
-    max_runs = 1
-    for key, envelope in envelopes.items():
-        values = parameters[key]
-        if not isinstance(values, list) or not values:
-            raise ValueError(f"Proposal parameter {key} must be a non-empty list.")
-        for index, value in enumerate(values):
-            _validate_proposal_value(key, index, value, envelope)
-        if _has_duplicates(values, envelope["kind"]):
-            raise ValueError(f"Proposal parameter {key} contains duplicate values.")
-        normalized_parameters[key] = list(values)
-        max_runs *= len(values)
+    if "parameters" in proposal:
+        normalized_search = {"parameters": _validate_proposal_parameters(proposal["parameters"], envelopes)}
+        max_runs = 1
+        for values in normalized_search["parameters"].values():
+            max_runs *= len(values)
+        budget_noun = "Cartesian product"
+    else:
+        points = _validate_proposal_configurations(proposal["configurations"], envelopes)
+        normalized_search = {"configurations": points}
+        max_runs = len(points)
+        budget_noun = "configuration count"
 
     budget = input_payload["remaining_budget"]
     if max_runs > budget["round_size"]:
-        raise ValueError(f"Proposal Cartesian product {max_runs} exceeds adaptive round_size {budget['round_size']}.")
+        raise ValueError(f"Proposal {budget_noun} {max_runs} exceeds adaptive round_size {budget['round_size']}.")
     if max_runs > budget["runs"]:
-        raise ValueError(f"Proposal Cartesian product {max_runs} exceeds remaining run budget {budget['runs']}.")
+        raise ValueError(f"Proposal {budget_noun} {max_runs} exceeds remaining run budget {budget['runs']}.")
 
     evidence_run_ids = proposal["evidence_run_ids"]
     if not isinstance(evidence_run_ids, list) or not evidence_run_ids:
@@ -213,12 +202,68 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
     return {
         "request_id": proposal["request_id"],
         "target_round": proposal["target_round"],
-        "parameters": normalized_parameters,
+        **normalized_search,
         "evidence_run_ids": list(evidence_run_ids),
         "rationale": rationale.strip(),
         "proposer": proposer,
         "max_runs": max_runs,
     }
+
+
+def _validate_proposal_parameters(
+    parameters: Any, envelopes: Mapping[str, Any]
+) -> dict[str, list[Any]]:
+    if not isinstance(parameters, Mapping):
+        raise ValueError("Proposal parameters must be a mapping.")
+    missing = sorted(set(envelopes) - set(parameters))
+    unknown = sorted(set(parameters) - set(envelopes))
+    if missing or unknown:
+        detail = []
+        if missing:
+            detail.append(f"missing: {', '.join(missing)}")
+        if unknown:
+            detail.append(f"unknown: {', '.join(unknown)}")
+        raise ValueError(f"Proposal parameter keys must exactly match the input snapshot ({'; '.join(detail)}).")
+
+    normalized_parameters: dict[str, list[Any]] = {}
+    for key, envelope in envelopes.items():
+        values = parameters[key]
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"Proposal parameter {key} must be a non-empty list.")
+        for index, value in enumerate(values):
+            _validate_proposal_value(f"Proposal parameters.{key}[{index}]", value, envelope)
+        if _has_duplicates(values, envelope["kind"]):
+            raise ValueError(f"Proposal parameter {key} contains duplicate values.")
+        normalized_parameters[key] = list(values)
+    return normalized_parameters
+
+
+def _validate_proposal_configurations(
+    configurations: Any, envelopes: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    if not isinstance(configurations, list) or not configurations:
+        raise ValueError("Proposal configurations must be a non-empty list.")
+    points: list[dict[str, Any]] = []
+    for index, point in enumerate(configurations):
+        if not isinstance(point, Mapping):
+            raise ValueError(f"Proposal configurations[{index}] must be a mapping.")
+        missing = sorted(set(envelopes) - set(point))
+        unknown = sorted(set(point) - set(envelopes))
+        if missing or unknown:
+            detail = []
+            if missing:
+                detail.append(f"missing: {', '.join(missing)}")
+            if unknown:
+                detail.append(f"unknown: {', '.join(unknown)}")
+            raise ValueError(
+                f"Proposal configurations[{index}] keys must exactly match the input snapshot ({'; '.join(detail)})."
+            )
+        for key, envelope in envelopes.items():
+            _validate_proposal_value(f"Proposal configurations[{index}].{key}", point[key], envelope)
+        points.append(dict(point))
+    if _has_duplicate_points(points, envelopes):
+        raise ValueError("Proposal configurations contains duplicate configuration points.")
+    return points
 
 
 def _parameter_kind(key: str, values: Any) -> str:
@@ -316,8 +361,7 @@ def _validate_envelope_document(envelopes: Any) -> None:
             raise ValueError(f"Envelope {key}.kind must be integer, number, or categorical.")
 
 
-def _validate_proposal_value(key: str, index: int, value: Any, envelope: Mapping[str, Any]) -> None:
-    location = f"Proposal parameters.{key}[{index}]"
+def _validate_proposal_value(location: str, value: Any, envelope: Mapping[str, Any]) -> None:
     kind = envelope["kind"]
     if kind in {"integer", "number"}:
         _validate_numeric_value(value, kind, location)
@@ -343,6 +387,19 @@ def _has_duplicates(values: list[Any], kind: str) -> bool:
             if kind in {"integer", "number"} and value == other:
                 return True
             if kind == "categorical" and type(value) is type(other) and value == other:
+                return True
+    return False
+
+
+def _has_duplicate_points(points: list[Mapping[str, Any]], envelopes: Mapping[str, Any]) -> bool:
+    def values_equal(a: Any, b: Any, kind: str) -> bool:
+        if kind == "categorical":
+            return type(a) is type(b) and a == b
+        return a == b
+
+    for index, point in enumerate(points):
+        for other in points[:index]:
+            if all(values_equal(point[key], other[key], envelopes[key]["kind"]) for key in envelopes):
                 return True
     return False
 

@@ -565,6 +565,88 @@ def test_agent_proposal_loop_fails_without_writing_an_event(tmp_path: Path):
     assert events_path.read_bytes() == before
 
 
+def _write_agent_configuration_submission(input_path: Path) -> Path:
+    proposal_input = json.loads(input_path.read_text())
+    proposal_path = Path(proposal_input["expected_proposal_path"])
+    proposal_path.parent.mkdir(parents=True, exist_ok=True)
+    proposal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "request_id": proposal_input["request_id"],
+                "target_round": proposal_input["input"]["target_round"],
+                "configurations": [
+                    {"runtime.lr": 5e-7, "yaml:/model/head/name": "classification"},
+                    {"runtime.lr": 2e-6, "yaml:/model/head/name": "classification"},
+                ],
+                "evidence_run_ids": [proposal_input["input"]["digest_rows"][0]["run_id"]],
+                "rationale": "Probe both authorized ends of the LR interval as exact points.",
+                "proposer": {"agent": "codex", "model": "gpt-5"},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    return proposal_path
+
+
+def test_agent_proposal_configuration_points_execute_as_exact_runs(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["round_size"] = 2  # two-point round must fit round_size
+    recipe.write_text(yaml.safe_dump(payload))
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir, score=0.73)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_configuration_submission(input_path)
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
+    assert events_path.read_bytes() == events_before  # preview is side-effect free
+
+    def fake_launch(run_dir, *, dry_run=True):
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in runs],
+        )
+        return launch_manifest
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+
+    suggestion = adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    suggestion_payload = yaml.safe_load(suggestion.read_text())
+    assert suggestion_payload["search"]["configurations"] == [
+        {"runtime.lr": 5e-7, "yaml:/model/head/name": "classification"},
+        {"runtime.lr": 2e-6, "yaml:/model/head/name": "classification"},
+    ]
+    assert suggestion_payload["search"]["max_runs"] == 2
+    assert "parameters" not in suggestion_payload["search"]
+
+    plan_runs = json.loads(
+        (workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").read_text()
+    )["runs"]
+    assert len(plan_runs) == 2  # two points, not the 2x1 product per key
+    assert [run["runtime.lr"] for run in plan_runs] == [5e-7, 2e-6]
+
+    accepted = json.loads((workflow_dir / "adaptive" / "proposals" / "round_001.json").read_text())
+    assert accepted["configurations"] == suggestion_payload["search"]["configurations"]
+    assert "parameters" not in accepted
+    rationale = (workflow_dir / "adaptive" / "suggestions" / "round_001.md").read_text()
+    assert "## Configurations" in rationale
+    assert "point 0" in rationale and "point 1" in rationale
+    assert "agent_proposal_accepted" in events_path.read_text()
+
+
 def test_adaptive_init_preflight_leaves_blocked_root_untouched_then_retries(tmp_path: Path):
     source = tmp_path / "source"
     recipe = _adaptive_recipe(source)
