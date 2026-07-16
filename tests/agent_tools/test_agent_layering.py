@@ -28,25 +28,53 @@ def _module_source(module: str) -> str:
     return (_package_dir() / (module.replace(".", "/") + ".py")).read_text()
 
 
-def _normalize_import(node: ast.ImportFrom) -> list[str]:
-    """Package-relative dotted targets an ImportFrom reaches.
+_PACKAGE = "agent_tools"
 
-    ``from .domain.presets import x``  -> ["domain.presets"]
-    ``from .index_csv import x``       -> ["index_csv"]
-    ``from . import configs, plans``   -> ["configs", "plans"]
-    ``from .domain import presets``    -> ["domain.presets"]
 
-    Absolute imports (level 0) and dotted-out-of-package imports are ignored --
-    only intra-package targets matter for layering.
+def _strip_package(dotted: str) -> str | None:
+    """Package-local remainder of an absolute ``agent_tools[.x.y]`` name.
+
+    ``agent_tools`` -> None (the package itself, no submodule target)
+    ``agent_tools.domain.presets`` -> "domain.presets"
+    non-package names -> None
     """
-    if node.level != 1:  # only package-relative single-dot imports
-        return []
-    if node.module:
-        base = node.module
-        # `from .domain import presets` -> the imported names may be submodules.
-        return [f"{base}.{alias.name}" for alias in node.names] + [base]
-    # `from . import configs` -> each name is a sibling module.
-    return [alias.name for alias in node.names]
+    if dotted == _PACKAGE:
+        return None
+    prefix = _PACKAGE + "."
+    return dotted[len(prefix) :] if dotted.startswith(prefix) else None
+
+
+def _normalize_import(node: ast.AST) -> list[str]:
+    """Package-local dotted targets an import node reaches.
+
+    Both relative and absolute intra-package forms normalize to the same names,
+    so the guard can't be bypassed by spelling the import absolutely:
+
+    ``from .domain.presets import x``            -> ["domain.presets.x", "domain.presets"]
+    ``from agent_tools.domain.presets import x`` -> ["domain.presets.x", "domain.presets"]
+    ``import agent_tools.domain.presets``        -> ["domain.presets"]
+    ``from . import configs`` / ``from agent_tools import configs`` -> ["configs"]
+
+    Out-of-package imports are ignored -- only intra-package targets matter.
+    """
+    if isinstance(node, ast.Import):
+        # ``import agent_tools.domain.presets [as p]``
+        return [local for alias in node.names if (local := _strip_package(alias.name)) is not None]
+    if isinstance(node, ast.ImportFrom):
+        if node.level == 1:  # ``from .X import ...``
+            base = node.module
+        elif node.level == 0 and node.module is not None:  # ``from agent_tools.X import ...``
+            base = _strip_package(node.module)
+            if node.module != _PACKAGE and base is None:
+                return []  # unrelated absolute import
+        else:
+            return []  # multi-dot relative (out of package) or bare ``import`` handled above
+        if base:
+            # names may be submodules (``from .domain import presets``) or symbols.
+            return [f"{base}.{alias.name}" for alias in node.names] + [base]
+        # ``from . import configs`` / ``from agent_tools import configs`` -> siblings.
+        return [alias.name for alias in node.names]
+    return []
 
 
 def _reverse_import_offenders(module: str, source: str) -> list[tuple[str, str, int]]:
@@ -54,7 +82,7 @@ def _reverse_import_offenders(module: str, source: str) -> list[tuple[str, str, 
     offenders: list[tuple[str, str, int]] = []
     tree = ast.parse(source, module)
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
         for target in _normalize_import(node):
             if target in layering.DOMAIN_MODULES and (module, target) not in layering.KNOWN_DOMAIN_IMPORT_EXEMPTIONS:
@@ -81,9 +109,16 @@ def test_no_new_reverse_domain_imports():
 
 def test_guard_catches_synthetic_violation():
     # A pure-kernel module (decisions) reaching into a domain module is not
-    # exempt and must be flagged.
-    offenders = _reverse_import_offenders("decisions", "from .domain.presets import preset_summary\n")
-    assert ("decisions", "domain.presets", 1) in offenders
+    # exempt and must be flagged -- in relative and both absolute spellings, so
+    # the guard can't be bypassed by writing the import differently.
+    relative = _reverse_import_offenders("decisions", "from .domain.presets import preset_summary\n")
+    assert ("decisions", "domain.presets", 1) in relative
+
+    absolute_from = _reverse_import_offenders("decisions", "from agent_tools.domain.presets import preset_summary\n")
+    assert ("decisions", "domain.presets", 1) in absolute_from
+
+    absolute_import = _reverse_import_offenders("decisions", "import agent_tools.domain.presets\n")
+    assert ("decisions", "domain.presets", 1) in absolute_import
 
 
 def test_every_exemption_is_live():
@@ -92,7 +127,12 @@ def test_every_exemption_is_live():
         if target not in layering.DOMAIN_MODULES:
             continue  # documentation-only edge (e.g. domain.index_csv -> configs)
         tree = ast.parse(_module_source(source), source)
-        edges = {t for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) for t in _normalize_import(node)}
+        edges = {
+            t
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for t in _normalize_import(node)
+        }
         assert target in edges, f"stale exemption: {source} no longer imports {target}"
 
 
