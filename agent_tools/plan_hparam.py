@@ -194,14 +194,32 @@ def resolved_final_eval_config_path(recipe: dict, fallback: Any) -> Any:
 def has_yaml_search_overrides(recipe: dict) -> bool:
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     parameters = search.get("parameters") if isinstance(search.get("parameters"), dict) else {}
-    return any(isinstance(key, str) and key.startswith("yaml:/") for key in parameters)
+    if any(isinstance(key, str) and key.startswith("yaml:/") for key in parameters):
+        return True
+    configurations = search.get("configurations") if isinstance(search.get("configurations"), list) else []
+    try:
+        max_runs = int(search.get("max_runs"))
+    except (TypeError, ValueError):
+        max_runs = None  # malformed budgets are the contract layer's report, not ours
+    if max_runs is not None:
+        # Points beyond max_runs never execute (same prefix truncation as
+        # hparam_combos), so their keys must not force config requirements.
+        configurations = configurations[:max_runs]
+    return any(
+        isinstance(point, dict) and any(isinstance(key, str) and key.startswith("yaml:/") for key in point)
+        for point in configurations
+    )
 
 
 def hparam_combos(recipe: dict) -> list[dict[str, Any]]:
     search = recipe.get("search") or {}
-    params = search.get("parameters") or {}
-    keys = list(params)
-    combos = [dict(zip(keys, values)) for values in product(*(params[key] for key in keys))]
+    configurations = search.get("configurations") or []
+    if configurations:
+        combos = [dict(point) for point in configurations]
+    else:
+        params = search.get("parameters") or {}
+        keys = list(params)
+        combos = [dict(zip(keys, values)) for values in product(*(params[key] for key in keys))]
     max_runs = int(search.get("max_runs")) if search.get("max_runs") not in (None, "") else len(combos)
     return combos[:max_runs]
 

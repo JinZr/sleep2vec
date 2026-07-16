@@ -386,8 +386,14 @@ def _agent_suggestion_payload(
     if suggested_root is not None:
         suggested["experiment"]["root"] = str(suggested_root)
     suggested["name"] = f"{recipe_name(recipe)}_adaptive_round_{target_round:03d}"
-    suggested.setdefault("search", {})["parameters"] = validated["parameters"]
-    suggested["search"]["max_runs"] = validated["max_runs"]
+    search = suggested.setdefault("search", {})
+    if "configurations" in validated:
+        search.pop("parameters", None)
+        search["configurations"] = validated["configurations"]
+    else:
+        search.pop("configurations", None)
+        search["parameters"] = validated["parameters"]
+    search["max_runs"] = validated["max_runs"]
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
     return _strip_internal_recipe_keys(suggested)
@@ -404,10 +410,13 @@ def _agent_suggestion_rationale(validated: dict[str, Any]) -> str:
         "",
         validated["rationale"],
         "",
-        "## Parameters",
-        "",
     ]
-    lines.extend(f"- {key}: {value}" for key, value in validated["parameters"].items())
+    if "configurations" in validated:
+        lines.extend(["## Configurations", ""])
+        lines.extend(f"- point {index}: {point}" for index, point in enumerate(validated["configurations"]))
+    else:
+        lines.extend(["## Parameters", ""])
+        lines.extend(f"- {key}: {value}" for key, value in validated["parameters"].items())
     return "\n".join(lines) + "\n"
 
 
@@ -843,6 +852,14 @@ def _validate_adaptive_recipe(recipe: dict[str, Any]) -> None:
     uses_external = objective.startswith("test_") or objective.startswith("external_")
     if uses_external and adaptive.get("test_feedback_for_selection") is not True:
         raise ValueError("adaptive.test_feedback_for_selection=true is required for test/external objectives.")
+    # Both strategies derive their search space from parameters (envelopes for
+    # agent_proposal, neighborhood mutation for best_neighborhood); explicit
+    # configuration points are only valid in derived round recipes.
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    if "configurations" in search:
+        raise ValueError("Adaptive source recipes must declare search.parameters, not search.configurations.")
+    if not search.get("parameters"):
+        raise ValueError("Adaptive source recipes must declare a non-empty search.parameters mapping.")
 
 
 def _adaptive(recipe: dict[str, Any]) -> dict[str, Any]:
@@ -1308,7 +1325,11 @@ def _numeric_neighbors(value: int | float) -> list[int | float]:
 
 
 def _hparam_count(recipe: dict[str, Any]) -> int:
-    params = (recipe.get("search") or {}).get("parameters") or {}
+    search = recipe.get("search") or {}
+    configurations = search.get("configurations") or []
+    if configurations:
+        return len(configurations)
+    params = search.get("parameters") or {}
     count = 1
     for choices in params.values():
         count *= len(choices)

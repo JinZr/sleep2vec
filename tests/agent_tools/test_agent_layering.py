@@ -142,10 +142,39 @@ def test_layering_modules_exist():
         assert (root / (module.replace(".", "/") + ".py")).exists(), f"declared module missing: {module}"
 
 
+#: Modules deliberately outside the three-way partition: the declaration module
+#: itself and the adapter protocol skeleton (generic plumbing, documented in
+#: ARCHITECTURE.md but not kernel/domain/mixed). Everything else must be
+#: classified -- an unregistered module bypasses the reverse-import guard.
+_PARTITION_EXEMPT = frozenset(
+    {
+        "layering",
+        "adapters.base",
+        "adapters.registry",
+        "adapters.config_providers",
+    }
+)
+
+
+def test_every_module_is_classified():
+    root = _package_dir()
+    declared = (
+        set(layering.KERNEL_MODULES) | set(layering.DOMAIN_MODULES) | set(layering.MIXED_MODULES) | _PARTITION_EXEMPT
+    )
+    unclassified = sorted(
+        str(path.relative_to(root).with_suffix("")).replace("/", ".")
+        for path in root.rglob("*.py")
+        if path.name not in ("__init__.py", "__main__.py")
+        and str(path.relative_to(root).with_suffix("")).replace("/", ".") not in declared
+    )
+    assert unclassified == [], f"modules missing from the layering partition (add to layering.py): {unclassified}"
+
+
 def test_layering_partitions_disjoint():
     assert layering.KERNEL_MODULES.isdisjoint(layering.DOMAIN_MODULES)
     assert layering.KERNEL_MODULES.isdisjoint(layering.MIXED_MODULES)
     assert layering.DOMAIN_MODULES.isdisjoint(layering.MIXED_MODULES)
+    assert _PARTITION_EXEMPT.isdisjoint(layering.KERNEL_MODULES | layering.DOMAIN_MODULES | layering.MIXED_MODULES)
 
 
 def test_mixed_modules_acknowledged():

@@ -80,7 +80,7 @@ BASE_RECIPE_FIELDS: dict[str, RecipeField] = {
         (("preset", "required_channels"), ("preset", "channels")),
     ),
     "min_channels": RecipeField((("preset", "min_channels"),), ("preset", "min_channels")),
-    "hparam_search_space": RecipeField((("search", "parameters"),)),
+    "hparam_search_space": RecipeField((("search", "parameters"), ("search", "configurations"))),
     "hparam_budget": RecipeField((("search", "max_runs"),)),
     "final_eval_unlock": RecipeField(
         (("evaluation_policy", "final_test_unlocked"),),

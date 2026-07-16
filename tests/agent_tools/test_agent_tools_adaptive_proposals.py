@@ -276,3 +276,140 @@ def test_strict_json_round_trip_validates_submission():
     proposal = load_strict_json(json.dumps(_proposal(snapshot)), source="proposal")
 
     assert validate_proposal(proposal, snapshot)["max_runs"] == 1
+
+
+def _configuration_proposal(snapshot: dict, *, configurations: list | None = None) -> dict:
+    proposal = _proposal(snapshot)
+    del proposal["parameters"]
+    proposal["configurations"] = configurations or [
+        {"runtime.lr": 0.0001, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"},
+        {"runtime.lr": 0.0003, "runtime.batch_size": 16, "yaml:/model/head/name": "mlp"},
+    ]
+    return proposal
+
+
+def test_validate_proposal_accepts_configuration_points_and_counts_points():
+    snapshot = _snapshot()
+    proposal = _configuration_proposal(snapshot)
+
+    validated = validate_proposal(proposal, snapshot)
+
+    assert validated["max_runs"] == 2  # two points, not the 2x2x2 product
+    assert validated["configurations"] == proposal["configurations"]
+    assert "parameters" not in validated
+
+
+def test_validate_proposal_requires_exactly_one_of_parameters_or_configurations():
+    snapshot = _snapshot()
+    both = _proposal(snapshot)
+    both["configurations"] = [{"runtime.lr": 0.0001, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"}]
+    neither = _proposal(snapshot)
+    del neither["parameters"]
+
+    with pytest.raises(ValueError, match="exactly one of parameters or configurations"):
+        validate_proposal(both, snapshot)
+    with pytest.raises(ValueError, match="exactly one of parameters or configurations"):
+        validate_proposal(neither, snapshot)
+
+
+def test_validate_proposal_rejects_configuration_key_mismatch_with_point_index():
+    snapshot = _snapshot()
+    missing_key = _configuration_proposal(
+        snapshot,
+        configurations=[{"runtime.lr": 0.0001, "runtime.batch_size": 8}],
+    )
+    extra_key = _configuration_proposal(
+        snapshot,
+        configurations=[
+            {
+                "runtime.lr": 0.0001,
+                "runtime.batch_size": 8,
+                "yaml:/model/head/name": "linear",
+                "runtime.epochs": 3,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match=r"configurations\[0\].*missing: yaml:/model/head/name"):
+        validate_proposal(missing_key, snapshot)
+    with pytest.raises(ValueError, match=r"configurations\[0\].*unknown: runtime.epochs"):
+        validate_proposal(extra_key, snapshot)
+
+
+def test_validate_proposal_rejects_configuration_value_outside_envelope():
+    snapshot = _snapshot()
+    out_of_range = _configuration_proposal(
+        snapshot,
+        configurations=[{"runtime.lr": 0.5, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"}],
+    )
+    bad_category = _configuration_proposal(
+        snapshot,
+        configurations=[{"runtime.lr": 0.0001, "runtime.batch_size": 8, "yaml:/model/head/name": "attention"}],
+    )
+    bool_as_int = _configuration_proposal(
+        snapshot,
+        configurations=[{"runtime.lr": 0.0001, "runtime.batch_size": True, "yaml:/model/head/name": "linear"}],
+    )
+
+    with pytest.raises(ValueError, match=r"configurations\[0\].runtime.lr must be within"):
+        validate_proposal(out_of_range, snapshot)
+    with pytest.raises(ValueError, match=r"configurations\[0\].yaml:/model/head/name is not one of"):
+        validate_proposal(bad_category, snapshot)
+    with pytest.raises(ValueError, match=r"configurations\[0\].runtime.batch_size must be an integer"):
+        validate_proposal(bool_as_int, snapshot)
+
+
+def test_validate_proposal_rejects_duplicate_configuration_points_type_sensitively():
+    snapshot = _snapshot()
+    exact_duplicate = _configuration_proposal(
+        snapshot,
+        configurations=[
+            {"runtime.lr": 0.0001, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"},
+            {"runtime.lr": 0.0001, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"},
+        ],
+    )
+    partial_overlap = _configuration_proposal(
+        snapshot,
+        configurations=[
+            {"runtime.lr": 0.0001, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"},
+            {"runtime.lr": 0.0001, "runtime.batch_size": 16, "yaml:/model/head/name": "linear"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="duplicate configuration points"):
+        validate_proposal(exact_duplicate, snapshot)
+    assert validate_proposal(partial_overlap, snapshot)["max_runs"] == 2
+
+
+def test_validate_proposal_configuration_count_budget_checks_round_size_first():
+    snapshot = _snapshot(round_size=2, runs=2)
+    three_points = _configuration_proposal(
+        snapshot,
+        configurations=[
+            {"runtime.lr": 0.0001, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"},
+            {"runtime.lr": 0.0002, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"},
+            {"runtime.lr": 0.0003, "runtime.batch_size": 8, "yaml:/model/head/name": "linear"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="configuration count 3 exceeds adaptive round_size 2"):
+        validate_proposal(three_points, snapshot)
+
+    snapshot_runs = _snapshot(round_size=6, runs=2)
+    three_points_runs = _configuration_proposal(
+        snapshot_runs,
+        configurations=three_points["configurations"],
+    )
+    three_points_runs["request_id"] = snapshot_runs["request_id"]
+    with pytest.raises(ValueError, match="configuration count 3 exceeds remaining run budget 2"):
+        validate_proposal(three_points_runs, snapshot_runs)
+
+
+def test_parameters_snapshot_accepts_configuration_submission_without_new_request():
+    # Input snapshots do not encode the expansion mode, so a snapshot generated
+    # before the point-list capability accepts a configurations submission.
+    snapshot = _snapshot()
+    parameters_validated = validate_proposal(_proposal(snapshot), snapshot)
+    configurations_validated = validate_proposal(_configuration_proposal(snapshot), snapshot)
+
+    assert parameters_validated["request_id"] == configurations_validated["request_id"]
