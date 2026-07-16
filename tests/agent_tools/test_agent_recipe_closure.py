@@ -497,6 +497,97 @@ def test_adaptive_init_closure_failure_leaves_target_and_source_untouched(tmp_pa
     assert not workflow.exists()
 
 
+@pytest.mark.parametrize(
+    ("suggest", "replacement", "field"),
+    [
+        ({"strategy": "unknown"}, None, "adaptive.suggest.strategy"),
+        ({"strategy": "agent_proposal"}, {"enabled": True}, "adaptive.replacement"),
+        (
+            {"strategy": "agent_proposal", "bounds": {"runtime.weight_decay": [0.0, 1.0]}},
+            None,
+            "adaptive.suggest.bounds",
+        ),
+    ],
+)
+def test_agent_proposal_contract_failure_precedes_workspace_writes(
+    tmp_path: Path,
+    suggest: dict,
+    replacement: dict | None,
+    field: str,
+):
+    source = tmp_path / "source"
+    recipe = _write_hparam_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workflow = tmp_path / "workflow"
+    payload["experiment"]["root"] = str(workflow)
+    payload["adaptive"] = {
+        "enabled": True,
+        "objective_metric": "val_ahi_pearson",
+        "objective_mode": "max",
+        "max_rounds": 2,
+        "max_runs_total": 4,
+        "round_size": 1,
+        "suggest": suggest,
+    }
+    if replacement is not None:
+        payload["adaptive"]["replacement"] = replacement
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = _snapshot(source)
+
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+
+    assert result.returncode == 1
+    assert field in result.stdout + result.stderr
+    assert _snapshot(source) == before
+    assert not workflow.exists()
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["objective_metric", "objective_mode", "round_size", "max_rounds", "max_runs_total"],
+)
+@pytest.mark.parametrize("unresolved", ["missing", "null", "empty"])
+def test_agent_proposal_explicit_control_fields_block_before_workspace_writes(
+    tmp_path: Path,
+    field: str,
+    unresolved: str,
+):
+    source = tmp_path / "source"
+    recipe = _write_hparam_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workflow = tmp_path / "workflow"
+    payload["experiment"]["root"] = str(workflow)
+    payload["adaptive"] = {
+        "enabled": True,
+        "objective_metric": "val_ahi_pearson",
+        "objective_mode": "max",
+        "max_rounds": 2,
+        "max_runs_total": 4,
+        "round_size": 1,
+        "suggest": {"strategy": "agent_proposal"},
+    }
+    if unresolved == "missing":
+        payload["adaptive"].pop(field)
+    else:
+        payload["adaptive"][field] = None if unresolved == "null" else ""
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = _snapshot(source)
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--output-dir",
+        str(workflow / "plans" / "agent-proposal-explicit-fields"),
+    )
+
+    assert result.returncode == 2
+    assert "Status: NEEDS_USER_INPUT" in result.stdout
+    assert f"adaptive.{field}" in result.stdout + result.stderr
+    assert _snapshot(source) == before
+    assert not workflow.exists()
+
+
 def test_infer_runtime_fields_have_observable_command_effects():
     command = plans._commands_for_recipe(
         {

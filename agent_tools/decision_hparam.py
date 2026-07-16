@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from . import gpu_rules
+from .adaptive_proposals import validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import multilabel_sidecar_issue
 from .models import REPO_ROOT
@@ -54,7 +55,14 @@ _HPARAM_ADAPTIVE_REPLACEMENT_FIELDS = {
     "grace_minutes",
     "kill_margin",
 }
-_HPARAM_ADAPTIVE_SUGGEST_FIELDS = {"strategy"}
+_HPARAM_ADAPTIVE_SUGGEST_FIELDS = {"bounds", "strategy"}
+_HPARAM_AGENT_PROPOSAL_REQUIRED_FIELDS = (
+    "objective_metric",
+    "objective_mode",
+    "round_size",
+    "max_rounds",
+    "max_runs_total",
+)
 _HPARAM_INPUT_FIELDS = {
     "ckpt_path",
     "config",
@@ -128,6 +136,69 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     source_layer,
                 )
             )
+    suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
+    strategy = suggest.get("strategy", "best_neighborhood")
+    if not isinstance(strategy, str) or strategy not in {"best_neighborhood", "agent_proposal"}:
+        issues.append(
+            _contract_issue(
+                "adaptive.suggest.strategy",
+                "adaptive.suggest.strategy must be best_neighborhood or agent_proposal.",
+                strategy,
+                source_layer,
+            )
+        )
+    if "bounds" in suggest and strategy != "agent_proposal":
+        issues.append(
+            _contract_issue(
+                "adaptive.suggest.bounds",
+                "adaptive.suggest.bounds is supported only with strategy=agent_proposal.",
+                suggest["bounds"],
+                source_layer,
+            )
+        )
+    if strategy == "agent_proposal":
+        for field in _HPARAM_AGENT_PROPOSAL_REQUIRED_FIELDS:
+            if field in adaptive and adaptive[field] not in (None, ""):
+                continue
+            field_path = f"adaptive.{field}"
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.NEEDS_USER_INPUT,
+                    field_path,
+                    f"{field_path} must be explicit when adaptive.suggest.strategy=agent_proposal.",
+                    f"What should {field_path} be for this agent-proposal workflow?",
+                    {
+                        "value": adaptive.get(field),
+                        "source_layer": source_layer,
+                        "preflight_before_workspace": True,
+                    },
+                )
+            )
+        replacement = adaptive.get("replacement")
+        if replacement is not None and not (
+            isinstance(replacement, dict) and set(replacement) == {"enabled"} and replacement.get("enabled") is False
+        ):
+            issues.append(
+                _contract_issue(
+                    "adaptive.replacement",
+                    "strategy=agent_proposal requires adaptive.replacement to be omitted or exactly {enabled: false}.",
+                    replacement,
+                    source_layer,
+                )
+            )
+        parameters = recipe.get("search", {}).get("parameters") if isinstance(recipe.get("search"), dict) else None
+        if isinstance(parameters, dict) and parameters:
+            try:
+                validate_parameter_envelopes(parameters, suggest.get("bounds"))
+            except ValueError as exc:
+                issues.append(
+                    _contract_issue(
+                        "adaptive.suggest.bounds",
+                        str(exc),
+                        suggest.get("bounds"),
+                        source_layer,
+                    )
+                )
     return issues
 
 

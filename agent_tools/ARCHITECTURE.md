@@ -13,7 +13,7 @@ L0-level domain leaf.
 
 | Layer | Contents | Role |
 |---|---|---|
-| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, decision_paths, decision_hparam, plan_hparam, experiment_workspace, experiment_io, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
+| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
 | **L1 `adapters/`** | `base` (TaskAdapter protocol), `registry` (get_adapter / all_adapters / composite_adapter), 6 per-task plugins, `config_providers` | Generic plugin skeleton + domain plugins. Kernel dispatches through the registry and never hardcodes task names. |
 | **L2 kernel** | configs, decision_rules, decisions, plan_context, plans | Orchestration. Consumes adapter declarations; holds no per-task field knowledge (see schema_map). |
 | **`domain/`** | sidecar_summaries, finetune_summary, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
@@ -22,15 +22,19 @@ L0-level domain leaf.
 
 Mirrors the three frozensets in `layering.py`.
 
-### Kernel — reusable (23, zero domain signal)
+### Kernel — reusable (24, zero domain signal)
 decision_models, transport, manifests, schema_map, gpu_rules, repo,
 experiment_io, experiment_workspace, experiment_tracking, experiments,
 run_artifacts, run_evidence, hparam, hparam_runtime, hparam_selection,
-adaptive_hparam, recipes, progress, markdown, skills, decisions, plans,
-decision_rules.
+adaptive_hparam, adaptive_proposals, recipes, progress, markdown, skills,
+decisions, plans, decision_rules.
 
 These must stay domain-free — the layering guard allows them **no** domain
 imports.
+
+`adaptive_proposals` owns the pure snapshot, parameter-envelope, and external
+submission-validation contract. `adaptive_hparam` owns the surrounding digest,
+preflight, round registration, launch, and lifecycle orchestration.
 
 ### Domain — sleep2vec-specific
 `domain/` (sidecar_summaries, finetune_summary, sex_age_summary, presets,

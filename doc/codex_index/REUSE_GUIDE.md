@@ -48,6 +48,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Local/SSH managed I/O | [`agent_tools/experiment_io.py`](../../agent_tools/experiment_io.py) | each experiment command |
 | Frozen hparam plan reads | `read_hparam_plan` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | launcher/postprocess-specific parsing |
 | Public hparam operations | [`agent_tools/hparam.py`](../../agent_tools/hparam.py) facade with responsibility modules behind it | direct private cross-module imports |
+| Adaptive agent proposal validation | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py) for canonical snapshots, parameter envelopes, and submission validation; [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) for orchestration | provider callbacks, latest-digest lookup during apply, or lifecycle mutation in the proposal kernel |
 | Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade with I/O/tracking owners behind it | skills or CLI handlers |
 | Index/config/preset summaries | [`agent_tools/domain/`](../../agent_tools/domain/) through stable top-level facades | shell parsing templates |
 | MoE routing and experts | [`sleep2expert/backbones/roformer/moe.py`](../../sleep2expert/backbones/roformer/moe.py) | trainer-local routing branches |
@@ -114,6 +115,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
 - Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
+- Keep external-agent suggestions inside the `adaptive_proposals` snapshot/envelope contract; let `adaptive_hparam` own preflight and lifecycle changes.
 - Generate calls to existing model, preprocess, baseline, and sleep2stat entrypoints rather than adding an agent runtime.
 - Follow [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and its layering test for kernel/domain boundaries.
 

@@ -267,6 +267,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     adaptive_step_cmd = sub.add_parser("hparam-adaptive-step")
     adaptive_step_cmd.add_argument("--workflow-dir", required=True)
+    adaptive_step_cmd.add_argument("--proposal")
     adaptive_step_cmd.add_argument("--execute", action="store_true")
     adaptive_step_cmd.set_defaults(func=_cmd_hparam_adaptive_step)
 
@@ -557,8 +558,13 @@ def _cmd_hparam_adaptive_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_adaptive_step(args: argparse.Namespace) -> int:
-    suggestion = adaptive_step(args.workflow_dir, execute=args.execute)
-    print(f"Wrote {suggestion}")
+    result = adaptive_step(args.workflow_dir, proposal_path=args.proposal, execute=args.execute)
+    if result is None:
+        print("waiting_for_round_terminal")
+    elif args.proposal and not args.execute:
+        print(f"Validated {result}")
+    else:
+        print(f"Wrote {result}")
     return 0
 
 

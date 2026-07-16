@@ -96,6 +96,44 @@ def _adaptive_recipe(
     )
 
 
+def _agent_recipe(tmp_path: Path, *, max_rounds: int = 2) -> Path:
+    recipe = _adaptive_recipe(tmp_path, max_rounds=max_rounds)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["replacement"] = {"enabled": False}
+    payload["adaptive"]["suggest"] = {
+        "strategy": "agent_proposal",
+        "bounds": {"runtime.lr": [5e-7, 2e-6]},
+    }
+    recipe.write_text(yaml.safe_dump(payload))
+    return recipe
+
+
+def _write_agent_submission(input_path: Path, *, lr: list[float] | None = None) -> Path:
+    proposal_input = json.loads(input_path.read_text())
+    proposal_path = Path(proposal_input["expected_proposal_path"])
+    proposal_path.parent.mkdir(parents=True, exist_ok=True)
+    proposal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "request_id": proposal_input["request_id"],
+                "target_round": proposal_input["input"]["target_round"],
+                "parameters": {
+                    "runtime.lr": lr or [5e-7],
+                    "yaml:/model/head/name": ["classification"],
+                },
+                "evidence_run_ids": [proposal_input["input"]["digest_rows"][0]["run_id"]],
+                "rationale": "The terminal run supports a lower learning rate within the authorized bounds.",
+                "proposer": {"agent": "codex", "model": "gpt-5"},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    return proposal_path
+
+
 def _write_fake_manifest(workflow_dir: Path, *, score: float = 0.7) -> None:
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     launched = _run("hparam-launch", "--plan-dir", str(round_dir))
@@ -123,6 +161,14 @@ def _write_fake_manifest(workflow_dir: Path, *, score: float = 0.7) -> None:
     )
 
 
+def _mark_round_terminal(workflow_dir: Path, workspace: Path, *, status: str = "finished") -> None:
+    run = json.loads((workflow_dir / "adaptive" / "rounds" / "round_000" / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        workspace,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": status}],
+    )
+
+
 def test_adaptive_recipe_requires_explicit_test_feedback_flag(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, test_feedback=False)
 
@@ -146,6 +192,377 @@ def test_adaptive_rejects_removed_run_budget_and_gpu_fields(tmp_path: Path):
     assert "search.max_trials is no longer supported" in result.stdout
     assert "adaptive.max_trials_total is no longer supported" in result.stdout
     assert "execution.gpus_per_trial is no longer supported" in result.stdout
+
+
+def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snapshot(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+
+    assert adaptive_hparam.adaptive_step(workflow_dir) is None
+    assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+
+    _write_fake_manifest(workflow_dir, score=0.73)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    first_bytes = input_path.read_bytes()
+    proposal_input = json.loads(first_bytes)
+    assert proposal_input["input"]["source_round"] == 0
+    assert proposal_input["input"]["target_round"] == 1
+    assert proposal_input["input"]["parameter_envelopes"]["runtime.lr"] == {
+        "kind": "number",
+        "min": 5e-7,
+        "max": 2e-6,
+    }
+    assert Path(proposal_input["expected_proposal_path"]).name == (
+        f"round_001--{proposal_input['request_id'][7:19]}.json"
+    )
+
+    assert adaptive_hparam.adaptive_step(workflow_dir) == input_path
+    assert input_path.read_bytes() == first_bytes
+
+
+def test_agent_proposal_can_request_after_all_runs_fail_without_a_score(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    run = json.loads((workflow_dir / "adaptive" / "rounds" / "round_000" / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "failed"}],
+    )
+
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert input_path is not None
+    row = json.loads(input_path.read_text())["input"]["digest_rows"][0]
+    assert row["run_id"] == run["run_id"]
+    assert row["status"] == "failed"
+    assert "test_auroc" not in row
+
+
+def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir, score=0.73)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
+    assert events_path.read_bytes() == events_before
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+
+    (workflow_dir / "adaptive" / "digests" / "round_000.csv").write_text("run_id,status\nforeign,finished\n")
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "digest_hparam_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("phase 2 must not refresh digest")),
+    )
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_latest_digest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("phase 2 must not read latest digest")),
+    )
+
+    def fake_launch(run_dir, *, dry_run=True):
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in runs],
+        )
+        return launch_manifest
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+
+    suggestion = adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    suggestion_payload = yaml.safe_load(suggestion.read_text())
+    accepted = json.loads((workflow_dir / "adaptive" / "proposals" / "round_001.json").read_text())
+    assert suggestion_payload["search"]["parameters"]["runtime.lr"] == [5e-7]
+    assert suggestion_payload["search"]["max_runs"] == 1
+    assert accepted["request_id"] == json.loads(input_path.read_text())["request_id"]
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert "agent_proposal_accepted" in events_path.read_text()
+    with pytest.raises(ValueError, match="round binding is stale"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
+
+
+def test_agent_proposal_rejects_tampered_snapshot_before_acceptance(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    proposal_input = json.loads(input_path.read_text())
+    proposal_input["input"]["remaining_budget"]["runs"] -= 1
+    input_path.write_text(json.dumps(proposal_input, indent=2, sort_keys=True) + "\n")
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="request_id does not match"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
+
+
+def test_agent_proposal_rejects_tampered_expected_path_even_when_request_id_is_unchanged(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    forged_path = proposal_path.with_name("forged.json")
+    forged_path.write_bytes(proposal_path.read_bytes())
+    proposal_input = json.loads(input_path.read_text())
+    proposal_input["expected_proposal_path"] = str(forged_path)
+    input_path.write_text(json.dumps(proposal_input, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="expected path does not match"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=forged_path)
+
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
+
+
+def test_agent_proposal_rejects_source_recipe_drift_after_snapshot(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["name"] = "changed_after_snapshot"
+    recipe.write_text(yaml.safe_dump(payload))
+
+    with pytest.raises(ValueError, match="source recipe changed"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
+
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+
+
+def test_agent_proposal_rechecks_live_budget_after_snapshot(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    monkeypatch.setattr(adaptive_hparam, "_budget_exhausted", lambda *_args, **_kwargs: True)
+
+    with pytest.raises(ValueError, match="no longer fits"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
+
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+
+
+def test_agent_proposal_zero_start_recovery_uses_a_fresh_target_round(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    first_input = adaptive_hparam.adaptive_step(workflow_dir)
+    assert first_input is not None
+    first_proposal = _write_agent_submission(first_input)
+    launch_statuses = iter(["pending", "launched"])
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: next(launch_statuses))
+
+    with pytest.raises(RuntimeError, match=r"started no runs.*was not committed"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=first_proposal, execute=True)
+
+    first_attempt = workflow_dir / "adaptive" / "rounds" / "round_001"
+    assert first_attempt.exists()
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    second_input = adaptive_hparam.adaptive_step(workflow_dir)
+    assert second_input is not None
+    second_snapshot = json.loads(second_input.read_text())
+    assert second_snapshot["input"]["source_round"] == 0
+    assert second_snapshot["input"]["target_round"] == 2
+    second_proposal = _write_agent_submission(second_input)
+    blocked_rationale = workflow_dir / "adaptive" / "suggestions" / "round_002.md"
+    blocked_rationale.symlink_to(tmp_path / "missing-rationale.md")
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=second_proposal, execute=True)
+
+    assert events_path.read_bytes() == events_before
+    assert (
+        next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")["status"]
+        == "pending"
+    )
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_002.json").exists()
+    blocked_rationale.unlink()
+
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=second_proposal, execute=True)
+
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 2
+    assert (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
+    statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert statuses == {"run-000": "finished", "run-001": "superseded", "run-002": "launched"}
+
+
+@pytest.mark.parametrize("protocol_file", ["input", "proposal"])
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_agent_proposal_rejects_aliased_protocol_file(tmp_path: Path, protocol_file: str, alias_kind: str):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    protocol_path = input_path if protocol_file == "input" else proposal_path
+    backing = tmp_path / f"proposal-{protocol_file}-backing.json"
+    protocol_path.rename(backing)
+    if alias_kind == "symlink":
+        protocol_path.symlink_to(backing)
+    else:
+        os.link(backing, protocol_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
+
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+
+
+def test_agent_proposal_rejects_submission_changed_during_validation(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    file_sha256 = adaptive_hparam.file_sha256
+
+    def mutate_before_recheck(path):
+        if Path(path) == proposal_path:
+            proposal_path.write_text("{}\n")
+        return file_sha256(path)
+
+    monkeypatch.setattr(adaptive_hparam, "file_sha256", mutate_before_recheck)
+
+    with pytest.raises(ValueError, match="changed during validation"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+
+
+def test_hparam_suggest_rejects_agent_strategy_without_reusing_latest_digest(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_latest_digest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("latest digest must not be read")),
+    )
+
+    with pytest.raises(ValueError, match="generated by hparam-adaptive-step"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()
+
+
+def test_agent_proposal_cli_reports_waiting_and_side_effect_free_preview(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+
+    waiting = _run("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
+    assert waiting.returncode == 0, waiting.stderr
+    assert waiting.stdout.strip() == "waiting_for_round_terminal"
+
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    requested = _run("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
+    assert requested.returncode == 0, requested.stderr
+    input_path = Path(requested.stdout.strip().removeprefix("Wrote "))
+    proposal_path = _write_agent_submission(input_path)
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    preview = _run(
+        "hparam-adaptive-step",
+        "--workflow-dir",
+        str(workflow_dir),
+        "--proposal",
+        str(proposal_path),
+    )
+
+    assert preview.returncode == 0, preview.stderr
+    assert preview.stdout.strip() == f"Validated {proposal_path}"
+    assert events_path.read_bytes() == events_before
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+
+
+def test_agent_proposal_execute_requires_submission_before_digest(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "digest_hparam_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("digest must not run")),
+    )
+
+    with pytest.raises(ValueError, match="requires --proposal"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+
+def test_agent_proposal_loop_fails_without_writing_an_event(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    events_path = tmp_path / "events.jsonl"
+    before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match="does not support agent_proposal"):
+        adaptive_hparam.adaptive_loop(workflow_dir)
+
+    assert events_path.read_bytes() == before
 
 
 def test_adaptive_init_preflight_leaves_blocked_root_untouched_then_retries(tmp_path: Path):
@@ -470,8 +887,13 @@ def test_adaptive_stop_scan_ignores_header_only_legacy_projection(tmp_path: Path
     assert status_path.read_text() == "trial_id\tstatus\n"
 
 
-def test_adaptive_digest_and_suggest_use_external_objective_and_fixed_checkpoint(tmp_path: Path):
+@pytest.mark.parametrize("explicit_strategy", [False, True])
+def test_best_neighborhood_default_and_explicit_use_existing_numeric_neighbors(tmp_path: Path, explicit_strategy: bool):
     recipe = _adaptive_recipe(tmp_path)
+    if not explicit_strategy:
+        payload = yaml.safe_load(recipe.read_text())
+        payload["adaptive"].pop("suggest")
+        recipe.write_text(yaml.safe_dump(payload))
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
@@ -1584,7 +2006,7 @@ def test_hparam_count_does_not_materialize_search_values():
     assert adaptive_hparam._hparam_count(recipe) == 1_000_000
 
 
-def test_adaptive_step_execute_stops_bad_running_run_through_recorded_manifest(tmp_path: Path, monkeypatch):
+def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=2)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
