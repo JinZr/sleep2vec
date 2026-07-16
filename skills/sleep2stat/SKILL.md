@@ -184,7 +184,4 @@ Owners: `agent-tooling-maintainer`, `runtime-orchestrator`, `regression-guard`.
 
 Relevant index:
 
-- `doc/codex_index/branches/main/WORKFLOWS/AGENT_TOOLING.md`
-- `doc/codex_index/branches/main/FUNCTIONS/AGENT_TOOLING.md`
-- `doc/codex_index/branches/main/WORKFLOWS/SLEEP2STAT.md`
-- `doc/codex_index/branches/main/FUNCTIONS/SLEEP2STAT.md`
+- `doc/codex_index/WORKFLOWS.md`

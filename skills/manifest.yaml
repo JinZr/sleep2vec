@@ -4,71 +4,65 @@ skills:
     task_types: [preset_prepare]
     owners: [preset-pipeline, data-contract-guardian, agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/PREPROCESSING.md
-      - doc/codex_index/branches/main/FUNCTIONS/PREPROCESSING_AND_CONVERSION.md
-      - doc/codex_index/branches/main/FUNCTIONS/DATASETS_AND_SAMPLERS.md
+      - doc/codex_index/WORKFLOWS.md
   kaldi_conversion:
     path: skills/kaldi_conversion/SKILL.md
     task_types: [kaldi_convert]
     owners: [preset-pipeline, data-contract-guardian, agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/PREPROCESSING.md
+      - doc/codex_index/WORKFLOWS.md
   pretraining:
     path: skills/pretraining/SKILL.md
     task_types: [pretrain]
     owners: [runtime-orchestrator, model-integration, agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/PRETRAIN.md
+      - doc/codex_index/WORKFLOWS.md
   adaptation:
     path: skills/adaptation/SKILL.md
     task_types: [adapt]
     owners: [runtime-orchestrator, model-integration, agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/ADAPT.md
+      - doc/codex_index/WORKFLOWS.md
   finetuning:
     path: skills/finetuning/SKILL.md
     task_types: [finetune]
     owners: [runtime-orchestrator, config-task-contract, model-integration, agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/FINETUNE.md
-      - doc/codex_index/branches/main/FUNCTIONS/RUNTIME_ORCHESTRATION.md
+      - doc/codex_index/WORKFLOWS.md
   inference_evaluation:
     path: skills/inference_evaluation/SKILL.md
     task_types: [infer, evaluate]
     owners: [runtime-orchestrator, agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/INFER_AND_CHECKPOINTS.md
+      - doc/codex_index/WORKFLOWS.md
   sleep2stat:
     path: skills/sleep2stat/SKILL.md
     task_types: [sleep2stat]
     owners: [agent-tooling-maintainer, runtime-orchestrator, regression-guard]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/AGENT_TOOLING.md
-      - doc/codex_index/branches/main/FUNCTIONS/AGENT_TOOLING.md
-      - doc/codex_index/branches/main/WORKFLOWS/SLEEP2STAT.md
-      - doc/codex_index/branches/main/FUNCTIONS/SLEEP2STAT.md
+      - doc/codex_index/WORKFLOWS.md
   hyperparameter_tuning:
     path: skills/hyperparameter_tuning/SKILL.md
     task_types: [hparam_tune]
     owners: [runtime-orchestrator, regression-guard, agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/FINETUNE.md
-      - doc/codex_index/branches/main/WORKFLOWS/AGENT_TOOLING.md
+      - doc/codex_index/WORKFLOWS.md
   debugging_triage:
     path: skills/debugging_triage/SKILL.md
     task_types: [debug]
     owners: [agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/README.md
+      - doc/codex_index/README.md
   config_editing:
     path: skills/config_editing/SKILL.md
     task_types: [config_edit]
     owners: [config-task-contract, agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/WORKFLOWS/CONFIG_VALIDATION.md
+      - doc/codex_index/MODULE_MAP.md
+      - doc/codex_index/REUSE_GUIDE.md
   index_maintenance:
     path: skills/index_maintenance/SKILL.md
     task_types: [index_maintain]
     owners: [agent-tooling-maintainer]
     relevant_index:
-      - doc/codex_index/branches/main/README.md
+      - doc/codex_index/README.md

@@ -51,17 +51,14 @@ bash utils/style_check.sh
 - Keep summary commands read-only unless their contract explicitly says they repair or rebuild data. A `summarize`-style command should inspect committed outputs, not infer completion from partial intermediate files.
 
 ## Codex Index Usage Policy
-- Before editing code, determine the current Git branch and consult the matching index under `doc/codex_index/branches/<branch>/`.
-- For small, localized fixes or routine updates, keep the consult lightweight: review `README.md` plus the single most relevant page from `REUSE_GUIDE.md`, `MODULE_MAP.md`, `FUNCTIONS/`, or `WORKFLOWS/` for the area being changed.
-- For broader changes that add or reshape behavior, review `README.md`, `REUSE_GUIDE.md`, `MODULE_MAP.md`, and the relevant files under `FUNCTIONS/` or `WORKFLOWS/` for the area being changed.
-- Before adding any new function, method, helper, wrapper, or utility, search the index for existing implementations with the same or overlapping responsibility.
-- Prefer reusing or minimally extending an indexed implementation over creating a new one.
-- New functions are allowed only when the indexed code does not satisfy the required contract; when creating one, briefly state why the indexed implementations were not suitable.
-- Avoid near-duplicate helpers, thin wrappers, renamed copies, and parallel implementations of already-indexed behavior.
-- If the relevant index is missing, stale, or branch-mismatched, do a lightweight repo scan instead for small localized changes; refresh the relevant portion of the index before editing only when the task changes reusable contracts, workflows, or ownership boundaries.
-- After making changes, update the relevant files under `doc/codex_index/branches/<branch>/` only when the change affects indexed responsibilities, reusable implementations, contracts, workflows, or duplication guidance. Small local fixes, narrow bug fixes, and routine updates that stay within the existing contract do not require index maintenance.
-- In the first progress update before making edits, name the index files consulted.
-- In the final response, briefly state whether an indexed implementation was reused or a new one was intentionally introduced.
+- `doc/codex_index/` is a shared navigation layer, not a branch-specific or exhaustive source of truth. Source code, tests, `AGENTS.md`, and dedicated contract documents remain authoritative.
+- Small localized fixes and routine updates may inspect source and tests directly without consulting the index.
+- Consult the shared index when a change crosses modules, adds a reusable implementation, or has unclear ownership. Start with `README.md`, then use `MODULE_MAP.md`, `REUSE_GUIDE.md`, or `WORKFLOWS.md` as needed.
+- Before adding a function, method, helper, wrapper, or utility, search the source and `REUSE_GUIDE.md` for an existing implementation with the same responsibility. Prefer minimally extending the canonical owner.
+- Never create feature-branch index copies, `branches/` trees, or `DELTA_FROM_MAIN.md` files.
+- Update the shared index only when a change affects ownership, a canonical reusable implementation, a public contract, a key workflow, or a top-level entrypoint.
+- Do not update it for local fixes, routine refactors, or inventories of signatures, callers, file counts, commits, or branch metadata.
+- Keep the index limited to `README.md`, `MODULE_MAP.md`, `REUSE_GUIDE.md`, and `WORKFLOWS.md`.
 
 ## Testing Guidelines
 - Use targeted pytest files for contract changes and smoke commands for runtime changes.
