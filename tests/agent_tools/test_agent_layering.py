@@ -92,12 +92,7 @@ def test_every_exemption_is_live():
         if target not in layering.DOMAIN_MODULES:
             continue  # documentation-only edge (e.g. domain.index_csv -> configs)
         tree = ast.parse(_module_source(source), source)
-        edges = {
-            t
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            for t in _normalize_import(node)
-        }
+        edges = {t for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) for t in _normalize_import(node)}
         assert target in edges, f"stale exemption: {source} no longer imports {target}"
 
 
