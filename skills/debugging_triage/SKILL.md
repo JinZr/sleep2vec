@@ -29,4 +29,4 @@ Run the smallest command that reproduces or explains the failure.
 Missing paths, stale generated artifacts, unsupported backend, and environment dependency gaps.
 
 ## Relevant owners and index pages
-Owner: `agent-tooling-maintainer`. Index: branch README.
+Owner: `agent-tooling-maintainer`. Index: shared `doc/codex_index/README.md`.

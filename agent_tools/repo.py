@@ -34,8 +34,7 @@ def repo_summary() -> dict[str, Any]:
         ok, status = _git(["status", "--short"])
         dirty = bool(status) if ok else False
 
-    index_path = REPO_ROOT / "doc" / "codex_index" / "branches" / (branch or "main")
-    fallback_main = REPO_ROOT / "doc" / "codex_index" / "branches" / "main"
+    index_path = REPO_ROOT / "doc" / "codex_index"
     return {
         "repo_root": str(REPO_ROOT),
         "git": {
@@ -45,9 +44,8 @@ def repo_summary() -> dict[str, Any]:
             "dirty": dirty,
         },
         "codex_index": {
-            "branch_index_path": str(index_path.relative_to(REPO_ROOT)),
+            "path": str(index_path.relative_to(REPO_ROOT)),
             "exists": index_path.exists(),
-            "fallback_main_exists": fallback_main.exists(),
         },
         "important_paths": {
             "agents_md": "AGENTS.md",

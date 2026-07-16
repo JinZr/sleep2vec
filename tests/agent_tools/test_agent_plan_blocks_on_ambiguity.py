@@ -735,7 +735,7 @@ def test_context_writes_questions_and_blocked_script(tmp_path: Path):
     context = json.loads((output_dir / "context.json").read_text())
     assert context["skill"]["name"] == "finetuning"
     assert "runtime-orchestrator" in context["owners"]
-    assert context["relevant_docs"]
+    assert context["relevant_docs"] == ["doc/codex_index/WORKFLOWS.md"]
     assert context["index_summary"]["rows"] == 1
     assert context["preset_summary"] is None
     assert context["expected_artifacts"]
