@@ -43,7 +43,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, resolve_repo_path
+from .models import REPO_ROOT, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
@@ -371,24 +371,19 @@ def evaluate_recipe(
     ):
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-        finetune_task = cfg.get(CONFIG_FINETUNE_SECTION, {}).get("task", {})
-        config_contracts = {
-            "data_backend": (
-                inputs.get("data_backend"),
-                cfg.get("data_backend"),
-                "data.backend",
-            ),
-            "selection_metric": (
-                evaluation.get("selection_metric"),
-                finetune_task.get("monitor"),
-                "finetune.task.monitor",
-            ),
-            "selection_mode": (
-                evaluation.get("selection_mode"),
-                finetune_task.get("monitor_mod"),
-                "finetune.task.monitor_mod",
-            ),
+        decision_values = {
+            "data_backend": inputs.get("data_backend"),
+            "selection_metric": evaluation.get("selection_metric"),
+            "selection_mode": evaluation.get("selection_mode"),
         }
+        config_contracts = {}
+        for field, decision_value in decision_values.items():
+            spec = schema_map.CONFIG_FIELDS[field]
+            node = cfg
+            for part in spec.summary_path[:-1]:
+                node = node.get(part, {})
+            config_value = node.get(spec.summary_path[-1])
+            config_contracts[field] = (decision_value, config_value, spec.display_path)
         contract_issues = []
         for field, (decision_value, config_value, config_field) in config_contracts.items():
             if decision_value in (None, "", "ASK_USER"):
