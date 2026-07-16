@@ -290,6 +290,54 @@ def test_agent_proposal_requires_explicit_control_fields(field: str, unresolved:
     assert issue.evidence["preflight_before_workspace"] is True
 
 
+def test_agent_proposal_treats_blank_objective_metric_as_unresolved():
+    adaptive = {
+        "enabled": True,
+        **_AGENT_PROPOSAL_REQUIRED_VALUES,
+        "objective_metric": "   ",
+        "suggest": {"strategy": "agent_proposal"},
+    }
+
+    issues = hparam_recipe_contract_issues(
+        {"search": {"parameters": {"runtime.lr": [1e-6, 2e-6]}}, "adaptive": adaptive},
+        source_layer="effective",
+    )
+    issue = next(issue for issue in issues if issue.field == "adaptive.objective_metric")
+
+    assert issue.status == DecisionStatus.NEEDS_USER_INPUT
+    assert issue.question
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
+@pytest.mark.parametrize(
+    "objective_metric",
+    [
+        pytest.param(0, id="zero"),
+        pytest.param(False, id="false"),
+        pytest.param([], id="list"),
+        pytest.param({}, id="mapping"),
+        pytest.param(1, id="integer"),
+    ],
+)
+def test_agent_proposal_rejects_non_string_objective_metric(objective_metric):
+    adaptive = {
+        "enabled": True,
+        **_AGENT_PROPOSAL_REQUIRED_VALUES,
+        "objective_metric": objective_metric,
+        "suggest": {"strategy": "agent_proposal"},
+    }
+
+    issues = hparam_recipe_contract_issues(
+        {"search": {"parameters": {"runtime.lr": [1e-6, 2e-6]}}, "adaptive": adaptive},
+        source_layer="effective",
+    )
+    issue = next(issue for issue in issues if issue.field == "adaptive.objective_metric")
+
+    assert issue.status == DecisionStatus.FAIL
+    assert issue.question is None
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
 @pytest.mark.parametrize(
     ("adaptive", "field"),
     [

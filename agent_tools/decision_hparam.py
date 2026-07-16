@@ -158,7 +158,21 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
         )
     if strategy == "agent_proposal":
         for field in _HPARAM_AGENT_PROPOSAL_REQUIRED_FIELDS:
-            if field in adaptive and adaptive[field] not in (None, ""):
+            value = adaptive.get(field)
+            if field == "objective_metric" and field in adaptive and value is not None and not isinstance(value, str):
+                issues.append(
+                    _contract_issue(
+                        "adaptive.objective_metric",
+                        (
+                            "adaptive.objective_metric must be a non-blank string when "
+                            "adaptive.suggest.strategy=agent_proposal."
+                        ),
+                        value,
+                        source_layer,
+                    )
+                )
+                continue
+            if field in adaptive and value not in (None, "") and (field != "objective_metric" or value.strip()):
                 continue
             field_path = f"adaptive.{field}"
             issues.append(
@@ -168,7 +182,7 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     f"{field_path} must be explicit when adaptive.suggest.strategy=agent_proposal.",
                     f"What should {field_path} be for this agent-proposal workflow?",
                     {
-                        "value": adaptive.get(field),
+                        "value": value,
                         "source_layer": source_layer,
                         "preflight_before_workspace": True,
                     },

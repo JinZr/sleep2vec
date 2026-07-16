@@ -4,7 +4,7 @@
 Use for `hparam_tune` recipes that generate validation-only run plans, orchestrate active launch/monitor/select/evaluate, or run append-only adaptive external-optimized tuning through `agent_tools`.
 
 ## Required inputs
-Requires experiment metadata, a named step, base recipe, search method, search parameters, budget, selection metric/mode/split, external-test lock policy, and final evaluation policy. Active orchestration additionally uses `execution:` fields. A local target at `REPO_ROOT` without a conda wrapper may omit Python/commit identity; SSH targets, separate local workdirs, and conda-wrapped targets require explicit `execution.python` and full `execution.runtime_commit`. Adaptive tuning additionally requires `adaptive.enabled=true`; if optimizing test/external metrics, `adaptive.test_feedback_for_selection=true` must be explicit. `adaptive.suggest.strategy` is `best_neighborhood` by default or `agent_proposal`; agent proposals additionally require explicit non-empty `adaptive.objective_metric`, `adaptive.objective_mode`, `adaptive.round_size`, `adaptive.max_rounds`, and `adaptive.max_runs_total`, are terminal-only, and require replacement to be omitted or exactly disabled.
+Requires experiment metadata, a named step, base recipe, search method, search parameters, budget, selection metric/mode/split, external-test lock policy, and final evaluation policy. Active orchestration additionally uses `execution:` fields. A local target at `REPO_ROOT` without a conda wrapper may omit Python/commit identity; SSH targets, separate local workdirs, and conda-wrapped targets require explicit `execution.python` and full `execution.runtime_commit`. Adaptive tuning additionally requires `adaptive.enabled=true`; if optimizing test/external metrics, `adaptive.test_feedback_for_selection=true` must be explicit. `adaptive.suggest.strategy` is `best_neighborhood` by default or `agent_proposal`; agent proposals additionally require `adaptive.objective_metric` as an explicit non-blank string plus explicit non-empty `adaptive.objective_mode`, `adaptive.round_size`, `adaptive.max_rounds`, and `adaptive.max_runs_total`, are terminal-only, and require replacement to be omitted or exactly disabled.
 
 ## First information-gathering commands
 - `python -m agent_tools doctor --recipe <recipe>`
@@ -40,6 +40,7 @@ Stop and consult the user if:
 - Adaptive tuning uses `test_*` or `external_*` objective metrics without `adaptive.test_feedback_for_selection=true`.
 - Adaptive output would overwrite an older round instead of appending a new round/event.
 - `agent_proposal` omits or leaves null/empty any explicit objective, direction, round-size, round-budget, or total-run-budget field; consultation must stop with exit code 2 before workspace mutation.
+- `agent_proposal` provides a non-string `adaptive.objective_metric`; the recipe contract must fail before workspace mutation.
 - `agent_proposal` is requested with active replacement, invalid numeric bounds, or an expectation that `hparam-adaptive-loop` will invoke an LLM.
 
 ## Canonical commands

@@ -588,6 +588,56 @@ def test_agent_proposal_explicit_control_fields_block_before_workspace_writes(
     assert not workflow.exists()
 
 
+@pytest.mark.parametrize(
+    ("objective_metric", "expected_exit_code", "expected_status"),
+    [
+        pytest.param("   ", 2, "NEEDS_USER_INPUT", id="blank"),
+        pytest.param(0, 1, "FAIL", id="zero"),
+        pytest.param(False, 1, "FAIL", id="false"),
+        pytest.param([], 1, "FAIL", id="list"),
+        pytest.param({}, 1, "FAIL", id="mapping"),
+        pytest.param(1, 1, "FAIL", id="integer"),
+    ],
+)
+def test_agent_proposal_invalid_objective_blocks_before_workspace_writes(
+    tmp_path: Path,
+    objective_metric,
+    expected_exit_code: int,
+    expected_status: str,
+):
+    source = tmp_path / "source"
+    recipe = _write_hparam_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workflow = tmp_path / "workflow"
+    payload["experiment"]["root"] = str(workflow)
+    payload["adaptive"] = {
+        "enabled": True,
+        "objective_metric": objective_metric,
+        "objective_mode": "max",
+        "max_rounds": 2,
+        "max_runs_total": 4,
+        "round_size": 1,
+        "test_feedback_for_selection": True,
+        "suggest": {"strategy": "agent_proposal"},
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = _snapshot(source)
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--output-dir",
+        str(workflow / "plans" / "agent-proposal-objective-type"),
+    )
+
+    assert result.returncode == expected_exit_code
+    assert f"Status: {expected_status}" in result.stdout
+    assert "adaptive.objective_metric" in result.stdout + result.stderr
+    assert _snapshot(source) == before
+    assert not workflow.exists()
+
+
 def test_infer_runtime_fields_have_observable_command_effects():
     command = plans._commands_for_recipe(
         {
