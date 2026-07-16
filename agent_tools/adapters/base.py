@@ -13,6 +13,10 @@ Layering contract (import directions are one-way):
 Adapters must never import layer-2 modules. decision_paths is layer 0 and
 must never import the registry -- task-specific dispatch that used to live
 there is hoisted into decisions.py instead.
+
+For the full module ownership map (kernel vs domain vs mixed bridges), the CLI
+command triage, and the tolerated reverse edges, see ../ARCHITECTURE.md and the
+machine-readable partition in ../layering.py.
 """
 
 from __future__ import annotations
