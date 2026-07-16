@@ -210,9 +210,7 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
     }
 
 
-def _validate_proposal_parameters(
-    parameters: Any, envelopes: Mapping[str, Any]
-) -> dict[str, list[Any]]:
+def _validate_proposal_parameters(parameters: Any, envelopes: Mapping[str, Any]) -> dict[str, list[Any]]:
     if not isinstance(parameters, Mapping):
         raise ValueError("Proposal parameters must be a mapping.")
     missing = sorted(set(envelopes) - set(parameters))
@@ -238,9 +236,7 @@ def _validate_proposal_parameters(
     return normalized_parameters
 
 
-def _validate_proposal_configurations(
-    configurations: Any, envelopes: Mapping[str, Any]
-) -> list[dict[str, Any]]:
+def _validate_proposal_configurations(configurations: Any, envelopes: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(configurations, list) or not configurations:
         raise ValueError("Proposal configurations must be a non-empty list.")
     points: list[dict[str, Any]] = []

@@ -221,9 +221,7 @@ def test_recipe_rejects_parameters_and_configurations_together(tmp_path: Path):
         ([{"runtime.not_allowed": 1}], "Unsupported runtime search parameter"),
     ],
 )
-def test_recipe_rejects_invalid_search_configurations(
-    tmp_path: Path, configurations, expected_message_part: str
-):
+def test_recipe_rejects_invalid_search_configurations(tmp_path: Path, configurations, expected_message_part: str):
     payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
     payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
     payload["search"] = {"method": "grid", "max_runs": 1, "configurations": configurations}

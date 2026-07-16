@@ -632,9 +632,7 @@ def test_agent_proposal_configuration_points_execute_as_exact_runs(tmp_path: Pat
     assert suggestion_payload["search"]["max_runs"] == 2
     assert "parameters" not in suggestion_payload["search"]
 
-    plan_runs = json.loads(
-        (workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").read_text()
-    )["runs"]
+    plan_runs = json.loads((workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").read_text())["runs"]
     assert len(plan_runs) == 2  # two points, not the 2x1 product per key
     assert [run["runtime.lr"] for run in plan_runs] == [5e-7, 2e-6]
 
@@ -2116,12 +2114,8 @@ def test_hparam_combos_expands_configuration_points_exactly_and_truncates_by_max
 
 
 def test_has_yaml_search_overrides_sees_configuration_point_keys():
-    assert plan_hparam.has_yaml_search_overrides(
-        {"search": {"configurations": [{"yaml:/model/dim": 128}]}}
-    )
-    assert not plan_hparam.has_yaml_search_overrides(
-        {"search": {"configurations": [{"runtime.lr": 1e-6}]}}
-    )
+    assert plan_hparam.has_yaml_search_overrides({"search": {"configurations": [{"yaml:/model/dim": 128}]}})
+    assert not plan_hparam.has_yaml_search_overrides({"search": {"configurations": [{"runtime.lr": 1e-6}]}})
 
 
 @pytest.mark.parametrize("strategy", ["best_neighborhood", "agent_proposal"])
