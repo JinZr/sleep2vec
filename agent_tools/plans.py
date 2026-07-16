@@ -373,9 +373,7 @@ def evaluate_recipe(
             )
     override_issues = None
     if cfg is not None and cfg.get("is_finetune") is True and not cfg.get("blocking_issues"):
-        override_issues = (
-            recipe_adapter.config_override_issues(recipe, cfg) if recipe_adapter is not None else None
-        )
+        override_issues = recipe_adapter.config_override_issues(recipe, cfg) if recipe_adapter is not None else None
     if (
         override_issues is None
         and cfg is not None
@@ -421,9 +419,7 @@ def evaluate_recipe(
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
     )
-    selected_config = (
-        recipe_adapter is not None and recipe_adapter.uses_finetune_config and "config" in user_decisions
-    )
+    selected_config = recipe_adapter is not None and recipe_adapter.uses_finetune_config and "config" in user_decisions
     if selected_config and selected_config_value in (None, "", "ASK_USER"):
         report = _append_issues(
             report,

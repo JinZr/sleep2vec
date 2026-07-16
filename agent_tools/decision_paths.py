@@ -259,7 +259,12 @@ def path_issues(
                 if issue is not None:
                     issues.append(issue)
     _append_remote_survival_sidecar_issues(
-        issues, task, recipe, config_summary, requires_survival_sidecars, preset_path_recipe_field,
+        issues,
+        task,
+        recipe,
+        config_summary,
+        requires_survival_sidecars,
+        preset_path_recipe_field,
         uses_finetune_config,
     )
     _append_remote_multilabel_sidecar_issues(issues, task, recipe, config_summary, uses_finetune_config)

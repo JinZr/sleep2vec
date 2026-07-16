@@ -474,9 +474,7 @@ def _base_task_issues(
     base_cli_args = dict(cli_args)
     if isinstance(base_cli_args.get("user_decisions"), dict):
         base_cli_args["user_decisions"] = {
-            field: value
-            for field, value in base_cli_args["user_decisions"].items()
-            if field in base_decision_fields
+            field: value for field, value in base_cli_args["user_decisions"].items() if field in base_decision_fields
         }
     report = evaluate_consultation_gates(
         base_task,
