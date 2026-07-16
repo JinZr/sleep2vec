@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from .models import resolve_repo_path
+from ..models import resolve_repo_path
 
 
 def looks_like_placeholder_path(value: str | Path | None) -> bool:
