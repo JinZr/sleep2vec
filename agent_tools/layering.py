@@ -66,6 +66,7 @@ DOMAIN_MODULES: frozenset[str] = frozenset(
         "adapters.preset_prepare",
         "adapters.finetune",
         "adapters.infer_evaluate",
+        "adapters.hparam_tune",
     }
 )
 
