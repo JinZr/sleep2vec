@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
 from ..models import CONFIG_FINETUNE_SECTION, repo_relative, resolve_repo_path
-from ..sidecar_summaries import looks_like_placeholder_path, multilabel_summary, survival_summary
+from ..domain.sidecar_summaries import looks_like_placeholder_path, multilabel_summary, survival_summary
 
 
 class ConfigSummaryProvider(NamedTuple):

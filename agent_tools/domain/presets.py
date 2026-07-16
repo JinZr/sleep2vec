@@ -6,7 +6,7 @@ import pickle
 import sys
 from typing import Any
 
-from .models import REPO_ROOT, repo_relative, resolve_repo_path
+from ..models import REPO_ROOT, repo_relative, resolve_repo_path
 
 
 def preset_summary(preset_path: str | Path) -> dict[str, Any]:

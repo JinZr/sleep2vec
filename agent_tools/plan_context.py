@@ -10,7 +10,7 @@ from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .decision_paths import path_context, path_validation
 from .index_csv import index_summary
 from .models import CONFIG_FINETUNE_SECTION, coerce_list, resolve_repo_path
-from .presets import preset_summary
+from .domain.presets import preset_summary
 from .skills import list_skills
 
 

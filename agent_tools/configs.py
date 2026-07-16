@@ -12,7 +12,7 @@ from .models import (  # noqa: F401 -- load_yaml re-exported for existing import
     repo_relative,
     resolve_repo_path,
 )
-from .sidecar_summaries import survival_summary
+from .domain.sidecar_summaries import survival_summary
 
 BUILTIN_LABELS = ("stage3", "stage4", "stage5", "ahi", "sex", "age")
 
