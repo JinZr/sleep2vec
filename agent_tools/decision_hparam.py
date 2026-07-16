@@ -326,7 +326,7 @@ def hparam_tune_issues(
             )
         )
     configurations = search.get("configurations")
-    if "configurations" in search and search.get("parameters"):
+    if "configurations" in search and "parameters" in search:
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,

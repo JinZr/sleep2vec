@@ -2118,6 +2118,15 @@ def test_has_yaml_search_overrides_sees_configuration_point_keys():
     assert not plan_hparam.has_yaml_search_overrides({"search": {"configurations": [{"runtime.lr": 1e-6}]}})
 
 
+def test_has_yaml_search_overrides_ignores_points_truncated_by_max_runs():
+    # A yaml:/ key that only appears in a point beyond max_runs never executes
+    # and must not force final_eval_config_path requirements.
+    points = [{"runtime.lr": 1e-6}, {"yaml:/model/dim": 128}]
+
+    assert not plan_hparam.has_yaml_search_overrides({"search": {"max_runs": 1, "configurations": points}})
+    assert plan_hparam.has_yaml_search_overrides({"search": {"max_runs": 2, "configurations": points}})
+
+
 @pytest.mark.parametrize("strategy", ["best_neighborhood", "agent_proposal"])
 def test_adaptive_source_recipe_rejects_search_configurations(tmp_path: Path, strategy: str):
     recipe_path = _adaptive_recipe(tmp_path)

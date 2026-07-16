@@ -197,6 +197,14 @@ def has_yaml_search_overrides(recipe: dict) -> bool:
     if any(isinstance(key, str) and key.startswith("yaml:/") for key in parameters):
         return True
     configurations = search.get("configurations") if isinstance(search.get("configurations"), list) else []
+    try:
+        max_runs = int(search.get("max_runs"))
+    except (TypeError, ValueError):
+        max_runs = None  # malformed budgets are the contract layer's report, not ours
+    if max_runs is not None:
+        # Points beyond max_runs never execute (same prefix truncation as
+        # hparam_combos), so their keys must not force config requirements.
+        configurations = configurations[:max_runs]
     return any(
         isinstance(point, dict) and any(isinstance(key, str) and key.startswith("yaml:/") for key in point)
         for point in configurations

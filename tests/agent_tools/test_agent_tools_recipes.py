@@ -210,6 +210,23 @@ def test_recipe_rejects_parameters_and_configurations_together(tmp_path: Path):
     assert any("mutually exclusive" in message for message in messages)
 
 
+def test_recipe_rejects_empty_parameters_alongside_configurations(tmp_path: Path):
+    # Mutual exclusion is a presence check: an empty parameters mapping must
+    # not slip past the two-shapes contract just because it is falsy.
+    payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
+    payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
+    payload["search"]["parameters"] = {}
+    payload["search"]["configurations"] = [{"runtime.lr": 1.0e-6}]
+    path = tmp_path / "hparam.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    _recipe, _cfg, report = evaluate_recipe(path)
+
+    assert report.exit_code == 1
+    messages = [issue.message for issue in report.blocking_issues() if issue.field == "hparam_search_space"]
+    assert any("mutually exclusive" in message for message in messages)
+
+
 @pytest.mark.parametrize(
     ("configurations", "expected_message_part"),
     [
