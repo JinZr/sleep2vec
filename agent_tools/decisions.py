@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import decision_paths as paths, plan_rendering as rendering
+from . import decision_paths as paths, plan_rendering as rendering, schema_map
 from .adapters import all_adapters, get_adapter
 from .decision_models import (
     DecisionIssue,
@@ -14,7 +14,7 @@ from .decision_models import (
     question_for,
 )
 from .experiment_workspace import experiment_metadata_issues
-from .models import CONFIG_FINETUNE_SECTION, SUPPORTED_VARIANTS, task_requires_variant
+from .models import SUPPORTED_VARIANTS, task_requires_variant
 
 __all__ = [
     "DecisionIssue",
@@ -373,57 +373,39 @@ _MISSING = _Missing()
 
 
 def _recipe_field_value(field: str, recipe: dict) -> Any:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
-    preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
-
-    pretrained_value = inputs.get("pretrained_backbone_path", _MISSING)
-    if pretrained_value is None:
-        pretrained_value = _MISSING
-    mapping = {
-        "task": recipe.get("task", _MISSING),
-        "label_name": inputs.get("label_name", _MISSING),
-        "data_backend": inputs.get("data_backend", _MISSING),
-        "train_val_test_policy": evaluation.get("selection_split", _MISSING),
-        "external_test_locked": evaluation.get("external_test_locked", _MISSING),
-        "selection_metric": evaluation.get("selection_metric", _MISSING),
-        "selection_mode": evaluation.get("selection_mode", _MISSING),
-        "pretrained_backbone_path": pretrained_value,
-        "config": inputs.get("config", _MISSING),
-        "ckpt_path": inputs.get("ckpt_path", _MISSING),
-        "eval_split": inputs.get("eval_split", _MISSING),
-        "final_eval_config_path": inputs.get("final_eval_config_path", _MISSING),
-        "overwrite_policy": artifacts.get("overwrite", preset.get("overwrite", _MISSING)),
-        "required_channels": preset.get("required_channels", preset.get("channels", _MISSING)),
-        "min_channels": preset.get("min_channels", _MISSING),
-        "hparam_search_space": search.get("parameters", _MISSING),
-        "hparam_budget": search.get("max_runs", _MISSING),
-        "final_eval_unlock": evaluation.get("final_test_unlocked", _MISSING),
-        "test_after_fit": evaluation.get("test_after_fit", _MISSING),
-    }
-    return mapping.get(field, _MISSING)
+    spec = schema_map.BASE_RECIPE_FIELDS.get(field)
+    if spec is None:
+        return _MISSING
+    if field == "task":
+        return recipe.get("task", _MISSING)
+    value: Any = _MISSING
+    for section, key in spec.read_path:
+        owner = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
+        if key in owner:  # present-but-falsy values (e.g. overwrite=False) count as a hit
+            value = owner[key]
+            break
+    if spec.none_is_missing and value is None:
+        return _MISSING
+    return value
 
 
 def _config_field_value(field: str, config_summary: dict | None) -> Any:
     if not config_summary:
         return _MISSING
-    data = config_summary.get("data", {})
-    finetune_task = config_summary.get(CONFIG_FINETUNE_SECTION, {}).get("task", {})
-    preset_build = config_summary.get("preset_build", {})
-    mapping = {
-        "data_backend": config_summary.get("data_backend"),
-        "selection_metric": finetune_task.get("monitor"),
-        "selection_mode": finetune_task.get("monitor_mod"),
-        "required_channels": preset_build.get("required_channels"),
-        "min_channels": preset_build.get("min_channels"),
-    }
-    value = mapping.get(field, _MISSING)
+    spec = schema_map.CONFIG_FIELDS.get(field)
+    if spec is None:
+        return _MISSING
+    node: Any = config_summary
+    for part in spec.summary_path[:-1]:
+        node = node.get(part, {})
+    value = node.get(spec.summary_path[-1])
     if (
         field == "data_backend"
         and value is None
-        and (data.get("finetune_preset_path") or data.get("finetune_data_index"))
+        and (
+            config_summary.get("data", {}).get("finetune_preset_path")
+            or config_summary.get("data", {}).get("finetune_data_index")
+        )
     ):
         return "npz"
     if value in (None, ""):

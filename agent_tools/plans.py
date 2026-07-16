@@ -15,6 +15,7 @@ from . import (
     plan_rendering as rendering,
     repo as repo_tools,
     run_artifacts as artifacts,
+    schema_map,
 )
 from .adapters import composite_adapter, get_adapter
 from .configs import config_summary
@@ -42,7 +43,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, resolve_repo_path
+from .models import REPO_ROOT, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
@@ -60,6 +61,12 @@ def _artifact_fields_for_task(task: str) -> set[str]:
     if adapter is not None:
         return set(adapter.artifact_fields)
     return set()
+
+
+def _resolve_write_targets(task: str | None) -> dict[str, tuple[str, str]]:
+    adapter = get_adapter(task)
+    adapter_targets = dict(adapter.decision_recipe_targets) if adapter is not None else {}
+    return schema_map.merged_write_targets(adapter_targets)
 
 
 def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) -> list[DecisionIssue]:
@@ -241,27 +248,9 @@ def _materialize_decisions(
                 )
             )
 
-    canonical_fields = {
-        "label_name": ("inputs", "label_name"),
-        "data_backend": ("inputs", "data_backend"),
-        "external_test_locked": ("evaluation_policy", "external_test_locked"),
-        "selection_metric": ("evaluation_policy", "selection_metric"),
-        "selection_mode": ("evaluation_policy", "selection_mode"),
-        "pretrained_backbone_path": ("inputs", "pretrained_backbone_path"),
-        "config": ("inputs", "config"),
-        "ckpt_path": ("inputs", "ckpt_path"),
-        "eval_split": ("inputs", "eval_split"),
-        "final_eval_config_path": ("inputs", "final_eval_config_path"),
-        "min_channels": ("preset", "min_channels"),
-        "final_eval_unlock": ("evaluation_policy", "final_test_unlocked"),
-        "test_after_fit": ("evaluation_policy", "test_after_fit"),
-    }
-    canonical_fields["overwrite_policy"] = ("artifacts", "overwrite")
-    adapter = get_adapter(recipe.get("task"))
-    if adapter is not None:
-        canonical_fields.update(adapter.decision_recipe_targets)
-    if decision_values.get("train_val_test_policy") in ("train", "val", "test"):
-        canonical_fields["train_val_test_policy"] = ("evaluation_policy", "selection_split")
+    canonical_fields = _resolve_write_targets(recipe.get("task"))
+    if decision_values.get("train_val_test_policy") not in ("train", "val", "test"):
+        canonical_fields.pop("train_val_test_policy", None)
 
     for field, (section, key) in canonical_fields.items():
         if field not in decision_values:
@@ -382,24 +371,19 @@ def evaluate_recipe(
     ):
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-        finetune_task = cfg.get(CONFIG_FINETUNE_SECTION, {}).get("task", {})
-        config_contracts = {
-            "data_backend": (
-                inputs.get("data_backend"),
-                cfg.get("data_backend"),
-                "data.backend",
-            ),
-            "selection_metric": (
-                evaluation.get("selection_metric"),
-                finetune_task.get("monitor"),
-                "finetune.task.monitor",
-            ),
-            "selection_mode": (
-                evaluation.get("selection_mode"),
-                finetune_task.get("monitor_mod"),
-                "finetune.task.monitor_mod",
-            ),
+        decision_values = {
+            "data_backend": inputs.get("data_backend"),
+            "selection_metric": evaluation.get("selection_metric"),
+            "selection_mode": evaluation.get("selection_mode"),
         }
+        config_contracts = {}
+        for field, decision_value in decision_values.items():
+            spec = schema_map.CONFIG_FIELDS[field]
+            node = cfg
+            for part in spec.summary_path[:-1]:
+                node = node.get(part, {})
+            config_value = node.get(spec.summary_path[-1])
+            config_contracts[field] = (decision_value, config_value, spec.display_path)
         contract_issues = []
         for field, (decision_value, config_value, config_field) in config_contracts.items():
             if decision_value in (None, "", "ASK_USER"):
@@ -893,10 +877,7 @@ def _has_output_artifact_issue(report: DecisionReport) -> bool:
 
 
 def _overwrite_policy(recipe: dict) -> Any:
-    section, key = "artifacts", "overwrite"
-    adapter = get_adapter(recipe.get("task"))
-    if adapter is not None:
-        section, key = adapter.decision_recipe_targets.get("overwrite_policy", (section, key))
+    section, key = _resolve_write_targets(recipe.get("task"))["overwrite_policy"]
     owner = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
     return owner.get(key)
 
