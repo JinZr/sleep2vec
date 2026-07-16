@@ -50,21 +50,14 @@ def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
     return finetune if isinstance(finetune, dict) else {}
 
 
-# Legacy fallback for callers that do not thread uses_finetune_config yet;
-# removed once every task passes the flag explicitly.
-_FINETUNE_CONFIG_TASKS = {"finetune", "hparam_tune", "infer", "evaluate"}
-
-
 def _effective_preset_path(
     task: str,
     recipe: dict,
     config_summary: dict | None,
     recipe_field: str | None = None,
     *,
-    uses_finetune_config: bool | None = None,
+    uses_finetune_config: bool = False,
 ) -> tuple[str, Any]:
-    if uses_finetune_config is None:
-        uses_finetune_config = task in _FINETUNE_CONFIG_TASKS
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     if recipe_field is not None:
         value = inputs.get(recipe_field)
@@ -83,7 +76,7 @@ def survival_sidecar_issue(
     *,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
-    uses_finetune_config: bool | None = None,
+    uses_finetune_config: bool = False,
 ) -> DecisionIssue | None:
     if not _requires_survival_sidecars(
         task, recipe, config_summary, required, preset_path_recipe_field, uses_finetune_config
@@ -109,7 +102,7 @@ def multilabel_sidecar_issue(
     recipe: dict,
     config_summary: dict | None,
     *,
-    uses_finetune_config: bool | None = None,
+    uses_finetune_config: bool = False,
 ) -> DecisionIssue | None:
     if not _requires_multilabel_sidecars(task, recipe, config_summary, uses_finetune_config):
         return None
@@ -134,10 +127,8 @@ def _requires_survival_sidecars(
     config_summary: dict | None,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
-    uses_finetune_config: bool | None = None,
+    uses_finetune_config: bool = False,
 ) -> bool:
-    if uses_finetune_config is None:
-        uses_finetune_config = task in _FINETUNE_CONFIG_TASKS
     task_cfg = _config_finetune(config_summary).get("task")
     if not isinstance(task_cfg, dict) or task_cfg.get("type") != "survival":
         return False
@@ -154,10 +145,8 @@ def _requires_survival_sidecars(
 
 
 def _requires_multilabel_sidecars(
-    task: str, recipe: dict, config_summary: dict | None, uses_finetune_config: bool | None = None
+    task: str, recipe: dict, config_summary: dict | None, uses_finetune_config: bool = False
 ) -> bool:
-    if uses_finetune_config is None:
-        uses_finetune_config = task in _FINETUNE_CONFIG_TASKS
     task_cfg = _config_finetune(config_summary).get("task")
     if not isinstance(task_cfg, dict) or task_cfg.get("type") != "multilabel_classification":
         return False
@@ -171,7 +160,7 @@ def _append_remote_survival_sidecar_issues(
     config_summary: dict | None,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
-    uses_finetune_config: bool | None = None,
+    uses_finetune_config: bool = False,
 ) -> None:
     if not _requires_survival_sidecars(
         task, recipe, config_summary, required, preset_path_recipe_field, uses_finetune_config
@@ -197,7 +186,7 @@ def _append_remote_multilabel_sidecar_issues(
     task: str,
     recipe: dict,
     config_summary: dict | None,
-    uses_finetune_config: bool | None = None,
+    uses_finetune_config: bool = False,
 ) -> None:
     if not _requires_multilabel_sidecars(task, recipe, config_summary, uses_finetune_config):
         return
@@ -225,7 +214,7 @@ def path_issues(
     requires_survival_sidecars: bool | None = None,
     preset_path_recipe_field: str | None = None,
     validates_dataset_paths: bool = False,
-    uses_finetune_config: bool | None = None,
+    uses_finetune_config: bool = False,
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}

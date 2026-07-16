@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import decision_hparam as hparam_rules, decision_paths as paths, plan_rendering as rendering
+from . import decision_paths as paths, plan_rendering as rendering
 from .adapters import all_adapters, get_adapter
 from .decision_models import (
     DecisionIssue,
@@ -27,15 +27,6 @@ __all__ = [
 
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
 _DECISION_ENTRY_FIELDS = {"meaning", "question", "rationale", "source", "value"}
-_EXTRA_DECISION_TASKS = {
-    "ckpt_path": {"hparam_tune"},
-    "config": {"hparam_tune"},
-    "data_backend": {"hparam_tune"},
-    "final_eval_config_path": {"hparam_tune"},
-    "pretrained_backbone_path": {"hparam_tune"},
-    "required_channels": {"hparam_tune"},
-    "test_after_fit": {"hparam_tune"},
-}
 
 
 def consultation_contract_issues(
@@ -98,8 +89,6 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.runtime_fields(variant)
-    if task == "hparam_tune":
-        return rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
     union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
     for registered in all_adapters():
         union = union | registered.runtime_fields(variant)
@@ -108,8 +97,9 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
 
 def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
     task_scope = {task}
-    if task == "hparam_tune":
-        task_scope.add(hparam_rules.HPARAM_BASE_TASK)
+    scope_adapter = get_adapter(task)
+    if scope_adapter is not None and scope_adapter.base_task is not None:
+        task_scope.add(scope_adapter.base_task)
     allowed = {
         str(item["id"])
         for item in policy.get("high_impact_fields", [])
@@ -117,16 +107,11 @@ def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
         and "id" in item
         and (task is None or task_scope.intersection(item.get("required_for_tasks", [])))
     }
-    for field, tasks in _EXTRA_DECISION_TASKS.items():
-        if task is None or task in tasks:
-            allowed.add(field)
     if task is None:
         for adapter in all_adapters():
             allowed |= adapter.extra_decision_fields
-    else:
-        adapter = get_adapter(task)
-        if adapter is not None:
-            allowed |= adapter.extra_decision_fields
+    elif scope_adapter is not None:
+        allowed |= scope_adapter.extra_decision_fields
     return allowed
 
 
@@ -218,7 +203,11 @@ def evaluate_consultation_gates(
 
     if require_experiment:
         metadata_recipe = recipe
-        if task_value == "hparam_tune" and isinstance(recipe.get("_local_recipe"), dict):
+        if (
+            task_adapter is not None
+            and task_adapter.base_task is not None
+            and isinstance(recipe.get("_local_recipe"), dict)
+        ):
             metadata_recipe = recipe["_local_recipe"]
         for issue in experiment_metadata_issues(metadata_recipe):
             issues.append(
@@ -282,8 +271,8 @@ def evaluate_consultation_gates(
     ):
         decisions[optional_field] = _resolve_decision(optional_field, recipe, config_summary, cli_args, user_decisions)
 
-    if str(task_value) == "hparam_tune":
-        issues.extend(_base_task_issues(hparam_rules.HPARAM_BASE_TASK, recipe, config_summary, cli_args, policy))
+    if task_adapter is not None and task_adapter.base_task is not None:
+        issues.extend(_base_task_issues(task_adapter.base_task, recipe, config_summary, cli_args, policy))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
     issues.extend(
         paths.path_issues(
@@ -452,8 +441,6 @@ def _task_specific_issues(
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.task_issues(recipe, config_summary, decisions, high_impact)
-    if task == "hparam_tune":
-        return hparam_rules.hparam_tune_issues(recipe, config_summary, decisions, high_impact)
     return []
 
 

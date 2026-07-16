@@ -116,7 +116,6 @@ def loads_train_val(epochs: Any) -> bool:
 
 
 def finetune_loaded_split_values(recipe: dict, *, test_split_opt_in: bool = False) -> list[str]:
-    task = recipe.get("task")
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
 
@@ -125,7 +124,7 @@ def finetune_loaded_split_values(recipe: dict, *, test_split_opt_in: bool = Fals
         splits.extend(["train", "val"])
 
     test_after_fit = evaluation.get("test_after_fit")
-    if test_split_opt_in or task == "hparam_tune":
+    if test_split_opt_in:
         if test_after_fit is True:
             splits.append("test")
     elif test_after_fit is not False:

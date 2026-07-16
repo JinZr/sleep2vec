@@ -125,19 +125,12 @@ def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
 
 
 def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any, list[Any]]:
-    task = recipe.get("task")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
     for adapter in all_adapters():
         override = adapter.index_summary_inputs_override(recipe, cfg)
         if override is not None:
             return override
-    if task in {"finetune", "hparam_tune"}:
-        split_values = rendering.finetune_loaded_split_values(recipe)
-        if effective_preset_path(recipe, cfg) not in (None, ""):
-            return [], config, split_values
-        data = (cfg or {}).get("data") or {}
-        return coerce_list(data.get("finetune_data_index")), config, split_values
 
     paths = coerce_list(inputs.get("index"))
     if not paths and cfg:
@@ -185,7 +178,7 @@ def effective_preset_path(recipe: dict, cfg: dict | None) -> Any:
         preset_path = inputs.get(recipe_field)
         if preset_path not in (None, "", "ASK_USER"):
             return preset_path
-    if task in {"finetune", "hparam_tune", "infer", "evaluate"} and cfg:
+    if adapter is not None and adapter.uses_finetune_config and cfg:
         preset_path = (cfg.get("data") or {}).get("finetune_preset_path")
         if preset_path not in (None, "", "ASK_USER"):
             return preset_path
