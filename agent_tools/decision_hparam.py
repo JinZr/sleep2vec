@@ -191,7 +191,7 @@ def hparam_tune_issues(
                     {"config": config},
                 )
             )
-    multilabel_issue = multilabel_sidecar_issue("hparam_tune", recipe, config_summary)
+    multilabel_issue = multilabel_sidecar_issue("hparam_tune", recipe, config_summary, uses_finetune_config=True)
     if multilabel_issue is not None:
         issues.append(multilabel_issue)
     local_field_map = {

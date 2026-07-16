@@ -283,7 +283,7 @@ def evaluate_consultation_gates(
         decisions[optional_field] = _resolve_decision(optional_field, recipe, config_summary, cli_args, user_decisions)
 
     if str(task_value) == "hparam_tune":
-        issues.extend(_base_finetune_issues(recipe, config_summary, cli_args, policy))
+        issues.extend(_base_task_issues(hparam_rules.HPARAM_BASE_TASK, recipe, config_summary, cli_args, policy))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
     issues.extend(
         paths.path_issues(
@@ -294,6 +294,7 @@ def evaluate_consultation_gates(
             requires_survival_sidecars=task_adapter.requires_survival_sidecars if task_adapter else None,
             preset_path_recipe_field=task_adapter.preset_path_recipe_field if task_adapter else None,
             validates_dataset_paths=task_adapter.validates_dataset_paths if task_adapter else False,
+            uses_finetune_config=task_adapter.uses_finetune_config if task_adapter else None,
         )
     )
     if task_adapter is not None:
@@ -456,7 +457,8 @@ def _task_specific_issues(
     return []
 
 
-def _base_finetune_issues(
+def _base_task_issues(
+    base_task: str,
     recipe: dict,
     config_summary: dict | None,
     cli_args: dict,
@@ -467,28 +469,30 @@ def _base_finetune_issues(
         return []
     local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
     base_gate = {key: value for key, value in recipe.items() if not key.startswith("_")}
-    base_gate["task"] = hparam_rules.HPARAM_BASE_TASK
+    base_gate["task"] = base_task
     if isinstance(base_gate.get("runtime"), dict):
-        finetune_runtime = _runtime_fields_for_task(hparam_rules.HPARAM_BASE_TASK, recipe.get("variant"))
+        base_runtime_fields = _runtime_fields_for_task(base_task, recipe.get("variant"))
         base_gate["runtime"] = {
-            field: value for field, value in base_gate["runtime"].items() if field in finetune_runtime
+            field: value for field, value in base_gate["runtime"].items() if field in base_runtime_fields
         }
 
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     base_decisions = dict(base_recipe.get("decisions") or {})
-    finetune_decisions = _decision_fields_for_task(hparam_rules.HPARAM_BASE_TASK, policy)
+    base_decision_fields = _decision_fields_for_task(base_task, policy)
     for decision_field, value in local_decisions.items():
-        if decision_field in finetune_decisions and decision_field not in base_decisions:
+        if decision_field in base_decision_fields and decision_field not in base_decisions:
             base_decisions[decision_field] = value
     base_gate["decisions"] = base_decisions
 
     base_cli_args = dict(cli_args)
     if isinstance(base_cli_args.get("user_decisions"), dict):
         base_cli_args["user_decisions"] = {
-            field: value for field, value in base_cli_args["user_decisions"].items() if field in finetune_decisions
+            field: value
+            for field, value in base_cli_args["user_decisions"].items()
+            if field in base_decision_fields
         }
     report = evaluate_consultation_gates(
-        hparam_rules.HPARAM_BASE_TASK,
+        base_task,
         base_gate,
         config_summary,
         base_cli_args,
@@ -498,8 +502,8 @@ def _base_finetune_issues(
     return [
         DecisionIssue(
             issue.status,
-            f"base_finetune.{issue.field}",
-            f"Base finetune readiness issue: {issue.message}",
+            f"base_{base_task}.{issue.field}",
+            f"Base {base_task} readiness issue: {issue.message}",
             issue.question,
             issue.evidence,
         )

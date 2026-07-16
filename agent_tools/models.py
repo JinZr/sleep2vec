@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SUPPORTED_VARIANTS = ("sleep2vec", "sleep2vec2", "sleep2expert", "sex_age_baseline")
 VARIANTLESS_TASKS = {"sleep2stat"}
@@ -15,6 +17,16 @@ CONFIG_FINETUNE_SECTION = "finetune"
 
 def recipe_name(recipe: dict[str, Any]) -> str:
     return str(recipe.get("name") or Path(str(recipe.get("_recipe_path", "recipe"))).stem)
+
+
+def load_yaml(path: str | Path) -> dict[str, Any]:
+    resolved = resolve_repo_path(path)
+    if resolved is None:
+        raise FileNotFoundError("Config path is required.")
+    data = yaml.safe_load(resolved.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML must be a mapping: {resolved}")
+    return data
 
 
 def task_requires_variant(task: str | None) -> bool:

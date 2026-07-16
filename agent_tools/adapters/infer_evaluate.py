@@ -20,6 +20,9 @@ _INFER_EVALUATE_TASKS = frozenset({"infer", "evaluate"})
 # model tasks (a finetune recipe dispatched as infer still produced the
 # issue; a task-less recipe did not).
 _SEX_AGE_PRETRAINED_GUARD_TASKS = frozenset({"finetune", "infer", "evaluate"})
+# Byte-compat guard for the sidecar helpers' finetune-config membership, keyed
+# on the recipe's own task string like the pre-adapter kernel sets were.
+_FINETUNE_CONFIG_GUARD_TASKS = frozenset({"finetune", "hparam_tune", "infer", "evaluate"})
 
 _INPUT_FIELDS = frozenset(
     {
@@ -68,6 +71,7 @@ class InferEvaluateAdapter(TaskAdapter):
     contract_sections = {"inputs": _INPUT_FIELDS, "evaluation_policy": _EVALUATION_FIELDS}
     preset_path_recipe_field = "inference_preset_path"
     validates_dataset_paths = True
+    uses_finetune_config = True
 
     def __init__(self, task: str, extra_decision_fields: frozenset[str]) -> None:
         self.task = task
@@ -131,10 +135,16 @@ class InferEvaluateAdapter(TaskAdapter):
             recipe,
             config_summary,
             preset_path_recipe_field=_recipe_preset_field(recipe),
+            uses_finetune_config=str(recipe.get("task")) in _FINETUNE_CONFIG_GUARD_TASKS,
         )
         if survival_issue is not None:
             issues.append(survival_issue)
-        multilabel_issue = multilabel_sidecar_issue(str(recipe.get("task")), recipe, config_summary)
+        multilabel_issue = multilabel_sidecar_issue(
+            str(recipe.get("task")),
+            recipe,
+            config_summary,
+            uses_finetune_config=str(recipe.get("task")) in _FINETUNE_CONFIG_GUARD_TASKS,
+        )
         if multilabel_issue is not None:
             issues.append(multilabel_issue)
         return issues

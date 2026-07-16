@@ -4,23 +4,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import yaml
-
 from .adapters import all_adapters
 from .adapters.sleep2stat import sleep2stat_config_summary  # noqa: F401 -- test-frozen import path
-from .models import CONFIG_FINETUNE_SECTION, repo_relative, resolve_repo_path
+from .models import (  # noqa: F401 -- load_yaml re-exported for existing importers
+    CONFIG_FINETUNE_SECTION,
+    load_yaml,
+    repo_relative,
+    resolve_repo_path,
+)
 
 BUILTIN_LABELS = ("stage3", "stage4", "stage5", "ahi", "sex", "age")
-
-
-def load_yaml(path: str | Path) -> dict[str, Any]:
-    resolved = resolve_repo_path(path)
-    if resolved is None:
-        raise FileNotFoundError("Config path is required.")
-    data = yaml.safe_load(resolved.read_text())
-    if not isinstance(data, dict):
-        raise ValueError(f"YAML must be a mapping: {resolved}")
-    return data
 
 
 def guess_variant(config_path: str | Path) -> str:
