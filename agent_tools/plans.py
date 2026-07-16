@@ -8,17 +8,15 @@ from typing import Any
 import yaml
 
 from . import (
-    decision_hparam as hparam_rules,
     decision_paths as path_rules,
     decision_rules as task_rules,
     experiment_io as exp_io,
     plan_context as context,
-    plan_hparam as hparam,
     plan_rendering as rendering,
     repo as repo_tools,
     run_artifacts as artifacts,
 )
-from .adapters import get_adapter
+from .adapters import composite_adapter, get_adapter
 from .configs import config_summary
 from .decisions import (
     DecisionIssue,
@@ -48,27 +46,20 @@ from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
 
 _COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
-_TASK_RECIPE_FIELDS = {
-    "hparam_tune": _COMMON_RECIPE_FIELDS
-    | {"adaptive", "artifacts", "base_recipe", "evaluation_policy", "execution", "inputs", "runtime", "search"},
-}
-_ARTIFACT_FIELDS = {
-    "hparam_tune": {"overwrite", "results_csv_path"},
-}
 
 
 def _recipe_fields_for_task(task: str) -> set[str] | None:
     adapter = get_adapter(task)
     if adapter is not None:
         return _COMMON_RECIPE_FIELDS | adapter.recipe_extra_fields
-    return _TASK_RECIPE_FIELDS.get(task)
+    return None
 
 
 def _artifact_fields_for_task(task: str) -> set[str]:
     adapter = get_adapter(task)
     if adapter is not None:
         return set(adapter.artifact_fields)
-    return _ARTIFACT_FIELDS.get(task, set())
+    return set()
 
 
 def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) -> list[DecisionIssue]:
@@ -98,15 +89,16 @@ def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) ->
                     {"source_layer": "local", "preflight_before_workspace": True},
                 )
             )
-        local_contract_task = "hparam_tune" if local_task in (None, "", "ASK_USER") else str(local_task)
+        owner = composite_adapter()
+        local_contract_task = owner.task if local_task in (None, "", "ASK_USER") else str(local_task)
         sources = [
-            (base_recipe, hparam_rules.HPARAM_BASE_TASK, "base"),
+            (base_recipe, owner.base_task, "base"),
             (local_recipe, local_contract_task, "local"),
         ]
     else:
         sources = [(recipe, str(effective_task or ""), "effective")]
 
-    if has_layers and base_recipe.get("task") not in (None, "", "ASK_USER", hparam_rules.HPARAM_BASE_TASK):
+    if has_layers and base_recipe.get("task") not in (None, "", "ASK_USER", owner.base_task):
         issues.append(
             _recipe_contract_issue(
                 "task",
@@ -158,8 +150,10 @@ def _source_recipe_contract_issues(
             )
         )
     issues.extend(consultation_contract_issues(task or None, recipe, policy, source_layer=source_layer))
-    if task == "hparam_tune":
-        issues.extend(hparam_rules.hparam_recipe_contract_issues(recipe, source_layer=source_layer))
+    adapter = get_adapter(task)
+    adapter_contract = adapter.section_contract_issues(recipe, source_layer=source_layer) if adapter else None
+    if adapter_contract is not None:
+        issues.extend(adapter_contract)
     else:
         issues.extend(task_rules.task_recipe_contract_issues(task, recipe, source_layer=source_layer))
         issues.extend(path_rules.execution_contract_issues(recipe, source_layer=source_layer))
@@ -259,8 +253,6 @@ def _materialize_decisions(
         "eval_split": ("inputs", "eval_split"),
         "final_eval_config_path": ("inputs", "final_eval_config_path"),
         "min_channels": ("preset", "min_channels"),
-        "hparam_search_space": ("search", "parameters"),
-        "hparam_budget": ("search", "max_runs"),
         "final_eval_unlock": ("evaluation_policy", "final_test_unlocked"),
         "test_after_fit": ("evaluation_policy", "test_after_fit"),
     }
@@ -346,8 +338,10 @@ def evaluate_recipe(
         policy,
     )
     report = _append_issues(report, materialization_issues)
+    recipe_adapter = get_adapter(recipe.get("task"))
     if (
-        recipe.get("task") in {"finetune", "hparam_tune"}
+        recipe_adapter is not None
+        and recipe_adapter.enforces_required_channels
         and cfg is not None
         and cfg.get("is_finetune") is True
         and not cfg.get("blocking_issues")
@@ -377,8 +371,11 @@ def evaluate_recipe(
                     )
                 ],
             )
+    override_issues = None
+    if cfg is not None and cfg.get("is_finetune") is True and not cfg.get("blocking_issues"):
+        override_issues = recipe_adapter.config_override_issues(recipe, cfg) if recipe_adapter is not None else None
     if (
-        recipe.get("task") != "hparam_tune"
+        override_issues is None
         and cfg is not None
         and cfg.get("is_finetune") is True
         and not cfg.get("blocking_issues")
@@ -422,9 +419,7 @@ def evaluate_recipe(
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
     )
-    selected_config = (
-        recipe.get("task") in {"finetune", "infer", "evaluate", "hparam_tune"} and "config" in user_decisions
-    )
+    selected_config = recipe_adapter is not None and recipe_adapter.uses_finetune_config and "config" in user_decisions
     if selected_config and selected_config_value in (None, "", "ASK_USER"):
         report = _append_issues(
             report,
@@ -461,13 +456,8 @@ def evaluate_recipe(
                 ],
             )
     report = _append_issues(report, context.index_summary_issues(recipe, cfg))
-    if (
-        recipe.get("task") == "hparam_tune"
-        and cfg is not None
-        and cfg.get("is_finetune") is True
-        and not cfg.get("blocking_issues")
-    ):
-        report = _append_issues(report, hparam.hparam_yaml_override_issues(recipe))
+    if override_issues:
+        report = _append_issues(report, override_issues)
     return recipe, cfg, report
 
 
@@ -640,8 +630,9 @@ def build_plan(
     ensure_experiment_workspace(recipe, out)
 
     task = recipe.get("task")
-    if task == "hparam_tune":
-        hparam.write_hparam_plan(recipe, out, unlock_final_test=unlock_final_test)
+    plan_adapter = get_adapter(task)
+    if plan_adapter is not None and plan_adapter.materializes_plan:
+        plan_adapter.write_plan(recipe, out, unlock_final_test=unlock_final_test)
     else:
         root = experiment_root(recipe)
         if root is None:
@@ -788,12 +779,12 @@ def preflight_plan(
                         )
                     ],
                 )
-    if report.exit_code == 0 and recipe.get("task") == "hparam_tune":
-        report = _append_issues(
-            report,
-            hparam.final_test_checkpoint_issues(recipe, unlock_final_test=unlock_final_test),
-        )
-    if report.exit_code == 0 and recipe.get("task") != "hparam_tune":
+    preflight_adapter = get_adapter(recipe.get("task"))
+    if report.exit_code == 0 and preflight_adapter is not None:
+        adapter_preflight = preflight_adapter.preflight_issues(recipe, cfg, unlock_final_test=unlock_final_test)
+        if adapter_preflight:
+            report = _append_issues(report, adapter_preflight)
+    if report.exit_code == 0 and not (preflight_adapter is not None and preflight_adapter.materializes_plan):
         commands = _commands_for_recipe(recipe, cfg)
         if not commands:
             report = _unsupported_command_report(report, str(recipe.get("task")))
@@ -969,42 +960,28 @@ def _planned_plan_paths(
     allow_unresolved: bool,
     unlock_final_test: bool,
 ) -> list[Path]:
+    adapter = get_adapter(recipe.get("task"))
+    if adapter is not None:
+        adapter_paths = adapter.planned_plan_paths(
+            recipe, out, report, allow_unresolved=allow_unresolved, unlock_final_test=unlock_final_test
+        )
+        if adapter_paths is not None:
+            return adapter_paths
     if report.exit_code != 0:
         paths = [out / "questions.json", out / "questions.md", out / "plan.blocked.md"]
-        if recipe.get("task") == "hparam_tune":
-            evaluation = recipe.get("evaluation_policy") or {}
-            if hparam.final_test_unlocked(evaluation, unlock_final_test):
-                paths.append(out / "final_external_test.sh")
         if allow_unresolved and report.exit_code == 2:
             paths.append(out / "plan.draft.json")
         return paths
-    if recipe.get("task") != "hparam_tune":
-        declared_name = safe_artifact_name((recipe.get("artifacts") or {}).get("version_name") or recipe_name(recipe))
-        identity = run_identity(recipe, next_run_index(recipe), {}, run_name=declared_name)
-        run_dir = out / "runs" / f"{identity['run_id']}--{identity['run_name']}"
-        return [
-            out / "plan.json",
-            out / "plan.md",
-            out / "run.sh",
-            out / "recipe.resolved.yaml",
-            run_dir / "run.json",
-            run_dir / "config.yaml",
-            run_dir / "launch.sh",
-            run_dir / "artifacts.json",
-        ]
-
-    paths = [
+    declared_name = safe_artifact_name((recipe.get("artifacts") or {}).get("version_name") or recipe_name(recipe))
+    identity = run_identity(recipe, next_run_index(recipe), {}, run_name=declared_name)
+    run_dir = out / "runs" / f"{identity['run_id']}--{identity['run_name']}"
+    return [
         out / "plan.json",
         out / "plan.md",
-        out / "run_all.sh",
-        out / "validation.sh",
+        out / "run.sh",
         out / "recipe.resolved.yaml",
+        run_dir / "run.json",
+        run_dir / "config.yaml",
+        run_dir / "launch.sh",
+        run_dir / "artifacts.json",
     ]
-    offset = next_run_index(recipe)
-    for idx, combo in enumerate(hparam.hparam_combos(recipe)):
-        identity = run_identity(recipe, offset + idx, combo)
-        run_dir = out / "runs" / f"{identity['run_id']}--{identity['run_name']}"
-        paths.extend([run_dir / "launch.sh", run_dir / "config.yaml", run_dir / "run.json", run_dir / "artifacts.json"])
-    evaluation = recipe.get("evaluation_policy") or {}
-    paths.append(out / "final_external_test.sh")
-    return paths

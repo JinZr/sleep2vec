@@ -5,23 +5,15 @@ from typing import Any
 from .adapters import get_adapter
 from .decision_models import DecisionIssue, DecisionStatus
 
-_INPUT_FIELDS: dict[str, set[str]] = {}
-_EVALUATION_FIELDS: dict[str, set[str]] = {}
-
 
 def task_recipe_contract_issues(task: str, recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     adapter = get_adapter(task)
-    if adapter is not None:
-        sections = {
-            section: adapter.contract_sections.get(section) for section in ("inputs", "evaluation_policy", "preset")
-        }
-    else:
-        sections = {
-            "inputs": _INPUT_FIELDS.get(task),
-            "evaluation_policy": _EVALUATION_FIELDS.get(task),
-            "preset": None,
-        }
+    if adapter is None:
+        return issues
+    sections = {
+        section: adapter.contract_sections.get(section) for section in ("inputs", "evaluation_policy", "preset")
+    }
     for section, allowed_fields in sections.items():
         if section not in recipe or allowed_fields is None:
             continue

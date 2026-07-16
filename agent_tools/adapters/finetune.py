@@ -34,6 +34,8 @@ class FinetuneAdapter(TaskAdapter):
     }
     extra_decision_fields = frozenset({"ckpt_path", "config", "external_test_locked", "test_after_fit"})
     validates_dataset_paths = True
+    uses_finetune_config = True
+    enforces_required_channels = True
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         fields = FINETUNE_RUNTIME_FIELDS
@@ -126,10 +128,10 @@ class FinetuneAdapter(TaskAdapter):
             issues.append(pretrained_issue)
         # self.task, not the recipe's own task string: the pre-adapter kernel
         # hard-coded "finetune" for these helpers.
-        survival_issue = survival_sidecar_issue(self.task, recipe, config_summary)
+        survival_issue = survival_sidecar_issue(self.task, recipe, config_summary, uses_finetune_config=True)
         if survival_issue is not None:
             issues.append(survival_issue)
-        multilabel_issue = multilabel_sidecar_issue(self.task, recipe, config_summary)
+        multilabel_issue = multilabel_sidecar_issue(self.task, recipe, config_summary, uses_finetune_config=True)
         if multilabel_issue is not None:
             issues.append(multilabel_issue)
         external_test_locked = evaluation.get("external_test_locked")

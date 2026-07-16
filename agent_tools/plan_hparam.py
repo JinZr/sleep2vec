@@ -9,7 +9,6 @@ from typing import Any
 import yaml
 
 from . import plan_rendering as rendering
-from .configs import load_yaml
 from .decision_models import DecisionIssue, DecisionStatus
 from .decision_paths import validate_input_path
 from .experiment_workspace import (
@@ -22,7 +21,7 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import write_json, write_text
-from .models import REPO_ROOT, coerce_list
+from .models import REPO_ROOT, coerce_list, load_yaml
 from .repo import repo_summary
 
 

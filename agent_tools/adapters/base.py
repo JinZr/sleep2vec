@@ -3,7 +3,8 @@
 Layering contract (import directions are one-way):
 
 - Layer 0 (leaf modules adapters MAY import): models, decision_models,
-  transport, plan_rendering, decision_paths.
+  transport, plan_rendering, decision_paths, gpu_rules, decision_hparam,
+  plan_hparam, experiment_workspace, manifests, repo.
 - Layer 1 (this package): adapters/base.py, adapters/<task>.py,
   adapters/registry.py.
 - Layer 2 (kernel orchestration, imports the registry): configs,
@@ -19,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..decision_models import DecisionIssue, ResolvedDecision
+from ..decision_models import DecisionIssue, DecisionReport, ResolvedDecision
 
 
 class TaskAdapter:
@@ -63,6 +64,59 @@ class TaskAdapter:
     #: True enables path_issues' dataset-source existence checks (npz
     #: effective preset/index; sex_age kaldi data root/manifest).
     validates_dataset_paths: bool = False
+    #: Composite task's base-layer task name; non-None means recipes may
+    #: carry two layers (_base_recipe/_local_recipe), the base layer closes
+    #: under this task's contract and the kernel runs a recursive base gate.
+    base_task: str | None = None
+    #: Task consumes datasets through the finetune-family config: the
+    #: finetune_preset_path fallback, survival/multilabel sidecar inference,
+    #: and the explicit config-decision check apply.
+    uses_finetune_config: bool = False
+    #: required_channels decision vs config preset_build consistency check.
+    enforces_required_channels: bool = False
+    #: Task writes its own complete plan bundle (multi-run) via write_plan;
+    #: the kernel skips the generic single-run materialization and the flat
+    #: command-emptiness preflight check.
+    materializes_plan: bool = False
+
+    def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
+        """Full replacement for the kernel's per-section recipe contract walk
+        (task_recipe_contract_issues + execution_contract_issues); None means
+        use the generic path."""
+        return None
+
+    def config_override_issues(
+        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+    ) -> list[DecisionIssue] | None:
+        """None: the kernel runs its generic flat config-contract block.
+        Non-None: the kernel skips that block and appends these issues at the
+        original override position (after index issues)."""
+        return None
+
+    def preflight_issues(
+        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None, *, unlock_final_test: bool
+    ) -> list[DecisionIssue]:
+        """Extra issues evaluated only during preflight_plan (not doctor)."""
+        return []
+
+    def write_plan(self, recipe: dict[str, Any], out: Path, *, unlock_final_test: bool) -> None:
+        """Materialize the full plan bundle; called only when
+        materializes_plan is True."""
+        raise NotImplementedError
+
+    def planned_plan_paths(
+        self,
+        recipe: dict[str, Any],
+        out: Path,
+        report: DecisionReport,
+        *,
+        allow_unresolved: bool,
+        unlock_final_test: bool,
+    ) -> list[Path] | None:
+        """Full replacement for the kernel's expected-output path list
+        (both the blocked and success branches); None means use the generic
+        single-run path list."""
+        return None
 
     def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
         """Externally-managed runtime directory for a planned managed run;
