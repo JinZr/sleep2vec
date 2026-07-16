@@ -843,6 +843,14 @@ def _validate_adaptive_recipe(recipe: dict[str, Any]) -> None:
     uses_external = objective.startswith("test_") or objective.startswith("external_")
     if uses_external and adaptive.get("test_feedback_for_selection") is not True:
         raise ValueError("adaptive.test_feedback_for_selection=true is required for test/external objectives.")
+    # Both strategies derive their search space from parameters (envelopes for
+    # agent_proposal, neighborhood mutation for best_neighborhood); explicit
+    # configuration points are only valid in derived round recipes.
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    if "configurations" in search:
+        raise ValueError("Adaptive source recipes must declare search.parameters, not search.configurations.")
+    if not search.get("parameters"):
+        raise ValueError("Adaptive source recipes must declare a non-empty search.parameters mapping.")
 
 
 def _adaptive(recipe: dict[str, Any]) -> dict[str, Any]:
@@ -1308,7 +1316,11 @@ def _numeric_neighbors(value: int | float) -> list[int | float]:
 
 
 def _hparam_count(recipe: dict[str, Any]) -> int:
-    params = (recipe.get("search") or {}).get("parameters") or {}
+    search = recipe.get("search") or {}
+    configurations = search.get("configurations") or []
+    if configurations:
+        return len(configurations)
+    params = search.get("parameters") or {}
     count = 1
     for choices in params.values():
         count *= len(choices)

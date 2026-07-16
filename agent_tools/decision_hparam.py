@@ -73,7 +73,7 @@ _HPARAM_INPUT_FIELDS = {
     "override_dataset_names",
     "pretrained_backbone_path",
 }
-_HPARAM_SEARCH_FIELDS = {"max_runs", "max_trials", "method", "parameters"}
+_HPARAM_SEARCH_FIELDS = {"configurations", "max_runs", "max_trials", "method", "parameters"}
 
 
 def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
@@ -325,7 +325,20 @@ def hparam_tune_issues(
                 {"method": search.get("method")},
             )
         )
-    if not search.get("parameters"):
+    configurations = search.get("configurations")
+    if "configurations" in search and search.get("parameters"):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "hparam_search_space",
+                "search.parameters and search.configurations are mutually exclusive.",
+                None,
+                {"parameters": search.get("parameters"), "configurations": configurations},
+            )
+        )
+    elif "configurations" in search:
+        issues.extend(_hparam_search_configurations_issues(configurations))
+    elif not search.get("parameters"):
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     else:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
@@ -720,7 +733,25 @@ def _hparam_search_parameter_issues(parameters: Any) -> list[DecisionIssue]:
                 {"parameters": parameters},
             )
         ]
-    allowed_runtime = {
+    for key, values in parameters.items():
+        if not isinstance(values, list) or not values:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "hparam_search_space",
+                    "Each search parameter must have a non-empty list of values.",
+                    None,
+                    {"parameter": key, "value": values},
+                )
+            )
+        key_issue = _search_key_issue(key)
+        if key_issue is not None:
+            issues.append(key_issue)
+    return issues
+
+
+_ALLOWED_RUNTIME_SEARCH_FIELDS = frozenset(
+    {
         "lr",
         "weight_decay",
         "batch_size",
@@ -734,39 +765,58 @@ def _hparam_search_parameter_issues(parameters: Any) -> list[DecisionIssue]:
         "check_val_every_n_epoch",
         "ckpt_every_n_epochs",
     }
-    for key, values in parameters.items():
-        if not isinstance(values, list) or not values:
+)
+
+
+def _search_key_issue(key: Any) -> DecisionIssue | None:
+    if isinstance(key, str) and key.startswith("runtime."):
+        runtime_name = key.split(".", 1)[1]
+        if runtime_name not in _ALLOWED_RUNTIME_SEARCH_FIELDS:
+            return DecisionIssue(
+                DecisionStatus.FAIL,
+                "hparam_search_space",
+                "Unsupported runtime search parameter.",
+                None,
+                {"parameter": key, "allowed_runtime": sorted(_ALLOWED_RUNTIME_SEARCH_FIELDS)},
+            )
+        return None
+    if isinstance(key, str) and key.startswith("yaml:/"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "hparam_search_space",
+        "Search parameters must use runtime.<name> or yaml:/json/pointer/path keys.",
+        None,
+        {"parameter": key},
+    )
+
+
+def _hparam_search_configurations_issues(configurations: Any) -> list[DecisionIssue]:
+    if not isinstance(configurations, list) or not configurations:
+        return [
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "hparam_search_space",
+                "search.configurations must be a non-empty list of configuration points.",
+                None,
+                {"configurations": configurations},
+            )
+        ]
+    issues: list[DecisionIssue] = []
+    for index, point in enumerate(configurations):
+        if not isinstance(point, dict) or not point:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
                     "hparam_search_space",
-                    "Each search parameter must have a non-empty list of values.",
+                    "Each search configuration must be a non-empty mapping of search keys to values.",
                     None,
-                    {"parameter": key, "value": values},
+                    {"configuration_index": index, "value": point},
                 )
             )
-        if isinstance(key, str) and key.startswith("runtime."):
-            runtime_name = key.split(".", 1)[1]
-            if runtime_name not in allowed_runtime:
-                issues.append(
-                    DecisionIssue(
-                        DecisionStatus.FAIL,
-                        "hparam_search_space",
-                        "Unsupported runtime search parameter.",
-                        None,
-                        {"parameter": key, "allowed_runtime": sorted(allowed_runtime)},
-                    )
-                )
-        elif isinstance(key, str) and key.startswith("yaml:/"):
             continue
-        else:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "hparam_search_space",
-                    "Search parameters must use runtime.<name> or yaml:/json/pointer/path keys.",
-                    None,
-                    {"parameter": key},
-                )
-            )
+        for key in point:
+            key_issue = _search_key_issue(key)
+            if key_issue is not None:
+                issues.append(key_issue)
     return issues

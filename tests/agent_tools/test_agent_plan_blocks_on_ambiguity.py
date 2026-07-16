@@ -1048,6 +1048,32 @@ def test_finetune_plan_honors_runtime_wandb_mode_cli(tmp_path: Path):
     assert "WANDB_MODE=" not in script
 
 
+def test_hparam_plan_expands_explicit_configurations_to_exact_runs(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"] = {
+        "method": "grid",
+        "max_runs": 2,
+        "configurations": [
+            {"runtime.lr": 1.0e-6, "runtime.weight_decay": 1.0e-5},
+            {"runtime.lr": 2.0e-6, "runtime.weight_decay": 1.0e-6},
+        ],
+    }
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    runs = json.loads((output_dir / "plan.json").read_text())["runs"]
+    assert len(runs) == 2  # two points, not the 2x2 cartesian product
+    observed = [(run["runtime.lr"], run["runtime.weight_decay"]) for run in runs]
+    assert observed == [(1.0e-6, 1.0e-5), (2.0e-6, 1.0e-6)]
+    for run, expected_lr in zip(runs, (1.0e-6, 2.0e-6)):
+        script = Path(run["script"]).read_text()
+        assert f"--lr {expected_lr}" in script
+
+
 def test_hparam_run_script_honors_base_runtime_wandb_mode_cli(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())

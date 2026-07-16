@@ -2006,6 +2006,60 @@ def test_hparam_count_does_not_materialize_search_values():
     assert adaptive_hparam._hparam_count(recipe) == 1_000_000
 
 
+def test_hparam_count_uses_configuration_point_count():
+    recipe = {
+        "search": {
+            "configurations": [
+                {"runtime.lr": 1e-6, "runtime.batch_size": 8},
+                {"runtime.lr": 2e-6, "runtime.batch_size": 16},
+            ],
+        }
+    }
+
+    assert adaptive_hparam._hparam_count(recipe) == 2
+
+
+def test_hparam_combos_expands_configuration_points_exactly_and_truncates_by_max_runs():
+    points = [
+        {"runtime.lr": 1e-6, "yaml:/model/head/name": "classification"},
+        {"runtime.lr": 2e-6, "yaml:/model/head/name": "regression"},
+    ]
+
+    combos = plan_hparam.hparam_combos({"search": {"configurations": points, "max_runs": 2}})
+    assert combos == points
+    assert combos[0] is not points[0]  # defensive copy
+
+    truncated = plan_hparam.hparam_combos({"search": {"configurations": points, "max_runs": 1}})
+    assert truncated == points[:1]
+
+
+def test_has_yaml_search_overrides_sees_configuration_point_keys():
+    assert plan_hparam.has_yaml_search_overrides(
+        {"search": {"configurations": [{"yaml:/model/dim": 128}]}}
+    )
+    assert not plan_hparam.has_yaml_search_overrides(
+        {"search": {"configurations": [{"runtime.lr": 1e-6}]}}
+    )
+
+
+@pytest.mark.parametrize("strategy", ["best_neighborhood", "agent_proposal"])
+def test_adaptive_source_recipe_rejects_search_configurations(tmp_path: Path, strategy: str):
+    recipe_path = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe_path.read_text())
+    payload["search"] = {
+        "method": "grid",
+        "max_runs": 1,
+        "configurations": [{"runtime.lr": 1e-6}],
+    }
+    payload["adaptive"]["suggest"] = {"strategy": strategy}
+    if strategy == "agent_proposal":
+        payload["adaptive"].pop("replacement", None)
+    write_yaml(recipe_path, payload)
+
+    with pytest.raises(ValueError, match="search.parameters, not search.configurations"):
+        adaptive_hparam.init_adaptive_workflow(recipe_path, tmp_path / "workflow")
+
+
 def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=2)
     workflow_dir = tmp_path / "workflow"
