@@ -253,8 +253,6 @@ def _materialize_decisions(
         "eval_split": ("inputs", "eval_split"),
         "final_eval_config_path": ("inputs", "final_eval_config_path"),
         "min_channels": ("preset", "min_channels"),
-        "hparam_search_space": ("search", "parameters"),
-        "hparam_budget": ("search", "max_runs"),
         "final_eval_unlock": ("evaluation_policy", "final_test_unlocked"),
         "test_after_fit": ("evaluation_policy", "test_after_fit"),
     }

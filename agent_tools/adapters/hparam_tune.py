@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..decision_hparam import HPARAM_BASE_TASK, hparam_recipe_contract_issues, hparam_tune_issues
+from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, ResolvedDecision
 from ..models import coerce_list
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values
@@ -28,10 +28,14 @@ class HparamTuneAdapter(TaskAdapter):
             "test_after_fit",
         }
     )
-    base_task = HPARAM_BASE_TASK
+    base_task = "finetune"
     uses_finetune_config = True
     enforces_required_channels = True
     materializes_plan = True
+    decision_recipe_targets = {
+        "hparam_search_space": ("search", "parameters"),
+        "hparam_budget": ("search", "max_runs"),
+    }
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS

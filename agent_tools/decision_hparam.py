@@ -9,11 +9,6 @@ from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, ne
 from .decision_paths import multilabel_sidecar_issue
 from .models import REPO_ROOT
 
-# Transitional: hparam_tune's base recipe is gated under the finetune task
-# contract. This constant (and its call sites) disappears when hparam_tune
-# migrates to a TaskAdapter.
-HPARAM_BASE_TASK = "finetune"
-
 _HPARAM_EXECUTION_FIELDS = {
     "target",
     "host",
