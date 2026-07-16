@@ -81,6 +81,16 @@ def test_cli_has_exactly_32_subcommands():
     assert len(subcommands) == 32
 
 
+def test_hparam_adaptive_step_cli_contract():
+    parser, subcommands = _parser_contract()
+    actions = _actions(subcommands["hparam-adaptive-step"])
+    args = parser.parse_args(["hparam-adaptive-step", "--workflow-dir", "workflow"])
+
+    assert {name for name, action in actions.items() if action.required} == {"workflow_dir"}
+    assert args.proposal is None
+    assert args.execute is False
+
+
 def test_plan_cli_contract():
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["plan"])
