@@ -103,4 +103,3 @@ def test_write_targets_resolve_from_schema_map():
     for adapter in all_adapters():
         expected = schema_map.merged_write_targets(dict(adapter.decision_recipe_targets))
         assert plans._resolve_write_targets(adapter.task) == expected
-

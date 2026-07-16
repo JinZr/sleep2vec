@@ -118,8 +118,6 @@ def merged_write_targets(adapter_targets: dict[str, tuple[str, str]]) -> dict[st
     Equivalent to plans._materialize_decisions' ``canonical_fields`` base dict
     plus ``canonical_fields.update(adapter.decision_recipe_targets)``.
     """
-    targets = {
-        name: spec.write_target for name, spec in BASE_RECIPE_FIELDS.items() if spec.write_target is not None
-    }
+    targets = {name: spec.write_target for name, spec in BASE_RECIPE_FIELDS.items() if spec.write_target is not None}
     targets.update(adapter_targets)
     return targets
