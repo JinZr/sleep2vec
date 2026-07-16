@@ -7,10 +7,7 @@ from .adapters import all_adapters
 from .adapters.config_providers import CONFIG_SUMMARY_PROVIDERS
 from .adapters.sleep2stat import sleep2stat_config_summary  # noqa: F401 -- test-frozen import path
 from .domain.finetune_summary import finetune_summary_body
-from .models import (  # noqa: F401 -- load_yaml re-exported for existing importers
-    load_yaml,
-    resolve_repo_path,
-)
+from .models import load_yaml, resolve_repo_path  # noqa: F401 -- load_yaml re-exported for existing importers
 
 
 def config_summary(

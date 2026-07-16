@@ -7,6 +7,7 @@ from typing import Any
 
 from .adaptive_hparam import adaptive_loop, adaptive_step, digest_hparam_run, init_adaptive_workflow, suggest_next_round
 from .configs import config_summary
+from .domain.presets import preset_summary
 from .experiments import (
     finalize_experiment,
     index_checkpoints,
@@ -32,7 +33,6 @@ from .index_csv import index_summary
 from .markdown import report_text
 from .models import json_ready
 from .plans import build_context, build_plan, collect_runs, evaluate_recipe, prepare_doctor_report, write_doctor_outputs
-from .domain.presets import preset_summary
 from .progress import format_progress, read_progress
 from .repo import repo_summary
 from .skills import list_skills, validate_skills
