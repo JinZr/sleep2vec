@@ -120,6 +120,16 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
         ],
     )
     monitor_hparam_runs(round_dir)
+    rows = _digest_rows(round_dir, round_index, workspace)
+    write_rows(out, rows)
+    write_text(out_dir / f"round_{round_index:03d}.md", _digest_markdown(rows, _objective(workflow_root, recipe)))
+    _append_event(workflow_root, "digest", {"round": round_index, "path": str(out), "rows": len(rows)})
+    _write_incumbent(workflow_root, rows, _objective(workflow_root, recipe), round_index)
+    return out
+
+
+def _digest_rows(round_dir: Path, round_index: int, workspace: Path) -> list[dict[str, Any]]:
+    plan = artifacts.read_hparam_plan(round_dir)
     plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
     status_rows = {
         managed_run_key(row): row for row in read_run_manifest(workspace) if managed_run_key(row) in plan_keys
@@ -163,11 +173,7 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
         row["status"] = status.get("status", "")
         row["pid"] = status.get("pid", "")
         rows.append(row)
-    write_rows(out, rows)
-    write_text(out_dir / f"round_{round_index:03d}.md", _digest_markdown(rows, _objective(workflow_root, recipe)))
-    _append_event(workflow_root, "digest", {"round": round_index, "path": str(out), "rows": len(rows)})
-    _write_incumbent(workflow_root, rows, _objective(workflow_root, recipe), round_index)
-    return out
+    return rows
 
 
 def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | None = None) -> Path:
@@ -249,13 +255,37 @@ def _round_is_terminal(round_dir: Path, workspace: Path) -> bool:
     return bool(run_keys) and all(canonical_by_key.get(key, {}).get("status") in TERMINAL_STATUSES for key in run_keys)
 
 
-def _write_agent_proposal_input(
+def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, str]]:
+    source_round = _latest_round_index(root)
+    rows = _digest_rows(_round_dir(root, source_round), source_round, workspace)
+    return [{key: "" if value is None else str(value) for key, value in row.items()} for row in rows]
+
+
+def _source_config_sha256(recipe: dict[str, Any]) -> str:
+    source_config = (recipe.get("inputs") or {}).get("config")
+    config_path = resolve_repo_path(source_config)
+    if config_path is None or not config_path.exists():
+        raise ValueError(f"Cannot hash missing source config: {source_config}")
+    return file_sha256(config_path)
+
+
+def _bound_source_config_bytes(recipe: dict[str, Any], expected_sha256: str) -> bytes:
+    source_config = (recipe.get("inputs") or {}).get("config")
+    config_path = resolve_repo_path(source_config)
+    if config_path is None or not config_path.exists():
+        raise ValueError(f"Cannot read missing source config: {source_config}")
+    config_bytes = config_path.read_bytes()
+    if hashlib.sha256(config_bytes).hexdigest() != expected_sha256:
+        raise ValueError("Adaptive source config changed after the proposal input was created.")
+    return config_bytes
+
+
+def _agent_proposal_input_payload(
     root: Path,
     workflow: dict[str, Any],
     recipe: dict[str, Any],
-    digest: Path,
     rows: list[dict[str, Any]],
-) -> Path:
+) -> dict[str, Any]:
     source_round = _latest_round_index(root)
     target_round = _next_round_index(root)
     adaptive = _adaptive(recipe)
@@ -273,7 +303,7 @@ def _write_agent_proposal_input(
         raise ValueError("Adaptive budget is exhausted; no agent proposal can be requested.")
     suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
     parameters = (recipe.get("search") or {}).get("parameters") or {}
-    input_payload = {
+    return {
         "source_round": source_round,
         "target_round": target_round,
         "objective": _objective(root, recipe),
@@ -285,8 +315,21 @@ def _write_agent_proposal_input(
         "digest_rows": rows,
         "parameter_envelopes": adaptive_proposals.validate_parameter_envelopes(parameters, suggest.get("bounds")),
         "resolved_recipe_sha256": adaptive_proposals.canonical_sha256(_strip_internal_recipe_keys(recipe)),
+        "source_config_sha256": _source_config_sha256(recipe),
         "execution_identity": copy.deepcopy(workflow["execution_identity"]),
     }
+
+
+def _write_agent_proposal_input(
+    root: Path,
+    workflow: dict[str, Any],
+    recipe: dict[str, Any],
+    digest: Path,
+    rows: list[dict[str, Any]],
+) -> Path:
+    input_payload = _agent_proposal_input_payload(root, workflow, recipe, rows)
+    source_round = input_payload["source_round"]
+    target_round = input_payload["target_round"]
     request_id = adaptive_proposals.proposal_request_id(input_payload)
     id12 = request_id.removeprefix("sha256:")[:12]
     proposal_path = root / "adaptive" / "proposal_submissions" / f"round_{target_round:03d}--{id12}.json"
@@ -300,6 +343,7 @@ def _write_agent_proposal_input(
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
     exp_io.validate_managed_output_paths(workspace, [input_path, proposal_path, workspace / "events.jsonl"])
     text = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    input_sha256 = hashlib.sha256(text.encode()).hexdigest()
     created = not input_path.exists()
     if created:
         input_path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,10 +360,87 @@ def _write_agent_proposal_input(
                 "digest": str(digest),
                 "request_id": request_id,
                 "input_path": str(input_path),
+                "input_sha256": input_sha256,
                 "proposal_path": str(proposal_path),
             },
         )
     return input_path
+
+
+def _validate_proposal_request_event(
+    workspace: Path,
+    proposal_input: dict[str, Any],
+    input_path: Path,
+    input_sha256: str,
+    proposal_path: Path,
+) -> None:
+    snapshot = proposal_input["input"]
+    events_path = workspace / "events.jsonl"
+    exp_io.validate_managed_output_paths(workspace, [events_path])
+    if not events_path.exists():
+        raise ValueError("Agent proposal input was not issued by phase one.")
+    related = []
+    for line in events_path.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed experiment event log: {events_path}") from exc
+        if not isinstance(event, dict):
+            raise ValueError(f"Experiment event log contains a non-object row: {events_path}")
+        if event.get("event_type") != "agent_proposal_requested":
+            continue
+        if event.get("request_id") == proposal_input["request_id"]:
+            related.append(event)
+    if len(related) != 1:
+        raise ValueError("Agent proposal input has no unique phase-one issuance record.")
+    event = related[0]
+    expected = {
+        "source_round": snapshot["source_round"],
+        "target_round": snapshot["target_round"],
+        "request_id": proposal_input["request_id"],
+        "input_path": str(input_path),
+        "input_sha256": input_sha256,
+        "proposal_path": str(proposal_path),
+    }
+    if any(event.get(field) != value for field, value in expected.items()):
+        raise ValueError("Agent proposal input differs from its phase-one issuance record.")
+
+
+def _validated_agent_proposal_input(
+    root: Path,
+    workflow: dict[str, Any],
+    recipe: dict[str, Any],
+    workspace: Path,
+    input_path: Path,
+    proposal_path: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    input_bytes = input_path.read_bytes()
+    input_sha256 = hashlib.sha256(input_bytes).hexdigest()
+    if expected_sha256 is not None and input_sha256 != expected_sha256:
+        raise ValueError("Agent proposal input snapshot changed during validation.")
+    proposal_input = adaptive_proposals.load_strict_json(input_bytes.decode(), source=str(input_path))
+    proposal_input = adaptive_proposals.validate_proposal_input(proposal_input)
+    if Path(proposal_input["expected_proposal_path"]) != proposal_path:
+        raise ValueError("Proposal input expected path does not match its request id and target round.")
+    _validate_proposal_request_event(workspace, proposal_input, input_path, input_sha256, proposal_path)
+    snapshot = proposal_input["input"]
+    recipe_hash = adaptive_proposals.canonical_sha256(_strip_internal_recipe_keys(recipe))
+    if snapshot["resolved_recipe_sha256"] != recipe_hash:
+        raise ValueError("Adaptive source recipe changed after the proposal input was created.")
+    if snapshot["source_config_sha256"] != _source_config_sha256(recipe):
+        raise ValueError("Adaptive source config changed after the proposal input was created.")
+    if snapshot["execution_identity"] != workflow["execution_identity"]:
+        raise ValueError("Adaptive execution identity changed after the proposal input was created.")
+    if snapshot["source_round"] != _latest_round_index(root) or snapshot["target_round"] != _next_round_index(root):
+        raise ValueError("Agent proposal round binding is stale.")
+    if not _round_is_terminal(_round_dir(root, snapshot["source_round"]), workspace):
+        raise ValueError("Agent proposal source round is no longer terminal.")
+    authoritative = _agent_proposal_input_payload(root, workflow, recipe, _proposal_digest_rows(root, workspace))
+    if snapshot != authoritative:
+        raise ValueError("Agent proposal input does not match the current authoritative snapshot.")
+    return proposal_input, input_sha256
 
 
 def _load_agent_proposal(
@@ -348,26 +469,14 @@ def _load_agent_proposal(
         raise ValueError("Proposal target_round must be a positive integer.")
     id12 = request_id.removeprefix("sha256:")[:12]
     input_path = root / "adaptive" / "proposal_inputs" / f"round_{target_round:03d}--{id12}.json"
-    exp_io.validate_managed_output_paths(workspace, [proposal_file, input_path])
-    input_bytes = input_path.read_bytes()
-    input_sha256 = hashlib.sha256(input_bytes).hexdigest()
-    proposal_input = adaptive_proposals.load_strict_json(input_bytes.decode(), source=str(input_path))
-    proposal_input = adaptive_proposals.validate_proposal_input(proposal_input)
     expected_proposal_path = root / "adaptive" / "proposal_submissions" / f"round_{target_round:03d}--{id12}.json"
-    if Path(proposal_input["expected_proposal_path"]) != expected_proposal_path:
-        raise ValueError("Proposal input expected path does not match its request id and target round.")
+    exp_io.validate_managed_output_paths(workspace, [proposal_file, input_path])
+    proposal_input, input_sha256 = _validated_agent_proposal_input(
+        root, workflow, recipe, workspace, input_path, expected_proposal_path
+    )
     if proposal_file != expected_proposal_path:
         raise ValueError("Proposal path does not match the bound input snapshot.")
     validated = adaptive_proposals.validate_proposal(proposal, proposal_input)
-    snapshot = proposal_input["input"]
-    if snapshot["resolved_recipe_sha256"] != adaptive_proposals.canonical_sha256(_strip_internal_recipe_keys(recipe)):
-        raise ValueError("Adaptive source recipe changed after the proposal input was created.")
-    if snapshot["execution_identity"] != workflow["execution_identity"]:
-        raise ValueError("Adaptive execution identity changed after the proposal input was created.")
-    if snapshot["source_round"] != _latest_round_index(root) or snapshot["target_round"] != _next_round_index(root):
-        raise ValueError("Agent proposal round binding is stale.")
-    if not _round_is_terminal(_round_dir(root, snapshot["source_round"]), workspace):
-        raise ValueError("Agent proposal source round is no longer terminal.")
     if _budget_exhausted(root, recipe, prospective_runs=validated["max_runs"]):
         raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
     accepted_path = root / "adaptive" / "proposals" / f"round_{target_round:03d}.json"
@@ -671,6 +780,9 @@ def adaptive_step(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    bound_config_path: Path | None = None
+    bound_config_sha256: str | None = None
+    round_recipe_payload: dict[str, Any] | None = None
 
     if strategy == "agent_proposal" and proposal_path is None:
         digest = digest_hparam_run(round_dir)
@@ -692,7 +804,29 @@ def adaptive_step(
             raise RuntimeError(
                 f"Agent proposal failed preflight with exit code {candidate_preflight.exit_code}: {details}"
             )
+        workflow = _workflow(root)
+        recipe, _, current_preflight = preflight_plan(recipe_path=workflow["recipe_path"], output_dir=next_dir)
+        if current_preflight.exit_code != 0:
+            details = "; ".join(f"{issue.field}: {issue.message}" for issue in current_preflight.blocking_issues())
+            raise RuntimeError(
+                f"Adaptive source recipe failed preflight with exit code {current_preflight.exit_code}: {details}"
+            )
+        recipe = _with_workflow_execution(recipe, workflow)
+        workspace = experiment_root(recipe)
+        if workspace is None:
+            raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
         if not execute:
+            _validated_agent_proposal_input(
+                root,
+                workflow,
+                recipe,
+                workspace,
+                input_path,
+                proposal_file,
+                expected_sha256=input_sha256,
+            )
+            if file_sha256(proposal_file) != proposal_sha256:
+                raise ValueError("Agent proposal submission changed during validation.")
             return proposal_file
 
         next_run_count = _hparam_count(next_recipe)
@@ -701,6 +835,20 @@ def adaptive_step(
             next_run_count = min(next_run_count, int(next_max_runs))
         if _budget_exhausted(root, recipe, prospective_runs=next_run_count):
             raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
+        proposal_input, _ = _validated_agent_proposal_input(
+            root,
+            workflow,
+            recipe,
+            workspace,
+            input_path,
+            proposal_file,
+            expected_sha256=input_sha256,
+        )
+        bound_config_sha256 = proposal_input["input"]["source_config_sha256"]
+        bound_config_bytes = _bound_source_config_bytes(recipe, bound_config_sha256)
+        bound_config_path = next_dir / "source_config.yaml"
+        candidate_payload.setdefault("inputs", {})["config"] = str(bound_config_path)
+        round_recipe_payload = candidate_payload
         if file_sha256(proposal_file) != proposal_sha256 or file_sha256(input_path) != input_sha256:
             raise ValueError("Agent proposal submission or input snapshot changed during validation.")
         accepted_path = root / "adaptive" / "proposals" / f"round_{next_round:03d}.json"
@@ -717,10 +865,13 @@ def adaptive_step(
                 rationale_path,
                 workspace / "events.jsonl",
                 root / "adaptive" / "run_registry.tsv",
+                bound_config_path,
                 next_dir / "round_recipe.yaml",
             ],
         )
         _reject_unresolved_launch_attempts(root, workspace)
+        bound_config_path.parent.mkdir(parents=True, exist_ok=True)
+        bound_config_path.write_bytes(bound_config_bytes)
         accepted_path.parent.mkdir(parents=True, exist_ok=True)
         suggestion_dir.mkdir(parents=True, exist_ok=True)
         write_json(
@@ -769,8 +920,37 @@ def adaptive_step(
         # Retiring current runs is allowed only when the complete replacement round fits the remaining budget.
         budget_exhausted = execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count)
     if execute and not budget_exhausted:
-        round_recipe = _write_round_recipe(load_recipe_with_base(suggestion), suggestion, next_dir, next_round)
-        report = build_plan(recipe_path=round_recipe, output_dir=next_dir)
+        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
+            raise ValueError("Agent proposal frozen source config changed before round materialization.")
+        recipe_payload = round_recipe_payload if round_recipe_payload is not None else load_recipe_with_base(suggestion)
+        recipe_source = workflow["recipe_path"] if round_recipe_payload is not None else suggestion
+        expected_recipe = (
+            _materialized_round_recipe(recipe_payload, recipe_source, next_round)
+            if round_recipe_payload is not None
+            else None
+        )
+        expected_base_recipe = (
+            _strip_internal_recipe_keys(copy.deepcopy(recipe["_base_recipe"]))
+            if round_recipe_payload is not None and isinstance(recipe.get("_base_recipe"), dict)
+            else None
+        )
+        round_recipe = _write_round_recipe(
+            recipe_payload,
+            recipe_source,
+            next_dir,
+            next_round,
+        )
+        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
+            raise ValueError("Agent proposal frozen source config changed during round materialization.")
+        report = build_plan(
+            recipe_path=round_recipe,
+            output_dir=next_dir,
+            source_config_sha256=bound_config_sha256,
+            expected_recipe=expected_recipe,
+            expected_base_recipe=expected_base_recipe,
+        )
+        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
+            raise ValueError("Agent proposal frozen source config changed during plan materialization.")
         if report.exit_code != 0:
             raise RuntimeError(f"Round {next_round:03d} plan failed with exit code {report.exit_code}.")
         _append_registry_rows(root, next_round, next_dir)
@@ -949,6 +1129,15 @@ def _write_round_recipe(
     recipe: dict[str, Any], source_recipe_path: str | Path, round_dir: Path, round_index: int
 ) -> Path:
     round_dir.mkdir(parents=True, exist_ok=True)
+    copied = _materialized_round_recipe(recipe, source_recipe_path, round_index)
+    target = round_dir / "round_recipe.yaml"
+    target.write_text(yaml.safe_dump(copied, sort_keys=False))
+    return target
+
+
+def _materialized_round_recipe(
+    recipe: dict[str, Any], source_recipe_path: str | Path, round_index: int
+) -> dict[str, Any]:
     source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
     copied = _strip_internal_recipe_keys(copy.deepcopy(source))
     if isinstance(recipe.get("execution"), dict):
@@ -961,9 +1150,7 @@ def _write_round_recipe(
     if copied.get("base_recipe"):
         copied["base_recipe"] = str(_resolve_base_recipe(source_recipe_path, copied["base_recipe"]))
     copied["name"] = f"{recipe_name(recipe)}-round-{round_index:03d}"
-    target = round_dir / "round_recipe.yaml"
-    target.write_text(yaml.safe_dump(copied, sort_keys=False))
-    return target
+    return copied
 
 
 def _resolve_base_recipe(recipe_path: str | Path, base_recipe: str | Path) -> Path:

@@ -45,6 +45,7 @@ def _input_payload(
         ],
         "parameter_envelopes": validate_parameter_envelopes(parameters, bounds),
         "resolved_recipe_sha256": "a" * 64,
+        "source_config_sha256": "c" * 64,
         "execution_identity": {"target": "local", "runtime_commit": "b" * 40},
     }
 
@@ -146,6 +147,48 @@ def test_request_id_is_canonical_and_does_not_depend_on_submission_path():
     assert first["request_id"] == second["request_id"]
     assert first["request_id"] == f"sha256:{canonical_sha256(first['input'])}"
     assert validate_proposal_input(first) == first
+
+
+def test_request_id_binds_source_config_hash():
+    original = _input_payload()
+    modified = copy.deepcopy(original)
+    modified["source_config_sha256"] = "d" * 64
+
+    assert proposal_request_id(original) != proposal_request_id(modified)
+
+
+@pytest.mark.parametrize("source_config_sha256", ["C" * 64, "c" * 63, "g" * 64, 1])
+def test_validate_proposal_input_requires_lowercase_source_config_sha256(source_config_sha256):
+    input_payload = _input_payload()
+    input_payload["source_config_sha256"] = source_config_sha256
+
+    with pytest.raises(ValueError, match="source_config_sha256.*lowercase 64-hex"):
+        build_proposal_input(input_payload, expected_proposal_path="proposal.json")
+
+
+def test_build_proposal_input_requires_source_config_sha256():
+    input_payload = _input_payload()
+    del input_payload["source_config_sha256"]
+
+    with pytest.raises(ValueError, match="missing field.*source_config_sha256"):
+        build_proposal_input(input_payload, expected_proposal_path="proposal.json")
+
+
+def test_validate_proposal_input_rejects_v1_snapshot():
+    snapshot = _snapshot()
+    snapshot["schema_version"] = 1
+
+    with pytest.raises(ValueError, match="schema_version must be 2"):
+        validate_proposal_input(snapshot)
+
+
+def test_v2_input_accepts_v1_proposal_submission():
+    snapshot = _snapshot()
+    proposal = _proposal(snapshot)
+
+    assert snapshot["schema_version"] == 2
+    assert proposal["schema_version"] == 1
+    assert validate_proposal(proposal, snapshot)["request_id"] == snapshot["request_id"]
 
 
 def test_validate_proposal_input_rejects_tampered_snapshot():
