@@ -1,0 +1,66 @@
+name: sex_age_multilabel_finetune_example
+task: finetune
+variant: sex_age_baseline
+
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: train
+  purpose: ASK_USER
+
+inputs:
+  config: configs/sex_age_baseline/multilabel.yaml
+  label_name: disease_multilabel
+  ckpt_path: null
+
+runtime:
+  devices: [0]
+  precision: bf16-mixed
+  epochs: 30
+  batch_size: 256
+  num_workers: 8
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+artifacts:
+  version_name: sex-age-multilabel-agent-example
+  results_csv_path: results/sex_age_multilabel_agent_example.csv
+  overwrite: false
+
+evaluation_policy:
+  selection_metric: val_macro_auroc
+  selection_mode: max
+  selection_split: val
+  external_test_locked: true
+  test_after_fit: false
+
+decisions:
+  task:
+    value: finetune
+    source: explicit_recipe
+  label_name:
+    value: disease_multilabel
+    source: explicit_recipe
+  pretrained_backbone_path:
+    value: null
+    source: explicit_recipe
+    meaning: "sex_age_baseline has no pretrained backbone"
+  train_val_test_policy:
+    value: "select on val; keep test locked"
+    source: explicit_recipe
+  external_test_locked:
+    value: true
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe
+  required_channels:
+    value: []
+    source: explicit_config

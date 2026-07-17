@@ -1,0 +1,53 @@
+name: sleep2stat_spo2_respiratory_template
+task: sleep2stat
+
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: analyze
+  purpose: ASK_USER
+
+inputs:
+  config: configs/sleep2stat/spo2_respiratory_v02.yaml
+  split: [test]
+
+runtime:
+  device: cpu
+  num_workers: 4
+  batch_size: null
+  limit_records: null
+  dry_run: false
+  summarize_after_run: true
+  plot_cohort_after_run: true
+  plot_group_column: source
+
+artifacts:
+  run_dir: results/sleep2stat/spo2_respiratory_v02
+  overwrite: false
+
+execution:
+  target: local
+  path_context: local
+  path_validation: local
+
+evaluation_policy:
+  external_test_locked: true
+
+decisions:
+  task:
+    value: sleep2stat
+    source: explicit_recipe
+  sleep2stat_split_policy:
+    value: "Generate SpO2/desaturation summaries for descriptive respiratory burden review; do not select desaturation thresholds using external test outputs."
+    source: explicit_recipe
+  sleep2stat_metric_use_policy:
+    value: "Treat ODI/T90/desaturation burden as signal-derived metrics; event-related hypoxic burden is a proxy unless respiratory event annotations are configured."
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe

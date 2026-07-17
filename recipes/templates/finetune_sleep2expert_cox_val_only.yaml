@@ -1,0 +1,64 @@
+name: sleep2expert_cox_finetune_example
+task: finetune
+variant: sleep2expert
+
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: ASK_USER
+  phase: train
+  purpose: ASK_USER
+
+inputs:
+  config: configs/sleep2expert/moe/heartbeat_breath_cox_finetune.yaml
+  label_name: incident_cox
+  pretrained_backbone_path: null
+
+runtime:
+  devices: [0]
+  precision: bf16-mixed
+  epochs: 30
+  batch_size: 12
+  num_workers: 8
+  lr: 1.0e-6
+  weight_decay: 1.0e-5
+
+artifacts:
+  version_name: sleep2expert-cox-agent-example
+  results_csv_path: results/sleep2expert_cox_agent_example.csv
+  overwrite: false
+
+evaluation_policy:
+  selection_metric: val_loss
+  selection_mode: min
+  selection_split: val
+  external_test_locked: true
+  test_after_fit: false
+
+decisions:
+  task:
+    value: finetune
+    source: explicit_recipe
+  label_name:
+    value: incident_cox
+    source: explicit_recipe
+  pretrained_backbone_path:
+    value: null
+    source: explicit_recipe
+    meaning: "train downstream model without loading a pretrained backbone"
+  train_val_test_policy:
+    value: "select on val; keep test locked"
+    source: explicit_recipe
+  external_test_locked:
+    value: true
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe
+  required_channels:
+    value: [heartbeat, breath]
+    source: explicit_config

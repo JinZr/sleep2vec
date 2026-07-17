@@ -1,0 +1,1122 @@
+from __future__ import annotations
+
+from copy import deepcopy
+import importlib
+from itertools import combinations
+from pathlib import Path
+
+import pytest
+import yaml
+
+from sleep2vec.config import (
+    BackboneConfig,
+    ChannelAggConfig,
+    ChannelConfig,
+    ClsConfig,
+    HeadConfig,
+    ModelConfig,
+    ProjectionConfig,
+    TemporalAggConfig,
+    TokenizerConfig,
+    load_finetune_config,
+    load_pretrain_config,
+    validate_model_config,
+)
+from wrist2vec.config import (
+    load_pretrain_config as load_wrist2vec_pretrain_config,
+    validate_model_config as validate_wrist2vec_model_config,
+)
+
+
+def _write_yaml(tmp_path: Path, payload: dict, name: str = "config.yaml") -> Path:
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(payload))
+    return path
+
+
+def _base_model_block() -> dict:
+    return {
+        "backbone": {
+            "name": "roformer",
+            "hidden_size": 8,
+            "num_hidden_layers": 3,
+            "num_attention_heads": 2,
+            "vocab_size": 1,
+        },
+        "projection": {
+            "name": "simclr",
+            "enabled": True,
+            "hidden_dim": 8,
+            "out_dim": 4,
+        },
+        "cls": {
+            "embedding_type": None,
+            "downstream": "tokens",
+        },
+        "channels": [
+            {
+                "name": "eeg",
+                "input_dim": 4,
+                "tokenizer": {"name": "linear", "out_dim": 8},
+            },
+            {
+                "name": "ecg",
+                "input_dim": 4,
+                "tokenizer": {"name": "linear", "out_dim": 8},
+            },
+        ],
+    }
+
+
+def _pretrain_payload() -> dict:
+    return {
+        "model": _base_model_block(),
+        "loss": {"name": "info_nce", "temperature": 0.2},
+        "data": {"mask_rate": 0.1, "max_tokens": 4},
+    }
+
+
+def _finetune_payload() -> dict:
+    payload = {
+        "model": _base_model_block(),
+        "data": {
+            "max_tokens": 4,
+            "data_channel_names": ["ecg", "eeg"],
+            "finetune_data_index": "index.csv",
+            "finetune_preset_path": "preset.pkl",
+            "train_dataset_names": ["train_ds"],
+            "test_dataset_names": ["test_ds"],
+            "n_few_shot": 16,
+        },
+        "finetune": {
+            "freeze_tokenizer": True,
+            "loss": {
+                "class_weights": None,
+                "pos_weight": None,
+            },
+            "sampler": {
+                "weighted_random": False,
+            },
+            "lora": {
+                "freeze_backbone_and_insert_lora": False,
+                "insert_lora": True,
+                "separate_adapters": False,
+            },
+            "layer_mix": {
+                "enabled": False,
+                "shared_across_modalities": False,
+                "layer_indices": None,
+            },
+            "task": {
+                "type": "classification",
+                "output_dim": 2,
+                "is_seq": False,
+                "monitor": "val_accuracy",
+                "monitor_mod": "max",
+            },
+        },
+    }
+    payload["model"]["head"] = {
+        "name": "classification",
+        "dropout": 0.1,
+        "hidden_dim": None,
+        "channel_agg": {"name": "mean", "kwargs": {}},
+        "temporal_agg": {"name": "mean", "kwargs": {}},
+    }
+    return payload
+
+
+def _survival_finetune_payload() -> dict:
+    payload = _finetune_payload()
+    payload["model"]["head"]["name"] = "regression"
+    payload["finetune"]["task"] = {
+        "type": "survival",
+        "output_dim": 2,
+        "is_seq": False,
+        "monitor": "val_loss",
+        "monitor_mod": "min",
+    }
+    payload["finetune"]["survival"] = {
+        "key_column": "eid",
+        "disease_columns_index": "disease_columns.txt",
+        "event_time_index": "event_time.csv",
+        "is_event_index": "is_event.csv",
+        "has_label_index": "has_label.csv",
+    }
+    return payload
+
+
+def _multilabel_finetune_payload() -> dict:
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "multilabel_classification",
+        "output_dim": 2,
+        "is_seq": False,
+        "monitor": "val_macro_auroc",
+        "monitor_mod": "max",
+    }
+    payload["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": "disease_columns.txt",
+        "label_index": "label.csv",
+        "has_label_index": "has_label.csv",
+    }
+    return payload
+
+
+def _valid_model_config() -> ModelConfig:
+    channels = [
+        ChannelConfig(
+            name="eeg",
+            input_dim=4,
+            tokenizer=TokenizerConfig(name="linear", out_dim=8),
+        ),
+        ChannelConfig(
+            name="ecg",
+            input_dim=4,
+            tokenizer=TokenizerConfig(name="linear", out_dim=8),
+        ),
+    ]
+    return ModelConfig(
+        channels=channels,
+        backbone=BackboneConfig(
+            name="roformer",
+            hidden_size=8,
+            num_hidden_layers=3,
+            num_attention_heads=2,
+            vocab_size=1,
+        ),
+        projection=ProjectionConfig(name="simclr", enabled=True, hidden_dim=8, out_dim=4),
+        cls=ClsConfig(downstream="tokens", embedding_type=None),
+        head=HeadConfig(
+            channel_agg=ChannelAggConfig(name="mean"),
+            temporal_agg=TemporalAggConfig(name="mean"),
+            name="classification",
+        ),
+    )
+
+
+def test_load_pretrain_config_parses_valid_yaml(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _pretrain_payload())
+    bundle = load_pretrain_config(config_path)
+
+    assert [c.name for c in bundle.model.channels] == ["eeg", "ecg"]
+    assert bundle.model.backbone.hidden_size == 8
+    assert bundle.loss.name == "info_nce"
+    assert bundle.data.backend == "npz"
+    assert bundle.data.kaldi_data_root is None
+    assert bundle.data.kaldi_manifest is None
+    assert bundle.data.max_tokens == 4
+
+
+def test_load_wrist2vec_pretrain_config_parses_token_sec(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["data"]["token_sec"] = 2
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    assert bundle.data.token_sec == 2
+
+
+def test_load_wrist2vec_pretrain_config_rejects_non_positive_token_sec(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["data"]["token_sec"] = 0
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="data.token_sec must be a positive integer"):
+        load_wrist2vec_pretrain_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_pretrain_config_parses_channel_alias_across_namespaces(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    payload = _pretrain_payload()
+    payload["model"]["channels"][0]["alias"] = "psg_eeg"
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_alias.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.model.channels[0].alias == "psg_eeg"
+    assert bundle.model.channels[1].alias is None
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+@pytest.mark.parametrize("alias", ["", 123, ["psg_eeg", "bcg_eeg"]])
+def test_load_pretrain_config_rejects_invalid_channel_alias(
+    tmp_path: Path,
+    module_name: str,
+    alias: object,
+):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    payload = _pretrain_payload()
+    payload["model"]["channels"][0]["alias"] = alias
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_invalid_alias.yaml")
+
+    with pytest.raises(ValueError, match="alias must be a non-empty string"):
+        loader(config_path)
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_pretrain_config_rejects_legacy_channel_aliases(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    payload = _pretrain_payload()
+    payload["model"]["channels"][0]["aliases"] = ["psg_eeg"]
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_legacy_aliases.yaml")
+
+    with pytest.raises(ValueError, match="unsupported field 'aliases'"):
+        loader(config_path)
+
+
+def test_load_pretrain_config_parses_kaldi_data_fields(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "kaldi_data_root": "/tmp/kaldi_root",
+            "kaldi_manifest": "/tmp/kaldi_root/manifest.json",
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_pretrain_config(config_path)
+
+    assert bundle.data.backend == "kaldi"
+    assert bundle.data.kaldi_data_root == "/tmp/kaldi_root"
+    assert bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.json"
+
+
+def test_load_pretrain_config_parses_adapt_block(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {
+        "new_channels": ["eeg"],
+        "stage1": {"train_shared_projection": True},
+        "stage2": {
+            "lr_scales": {"encoder": 0.2, "shared_legacy": 0.6, "new_modalities": 1.0},
+            "pair_schedule": [
+                {"until": 0.5, "new_pair_ratio": 1.0},
+                {"until": 1.0, "new_pair_ratio": 0.0},
+            ],
+        },
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_pretrain_config(config_path)
+
+    assert bundle.adapt is not None
+    assert bundle.adapt.new_channels == ["eeg"]
+    assert bundle.adapt.stage1.train_shared_projection is True
+    assert bundle.adapt.stage2.lr_scales.encoder == pytest.approx(0.2)
+    assert bundle.adapt.stage2.pair_schedule[-1].until == pytest.approx(1.0)
+
+
+def test_load_pretrain_config_requires_adapt_new_channels(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {"stage1": {"train_shared_projection": False}}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="adapt.new_channels is required"):
+        load_pretrain_config(config_path)
+
+
+def test_load_pretrain_config_validates_adapt_schedule_endpoint(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["adapt"] = {
+        "new_channels": ["eeg"],
+        "stage2": {
+            "pair_schedule": [
+                {"until": 0.5, "new_pair_ratio": 1.0},
+                {"until": 0.8, "new_pair_ratio": 0.0},
+            ]
+        },
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="must end with until=1.0"):
+        load_pretrain_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "sleep2vec_dense_adapt_ppg_actigraphy.yaml",
+        "sleep2vec_dense_adapt_ppg_actigraphy_cls.yaml",
+    ],
+)
+def test_ppg_actigraphy_adapt_configs_keep_uniform_final_stage_sampling(config_name: str):
+    config_path = Path(__file__).resolve().parents[2] / "configs" / config_name
+    bundle = load_pretrain_config(config_path)
+
+    assert bundle.adapt is not None
+    channel_names = [channel.name for channel in bundle.model.channels]
+    new_channels = set(bundle.adapt.new_channels)
+    all_pairs = list(combinations(channel_names, 2))
+    new_pair_count = sum(1 for left, right in all_pairs if left in new_channels or right in new_channels)
+    final_ratio = bundle.adapt.stage2.pair_schedule[-1].new_pair_ratio
+
+    assert final_ratio > 0.0
+    assert final_ratio == pytest.approx(new_pair_count / len(all_pairs))
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "wrist2vec_multilight_ppg_accgyro_pretrain_resnet1d.yaml",
+    ],
+)
+def test_wrist2vec_repo_pretrain_configs_load(config_name: str):
+    config_path = Path(__file__).resolve().parents[2] / "configs" / "write2vec" / config_name
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    validate_wrist2vec_model_config(bundle.model)
+    assert bundle.model.channels
+
+
+def test_wrist2vec_resnet1d_example_pretrain_config_loads():
+    config_path = (
+        Path(__file__).resolve().parents[2]
+        / "configs"
+        / "write2vec"
+        / "wrist2vec_multilight_ppg_accgyro_pretrain_resnet1d.yaml"
+    )
+    bundle = load_wrist2vec_pretrain_config(config_path)
+
+    validate_wrist2vec_model_config(bundle.model)
+    hidden_size = bundle.model.backbone.hidden_size
+    assert hidden_size == 384
+    assert bundle.model.backbone.num_hidden_layers == 12
+    assert bundle.model.backbone.num_attention_heads == 16
+    assert bundle.model.projection.hidden_dim == hidden_size
+    assert [channel.name for channel in bundle.model.channels] == [
+        "ppg_green",
+        "ppg_infrared",
+        "gyro_vm",
+        "acc_vm",
+    ]
+    assert [channel.tokenizer.name for channel in bundle.model.channels] == [
+        "resnet1d",
+        "resnet1d",
+        "sundial2",
+        "sundial2",
+    ]
+    assert all(channel.tokenizer.out_dim == hidden_size for channel in bundle.model.channels)
+    assert bundle.model.channels[0].tokenizer.kwargs["block_counts"] == [2, 2, 2]
+    assert bundle.loss.name == "info_nce"
+    assert bundle.data.token_sec == 2
+
+
+def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _finetune_payload())
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.model.head is not None
+    assert bundle.model.head.temporal_agg.name == "mean"
+    assert bundle.data.backend == "npz"
+    assert bundle.data.kaldi_data_root is None
+    assert bundle.data.kaldi_manifest is None
+    assert bundle.finetune.task is not None
+    assert bundle.finetune.task.output_dim == 2
+    assert bundle.finetune.loss.class_weights is None
+    assert bundle.finetune.loss.pos_weight is None
+    assert bundle.finetune.sampler.weighted_random is False
+    assert bundle.finetune.lora.r == 8
+    assert bundle.finetune.lora.alpha == 16
+    assert bundle.finetune.lora.dropout == 0.05
+    assert bundle.finetune.lora.target_modules == ["query", "key", "value"]
+    assert bundle.finetune.lora.use_dora is False
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
+    payload = _finetune_payload()
+    payload["finetune"]["lora"].update(
+        {
+            "r": 4,
+            "alpha": 12,
+            "dropout": 0.15,
+            "target_modules": ["query", "dense"],
+            "use_dora": True,
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.lora.r == 4
+    assert bundle.finetune.lora.alpha == 12
+    assert bundle.finetune.lora.dropout == 0.15
+    assert bundle.finetune.lora.target_modules == ["query", "dense"]
+    assert bundle.finetune.lora.use_dora is True
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_finetune_config_parses_imbalance_blocks_across_namespaces(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
+    payload = _finetune_payload()
+    if module_name != "sleep2vec.config":
+        payload["finetune"]["lora"] = {
+            "freeze_backbone_and_insert_lora": False,
+            "insert_lora": False,
+            "separate_adapters": False,
+        }
+    payload["finetune"]["loss"] = {"class_weights": [1, 2.5], "pos_weight": 3}
+    payload["finetune"]["sampler"] = {"weighted_random": True}
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.loss.class_weights == [1.0, 2.5]
+    assert bundle.finetune.loss.pos_weight == 3.0
+    assert bundle.finetune.sampler.weighted_random is True
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_finetune_config_parses_survival_covariates_across_namespaces(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
+    payload = _survival_finetune_payload()
+    payload["finetune"]["survival"].update({"covariates": ["age", "sex"], "covariate_embedding_dim": 16})
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_survival.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.survival is not None
+    assert bundle.finetune.survival.covariates == ["age", "sex"]
+    assert bundle.finetune.survival.covariate_embedding_dim == 16
+
+
+def test_load_finetune_config_defaults_survival_covariates(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _survival_finetune_payload())
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.survival is not None
+    assert bundle.finetune.survival.covariates == []
+    assert bundle.finetune.survival.covariate_embedding_dim == 16
+
+
+def test_sleep2vec2_load_finetune_config_parses_survival_covariate_fusion(tmp_path: Path):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _survival_finetune_payload()
+    payload["finetune"]["survival"].update({"covariates": ["age", "sex"], "covariate_fusion": "risk"})
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_survival_risk_fusion.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.survival.covariate_fusion == "risk"
+
+
+def test_sleep2vec2_load_finetune_config_parses_multilabel_token_concat(tmp_path: Path):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update({"covariates": ["age", "sex"], "covariate_fusion": "token_concat"})
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_multilabel_token_concat.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.multilabel.covariate_fusion == "token_concat"
+
+
+def test_sleep2vec2_load_finetune_config_parses_multilabel_risk_fusion(tmp_path: Path):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update({"covariates": ["age", "sex"], "covariate_fusion": "risk"})
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_multilabel_risk.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.multilabel.covariate_fusion == "risk"
+
+
+@pytest.mark.parametrize(
+    ("survival_patch", "pattern"),
+    [
+        ({"covariates": ["age"], "covariate_fusion": "late_concat"}, "covariate_fusion"),
+        ({"covariate_fusion": "risk"}, "requires finetune.survival.covariates"),
+    ],
+)
+def test_sleep2vec2_load_finetune_config_rejects_invalid_survival_covariate_fusion(
+    tmp_path: Path, survival_patch: dict, pattern: str
+):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _survival_finetune_payload()
+    payload["finetune"]["survival"].update(survival_patch)
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_survival_invalid_fusion.yaml")
+
+    with pytest.raises(ValueError, match=pattern):
+        loader(config_path)
+
+
+@pytest.mark.parametrize(
+    ("multilabel_patch", "pattern"),
+    [
+        ({"covariates": ["age"], "covariate_fusion": "late_concat"}, "covariate_fusion"),
+        ({"covariate_fusion": "risk"}, "requires finetune.multilabel.covariates"),
+        ({"covariate_fusion": "token_concat"}, "requires finetune.multilabel.covariates"),
+    ],
+)
+def test_sleep2vec2_load_finetune_config_rejects_invalid_multilabel_covariate_fusion(
+    tmp_path: Path, multilabel_patch: dict, pattern: str
+):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update(multilabel_patch)
+    config_path = _write_yaml(tmp_path, payload, name="sleep2vec2_multilabel_invalid_fusion.yaml")
+
+    with pytest.raises(ValueError, match=pattern):
+        loader(config_path)
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    ],
+)
+def test_load_finetune_config_parses_multilabel_task_across_namespaces(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update({"covariates": ["age", "sex"], "covariate_embedding_dim": 8})
+    config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_multilabel.yaml")
+
+    bundle = loader(config_path)
+
+    assert bundle.finetune.task.type == "multilabel_classification"
+    assert bundle.finetune.task.is_seq is False
+    assert bundle.finetune.task.monitor == "val_macro_auroc"
+    assert bundle.finetune.multilabel is not None
+    assert bundle.finetune.multilabel.key_column == "eid"
+    assert bundle.finetune.multilabel.covariates == ["age", "sex"]
+    assert bundle.finetune.multilabel.covariate_embedding_dim == 8
+
+
+def test_load_finetune_config_defaults_multilabel_covariates(tmp_path: Path):
+    config_path = _write_yaml(tmp_path, _multilabel_finetune_payload())
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.multilabel is not None
+    assert bundle.finetune.multilabel.covariates == []
+    assert bundle.finetune.multilabel.covariate_embedding_dim == 16
+
+
+@pytest.mark.parametrize(
+    ("multilabel_patch", "pattern"),
+    [
+        ({"covariates": ["age", "age"]}, "must not contain duplicates"),
+        ({"covariates": ["bmi"]}, "only supports"),
+        ({"covariates": "age"}, "must be a list"),
+        ({"covariate_embedding_dim": 0}, "must be a positive integer"),
+        ({"covariate_embedding_dim": True}, "must be a positive integer"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_multilabel_covariates(
+    tmp_path: Path, multilabel_patch: dict, pattern: str
+):
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["multilabel"].update(multilabel_patch)
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_sequence_multilabel_task(tmp_path: Path):
+    payload = _multilabel_finetune_payload()
+    payload["finetune"]["task"]["is_seq"] = True
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="is_seq must be false for multilabel_classification"):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_requires_multilabel_block_for_multilabel_task(tmp_path: Path):
+    payload = _multilabel_finetune_payload()
+    del payload["finetune"]["multilabel"]
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="finetune.multilabel is required"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("patch", "pattern"),
+    [
+        ({"label_index": None}, "missing required fields"),
+        ({"extra_field": "x"}, "unsupported fields"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_multilabel_fields(tmp_path: Path, patch: dict, pattern: str):
+    payload = _multilabel_finetune_payload()
+    if "label_index" in patch and patch["label_index"] is None:
+        del payload["finetune"]["multilabel"]["label_index"]
+    else:
+        payload["finetune"]["multilabel"].update(patch)
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_multilabel_block_for_other_tasks(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["multilabel"] = _multilabel_finetune_payload()["finetune"]["multilabel"]
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="only supported when finetune.task.type is multilabel_classification"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("survival_patch", "pattern"),
+    [
+        ({"covariates": ["age", "age"]}, "must not contain duplicates"),
+        ({"covariates": ["bmi"]}, "only supports"),
+        ({"covariates": "age"}, "must be a list"),
+        ({"covariate_embedding_dim": 0}, "must be a positive integer"),
+        ({"covariate_embedding_dim": True}, "must be a positive integer"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_survival_covariates(tmp_path: Path, survival_patch: dict, pattern: str):
+    payload = _survival_finetune_payload()
+    payload["finetune"]["survival"].update(survival_patch)
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_sequence_survival_task(tmp_path: Path):
+    payload = _survival_finetune_payload()
+    payload["finetune"]["task"]["is_seq"] = True
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="finetune.task.is_seq must be false for survival tasks"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2expert.config"])
+def test_standalone_variants_parse_attention_backend(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    default_payload = _pretrain_payload()
+    default_path = _write_yaml(tmp_path, default_payload, name=f"{module_name.replace('.', '_')}_default.yaml")
+
+    default_bundle = loader(default_path)
+
+    assert default_bundle.model.backbone.attention_backend == "eager"
+
+    sdpa_payload = _pretrain_payload()
+    sdpa_payload["model"]["backbone"]["attention_backend"] = "sdpa"
+    sdpa_path = _write_yaml(tmp_path, sdpa_payload, name=f"{module_name.replace('.', '_')}_sdpa.yaml")
+
+    sdpa_bundle = loader(sdpa_path)
+
+    assert sdpa_bundle.model.backbone.attention_backend == "sdpa"
+
+
+@pytest.mark.parametrize("module_name", ["sleep2vec2.config", "sleep2expert.config"])
+def test_standalone_variants_reject_invalid_attention_backend(tmp_path: Path, module_name: str):
+    loader = importlib.import_module(module_name).load_pretrain_config
+    payload = _pretrain_payload()
+    payload["model"]["backbone"]["attention_backend"] = "flash"
+    path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}_invalid_attention.yaml")
+
+    with pytest.raises(ValueError, match="attention_backend must be one of eager, sdpa"):
+        loader(path)
+
+
+@pytest.mark.parametrize(
+    ("loss_block", "match"),
+    [
+        ({"class_weights": [1.0, 0.0], "pos_weight": None}, "class_weights must contain only positive numbers"),
+        ({"class_weights": None, "pos_weight": [1.0, -1.0]}, "pos_weight must contain only positive numbers"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_imbalance_loss_values(tmp_path: Path, loss_block: dict, match: str):
+    payload = _finetune_payload()
+    payload["finetune"]["loss"] = loss_block
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=match):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_non_boolean_weighted_random(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["sampler"] = {"weighted_random": "true"}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="weighted_random must be a boolean"):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_parses_kaldi_data_fields(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "kaldi_data_root": "/tmp/kaldi_root",
+            "kaldi_manifest": "/tmp/kaldi_root/manifest.json",
+        }
+    )
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.data.backend == "kaldi"
+    assert bundle.data.kaldi_data_root == "/tmp/kaldi_root"
+    assert bundle.data.kaldi_manifest == "/tmp/kaldi_root/manifest.json"
+
+
+@pytest.mark.parametrize(
+    ("loader", "payload_factory"),
+    [
+        (load_pretrain_config, _pretrain_payload),
+        (load_finetune_config, _finetune_payload),
+    ],
+)
+def test_load_config_rejects_invalid_data_backend(tmp_path: Path, loader, payload_factory):
+    payload = payload_factory()
+    payload["data"]["backend"] = "hdf5"
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="data.backend must be one of"):
+        loader(config_path)
+
+
+def test_load_finetune_config_parses_eval_visualizations(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["eval_visualizations"] = {
+        "enabled": True,
+        "stages": ["val", "test"],
+        "confusion_matrix": {"enabled": True, "show_raw_counts": True},
+        "roc_curve": {"enabled": True},
+        "regression_scatter": {"enabled": False},
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.finetune.eval_visualizations is not None
+    assert bundle.finetune.eval_visualizations.enabled is True
+    assert bundle.finetune.eval_visualizations.stages == ["val", "test"]
+    assert bundle.finetune.eval_visualizations.confusion_matrix.enabled is True
+    assert bundle.finetune.eval_visualizations.confusion_matrix.show_raw_counts is True
+    assert bundle.finetune.eval_visualizations.roc_curve.enabled is True
+    assert bundle.finetune.eval_visualizations.regression_scatter.enabled is False
+
+
+@pytest.mark.parametrize("missing_key", ["backbone", "projection", "cls"])
+def test_load_pretrain_config_requires_model_blocks(tmp_path: Path, missing_key: str):
+    payload = _pretrain_payload()
+    payload["model"].pop(missing_key)
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=rf"model\.{missing_key} is required"):
+        load_pretrain_config(config_path)
+
+
+@pytest.mark.parametrize("missing_key", ["backbone", "projection", "cls"])
+def test_load_finetune_config_requires_model_blocks(tmp_path: Path, missing_key: str):
+    payload = _finetune_payload()
+    payload["model"].pop(missing_key)
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=rf"model\.{missing_key} is required"):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_requires_finetune_block(tmp_path: Path):
+    payload = _finetune_payload()
+    payload.pop("finetune")
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="top-level 'finetune' block"):
+        load_finetune_config(config_path)
+
+
+def test_load_pretrain_config_rejects_non_list_channels(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["model"]["channels"] = {"name": "eeg"}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="model.channels must be a list"):
+        load_pretrain_config(config_path)
+
+
+def test_load_pretrain_config_rejects_non_mapping_tokenizer(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["model"]["channels"][0]["tokenizer"] = "linear"
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="channel.tokenizer must be a mapping"):
+        load_pretrain_config(config_path)
+
+
+def test_load_pretrain_config_requires_tokenizer_name(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["model"]["channels"][0]["tokenizer"] = {"out_dim": 8}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="must set tokenizer.name"):
+        load_pretrain_config(config_path)
+
+
+def test_load_pretrain_config_requires_tokenizer_out_dim(tmp_path: Path):
+    payload = _pretrain_payload()
+    payload["model"]["channels"][0]["tokenizer"] = {"name": "linear"}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="must set tokenizer.out_dim"):
+        load_pretrain_config(config_path)
+
+
+def test_load_finetune_config_requires_head_block(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["model"].pop("head")
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="model.head must be a mapping and is required"):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_requires_temporal_agg(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["model"]["head"].pop("temporal_agg")
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="model.head.temporal_agg is required"):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_requires_channel_agg(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["model"]["head"].pop("channel_agg")
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="model.head.channel_agg is required"):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_task_missing_fields(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {"type": "classification"}
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="missing required fields"):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_task_extra_fields(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["task"]["extra"] = "x"
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="unsupported fields"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("task_patch", "pattern"),
+    [
+        ({"type": "invalid"}, "must be 'classification', 'regression', 'survival', or 'multilabel_classification'"),
+        ({"output_dim": 0}, "must be a positive integer"),
+        ({"is_seq": "yes"}, "must be a boolean"),
+        ({"monitor_mod": "up"}, "must be 'min' or 'max'"),
+        ({"type": "classification", "output_dim": 1}, "must be >= 2 for classification"),
+        ({"type": "regression", "output_dim": 2}, "must be 1 for regression"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_task_semantics(tmp_path: Path, task_patch: dict, pattern: str):
+    payload = _finetune_payload()
+    payload["finetune"]["task"].update(task_patch)
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("layer_indices", "pattern"),
+    [
+        ("not-a-list", "must be a non-empty list"),
+        ([], "must be a non-empty list"),
+        ([1, "2"], "must be a list of integers"),
+        ([0, 1], "values must be >= 1"),
+        ([1, 1], "must not contain duplicates"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_layer_mix_indices(tmp_path: Path, layer_indices, pattern: str):
+    payload = _finetune_payload()
+    payload["finetune"]["layer_mix"] = {
+        "enabled": True,
+        "shared_across_modalities": False,
+        "layer_indices": layer_indices,
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_rejects_layer_index_above_backbone_depth(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["model"]["backbone"]["num_hidden_layers"] = 2
+    payload["finetune"]["layer_mix"] = {
+        "enabled": True,
+        "shared_across_modalities": False,
+        "layer_indices": [3],
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="must be <= num_hidden_layers"):
+        load_finetune_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("eval_visualizations", "pattern"),
+    [
+        ("bad", "must be a mapping"),
+        ({"enabled": "yes"}, "enabled must be a boolean"),
+        ({"stages": "val"}, "stages must be a non-empty list"),
+        ({"stages": []}, "stages must be a non-empty list"),
+        ({"stages": ["val", "val"]}, "must not contain duplicates"),
+        ({"stages": ["train"]}, "only supports 'val' and 'test'"),
+        ({"unknown": {}}, "unsupported fields"),
+        ({"confusion_matrix": {"extra": True}}, "confusion_matrix has unsupported fields"),
+        (
+            {"confusion_matrix": {"show_raw_counts": "yes"}},
+            "confusion_matrix.show_raw_counts must be a boolean",
+        ),
+        ({"roc_curve": {"enabled": "yes"}}, "roc_curve.enabled must be a boolean"),
+        ({"regression_scatter": {"enabled": "yes"}}, "regression_scatter.enabled must be a boolean"),
+    ],
+)
+def test_load_finetune_config_rejects_invalid_eval_visualizations(
+    tmp_path: Path,
+    eval_visualizations,
+    pattern: str,
+):
+    payload = _finetune_payload()
+    payload["finetune"]["eval_visualizations"] = eval_visualizations
+    config_path = _write_yaml(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=pattern):
+        load_finetune_config(config_path)
+
+
+def test_load_finetune_config_accepts_lstm_temporal_aggregator(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["model"]["head"]["temporal_agg"] = {
+        "name": "lstm",
+        "kwargs": {"bidirectional": True, "num_layers": 1, "dropout": 0.0},
+    }
+    config_path = _write_yaml(tmp_path, payload)
+
+    bundle = load_finetune_config(config_path)
+
+    assert bundle.model.head.temporal_agg.name == "lstm"
+    assert validate_model_config(bundle.model) == 8
+
+
+def test_validate_model_config_accepts_valid_config():
+    model_cfg = _valid_model_config()
+    feature_dim = validate_model_config(model_cfg)
+    assert feature_dim == 8
+
+
+def test_validate_model_config_rejects_mismatched_tokenizer_dims():
+    model_cfg = _valid_model_config()
+    model_cfg.channels[1].tokenizer.out_dim = 16
+
+    with pytest.raises(ValueError, match="must share the same out_dim"):
+        validate_model_config(model_cfg)
+
+
+def test_validate_model_config_rejects_invalid_cls_embedding_type():
+    model_cfg = _valid_model_config()
+    model_cfg.cls = ClsConfig(downstream="tokens", embedding_type="foo")
+
+    with pytest.raises(ValueError, match="embedding_type must be null/none or 'bert'"):
+        validate_model_config(model_cfg)
+
+
+def test_validate_model_config_requires_cls_embedding_for_cls_downstream():
+    model_cfg = _valid_model_config()
+    model_cfg.cls = ClsConfig(downstream="cls", embedding_type=None)
+
+    with pytest.raises(ValueError, match="must be set when model.cls.downstream is 'cls'"):
+        validate_model_config(model_cfg)
+
+
+def test_validate_model_config_accepts_lstm_temporal_aggregator():
+    model_cfg = _valid_model_config()
+    model_cfg.head = deepcopy(model_cfg.head)
+    model_cfg.head.temporal_agg = TemporalAggConfig(
+        name="lstm",
+        kwargs={"bidirectional": True, "num_layers": 1, "dropout": 0.0},
+    )
+
+    assert validate_model_config(model_cfg) == 8
+
+
+def test_validate_model_config_rejects_invalid_temporal_aggregator():
+    model_cfg = _valid_model_config()
+    model_cfg.head = deepcopy(model_cfg.head)
+    model_cfg.head.temporal_agg.name = "invalid"
+
+    with pytest.raises(ValueError, match="temporal_agg.name must be 'mean', 'attn', or 'lstm'"):
+        validate_model_config(model_cfg)
+
+
+def test_validate_model_config_rejects_invalid_channel_aggregator():
+    model_cfg = _valid_model_config()
+    model_cfg.head = deepcopy(model_cfg.head)
+    model_cfg.head.channel_agg.name = "invalid"
+
+    with pytest.raises(ValueError, match="channel_agg.name must be 'mean', 'concat', or 'gated_scalar'"):
+        validate_model_config(model_cfg)

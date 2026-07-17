@@ -37,21 +37,35 @@ bash utils/style_check.sh
 - For small special-case handling changes, patch the canonical code path in place instead of adding a helper or wrapper; when the exception is not obvious, leave a brief comment noting the intention.
 - Keep architecture and loss choices in YAML under `configs/`; training hyperparameters stay on the CLI.
 
+## Code Design Simplicity Policy
+- Start from the existing contract and canonical code path. Change the narrowest owner that already handles the behavior before adding new entrypoints, helpers, wrappers, or schema branches.
+- Keep one canonical spelling and location for each concept. Do not add alternate config fields, nested aliases, source/value dictionaries, plural variants, or duplicate output names for the same semantic value.
+- Remove obsolete semantic entrypoints and aliases from the canonical behavior. Reject legacy fields at user-input boundaries only when accepting them would create duplicate semantic sources, hidden fallbacks, silently ignored analysis intent, or incorrect outputs. Do not add bespoke validation for inert values or malformed values that the canonical code path will naturally reject.
+- Treat paths and external identifiers exactly as the contract states. If a value should be passed through as provided, do not expand, resolve, normalize, infer a base directory, or silently rewrite it.
+- Make semantic choices explicit and fail fast at boundaries. Defaults are acceptable for operational convenience, but model/data semantics, label sources, thresholds, stage sources, and output contracts should not be guessed.
+- Name outputs by their real unit and denominator. If both ratio and percent are emitted, both names must say so; do not also emit ambiguous historical aliases.
+- Let tests pin removals as well as additions. When deleting legacy behavior, test that hidden fallbacks and ambiguous legacy entrypoints fail validation or disappear from outputs; do not add tests that require special rejection of ordinary bad values unless they would otherwise produce misleading results.
+
+## Runtime Failure & Output Directory Policy
+- Prefer `let it fail` for repository-owned analysis and derived-artifact pipelines. If an analyzer, reducer, parser, or writer raises, let the command fail with a non-zero exit instead of converting it into a partial-success bundle.
+- Do not add resume, repair, skip-existing, overwrite, or partial-rebuild protocols unless the user explicitly asks for them and the runtime need is concrete. For normal research runs, rerun with a fresh output directory or manually clear the failed output.
+- Treat committed run directories as single-use artifacts. A non-empty output directory should generally fail before expensive work starts unless the tool has an explicit append-only contract.
+- Write terminal manifests only after the run has completed successfully. Interrupted or failed directories should be considered invalid rather than interpreted through sidecars, shards, or partial tables.
+- Keep summary commands read-only unless their contract explicitly says they repair or rebuild data. A `summarize`-style command should inspect committed outputs, not infer completion from partial intermediate files.
+
 ## Codex Index Usage Policy
-- Before editing code, determine the current Git branch and consult the matching index under `doc/codex_index/branches/<branch>/`.
-- For small, localized fixes or routine updates, keep the consult lightweight: review `README.md` plus the single most relevant page from `REUSE_GUIDE.md`, `MODULE_MAP.md`, `FUNCTIONS/`, or `WORKFLOWS/` for the area being changed.
-- For broader changes that add or reshape behavior, review `README.md`, `REUSE_GUIDE.md`, `MODULE_MAP.md`, and the relevant files under `FUNCTIONS/` or `WORKFLOWS/` for the area being changed.
-- Before adding any new function, method, helper, wrapper, or utility, search the index for existing implementations with the same or overlapping responsibility.
-- Prefer reusing or minimally extending an indexed implementation over creating a new one.
-- New functions are allowed only when the indexed code does not satisfy the required contract; when creating one, briefly state why the indexed implementations were not suitable.
-- Avoid near-duplicate helpers, thin wrappers, renamed copies, and parallel implementations of already-indexed behavior.
-- If the relevant index is missing, stale, or branch-mismatched, do a lightweight repo scan instead for small localized changes; refresh the relevant portion of the index before editing only when the task changes reusable contracts, workflows, or ownership boundaries.
-- After making changes, update the relevant files under `doc/codex_index/branches/<branch>/` only when the change affects indexed responsibilities, reusable implementations, contracts, workflows, or duplication guidance. Small local fixes, narrow bug fixes, and routine updates that stay within the existing contract do not require index maintenance.
-- In the first progress update before making edits, name the index files consulted.
-- In the final response, briefly state whether an indexed implementation was reused or a new one was intentionally introduced.
+- `doc/codex_index/` is a shared navigation layer, not a branch-specific or exhaustive source of truth. Source code, tests, `AGENTS.md`, and dedicated contract documents remain authoritative.
+- Small localized fixes and routine updates may inspect source and tests directly without consulting the index.
+- Consult the shared index when a change crosses modules, adds a reusable implementation, or has unclear ownership. Start with `README.md`, then use `MODULE_MAP.md`, `REUSE_GUIDE.md`, or `WORKFLOWS.md` as needed.
+- Before adding a function, method, helper, wrapper, or utility, search the source and `REUSE_GUIDE.md` for an existing implementation with the same responsibility. Prefer minimally extending the canonical owner.
+- Never create feature-branch index copies, `branches/` trees, or `DELTA_FROM_MAIN.md` files.
+- Update the shared index only when a change affects ownership, a canonical reusable implementation, a public contract, a key workflow, or a top-level entrypoint.
+- Do not update it for local fixes, routine refactors, or inventories of signatures, callers, file counts, commits, or branch metadata.
+- Keep the index limited to `README.md`, `MODULE_MAP.md`, `REUSE_GUIDE.md`, and `WORKFLOWS.md`.
 
 ## Testing Guidelines
-- There is no dedicated test suite checked in; use diagnostics and short runs for sanity checks.
+- Use targeted pytest files for contract changes and smoke commands for runtime changes.
+- There is a checked `tests/` suite; prefer the smallest relevant test set for the ownership boundary touched.
 - Quick smoke test example:
 ```bash
 python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
@@ -66,6 +80,27 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 ## Configuration & Secrets
 - W&B login is required by default; set `WANDB_API_KEY` or use `WANDB_MODE=offline`.
 - Keep dataset paths and preset pickles in config/CLI (not hardcoded); document any new index CSV columns.
+
+## Agent Stop-And-Consult Policy
+Agents must not silently guess high-impact experiment decisions.
+
+Before generating runnable commands for preset preparation, finetuning, inference, evaluation, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`. `agent_tools context` is diagnostic-only and does not authorize runnable commands.
+
+If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. Do not run training. Do not generate executable scripts. Do not evaluate external test data.
+
+Generated runtime commands must respect recipe `variant`; do not route `sleep2vec2` or `sleep2expert` recipes through root `sleep2vec` entrypoints.
+
+High-impact decisions include label selection, split policy, external-test locking, checkpoint selection, pretrained-backbone choice, preset regeneration, overwrite behavior, required channels, selection metric, metric direction, and hyper-parameter search budget.
+
+## Experiment Management Policy
+
+- Every new runnable recipe and plan must declare an `experiment` with `id`, `title`, `objective`, `root`, and `baseline`, plus a `step` with `id`, `phase`, and `purpose`.
+- Runnable plans must be written inside `experiment.root`. Use the workspace as the human entry point; keep heavyweight datasets, checkpoints, W&B files, and trainer logs in their canonical locations and record links to them.
+- Runs must have both a stable `run-NNN` id and a semantic parameter-derived name. Do not create new `trial_000`-style artifact names that require opening configs to understand.
+- Freeze the resolved recipe, generated config, launch command, and hashes before execution. Do not silently rewrite a planned run after launch.
+- Monitoring may update status and reports but must not start pending runs. Launching is an explicit action.
+- Stopping a run requires a recorded reason. Finalization requires no active runs and a non-empty final report.
+- This policy applies to new work. Do not migrate or rename historical experiment trees unless the user explicitly asks.
 
 ## Config Strictness Policy
 - Follow “let it crash” for model/data semantics: missing or inconsistent YAML fields that affect model shape, task semantics, or evaluation should raise immediately.
@@ -84,26 +119,26 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 - Owns: `data/default_dataset.py`, `data/psg_pretrain_dataset.py`, `data/utils.py`, `data/samplers.py`, `data/channel_selection.py`, `data/metadata.py`.
 - Responsibilities: sample index semantics, `available_channels`, `source` and metadata filtering, token-window validity, few-shot behavior, pair-first batching, collate invariants.
 - Invoke when: changing dataset fields, preset payload shape, filtering rules, missing-channel handling, sampler behavior, or data/label loading semantics.
-- Must not be split from: pair-first tests in `tests/test_pair_first_sampler.py` and `tests/test_pretrain_pair_filtering.py`.
+- Must not be split from: pair-first and available-channel tests in `tests/data/test_pair_first_sampler.py`, `tests/data/test_bucket_sampler.py`, and `tests/data/test_data_utils.py`.
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall data tests
-python3.10 -m pytest -q tests/test_pair_first_sampler.py tests/test_pretrain_pair_filtering.py
+python3.10 -m pytest -q tests/data/test_pair_first_sampler.py tests/data/test_bucket_sampler.py tests/data/test_data_utils.py
 ```
 
 #### `config-task-contract`
 - Owns: `sleep2vec/config.py`, `sleep2vec/common.py`, `sleep2vec/builders.py`, `sleep2vec/registry.py`, `sleep2vec/backbones/encoder_factory.py`, `sleep2vec/modules/tokenizers.py`, `sleep2vec/modules/projection.py`.
 - Responsibilities: YAML schema strictness, built-in task semantics, channel parity checks, registry wiring, builder contracts, required vs optional config fields.
 - Invoke when: adding config fields, changing task semantics, changing registry names, changing builder signatures, or changing YAML validation behavior.
-- Must not be split from: `tests/test_config_loading.py`, `tests/test_common_finetune_apply.py`, `tests/test_metadata_task_validation.py`, `tests/test_registries_and_builders.py`.
+- Must not be split from: `tests/config/test_config_loading.py`, `tests/config/test_common_finetune_apply.py`, `tests/config/test_metadata_task_validation.py`, `tests/config/test_registries_and_builders.py`.
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
 python3.10 -m pytest -q \
-  tests/test_config_loading.py \
-  tests/test_common_finetune_apply.py \
-  tests/test_metadata_task_validation.py \
-  tests/test_registries_and_builders.py
+  tests/config/test_config_loading.py \
+  tests/config/test_common_finetune_apply.py \
+  tests/config/test_metadata_task_validation.py \
+  tests/config/test_registries_and_builders.py
 ```
 
 #### `model-integration`
@@ -115,23 +150,23 @@ python3.10 -m pytest -q \
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
 python3.10 -m pytest -q \
-  tests/test_losses.py \
-  tests/test_layer_mix_visualization.py \
-  tests/test_registries_and_builders.py
+  tests/models/test_losses.py \
+  tests/visualization/test_layer_mix_visualization.py \
+  tests/config/test_registries_and_builders.py
 ```
 
 #### `runtime-orchestrator`
 - Owns: `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `sleep2vec/checkpoints.py`, `sleep2vec/metrics.py`, `sleep2vec/callbacks/pair_acc_logger.py`, `sleep2vec/diagnostics.py`.
 - Responsibilities: trainer wiring, W&B behavior, checkpoint naming and averaging, inference execution, results CSV schema, diagnostics mode, runtime callbacks and logging.
 - Invoke when: changing CLI flags, trainer strategies, checkpoint alias behavior, runtime logging, diagnostics flow, or evaluation/export behavior.
-- Must not be split from: `tests/test_checkpoints.py` and config/task guard tests when runtime flags or monitor names change.
+- Must not be split from: `tests/runtime/test_checkpoints.py` and config/task guard tests when runtime flags or monitor names change.
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
 python3.10 -m pytest -q \
-  tests/test_checkpoints.py \
-  tests/test_common_finetune_apply.py \
-  tests/test_metadata_task_validation.py
+  tests/runtime/test_checkpoints.py \
+  tests/config/test_common_finetune_apply.py \
+  tests/config/test_metadata_task_validation.py
 ```
 - Smoke gate:
 ```bash
@@ -163,7 +198,19 @@ python preprocess/mask_missing_stats.py --help
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec_moe sleep2vec2
-python3.10 -m pytest -q tests/test_checkpoints.py tests/test_config_loading.py
+python3.10 -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_config_loading.py
+```
+
+#### `agent-tooling-maintainer`
+- Owns: `skills/`, `agent_tools/`, `recipes/`, `agent_policies/`, `doc/agent_contracts/`, and agent-facing workflow examples.
+- Responsibilities: task playbooks, machine-readable recipe schemas, context bundle generation, command-plan generation, skill validation, run-manifest conventions, agent documentation consistency, stop-and-consult policy enforcement, and external-test unlock checks.
+- Invoke when: adding or changing agent skills, recipe schemas, context-gathering tools, run-plan generators, consultation policies, user-decision files, or agent-facing documentation.
+- Must not be split from: `runtime-orchestrator` when the change affects training/inference command semantics; `preset-pipeline` when the change affects preset preparation; `regression-guard` when adding new agent-tool contracts.
+- Verification gate:
+```bash
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall agent_tools tests
+python3 -m pytest -q tests/agent_tools/test_agent_tools_*.py tests/agent_tools/test_agent_consultation_policy.py tests/agent_tools/test_agent_user_decisions.py tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py
+python -m agent_tools skills --validate
 ```
 
 #### `regression-guard`
@@ -178,6 +225,7 @@ python3.10 -m pytest -q tests/test_checkpoints.py tests/test_config_loading.py
 - If a task changes model forward paths, head/loss contracts, LoRA, or layer-mix behavior, route first to `model-integration`.
 - If a task changes entrypoints, checkpoints, metrics, callbacks, diagnostics, or inference/export behavior, route first to `runtime-orchestrator`.
 - If a task changes preprocessing scripts or preset generation logic, route first to `preset-pipeline`.
+- If a task changes agent-facing skills, recipes, context bundles, command plans, consultation gates, or user-decision schemas, route first to `agent-tooling-maintainer`.
 - If a task touches `sleep2vec_moe/`, `configs_moe/`, or `sleep2vec2/`, require `variant-maintainer` review before completion.
 - If a task changes a contract already covered by tests, or should be covered but is not, involve `regression-guard`.
 

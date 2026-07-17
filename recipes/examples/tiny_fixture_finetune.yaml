@@ -1,0 +1,67 @@
+name: tiny_fixture_finetune
+task: finetune
+variant: sleep2vec
+
+experiment:
+  id: tiny-fixture-finetune
+  title: Tiny fixture finetune
+  objective: Validate the managed finetune planning contract.
+  root: artifacts/experiments/tiny-fixture-finetune
+  baseline:
+    type: none
+    rationale: Synthetic command-generation fixture.
+
+step:
+  id: train-ahi
+  phase: train
+  purpose: Generate one tiny AHI finetune plan.
+
+inputs:
+  config: recipes/examples/fixtures/tiny_finetune_config.yaml
+  label_name: ahi
+  pretrained_backbone_path: null
+
+runtime:
+  devices: [0]
+  precision: bf16-mixed
+  epochs: 1
+  batch_size: 1
+  num_workers: 0
+  lr: 1.0e-6
+  weight_decay: 1.0e-5
+
+artifacts:
+  version_name: tiny-fixture
+  results_csv_path: results/tiny_fixture_results.csv
+  overwrite: false
+
+evaluation_policy:
+  selection_metric: val_ahi_pearson
+  selection_mode: max
+  selection_split: val
+  external_test_locked: true
+  test_after_fit: false
+
+decisions:
+  task:
+    value: finetune
+    source: explicit_recipe
+  label_name:
+    value: ahi
+    source: explicit_recipe
+  pretrained_backbone_path:
+    value: null
+    source: explicit_recipe
+    meaning: "train downstream model without loading a pretrained backbone"
+  train_val_test_policy:
+    value: "select on val; keep test locked"
+    source: explicit_recipe
+  external_test_locked:
+    value: true
+    source: explicit_recipe
+  overwrite_policy:
+    value: false
+    source: explicit_recipe
+  required_channels:
+    value: [ppg, ahi, stage5]
+    source: explicit_config

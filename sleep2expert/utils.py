@@ -103,6 +103,7 @@ def get_pretrain_dataloader(args):
             allow_missing_channels=allow_missing_channels,
             min_channels=min_channels,
             bucket_by_available_channels=bucket_by_available_channels,
+            channel_aliases=getattr(args, "channel_aliases", {}),
         )
     else:
         base_dataset_kwargs = dict(
@@ -187,7 +188,18 @@ def _build_finetune_loader(
     data_backend = getattr(args, "data_backend", "npz")
 
     is_seq_task = is_builtin_seq_task(args.label_name)
-    if args.label_name == "ahi":
+    is_survival_task = bool(getattr(args, "is_survival", False))
+    survival_config = getattr(args, "survival", None) if is_survival_task else None
+    survival_covariates = list(getattr(survival_config, "covariates", []) or [])
+    multilabel_config = getattr(args, "multilabel", None) if getattr(args, "is_multilabel", False) else None
+    multilabel_covariates = list(getattr(multilabel_config, "covariates", []) or [])
+    if is_survival_task:
+        meta_data_names = []
+        meta_data_regression_names = []
+    elif multilabel_config is not None:
+        meta_data_names = []
+        meta_data_regression_names = []
+    elif args.label_name == "ahi":
         meta_data_names = ["ahi", "tst"]
         meta_data_regression_names = ["ahi", "tst"]
     else:
@@ -195,7 +207,8 @@ def _build_finetune_loader(
         meta_data_regression_names = [] if args.is_classification else list(meta_data_names)
     if meta_data_names and args.is_classification and args.output_dim > 2 and not is_seq_task:
         raise ValueError(
-            "Metadata classification currently supports only binary labels (output_dim=2) for non-built-in sequence tasks. "
+            "Metadata classification currently supports only binary labels (output_dim=2) "
+            "for non-built-in sequence tasks. "
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
             "Extend metadata label encoding before using multiclass metadata targets."
         )
@@ -209,6 +222,7 @@ def _build_finetune_loader(
         if auxiliary_name not in dataset_channel_names:
             dataset_channel_names.append(auxiliary_name)
 
+    use_weighted_random_sampler = getattr(args, "weighted_random_sampler", False) and is_train_set
     dataset_kwargs = dict(
         channel_names=dataset_channel_names,
         channel_input_dims=dataset_channel_input_dims,
@@ -217,14 +231,17 @@ def _build_finetune_loader(
         mask_rate=0.0,
         meta_data_names=meta_data_names,
         meta_data_regression_names=meta_data_regression_names,
+        required_metadata_names=survival_covariates or multilabel_covariates,
         sources=sources,
         randomly_select_channels=False,
         allow_missing_channels=False,
         min_channels=len(dataset_channel_names),
-        weighted_random_sampler=getattr(args, "weighted_random_sampler", False) and is_train_set,
-        weighted_random_sampler_target=(
-            args.label_name if getattr(args, "weighted_random_sampler", False) and is_train_set else None
-        ),
+        weighted_random_sampler=use_weighted_random_sampler,
+        weighted_random_sampler_target=args.label_name if use_weighted_random_sampler else None,
+        survival_label_config=survival_config,
+        survival_output_dim=args.output_dim if is_survival_task else None,
+        multilabel_label_config=multilabel_config,
+        multilabel_output_dim=args.output_dim if multilabel_config is not None else None,
         is_train_set=is_train_set,
         batch_size=args.batch_size,
         shuffle=shuffle,
@@ -236,6 +253,7 @@ def _build_finetune_loader(
             load_preset_path=args.finetune_preset_path,
             index=args.finetune_data_index,
             stride_tokens=args.max_tokens,
+            channel_aliases=getattr(args, "channel_aliases", {}),
         )
     else:
         dataset_kwargs.update(

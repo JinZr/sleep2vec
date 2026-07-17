@@ -1,0 +1,14 @@
+name: sleep2expert_val_only_tuning_example
+task: hparam_tune
+variant: sleep2expert
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: tune-sleep2expert-validation
+  phase: train
+  purpose: Tune sleep2expert using validation selection.
+base_recipe: recipes/templates/finetune_sleep2expert_ahi_val_only.yaml

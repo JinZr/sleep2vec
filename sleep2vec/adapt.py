@@ -10,14 +10,18 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
+import torch
 import wandb
 import yaml
+
+torch.set_float32_matmul_precision("high")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data.samplers import handles_distributed_sharding
+from sleep2vec.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2vec.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2vec.common import apply_data_backend_args, apply_model_config_args, persist_run_config_and_args
 from sleep2vec.config import load_pretrain_config
@@ -154,7 +158,8 @@ def _resolve_adapt_run_artifacts(
         if existing_ckpts:
             raise ValueError(
                 "Fresh stage2 transition refuses to reuse a non-empty checkpoints.stage2 directory. "
-                "Use --ckpt-path to resume the existing stage2 run, or clear/move the old checkpoints.stage2 directory first."
+                "Use --ckpt-path to resume the existing stage2 run, or clear/move the old "
+                "checkpoints.stage2 directory first."
             )
         run_name = save_path.parent.name
         return AdaptRunArtifacts(
@@ -282,7 +287,7 @@ def sleep2vec_adapt(args):
         train_pair_skew_warn_threshold=args.train_pair_skew_warn_threshold,
         train_pair_min_unique_coverage_warn_threshold=args.train_pair_min_unique_coverage_warn_threshold,
     )
-    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb]
+    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb, GradScaleLoggerCallback()]
     if args.phase == "stage2":
         callbacks.append(
             AdaptPairScheduleCallback(
@@ -304,6 +309,7 @@ def sleep2vec_adapt(args):
         num_sanity_val_steps=0,
         precision=args.precision,
         gradient_clip_val=args.gradient_clip_val,
+        accumulate_grad_batches=args.accumulate_grad_batches,
     )
     if args.print_diagnostics:
         callbacks = []
@@ -356,6 +362,12 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=20, help="Early stopping patience in epochs.")
     parser.add_argument("--device", type=str, default="cuda", help="Torch device used by dataloader.")
     parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="Gradient clipping value.")
+    parser.add_argument(
+        "--accumulate-grad-batches",
+        type=int,
+        default=1,
+        help="Number of batches to accumulate before each optimizer step.",
+    )
     parser.add_argument(
         "--precision",
         type=str,

@@ -17,8 +17,16 @@ model:
     - name: ppg
       input_dim: 3000  # 30 s * 100 Hz; change if your PPG sampling rate differs
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
   head:
     name: classification
     dropout: 0.1
@@ -33,7 +41,7 @@ data:
   max_tokens: 1535  # whole-night cap in 30 s epochs
   data_channel_names: [ppg]
   finetune_data_index: null
-  finetune_preset_path: new_index/ppg_sex_wholenight_merged_preset_1535_sex.pickle
+  finetune_preset_path: null
   train_dataset_names: []
   test_dataset_names: []
   n_few_shot: 0

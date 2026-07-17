@@ -5,6 +5,8 @@ import typing as t
 import pandas as pd
 
 from data.default_dataset import DefaultDataset, SampleIndex
+from data.multilabel import attach_multilabel_metadata, load_multilabel_label_table
+from data.survival import attach_survival_metadata, load_survival_label_table
 from data.utils import default_extractor, default_mlm_mask_generator, default_tokenizer, window
 
 PAD_STAGE = -1
@@ -22,8 +24,10 @@ def _build_channel_registry(
     *,
     channel_names: t.Sequence[str],
     channel_input_dims: t.Mapping[str, int],
+    channel_aliases: t.Mapping[str, str] | None = None,
     mask_rate: float,
 ) -> dict[str, tuple[t.Callable, t.Callable, t.Callable]]:
+    channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
     registry: dict[str, tuple[t.Callable, t.Callable, t.Callable]] = {
         "stage5": (
             default_extractor("stage5", 1),
@@ -45,7 +49,7 @@ def _build_channel_registry(
             missing.append(name)
             continue
         registry[name] = (
-            default_extractor(name, frames_per_token),
+            default_extractor(name, frames_per_token, source_alias=channel_aliases.get(name)),
             default_tokenizer(frames_per_token),
             default_mlm_mask_generator(mask_rate),
         )
@@ -75,6 +79,7 @@ class PSGPretrainDataset(DefaultDataset):
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names: t.Optional[t.List[str]] = None,  # ← 新增参数
         meta_data_regression_names: t.Optional[t.List[str]] = None,
+        required_metadata_names: t.Optional[t.Sequence[str]] = None,
         sources: t.Optional[t.List[str]] = None,  # ← 新增参数
         pair_selector: t.Any | None = None,
         randomly_select_channels: bool = True,
@@ -85,9 +90,14 @@ class PSGPretrainDataset(DefaultDataset):
         train_pair_track_unique_samples: bool = False,
         weighted_random_sampler: bool = False,
         weighted_random_sampler_target: str | None = None,
+        survival_label_config: t.Any | None = None,
+        survival_output_dim: int | None = None,
+        multilabel_label_config: t.Any | None = None,
+        multilabel_output_dim: int | None = None,
         generative: bool = False,
         is_train_set: bool = True,
         filter_max_workers: int | None = None,
+        channel_aliases: t.Mapping[str, str] | None = None,
         **kwargs: t.Any,
     ) -> None:
 
@@ -105,17 +115,36 @@ class PSGPretrainDataset(DefaultDataset):
         meta_data_names = meta_data_names or []
         built_in_ahi_runtime_metadata = "ahi" in channel_names
         sources = sources or []
+        survival_labels = None
+        multilabel_labels = None
 
         split_list = [split] if isinstance(split, str) else list(split or [])
+        survival_key_column = getattr(survival_label_config, "key_column", None)
+        multilabel_key_column = getattr(multilabel_label_config, "key_column", None)
 
         if not load_preset_path:
+            survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
+            if survival_labels is not None:
+                survival_key_column = survival_labels.key_column
+            multilabel_labels = load_multilabel_label_table(multilabel_label_config, multilabel_output_dim)
+            if multilabel_labels is not None:
+                multilabel_key_column = multilabel_labels.key_column
+            read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+            key_converters = {}
+            if survival_key_column is not None:
+                key_converters[str(survival_key_column)] = str
+            if multilabel_key_column is not None:
+                key_converters[str(multilabel_key_column)] = str
+            if key_converters:
+                read_csv_kwargs["converters"] = key_converters
+
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(
                 idx: t.Union[str, os.PathLike, t.List[t.Union[str, os.PathLike]]],
             ) -> pd.DataFrame:
                 # 单个路径
                 if isinstance(idx, (str, os.PathLike, Path)):
-                    df = pd.read_csv(idx, low_memory=False)
+                    df = pd.read_csv(idx, **read_csv_kwargs)
                     if "source" not in df.columns:
                         df["source"] = str(idx)
                     else:
@@ -126,7 +155,7 @@ class PSGPretrainDataset(DefaultDataset):
                 if isinstance(idx, (list, tuple)):
                     dfs = []
                     for p in idx:
-                        dfi = pd.read_csv(p, low_memory=False)
+                        dfi = pd.read_csv(p, **read_csv_kwargs)
                         if "source" not in dfi.columns:
                             dfi["source"] = str(p)
                         else:
@@ -155,6 +184,19 @@ class PSGPretrainDataset(DefaultDataset):
                 for optional_meta_name in ("age", "sex"):
                     if optional_meta_name in row.index:
                         metadata[optional_meta_name] = row[optional_meta_name]
+                if survival_labels is not None:
+                    if survival_labels.key_column not in row.index:
+                        raise ValueError(
+                            f"Required survival key column '{survival_labels.key_column}' is missing from index CSV."
+                        )
+                    attach_survival_metadata(metadata, row[survival_labels.key_column], survival_labels)
+                if multilabel_labels is not None:
+                    if multilabel_labels.key_column not in row.index:
+                        raise ValueError(
+                            f"Required multilabel key column '{multilabel_labels.key_column}' "
+                            "is missing from index CSV."
+                        )
+                    attach_multilabel_metadata(metadata, row[multilabel_labels.key_column], multilabel_labels)
 
                 for meta_data_name in meta_data_names:
                     # Built-in AHI summary scalars come from NPZ backfill, not CSV columns.
@@ -166,8 +208,11 @@ class PSGPretrainDataset(DefaultDataset):
 
                 # 需要划分为 n 个 token
                 n = int(row["duration"] // self.token_sec)
+                if n <= 0:
+                    continue
 
-                # stride_tokens = 0 代表只取前面的1535个token，否则取滑窗 ceil((n - 1535) / stride_tokens) 个滑窗
+                # stride_tokens = 0 代表只取前面的1535个token
+                # 否则按滑窗 ceil((n - 1535) / stride_tokens) 取多个滑窗
                 for left, right in window(n, max_tokens, stride_tokens):
                     data.append(
                         SampleIndex(
@@ -181,9 +226,17 @@ class PSGPretrainDataset(DefaultDataset):
         else:
             data = None
 
+        effective_survival_output_dim = survival_output_dim if load_preset_path else None
+        if survival_labels is not None:
+            effective_survival_output_dim = len(survival_labels.label_names)
+        effective_multilabel_output_dim = multilabel_output_dim if load_preset_path else None
+        if multilabel_labels is not None:
+            effective_multilabel_output_dim = len(multilabel_labels.label_names)
+
         registry = _build_channel_registry(
             channel_names=channel_names,
             channel_input_dims=self.channel_input_dims,
+            channel_aliases=channel_aliases,
             mask_rate=mask_rate,
         )
 
@@ -202,10 +255,16 @@ class PSGPretrainDataset(DefaultDataset):
             few_shot=few_shot,
             meta_data_names=meta_data_names,
             meta_data_regression_names=meta_data_regression_names,
+            required_metadata_names=required_metadata_names,
             sources=sources,
             pair_selector=pair_selector,
             weighted_random_sampler=weighted_random_sampler,
             weighted_random_sampler_target=weighted_random_sampler_target,
+            survival_output_dim=effective_survival_output_dim,
+            survival_key_column=survival_key_column,
+            multilabel_output_dim=effective_multilabel_output_dim,
+            multilabel_key_column=multilabel_key_column,
             dataloader_config=kwargs,
+            channel_aliases=channel_aliases,
             filter_max_workers=filter_max_workers,
         )

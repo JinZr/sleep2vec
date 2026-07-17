@@ -27,6 +27,7 @@ class ChannelConfig:
     name: str
     input_dim: int
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
+    alias: str | None = None
 
 
 @dataclass
@@ -103,7 +104,7 @@ class HeadConfig:
 
 @dataclass
 class TemporalAggConfig:
-    name: str = "mean"  # "mean" or "attn"
+    name: str = "mean"  # "mean", "attn", or "lstm"
     kwargs: dict[str, t.Any] = field(default_factory=dict)
 
 
@@ -242,6 +243,27 @@ class FinetuneSamplerConfig:
 
 
 @dataclass
+class SurvivalConfig:
+    key_column: str
+    disease_columns_index: str
+    event_time_index: str
+    is_event_index: str
+    has_label_index: str
+    covariates: t.List[str] = field(default_factory=list)
+    covariate_embedding_dim: int = 16
+
+
+@dataclass
+class MultilabelConfig:
+    key_column: str
+    disease_columns_index: str
+    label_index: str
+    has_label_index: str
+    covariates: t.List[str] = field(default_factory=list)
+    covariate_embedding_dim: int = 16
+
+
+@dataclass
 class FinetuneConfig:
     freeze_tokenizer: bool = True
     lora: LoraConfig = field(default_factory=LoraConfig)
@@ -249,6 +271,8 @@ class FinetuneConfig:
     loss: FinetuneLossConfig = field(default_factory=FinetuneLossConfig)
     sampler: FinetuneSamplerConfig = field(default_factory=FinetuneSamplerConfig)
     task: TaskConfig | None = None
+    survival: SurvivalConfig | None = None
+    multilabel: MultilabelConfig | None = None
     eval_visualizations: EvalVisualizationsConfig | None = None
 
 
@@ -293,6 +317,12 @@ def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
         if tok_cfg.out_dim is None:
             raise ValueError(f"channel '{item.get('name', '?')}' must set tokenizer.out_dim.")
 
+        if "aliases" in item:
+            raise ValueError(f"channel '{item.get('name', '?')}' uses unsupported field 'aliases'; use 'alias'.")
+        alias = item.get("alias")
+        if alias is not None and (not isinstance(alias, str) or not alias):
+            raise ValueError(f"channel '{item.get('name', '?')}' alias must be a non-empty string.")
+
         channels.append(ChannelConfig(tokenizer=tok_cfg, **item))
     return channels
 
@@ -321,7 +351,7 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     temporal_block = head_raw.pop("temporal_agg", None)
     channel_block = head_raw.pop("channel_agg", None)
     if temporal_block is None:
-        raise ValueError("model.head.temporal_agg is required; specify name: mean|attn.")
+        raise ValueError("model.head.temporal_agg is required; specify name: mean|attn|lstm.")
     if channel_block is None:
         raise ValueError("model.head.channel_agg is required; specify name: mean|concat|gated_scalar.")
 
@@ -473,8 +503,10 @@ def _build_task_config(raw: t.Any) -> TaskConfig | None:
         raise ValueError(f"finetune.task missing required fields: {missing}")
 
     task_type = raw.get("type")
-    if task_type not in {"classification", "regression"}:
-        raise ValueError("finetune.task.type must be 'classification' or 'regression'.")
+    if task_type not in {"classification", "regression", "survival", "multilabel_classification"}:
+        raise ValueError(
+            "finetune.task.type must be 'classification', 'regression', 'survival', " "or 'multilabel_classification'."
+        )
 
     output_dim = raw.get("output_dim")
     if not isinstance(output_dim, int) or output_dim < 1:
@@ -496,10 +528,18 @@ def _build_task_config(raw: t.Any) -> TaskConfig | None:
     if extra:
         raise ValueError(f"finetune.task has unsupported fields: {extra}")
 
-    if task_type == "classification" and output_dim < 2:
+    if task_type in {"classification", "multilabel_classification"} and output_dim < 2:
         raise ValueError("finetune.task.output_dim must be >= 2 for classification tasks.")
     if task_type == "regression" and output_dim != 1:
         raise ValueError("finetune.task.output_dim must be 1 for regression tasks.")
+    if task_type == "survival":
+        if is_seq:
+            raise ValueError("finetune.task.is_seq must be false for survival tasks.")
+        allowed_monitors = {"val_loss": "min", "val_c_index": "max"}
+        if allowed_monitors.get(monitor) != monitor_mod:
+            raise ValueError("survival tasks must monitor val_loss/min or val_c_index/max.")
+    if task_type == "multilabel_classification" and is_seq:
+        raise ValueError("finetune.task.is_seq must be false for multilabel_classification tasks.")
 
     return TaskConfig(
         type=task_type,
@@ -562,6 +602,94 @@ def _build_finetune_sampler_config(raw: t.Any) -> FinetuneSamplerConfig:
     if not isinstance(weighted_random, bool):
         raise ValueError("finetune.sampler.weighted_random must be a boolean.")
     return FinetuneSamplerConfig(weighted_random=weighted_random)
+
+
+def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalConfig | None:
+    if raw is None:
+        if task_cfg is not None and task_cfg.type == "survival":
+            raise ValueError("finetune.survival is required for survival tasks.")
+        return None
+    if task_cfg is None or task_cfg.type != "survival":
+        raise ValueError("finetune.survival is only supported when finetune.task.type is survival.")
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.survival must be a mapping when provided.")
+
+    required = {"key_column", "disease_columns_index", "event_time_index", "is_event_index", "has_label_index"}
+    optional = {"covariates", "covariate_embedding_dim"}
+    missing = sorted(required - set(raw.keys()))
+    if missing:
+        raise ValueError(f"finetune.survival missing required fields: {missing}")
+    extra = sorted(set(raw.keys()) - required - optional)
+    if extra:
+        raise ValueError(f"finetune.survival has unsupported fields: {extra}")
+    for field_name in required:
+        value = raw[field_name]
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"finetune.survival.{field_name} must be a non-empty string.")
+
+    covariates = raw.get("covariates", [])
+    if not isinstance(covariates, list) or not all(isinstance(item, str) and item for item in covariates):
+        raise ValueError("finetune.survival.covariates must be a list of non-empty strings.")
+    if len(set(covariates)) != len(covariates):
+        raise ValueError("finetune.survival.covariates must not contain duplicates.")
+    unsupported = sorted(set(covariates) - {"age", "sex"})
+    if unsupported:
+        raise ValueError(f"finetune.survival.covariates only supports ['age', 'sex'], got {unsupported}.")
+
+    covariate_embedding_dim = raw.get("covariate_embedding_dim", 16)
+    if not isinstance(covariate_embedding_dim, int) or isinstance(covariate_embedding_dim, bool):
+        raise ValueError("finetune.survival.covariate_embedding_dim must be a positive integer.")
+    if covariate_embedding_dim < 1:
+        raise ValueError("finetune.survival.covariate_embedding_dim must be a positive integer.")
+
+    values = {field_name: raw[field_name] for field_name in required}
+    values["covariates"] = list(covariates)
+    values["covariate_embedding_dim"] = covariate_embedding_dim
+    return SurvivalConfig(**values)
+
+
+def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> MultilabelConfig | None:
+    if raw is None:
+        if task_cfg is not None and task_cfg.type == "multilabel_classification":
+            raise ValueError("finetune.multilabel is required for multilabel_classification tasks.")
+        return None
+    if task_cfg is None or task_cfg.type != "multilabel_classification":
+        raise ValueError("finetune.multilabel is only supported when finetune.task.type is multilabel_classification.")
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.multilabel must be a mapping when provided.")
+
+    required = {"key_column", "disease_columns_index", "label_index", "has_label_index"}
+    optional = {"covariates", "covariate_embedding_dim"}
+    missing = sorted(required - set(raw.keys()))
+    if missing:
+        raise ValueError(f"finetune.multilabel missing required fields: {missing}")
+    extra = sorted(set(raw.keys()) - required - optional)
+    if extra:
+        raise ValueError(f"finetune.multilabel has unsupported fields: {extra}")
+    for field_name in required:
+        value = raw[field_name]
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"finetune.multilabel.{field_name} must be a non-empty string.")
+
+    covariates = raw.get("covariates", [])
+    if not isinstance(covariates, list) or not all(isinstance(item, str) and item for item in covariates):
+        raise ValueError("finetune.multilabel.covariates must be a list of non-empty strings.")
+    if len(set(covariates)) != len(covariates):
+        raise ValueError("finetune.multilabel.covariates must not contain duplicates.")
+    unsupported = sorted(set(covariates) - {"age", "sex"})
+    if unsupported:
+        raise ValueError(f"finetune.multilabel.covariates only supports ['age', 'sex'], got {unsupported}.")
+
+    covariate_embedding_dim = raw.get("covariate_embedding_dim", 16)
+    if not isinstance(covariate_embedding_dim, int) or isinstance(covariate_embedding_dim, bool):
+        raise ValueError("finetune.multilabel.covariate_embedding_dim must be a positive integer.")
+    if covariate_embedding_dim < 1:
+        raise ValueError("finetune.multilabel.covariate_embedding_dim must be a positive integer.")
+
+    values = {field_name: raw[field_name] for field_name in required}
+    values["covariates"] = list(covariates)
+    values["covariate_embedding_dim"] = covariate_embedding_dim
+    return MultilabelConfig(**values)
 
 
 def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cfg: BackboneConfig) -> None:
@@ -696,8 +824,8 @@ def validate_model_config(model_cfg: ModelConfig) -> int:
             raise ValueError("model.cls.embedding_type must be set when model.cls.downstream is 'cls'.")
 
     if model_cfg.head is not None:
-        if model_cfg.head.temporal_agg.name not in {"mean", "attn"}:
-            raise ValueError("model.head.temporal_agg.name must be 'mean' or 'attn'.")
+        if model_cfg.head.temporal_agg.name not in {"mean", "attn", "lstm"}:
+            raise ValueError("model.head.temporal_agg.name must be 'mean', 'attn', or 'lstm'.")
         if model_cfg.head.channel_agg.name not in {"mean", "concat", "gated_scalar"}:
             raise ValueError("model.head.channel_agg.name must be 'mean', 'concat', or 'gated_scalar'.")
     return next(iter(out_dims))
@@ -771,6 +899,8 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     sampler_cfg = _build_finetune_sampler_config(finetune_block.get("sampler"))
     eval_visualizations_cfg = _build_eval_visualizations_config(finetune_block.get("eval_visualizations"))
     task_cfg = _build_task_config(finetune_block.get("task"))
+    survival_cfg = _build_survival_config(finetune_block.get("survival"), task_cfg)
+    multilabel_cfg = _build_multilabel_config(finetune_block.get("multilabel"), task_cfg)
     _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
     data_cfg = FinetuneDataConfig(**data_block)
     lora_cfg = LoraConfig(**lora_block)
@@ -781,6 +911,8 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         loss=loss_cfg,
         sampler=sampler_cfg,
         task=task_cfg,
+        survival=survival_cfg,
+        multilabel=multilabel_cfg,
         eval_visualizations=eval_visualizations_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
@@ -792,6 +924,8 @@ __all__ = [
     "FinetuneConfig",
     "FinetuneLossConfig",
     "FinetuneSamplerConfig",
+    "SurvivalConfig",
+    "MultilabelConfig",
     "PretrainConfigBundle",
     "FinetuneDataConfig",
     "PretrainDataConfig",

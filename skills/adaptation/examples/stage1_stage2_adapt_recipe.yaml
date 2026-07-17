@@ -1,0 +1,16 @@
+name: stage1_stage2_adapt_example
+task: adapt
+variant: sleep2vec
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: adapt-stage1-stage2
+  phase: train
+  purpose: Adapt the baseline through stage 1 and stage 2.
+inputs:
+  config: configs/sleep2vec_dense_adapt_ppg_actigraphy.yaml
+  phase: stage1

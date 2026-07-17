@@ -246,8 +246,15 @@ npz_lists/
 *.tmp
 *.bak
 .DS_Store
+__MACOSX/
 log-*/
 wandb_logs/
+recipes/generated/
+artifacts/
+artifacts/agent_context/
+artifacts/agent_plans/
+runs/generated/
+plans/generated/
 
 # VSCode settings folder
 .vscode/
@@ -255,3 +262,5 @@ wandb_logs/
 *.tar.gz
 results
 ossutil_output
+/.codex-tmp
+/tmp

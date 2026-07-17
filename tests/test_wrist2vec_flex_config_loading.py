@@ -680,7 +680,10 @@ def test_load_finetune_config_rejects_task_extra_fields(tmp_path: Path):
 @pytest.mark.parametrize(
     ("task_patch", "pattern"),
     [
-        ({"type": "invalid"}, "must be 'classification' or 'regression'"),
+        (
+            {"type": "invalid"},
+            "must be 'classification', 'regression', 'survival', or 'multilabel_classification'",
+        ),
         ({"output_dim": 0}, "must be a positive integer"),
         ({"is_seq": "yes"}, "must be a boolean"),
         ({"monitor_mod": "up"}, "must be 'min' or 'max'"),
@@ -801,7 +804,7 @@ def test_validate_model_config_rejects_invalid_temporal_aggregator():
     model_cfg.head = deepcopy(model_cfg.head)
     model_cfg.head.temporal_agg.name = "invalid"
 
-    with pytest.raises(ValueError, match="temporal_agg.name must be 'mean' or 'attn'"):
+    with pytest.raises(ValueError, match="temporal_agg.name must be 'mean', 'attn', or 'lstm'"):
         validate_model_config(model_cfg)
 
 

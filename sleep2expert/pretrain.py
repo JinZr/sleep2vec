@@ -9,13 +9,17 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
+import torch
 import wandb
+
+torch.set_float32_matmul_precision("high")
 
 # Make sure the repository root is importable when running this file directly
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sleep2expert.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2expert.callbacks.pair_acc_logger import PairAccLoggerCallback
 from sleep2expert.checkpoints import load_pretrain_init_weights
 from sleep2expert.common import apply_data_backend_args, apply_model_config_args, persist_run_config_and_args
@@ -163,7 +167,7 @@ def sleep2vec_pretrain(args):
         train_pair_skew_warn_threshold=args.train_pair_skew_warn_threshold,
         train_pair_min_unique_coverage_warn_threshold=args.train_pair_min_unique_coverage_warn_threshold,
     )
-    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb]
+    callbacks = [checkpoint_cb, early_stop_cb, lr_monitor, pair_acc_cb, GradScaleLoggerCallback()]
     enable_checkpointing = True
     trainer_kwargs = dict(
         devices=args.devices,
@@ -179,6 +183,7 @@ def sleep2vec_pretrain(args):
         num_sanity_val_steps=0,
         precision=args.precision,
         gradient_clip_val=args.gradient_clip_val,
+        accumulate_grad_batches=args.accumulate_grad_batches,
     )
     if args.print_diagnostics:
         # short diagnostic run: disable bar/ckpt/val to keep output clean
@@ -224,6 +229,18 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Override warmup steps for LR schedule (default: 3%% of total steps).",
+    )
+    parser.add_argument(
+        "--lr-decay-floor",
+        type=float,
+        default=0.1,
+        help="Final LR ratio for the post-warmup decay schedule.",
+    )
+    parser.add_argument(
+        "--lr-decay-shape",
+        choices=["cosine", "linear"],
+        default="cosine",
+        help="Post-warmup LR decay shape.",
     )
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="weight decay for AdamW")
     parser.add_argument("--batch-size", type=int, default=320, help="batch size")
@@ -391,6 +408,12 @@ if __name__ == "__main__":
         help="Number of training steps to accumulate diagnostics before stopping.",
     )
     parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
+    parser.add_argument(
+        "--accumulate-grad-batches",
+        type=int,
+        default=1,
+        help="Number of batches to accumulate before each optimizer step.",
+    )
     parser.add_argument(
         "--strategy",
         type=str,

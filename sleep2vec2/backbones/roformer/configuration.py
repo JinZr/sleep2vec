@@ -26,6 +26,9 @@ class RoFormerConfig:
     rotary_value: bool = False
     attention_backend: str = "eager"
 
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
     def __post_init__(self) -> None:
         if self.attention_backend not in ("eager", "sdpa"):
             raise ValueError("attention_backend must be one of eager, sdpa.")

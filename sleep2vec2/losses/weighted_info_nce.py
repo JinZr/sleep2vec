@@ -4,14 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from .base import ContrastiveLoss, LossOutput, register_loss
-
-
-def _contrastive_accuracy(logits_12: torch.Tensor, logits_21: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    with torch.no_grad():
-        pred12 = logits_12.argmax(dim=-1)
-        pred21 = logits_21.argmax(dim=-1)
-        acc = 0.5 * ((pred12 == labels).float().mean() + (pred21 == labels).float().mean())
-    return acc
+from .utils import contrastive_accuracy
 
 
 @register_loss("weighted_info_nce")
@@ -73,7 +66,7 @@ class WeightedInfoNCELoss(ContrastiveLoss):
         loss_21 = F.cross_entropy(logits_21_flat, labels_flat)
         loss = 0.5 * (loss_12 + loss_21)
 
-        acc = _contrastive_accuracy(base_12.reshape(L * B, B), base_21.reshape(L * B, B), labels_flat)
+        acc = contrastive_accuracy(base_12.reshape(L * B, B), base_21.reshape(L * B, B), labels_flat)
         metrics = {
             "contrastive_loss": loss.detach(),
             "contrastive_acc": acc,

@@ -16,60 +16,150 @@ model:
     downstream: tokens
   channels:
     - name: heartbeat
+      alias: psg_heartbeat
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: breath
+      alias: psg_breath
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: eeg_original
       input_dim: 3840
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: ecg_original
       input_dim: 3840
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: eog_original
       input_dim: 3840
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: emg_original
       input_dim: 3840
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: spo2
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: resp_original
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: resp_nasal_original
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: ppg
       input_dim: 3000
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: actigraphy
       input_dim: 960
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
 loss:
   name: info_nce
   temperature: 0.2

@@ -1,0 +1,48 @@
+run:
+  name: tiny_sleep2stat
+  output_dir: results/sleep2stat/tiny_fixture
+  seed: 4523
+
+data:
+  backend: npz
+  index: recipes/examples/fixtures/tiny_sleep2stat_index.csv
+  split: [test]
+  path_column: path
+  duration_column: duration
+  split_column: split
+  source_column: source
+  record_id_columns: [source, subject_id, session_id]
+  metadata_columns: [age, sex]
+  token_sec: 30
+  max_tokens: 4
+
+signals:
+  channels:
+    spo2:
+      source: spo2
+      sfreq: 1
+      kind: spo2
+      input_dim: 30
+      unit: pct
+
+analyzers:
+  - name: spo2_summary
+    type: spo2_summary
+    input_channels: [spo2]
+    artifact:
+      valid_min: 50
+      valid_max: 100
+
+reducers: []
+
+outputs:
+  write_global_tables: true
+  write_per_record: true
+  include_probabilities: true
+  include_raw_logits: false
+  compression: gzip
+  global_tables:
+    epoch_alignment: false
+    second_alignment: false
+    event_alignment: true
+    night_stats: true

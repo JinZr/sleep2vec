@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import typing as t
@@ -25,14 +25,26 @@ def default_extractor(
     dtype: torch.dtype = torch.float32,
     *,
     source_name: str | None = None,
+    source_alias: str | None = None,
 ):
     """Slice one NPZ channel between token-aligned frame offsets."""
+    if source_name is not None:
+        sources = (str(source_name),)
+    elif source_alias is not None:
+        sources = (str(name), str(source_alias))
+    else:
+        sources = (str(name),)
 
     def extract(npz, start: int, end: int):
         s = start * frames_per_token
         e = end * frames_per_token
 
-        arr = npz[source_name or name]
+        for source in sources:
+            if source in npz:
+                arr = npz[source]
+                break
+        else:
+            arr = npz[sources[0]]
         segment = arr[s:e]
 
         # Collapse trivial second dimension without copying.
@@ -144,16 +156,18 @@ def filter_valid_sample_indices(
     min_channels: int = 2,
     tolerance: int = 1,
     max_workers: int | None = None,
+    channel_aliases: t.Mapping[str, str] | None = None,
 ) -> list[t.Any]:
     """
     Filter out samples with tokenized channel-length mismatches.
-    - allow_missing_channels=True: keep samples with >= min_channels available channels
-      and record available channels in SampleIndex.payload.
+    - allow_missing_channels=True: keep samples with >= min_channels available channels.
     - allow_missing_channels=False: require all configured channels to exist.
+    Accepted samples record available channels in SampleIndex.payload.
     """
 
     worker_count = max_workers or _default_worker_count()
     channel_names = list(channel_names or [])
+    channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
     requires_builtin_ahi = "ahi" in extractors
 
     def _available_from_npz(npz):
@@ -166,7 +180,8 @@ def filter_valid_sample_indices(
                     continue
                 available.append(ch)
                 continue
-            if ch in npz:
+            alias = channel_aliases.get(ch)
+            if ch in npz or (alias is not None and alias in npz):
                 available.append(ch)
         return available
 
@@ -221,10 +236,9 @@ def filter_valid_sample_indices(
                         max_len, min_len = max(lengths), min(lengths)
 
                         if max_len - min_len <= tolerance:
-                            if allow_missing_channels:
-                                payload_dict = getattr(sample_index, "payload", None)
-                                if isinstance(payload_dict, dict):
-                                    payload_dict["available_channels"] = list(tokens.keys())
+                            payload_dict = getattr(sample_index, "payload", None)
+                            if isinstance(payload_dict, dict):
+                                payload_dict["available_channels"] = list(tokens.keys())
                             filtered_samples.append(sample_index)
                             continue
                         logging.info(
@@ -243,8 +257,7 @@ def filter_valid_sample_indices(
     filtered_data: list[t.Any] = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [executor.submit(process_path, path, samples) for path, samples in samples_by_path.items()]
-        iterator = as_completed(futures)
-        iterator = tqdm(iterator, total=len(futures), desc="Validating samples", leave=False)
+        iterator = tqdm(futures, total=len(futures), desc="Validating samples", leave=False)
         for f in iterator:
             filtered_data.extend(f.result())
 

@@ -45,6 +45,8 @@ class Sleep2vecDownstreamModel(nn.Module):
         model_config: ModelConfig | None = None,
         layer_mix_cfg: LayerMixConfig | None = None,
         head_config: HeadConfig | None = None,
+        survival_covariates: t.Sequence[str] | None = None,
+        survival_covariate_embedding_dim: int = 16,
     ):
         super().__init__()
         # core attributes
@@ -56,6 +58,29 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.is_classification = is_classification
         self.is_seq = is_seq
         self.target = target
+        self.survival_covariates = tuple(survival_covariates or ())
+        if len(set(self.survival_covariates)) != len(self.survival_covariates):
+            raise ValueError("survival_covariates must not contain duplicates.")
+        unsupported_covariates = sorted(set(self.survival_covariates) - {"age", "sex"})
+        if unsupported_covariates:
+            raise ValueError(f"survival_covariates only supports ['age', 'sex'], got {unsupported_covariates}.")
+        if self.survival_covariates and self.is_seq:
+            raise ValueError("survival covariates are only supported for non-sequence downstream tasks.")
+        if not isinstance(survival_covariate_embedding_dim, int) or isinstance(survival_covariate_embedding_dim, bool):
+            raise ValueError("survival_covariate_embedding_dim must be a positive integer.")
+        if survival_covariate_embedding_dim < 1:
+            raise ValueError("survival_covariate_embedding_dim must be a positive integer.")
+        self.survival_covariate_embedding_dim = survival_covariate_embedding_dim
+        self.survival_age_embedding = None
+        self.survival_sex_embedding = None
+        if "age" in self.survival_covariates:
+            self.survival_age_embedding = nn.Linear(1, survival_covariate_embedding_dim)
+            nn.init.zeros_(self.survival_age_embedding.weight)
+            nn.init.zeros_(self.survival_age_embedding.bias)
+        if "sex" in self.survival_covariates:
+            self.survival_sex_embedding = nn.Embedding(2, survival_covariate_embedding_dim)
+            nn.init.zeros_(self.survival_sex_embedding.weight)
+        survival_extra_feature_dim = len(self.survival_covariates) * survival_covariate_embedding_dim
 
         self.n_channels = len(self.channel_names)
         self.cls_embedding = getattr(self.backbone, "cls_embedding", None)
@@ -73,6 +98,8 @@ class Sleep2vecDownstreamModel(nn.Module):
             raise ValueError("head_config must be provided for downstream model construction.")
 
         inferred_head = head_config.name
+        if self.survival_covariates and inferred_head not in {"classification", "regression"}:
+            raise ValueError("covariates require the classification or regression head.")
         if head_config.act:
             head_kwargs.setdefault("act", _resolve_act(head_config.act))
         channel_cfg = head_config.channel_agg
@@ -90,6 +117,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             output_dim=self.output_dim,
             is_classification=self.is_classification,
             is_seq=self.is_seq,
+            extra_feature_dim=survival_extra_feature_dim,
             **head_kwargs,
         )
 
@@ -241,6 +269,29 @@ class Sleep2vecDownstreamModel(nn.Module):
                 token_mask = layer_mask
         return token_layers, cls_layers, token_mask
 
+    def _build_survival_extra_features(self, batch, reference: torch.Tensor) -> torch.Tensor | None:
+        if not self.survival_covariates:
+            return None
+
+        metadata = batch["metadata"]
+        extra_features = []
+        if "age" in self.survival_covariates:
+            if "age" not in metadata:
+                raise ValueError("Survival covariate 'age' requires batch metadata age.")
+            age = metadata["age"].to(device=reference.device, dtype=self.survival_age_embedding.weight.dtype)
+            if (age < 0).any():
+                raise ValueError("Survival covariate 'age' is missing for at least one sample.")
+            extra_features.append(self.survival_age_embedding(age.view(-1, 1) / 100.0))
+        if "sex" in self.survival_covariates:
+            if "sex" not in metadata:
+                raise ValueError("Survival covariate 'sex' requires batch metadata sex.")
+            sex = metadata["sex"].to(device=reference.device)
+            if ((sex != 0) & (sex != 1)).any():
+                raise ValueError("Survival covariate 'sex' must be 0 or 1 for every sample.")
+            extra_features.append(self.survival_sex_embedding(sex.long()))
+
+        return torch.cat(extra_features, dim=-1)
+
     def forward(self, batch):
         tokens = batch["tokens"]
 
@@ -320,6 +371,7 @@ class Sleep2vecDownstreamModel(nn.Module):
                     token_mask = token_mask.to(torch.bool)
                 token_masks.append(token_mask)
 
+        extra_features = self._build_survival_extra_features(batch, feature_of_different_mods[0])
         if self.is_seq and token_masks:
             merged_mask = token_masks[0]
             for mask in token_masks[1:]:
@@ -328,9 +380,9 @@ class Sleep2vecDownstreamModel(nn.Module):
                 if mask.shape != merged_mask.shape:
                     raise ValueError("Token masks must share the same shape for sequence heads.")
                 merged_mask = merged_mask & mask
-            output = self._call_head(feature_of_different_mods, merged_mask)
+            output = self._call_head(feature_of_different_mods, merged_mask, extra_features=extra_features)
         else:
-            output = self._call_head(feature_of_different_mods, None)
+            output = self._call_head(feature_of_different_mods, None, extra_features=extra_features)
         return output
 
     def _forward_seq(self, token_hidden, cls_hidden):
@@ -372,7 +424,14 @@ class Sleep2vecDownstreamModel(nn.Module):
             self._head_accepts_token_mask = bool(getattr(self.head, "supports_token_mask", False))
         return self._head_accepts_token_mask
 
-    def _call_head(self, features: t.List[torch.Tensor], token_mask: torch.Tensor | None):
+    def _call_head(
+        self,
+        features: t.List[torch.Tensor],
+        token_mask: torch.Tensor | None,
+        extra_features: torch.Tensor | None = None,
+    ):
+        if extra_features is not None:
+            return self.head(features, extra_features=extra_features)
         if token_mask is not None and self._head_supports_token_mask():
             return self.head(features, token_mask=token_mask)
         return self.head(features)

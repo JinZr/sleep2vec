@@ -9,12 +9,19 @@ from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agent_tools.progress import write_progress
 
 EPOCH_SECONDS = 30
 IS_SLEEP_LABEL = 1
@@ -458,21 +465,59 @@ def process_indexed_file(index, total, path, input_root, output_dir, args):
 
 
 def process_files(input_files, args):
+    total = len(input_files)
+    started_at = time.time()
+    write_progress(
+        args.output_dir,
+        status="running",
+        task="cut_ukb_sleep_with_asleep",
+        processed=0,
+        total=total,
+        success=0,
+        failed=0,
+        start_time=started_at,
+    )
     if args.num_workers == 1:
         asleep_pipeline = load_asleep_pipeline(args.output_dir / "_asleep_models")
         manifest_rows = []
-        total = len(input_files)
-        for index, path in enumerate(tqdm(input_files, total=total, desc="Processing CWA files", unit="file"), start=1):
-            path = path.resolve()
-            started_at = time.perf_counter()
-            tqdm.write(f"[{index}/{total}] {path}")
-            manifest_rows.extend(process_file(path, args.input_root, args.output_dir, args, asleep_pipeline))
-            elapsed = time.perf_counter() - started_at
-            tqdm.write(f"[{index}/{total}] completed {path} in {elapsed:.1f}s")
+        try:
+            for index, path in enumerate(
+                tqdm(input_files, total=total, desc="Processing CWA files", unit="file"),
+                start=1,
+            ):
+                path = path.resolve()
+                file_started_at = time.perf_counter()
+                tqdm.write(f"[{index}/{total}] {path}")
+                manifest_rows.extend(process_file(path, args.input_root, args.output_dir, args, asleep_pipeline))
+                elapsed = time.perf_counter() - file_started_at
+                tqdm.write(f"[{index}/{total}] completed {path} in {elapsed:.1f}s")
+                write_progress(
+                    args.output_dir,
+                    status="running",
+                    task="cut_ukb_sleep_with_asleep",
+                    processed=index,
+                    total=total,
+                    success=index,
+                    failed=0,
+                    start_time=started_at,
+                    current_item=str(path),
+                )
+        except Exception as exc:
+            write_progress(
+                args.output_dir,
+                status="failed",
+                task="cut_ukb_sleep_with_asleep",
+                processed=len(manifest_rows),
+                total=total,
+                success=len(manifest_rows),
+                failed=1,
+                start_time=started_at,
+                message=str(exc),
+            )
+            raise
         return manifest_rows
 
     indexed_rows = []
-    total = len(input_files)
     max_workers = min(args.num_workers, total)
     if args.pytorch_device is None:
         args.pytorch_device = "cpu"
@@ -492,13 +537,40 @@ def process_files(input_files, args):
             )
             for index, path in enumerate(input_files, start=1)
         ]
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            desc="Processing CWA files",
-            unit="file",
-        ):
-            indexed_rows.append(future.result())
+        try:
+            for completed, future in enumerate(
+                tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc="Processing CWA files",
+                    unit="file",
+                ),
+                start=1,
+            ):
+                indexed_rows.append(future.result())
+                write_progress(
+                    args.output_dir,
+                    status="running",
+                    task="cut_ukb_sleep_with_asleep",
+                    processed=completed,
+                    total=total,
+                    success=completed,
+                    failed=0,
+                    start_time=started_at,
+                )
+        except Exception as exc:
+            write_progress(
+                args.output_dir,
+                status="failed",
+                task="cut_ukb_sleep_with_asleep",
+                processed=len(indexed_rows),
+                total=total,
+                success=len(indexed_rows),
+                failed=1,
+                start_time=started_at,
+                message=str(exc),
+            )
+            raise
 
     manifest_rows = []
     for _, rows in sorted(indexed_rows, key=lambda item: item[0]):
@@ -517,6 +589,16 @@ def main():
 
     manifest_path = args.output_dir / args.manifest_name
     pd.DataFrame(manifest_rows).to_csv(manifest_path, index=False)
+    write_progress(
+        args.output_dir,
+        status="completed",
+        task="cut_ukb_sleep_with_asleep",
+        processed=len(input_files),
+        total=len(input_files),
+        success=len(input_files),
+        failed=0,
+        message=f"Wrote manifest: {manifest_path}",
+    )
     print(f"Wrote manifest: {manifest_path}")
 
 

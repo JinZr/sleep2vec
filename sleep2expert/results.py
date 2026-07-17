@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 from typing import Any
 import uuid
@@ -41,6 +42,9 @@ RESULT_METADATA_COLUMNS = (
     "ckpt_tag",
     "task_family",
     "timestamp_utc",
+    "route_filter_active",
+    "route_filter_groups",
+    "route_filter_expert_ids",
     "lr",
     "batch_size",
     "n_few_shot",
@@ -75,6 +79,70 @@ PREDICTION_METADATA_COLUMNS = (
     "token_starts",
 )
 
+SURVIVAL_PER_DISEASE_METADATA_COLUMNS = (
+    "prediction_run_id",
+    "namespace",
+    "experiment_version",
+    "result_source",
+    "config_path",
+    "label_name",
+    "eval_split",
+    "ckpt_path",
+    "run_dir",
+    "metrics_csv_path",
+    "prediction_csv_path",
+    "survival_per_disease_metrics_csv_path",
+    "ckpt_input",
+    "ckpt_resolved_path",
+    "ckpt_epoch",
+    "ckpt_step",
+    "ckpt_tag",
+    "task_family",
+    "timestamp_utc",
+    "route_filter_active",
+    "route_filter_groups",
+    "route_filter_expert_ids",
+    "stage",
+    "disease_idx",
+    "disease",
+    "n_labeled",
+    "n_events",
+    "c_index",
+)
+
+MULTILABEL_PER_DISEASE_METADATA_COLUMNS = (
+    "prediction_run_id",
+    "namespace",
+    "experiment_version",
+    "result_source",
+    "config_path",
+    "label_name",
+    "eval_split",
+    "ckpt_path",
+    "run_dir",
+    "metrics_csv_path",
+    "prediction_csv_path",
+    "multilabel_per_disease_metrics_csv_path",
+    "ckpt_input",
+    "ckpt_resolved_path",
+    "ckpt_epoch",
+    "ckpt_step",
+    "ckpt_tag",
+    "task_family",
+    "timestamp_utc",
+    "route_filter_active",
+    "route_filter_groups",
+    "route_filter_expert_ids",
+    "stage",
+    "disease_idx",
+    "disease",
+    "n_positive",
+    "n_negative",
+    "prevalence",
+    "auroc",
+    "auprc",
+)
+
 
 def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: Any | None = None):
     """Append one experiment result row to `csv_path`.
@@ -93,6 +161,7 @@ def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: A
     if prediction_run_id not in (None, ""):
         new_row["prediction_run_id"] = prediction_run_id
         _add_inference_run_metadata(new_row, args)
+        _add_route_filter_result_metadata(new_row, args)
     new_row["config_path"] = _stringify_optional_path(getattr(args, "config", None)) if args is not None else ""
     new_row["eval_split"] = getattr(args, "eval_split", None) if args is not None else None
 
@@ -167,6 +236,12 @@ def prepare_inference_result_paths(
     run_dir = root_path / (_slug_piece(namespace) or "namespace") / label_slug / run_id
     metrics_csv_path = run_dir / f"metrics__{label_slug}__{split_slug}__{ckpt_tag}.csv"
     prediction_csv_path = run_dir / f"predictions__{label_slug}__{split_slug}__{ckpt_tag}.csv"
+    survival_per_disease_metrics_csv_path = (
+        run_dir / f"survival_per_disease_metrics__{label_slug}__{split_slug}__{ckpt_tag}.csv"
+    )
+    multilabel_per_disease_metrics_csv_path = (
+        run_dir / f"multilabel_per_disease_metrics__{label_slug}__{split_slug}__{ckpt_tag}.csv"
+    )
     manifest_path = run_dir / "run_manifest.json"
 
     args.prediction_run_id = run_id
@@ -176,6 +251,8 @@ def prepare_inference_result_paths(
     args.run_dir = run_dir
     args.inference_metrics_csv_path = metrics_csv_path
     args.inference_prediction_csv_path = prediction_csv_path
+    args.inference_survival_per_disease_metrics_csv_path = survival_per_disease_metrics_csv_path
+    args.inference_multilabel_per_disease_metrics_csv_path = multilabel_per_disease_metrics_csv_path
     args.manifest_path = manifest_path
     args.timestamp_utc = timestamp
     args.ckpt_input = ckpt_info["ckpt_input"]
@@ -212,6 +289,8 @@ def make_prediction_run_id(
         "eval_split": eval_split,
         "timestamp_utc": timestamp,
         "launch_nonce": launch_nonce,
+        # Route filters change model behavior but stay out of the visible run-id slug.
+        "route_filter": _route_filter_payload(args),
     }
     short_hash = hashlib.sha1(json.dumps(hash_payload, sort_keys=True).encode("utf-8")).hexdigest()[:8]
     pieces = [timestamp, namespace, experiment_version, label_name, eval_split, ckpt_tag, short_hash]
@@ -268,6 +347,112 @@ def save_prediction_csv(rows: Sequence[Mapping[str, Any]], csv_path: str, args: 
     print(f"Predictions written to {csv_path} [rows={len(df_new)}]")
 
 
+def save_survival_per_disease_metrics_csv(
+    rows: Sequence[Mapping[str, Any]], csv_path: str, args: Any | None = None
+) -> None:
+    if not csv_path or not rows or not is_rank_zero_process():
+        return
+
+    metric_rows = []
+    for row in rows:
+        new_row: dict[str, Any] = dict(copy.deepcopy(row))
+        new_row["prediction_run_id"] = getattr(args, "prediction_run_id", None) if args is not None else None
+        new_row["experiment_version"] = _resolve_experiment_version(args)
+        new_row["result_source"] = _resolve_result_source(args)
+        new_row["config_path"] = _stringify_optional_path(getattr(args, "config", None)) if args is not None else ""
+        new_row["label_name"] = getattr(args, "label_name", None) if args is not None else None
+        new_row["eval_split"] = getattr(args, "eval_split", None) if args is not None else None
+        new_row["ckpt_path"] = getattr(args, "ckpt_path", None) if args is not None else None
+        _add_inference_run_metadata(new_row, args)
+        _add_route_filter_result_metadata(new_row, args)
+        metric_rows.append(new_row)
+
+    df_new = pd.DataFrame(metric_rows)
+    csv_file = Path(csv_path)
+
+    with _result_csv_lock(csv_file):
+        if not csv_file.exists() or csv_file.stat().st_size == 0:
+            ordered_columns = _ordered_survival_per_disease_columns(df_new)
+            _write_result_csv(df_new.reindex(columns=ordered_columns), csv_file)
+            print(f"Survival per-disease metrics written to {csv_path} [rows={len(df_new)}]")
+            return
+
+        try:
+            df_old = pd.read_csv(csv_file)
+        except pd.errors.EmptyDataError:
+            ordered_columns = _ordered_survival_per_disease_columns(df_new)
+            _write_result_csv(df_new.reindex(columns=ordered_columns), csv_file)
+            print(f"Survival per-disease metrics written to {csv_path} [rows={len(df_new)}]")
+            return
+
+        existing_columns = list(df_old.columns)
+        if all(column in existing_columns for column in df_new.columns):
+            _write_result_csv(df_new.reindex(columns=existing_columns), csv_file, mode="a", header=False)
+        else:
+            ordered_columns = _ordered_survival_per_disease_columns(df_old, df_new)
+            df_merged = pd.concat(
+                [df_old.reindex(columns=ordered_columns), df_new.reindex(columns=ordered_columns)],
+                axis=0,
+                ignore_index=True,
+            )
+            _write_result_csv(df_merged, csv_file)
+
+    print(f"Survival per-disease metrics written to {csv_path} [rows={len(df_new)}]")
+
+
+def save_multilabel_per_disease_metrics_csv(
+    rows: Sequence[Mapping[str, Any]], csv_path: str, args: Any | None = None
+) -> None:
+    if not csv_path or not rows or not is_rank_zero_process():
+        return
+
+    metric_rows = []
+    for row in rows:
+        new_row: dict[str, Any] = dict(copy.deepcopy(row))
+        new_row["prediction_run_id"] = getattr(args, "prediction_run_id", None) if args is not None else None
+        new_row["experiment_version"] = _resolve_experiment_version(args)
+        new_row["result_source"] = _resolve_result_source(args)
+        new_row["config_path"] = _stringify_optional_path(getattr(args, "config", None)) if args is not None else ""
+        new_row["label_name"] = getattr(args, "label_name", None) if args is not None else None
+        new_row["eval_split"] = getattr(args, "eval_split", None) if args is not None else None
+        new_row["ckpt_path"] = getattr(args, "ckpt_path", None) if args is not None else None
+        _add_inference_run_metadata(new_row, args)
+        _add_route_filter_result_metadata(new_row, args)
+        metric_rows.append(new_row)
+
+    df_new = pd.DataFrame(metric_rows)
+    csv_file = Path(csv_path)
+
+    with _result_csv_lock(csv_file):
+        if not csv_file.exists() or csv_file.stat().st_size == 0:
+            ordered_columns = _ordered_multilabel_per_disease_columns(df_new)
+            _write_result_csv(df_new.reindex(columns=ordered_columns), csv_file)
+            print(f"Multilabel per-disease metrics written to {csv_path} [rows={len(df_new)}]")
+            return
+
+        try:
+            df_old = pd.read_csv(csv_file)
+        except pd.errors.EmptyDataError:
+            ordered_columns = _ordered_multilabel_per_disease_columns(df_new)
+            _write_result_csv(df_new.reindex(columns=ordered_columns), csv_file)
+            print(f"Multilabel per-disease metrics written to {csv_path} [rows={len(df_new)}]")
+            return
+
+        existing_columns = list(df_old.columns)
+        if all(column in existing_columns for column in df_new.columns):
+            _write_result_csv(df_new.reindex(columns=existing_columns), csv_file, mode="a", header=False)
+        else:
+            ordered_columns = _ordered_multilabel_per_disease_columns(df_old, df_new)
+            df_merged = pd.concat(
+                [df_old.reindex(columns=ordered_columns), df_new.reindex(columns=ordered_columns)],
+                axis=0,
+                ignore_index=True,
+            )
+            _write_result_csv(df_merged, csv_file)
+
+    print(f"Multilabel per-disease metrics written to {csv_path} [rows={len(df_new)}]")
+
+
 def save_inference_manifest(
     args: Any,
     metrics: Mapping[str, Any] | None = None,
@@ -295,6 +480,12 @@ def save_inference_manifest(
             "overview_csv_path": _stringify_optional_path(getattr(args, "inference_overview_csv_path", None)),
             "metrics_csv_path": _stringify_optional_path(getattr(args, "inference_metrics_csv_path", None)),
             "prediction_csv_path": _stringify_optional_path(getattr(args, "inference_prediction_csv_path", None)),
+            "survival_per_disease_metrics_csv_path": _stringify_optional_path(
+                getattr(args, "inference_survival_per_disease_metrics_csv_path", None)
+            ),
+            "multilabel_per_disease_metrics_csv_path": _stringify_optional_path(
+                getattr(args, "inference_multilabel_per_disease_metrics_csv_path", None)
+            ),
             "manifest_path": _stringify_optional_path(manifest_path),
         },
         "checkpoint": {
@@ -314,10 +505,71 @@ def save_inference_manifest(
             "inference_preset_path": _stringify_optional_path(getattr(args, "inference_preset_path", None)),
             "finetune_preset_path": _stringify_optional_path(getattr(args, "finetune_preset_path", None)),
         },
+        "route_filter": _route_filter_payload(args),
         "metrics": dict(metrics or {}),
         "prediction_row_count": prediction_row_count,
     }
     _write_json_atomic(_json_safe(manifest), Path(manifest_path))
+
+
+def save_training_run_manifest(
+    args: Any,
+    *,
+    manifest_path: str | Path,
+    status: str,
+    monitor: str | None = None,
+    monitor_mode: str | None = None,
+    best_model_path: str | Path | None = None,
+    best_model_score: Any = None,
+    last_checkpoint_path: str | Path | None = None,
+    results_csv_path: str | Path | None = None,
+    survival_per_disease_metrics_csv_path: str | Path | None = None,
+    multilabel_per_disease_metrics_csv_path: str | Path | None = None,
+    metrics: Mapping[str, Any] | None = None,
+) -> None:
+    if not is_rank_zero_process():
+        return
+    path = Path(manifest_path)
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    manifest = {
+        "kind": "sleep2vec_finetune_run",
+        "status": status,
+        "created_at_utc": created_at,
+        "finished_at_utc": created_at,
+        "version": getattr(args, "version", None),
+        "config_path": _stringify_optional_path(getattr(args, "config", None)),
+        "config_copy_path": _stringify_optional_path(Path(f"log-finetune/{getattr(args, 'version', '')}/config.yaml")),
+        "cli_args_path": _stringify_optional_path(Path(f"log-finetune/{getattr(args, 'version', '')}/cli_args.yaml")),
+        "label_name": getattr(args, "label_name", None),
+        "monitor": monitor,
+        "monitor_mode": monitor_mode,
+        "best_model_path": _stringify_optional_path(best_model_path),
+        "best_model_score": _json_safe(best_model_score),
+        "last_checkpoint_path": _stringify_optional_path(last_checkpoint_path),
+        "test_after_fit": getattr(args, "test_after_fit", None),
+        "results_csv_path": _stringify_optional_path(results_csv_path),
+        "survival_per_disease_metrics_csv_path": _stringify_optional_path(survival_per_disease_metrics_csv_path),
+        "multilabel_per_disease_metrics_csv_path": _stringify_optional_path(multilabel_per_disease_metrics_csv_path),
+        "metrics": dict(metrics or {}),
+        "git": _git_manifest(),
+    }
+    _write_json_atomic(_json_safe(manifest), path)
+
+
+def _git_manifest() -> dict[str, Any]:
+    try:
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"], check=False, capture_output=True, text=True
+        ).stdout.strip()
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=False, capture_output=True, text=True
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(["git", "status", "--short"], check=False, capture_output=True, text=True).stdout.strip()
+        )
+    except OSError:
+        return {"available": False}
+    return {"available": True, "branch": branch, "commit": commit, "dirty": dirty}
 
 
 def _add_inference_run_metadata(row: dict[str, Any], args: Any | None) -> None:
@@ -327,6 +579,12 @@ def _add_inference_run_metadata(row: dict[str, Any], args: Any | None) -> None:
     row["run_dir"] = _stringify_optional_path(getattr(args, "run_dir", None))
     row["metrics_csv_path"] = _stringify_optional_path(getattr(args, "inference_metrics_csv_path", None))
     row["prediction_csv_path"] = _stringify_optional_path(getattr(args, "inference_prediction_csv_path", None))
+    row["survival_per_disease_metrics_csv_path"] = _stringify_optional_path(
+        getattr(args, "inference_survival_per_disease_metrics_csv_path", None)
+    )
+    row["multilabel_per_disease_metrics_csv_path"] = _stringify_optional_path(
+        getattr(args, "inference_multilabel_per_disease_metrics_csv_path", None)
+    )
     row["ckpt_input"] = getattr(args, "ckpt_input", getattr(args, "ckpt_path", None))
     row["ckpt_resolved_path"] = getattr(args, "ckpt_resolved_path", None)
     row["ckpt_epoch"] = getattr(args, "ckpt_epoch", None)
@@ -334,6 +592,63 @@ def _add_inference_run_metadata(row: dict[str, Any], args: Any | None) -> None:
     row["ckpt_tag"] = getattr(args, "ckpt_tag", None)
     row["task_family"] = getattr(args, "task_family", None)
     row["timestamp_utc"] = getattr(args, "timestamp_utc", None)
+
+
+def _route_filter_payload(args: Any | None) -> dict[str, Any]:
+    groups = _as_string_list(getattr(args, "route_filter_groups", None) if args is not None else None)
+    expert_ids = _as_int_list(getattr(args, "route_filter_expert_ids", None) if args is not None else None)
+    active = bool(getattr(args, "route_filter_active", bool(groups)) if args is not None else False)
+    if not active:
+        groups = []
+        expert_ids = []
+    return {"active": active, "groups": groups, "expert_ids": expert_ids}
+
+
+def set_route_filter_metadata(args: Any, group_names: Any, expert_ids: Any) -> None:
+    groups = _as_string_list(group_names)
+    args.route_filter_active = bool(groups)
+    args.route_filter_groups = groups
+    args.route_filter_expert_ids = _as_int_list(expert_ids) if groups else []
+
+
+def _route_filter_flat_metadata(args: Any | None) -> dict[str, Any]:
+    payload = _route_filter_payload(args)
+    return {
+        "route_filter_active": payload["active"],
+        "route_filter_groups": payload["groups"],
+        "route_filter_expert_ids": payload["expert_ids"],
+    }
+
+
+def _add_route_filter_result_metadata(row: dict[str, Any], args: Any | None) -> None:
+    payload = _route_filter_flat_metadata(args)
+    row["route_filter_active"] = payload["route_filter_active"]
+    row["route_filter_groups"] = ",".join(payload["route_filter_groups"])
+    row["route_filter_expert_ids"] = ",".join(str(expert_id) for expert_id in payload["route_filter_expert_ids"])
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [] if value == "" else [value]
+    try:
+        return [str(item) for item in value]
+    except TypeError:
+        return [str(value)]
+
+
+def _as_int_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [] if value == "" else [value]
+    else:
+        try:
+            values = list(value)
+        except TypeError:
+            values = [value]
+    return [int(item) for item in values]
 
 
 def _stringify_optional_path(value: Any) -> str:
@@ -475,6 +790,8 @@ def _as_int(value: Any, default: int | None) -> int | None:
 def _resolve_task_family(args: Any) -> str:
     if getattr(args, "label_name", None) == "ahi":
         return "ahi_sequence"
+    if getattr(args, "multilabel", None) is not None:
+        return "multilabel_classification"
     if getattr(args, "is_multilabel", False):
         return "multilabel_sequence"
     if getattr(args, "is_classification", False):
@@ -558,6 +875,30 @@ def _ordered_prediction_columns(*frames: pd.DataFrame) -> list[str]:
     )
     for column in prob_columns:
         if column not in ordered_columns:
+            ordered_columns.append(column)
+    for frame in frames:
+        for column in frame.columns:
+            if column not in ordered_columns:
+                ordered_columns.append(column)
+    return ordered_columns
+
+
+def _ordered_survival_per_disease_columns(*frames: pd.DataFrame) -> list[str]:
+    ordered_columns: list[str] = []
+    for column in SURVIVAL_PER_DISEASE_METADATA_COLUMNS:
+        if any(column in frame.columns for frame in frames):
+            ordered_columns.append(column)
+    for frame in frames:
+        for column in frame.columns:
+            if column not in ordered_columns:
+                ordered_columns.append(column)
+    return ordered_columns
+
+
+def _ordered_multilabel_per_disease_columns(*frames: pd.DataFrame) -> list[str]:
+    ordered_columns: list[str] = []
+    for column in MULTILABEL_PER_DISEASE_METADATA_COLUMNS:
+        if any(column in frame.columns for frame in frames):
             ordered_columns.append(column)
     for frame in frames:
         for column in frame.columns:

@@ -145,6 +145,7 @@ def channel_input_dims_from_model_config(model_cfg: ModelConfig) -> dict[str, in
 def apply_model_config_args(args, model_cfg: ModelConfig, *, set_backbone_arch: bool = False) -> None:
     args.channel_names = [c.name for c in model_cfg.channels]
     args.channel_input_dims = channel_input_dims_from_model_config(model_cfg)
+    args.channel_aliases = {c.name: c.alias for c in model_cfg.channels if c.alias}
     if set_backbone_arch:
         args.backbone_arch = model_cfg.backbone.name
 
@@ -190,10 +191,12 @@ def _validate_metadata_label_support(args) -> None:
     if (
         getattr(args, "is_classification", False)
         and int(getattr(args, "output_dim", 0)) > 2
+        and not getattr(args, "is_multilabel", False)
         and not is_builtin_seq_task(getattr(args, "label_name", None))
     ):
         raise ValueError(
-            "Metadata classification currently supports only binary labels (output_dim=2) for non-built-in sequence tasks. "
+            "Metadata classification currently supports only binary labels (output_dim=2) "
+            "for non-built-in sequence tasks. "
             f"Got --label-name '{args.label_name}' with finetune.task.output_dim={args.output_dim}. "
             "Extend metadata label encoding before using multiclass metadata targets."
         )
@@ -257,6 +260,7 @@ def _apply_builtin_task_attrs(args: argparse.Namespace, label_name: str) -> None
     args.class_labels = get_task_class_labels(label_name)
     args.label_merge_map = get_task_label_merge_map(label_name)
     args.is_multilabel = get_task_is_multilabel(label_name)
+    args.is_survival = False
     args.auxiliary_label_source_names = get_task_auxiliary_label_source_names(label_name)
 
 
@@ -266,6 +270,7 @@ def _apply_custom_task_attrs(args: argparse.Namespace) -> None:
     args.class_labels = None
     args.label_merge_map = None
     args.is_multilabel = False
+    args.is_survival = False
     args.auxiliary_label_source_names = []
 
 
@@ -279,7 +284,9 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
         else:
             _apply_custom_task_attrs(args)
         args.output_dim = task_cfg.output_dim
-        args.is_classification = task_cfg.type == "classification"
+        args.is_classification = task_cfg.type in {"classification", "multilabel_classification"}
+        args.is_survival = task_cfg.type == "survival"
+        args.is_multilabel = task_cfg.type == "multilabel_classification" or getattr(args, "is_multilabel", False)
         args.is_seq = task_cfg.is_seq
         args.monitor = task_cfg.monitor
         args.monitor_mod = task_cfg.monitor_mod
@@ -299,6 +306,7 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
         _apply_builtin_task_attrs(args, args.label_name)
         args.output_dim = builtin_spec["output_dim"]
         args.is_classification = builtin_spec["type"] == "classification"
+        args.is_survival = False
         args.is_seq = builtin_spec["is_seq"]
         args.monitor = builtin_spec["monitor"]
         args.monitor_mod = builtin_spec["monitor_mod"]
@@ -377,8 +385,15 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.freeze_backbone_and_insert_lora = lora_cfg.freeze_backbone_and_insert_lora
     args.insert_lora = lora_cfg.insert_lora
     args.separate_adapters = lora_cfg.separate_adapters
+    args.lora_r = lora_cfg.r
+    args.lora_alpha = lora_cfg.alpha
+    args.lora_dropout = lora_cfg.dropout
+    args.lora_target_modules = lora_cfg.target_modules
+    args.lora_use_dora = lora_cfg.use_dora
     args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
     args.eval_visualizations = finetune_cfg.eval_visualizations
+    args.survival = finetune_cfg.survival
+    args.multilabel = finetune_cfg.multilabel
     args.head_kwargs = {}
 
     # Fail fast if requested dataloader channels differ from model/backbone channels.
@@ -427,7 +442,7 @@ def apply_data_backend_args(args, data_cfg, *, preset_attr: str | None = None) -
         missing.append("kaldi_manifest")
     if missing:
         raise ValueError(
-            "Kaldi backend requires explicit kaldi_data_root and kaldi_manifest; " f"missing {', '.join(missing)}."
+            f"Kaldi backend requires explicit kaldi_data_root and kaldi_manifest; missing {', '.join(missing)}."
         )
 
     if preset_attr and getattr(args, preset_attr, None):

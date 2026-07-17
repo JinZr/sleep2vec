@@ -45,6 +45,9 @@ class Sleep2vecDownstreamModel(nn.Module):
         model_config: ModelConfig | None = None,
         layer_mix_cfg: LayerMixConfig | None = None,
         head_config: HeadConfig | None = None,
+        survival_covariates: t.Sequence[str] | None = None,
+        survival_covariate_embedding_dim: int = 16,
+        survival_covariate_fusion: str = "feature_concat",
     ):
         super().__init__()
         # core attributes
@@ -56,11 +59,50 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.is_classification = is_classification
         self.is_seq = is_seq
         self.target = target
+        self.survival_covariates = tuple(survival_covariates or ())
+        if len(set(self.survival_covariates)) != len(self.survival_covariates):
+            raise ValueError("survival_covariates must not contain duplicates.")
+        unsupported_covariates = sorted(set(self.survival_covariates) - {"age", "sex"})
+        if unsupported_covariates:
+            raise ValueError(f"survival_covariates only supports ['age', 'sex'], got {unsupported_covariates}.")
+        if self.survival_covariates and self.is_seq:
+            raise ValueError("survival covariates are only supported for non-sequence downstream tasks.")
+        if not isinstance(survival_covariate_embedding_dim, int) or isinstance(survival_covariate_embedding_dim, bool):
+            raise ValueError("survival_covariate_embedding_dim must be a positive integer.")
+        if survival_covariate_embedding_dim < 1:
+            raise ValueError("survival_covariate_embedding_dim must be a positive integer.")
+        self.survival_covariate_embedding_dim = survival_covariate_embedding_dim
+        if survival_covariate_fusion not in {"feature_concat", "risk", "token_concat"}:
+            raise ValueError("survival_covariate_fusion must be 'feature_concat', 'risk', or 'token_concat'.")
+        if survival_covariate_fusion in {"risk", "token_concat"} and not self.survival_covariates:
+            raise ValueError(f"survival_covariate_fusion='{survival_covariate_fusion}' requires survival_covariates.")
+        self.survival_covariate_fusion = survival_covariate_fusion
+        self.survival_age_embedding = None
+        self.survival_sex_embedding = None
+        self.survival_covariate_risk = None
+        covariate_feature_dim = len(self.survival_covariates) * survival_covariate_embedding_dim
+        if self.survival_covariate_fusion == "risk":
+            self.survival_covariate_risk = nn.Linear(len(self.survival_covariates), self.output_dim)
+            nn.init.zeros_(self.survival_covariate_risk.weight)
+            nn.init.zeros_(self.survival_covariate_risk.bias)
+        elif self.survival_covariates:
+            if "age" in self.survival_covariates:
+                self.survival_age_embedding = nn.Linear(1, survival_covariate_embedding_dim)
+                nn.init.zeros_(self.survival_age_embedding.weight)
+                nn.init.zeros_(self.survival_age_embedding.bias)
+            if "sex" in self.survival_covariates:
+                self.survival_sex_embedding = nn.Embedding(2, survival_covariate_embedding_dim)
+                nn.init.zeros_(self.survival_sex_embedding.weight)
 
         self.n_channels = len(self.channel_names)
         self.cls_embedding = getattr(self.backbone, "cls_embedding", None)
         cls_cfg = model_config.cls if model_config else None
         self.cls_usage = cls_cfg.downstream if cls_cfg else None
+        if self.survival_covariate_fusion == "token_concat" and self.cls_usage == "cls":
+            raise ValueError("survival_covariate_fusion='token_concat' requires model.cls.downstream='tokens'.")
+        token_extra_feature_dim = covariate_feature_dim if self.survival_covariate_fusion == "token_concat" else 0
+        survival_extra_feature_dim = covariate_feature_dim if self.survival_covariate_fusion == "feature_concat" else 0
+        downstream_feature_dim = self.backbone.transformer_hidden_size + token_extra_feature_dim
 
         if self.cls_usage == "cls" and self.cls_embedding is None:
             raise ValueError(
@@ -73,6 +115,8 @@ class Sleep2vecDownstreamModel(nn.Module):
             raise ValueError("head_config must be provided for downstream model construction.")
 
         inferred_head = head_config.name
+        if self.survival_covariates and inferred_head not in {"classification", "regression"}:
+            raise ValueError("covariates require the classification or regression head.")
         if head_config.act:
             head_kwargs.setdefault("act", _resolve_act(head_config.act))
         channel_cfg = head_config.channel_agg
@@ -85,11 +129,12 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.head = create_head(
             inferred_head,
             target=target,
-            feature_dim=self.backbone.transformer_hidden_size,
+            feature_dim=downstream_feature_dim,
             n_mods=self.n_channels,
             output_dim=self.output_dim,
             is_classification=self.is_classification,
             is_seq=self.is_seq,
+            extra_feature_dim=survival_extra_feature_dim,
             **head_kwargs,
         )
 
@@ -101,7 +146,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         # configure temporal aggregation (required)
         self.temporal_agg = build_temporal_aggregator(
             temporal_cfg.name,
-            hidden_size=self.backbone.transformer_hidden_size,
+            hidden_size=downstream_feature_dim,
             **dict(temporal_cfg.kwargs or {}),
         )
 
@@ -241,6 +286,68 @@ class Sleep2vecDownstreamModel(nn.Module):
                 token_mask = layer_mask
         return token_layers, cls_layers, token_mask
 
+    def _build_survival_covariate_embeddings(self, batch, reference: torch.Tensor) -> torch.Tensor | None:
+        if not self.survival_covariates:
+            return None
+        if self.survival_covariate_fusion == "risk":
+            return None
+
+        metadata = batch["metadata"]
+        extra_features = []
+        if "age" in self.survival_covariates:
+            if "age" not in metadata:
+                raise ValueError("Survival covariate 'age' requires batch metadata age.")
+            age = metadata["age"].to(device=reference.device, dtype=self.survival_age_embedding.weight.dtype)
+            if (age < 0).any():
+                raise ValueError("Survival covariate 'age' is missing for at least one sample.")
+            extra_features.append(self.survival_age_embedding(age.view(-1, 1) / 100.0))
+        if "sex" in self.survival_covariates:
+            if "sex" not in metadata:
+                raise ValueError("Survival covariate 'sex' requires batch metadata sex.")
+            sex = metadata["sex"].to(device=reference.device)
+            if ((sex != 0) & (sex != 1)).any():
+                raise ValueError("Survival covariate 'sex' must be 0 or 1 for every sample.")
+            extra_features.append(self.survival_sex_embedding(sex.long()))
+
+        return torch.cat(extra_features, dim=-1)
+
+    def _build_survival_extra_features(self, batch, reference: torch.Tensor) -> torch.Tensor | None:
+        if self.survival_covariate_fusion != "feature_concat":
+            return None
+        return self._build_survival_covariate_embeddings(batch, reference)
+
+    def _append_survival_token_features(self, token_hidden: torch.Tensor, batch) -> torch.Tensor:
+        if self.survival_covariate_fusion != "token_concat":
+            return token_hidden
+        covariates = self._build_survival_covariate_embeddings(batch, token_hidden)
+        token_covariates = covariates[:, None, :].expand(-1, token_hidden.size(1), -1)
+        return torch.cat(
+            [token_hidden, token_covariates.to(device=token_hidden.device, dtype=token_hidden.dtype)], dim=-1
+        )
+
+    def _build_survival_covariate_values(self, batch, reference: torch.Tensor) -> torch.Tensor | None:
+        if not self.survival_covariates:
+            return None
+
+        metadata = batch["metadata"]
+        covariates = []
+        if "age" in self.survival_covariates:
+            if "age" not in metadata:
+                raise ValueError("Survival covariate 'age' requires batch metadata age.")
+            age = metadata["age"].to(device=reference.device, dtype=reference.dtype)
+            if (age < 0).any():
+                raise ValueError("Survival covariate 'age' is missing for at least one sample.")
+            covariates.append(age.view(-1, 1) / 100.0)
+        if "sex" in self.survival_covariates:
+            if "sex" not in metadata:
+                raise ValueError("Survival covariate 'sex' requires batch metadata sex.")
+            sex = metadata["sex"].to(device=reference.device)
+            if ((sex != 0) & (sex != 1)).any():
+                raise ValueError("Survival covariate 'sex' must be 0 or 1 for every sample.")
+            covariates.append(sex.to(dtype=reference.dtype).view(-1, 1))
+
+        return torch.cat(covariates, dim=-1)
+
     def forward(self, batch):
         tokens = batch["tokens"]
 
@@ -281,7 +388,10 @@ class Sleep2vecDownstreamModel(nn.Module):
                             token_mask = token_mask.squeeze(1)
                         if token_mask is not None:
                             token_mask = token_mask.to(torch.bool)
-                        pooled_layers = [self.temporal_agg(layer_tokens, token_mask) for layer_tokens in token_layers]
+                        pooled_layers = [
+                            self.temporal_agg(self._append_survival_token_features(layer_tokens, batch), token_mask)
+                            for layer_tokens in token_layers
+                        ]
                         pooled_stack = torch.stack(pooled_layers, dim=0)
                         feature = self.layer_mix.mix(pooled_stack, mod_idx=mod_idx)
 
@@ -320,6 +430,11 @@ class Sleep2vecDownstreamModel(nn.Module):
                     token_mask = token_mask.to(torch.bool)
                 token_masks.append(token_mask)
 
+        extra_features = self._build_survival_extra_features(batch, feature_of_different_mods[0])
+        covariate_risk = None
+        if self.survival_covariate_fusion == "risk":
+            covariate_values = self._build_survival_covariate_values(batch, feature_of_different_mods[0])
+            covariate_risk = self.survival_covariate_risk(covariate_values)
         if self.is_seq and token_masks:
             merged_mask = token_masks[0]
             for mask in token_masks[1:]:
@@ -328,9 +443,15 @@ class Sleep2vecDownstreamModel(nn.Module):
                 if mask.shape != merged_mask.shape:
                     raise ValueError("Token masks must share the same shape for sequence heads.")
                 merged_mask = merged_mask & mask
-            output = self._call_head(feature_of_different_mods, merged_mask)
+            output = self._call_head(feature_of_different_mods, merged_mask, extra_features=extra_features)
         else:
-            output = self._call_head(feature_of_different_mods, None)
+            output = self._call_head(feature_of_different_mods, None, extra_features=extra_features)
+        if covariate_risk is not None:
+            if output.shape != covariate_risk.shape:
+                raise ValueError(
+                    f"survival covariate risk shape {covariate_risk.shape} does not match head output {output.shape}."
+                )
+            output = output + covariate_risk.to(dtype=output.dtype)
         return output
 
     def _forward_seq(self, token_hidden, cls_hidden):
@@ -357,6 +478,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             for i in range(B):
                 token_mask[i, : batch["length"][i].item()] = True
 
+        token_hidden = self._append_survival_token_features(token_hidden, batch)
         return self.temporal_agg(token_hidden, token_mask)
 
     @staticmethod
@@ -372,7 +494,14 @@ class Sleep2vecDownstreamModel(nn.Module):
             self._head_accepts_token_mask = bool(getattr(self.head, "supports_token_mask", False))
         return self._head_accepts_token_mask
 
-    def _call_head(self, features: t.List[torch.Tensor], token_mask: torch.Tensor | None):
+    def _call_head(
+        self,
+        features: t.List[torch.Tensor],
+        token_mask: torch.Tensor | None,
+        extra_features: torch.Tensor | None = None,
+    ):
+        if extra_features is not None:
+            return self.head(features, extra_features=extra_features)
         if token_mask is not None and self._head_supports_token_mask():
             return self.head(features, token_mask=token_mask)
         return self.head(features)
@@ -422,6 +551,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         lora_alpha: int = 16,
         lora_dropout: float = 0.05,
         target_modules=("query", "key", "value"),  # 只打注意力；若也想打FFN，加 "dense"
+        use_dora: bool = False,
         separate_adapters: bool = False,
     ):
         # 0) 先冻结 backbone 全部参数
@@ -440,6 +570,7 @@ class Sleep2vecDownstreamModel(nn.Module):
                 # layers_to_transform=[6, 7],      # 想只打高层就改成 [4,5,6,7] 之类
                 task_type=TaskType.FEATURE_EXTRACTION,
                 target_modules=list(target_modules),
+                use_dora=use_dora,
             )
             encoder_with_lora = get_peft_model(self._backbone_encoder(), cfg)
             self._replace_backbone_encoder(encoder_with_lora)
@@ -483,14 +614,14 @@ class Sleep2vecDownstreamModel(nn.Module):
     def _enable_all_adapters_trainable(self):
         encoder = self._backbone_encoder()
         for n, p in encoder.named_parameters():
-            # 只放开 LoRA 权重；底座仍然冻结
             if "lora_" in n:
-                # 仅放开这些 adapter 的参数（避免误放开 default）
-                if any(
-                    (f".{adp}." in n or f"_{adp}." in n or n.endswith(f".{adp}.weight"))
-                    for adp in self.channel_adapters
-                ):
-                    p.requires_grad = True
+                p.requires_grad = False
+        for n, p in encoder.named_parameters():
+            # 仅放开这些 adapter 的参数（避免误放开 default）
+            if "lora_" in n and any(
+                (f".{adp}." in n or f"_{adp}." in n or n.endswith(f".{adp}.weight")) for adp in self.channel_adapters
+            ):
+                p.requires_grad = True
 
     # ---- helpers ----
     @staticmethod

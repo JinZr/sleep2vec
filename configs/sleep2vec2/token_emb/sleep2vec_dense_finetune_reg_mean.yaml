@@ -15,50 +15,124 @@ model:
     downstream: tokens      # use token sequence for downstream pooling
   channels:
     - name: heartbeat
+      alias: psg_heartbeat
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: breath
+      alias: psg_breath
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: eeg_original
       input_dim: 3840
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: ecg_original
       input_dim: 3840
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: eog_original
       input_dim: 3840
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: emg_original
       input_dim: 3840
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: spo2
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: resp_original
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
     - name: resp_nasal_original
       input_dim: 120
       tokenizer:
-        name: sundial
+        name: sundial2
         out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
   head:
     name: regression
     dropout: 0.1
@@ -72,8 +146,8 @@ model:
 data:
   max_tokens: 120
   data_channel_names: null
-  finetune_data_index: index/hsp_psg_pretrain.csv
-  finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
+  finetune_data_index: null
+  finetune_preset_path: null
   train_dataset_names: [shhs]
   test_dataset_names: [shhs]
   n_few_shot: 1280

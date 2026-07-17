@@ -18,9 +18,19 @@ Example:
 import argparse
 from collections import defaultdict
 from pathlib import Path
+import sys
+import time
 
 import numpy as np
 import pandas as pd
+
+TRUTHY_MASK_VALUES = frozenset({"1", "1.0", "true", "t", "yes"})
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agent_tools.progress import write_progress
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +91,18 @@ def main() -> None:
     print(f"CSV: {csv_path}")
     print(f"Total columns: {len(cols)}")
     print(f"Mask columns ({num_masks}): {', '.join(mask_cols)}")
+    progress_dir = Path(_prefix_path(args.out_prefix)).expanduser().parent
+    started_at = time.time()
+    write_progress(
+        progress_dir,
+        status="running",
+        task="mask_missing_stats",
+        processed=0,
+        total=None,
+        success=0,
+        failed=0,
+        start_time=started_at,
+    )
 
     overall_total = 0
     overall_missing = pd.Series(0, index=mask_cols, dtype="int64")
@@ -96,9 +118,8 @@ def main() -> None:
         # Normalize dataset labels
         ds = chunk[args.dataset_col].astype("string").fillna("<NA>")
 
-        # Convert mask columns to numeric; present iff == 1
-        masks_num = chunk[mask_cols].apply(pd.to_numeric, errors="coerce")
-        present = masks_num.eq(1)
+        mask_strings = chunk[mask_cols].astype("string").apply(lambda col: col.str.strip().str.lower())
+        present = mask_strings.isin(TRUTHY_MASK_VALUES) | chunk[mask_cols].apply(pd.to_numeric, errors="coerce").eq(1)
         missing = ~present
 
         n = len(chunk)
@@ -125,6 +146,16 @@ def main() -> None:
         for (dset, k), cnt in ds_hist_counts.items():
             # k is missing-channel count (0..num_masks)
             ds_row_missing_hist[dset][int(k)] += int(cnt)
+        write_progress(
+            progress_dir,
+            status="running",
+            task="mask_missing_stats",
+            processed=overall_total,
+            total=None,
+            success=overall_total,
+            failed=0,
+            start_time=started_at,
+        )
 
     # Overall per-channel table
     overall_df = pd.DataFrame(
@@ -244,6 +275,17 @@ def main() -> None:
     print(f"Wrote: {by_ds_out}")
     print(f"Wrote: {hist_overall_out}")
     print(f"Wrote: {hist_by_ds_out}")
+    write_progress(
+        progress_dir,
+        status="completed",
+        task="mask_missing_stats",
+        processed=overall_total,
+        total=overall_total,
+        success=overall_total,
+        failed=0,
+        start_time=started_at,
+        message=f"Wrote {overall_out}",
+    )
 
 
 if __name__ == "__main__":

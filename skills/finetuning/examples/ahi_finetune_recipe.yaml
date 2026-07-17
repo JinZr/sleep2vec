@@ -1,0 +1,16 @@
+name: ahi_finetune_example
+task: finetune
+variant: sleep2vec
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: train-ahi
+  phase: train
+  purpose: Finetune the AHI task.
+inputs:
+  config: configs/examples/ahi/FINETUNE_EXAMPLE.yaml
+  label_name: ahi

@@ -1,0 +1,17 @@
+name: checkpoint_inference_example
+task: infer
+variant: sleep2vec
+experiment:
+  id: ASK_USER
+  title: ASK_USER
+  objective: ASK_USER
+  root: ASK_USER
+  baseline: ASK_USER
+step:
+  id: evaluate-checkpoint
+  phase: evaluate
+  purpose: Evaluate an explicitly selected checkpoint.
+inputs:
+  config: configs/examples/ahi/FINETUNE_EXAMPLE.yaml
+  label_name: ahi
+  ckpt_path: ASK_USER

@@ -33,7 +33,7 @@ data:
   max_tokens: 1535  # whole-night cap in 30 s epochs
   data_channel_names: [ppg]
   finetune_data_index: null
-  finetune_preset_path: new_index/ppg_age_wholenight_merged_preset_1535_age.pickle
+  finetune_preset_path: null
   train_dataset_names: []
   test_dataset_names: []
   n_few_shot: 0

@@ -15,7 +15,103 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  unit_tests:
+  detect_changes:
+    runs-on: ubuntu-latest
+    outputs:
+      core_tests: ${{ steps.detect.outputs.core_tests }}
+      recipe_mode: ${{ steps.detect.outputs.recipe_mode }}
+      recipe_nodes_json: ${{ steps.detect.outputs.recipe_nodes_json }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed test scope
+        id: detect
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            {
+              echo "core_tests=true"
+              echo "recipe_mode=full"
+              echo 'recipe_nodes_json=[]'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-status "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > changed.txt
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          changed = Path("changed.txt").read_text().splitlines()
+          recipe_paths = []
+          recipe_only = bool(changed)
+          full_recipe_matrix = False
+
+          shared_prefixes = (
+              "agent_tools/",
+              "agent_policies/",
+              "configs/",
+              "recipes/examples/fixtures/",
+          )
+          shared_files = {
+              ".github/workflows/unit_tests.yml",
+              "requirements-agent-tools.txt",
+              "requirements-unit-tests.txt",
+              "sleep2stat/config.py",
+              "tests/agent_tools/test_agent_tools_recipes.py",
+          }
+
+          def is_recipe_path(path: str) -> bool:
+              path_obj = Path(path)
+              return (
+                  path_obj.suffix in {".yaml", ".yml"}
+                  and len(path_obj.parts) == 3
+                  and path_obj.parts[0] == "recipes"
+                  and path_obj.parts[1] in {"examples", "templates"}
+              )
+
+          for line in changed:
+              parts = line.split("\t")
+              status = parts[0]
+              paths = parts[1:]
+              if status.startswith(("D", "R")):
+                  recipe_only = False
+                  if any(is_recipe_path(path) for path in paths):
+                      full_recipe_matrix = True
+                  continue
+
+              path = paths[-1] if paths else ""
+              if is_recipe_path(path):
+                  recipe_paths.append(path)
+                  continue
+
+              recipe_only = False
+              if path in shared_files or any(path.startswith(prefix) for prefix in shared_prefixes):
+                  full_recipe_matrix = True
+
+          if recipe_only and recipe_paths:
+              recipe_mode = "changed"
+              core_tests = "false"
+          else:
+              recipe_mode = "full" if full_recipe_matrix or recipe_paths else "skip"
+              core_tests = "true"
+
+          nodes = [
+              f"tests/agent_tools/test_agent_tools_recipes.py::test_checked_in_recipe[{path}]"
+              for path in sorted(dict.fromkeys(recipe_paths))
+          ]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"core_tests={core_tests}\n")
+              output.write(f"recipe_mode={recipe_mode}\n")
+              output.write(f"recipe_nodes_json={json.dumps(nodes, separators=(',', ':'))}\n")
+          PY
+
+  agent_tools_recipe_tests:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.recipe_mode != 'skip'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -33,20 +129,118 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
-            requirements.txt
+            requirements-agent-tools.txt
+            .github/workflows/unit_tests.yml
+            pyproject.toml
+
+      - name: Install agent tool test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-agent-tools.txt
+
+      - name: Run recipe tests
+        env:
+          RECIPE_MODE: ${{ needs.detect_changes.outputs.recipe_mode }}
+          RECIPE_NODES_JSON: ${{ needs.detect_changes.outputs.recipe_nodes_json }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          if os.environ["RECIPE_MODE"] == "changed":
+              nodes = json.loads(os.environ["RECIPE_NODES_JSON"])
+              command = ["pytest", "-q", *nodes]
+          else:
+              command = ["pytest", "-q", "tests/agent_tools/test_agent_tools_recipes.py"]
+          sys.exit(subprocess.run(command).returncode)
+          PY
+
+  agent_tools_kernel_tests:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.core_tests == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-agent-tools.txt
+            .github/workflows/unit_tests.yml
+            pyproject.toml
+
+      - name: Install agent tool test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-agent-tools.txt
+
+      # The agent_tools kernel must stay importable and fully testable without
+      # any domain package (torch, lightning, wandb, sleep2stat, ...). The
+      # ignored domain-facing test files need those packages in their own
+      # environment; test_agent_tools_recipes.py is owned by the
+      # agent_tools_recipe_tests job above. The deselected hparam cases assert
+      # generated scripts whose frozen-identity preflight imports the variant
+      # module (and thus torch) in the invoking python.
+      - name: Run agent tools kernel tests
+        run: |
+          pytest -q tests/agent_tools \
+            --ignore=tests/agent_tools/test_agent_run_manifest.py \
+            --ignore=tests/agent_tools/test_agent_tools_sleep2stat.py \
+            --ignore=tests/agent_tools/test_agent_sex_age_baseline.py \
+            --ignore=tests/agent_tools/test_agent_tools_recipes.py \
+            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_model_variant_controls_generated_hparam_module" \
+            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked" \
+            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_unlock_final_test_with_explicit_ckpt_generates_final_script"
+
+  unit_tests:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.core_tests == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-unit-tests.txt
+            .github/workflows/unit_tests.yml
             pyproject.toml
 
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          # Keep torch separate to force the CPU wheel on GitHub runners.
+          python -m pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-unit-tests.txt
 
       - name: Run unit tests
         run: |
           pytest -q \
-            tests/test_metadata_task_validation.py \
-            tests/test_config_loading.py \
-            tests/test_common_finetune_apply.py \
-            tests/test_registries_and_builders.py \
-            tests/test_losses.py \
-            tests/test_checkpoints.py
+            tests/config/test_metadata_task_validation.py \
+            tests/config/test_config_loading.py \
+            tests/config/test_common_finetune_apply.py \
+            tests/config/test_registries_and_builders.py \
+            tests/models/test_losses.py \
+            tests/runtime/test_checkpoints.py

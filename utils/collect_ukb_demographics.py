@@ -28,9 +28,17 @@ import csv
 from datetime import date, datetime
 import json
 from pathlib import Path
+import sys
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from tqdm import tqdm
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agent_tools.progress import write_progress
 
 SEX_LABELS = {
     "0": "Female",
@@ -243,11 +251,33 @@ def main() -> None:
     errors = []
 
     json_files = list(iter_json_files(root, args.pattern))
-    for json_path in tqdm(json_files, desc="Collecting JSON metadata", unit="file"):
+    started_at = time.time()
+    write_progress(
+        output.parent,
+        status="running",
+        task="collect_ukb_demographics",
+        processed=0,
+        total=len(json_files),
+        success=0,
+        failed=0,
+        start_time=started_at,
+    )
+    for processed, json_path in enumerate(tqdm(json_files, desc="Collecting JSON metadata", unit="file"), start=1):
         try:
             rows.append(extract_record(json_path, root))
         except Exception as exc:
             errors.append((str(json_path), str(exc)))
+        write_progress(
+            output.parent,
+            status="running",
+            task="collect_ukb_demographics",
+            processed=processed,
+            total=len(json_files),
+            success=len(rows),
+            failed=len(errors),
+            start_time=started_at,
+            current_item=str(json_path),
+        )
 
     if args.dedupe_by_eid:
         seen = set()
@@ -273,6 +303,17 @@ def main() -> None:
     ]
 
     if not rows and not args.allow_empty:
+        write_progress(
+            output.parent,
+            status="failed",
+            task="collect_ukb_demographics",
+            processed=len(json_files),
+            total=len(json_files),
+            success=len(rows),
+            failed=len(errors),
+            start_time=started_at,
+            message="no JSON files found",
+        )
         raise SystemExit(
             f"No JSON files found under {root} with pattern {args.pattern}. "
             "Use --allow-empty if you still want an empty CSV."
@@ -285,6 +326,17 @@ def main() -> None:
         writer.writerows(rows)
 
     print(f"Wrote {len(rows)} rows to {output}")
+    write_progress(
+        output.parent,
+        status="completed",
+        task="collect_ukb_demographics",
+        processed=len(json_files),
+        total=len(json_files),
+        success=len(rows),
+        failed=len(errors),
+        start_time=started_at,
+        message=f"Wrote {len(rows)} rows to {output}",
+    )
 
     if errors:
         error_log = output.with_suffix(output.suffix + ".errors.txt")

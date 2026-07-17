@@ -56,6 +56,7 @@
 - Main entrypoints: `python -m sleep2vec.pretrain ...`, `python -m sleep2vec.adapt --phase stage1|stage2 ...`, `python -m sleep2vec.finetune ...`, `python -m sleep2vec.infer ...`.
 - Parallel namespace: `python -m wrist2vec.pretrain ...`, `python -m wrist2vec.finetune ...`, `python -m wrist2vec.infer ...`; checked wrist recipes live under `configs/write2vec/`.
 - Minimal checked examples live under `configs/examples/`: one pretrain example plus built-in finetune examples for `stage3`, `stage4`, `stage5`, `ahi`, `sex`, and `age`. Validate configs with `python utils/check_configs.py [paths...]`.
+- Agent-facing tooling lives under `agent_tools/`, `skills/`, `recipes/`, `agent_policies/`, and `doc/agent_contracts/`. Use `python -m agent_tools doctor --recipe <recipe>` before generating runnable commands; `NEEDS_USER_INPUT` exits with code `2` and means the agent must ask the user before continuing.
 
 ---
 
@@ -356,7 +357,7 @@ python -m sleep2vec.infer \
   --ckpt-path log-finetune/exp001-stage5/checkpoints/epoch=49.ckpt \
   --label-name stage5 --batch-size 12 --devices 0 \
   --inference-preset-path /path/to/test_preset_1535.pickle \
-  --eval-split test --results-csv-path outputs.csv
+  --eval-split test
 ```
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
 Use `--inference-preset-path` to evaluate the same config/checkpoint against a different preset pickle without editing YAML; result CSV rows record the effective preset in `preset_path`.

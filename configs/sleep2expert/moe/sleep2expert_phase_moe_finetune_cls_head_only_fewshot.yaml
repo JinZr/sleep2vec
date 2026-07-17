@@ -50,11 +50,13 @@ model:
     downstream: tokens
   channels:
     - name: heartbeat
+      alias: psg_heartbeat
       input_dim: 120
       tokenizer:
         name: sundial
         out_dim: 768
     - name: breath
+      alias: psg_breath
       input_dim: 120
       tokenizer:
         name: sundial
@@ -110,8 +112,8 @@ data:
   kaldi_manifest: null
   max_tokens: 120
   data_channel_names: null
-  finetune_data_index: index/hsp_psg_pretrain.csv
-  finetune_preset_path: /data/ywx/BIOT/data/all_disease_preset_1535_1211.pickle
+  finetune_data_index: null
+  finetune_preset_path: null
   train_dataset_names: [shhs]
   test_dataset_names: [shhs]
   n_few_shot: 128

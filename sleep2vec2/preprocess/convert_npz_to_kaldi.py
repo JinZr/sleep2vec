@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 import typing as t
 
 import numpy as np
@@ -21,10 +22,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from agent_tools.progress import write_progress
 from sleep2vec2.data.psg_pretrain_dataset import _build_channel_registry
 from sleep2vec2.data.utils import load_builtin_ahi_metadata, load_npz, window
 from sleep2vec2.preprocess.save_dataset_presets import (
     _load_config_mapping,
+    _load_model_channel_aliases,
     _load_model_channels,
     _load_preset_build_block,
     _mask_column_for_channel,
@@ -183,19 +186,31 @@ def _resolve_channels(args: argparse.Namespace) -> tuple[list[str], dict[str, in
         preset_required_channels=None,
         selected_channels=selected_channels,
     )
+    cli_min_channels = args.min_channels if args.allow_missing_channels else min(args.min_channels, len(channel_names))
     effective_min_channels = _resolve_effective_min_channels(
         channel_names=channel_names,
-        cli_min_channels=args.min_channels,
+        cli_min_channels=cli_min_channels,
         preset_min_channels=preset_min_channels,
     )
     return channel_names, channel_input_dims, effective_min_channels
 
 
-def _load_index_df(index_paths: t.Sequence[Path]) -> pd.DataFrame:
-    frames = [pd.read_csv(path, low_memory=False) for path in index_paths]
+def _load_index_df(index_paths: t.Sequence[Path], survival_key_column: str | None = None) -> pd.DataFrame:
+    key_column = None if survival_key_column in (None, "") else str(survival_key_column)
+    read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
+    if key_column is not None:
+        read_csv_kwargs["converters"] = {key_column: str}
+    frames = [pd.read_csv(path, **read_csv_kwargs) for path in index_paths]
     if not frames:
         raise ValueError("At least one --index CSV is required.")
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+    if key_column is not None:
+        if key_column not in df.columns:
+            raise ValueError(f"Input index CSV is missing required survival key column {key_column!r}.")
+        missing_key = df[key_column].isna() | df[key_column].astype(str).str.strip().eq("")
+        if missing_key.any():
+            raise ValueError(f"Input index CSV contains missing values in required survival key column {key_column!r}.")
+    return df
 
 
 def _validate_required_columns(df: pd.DataFrame, source_field: str) -> None:
@@ -498,15 +513,22 @@ def convert(args: argparse.Namespace) -> Path:
         raise FileNotFoundError(f"Index CSV not found: {missing_indexes}")
 
     channel_names, channel_input_dims, effective_min_channels = _resolve_channels(args)
+    config_data = _load_config_mapping(args.config)
+    model_channel_aliases = _load_model_channel_aliases(config_data)
+    channel_aliases = {name: alias for name, alias in model_channel_aliases.items() if name in channel_names}
     registry = _build_channel_registry(
         channel_names=channel_names,
         channel_input_dims=channel_input_dims,
+        channel_aliases=channel_aliases,
         mask_rate=0.0,
     )
     extractors = {name: registry[name][0] for name in channel_names}
     tokenizers = {name: registry[name][1] for name in channel_names}
 
-    df = _load_index_df(index_paths)
+    finetune_block = config_data.get("finetune", {})
+    survival_block = finetune_block.get("survival", {}) if isinstance(finetune_block, dict) else {}
+    survival_key_column = survival_block.get("key_column") if isinstance(survival_block, dict) else None
+    df = _load_index_df(index_paths, survival_key_column=survival_key_column)
     _validate_required_columns(df, args.source_field)
     if args.split is not None:
         requested_splits = {str(split) for split in args.split}
@@ -658,28 +680,77 @@ def convert(args: argparse.Namespace) -> Path:
 
             converted_records = converted_records_iter()
 
-        for samples in tqdm(converted_records, total=len(df), desc="Converting records", unit="record"):
-            for sample in samples:
-                sample_key = sample["sample_key"]
-                if sample_key in seen_sample_keys:
-                    raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
+        started_at = time.time()
+        processed = 0
+        write_progress(
+            output_dir,
+            status="running",
+            task="convert_npz_to_kaldi",
+            processed=0,
+            total=len(df),
+            success=0,
+            failed=0,
+            start_time=started_at,
+        )
+        try:
+            for samples in tqdm(converted_records, total=len(df), desc="Converting records", unit="record"):
+                processed += 1
+                for sample in samples:
+                    sample_key = sample["sample_key"]
+                    if sample_key in seen_sample_keys:
+                        raise ValueError(f"Duplicate Kaldi sample_key generated: {sample_key}")
 
-                seen_sample_keys.add(sample_key)
-                split_key = ensure_split_writers(sample["split"])
-                split_sample_count = split_sample_counts.get(split_key, 0)
-                shard_index = split_sample_count % args.ark_shards
-                split_sample_counts[split_key] = split_sample_count + 1
-                for channel, matrix in sample["matrices"].items():
-                    writer = writers[(split_key, channel, shard_index)]
-                    storage = split_channel_storage[(split_key, channel)]
-                    if storage == "compressed_matrix":
-                        writer.write(sample_key, matrix, method=compression_method)
-                    else:
-                        writer.write(sample_key, matrix)
-                manifest_writers[split_key].writerow(manifest_csv_row(sample["manifest_row"]))
+                    seen_sample_keys.add(sample_key)
+                    split_key = ensure_split_writers(sample["split"])
+                    split_sample_count = split_sample_counts.get(split_key, 0)
+                    shard_index = split_sample_count % args.ark_shards
+                    split_sample_counts[split_key] = split_sample_count + 1
+                    for channel, matrix in sample["matrices"].items():
+                        writer = writers[(split_key, channel, shard_index)]
+                        storage = split_channel_storage[(split_key, channel)]
+                        if storage == "compressed_matrix":
+                            writer.write(sample_key, matrix, method=compression_method)
+                        else:
+                            writer.write(sample_key, matrix)
+                    manifest_writers[split_key].writerow(manifest_csv_row(sample["manifest_row"]))
+                write_progress(
+                    output_dir,
+                    status="running",
+                    task="convert_npz_to_kaldi",
+                    processed=processed,
+                    total=len(df),
+                    success=processed,
+                    failed=0,
+                    start_time=started_at,
+                )
+        except Exception as exc:
+            write_progress(
+                output_dir,
+                status="failed",
+                task="convert_npz_to_kaldi",
+                processed=processed,
+                total=len(df),
+                success=processed,
+                failed=1,
+                start_time=started_at,
+                message=str(exc),
+            )
+            raise
 
     if not split_sample_counts:
-        raise ValueError("No samples satisfied the requested channel availability rules.")
+        message = "No samples satisfied the requested channel availability rules."
+        write_progress(
+            output_dir,
+            status="failed",
+            task="convert_npz_to_kaldi",
+            processed=len(df),
+            total=len(df),
+            success=0,
+            failed=1,
+            start_time=started_at,
+            message=message,
+        )
+        raise ValueError(message)
 
     splits: dict[str, dict[str, t.Any]] = {}
     for split_key in split_sample_counts:
@@ -713,7 +784,6 @@ def convert(args: argparse.Namespace) -> Path:
         }
 
     manifest = {
-        "format_version": 2,
         "backend": "kaldi_native_io",
         "token_sec": int(args.token_sec),
         "max_tokens": int(args.max_tokens),
@@ -722,6 +792,17 @@ def convert(args: argparse.Namespace) -> Path:
         "splits": splits,
     }
     manifest_json_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    write_progress(
+        output_dir,
+        status="completed",
+        task="convert_npz_to_kaldi",
+        processed=len(df),
+        total=len(df),
+        success=len(df),
+        failed=0,
+        start_time=started_at,
+        message=f"Wrote {manifest_json_path}",
+    )
     return manifest_json_path
 
 

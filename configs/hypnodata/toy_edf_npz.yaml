@@ -1,0 +1,52 @@
+center: toy
+record_discovery:
+  type: glob
+  root: tests/fixtures/sample_dataset
+  pattern: "*.edf"
+  metadata:
+    source: toy
+    split: train
+backend:
+  type: npz
+signals:
+  eeg:
+    kind: eeg
+    required: true
+    target_sfreq: 10
+    target_unit: uV
+    candidates:
+      - "EEG C3"
+    scale: 1.0
+    polarity: normal
+    preprocess:
+      - type: filter
+        method: bessel
+        order: 4
+        lowcut: 0.5
+        highcut: 4.0
+  spo2:
+    kind: spo2
+    required: false
+    target_sfreq: 1
+    target_unit: "%"
+    candidates:
+      - "SpO2"
+  stage5:
+    kind: stage
+    required: false
+    epoch_sec: 30
+    candidates: []
+  ah_event_table:
+    kind: event_table
+    required: false
+    candidates: []
+  ahi:
+    kind: ahi
+    required: false
+    interval_sec: 1
+    candidates: []
+  arousal_anchor:
+    kind: event_anchor
+    required: false
+    window_sec: 10
+    candidates: []

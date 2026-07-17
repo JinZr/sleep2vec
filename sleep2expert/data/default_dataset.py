@@ -11,11 +11,15 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from sleep2expert.data.metadata import (
+    _encode_binary_label,
     build_w_h_age_sex_center,
     extract_binary_labels,
     make_weighted_sampler_from_labels,
     process_metadata,
+    safe_cast,
 )
+from sleep2expert.data.multilabel import stack_multilabel_metadata
+from sleep2expert.data.survival import stack_survival_metadata
 from sleep2expert.data.utils import filter_valid_sample_indices, load_builtin_ahi_metadata, load_npz
 
 
@@ -62,10 +66,16 @@ class DefaultDataset(BaseDataset):
         few_shot: int | float | None = None,  # ← 新增参数
         meta_data_names=None,  # ← 新增参数
         meta_data_regression_names: t.Optional[t.List[str]] = None,
+        required_metadata_names: t.Optional[t.Sequence[str]] = None,
         sources=None,  # ← 新增参数
         pair_selector: t.Any | None = None,
         weighted_random_sampler: bool = False,
         weighted_random_sampler_target: str | None = None,
+        survival_output_dim: int | None = None,
+        survival_key_column: str | None = None,
+        multilabel_output_dim: int | None = None,
+        multilabel_key_column: str | None = None,
+        channel_aliases: t.Mapping[str, str] | None = None,
         seed: int = 42,
         filter_max_workers: int | None = None,
     ) -> None:
@@ -82,6 +92,7 @@ class DefaultDataset(BaseDataset):
         self.seed = seed
         self.meta_data_names = meta_data_names or []
         self.meta_data_regression_names = meta_data_regression_names or []
+        self.required_metadata_names = list(required_metadata_names or [])
         self.sources = sources or []
         self.few_shot = few_shot
         self.extractors = extractors
@@ -90,6 +101,11 @@ class DefaultDataset(BaseDataset):
         self.pair_selector = pair_selector
         self.weighted_random_sampler = bool(weighted_random_sampler)
         self.weighted_random_sampler_target = weighted_random_sampler_target
+        self.survival_output_dim = survival_output_dim
+        self.survival_key_column = survival_key_column
+        self.multilabel_output_dim = multilabel_output_dim
+        self.multilabel_key_column = multilabel_key_column
+        self.channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
         # self.collators = collators
         self.dataloader_config = dataloader_config
 
@@ -120,7 +136,7 @@ class DefaultDataset(BaseDataset):
             self.data = self._filter_valid_sample_indices(data, filter_max_workers=filter_max_workers)
             if "ahi" in channel_names and not self.data:
                 raise ValueError(
-                    "No valid samples remain for the built-in AHI contract. "
+                    "No valid samples remain for the Built-in AHI contract. "
                     "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
                 )
             if save_preset_path:
@@ -131,9 +147,13 @@ class DefaultDataset(BaseDataset):
 
         # 根据需要的 metadata 筛选数据
         self.filter_with_metadata()
+        if self.required_metadata_names and not self.data:
+            raise ValueError(
+                "No samples remain after required metadata filtering: " f"{sorted(self.required_metadata_names)}."
+            )
         if "ahi" in getattr(self, "channel_names", []) and not self.data:
             raise ValueError(
-                "No valid samples remain for the built-in AHI contract. "
+                "No valid samples remain for the Built-in AHI contract. "
                 "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
             )
 
@@ -156,6 +176,7 @@ class DefaultDataset(BaseDataset):
             min_channels=self.min_channels,
             tolerance=1,
             max_workers=filter_max_workers,
+            channel_aliases=self.channel_aliases,
         )
 
     def _get_available_channels_for_src(self, src: SampleIndex) -> set[str]:
@@ -207,7 +228,7 @@ class DefaultDataset(BaseDataset):
 
         for d in self.data:
             keep = True
-            for meta_data_name in self.meta_data_names:
+            for meta_data_name in itertools.chain(self.meta_data_names, self.required_metadata_names):
                 if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
                     continue
                 value = d.metadata.get(meta_data_name, None)
@@ -216,6 +237,13 @@ class DefaultDataset(BaseDataset):
                 if value is None or (isinstance(value, float) and math.isnan(value)):
                     keep = False
                     break
+                if meta_data_name in self.required_metadata_names:
+                    if meta_data_name == "age" and safe_cast(value, -1) < 0:
+                        keep = False
+                        break
+                    if meta_data_name == "sex" and _encode_binary_label(value) not in {0, 1}:
+                        keep = False
+                        break
 
             if self.sources:
                 source_path = d.metadata.get("source", None)
@@ -311,17 +339,91 @@ class DefaultDataset(BaseDataset):
         #     metadata=src.metadata  # ✅ 传入 metadata
         # )
 
+    def _select_batch_channels(
+        self,
+        resolved_indices: list[SampleIndex],
+        selected_pair: tuple[str, str] | None,
+    ) -> tuple[list[str], list[SampleIndex]]:
+        if bool(self.allow_missing_channels):
+            avail_map = []
+            for src in resolved_indices:
+                avail = self._get_available_channels_for_src(src)
+                if len(avail) >= self.min_channels:
+                    avail_map.append((src, avail))
+                elif selected_pair is not None:
+                    raise ValueError(
+                        "Pair-first sampler emitted sample without enough channels: "
+                        f"id={src.id}, path={src.path}, available={len(avail)}, min_channels={self.min_channels}."
+                    )
+
+            if not avail_map:
+                raise ValueError("No samples have enough available channels in this batch.")
+
+            if selected_pair is not None:
+                left, right = selected_pair
+                chosen = [left, right]
+                selected_sources = []
+                for src, avail in avail_map:
+                    if left in avail and right in avail:
+                        selected_sources.append(src)
+                    else:
+                        raise ValueError(
+                            f"Pair-first sampler emitted sample {src.id} without required pair {selected_pair}."
+                        )
+                if not selected_sources:
+                    raise ValueError(f"No samples in batch support scheduled pair {selected_pair}.")
+                if len(selected_sources) != len(resolved_indices):
+                    raise ValueError(
+                        "Pair-first collate batch was unexpectedly shrunk. "
+                        f"scheduled_pair={selected_pair}, input={len(resolved_indices)}, "
+                        f"kept={len(selected_sources)}."
+                    )
+                return chosen, selected_sources
+
+            batch_available = set.intersection(*(avail for _, avail in avail_map))
+            if len(batch_available) >= 2:
+                if self.pair_selector is not None:
+                    chosen = self.pair_selector.select(sorted(batch_available))
+                elif self.randomly_select_channels:
+                    chosen = random.sample(sorted(batch_available), k=2)
+                    if self.generative and "eeg_original" in batch_available:
+                        chosen[0] = "eeg_original"
+                else:
+                    chosen = sorted(batch_available)
+                selected_sources = [src for src, _ in avail_map]
+                return chosen, selected_sources
+
+            pair_counts: dict[tuple[str, str], int] = {}
+            for _, avail in avail_map:
+                for pair in itertools.combinations(sorted(avail), 2):
+                    pair_counts[pair] = pair_counts.get(pair, 0) + 1
+            if not pair_counts:
+                raise ValueError("No valid channel pairs found for this batch.")
+            best_pair = max(pair_counts, key=pair_counts.get)
+            chosen = list(best_pair)
+            selected_sources = [src for src, avail in avail_map if best_pair[0] in avail and best_pair[1] in avail]
+            return chosen, selected_sources
+
+        if selected_pair is not None:
+            chosen = [selected_pair[0], selected_pair[1]]
+        elif self.pair_selector is not None:
+            chosen = self.pair_selector.select(self.channel_names)
+        elif self.randomly_select_channels:
+            chosen = random.sample(self.channel_names, k=2)
+            if self.generative:
+                chosen[0] = "eeg_original"
+        else:
+            chosen = self.channel_names
+        return chosen, resolved_indices
+
     def dataloader(self, device: str = "cpu") -> DataLoader:
         channel_names = self.channel_names
-        randomly_select_channels = self.randomly_select_channels
-        generative = self.generative
         disease_names = self.meta_data_names
         allow_missing_channels = bool(self.allow_missing_channels)
         min_channels = self.min_channels
         bucket_by_available_channels = bool(self.bucket_by_available_channels)
         train_pair_probs = self.train_pair_probs
         train_pair_track_unique_samples = bool(self.train_pair_track_unique_samples)
-        pair_selector = self.pair_selector
 
         def collate_fn(indices, tolerance=1):
             selected_pair: tuple[str, str] | None = None
@@ -341,77 +443,7 @@ class DefaultDataset(BaseDataset):
                         raise ValueError(f"Mixed scheduled pairs within one batch: {selected_pair} vs {pair}")
                 resolved_indices.append(src)
 
-            if allow_missing_channels:
-                avail_map = []
-                for src in resolved_indices:
-                    avail = self._get_available_channels_for_src(src)
-                    if len(avail) >= min_channels:
-                        avail_map.append((src, avail))
-                    elif selected_pair is not None:
-                        raise ValueError(
-                            "Pair-first sampler emitted sample without enough channels: "
-                            f"id={src.id}, path={src.path}, available={len(avail)}, min_channels={min_channels}."
-                        )
-
-                if not avail_map:
-                    raise ValueError("No samples have enough available channels in this batch.")
-
-                if selected_pair is not None:
-                    left, right = selected_pair
-                    chosen = [left, right]
-                    selected_sources = []
-                    for src, avail in avail_map:
-                        if left in avail and right in avail:
-                            selected_sources.append(src)
-                        else:
-                            raise ValueError(
-                                f"Pair-first sampler emitted sample {src.id} without required pair {selected_pair}."
-                            )
-                    if not selected_sources:
-                        raise ValueError(f"No samples in batch support scheduled pair {selected_pair}.")
-                    if len(selected_sources) != len(resolved_indices):
-                        raise ValueError(
-                            "Pair-first collate batch was unexpectedly shrunk. "
-                            f"scheduled_pair={selected_pair}, input={len(resolved_indices)}, "
-                            f"kept={len(selected_sources)}."
-                        )
-                else:
-                    batch_available = set.intersection(*(avail for _, avail in avail_map))
-
-                    if len(batch_available) >= 2:
-                        if pair_selector is not None:
-                            chosen = pair_selector.select(sorted(batch_available))
-                        elif randomly_select_channels:
-                            chosen = random.sample(sorted(batch_available), k=2)
-                            if generative and "eeg_original" in batch_available:
-                                chosen[0] = "eeg_original"
-                        else:
-                            chosen = sorted(batch_available)
-                        selected_sources = [src for src, _ in avail_map]
-                    else:
-                        pair_counts: dict[tuple[str, str], int] = {}
-                        for _, avail in avail_map:
-                            for pair in itertools.combinations(sorted(avail), 2):
-                                pair_counts[pair] = pair_counts.get(pair, 0) + 1
-                        if not pair_counts:
-                            raise ValueError("No valid channel pairs found for this batch.")
-                        best_pair = max(pair_counts, key=pair_counts.get)
-                        chosen = list(best_pair)
-                        selected_sources = [
-                            src for src, avail in avail_map if best_pair[0] in avail and best_pair[1] in avail
-                        ]
-            else:
-                if selected_pair is not None:
-                    chosen = [selected_pair[0], selected_pair[1]]
-                elif pair_selector is not None:
-                    chosen = pair_selector.select(channel_names)
-                elif randomly_select_channels:
-                    chosen = random.sample(channel_names, k=2)
-                    if generative:
-                        chosen[0] = "eeg_original"
-                else:
-                    chosen = channel_names
-                selected_sources = resolved_indices
+            chosen, selected_sources = self._select_batch_channels(resolved_indices, selected_pair)
 
             samples = []
             token_starts: list[int] = []
@@ -446,6 +478,24 @@ class DefaultDataset(BaseDataset):
             # 2️⃣ 获取整个 batch 中的最大 token 长度（裁剪后），用于 pad
             max_len = max(next(iter(s.tokens.values())).shape[0] for s in samples)
 
+            metadata_batch = process_metadata(samples, disease_names, self.meta_data_regression_names)
+            if self.survival_output_dim is not None:
+                metadata_batch.update(
+                    stack_survival_metadata(
+                        samples,
+                        expected_output_dim=self.survival_output_dim,
+                        key_column=self.survival_key_column,
+                    )
+                )
+            if self.multilabel_output_dim is not None:
+                metadata_batch.update(
+                    stack_multilabel_metadata(
+                        samples,
+                        expected_output_dim=self.multilabel_output_dim,
+                        key_column=self.multilabel_key_column,
+                    )
+                )
+
             batch = {
                 "id": [s.id for s in samples],
                 "length": torch.tensor(
@@ -453,7 +503,7 @@ class DefaultDataset(BaseDataset):
                     # device=device
                 ),
                 "token_start": torch.tensor(token_starts, dtype=torch.long),
-                "metadata": process_metadata(samples, disease_names, self.meta_data_regression_names),
+                "metadata": metadata_batch,
             }
             if len(chosen) == 2:
                 batch["pair"] = (str(chosen[0]), str(chosen[1]))
@@ -542,10 +592,6 @@ class DefaultDataset(BaseDataset):
                 **dl_kwargs,
             )
 
-        # When pretraining with missing channels, random shuffling can mix different
-        # channel-availability signatures within one batch. That makes the
-        # intersection of available channels tiny and triggers the legacy fallback
-        # to a single "best_pair", collapsing training.
         # When pretraining with missing channels, random shuffling can mix different
         # channel-availability signatures within one batch. That makes the
         # intersection of available channels tiny and triggers the legacy fallback
