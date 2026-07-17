@@ -103,7 +103,14 @@ class TaskAdapter:
         """Extra issues evaluated only during preflight_plan (not doctor)."""
         return []
 
-    def write_plan(self, recipe: dict[str, Any], out: Path, *, unlock_final_test: bool) -> None:
+    def write_plan(
+        self,
+        recipe: dict[str, Any],
+        out: Path,
+        *,
+        unlock_final_test: bool,
+        source_config_sha256: str | None = None,
+    ) -> None:
         """Materialize the full plan bundle; called only when
         materializes_plan is True."""
         raise NotImplementedError

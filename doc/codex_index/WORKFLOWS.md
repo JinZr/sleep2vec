@@ -170,15 +170,18 @@ Follow [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and
 Adaptive tuning defaults to the existing `best_neighborhood` strategy, which
 may inspect active rounds and use the configured replacement policy. The
 `agent_proposal` strategy instead uses a terminal-only two-phase handshake:
-`hparam-adaptive-step` freezes a hash-addressed evidence snapshot under
-`adaptive/proposal_inputs/`, an external agent writes the exact matching
-submission path, and a second step invocation previews or explicitly executes
-the bounded proposal. Its recipes explicitly declare `objective_metric`,
-`objective_mode`, `round_size`, `max_rounds`, and `max_runs_total`; missing
-values stop at consultation before workspace mutation. Apply resolves that specific immutable snapshot rather
-than a latest digest; live checks still protect source identity, target round,
-terminal state, and budget. Agent proposals cannot own replacement, planning,
-launch, or `run_manifest.tsv` lifecycle state.
+`hparam-adaptive-step` writes and records the full-file hash of a tool-issued
+proposal-input v2 snapshot under `adaptive/proposal_inputs/`. Its request id
+also binds the exact source config bytes. An external agent may write only the
+named submission under `adaptive/proposal_submissions/`; a second invocation
+previews or explicitly executes the bounded proposal. Phase two requires the
+matching issuance and snapshot bytes, then rebuilds the input from current
+canonical workflow state before and after candidate preflight. Config or
+canonical-state drift therefore fails before lifecycle mutation. Execute
+freezes the verified source-config bytes inside the next round and materializes
+from the validated in-memory proposal rather than re-reading the suggestion.
+Existing v1 input snapshots must be regenerated. Agent proposals cannot own
+replacement, planning, launch, or `run_manifest.tsv` lifecycle state.
 
 The shared Codex index only supplies navigation paths in context bundles. It
 does not authorize commands or replace live repository inspection.

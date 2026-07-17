@@ -15,6 +15,7 @@ _INPUT_FIELDS = {
     "digest_rows",
     "parameter_envelopes",
     "resolved_recipe_sha256",
+    "source_config_sha256",
     "execution_identity",
 }
 _PROPOSAL_INPUT_FIELDS = {"schema_version", "request_id", "input", "expected_proposal_path"}
@@ -83,7 +84,7 @@ def build_proposal_input(input_payload: Mapping[str, Any], *, expected_proposal_
     if not isinstance(expected_proposal_path, str) or not expected_proposal_path.strip():
         raise ValueError("expected_proposal_path must be a non-empty string.")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "request_id": proposal_request_id(normalized),
         "input": normalized,
         "expected_proposal_path": expected_proposal_path,
@@ -116,8 +117,8 @@ def validate_proposal_input(document: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(document, Mapping):
         raise ValueError("Proposal input must be a mapping.")
     _validate_closed_fields(document, _PROPOSAL_INPUT_FIELDS, _PROPOSAL_INPUT_FIELDS, "Proposal input")
-    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
-        raise ValueError("Proposal input schema_version must be 1.")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 2:
+        raise ValueError("Proposal input schema_version must be 2.")
     request_id = document["request_id"]
     if not isinstance(request_id, str) or _REQUEST_ID_RE.fullmatch(request_id) is None:
         raise ValueError("Proposal input request_id must be a sha256:<64-hex> value.")
@@ -129,7 +130,7 @@ def validate_proposal_input(document: Mapping[str, Any]) -> dict[str, Any]:
     if request_id != expected_request_id:
         raise ValueError("Proposal input request_id does not match its canonical input snapshot.")
     normalized = {
-        "schema_version": 1,
+        "schema_version": 2,
         "request_id": request_id,
         "input": input_payload,
         "expected_proposal_path": expected_path,
@@ -327,6 +328,9 @@ def _validate_input_payload(input_payload: Mapping[str, Any]) -> dict[str, Any]:
     recipe_hash = input_payload["resolved_recipe_sha256"]
     if not isinstance(recipe_hash, str) or _SHA256_RE.fullmatch(recipe_hash) is None:
         raise ValueError("Proposal input resolved_recipe_sha256 must be a 64-hex SHA-256 value.")
+    config_hash = input_payload["source_config_sha256"]
+    if not isinstance(config_hash, str) or _SHA256_RE.fullmatch(config_hash) is None:
+        raise ValueError("Proposal input source_config_sha256 must be a lowercase 64-hex SHA-256 value.")
     if not isinstance(input_payload["execution_identity"], Mapping) or not input_payload["execution_identity"]:
         raise ValueError("Proposal input execution_identity must be a non-empty mapping.")
 

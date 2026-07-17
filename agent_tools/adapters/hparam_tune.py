@@ -66,10 +66,22 @@ class HparamTuneAdapter(TaskAdapter):
 
         return plan_hparam.final_test_checkpoint_issues(recipe, unlock_final_test=unlock_final_test)
 
-    def write_plan(self, recipe: dict[str, Any], out: Path, *, unlock_final_test: bool) -> None:
+    def write_plan(
+        self,
+        recipe: dict[str, Any],
+        out: Path,
+        *,
+        unlock_final_test: bool,
+        source_config_sha256: str | None = None,
+    ) -> None:
         from .. import plan_hparam
 
-        plan_hparam.write_hparam_plan(recipe, out, unlock_final_test=unlock_final_test)
+        plan_hparam.write_hparam_plan(
+            recipe,
+            out,
+            unlock_final_test=unlock_final_test,
+            source_config_sha256=source_config_sha256,
+        )
 
     def planned_plan_paths(
         self,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import json
 from pathlib import Path
 from typing import Any
 
@@ -580,6 +581,9 @@ def build_plan(
     user_decisions_path: str | Path | None = None,
     allow_unresolved: bool = False,
     unlock_final_test: bool = False,
+    source_config_sha256: str | None = None,
+    expected_recipe: dict[str, Any] | None = None,
+    expected_base_recipe: dict[str, Any] | None = None,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     recipe, cfg, report = preflight_plan(
@@ -589,6 +593,23 @@ def build_plan(
         allow_unresolved=allow_unresolved,
         unlock_final_test=unlock_final_test,
     )
+    if expected_recipe is not None:
+        recipe_source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+        actual_recipe = {key: value for key, value in recipe_source.items() if not str(key).startswith("_")}
+        actual_recipe_json = json.dumps(actual_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        expected_recipe_json = json.dumps(expected_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if actual_recipe_json != expected_recipe_json:
+            raise ValueError("Plan recipe does not match the bound adaptive recipe.")
+        base_source = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else None
+        actual_base_recipe = (
+            {key: value for key, value in base_source.items() if not str(key).startswith("_")}
+            if base_source is not None
+            else None
+        )
+        actual_base_json = json.dumps(actual_base_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        expected_base_json = json.dumps(expected_base_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if actual_base_json != expected_base_json:
+            raise ValueError("Plan base recipe does not match the bound adaptive recipe.")
     if _has_output_artifact_issue(report):
         return report
     if report.exit_code != 0:
@@ -616,7 +637,12 @@ def build_plan(
     task = recipe.get("task")
     plan_adapter = get_adapter(task)
     if plan_adapter is not None and plan_adapter.materializes_plan:
-        plan_adapter.write_plan(recipe, out, unlock_final_test=unlock_final_test)
+        plan_adapter.write_plan(
+            recipe,
+            out,
+            unlock_final_test=unlock_final_test,
+            source_config_sha256=source_config_sha256,
+        )
     else:
         root = experiment_root(recipe)
         if root is None:

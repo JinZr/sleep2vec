@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from itertools import product
 from pathlib import Path
 import sys
@@ -21,7 +22,7 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import write_json, write_text
-from .models import REPO_ROOT, coerce_list, load_yaml
+from .models import REPO_ROOT, coerce_list, load_yaml, resolve_repo_path
 from .repo import repo_summary
 
 
@@ -306,6 +307,7 @@ def write_hparam_plan(
     out: Path,
     *,
     unlock_final_test: bool,
+    source_config_sha256: str | None = None,
 ) -> None:
     out = out.expanduser()
     if not out.is_absolute():
@@ -320,7 +322,18 @@ def write_hparam_plan(
     runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     source_config_path = inputs.get("config")
-    base_config = load_yaml(source_config_path) if source_config_path else {}
+    if source_config_path:
+        resolved_source_config = resolve_repo_path(source_config_path)
+        if resolved_source_config is None:
+            raise FileNotFoundError("Config path is required.")
+        source_config_bytes = resolved_source_config.read_bytes()
+        if source_config_sha256 is not None and hashlib.sha256(source_config_bytes).hexdigest() != source_config_sha256:
+            raise ValueError("Hparam source config does not match the bound SHA-256.")
+        base_config = yaml.safe_load(source_config_bytes)
+        if not isinstance(base_config, dict):
+            raise ValueError(f"YAML must be a mapping: {resolved_source_config}")
+    else:
+        base_config = {}
     combos = hparam_combos(recipe)
     runs = []
     evaluation = recipe.get("evaluation_policy") or {}
