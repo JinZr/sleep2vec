@@ -98,6 +98,65 @@ def start_token(pid):
 """.strip()
 
 
+_PROCESS_GROUP_RUNNING_CODE = """
+def process_group_running(pgid, proc_root="/proc"):
+    leader_uncertain = False
+    try:
+        leader_stat = open(os.path.join(proc_root, str(pgid), "stat"), encoding="utf-8").read()
+    except FileNotFoundError:
+        leader_stat = None
+    except OSError:
+        leader_stat = None
+        leader_uncertain = True
+    if leader_stat:
+        fields = leader_stat.rsplit(")", 1)[-1].split()
+        try:
+            leader_pgid = int(fields[2])
+        except (IndexError, ValueError):
+            leader_uncertain = True
+        else:
+            if leader_pgid == pgid and fields[0] not in {"Z", "X"}:
+                return True
+
+    try:
+        entries = os.listdir(proc_root)
+    except FileNotFoundError:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    except OSError:
+        return None
+
+    uncertain = leader_uncertain
+    for entry in entries:
+        if not entry.isdigit() or entry == str(pgid):
+            continue
+        try:
+            stat_text = open(os.path.join(proc_root, entry, "stat"), encoding="utf-8").read()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            uncertain = True
+            continue
+        fields = stat_text.rsplit(")", 1)[-1].split()
+        if len(fields) < 3:
+            uncertain = True
+            continue
+        try:
+            process_pgid = int(fields[2])
+        except ValueError:
+            uncertain = True
+            continue
+        if process_pgid == pgid and fields[0] not in {"Z", "X"}:
+            return True
+    return None if uncertain else False
+""".strip()
+
+
 def status_row(
     run_dir: Path,
     row: dict[str, Any],
@@ -433,6 +492,7 @@ import subprocess
 import sys
 """.strip(),
         _PROCESS_START_TOKEN_CODE,
+        _PROCESS_GROUP_RUNNING_CODE,
         """
 
 pid = int(sys.argv[1])
@@ -449,14 +509,10 @@ else:
         raise SystemExit(1)
     leader = {"pid": pid, "process_group_id": leader_pgid, "process_start_token": token}
 
-try:
-    os.killpg(pgid, 0)
-except ProcessLookupError:
-    group_running = False
-except PermissionError:
-    group_running = True
-else:
-    group_running = True
+group_running = process_group_running(pgid)
+if group_running is None:
+    print(f"Cannot inspect process group {pgid}", file=sys.stderr)
+    raise SystemExit(1)
 
 print(json.dumps({"leader": leader, "group_running": group_running}, sort_keys=True))
 """.strip(),
@@ -490,7 +546,6 @@ def process_identity_running(row: dict[str, Any], identity: dict[str, Any]) -> b
             str(leader.get(field)) != str(identity[field]) for field in PROCESS_IDENTITY_FIELDS
         ):
             raise ProcessIdentityError(f"PID {identity['pid']} was reused by a different process.")
-        return True
     return payload["group_running"]
 
 
@@ -528,21 +583,13 @@ import sys
 import time
 """.strip(),
         _PROCESS_START_TOKEN_CODE,
+        _PROCESS_GROUP_RUNNING_CODE,
         """
 
 pid = int(sys.argv[1])
 pgid = int(sys.argv[2])
 expected_token = sys.argv[3]
 timeout = float(sys.argv[4])
-
-def group_running():
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 if pgid != pid or pgid == os.getpgrp():
     print("Refusing to signal an unsafe process group", file=sys.stderr)
@@ -555,15 +602,30 @@ if leader_pgid is not None:
     if leader_pgid != pgid or start_token(pid) != expected_token:
         print("Process identity changed before stop", file=sys.stderr)
         raise SystemExit(45)
-elif not group_running():
+
+group_running = process_group_running(pgid)
+if group_running is None:
+    print("Cannot inspect managed process group", file=sys.stderr)
+    raise SystemExit(1)
+if not group_running:
     print("Managed process group is no longer running", file=sys.stderr)
     raise SystemExit(44)
 
 os.killpg(pgid, signal.SIGTERM)
 deadline = time.monotonic() + timeout
-while group_running() and time.monotonic() < deadline:
+while time.monotonic() < deadline:
+    group_running = process_group_running(pgid)
+    if group_running is None:
+        print("Cannot inspect managed process group", file=sys.stderr)
+        raise SystemExit(1)
+    if not group_running:
+        break
     time.sleep(0.05)
-if group_running():
+group_running = process_group_running(pgid)
+if group_running is None:
+    print("Cannot inspect managed process group", file=sys.stderr)
+    raise SystemExit(1)
+if group_running:
     print("Managed process group did not stop after SIGTERM", file=sys.stderr)
     raise SystemExit(46)
 """.strip(),
@@ -598,20 +660,19 @@ def stop_process_group(row: dict[str, Any], identity: dict[str, Any], *, timeout
         raise RuntimeError(f"Cannot verify managed process group before stop: {pgid}")
     os.killpg(pgid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
-    while _local_process_group_running(pgid) and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        running = process_identity_running(row, identity)
+        if running is None:
+            raise RuntimeError(f"Cannot verify managed process group after stop: {pgid}")
+        if not running:
+            return
         time.sleep(0.05)
-    if _local_process_group_running(pgid):
-        raise RuntimeError(f"Managed process group did not stop after SIGTERM: {pgid}")
-
-
-def _local_process_group_running(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    running = process_identity_running(row, identity)
+    if running is None:
+        raise RuntimeError(f"Cannot verify managed process group after stop: {pgid}")
+    if not running:
+        return
+    raise RuntimeError(f"Managed process group did not stop after SIGTERM: {pgid}")
 
 
 def log_has_failure(path: Any, row: dict[str, Any] | None = None) -> bool | None:

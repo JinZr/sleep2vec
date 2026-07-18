@@ -349,10 +349,13 @@ def evaluate_recipe(
             cfg = dict(cfg)
             cfg["_source_config_bytes"] = source_config_bytes
             cfg["_source_config_sha256"] = hashlib.sha256(source_config_bytes).hexdigest()
+    consultation_cfg = dict(cfg) if cfg is not None else None
+    if consultation_cfg is not None:
+        consultation_cfg.pop("_source_config_bytes", None)
     report = evaluate_consultation_gates(
         recipe.get("task"),
         recipe,
-        cfg,
+        consultation_cfg,
         {"user_decisions": user_decisions},
         policy,
     )

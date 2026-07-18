@@ -87,6 +87,28 @@ def test_sleep2stat_any_non_null_variant_fails(tmp_path: Path):
     assert any(issue.field == "variant" for issue in report.issues)
 
 
+def test_sleep2stat_wrong_config_writes_blocked_plan_without_private_config_bytes(tmp_path: Path):
+    payload = _tiny_recipe_payload()
+    experiment_root = tmp_path / "experiment"
+    payload["experiment"]["root"] = str(experiment_root)
+    payload["inputs"]["config"] = str(REPO_ROOT / "recipes/examples/fixtures/tiny_finetune_config.yaml")
+    recipe_path = _write_tiny_recipe(tmp_path, payload)
+    output_dir = experiment_root / "plans" / "wrong-config"
+
+    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
+
+    assert report.status.value == "FAIL"
+    assert report.exit_code == 1
+    issue = next(
+        item for item in report.blocking_issues() if item.message == "task=sleep2stat requires a sleep2stat config."
+    )
+    assert "_source_config_bytes" not in issue.evidence["config_summary"]
+    questions = json.loads((output_dir / "questions.json").read_text())
+    question = next(item for item in questions["questions"] if item["message"] == issue.message)
+    assert "_source_config_bytes" not in question["evidence"]["config_summary"]
+    assert (output_dir / "plan.blocked.md").exists()
+
+
 def test_sleep2stat_run_dir_mismatch_blocks_before_command_generation(tmp_path: Path):
     payload = _tiny_recipe_payload()
     payload["artifacts"]["run_dir"] = "results/sleep2stat/wrong"

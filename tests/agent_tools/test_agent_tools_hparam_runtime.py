@@ -99,6 +99,18 @@ def _write_process_identity(path: str | Path, pid: int = 123) -> dict[str, int |
     return identity
 
 
+def _write_proc_stat(proc_root: Path, pid: int, pgid: int, state: str) -> None:
+    process_dir = proc_root / str(pid)
+    process_dir.mkdir(parents=True)
+    (process_dir / "stat").write_text(f"{pid} (unit) {state} 1 {pgid}\n")
+
+
+def _embedded_process_group_running(proc_root: Path, pgid: int) -> bool | None:
+    namespace = {"os": os}
+    exec(run_evidence._PROCESS_GROUP_RUNNING_CODE, namespace)
+    return namespace["process_group_running"](pgid, str(proc_root))
+
+
 def _set_execution_probe(
     monkeypatch,
     plan_dir: Path,
@@ -961,8 +973,73 @@ def test_remote_stop_verifies_and_signals_in_one_command(monkeypatch):
     run_evidence.stop_process_group({"target": "ssh", "host": "unit-host"}, identity)
 
     assert len(commands) == 1
+    assert "process_group_running(pgid)" in commands[0]
+    assert commands[0].count("group_running = process_group_running(pgid)") == 3
+    assert commands[0].index("group_running = process_group_running(pgid)") < commands[0].index(
+        "os.killpg(pgid, signal.SIGTERM)"
+    )
     assert "os.killpg(pgid, signal.SIGTERM)" in commands[0]
     assert "expected_token" in commands[0]
+
+
+@pytest.mark.parametrize(
+    ("leader_state", "live_child", "expected"),
+    [
+        pytest.param("Z", False, False, id="zombie-only"),
+        pytest.param("X", False, False, id="dead-only"),
+        pytest.param("Z", True, True, id="live-child"),
+    ],
+)
+def test_embedded_process_group_probe_requires_a_non_zombie_member(
+    tmp_path: Path, leader_state: str, live_child: bool, expected: bool
+):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc_stat(proc_root, 123, 123, leader_state)
+    if live_child:
+        _write_proc_stat(proc_root, 124, 123, "S")
+    _write_proc_stat(proc_root, 200, 200, "S")
+
+    assert _embedded_process_group_running(proc_root, 123) is expected
+
+
+def test_embedded_process_group_probe_uses_the_live_leader_fast_path(tmp_path: Path, monkeypatch):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc_stat(proc_root, 123, 123, "S")
+    monkeypatch.setattr(
+        run_evidence.os,
+        "listdir",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("live leader should not scan /proc")),
+    )
+
+    assert _embedded_process_group_running(proc_root, 123) is True
+
+
+def test_embedded_process_group_probe_preserves_uncertainty_from_unreadable_proc_entries(tmp_path: Path):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc_stat(proc_root, 123, 123, "Z")
+    (proc_root / "124" / "stat").mkdir(parents=True)
+
+    assert _embedded_process_group_running(proc_root, 123) is None
+
+
+@pytest.mark.parametrize("group_running", [False, True], ids=["zombie-only", "live-child"])
+def test_process_monitor_uses_group_liveness_for_a_matching_leader(monkeypatch, group_running: bool):
+    identity = _process_identity()
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda *_args: subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"leader": identity, "group_running": group_running}) + "\n",
+            "",
+        ),
+    )
+
+    assert run_evidence.process_identity_running({}, identity) is group_running
 
 
 def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
@@ -981,6 +1058,54 @@ def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
 
     with pytest.raises(RuntimeError, match="was reused"):
         run_evidence.process_identity_running({}, identity)
+
+
+def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "managed.pid"
+    identity = _write_process_identity(pid_path)
+    row = {
+        "script": str(tmp_path / "launch.sh"),
+        "pid_path": str(pid_path),
+        "status": "running",
+        **identity,
+    }
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda *_args: subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"leader": identity, "group_running": False}) + "\n",
+            "",
+        ),
+    )
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert observed["status"] == "finished"
+
+
+def test_local_stop_checks_once_more_at_the_deadline_for_a_zombie_only_group(monkeypatch):
+    identity = _process_identity()
+    states = iter([True, False])
+    clock = iter([0.0, 1.0])
+    calls = []
+    monkeypatch.setattr(
+        run_evidence,
+        "process_identity_running",
+        lambda *_args: calls.append("probe") or next(states),
+    )
+    monkeypatch.setattr(run_evidence.os, "killpg", lambda *_args: calls.append("signal"))
+    monkeypatch.setattr(run_evidence.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        run_evidence.time,
+        "sleep",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("zombie-only group should not wait")),
+    )
+
+    run_evidence.stop_process_group({}, identity, timeout=0.5)
+
+    assert calls == ["probe", "signal", "probe"]
 
 
 @pytest.mark.parametrize("script_commits_terminal_status", [False, True])
