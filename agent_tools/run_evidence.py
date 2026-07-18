@@ -167,12 +167,35 @@ def status_row(
 ) -> dict[str, Any]:
     previous = previous or {}
     process_identity = None
+    committed_process_identity = None
     managed_process = any(source.get("script") not in (None, "") for source in (row, previous))
     try:
         if managed_process:
+            canonical_process_identity = {
+                field: previous[field] if field in previous else row.get(field) for field in PROCESS_IDENTITY_FIELDS
+            }
+            populated_process_fields = {
+                field for field, value in canonical_process_identity.items() if value not in (None, "")
+            }
+            if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
+                missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
+                raise ProcessIdentityError(f"Canonical run has partial process identity; missing: {missing}")
             process_identity = read_process_identity(row.get("pid_path"), row)
             pid = process_identity["pid"] if process_identity is not None else None
             running_state = process_identity_running(row, process_identity) if process_identity is not None else False
+            if process_identity is not None:
+                if populated_process_fields == PROCESS_IDENTITY_FIELDS:
+                    committed_process_identity = process_identity
+                elif running_state is True:
+                    _require_process_script(
+                        process_identity["pid"],
+                        previous.get("script") or row.get("script"),
+                        row,
+                    )
+                    committed_process_identity = process_identity
+                else:
+                    # A dead leader cannot bind previously unfrozen PID evidence to the launch script.
+                    running_state = None
         else:
             pid = read_pid(row.get("pid_path"), row)
             running_state = process_running(row, pid) if pid is not None else False
@@ -237,9 +260,9 @@ def status_row(
         manifest, _manifest_data, checkpoints = observed_artifacts
     observation = {
         **row,
-        **(process_identity or {}),
+        **(committed_process_identity or {}),
         "status": observed_status,
-        "pid": pid or previous.get("pid") or row.get("pid") or "",
+        "pid": (committed_process_identity or {}).get("pid") or previous.get("pid") or row.get("pid") or "",
         "log_tail": log_tail(row.get("log_path"), row),
         "run_manifest": str(manifest or ""),
         "checkpoints": ";".join(checkpoints),
@@ -374,6 +397,7 @@ def read_pid(
             state = process_identity_running(row or {}, identity)
             if state is not True:
                 raise RuntimeError(f"Cannot verify PID {identity['pid']} process identity.")
+            _require_process_script(identity["pid"], expected_script, row)
         return identity["pid"]
     try:
         pid = int(text)
@@ -386,7 +410,12 @@ def read_pid(
     return pid
 
 
-def read_process_identity(path: Any, row: dict[str, Any] | None = None) -> dict[str, Any] | None:
+def read_process_identity(
+    path: Any,
+    row: dict[str, Any] | None = None,
+    *,
+    expected_script: str | Path | None = None,
+) -> dict[str, Any] | None:
     text = _read_pid_text(path, row)
     if text is None:
         return None
@@ -398,7 +427,27 @@ def read_process_identity(path: Any, row: dict[str, Any] | None = None) -> dict[
         if legacy_pid <= 0:
             raise ProcessIdentityError(f"PID file is empty or invalid: {path}")
         raise ProcessIdentityError(f"PID file lacks process group identity: {path}")
-    return _parse_process_identity(text, path)
+    identity = _parse_process_identity(text, path)
+    if expected_script is not None:
+        _require_process_script(identity["pid"], expected_script, row)
+    return identity
+
+
+def _require_process_script(pid: int, expected_script: str | Path | None, row: dict[str, Any] | None) -> None:
+    script_path = Path(str(expected_script or ""))
+    if not script_path.is_absolute():
+        raise RuntimeError(f"Frozen run script is not absolute: {expected_script}")
+    result = run_row_command(row or {}, f"ps -ww -p {pid} -o args=")
+    if result.returncode != 0 or not result.stdout.strip():
+        location = f" on {row['host']}" if is_remote_row(row) else ""
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"Cannot verify PID {pid} process identity{location}: {detail}")
+    process_args = result.stdout.rstrip("\r\n")
+    expected_suffix = f"bash {script_path}"
+    prefix = process_args[: -len(expected_suffix)] if process_args.endswith(expected_suffix) else ""
+    allowed_prefix = not prefix or (prefix.endswith("/") and not any(character.isspace() for character in prefix))
+    if not process_args.endswith(expected_suffix) or not allowed_prefix:
+        raise ProcessIdentityError(f"PID {pid} process identity does not match frozen script: {script_path}")
 
 
 def _read_pid_text(path: Any, row: dict[str, Any] | None) -> str | None:

@@ -404,7 +404,10 @@ def test_hparam_launch_does_not_restart_workspace_terminal_run(tmp_path: Path, m
 
 @pytest.mark.parametrize("operation", ["launch", "monitor", "stop"])
 def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: Path, monkeypatch, operation: str):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+    )
     _write_process_identity(rows[0]["pid_path"])
     launch_rows = _read_table(tmp_path / "launch_manifest.tsv")
     launch_rows[0].update({"status": "planned", "score": "0.1", "wandb_url": "https://wandb.example/stale"})
@@ -770,7 +773,15 @@ def test_hparam_runtime_rejects_workdir_that_differs_from_frozen_runtime_path(tm
 def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
-        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
+        [
+            {
+                "run_id": "run-000",
+                "target": "ssh",
+                "host": "unit-host",
+                "status": "running",
+                **_process_identity(),
+            }
+        ],
     )
     before_launch = (tmp_path / "launch_manifest.tsv").read_bytes()
     before_status = (tmp_path / "run_status.tsv").read_bytes()
@@ -925,8 +936,190 @@ def test_hparam_stop_rejects_unsafe_remote_pid_topology_before_read_or_signal(tm
     assert calls == [("preflight", "unit-host")]
 
 
-def test_hparam_stop_uses_the_recorded_process_group_identity(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    ("target", "host", "message"),
+    [
+        pytest.param("cluster", "unit-host", "target must be local or ssh", id="unknown-target"),
+        pytest.param("ssh", "", "requires a non-empty host", id="missing-ssh-host"),
+        pytest.param("ssh", "   ", "requires a non-empty host", id="blank-ssh-host"),
+    ],
+)
+def test_hparam_stop_rejects_invalid_transport_before_pid_read_or_signal(
+    tmp_path: Path,
+    monkeypatch,
+    target: str,
+    host: str,
+    message: str,
+):
+    rows = _write_runtime_rows(
+        tmp_path,
+        [
+            {
+                "run_id": "run-000",
+                "target": target,
+                "host": host,
+                "status": "running",
+                **_process_identity(),
+            }
+        ],
+    )
+    _write_process_identity(rows[0]["pid_path"])
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    calls = []
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args, **_kwargs: calls.append("signal"))
+
+    with pytest.raises(ValueError, match=message):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="invalid transport")
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("missing_field", ["pid", "process_group_id", "process_start_token"])
+def test_hparam_stop_rejects_partial_canonical_process_identity_before_pid_read_or_signal(
+    tmp_path: Path,
+    monkeypatch,
+    missing_field: str,
+):
+    identity = _process_identity()
+    identity[missing_field] = ""
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "running", **identity}],
+    )
+    _write_process_identity(rows[0]["pid_path"])
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    calls = []
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args, **_kwargs: calls.append("signal"))
+
+    with pytest.raises(ValueError, match="partial process identity"):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="partial identity")
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    "process_args",
+    [
+        "bash {script}",
+        "/bin/bash {script}",
+    ],
+)
+def test_hparam_stop_binds_first_process_identity_to_the_frozen_script(
+    tmp_path: Path,
+    monkeypatch,
+    process_args: str,
+):
+    root = tmp_path / "experiment with spaces"
+    root.mkdir()
+    rows = _write_runtime_rows(root, [{"run_id": "run-000", "status": "running"}])
+    identity = _write_process_identity(rows[0]["pid_path"])
+    commands = []
+
+    def matched_script(_row, command):
+        commands.append(command)
+        return subprocess.CompletedProcess([], 0, process_args.format(script=rows[0]["script"]) + "\n", "")
+
+    stopped = []
+    monkeypatch.setattr(run_evidence, "run_row_command", matched_script)
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda _row, observed: stopped.append(observed))
+
+    hparam_runtime.stop_hparam_run(root, "run-000", reason="matched frozen script")
+
+    assert commands == ["ps -ww -p 123 -o args="]
+    assert stopped == [identity]
+    canonical = _read_table(root / "run_manifest.tsv")[0]
+    assert canonical["pid"] == "123"
+    assert canonical["process_group_id"] == "123"
+    assert canonical["process_start_token"] == "proc:unit-start"
+    assert canonical["status"] == "stopped"
+
+
+@pytest.mark.parametrize(
+    "process_args",
+    [
+        "python unrelated_job.py",
+        "fakebash {script}",
+        "python unrelated_job.py bash {script}",
+        "conda run --no-capture-output -n exp bash {script}",
+    ],
+)
+def test_hparam_stop_rejects_unbound_first_process_identity_before_signal_or_commit(
+    tmp_path: Path,
+    monkeypatch,
+    process_args: str,
+):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    _write_process_identity(rows[0]["pid_path"])
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda _row, _command: subprocess.CompletedProcess(
+            [],
+            0,
+            process_args.format(script=rows[0]["script"]) + "\n",
+            "",
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args: calls.append("signal"))
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("commit"))
+
+    with pytest.raises(run_evidence.ProcessIdentityError, match="does not match frozen script"):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unbound identity")
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_stop_rejects_unbound_remote_first_process_identity_before_signal_or_commit(
+    tmp_path: Path,
+    monkeypatch,
+):
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
+    )
+    commands = []
+
+    def remote_evidence(_row, command):
+        commands.append(command)
+        if "sys.stdout.write(file_obj.read())" in command:
+            return subprocess.CompletedProcess([], 0, json.dumps(_process_identity()) + "\n", "")
+        if command == "ps -ww -p 123 -o args=":
+            return subprocess.CompletedProcess([], 0, "python unrelated_job.py\n", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", remote_evidence)
+    calls = []
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args: calls.append("signal"))
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("commit"))
+
+    with pytest.raises(run_evidence.ProcessIdentityError, match="does not match frozen script"):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unbound remote identity")
+
+    assert len(commands) == 2
+    assert commands[1] == "ps -ww -p 123 -o args="
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_stop_uses_the_recorded_process_group_identity(tmp_path: Path, monkeypatch):
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+    )
     identity = _write_process_identity(rows[0]["pid_path"])
     calls = []
     monkeypatch.setattr(
@@ -946,7 +1139,10 @@ def test_hparam_stop_uses_the_recorded_process_group_identity(tmp_path: Path, mo
 
 
 def test_hparam_stop_rejects_a_reused_process_before_canonical_commit(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+    )
     _write_process_identity(rows[0]["pid_path"])
     before = (tmp_path / "run_manifest.tsv").read_bytes()
     monkeypatch.setattr(
@@ -1058,6 +1254,94 @@ def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
 
     with pytest.raises(RuntimeError, match="was reused"):
         run_evidence.process_identity_running({}, identity)
+
+
+@pytest.mark.parametrize(
+    ("process_args", "expected_status", "expected_pid"),
+    [
+        pytest.param("/bin/bash {script}", "running", 123, id="matching-script"),
+        pytest.param("python unrelated_job.py", "failed", "", id="unrelated-process"),
+    ],
+)
+def test_status_binds_first_process_identity_only_to_the_frozen_script(
+    tmp_path: Path,
+    monkeypatch,
+    process_args: str,
+    expected_status: str,
+    expected_pid: int | str,
+):
+    pid_path = tmp_path / "managed.pid"
+    _write_process_identity(pid_path)
+    script = tmp_path / "launch.sh"
+    script.write_text("#!/usr/bin/env bash\ntrue\n")
+    row = {
+        "script": str(script),
+        "pid_path": str(pid_path),
+        "status": "running",
+    }
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: True)
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda _row, command: (
+            subprocess.CompletedProcess(
+                [],
+                0,
+                process_args.format(script=script) + "\n",
+                "",
+            )
+            if command == "ps -ww -p 123 -o args="
+            else (_ for _ in ()).throw(AssertionError(command))
+        ),
+    )
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert observed["status"] == expected_status
+    assert observed["pid"] == expected_pid
+    assert observed.get("process_group_id", "") == expected_pid
+    assert observed.get("process_start_token", "") == ("proc:unit-start" if expected_pid else "")
+
+
+@pytest.mark.parametrize(
+    ("target", "host", "expected_status"),
+    [
+        pytest.param("local", "", "launched", id="local"),
+        pytest.param("ssh", "unit-host", "unknown_remote", id="ssh"),
+    ],
+)
+def test_status_keeps_dead_unfrozen_process_identity_unresolved(
+    tmp_path: Path,
+    monkeypatch,
+    target: str,
+    host: str,
+    expected_status: str,
+):
+    script = tmp_path / "launch.sh"
+    script.write_text("#!/usr/bin/env bash\ntrue\n")
+    row = {
+        "target": target,
+        "host": host,
+        "script": str(script),
+        "pid_path": str(tmp_path / "managed.pid"),
+        "status": "launched",
+    }
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args: _process_identity())
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+    monkeypatch.setattr(
+        run_evidence,
+        "_require_process_script",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("dead identity must remain unbound")),
+    )
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: None)
+    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args: "")
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert observed["status"] == expected_status
+    assert observed["pid"] == ""
+    assert observed.get("process_group_id", "") == ""
+    assert observed.get("process_start_token", "") == ""
 
 
 def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, monkeypatch):
@@ -1240,7 +1524,10 @@ def test_hparam_stop_rejects_dangling_status_manifest_before_kill_or_write(tmp_p
 
 
 def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+    )
     _write_process_identity(rows[0]["pid_path"])
     stopped = []
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda _row, identity: stopped.append(identity))
@@ -1283,7 +1570,10 @@ def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path
 
 
 def test_hparam_stop_mirrors_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+    )
     _write_process_identity(rows[0]["pid_path"])
     merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": "running"}])
     real_merge = merge_run_manifest
@@ -1319,7 +1609,10 @@ def test_hparam_stop_mirrors_the_status_committed_by_the_canonical_owner(tmp_pat
 def test_hparam_stop_ignores_execution_identity_drift_in_projection(
     tmp_path: Path, monkeypatch, field: str, changed: str
 ):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+    )
     _write_process_identity(rows[0]["pid_path"])
     merge_run_manifest(tmp_path, [rows[0]])
     rows[0][field] = changed
@@ -3078,7 +3371,13 @@ def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, 
     _write_runtime_rows(
         tmp_path,
         [
-            {"run_id": "running", "version": "v1", "pid_path": str(pid_path), "status": "launched"},
+            {
+                "run_id": "running",
+                "version": "v1",
+                "pid_path": str(pid_path),
+                "status": "launched",
+                **_process_identity(101),
+            },
             {"run_id": "missing", "version": "v2", "pid_path": str(missing_pid), "status": "launched"},
             {
                 "run_id": "failed",
@@ -3086,6 +3385,7 @@ def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, 
                 "pid_path": str(fail_pid),
                 "log_path": str(fail_log),
                 "status": "launched",
+                **_process_identity(102),
             },
         ],
     )
@@ -3162,7 +3462,10 @@ def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonica
 
 
 def test_hparam_monitor_marks_clean_exit_finished_without_launch_manifest(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+    )
     _write_process_identity(rows[0]["pid_path"])
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
     workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
@@ -3207,6 +3510,7 @@ def test_hparam_monitor_keeps_failed_status_after_failure_evidence_disappears(tm
                 "pid_path": str(dead_pid),
                 "log_path": str(fail_log),
                 "status": "launched",
+                **_process_identity(),
             }
         ],
     )
@@ -3233,6 +3537,7 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
                 "pid_path": str(dead_pid),
                 "status": "launched",
                 "launched_at": "2026-01-01T00:00:00Z",
+                **_process_identity(),
             },
             {"run_id": "run-001", "version": "v1", "status": "pending"},
         ],
@@ -3262,7 +3567,15 @@ def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):
     _write_process_identity(pid_path)
     _write_runtime_rows(
         tmp_path,
-        [{"run_id": "running", "version": "v1", "pid_path": str(pid_path), "status": "launched"}],
+        [
+            {
+                "run_id": "running",
+                "version": "v1",
+                "pid_path": str(pid_path),
+                "status": "launched",
+                **_process_identity(),
+            }
+        ],
     )
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda _row, _identity: True)
 
@@ -3389,7 +3702,15 @@ def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeyp
     _write_process_identity(pid_path)
     _write_runtime_rows(
         tmp_path,
-        [{"run_id": "running", "version": "v1", "pid_path": str(pid_path), "status": "launched"}],
+        [
+            {
+                "run_id": "running",
+                "version": "v1",
+                "pid_path": str(pid_path),
+                "status": "launched",
+                **_process_identity(),
+            }
+        ],
     )
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda _row, _identity: True)
     monkeypatch.setattr(run_evidence, "gpu_summary", lambda row, pid: "123, GPU-1, 1024")
@@ -3409,7 +3730,15 @@ def test_hparam_monitor_health_classifies_data_loading_from_io_delta(tmp_path: P
     _write_process_identity(pid_path)
     rows = _write_runtime_rows(
         tmp_path,
-        [{"run_id": "running", "version": "v1", "pid_path": str(pid_path), "status": "launched"}],
+        [
+            {
+                "run_id": "running",
+                "version": "v1",
+                "pid_path": str(pid_path),
+                "status": "launched",
+                **_process_identity(),
+            }
+        ],
     )
     rows[0].update({"status": "running", "io_read_bytes": 100, "io_write_bytes": 50, "checkpoint_count": 0})
     manifests.write_rows(tmp_path / "run_status.tsv", rows)
@@ -3445,7 +3774,13 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
     _write_runtime_rows(
         tmp_path,
         [
-            {"run_id": "stalled", "version": "v1", "pid_path": str(pid_path), "status": "launched"},
+            {
+                "run_id": "stalled",
+                "version": "v1",
+                "pid_path": str(pid_path),
+                "status": "launched",
+                **_process_identity(),
+            },
             {
                 "run_id": "remote",
                 "version": "v2",
@@ -3453,6 +3788,7 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
                 "host": "baichuan3",
                 "pid_path": str(pid_path),
                 "status": "launched",
+                **_process_identity(),
             },
         ],
     )
@@ -3483,7 +3819,7 @@ def test_hparam_monitor_remote_pid_probe_failure_is_unknown_until_recovery(tmp_p
                 "target": "ssh",
                 "host": "unit-host",
                 "status": "running",
-                "pid": "123",
+                **_process_identity(),
             }
         ],
     )
@@ -3556,7 +3892,7 @@ def test_hparam_monitor_requires_certain_remote_process_absence_before_clean_fin
                 "target": "ssh",
                 "host": "unit-host",
                 "status": "running",
-                "pid": "123",
+                **_process_identity(),
             }
         ],
     )
@@ -3622,7 +3958,15 @@ def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypat
     _write_process_identity(pid_path)
     rows = _write_runtime_rows(
         tmp_path,
-        [{"run_id": "running", "version": "v1", "pid_path": str(pid_path), "status": "launched"}],
+        [
+            {
+                "run_id": "running",
+                "version": "v1",
+                "pid_path": str(pid_path),
+                "status": "launched",
+                **_process_identity(),
+            }
+        ],
     )
     rows[0].update(
         {

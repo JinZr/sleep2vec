@@ -1083,13 +1083,30 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         )
     if previous.get("status") in TERMINAL_STATUSES:
         raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
-    remote_host = str(previous["host"]) if previous.get("target") == "ssh" else None
+    target = previous.get("target")
+    if target not in {"local", "ssh"}:
+        raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
+    host = previous.get("host")
+    if target == "ssh" and (not isinstance(host, str) or not host.strip()):
+        raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+    populated_process_fields = {field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")}
+    if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
+        missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
+        raise ValueError(f"Canonical run has partial process identity for {run_id}; missing: {missing}")
+    remote_host = str(host) if target == "ssh" else None
     exp_io.validate_managed_output_paths(
         workspace,
         [previous["pid_path"]],
         remote=remote_host,
     )
-    process_identity = evidence.read_process_identity(previous.get("pid_path"), previous)
+    if populated_process_fields:
+        process_identity = evidence.read_process_identity(previous.get("pid_path"), previous)
+    else:
+        process_identity = evidence.read_process_identity(
+            previous.get("pid_path"),
+            previous,
+            expected_script=previous.get("script"),
+        )
     if process_identity is None:
         raise ValueError(f"No recorded PID for run_id: {run_id}")
     for field in PROCESS_IDENTITY_FIELDS:

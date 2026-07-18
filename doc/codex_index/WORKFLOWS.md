@@ -171,8 +171,9 @@ owners. Remote run matrices are version-checked projections of
 `run_manifest.tsv`, and experiment finalization publishes the report before
 the terminal experiment manifest. Managed launches create a dedicated process
 group and freeze its PID, process-group id, and OS start token. Launch timeout
-is unresolved evidence rather than permission to retry; stop verifies that
-identity, signals the full group, and records `stopped` only after exit.
+is unresolved evidence rather than permission to retry; a timeout-derived first
+fill also matches the live leader command to the frozen launch script. Stop
+verifies that identity, signals the full group, and records `stopped` only after exit.
 Lifecycle-enabled scripts own their terminal success/failure commit, so their
 uncommitted process-group disappearance is failure rather than inferred
 success. Hparam launch scripts instead leave terminal inference to their

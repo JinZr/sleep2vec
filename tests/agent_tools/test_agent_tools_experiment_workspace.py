@@ -319,6 +319,10 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     pid_path = Path(row["pid_path"])
     identity = {"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}
     pid_path.write_text(json.dumps(identity) + "\n")
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": row["step_id"], "run_id": row["run_id"], **identity}],
+    )
     monkeypatch.setattr(hparam_runtime.evidence, "stop_process_group", lambda *_args: None)
 
     with pytest.raises(ValueError, match="reason"):
