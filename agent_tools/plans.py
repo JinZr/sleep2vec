@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from . import (
     run_artifacts as artifacts,
     schema_map,
 )
-from .adapters import composite_adapter, get_adapter
+from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
 from .configs import config_summary
 from .decisions import (
     DecisionIssue,
@@ -134,6 +135,15 @@ def _source_recipe_contract_issues(
     policy: dict,
     source_layer: str,
 ) -> list[DecisionIssue]:
+    if task and task not in SUPPORTED_TASKS:
+        return [
+            _recipe_contract_issue(
+                "task",
+                f"Unsupported task: {task}",
+                task,
+                source_layer,
+            )
+        ]
     allowed_top_level = _recipe_fields_for_task(task)
     if allowed_top_level is None:
         return []
@@ -312,14 +322,33 @@ def evaluate_recipe(
     materialization_issues = _materialize_decisions(recipe, recipe_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
 
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    source_config = inputs.get("config")
+    source_config_path = resolve_repo_path(source_config)
+    source_config_bytes = None
+    if source_config_path is not None and source_config_path.is_file():
+        source_config_bytes = source_config_path.read_bytes()
+
     config_error = None
     try:
-        cfg = context.load_config_summary_for_recipe(recipe)
+        cfg = context.load_config_summary_for_recipe(recipe, config_bytes=source_config_bytes)
     except Exception as exc:
         if "config" not in user_decisions:
             raise
         cfg = None
         config_error = str(exc)
+    config_changed_during_validation = False
+    if source_config_bytes is not None:
+        try:
+            config_changed_during_validation = (
+                source_config_path is None or source_config_path.read_bytes() != source_config_bytes
+            )
+        except OSError:
+            config_changed_during_validation = True
+        if cfg is not None and not config_changed_during_validation:
+            cfg = dict(cfg)
+            cfg["_source_config_bytes"] = source_config_bytes
+            cfg["_source_config_sha256"] = hashlib.sha256(source_config_bytes).hexdigest()
     report = evaluate_consultation_gates(
         recipe.get("task"),
         recipe,
@@ -328,6 +357,19 @@ def evaluate_recipe(
         policy,
     )
     report = _append_issues(report, materialization_issues)
+    if config_changed_during_validation:
+        report = _append_issues(
+            report,
+            [
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "config",
+                    "Config changed while consultation gates were validating it.",
+                    None,
+                    {"config": str(source_config), "preflight_before_workspace": True},
+                )
+            ],
+        )
     recipe_adapter = get_adapter(recipe.get("task"))
     if (
         recipe_adapter is not None
@@ -610,6 +652,15 @@ def build_plan(
         expected_base_json = json.dumps(expected_base_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
         if actual_base_json != expected_base_json:
             raise ValueError("Plan base recipe does not match the bound adaptive recipe.")
+    validated_config_bytes = cfg.get("_source_config_bytes") if isinstance(cfg, dict) else None
+    validated_config_sha256 = cfg.get("_source_config_sha256") if isinstance(cfg, dict) else None
+    if report.exit_code == 0:
+        if not isinstance(validated_config_bytes, bytes) or not isinstance(validated_config_sha256, str):
+            raise ValueError("Successful plan preflight did not bind the source config bytes.")
+        if hashlib.sha256(validated_config_bytes).hexdigest() != validated_config_sha256:
+            raise ValueError("Validated source config bytes do not match their SHA-256.")
+        if source_config_sha256 is not None and source_config_sha256 != validated_config_sha256:
+            raise ValueError("Source config does not match the externally bound SHA-256.")
     if _has_output_artifact_issue(report):
         return report
     if report.exit_code != 0:
@@ -641,7 +692,8 @@ def build_plan(
             recipe,
             out,
             unlock_final_test=unlock_final_test,
-            source_config_sha256=source_config_sha256,
+            source_config_bytes=validated_config_bytes,
+            source_config_sha256=validated_config_sha256,
         )
     else:
         root = experiment_root(recipe)
@@ -655,11 +707,7 @@ def build_plan(
         run_dir = out / "runs" / f"{run_id}--{run_name}"
         run_dir.mkdir(parents=True, exist_ok=True)
         config_path = run_dir / "config.yaml"
-        source_config = (recipe.get("inputs") or {}).get("config")
-        source_path = resolve_repo_path(source_config)
-        if source_path is None or not source_path.exists():
-            raise ValueError(f"Cannot freeze missing config: {source_config}")
-        config_path.write_text(source_path.read_text())
+        config_path.write_bytes(validated_config_bytes)
         runtime_recipe = copy.deepcopy(recipe)
         runtime_recipe.setdefault("inputs", {})["config"] = str(config_path)
         runtime_recipe.setdefault("artifacts", {})["version_name"] = version

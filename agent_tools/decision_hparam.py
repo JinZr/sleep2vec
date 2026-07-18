@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import re
 from typing import Any
@@ -9,6 +10,8 @@ from .adaptive_proposals import validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import multilabel_sidecar_issue
 from .models import REPO_ROOT
+
+DEFAULT_ADAPTIVE_SUGGEST_STRATEGY = "agent_proposal"
 
 _HPARAM_EXECUTION_FIELDS = {
     "target",
@@ -137,7 +140,7 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                 )
             )
     suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
-    strategy = suggest.get("strategy", "best_neighborhood")
+    strategy = suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY)
     if not isinstance(strategy, str) or strategy not in {"best_neighborhood", "agent_proposal"}:
         issues.append(
             _contract_issue(
@@ -156,7 +159,8 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                 source_layer,
             )
         )
-    if strategy == "agent_proposal":
+    # A disabled adaptive block never starts the suggestion protocol.
+    if strategy == "agent_proposal" and adaptive.get("enabled") is True:
         for field in _HPARAM_AGENT_PROPOSAL_REQUIRED_FIELDS:
             value = adaptive.get(field)
             if field == "objective_metric" and field in adaptive and value is not None and not isinstance(value, str):
@@ -347,20 +351,16 @@ def hparam_tune_issues(
     max_runs = search.get("max_runs")
     if max_runs in (None, ""):
         issues.append(needs_issue("hparam_budget", "search.max_runs is required.", high_impact))
-    else:
-        try:
-            if int(max_runs) <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "hparam_budget",
-                    "search.max_runs must be a positive integer.",
-                    None,
-                    {"max_runs": max_runs},
-                )
+    elif type(max_runs) is not int or max_runs <= 0:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "hparam_budget",
+                "search.max_runs must be a positive integer.",
+                None,
+                {"max_runs": max_runs},
             )
+        )
     if evaluation.get("selection_split") == "test":
         issues.append(
             DecisionIssue(
@@ -650,7 +650,46 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
                 {"max_trials_total": adaptive.get("max_trials_total")},
             )
         )
+    for field in ("enabled", "test_feedback_for_selection"):
+        if field in adaptive and type(adaptive[field]) is not bool:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    f"adaptive.{field}",
+                    f"adaptive.{field} must be a boolean.",
+                    None,
+                    {field: adaptive.get(field)},
+                )
+            )
     replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
+    for field in ("enabled", "allow_running_stop"):
+        if field in replacement and type(replacement[field]) is not bool:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    f"adaptive.replacement.{field}",
+                    f"adaptive.replacement.{field} must be a boolean.",
+                    None,
+                    {field: replacement.get(field)},
+                )
+            )
+    for field in ("grace_epochs", "grace_minutes", "kill_margin"):
+        value = replacement.get(field)
+        if field in replacement and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value < 0
+        ):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    f"adaptive.replacement.{field}",
+                    f"adaptive.replacement.{field} must be a finite non-negative number.",
+                    None,
+                    {field: value},
+                )
+            )
     if adaptive.get("enabled") is not True:
         return issues
     objective = str(adaptive.get("objective_metric") or "test_auroc")
@@ -669,7 +708,8 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
                 {"objective_metric": objective},
             )
         )
-    if adaptive.get("objective_mode", "max") not in {"max", "min"}:
+    objective_mode = adaptive.get("objective_mode", "max")
+    if not isinstance(objective_mode, str) or objective_mode not in {"max", "min"}:
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
@@ -682,10 +722,7 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
     for adaptive_field in ("max_rounds", "max_runs_total", "round_size", "poll_seconds"):
         if adaptive_field not in adaptive:
             continue
-        try:
-            if int(adaptive[adaptive_field]) <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
+        if type(adaptive[adaptive_field]) is not int or adaptive[adaptive_field] <= 0:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
@@ -693,20 +730,6 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
                     f"adaptive.{adaptive_field} must be a positive integer.",
                     None,
                     {adaptive_field: adaptive.get(adaptive_field)},
-                )
-            )
-    if replacement and replacement.get("kill_margin") is not None:
-        try:
-            if float(replacement["kill_margin"]) < 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "adaptive.replacement.kill_margin",
-                    "adaptive.replacement.kill_margin must be a non-negative number.",
-                    None,
-                    {"kill_margin": replacement.get("kill_margin")},
                 )
             )
     return issues

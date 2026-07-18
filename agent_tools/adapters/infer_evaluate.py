@@ -108,6 +108,18 @@ class InferEvaluateAdapter(TaskAdapter):
                         {"config_path": config_summary.get("config_path")},
                     )
                 )
+            # Only the structural config-family marker is a routing gate; variant_guess can be path-derived.
+            config_variant = config_summary.get("authoritative_variant")
+            if config_variant is not None and recipe.get("variant") != config_variant:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "variant",
+                        f"Config family requires variant={config_variant}.",
+                        None,
+                        {"config_variant": config_variant, "recipe_variant": recipe.get("variant")},
+                    )
+                )
         if inputs.get("eval_split") == "test":
             if evaluation.get("final_test_unlocked") is not True:
                 issues.append(

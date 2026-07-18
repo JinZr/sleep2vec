@@ -544,3 +544,28 @@ def test_missing_high_impact_label_requires_user_input():
 
     assert report.status == DecisionStatus.NEEDS_USER_INPUT
     assert any(issue.field == "label_name" for issue in report.issues)
+
+
+def test_consultation_policy_rejects_tasks_without_registered_adapters():
+    policy = yaml.safe_load(yaml.safe_dump(load_consultation_policy()))
+    policy["high_impact_fields"][0]["required_for_tasks"].append("ghost")
+
+    report = evaluate_consultation_gates("finetune", {"task": "finetune"}, None, {}, policy)
+
+    assert report.exit_code == 1
+    issue = next(issue for issue in report.issues if issue.field == "consultation_policy")
+    assert issue.evidence["unknown_tasks"] == ["ghost"]
+    assert issue.evidence["missing_tasks"] == []
+
+
+def test_consultation_policy_rejects_registered_tasks_without_policy_coverage():
+    policy = yaml.safe_load(yaml.safe_dump(load_consultation_policy()))
+    for field in policy["high_impact_fields"]:
+        field["required_for_tasks"] = [task for task in field["required_for_tasks"] if task != "sleep2stat"]
+
+    report = evaluate_consultation_gates("finetune", {"task": "finetune"}, None, {}, policy)
+
+    assert report.exit_code == 1
+    issue = next(issue for issue in report.issues if issue.field == "consultation_policy")
+    assert issue.evidence["unknown_tasks"] == []
+    assert issue.evidence["missing_tasks"] == ["sleep2stat"]

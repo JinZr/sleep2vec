@@ -72,7 +72,8 @@ class HparamTuneAdapter(TaskAdapter):
         out: Path,
         *,
         unlock_final_test: bool,
-        source_config_sha256: str | None = None,
+        source_config_bytes: bytes,
+        source_config_sha256: str,
     ) -> None:
         from .. import plan_hparam
 
@@ -80,6 +81,7 @@ class HparamTuneAdapter(TaskAdapter):
             recipe,
             out,
             unlock_final_test=unlock_final_test,
+            source_config_bytes=source_config_bytes,
             source_config_sha256=source_config_sha256,
         )
 
@@ -109,6 +111,7 @@ class HparamTuneAdapter(TaskAdapter):
             out / "run_all.sh",
             out / "validation.sh",
             out / "recipe.resolved.yaml",
+            out / "config.source.yaml",
         ]
         offset = next_run_index(recipe)
         for idx, combo in enumerate(plan_hparam.hparam_combos(recipe)):

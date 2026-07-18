@@ -73,3 +73,12 @@ def test_assign_ranks_sinks_unparseable_scores():
     ranked = artifacts.assign_ranks(rows, key="score", reverse=True)
 
     assert [row["run_id"] for row in ranked] == ["run-002", "run-000", "run-001"]
+
+
+def test_assign_ranks_sinks_nonfinite_scores_in_both_modes():
+    for reverse, expected_valid in ((True, ["run-002", "run-000"]), (False, ["run-000", "run-002"])):
+        rows = _rows(["0.5", "nan", "0.9", "inf", "-inf"])
+
+        ranked = artifacts.assign_ranks(rows, key="score", reverse=reverse)
+
+        assert [row["run_id"] for row in ranked] == [*expected_valid, "run-001", "run-003", "run-004"]

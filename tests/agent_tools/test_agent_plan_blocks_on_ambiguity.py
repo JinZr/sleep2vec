@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -10,7 +11,7 @@ from agent_tool_test_helpers import survival_config_payload, write_finetune_reci
 import pytest
 import yaml
 
-from agent_tools import experiments, plans
+from agent_tools import configs, experiments, plans
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import collect_runs
@@ -27,6 +28,14 @@ def _run(*args: str) -> subprocess.CompletedProcess:
 
 def _first_run(plan_dir: Path) -> dict:
     return json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+
+
+def _bound_config_summary(recipe: dict) -> dict:
+    config_bytes = Path(recipe["inputs"]["config"]).read_bytes()
+    return {
+        "_source_config_bytes": config_bytes,
+        "_source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+    }
 
 
 def _hparam_recipe(
@@ -1364,6 +1373,90 @@ def test_variant_controls_generated_finetune_module(tmp_path: Path):
     assert "--no-test-after-fit" in script
 
 
+def test_path_based_variant_guess_does_not_override_recipe_routing(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path / "sleep2vec2", variant="sleep2vec")
+    output_dir = tmp_path / "sleep2vec2" / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    assert "python -m sleep2vec.finetune" in (output_dir / "run.sh").read_text()
+
+
+def test_finetune_plan_freezes_config_bytes_validated_before_workspace_setup(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    validated_bytes = config.read_bytes()
+    real_ensure_workspace = plans.ensure_experiment_workspace
+
+    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path):
+        payload = yaml.safe_load(config.read_text())
+        payload["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
+        config.write_text(yaml.safe_dump(payload, sort_keys=False))
+        return real_ensure_workspace(recipe_payload, output_dir)
+
+    monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
+    output_dir = tmp_path / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    frozen_config = Path(_first_run(output_dir)["config"])
+    assert frozen_config.read_bytes() == validated_bytes
+    assert yaml.safe_load(frozen_config.read_text())["finetune"]["task"]["monitor"] == "val_ahi_pearson"
+
+
+def test_finetune_plan_validates_captured_bytes_during_aba_source_swap(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    validated_bytes = config.read_bytes()
+    swapped = yaml.safe_load(config.read_text())
+    swapped["finetune"]["task"]["output_dim"] = 31
+    swapped_bytes = yaml.safe_dump(swapped, sort_keys=False).encode()
+    real_summary = configs.finetune_summary_body
+
+    def summarize_while_source_is_swapped(config_path: Path, **kwargs):
+        config.write_bytes(swapped_bytes)
+        try:
+            return real_summary(config_path, **kwargs)
+        finally:
+            config.write_bytes(validated_bytes)
+
+    monkeypatch.setattr(configs, "finetune_summary_body", summarize_while_source_is_swapped)
+    output_dir = tmp_path / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    frozen_config = Path(_first_run(output_dir)["config"])
+    assert frozen_config.read_bytes() == validated_bytes
+    assert yaml.safe_load(frozen_config.read_text())["finetune"]["task"]["output_dim"] == 30
+
+
+def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    base_recipe = Path(yaml.safe_load(recipe.read_text())["base_recipe"])
+    config = Path(yaml.safe_load(base_recipe.read_text())["inputs"]["config"])
+    validated_bytes = config.read_bytes()
+    real_ensure_workspace = plans.ensure_experiment_workspace
+
+    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path):
+        payload = yaml.safe_load(config.read_text())
+        payload["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
+        config.write_text(yaml.safe_dump(payload, sort_keys=False))
+        return real_ensure_workspace(recipe_payload, output_dir)
+
+    monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
+    output_dir = tmp_path / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    assert (output_dir / "config.source.yaml").read_bytes() == validated_bytes
+    run_config = Path(_first_run(output_dir)["config"])
+    assert yaml.safe_load(run_config.read_text())["finetune"]["task"]["monitor"] == "val_ahi_pearson"
+
+
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_model_variant_controls_generated_hparam_module(tmp_path: Path, variant: str):
     recipe = _hparam_recipe(tmp_path, variant=variant)
@@ -1534,7 +1627,7 @@ def test_pretrain_and_adapt_are_not_runnable_recipe_tasks(tmp_path: Path):
 
         assert result.returncode == 1
         assert f"Unsupported task: {task}" in result.stdout
-        assert (output_dir / "plan.blocked.md").exists()
+        assert not output_dir.exists()
         assert not (output_dir / "run.sh").exists()
 
 
@@ -2550,7 +2643,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     }
     recipe["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, None, report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     marker = tmp_path / "runtime.txt"
     runtime_code = (
         "import sys; from pathlib import Path; "
@@ -2587,7 +2680,7 @@ def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(t
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, None, report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", "import sys; sys.exit(7)"))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
@@ -2606,7 +2699,7 @@ def test_non_hparam_run_script_propagates_terminal_commit_failure(tmp_path: Path
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, None, report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     runtime_code = "import sys; from pathlib import Path; (Path(sys.argv[1]) / 'run_manifest.tsv').unlink()"
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", runtime_code, workspace))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
@@ -2626,7 +2719,7 @@ def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, m
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, None, report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     marker = tmp_path / "runtime.txt"
     command = " ".join(
         shlex_quote(str(value))

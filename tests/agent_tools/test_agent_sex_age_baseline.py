@@ -226,6 +226,84 @@ def test_sex_age_baseline_config_summary_reports_backend_and_variant(tmp_path: P
     assert summary["data"]["finetune_data_index"]
 
 
+def test_sex_age_config_family_blocks_root_finetune_variant(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    recipe = _finetune_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["variant"] = "sleep2vec"
+    _write_yaml(recipe, payload)
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 1
+    assert any(
+        issue.field == "variant" and "requires variant=sex_age_baseline" in issue.message for issue in report.issues
+    )
+
+
+def test_sex_age_config_family_blocks_root_infer_and_evaluate_variants(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("checkpoint")
+    for task in ("infer", "evaluate"):
+        case = tmp_path / task
+        case.mkdir()
+        recipe = _infer_recipe(case, config, ckpt)
+        payload = yaml.safe_load(recipe.read_text())
+        payload["task"] = task
+        payload["variant"] = "sleep2vec"
+        payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+        _write_yaml(recipe, payload)
+
+        _recipe, _cfg, report = evaluate_recipe(recipe)
+
+        assert report.exit_code == 1
+        assert any(
+            issue.field == "variant" and "requires variant=sex_age_baseline" in issue.message for issue in report.issues
+        )
+
+
+def test_sex_age_config_family_blocks_root_hparam_variant(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    base = _finetune_recipe(tmp_path, config)
+    recipe = _write_yaml(
+        tmp_path / "hparam_wrong_variant.yaml",
+        {
+            "name": "unit_sex_age_hparam_wrong_variant",
+            "task": "hparam_tune",
+            "variant": "sleep2vec",
+            "base_recipe": str(base),
+            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
+            "evaluation_policy": {
+                "selection_metric": "val_c_index",
+                "selection_mode": "max",
+                "selection_split": "val",
+                "external_test_locked": True,
+                "test_after_fit": False,
+                "final_eval_split": "validation",
+                "final_test_unlocked": False,
+                "require_manual_unlock_for_final_test": True,
+            },
+            "decisions": {
+                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
+                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 1
+    assert any(
+        issue.field == "base_finetune.variant" and "requires variant=sex_age_baseline" in issue.message
+        for issue in report.issues
+    )
+
+
 def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _finetune_recipe(tmp_path, config)

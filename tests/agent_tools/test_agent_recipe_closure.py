@@ -128,6 +128,22 @@ def test_recipe_rejects_unknown_fields_in_existing_owner_sections(
     assert issue.evidence["preflight_before_workspace"] is True
 
 
+def test_recipe_rejects_unregistered_task_at_the_recipe_boundary(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = "not_registered"
+    payload["decisions"]["task"] = {"value": "not_registered", "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    issue = next(issue for issue in report.blocking_issues() if issue.field == "task")
+    assert report.exit_code == 1
+    assert issue.message == "Unsupported task: not_registered"
+    assert issue.evidence["source_layer"] == "effective"
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
 @pytest.mark.parametrize("section", ["inputs", "runtime", "decisions"])
 def test_recipe_rejects_non_mapping_sections_before_consumers_run(tmp_path: Path, section: str):
     recipe = write_finetune_recipe(tmp_path)

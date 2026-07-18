@@ -76,6 +76,8 @@ and this table, so a module can't silently slide into "mixed".
 
 All current reverse edges are top-level imports, tolerated and frozen by
 `KNOWN_DOMAIN_IMPORT_EXEMPTIONS`. The guard fails on any new one.
+The same guard scans every `adapters/` module and rejects imports into the
+`L2_MODULES` orchestration set, including multi-dot relative spellings.
 
 | Source → Target | Layer | Why tolerated | Future removal |
 |---|---|---|---|
@@ -88,7 +90,7 @@ All current reverse edges are top-level imports, tolerated and frozen by
 | `index_csv → domain.index_csv` | shim → domain | frozen top-level import path | Drop when the shim is retired |
 | `domain.index_csv → configs` | domain → L2 | index_csv is a config-summary consumer, not a leaf; configs never imports it back, so the edge is one-way | Would need index summary to take config_summary as an argument |
 
-Documented but **not** guard-monitored (not kernel/mixed → domain):
+Legal edges outside the reverse-edge table:
 - `adapters/config_providers → domain.sex_age_summary` — L1 → L0, a legal
   direction.
 - `markdown → decisions`, `experiment_workspace → experiment_io` — core → core.

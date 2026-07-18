@@ -18,6 +18,7 @@ The guard scans KERNEL_MODULES | MIXED_MODULES for imports that reach into
 DOMAIN_MODULES. Pure-kernel modules must stay domain-free (no exemptions);
 the mixed bridges carry a fixed set of grandfathered edges
 (KNOWN_DOMAIN_IMPORT_EXEMPTIONS) that the guard allows but freezes from growing.
+It also scans every adapters/ module so the L1 layer cannot import L2 orchestration.
 """
 
 from __future__ import annotations
@@ -87,6 +88,10 @@ MIXED_MODULES: frozenset[str] = frozenset(
         "cli",
     }
 )
+
+#: L2 orchestration modules. The adapter guard uses this subset to enforce the
+#: documented L2 -> L1 direction without forbidding legal adapter imports of L0 leaves.
+L2_MODULES: frozenset[str] = frozenset({"configs", "decision_rules", "decisions", "plan_context", "plans"})
 
 #: Grandfathered (source, target) import edges from a scanned module into a
 #: domain module. The guard permits exactly these and fails on any new one.

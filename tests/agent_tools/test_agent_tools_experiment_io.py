@@ -87,6 +87,15 @@ def test_local_conditional_replace_requires_expected_digest(tmp_path: Path):
     assert path.stat().st_mode & 0o777 == 0o640
 
 
+def test_local_conditional_create_never_replaces_an_existing_file(tmp_path: Path):
+    path = tmp_path / "state.tsv"
+
+    assert experiment_io.conditional_atomic_replace_text_at(path, "first\n", None)
+    assert path.read_text() == "first\n"
+    assert not experiment_io.conditional_atomic_replace_text_at(path, "second\n", None)
+    assert path.read_text() == "first\n"
+
+
 def test_remote_conditional_replace_reports_conflict_and_writes_exact_bytes(monkeypatch):
     calls = []
 
@@ -107,6 +116,22 @@ def test_remote_conditional_replace_reports_conflict_and_writes_exact_bytes(monk
     assert "os.fchmod" in command[-1]
     assert "os.replace" in command[-1]
     assert kwargs["input"] == b"new\r\n"
+
+
+def test_remote_conditional_create_uses_missing_file_contract(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
+
+    assert experiment_io.conditional_atomic_replace_text_at("/remote/state.tsv", "new\n", None, remote="host")
+    command, kwargs = calls[0]
+    assert "expect_missing = not expected" in command[-1]
+    assert "os.link(temporary, path)" in command[-1]
+    assert kwargs["input"] == b"new\n"
 
 
 @pytest.mark.parametrize("returncode", [1, 255])

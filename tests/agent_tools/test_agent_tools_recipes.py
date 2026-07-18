@@ -287,6 +287,17 @@ def _adaptive_contract_fields(*, parameters: dict, adaptive: dict) -> set[str]:
     return {issue.field for issue in issues}
 
 
+def _adaptive_semantic_issue_fields(tmp_path: Path, adaptive: dict, *, max_runs=1) -> set[str]:
+    payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
+    payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
+    payload["search"]["max_runs"] = max_runs
+    payload["adaptive"] = adaptive
+    path = tmp_path / "hparam.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    _recipe, _cfg, report = evaluate_recipe(path)
+    return {issue.field for issue in report.blocking_issues()}
+
+
 _AGENT_PROPOSAL_REQUIRED_VALUES = {
     "objective_metric": "val_ahi_pearson",
     "objective_mode": "max",
@@ -296,14 +307,124 @@ _AGENT_PROPOSAL_REQUIRED_VALUES = {
 }
 
 
-@pytest.mark.parametrize("suggest", [{}, {"strategy": "best_neighborhood"}])
-def test_best_neighborhood_contract_keeps_existing_parameter_value_semantics(suggest: dict):
+def _valid_adaptive_values() -> dict:
+    return {
+        "enabled": True,
+        "objective_metric": "val_ahi_pearson",
+        "objective_mode": "max",
+        "max_rounds": 2,
+        "max_runs_total": 4,
+        "round_size": 1,
+        "poll_seconds": 1,
+        "replacement": {
+            "enabled": True,
+            "allow_running_stop": True,
+            "grace_epochs": 1,
+            "grace_minutes": 1,
+            "kill_margin": 0.05,
+        },
+        "suggest": {"strategy": "best_neighborhood"},
+    }
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "2"])
+def test_hparam_budget_requires_an_exact_positive_integer(tmp_path: Path, value):
+    fields = _adaptive_semantic_issue_fields(tmp_path, _valid_adaptive_values(), max_runs=value)
+
+    assert "hparam_budget" in fields
+
+
+@pytest.mark.parametrize("field", ["max_rounds", "max_runs_total", "round_size", "poll_seconds"])
+@pytest.mark.parametrize("value", [True, 1.5, "2"])
+def test_adaptive_integer_fields_require_exact_positive_integers(tmp_path: Path, field: str, value):
+    adaptive = _valid_adaptive_values()
+    adaptive[field] = value
+
+    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
+
+    assert f"adaptive.{field}" in fields
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("enabled", "false"),
+        ("test_feedback_for_selection", "false"),
+    ],
+)
+def test_adaptive_flags_require_booleans(tmp_path: Path, field: str, value):
+    adaptive = _valid_adaptive_values()
+    adaptive[field] = value
+
+    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
+
+    assert f"adaptive.{field}" in fields
+
+
+@pytest.mark.parametrize("field", ["enabled", "allow_running_stop"])
+def test_adaptive_replacement_flags_require_booleans(tmp_path: Path, field: str):
+    adaptive = _valid_adaptive_values()
+    adaptive["replacement"][field] = "false"
+
+    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
+
+    assert f"adaptive.replacement.{field}" in fields
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("grace_epochs", -1),
+        ("grace_minutes", "invalid"),
+        ("kill_margin", float("nan")),
+    ],
+)
+def test_adaptive_replacement_thresholds_must_be_finite_and_non_negative(tmp_path: Path, field: str, value):
+    adaptive = _valid_adaptive_values()
+    adaptive["replacement"][field] = value
+
+    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
+
+    assert f"adaptive.replacement.{field}" in fields
+
+
+@pytest.mark.parametrize("objective_mode", [["max"], {"value": "max"}])
+def test_malformed_adaptive_objective_mode_returns_a_structured_issue(tmp_path: Path, objective_mode):
+    adaptive = _valid_adaptive_values()
+    adaptive["objective_mode"] = objective_mode
+
+    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
+
+    assert "adaptive.objective_mode" in fields
+
+
+def test_explicit_best_neighborhood_contract_keeps_existing_parameter_value_semantics():
     fields = _adaptive_contract_fields(
         parameters={"runtime.lr": [[1, 2], [3, 4]]},
-        adaptive={"enabled": True, "suggest": suggest},
+        adaptive={"enabled": True, "suggest": {"strategy": "best_neighborhood"}},
     )
 
     assert not fields
+
+
+def test_omitted_strategy_defaults_to_agent_proposal():
+    fields = _adaptive_contract_fields(
+        parameters={"runtime.lr": [1e-6, 2e-6]},
+        adaptive={
+            "enabled": True,
+            **_AGENT_PROPOSAL_REQUIRED_VALUES,
+            "suggest": {"bounds": {"runtime.lr": [5e-7, 1e-5]}},
+        },
+    )
+
+    assert not fields
+
+
+@pytest.mark.parametrize("adaptive", [{}, {"enabled": False}])
+def test_inactive_adaptive_block_does_not_start_default_agent_proposal_contract(adaptive: dict):
+    issues = hparam_recipe_contract_issues({"adaptive": adaptive}, source_layer="effective")
+
+    assert not issues
 
 
 def test_agent_proposal_contract_accepts_expanded_numeric_bounds_and_categories():
@@ -422,10 +543,6 @@ def test_agent_proposal_rejects_non_string_objective_metric(objective_metric):
             {"suggest": {"strategy": "best_neighborhood", "bounds": {"runtime.lr": [1e-7, 1e-5]}}},
             "adaptive.suggest.bounds",
         ),
-        (
-            {"suggest": {"bounds": {"runtime.lr": [1e-7, 1e-5]}}},
-            "adaptive.suggest.bounds",
-        ),
     ],
 )
 def test_adaptive_suggest_strategy_and_bounds_are_closed(adaptive: dict, field: str):
@@ -435,14 +552,13 @@ def test_adaptive_suggest_strategy_and_bounds_are_closed(adaptive: dict, field: 
 
 
 @pytest.mark.parametrize("replacement", [{}, {"enabled": True}, {"enabled": False, "grace_epochs": 1}, {"enabled": 0}])
-def test_agent_proposal_requires_replacement_to_be_omitted_or_strictly_disabled(replacement: dict):
+def test_default_agent_proposal_requires_replacement_to_be_omitted_or_strictly_disabled(replacement: dict):
     fields = _adaptive_contract_fields(
         parameters={"runtime.lr": [1e-6]},
         adaptive={
             "enabled": True,
             **_AGENT_PROPOSAL_REQUIRED_VALUES,
             "replacement": replacement,
-            "suggest": {"strategy": "agent_proposal"},
         },
     )
 

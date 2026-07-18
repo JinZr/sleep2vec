@@ -11,7 +11,7 @@ evaluate_recipe can never false-positive.
 import ast
 from pathlib import Path
 
-from agent_tools.adapters import all_adapters, composite_adapter, get_adapter
+from agent_tools.adapters import SUPPORTED_TASKS, all_adapters, composite_adapter, get_adapter
 from agent_tools.models import VARIANTLESS_TASKS
 
 KERNEL_MODULES = (
@@ -40,6 +40,7 @@ def test_registry_resolves_migrated_tasks():
         assert adapter.task == task
     assert get_adapter(None) is None
     assert get_adapter("") is None
+    assert SUPPORTED_TASKS == frozenset(ALL_TASKS)
 
 
 def test_requires_variant_matches_variantless_tasks():

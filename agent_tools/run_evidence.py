@@ -4,6 +4,7 @@ import calendar
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import time
@@ -11,7 +12,7 @@ from typing import Any
 
 from . import run_artifacts as artifacts, transport
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
-from .experiment_workspace import TERMINAL_STATUSES, merge_run_row
+from .experiment_workspace import PROCESS_IDENTITY_FIELDS, TERMINAL_STATUSES, merge_run_row
 from .manifests import read_json, utc_now
 from .progress import read_progress
 from .transport import SSH_TIMEOUT_SECONDS
@@ -23,6 +24,8 @@ RUN_EVIDENCE_FIELDS = {
     "gpus",
     "pid_path",
     "pid",
+    "process_group_id",
+    "process_start_token",
     "log_path",
     "log_tail",
     "log_age_seconds",
@@ -50,6 +53,51 @@ RUN_EVIDENCE_FIELDS = {
 RUN_STATUS_FIELDS = RUN_EVIDENCE_FIELDS | {"status"}
 
 
+class ProcessIdentityError(RuntimeError):
+    pass
+
+
+_PROCESS_START_TOKEN_CODE = """
+def start_token(pid):
+    try:
+        stat_text = open(f"/proc/{pid}/stat", encoding="utf-8").read()
+    except OSError:
+        if sys.platform == "darwin":
+            # macOS has no /proc; libproc exposes the kernel start timestamp without a fragile ps parse.
+            import ctypes
+
+            class ProcBsdInfo(ctypes.Structure):
+                _fields_ = [
+                    ("flags", ctypes.c_uint32), ("status", ctypes.c_uint32),
+                    ("xstatus", ctypes.c_uint32), ("pid", ctypes.c_uint32),
+                    ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
+                    ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32),
+                    ("rgid", ctypes.c_uint32), ("svuid", ctypes.c_uint32),
+                    ("svgid", ctypes.c_uint32), ("rfu", ctypes.c_uint32),
+                    ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
+                    ("nfiles", ctypes.c_uint32), ("pgid", ctypes.c_uint32),
+                    ("pjobc", ctypes.c_uint32), ("e_tdev", ctypes.c_uint32),
+                    ("e_tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32),
+                    ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64),
+                ]
+
+            info = ProcBsdInfo()
+            libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+            size = libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+            if size == ctypes.sizeof(info) and info.pid == pid:
+                return f"darwin:{info.start_sec}:{info.start_usec}"
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        return "ps:" + result.stdout.strip()
+    return "proc:" + stat_text.rsplit(")", 1)[1].split()[19]
+""".strip()
+
+
 def status_row(
     run_dir: Path,
     row: dict[str, Any],
@@ -58,8 +106,23 @@ def status_row(
     health: bool = False,
 ) -> dict[str, Any]:
     previous = previous or {}
+    process_identity = None
+    script_owned = any(source.get("script") not in (None, "") for source in (row, previous))
     try:
-        pid = read_pid(row.get("pid_path"), row)
+        if script_owned:
+            process_identity = read_process_identity(row.get("pid_path"), row)
+            pid = process_identity["pid"] if process_identity is not None else None
+            running_state = process_identity_running(row, process_identity) if process_identity is not None else False
+        else:
+            pid = read_pid(row.get("pid_path"), row)
+            running_state = process_running(row, pid) if pid is not None else False
+    except ProcessIdentityError:
+        # Corrupt, incomplete, or reused identity is confirmed unsafe evidence, not a transient probe failure.
+        observed_status = previous.get("status") or row.get("status") or "missing_pid"
+        pid = to_int(previous.get("pid") or row.get("pid"))
+        running_state = None
+        if observed_status not in TERMINAL_STATUSES:
+            observed_status = "missing_pid" if observed_status in {"planned", "pending"} else "failed"
     except RuntimeError as exc:
         observed_status = previous.get("status") or row.get("status") or "missing_pid"
         if not is_remote_row(row) and observed_status in {"planned", "pending"} and isinstance(exc.__cause__, OSError):
@@ -71,7 +134,6 @@ def status_row(
         elif observed_status in {"planned", "pending"}:
             observed_status = "missing_pid"
     else:
-        running_state = process_running(row, pid) if pid is not None else False
         observed_status = row.get("status") or "unknown"
     running = bool(running_state)
     if observed_status in TERMINAL_STATUSES:
@@ -98,12 +160,15 @@ def status_row(
     elif running:
         observed_status = "running"
     elif observed_status in {"launched", "running", "unknown_remote"}:
-        log_failed = log_has_failure(row.get("log_path"), row)
-        # A stopped remote PID is not terminal evidence until its log read is also certain.
-        if log_failed is None and is_remote_row(row):
-            observed_status = "unknown_remote"
+        if script_owned:
+            # Managed scripts commit their own terminal status; disappearance without that commit is failure.
+            observed_status = "failed"
         else:
-            observed_status = "failed" if log_failed else "finished"
+            log_failed = log_has_failure(row.get("log_path"), row)
+            if log_failed is None and is_remote_row(row):
+                observed_status = "unknown_remote"
+            else:
+                observed_status = "failed" if log_failed else "finished"
     # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
     manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
     checkpoints = [name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name]
@@ -112,8 +177,9 @@ def status_row(
         manifest, _manifest_data, checkpoints = observed_artifacts
     observation = {
         **row,
+        **(process_identity or {}),
         "status": observed_status,
-        "pid": pid or "",
+        "pid": pid or previous.get("pid") or row.get("pid") or "",
         "log_tail": log_tail(row.get("log_path"), row),
         "run_manifest": str(manifest or ""),
         "checkpoints": ";".join(checkpoints),
@@ -239,6 +305,43 @@ def read_pid(
     *,
     expected_script: str | Path | None = None,
 ) -> int | None:
+    text = _read_pid_text(path, row)
+    if text is None:
+        return None
+    if text.startswith("{"):
+        identity = _parse_process_identity(text, path)
+        if expected_script is not None:
+            state = process_identity_running(row or {}, identity)
+            if state is not True:
+                raise RuntimeError(f"Cannot verify PID {identity['pid']} process identity.")
+        return identity["pid"]
+    try:
+        pid = int(text)
+    except ValueError as exc:
+        raise RuntimeError(f"PID file is empty or invalid: {path}") from exc
+    if pid <= 0:
+        raise RuntimeError(f"PID file is empty or invalid: {path}")
+    if expected_script is not None:
+        raise ProcessIdentityError(f"PID file lacks process group identity: {path}")
+    return pid
+
+
+def read_process_identity(path: Any, row: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    text = _read_pid_text(path, row)
+    if text is None:
+        return None
+    if not text.startswith("{"):
+        try:
+            legacy_pid = int(text)
+        except ValueError as exc:
+            raise ProcessIdentityError(f"PID file is empty or invalid: {path}") from exc
+        if legacy_pid <= 0:
+            raise ProcessIdentityError(f"PID file is empty or invalid: {path}")
+        raise ProcessIdentityError(f"PID file lacks process group identity: {path}")
+    return _parse_process_identity(text, path)
+
+
+def _read_pid_text(path: Any, row: dict[str, Any] | None) -> str | None:
     if not path:
         return None
     if is_remote_row(row):
@@ -293,31 +396,108 @@ except (OSError, UnicodeError) as exc:
             text = pid_path.read_text().strip()
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(f"PID file read failed: {path}") from exc
-    try:
-        pid = int(text)
-    except ValueError as exc:
-        raise RuntimeError(f"PID file is empty or invalid: {path}") from exc
-    if pid <= 0:
+    if not text:
         raise RuntimeError(f"PID file is empty or invalid: {path}")
-    if expected_script is not None:
-        _require_process_script(pid, expected_script, row)
-    return pid
+    return text
 
 
-def _require_process_script(pid: int, expected_script: str | Path, row: dict[str, Any] | None) -> None:
-    script_path = Path(str(expected_script))
-    if not script_path.is_absolute():
-        raise RuntimeError(f"Frozen run script is not absolute: {expected_script}")
-    result = run_row_command(row or {}, f"ps -ww -p {pid} -o args=")
-    if result.returncode != 0 or not result.stdout.strip():
-        location = f" on {row['host']}" if is_remote_row(row) else ""
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"Cannot verify PID {pid} process identity{location}: {detail}")
-    process_args = result.stdout.rstrip("\r\n")
-    expected_suffix = f"bash {script_path}"
-    prefix = process_args[: -len(expected_suffix)] if process_args.endswith(expected_suffix) else ""
-    if not process_args.endswith(expected_suffix) or (prefix and prefix[-1] not in {" ", "/"}):
-        raise RuntimeError(f"PID {pid} process identity does not match frozen script: {script_path}")
+def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProcessIdentityError(f"PID file is empty or invalid: {path}") from exc
+    if not isinstance(payload, dict) or set(payload) != PROCESS_IDENTITY_FIELDS:
+        raise ProcessIdentityError(f"PID file has incomplete process group identity: {path}")
+    pid = payload.get("pid")
+    pgid = payload.get("process_group_id")
+    token = payload.get("process_start_token")
+    if (
+        type(pid) is not int
+        or type(pgid) is not int
+        or pid <= 0
+        or pgid != pid
+        or not isinstance(token, str)
+        or not token
+    ):
+        raise ProcessIdentityError(f"PID file has invalid process group identity: {path}")
+    return {"pid": pid, "process_group_id": pgid, "process_start_token": token}
+
+
+_PROCESS_PROBE_SCRIPT = "\n\n".join(
+    [
+        """
+import json
+import os
+import subprocess
+import sys
+""".strip(),
+        _PROCESS_START_TOKEN_CODE,
+        """
+
+pid = int(sys.argv[1])
+pgid = int(sys.argv[2])
+
+try:
+    leader_pgid = os.getpgid(pid)
+except ProcessLookupError:
+    leader = None
+else:
+    token = start_token(pid)
+    if token is None:
+        print(f"Cannot read process start time for PID {pid}", file=sys.stderr)
+        raise SystemExit(1)
+    leader = {"pid": pid, "process_group_id": leader_pgid, "process_start_token": token}
+
+try:
+    os.killpg(pgid, 0)
+except ProcessLookupError:
+    group_running = False
+except PermissionError:
+    group_running = True
+else:
+    group_running = True
+
+print(json.dumps({"leader": leader, "group_running": group_running}, sort_keys=True))
+""".strip(),
+    ]
+)
+
+
+def process_identity_running(row: dict[str, Any], identity: dict[str, Any]) -> bool | None:
+    _require_matching_process_identity(row, identity)
+    result = run_row_command(
+        row,
+        transport.remote_python_command(
+            _PROCESS_PROBE_SCRIPT,
+            identity["pid"],
+            identity["process_group_id"],
+        ),
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ProcessIdentityError(
+            f"Process identity probe returned malformed output for PID {identity['pid']}."
+        ) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("group_running"), bool):
+        raise ProcessIdentityError(f"Process identity probe returned malformed output for PID {identity['pid']}.")
+    leader = payload.get("leader")
+    if leader is not None:
+        if not isinstance(leader, dict) or any(
+            str(leader.get(field)) != str(identity[field]) for field in PROCESS_IDENTITY_FIELDS
+        ):
+            raise ProcessIdentityError(f"PID {identity['pid']} was reused by a different process.")
+        return True
+    return payload["group_running"]
+
+
+def _require_matching_process_identity(row: dict[str, Any], identity: dict[str, Any]) -> None:
+    for field in PROCESS_IDENTITY_FIELDS:
+        expected = row.get(field)
+        if expected not in (None, "") and str(expected) != str(identity[field]):
+            raise ProcessIdentityError(f"PID file differs from canonical {field}: {identity['pid']}")
 
 
 def process_running(row: dict[str, Any], pid: int | None) -> bool | None:
@@ -334,6 +514,102 @@ def process_running(row: dict[str, Any], pid: int | None) -> bool | None:
         os.kill(pid, 0)
     except OSError:
         return False
+    return True
+
+
+_PROCESS_STOP_SCRIPT = "\n\n".join(
+    [
+        """
+import os
+import signal
+import subprocess
+import sys
+import time
+""".strip(),
+        _PROCESS_START_TOKEN_CODE,
+        """
+
+pid = int(sys.argv[1])
+pgid = int(sys.argv[2])
+expected_token = sys.argv[3]
+timeout = float(sys.argv[4])
+
+def group_running():
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+if pgid != pid or pgid == os.getpgrp():
+    print("Refusing to signal an unsafe process group", file=sys.stderr)
+    raise SystemExit(45)
+try:
+    leader_pgid = os.getpgid(pid)
+except ProcessLookupError:
+    leader_pgid = None
+if leader_pgid is not None:
+    if leader_pgid != pgid or start_token(pid) != expected_token:
+        print("Process identity changed before stop", file=sys.stderr)
+        raise SystemExit(45)
+elif not group_running():
+    print("Managed process group is no longer running", file=sys.stderr)
+    raise SystemExit(44)
+
+os.killpg(pgid, signal.SIGTERM)
+deadline = time.monotonic() + timeout
+while group_running() and time.monotonic() < deadline:
+    time.sleep(0.05)
+if group_running():
+    print("Managed process group did not stop after SIGTERM", file=sys.stderr)
+    raise SystemExit(46)
+""".strip(),
+    ]
+)
+
+
+def stop_process_group(row: dict[str, Any], identity: dict[str, Any], *, timeout: float = 5.0) -> None:
+    _require_matching_process_identity(row, identity)
+    pid = identity["pid"]
+    pgid = identity["process_group_id"]
+    if is_remote_row(row):
+        # Verification and signal share one remote process so PID reuse cannot race a second SSH call.
+        result = run_row_command(
+            row,
+            transport.remote_python_command(
+                _PROCESS_STOP_SCRIPT,
+                pid,
+                pgid,
+                identity["process_start_token"],
+                timeout,
+            ),
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"Failed to stop remote process group {pgid} on {row['host']}: {detail}")
+        return
+    if pgid != pid or pgid == os.getpgrp():
+        raise RuntimeError(f"Refusing to signal unsafe process group: {pgid}")
+    running = process_identity_running(row, identity)
+    if running is not True:
+        raise RuntimeError(f"Cannot verify managed process group before stop: {pgid}")
+    os.killpg(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout
+    while _local_process_group_running(pgid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _local_process_group_running(pgid):
+        raise RuntimeError(f"Managed process group did not stop after SIGTERM: {pgid}")
+
+
+def _local_process_group_running(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
     return True
 
 

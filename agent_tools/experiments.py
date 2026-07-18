@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -9,14 +10,13 @@ from . import experiment_io as exp_io, experiment_tracking as tracking
 from .experiment_workspace import (
     TERMINAL_STATUSES,
     canonical_local_experiment_root,
+    commit_step_manifest,
     experiment_metadata_issues,
     experiment_readme_text,
     managed_run_key,
     merge_run_manifest,
-    merge_step_manifest,
     read_managed_yaml_mapping,
     read_run_manifest,
-    read_step_manifest,
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -123,15 +123,13 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
     if issues:
         raise ValueError("; ".join(issue["message"] for issue in issues))
     path = root / "steps" / str(step["id"]) / "step.yaml"
-    existing = read_step_manifest(root, str(step["id"]), remote=remote, allow_missing=True)
-    merged = merge_step_manifest(
-        existing or {},
-        {"step": step, "experiment_id": experiment["id"], "recipe_path": "", "plans": []},
-    )
     exp_io.validate_managed_output_paths(root, [path, root / "events.jsonl"], remote=remote)
-    if merged != existing:
-        exp_io.write_text_at(path, yaml.safe_dump(merged, sort_keys=False), remote=remote)
-    if existing is None:
+    _merged, created = commit_step_manifest(
+        root,
+        {"step": step, "experiment_id": experiment["id"], "recipe_path": "", "plans": []},
+        remote=remote,
+    )
+    if created:
         exp_io.append_event_at(root, "step_registered", {"step_id": step["id"], "phase": step["phase"]}, remote=remote)
     return path
 
@@ -161,10 +159,21 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         [target, root / "experiment.yaml", root / "events.jsonl"],
         remote=remote,
     )
-    exp_io.write_text_at(target, report_text, remote=remote)
+    target_exists = exp_io.path_exists_at(target, remote=remote)
+    target_text = exp_io.read_text_at(target, remote=remote) if target_exists else ""
+    target_sha256 = hashlib.sha256(target_text.encode()).hexdigest() if target_exists else None
+    if not exp_io.conditional_atomic_replace_text_at(target, report_text, target_sha256, remote=remote):
+        raise RuntimeError(f"Final report changed during publication: {target}")
     manifest["experiment"]["status"] = "completed"
     manifest["experiment"]["completed_at"] = utc_now()
-    exp_io.write_text_at(root / "experiment.yaml", yaml.safe_dump(manifest, sort_keys=False), remote=remote)
+    # The experiment manifest is the terminal commit, so publish it only after the report is durable.
+    if not exp_io.conditional_atomic_replace_text_at(
+        root / "experiment.yaml",
+        yaml.safe_dump(manifest, sort_keys=False),
+        hashlib.sha256(manifest_text.encode()).hexdigest(),
+        remote=remote,
+    ):
+        raise RuntimeError("Experiment manifest changed during finalization.")
     exp_io.append_event_at(root, "experiment_finalized", {"report": str(target)}, remote=remote)
     return target
 

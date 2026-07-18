@@ -44,7 +44,7 @@ def _strip_package(dotted: str) -> str | None:
     return dotted[len(prefix) :] if dotted.startswith(prefix) else None
 
 
-def _normalize_import(node: ast.AST) -> list[str]:
+def _normalize_import(node: ast.AST, source_module: str) -> list[str]:
     """Package-local dotted targets an import node reaches.
 
     Both relative and absolute intra-package forms normalize to the same names,
@@ -61,14 +61,21 @@ def _normalize_import(node: ast.AST) -> list[str]:
         # ``import agent_tools.domain.presets [as p]``
         return [local for alias in node.names if (local := _strip_package(alias.name)) is not None]
     if isinstance(node, ast.ImportFrom):
-        if node.level == 1:  # ``from .X import ...``
-            base = node.module
-        elif node.level == 0 and node.module is not None:  # ``from agent_tools.X import ...``
+        if node.level > 0:
+            package_parts = source_module.split(".")[:-1]
+            parents_up = node.level - 1
+            if parents_up > len(package_parts):
+                return []
+            base_parts = package_parts[: len(package_parts) - parents_up] if parents_up else package_parts
+            if node.module:
+                base_parts.extend(node.module.split("."))
+            base = ".".join(base_parts)
+        elif node.module is not None:  # ``from agent_tools.X import ...``
             base = _strip_package(node.module)
             if node.module != _PACKAGE and base is None:
                 return []  # unrelated absolute import
         else:
-            return []  # multi-dot relative (out of package) or bare ``import`` handled above
+            return []
         if base:
             # names may be submodules (``from .domain import presets``) or symbols.
             return [f"{base}.{alias.name}" for alias in node.names] + [base]
@@ -84,7 +91,7 @@ def _reverse_import_offenders(module: str, source: str) -> list[tuple[str, str, 
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
-        for target in _normalize_import(node):
+        for target in _normalize_import(node, module):
             if target in layering.DOMAIN_MODULES and (module, target) not in layering.KNOWN_DOMAIN_IMPORT_EXEMPTIONS:
                 offenders.append((module, target, node.lineno))
     return offenders
@@ -98,6 +105,23 @@ def _scanned_modules() -> set[str]:
         | set(layering.MIXED_MODULES)
         | {source for source, _ in layering.KNOWN_DOMAIN_IMPORT_EXEMPTIONS}
     )
+
+
+def _adapter_modules() -> set[str]:
+    root = _package_dir()
+    return {str(path.relative_to(root).with_suffix("")).replace("/", ".") for path in (root / "adapters").rglob("*.py")}
+
+
+def _adapter_l2_offenders(module: str, source: str) -> list[tuple[str, str, int]]:
+    offenders = []
+    tree = ast.parse(source, module)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        for target in _normalize_import(node, module):
+            if target in layering.L2_MODULES:
+                offenders.append((module, target, node.lineno))
+    return offenders
 
 
 def test_no_new_reverse_domain_imports():
@@ -120,18 +144,33 @@ def test_guard_catches_synthetic_violation():
     absolute_import = _reverse_import_offenders("decisions", "import agent_tools.domain.presets\n")
     assert ("decisions", "domain.presets", 1) in absolute_import
 
+    nested_relative = _reverse_import_offenders("nested.worker", "from ..domain import presets\n")
+    assert ("nested.worker", "domain.presets", 1) in nested_relative
+
+
+def test_adapters_do_not_import_l2_orchestration():
+    offenders = []
+    for module in sorted(_adapter_modules()):
+        offenders.extend(_adapter_l2_offenders(module, _module_source(module)))
+    assert offenders == [], f"adapter -> L2 imports: {offenders}"
+
+
+def test_adapter_guard_catches_relative_and_absolute_l2_imports():
+    relative = _adapter_l2_offenders("adapters.finetune", "from ..plans import build_plan\n")
+    absolute = _adapter_l2_offenders("adapters.finetune", "from agent_tools.plans import build_plan\n")
+    assert ("adapters.finetune", "plans", 1) in relative
+    assert ("adapters.finetune", "plans", 1) in absolute
+
 
 def test_every_exemption_is_live():
     # No stale exemptions: each grandfathered edge must still exist in source.
     for source, target in layering.KNOWN_DOMAIN_IMPORT_EXEMPTIONS:
-        if target not in layering.DOMAIN_MODULES:
-            continue  # documentation-only edge (e.g. domain.index_csv -> configs)
         tree = ast.parse(_module_source(source), source)
         edges = {
             t
             for node in ast.walk(tree)
             if isinstance(node, (ast.Import, ast.ImportFrom))
-            for t in _normalize_import(node)
+            for t in _normalize_import(node, source)
         }
         assert target in edges, f"stale exemption: {source} no longer imports {target}"
 
@@ -175,6 +214,7 @@ def test_layering_partitions_disjoint():
     assert layering.KERNEL_MODULES.isdisjoint(layering.MIXED_MODULES)
     assert layering.DOMAIN_MODULES.isdisjoint(layering.MIXED_MODULES)
     assert _PARTITION_EXEMPT.isdisjoint(layering.KERNEL_MODULES | layering.DOMAIN_MODULES | layering.MIXED_MODULES)
+    assert layering.L2_MODULES <= layering.KERNEL_MODULES | layering.MIXED_MODULES
 
 
 def test_mixed_modules_acknowledged():

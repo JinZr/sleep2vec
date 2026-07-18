@@ -161,18 +161,34 @@ The control flow is:
    pending work;
 6. finalization requires no active runs and a non-empty report.
 
+A successful plan binds the exact config bytes accepted by consultation and
+materializes from that immutable snapshot even if the source path changes
+later. Structural config-family ownership may constrain recipe `variant`;
+filename- or directory-derived variant guesses are diagnostic only.
+
+Step and run manifests commit through their canonical merge-and-compare-swap
+owners. Remote run matrices are version-checked projections of
+`run_manifest.tsv`, and experiment finalization publishes the report before
+the terminal experiment manifest. Managed launches create a dedicated process
+group and freeze its PID, process-group id, and OS start token. Launch timeout
+is unresolved evidence rather than permission to retry; stop verifies that
+identity, signals the full group, and records `stopped` only after exit.
+Generated scripts own their terminal success/failure commit, so an uncommitted
+process-group disappearance is failure rather than inferred success.
+
 Public facades are `decisions.py`, `plans.py`, `hparam.py`, and
 `experiments.py`. Task-specific behavior extends the adapter/domain layers;
 managed workspace identity and `run_manifest.tsv` remain canonical owners.
 Follow [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and
 [`doc/agent_contracts/`](../agent_contracts/) for detailed machine contracts.
 
-Adaptive tuning defaults to the existing `best_neighborhood` strategy, which
-may inspect active rounds and use the configured replacement policy. The
-`agent_proposal` strategy instead uses a terminal-only two-phase handshake:
-`hparam-adaptive-step` writes and records the full-file hash of a tool-issued
-proposal-input v2 snapshot under `adaptive/proposal_inputs/`. Its request id
-also binds the exact source config bytes. An external agent may write only the
+Adaptive tuning defaults to `agent_proposal` when strategy is omitted. It uses
+a terminal-only two-phase handshake: `hparam-adaptive-step` writes and records
+the full-file hash of a tool-issued proposal-input v2 snapshot under
+`adaptive/proposal_inputs/`. Explicit `best_neighborhood` remains available
+for automatic neighborhood suggestions and active-round replacement. The
+default proposal workflow also binds its request id to the exact source config
+bytes. An external agent may write only the
 named submission under `adaptive/proposal_submissions/`; a second invocation
 previews or explicitly executes the bounded proposal. Phase two requires the
 matching issuance and snapshot bytes, then rebuilds the input from current

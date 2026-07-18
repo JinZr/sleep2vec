@@ -96,14 +96,15 @@ def _adaptive_recipe(
     )
 
 
-def _agent_recipe(tmp_path: Path, *, max_rounds: int = 2) -> Path:
+def _agent_recipe(tmp_path: Path, *, max_rounds: int = 2, explicit_strategy: bool = True) -> Path:
     recipe = _adaptive_recipe(tmp_path, max_rounds=max_rounds)
     payload = yaml.safe_load(recipe.read_text())
     payload["adaptive"]["replacement"] = {"enabled": False}
     payload["adaptive"]["suggest"] = {
-        "strategy": "agent_proposal",
         "bounds": {"runtime.lr": [5e-7, 2e-6]},
     }
+    if explicit_strategy:
+        payload["adaptive"]["suggest"]["strategy"] = "agent_proposal"
     recipe.write_text(yaml.safe_dump(payload))
     return recipe
 
@@ -178,6 +179,23 @@ def test_adaptive_recipe_requires_explicit_test_feedback_flag(tmp_path: Path):
     assert "adaptive.test_feedback_for_selection" in result.stdout
 
 
+def test_adaptive_runtime_requires_literal_true_enabled_flag():
+    with pytest.raises(ValueError, match="adaptive.enabled must be true"):
+        adaptive_hparam._validate_adaptive_recipe({"adaptive": {"enabled": "true"}})
+
+
+@pytest.mark.parametrize(
+    ("enabled", "allow_running_stop"),
+    [("true", True), (True, "true"), ("false", "false")],
+)
+def test_adaptive_runtime_never_stops_runs_for_non_boolean_replacement_flags(
+    tmp_path: Path, enabled, allow_running_stop
+):
+    recipe = {"adaptive": {"replacement": {"enabled": enabled, "allow_running_stop": allow_running_stop}}}
+
+    assert adaptive_hparam._bad_running_run_keys(tmp_path, tmp_path / "missing-round", recipe) == set()
+
+
 def test_adaptive_rejects_removed_run_budget_and_gpu_fields(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -194,8 +212,11 @@ def test_adaptive_rejects_removed_run_budget_and_gpu_fields(tmp_path: Path):
     assert "execution.gpus_per_trial is no longer supported" in result.stdout
 
 
-def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snapshot(tmp_path: Path):
-    recipe = _agent_recipe(tmp_path)
+@pytest.mark.parametrize("explicit_strategy", [False, True])
+def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snapshot(
+    tmp_path: Path, explicit_strategy: bool
+):
+    recipe = _agent_recipe(tmp_path, explicit_strategy=explicit_strategy)
     workflow_dir = tmp_path / "workflow"
     result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
@@ -238,6 +259,55 @@ def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snaps
     assert adaptive_hparam.adaptive_step(workflow_dir) == input_path
     assert input_path.read_bytes() == first_bytes
     assert (tmp_path / "events.jsonl").read_text().count('"event_type": "agent_proposal_requested"') == 1
+
+
+def test_agent_proposal_request_recovers_missing_issuance_for_existing_snapshot(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    first_bytes = input_path.read_bytes()
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    events = [event for event in events if event.get("event_type") != "agent_proposal_requested"]
+    events_path.write_text("".join(json.dumps(event, sort_keys=True) + "\n" for event in events))
+
+    # Simulate a crash after the immutable input write but before the matching issuance append.
+    assert adaptive_hparam.adaptive_step(workflow_dir) == input_path
+
+    assert input_path.read_bytes() == first_bytes
+    request_events = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event_type") == "agent_proposal_requested"
+    ]
+    assert len(request_events) == 1
+    assert request_events[0]["input_sha256"] == adaptive_hparam.file_sha256(input_path)
+
+
+def test_agent_proposal_request_rejects_conflicting_existing_issuance(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    request_event = next(event for event in events if event.get("event_type") == "agent_proposal_requested")
+    request_event["input_sha256"] = "0" * 64
+    events_path.write_text("".join(json.dumps(event, sort_keys=True) + "\n" for event in events))
+
+    with pytest.raises(ValueError, match="differs from its phase-one issuance"):
+        adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert events_path.read_text().count('"event_type": "agent_proposal_requested"') == 1
 
 
 def test_agent_proposal_can_request_after_all_runs_fail_without_a_score(tmp_path: Path):
@@ -483,6 +553,56 @@ def test_agent_proposal_refreshes_source_contract_after_candidate_preflight(tmp_
     assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
     assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
     assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+
+
+def test_agent_proposal_rebuilds_candidate_from_refreshed_base_and_local_pair(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    real_preflight = adaptive_hparam.preflight_plan
+    mutated = False
+
+    def offset_base_and_local_after_candidate_preflight(*args, **kwargs):
+        nonlocal mutated
+        result = real_preflight(*args, **kwargs)
+        recipe_path = Path(kwargs.get("recipe_path") or args[0])
+        if recipe_path.name == "suggested.yaml" and not mutated:
+            mutated = True
+            local_payload = yaml.safe_load(recipe.read_text())
+            base_path = Path(local_payload["base_recipe"])
+            base_payload = yaml.safe_load(base_path.read_text())
+            base_payload["runtime"]["devices"] = [7]
+            base_path.write_text(yaml.safe_dump(base_payload, sort_keys=False))
+            # This local override keeps the effective snapshot at devices=[0].
+            local_payload["runtime"] = {"devices": [0]}
+            recipe.write_text(yaml.safe_dump(local_payload, sort_keys=False))
+        return result
+
+    def fake_launch(run_dir, *, dry_run=True):
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in runs],
+        )
+        return launch_manifest
+
+    monkeypatch.setattr(adaptive_hparam, "preflight_plan", offset_base_and_local_after_candidate_preflight)
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    plan = json.loads((workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").read_text())
+    assert plan["recipe"]["runtime"]["devices"] == [0]
+    assert plan["recipe"]["_local_recipe"]["runtime"]["devices"] == [0]
+    assert plan["recipe"]["_base_recipe"]["runtime"]["devices"] == [7]
 
 
 def test_agent_proposal_materializes_bound_recipe_and_config_bytes(tmp_path: Path, monkeypatch):
@@ -879,6 +999,31 @@ def test_agent_proposal_execute_requires_submission_before_digest(tmp_path: Path
 
     with pytest.raises(ValueError, match="requires --proposal"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+
+@pytest.mark.parametrize("command", ["step", "suggest", "loop"])
+def test_adaptive_commands_reject_disabled_source_before_writing(tmp_path: Path, command: str):
+    recipe = _agent_recipe(tmp_path, explicit_strategy=False)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["enabled"] = False
+    recipe.write_text(yaml.safe_dump(payload))
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    run = {
+        "step": lambda: adaptive_hparam.adaptive_step(workflow_dir),
+        "suggest": lambda: adaptive_hparam.suggest_next_round(workflow_dir),
+        "loop": lambda: adaptive_hparam.adaptive_loop(workflow_dir),
+    }[command]
+    with pytest.raises(ValueError, match="adaptive.enabled must be true"):
+        run()
+
+    assert events_path.read_bytes() == events_before
+    assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
 
 
 def test_agent_proposal_loop_fails_without_writing_an_event(tmp_path: Path):
@@ -1297,13 +1442,8 @@ def test_adaptive_stop_scan_ignores_header_only_legacy_projection(tmp_path: Path
     assert status_path.read_text() == "trial_id\tstatus\n"
 
 
-@pytest.mark.parametrize("explicit_strategy", [False, True])
-def test_best_neighborhood_default_and_explicit_use_existing_numeric_neighbors(tmp_path: Path, explicit_strategy: bool):
+def test_explicit_best_neighborhood_uses_existing_numeric_neighbors(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
-    if not explicit_strategy:
-        payload = yaml.safe_load(recipe.read_text())
-        payload["adaptive"].pop("suggest")
-        recipe.write_text(yaml.safe_dump(payload))
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
@@ -1865,7 +2005,9 @@ def test_adaptive_step_reconciles_pid_after_initial_post_start_commit_failure(tm
         starts.append(True)
         run = json.loads((next_dir / "plan.json").read_text())["runs"][0]
         pid_path = Path(run["run_dir"]) / "pid"
-        pid_path.write_text(str(os.getpid()))
+        pid_path.write_text(
+            json.dumps({"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}) + "\n"
+        )
         return "launched"
 
     real_runtime_merge = hparam_runtime.merge_run_manifest
@@ -1879,6 +2021,7 @@ def test_adaptive_step_reconciles_pid_after_initial_post_start_commit_failure(tm
         return real_runtime_merge(*args, **kwargs)
 
     monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(hparam_runtime.evidence, "process_identity_running", lambda *_args: True)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
 
     with pytest.raises(RuntimeError, match=r"launch failed.*already committed"):
@@ -1887,7 +2030,9 @@ def test_adaptive_step_reconciles_pid_after_initial_post_start_commit_failure(tm
     prospective = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
     assert prospective["status"] == "launched"
     assert prospective["target"] == "local"
-    assert prospective["pid"] == str(os.getpid())
+    assert prospective["pid"] == "123"
+    assert prospective["process_group_id"] == "123"
+    assert prospective["process_start_token"] == "proc:unit-start"
     assert prospective["pid_path"] == str(Path(prospective["run_dir"]) / "pid")
     assert adaptive_hparam._latest_round_index(workflow_dir) == 1
     assert (
@@ -1926,7 +2071,9 @@ def test_adaptive_step_blocks_retry_when_post_start_reconciliation_fails(
     def start_with_pid(_execution, _command):
         starts.append(True)
         run = json.loads((next_dir / "plan.json").read_text())["runs"][0]
-        (Path(run["run_dir"]) / "pid").write_text(str(os.getpid()))
+        (Path(run["run_dir"]) / "pid").write_text(
+            json.dumps({"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}) + "\n"
+        )
         return "launched"
 
     real_runtime_merge = hparam_runtime.merge_run_manifest
@@ -2155,11 +2302,13 @@ def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, mon
 
     prospective = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
     if uncommitted_evidence == "launch_failed_pid":
-        Path(prospective["pid_path"]).write_text(str(os.getpid()))
+        Path(prospective["pid_path"]).write_text(
+            json.dumps({"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}) + "\n"
+        )
     elif uncommitted_evidence == "pid_read_error":
         monkeypatch.setattr(
             adaptive_hparam.evidence,
-            "read_pid",
+            "read_process_identity",
             lambda *_args: (_ for _ in ()).throw(RuntimeError("PID read uncertain")),
         )
     digest_calls.clear()
@@ -2488,7 +2637,11 @@ def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(t
     pid_path = Path(launch["pid_path"])
     log_path = Path(launch["log_path"])
     pid_path.parent.mkdir(parents=True, exist_ok=True)
-    pid_path.write_text(str(os.getpid()))
+    pid_path.write_text(
+        json.dumps({"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}) + "\n"
+    )
+    # Keep the synthetic current run active; this test targets replacement ordering, not an OS process probe.
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: True)
     log_path.write_text("Traceback\nRuntimeError: failed\n")
     merge_run_manifest(
         tmp_path,
@@ -2859,7 +3012,9 @@ def test_adaptive_step_reconciles_pid_after_post_drain_commit_failure(tmp_path: 
 
     def start_with_pid(_execution, _command):
         run = json.loads((next_dir / "plan.json").read_text())["runs"][0]
-        (Path(run["run_dir"]) / "pid").write_text(str(os.getpid()))
+        (Path(run["run_dir"]) / "pid").write_text(
+            json.dumps({"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}) + "\n"
+        )
         return "launched"
 
     real_runtime_merge = hparam_runtime.merge_run_manifest
@@ -2895,6 +3050,7 @@ def test_adaptive_step_reconciles_pid_after_post_drain_commit_failure(tmp_path: 
         return Path(run_dir) / "run_status.tsv"
 
     monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(hparam_runtime.evidence, "process_identity_running", lambda *_args: True)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", launch_after_drain)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
@@ -2907,7 +3063,9 @@ def test_adaptive_step_reconciles_pid_after_post_drain_commit_failure(tmp_path: 
     prospective = next(row for row in rows if row["run_id"] != current_run["run_id"])
     assert prospective["status"] == "launched"
     assert prospective["target"] == "local"
-    assert prospective["pid"] == str(os.getpid())
+    assert prospective["pid"] == "123"
+    assert prospective["process_group_id"] == "123"
+    assert prospective["process_start_token"] == "proc:unit-start"
     assert calls == ["launch", "stop:run-000", "launch"]
     assert adaptive_hparam._latest_round_index(workflow_dir) == 1
     assert (

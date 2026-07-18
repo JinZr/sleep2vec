@@ -109,7 +109,8 @@ class TaskAdapter:
         out: Path,
         *,
         unlock_final_test: bool,
-        source_config_sha256: str | None = None,
+        source_config_bytes: bytes,
+        source_config_sha256: str,
     ) -> None:
         """Materialize the full plan bundle; called only when
         materializes_plan is True."""

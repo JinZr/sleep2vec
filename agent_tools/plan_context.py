@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from . import plan_rendering as rendering
 from .adapters import all_adapters, get_adapter
 from .configs import config_summary, load_yaml
@@ -14,16 +16,16 @@ from .models import CONFIG_FINETUNE_SECTION, coerce_list, resolve_repo_path
 from .skills import list_skills
 
 
-def load_config_summary_for_recipe(recipe: dict) -> dict | None:
+def load_config_summary_for_recipe(recipe: dict, *, config_bytes: bytes | None = None) -> dict | None:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
     if not config:
         return None
     resolved = resolve_repo_path(config)
-    if resolved is None or not resolved.exists():
+    if resolved is None or (config_bytes is None and not resolved.exists()):
         return None
     try:
-        config_data = load_yaml(config)
+        config_data = load_yaml(config) if config_bytes is None else yaml.safe_load(config_bytes)
     except Exception:
         config_data = {}
     return config_summary(
@@ -33,6 +35,7 @@ def load_config_summary_for_recipe(recipe: dict) -> dict | None:
             recipe,
             survival_validation_paths(config_data),
         ),
+        config_bytes=config_bytes,
     )
 
 

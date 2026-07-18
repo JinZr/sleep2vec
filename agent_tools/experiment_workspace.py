@@ -12,11 +12,12 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io
+from . import experiment_io as exp_io, transport
 from .models import REPO_ROOT, json_ready
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
+PROCESS_IDENTITY_FIELDS = {"pid", "process_group_id", "process_start_token"}
 EXECUTION_IDENTITY_FIELDS = {
     "target",
     "host",
@@ -25,7 +26,7 @@ EXECUTION_IDENTITY_FIELDS = {
     "pid_path",
     "log_path",
     "command",
-}
+} | PROCESS_IDENTITY_FIELDS
 FROZEN_RUN_FIELDS = {
     "experiment_id",
     "step_id",
@@ -334,19 +335,7 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     }
 
 
-def read_step_manifest(
-    root: str | Path,
-    step_id: str,
-    *,
-    remote: str | None = None,
-    allow_missing: bool = False,
-) -> dict[str, Any] | None:
-    path = Path(root) / "steps" / str(step_id) / "step.yaml"
-    if not exp_io.path_exists_at(path, remote=remote):
-        if allow_missing:
-            return None
-        raise FileNotFoundError(f"Managed step manifest does not exist: {path}")
-    text = exp_io.read_text_at(path, remote=remote)
+def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, Any]:
     payload = read_managed_yaml_mapping(text, source=f"Managed step manifest {path}")
     normalized = merge_step_manifest(payload, {})
     if normalized != payload:
@@ -367,6 +356,55 @@ def read_step_manifest(
     if any(not Path(str(plan)).is_absolute() for plan in payload["plans"]):
         raise ValueError(f"Managed step manifest plan paths must be absolute: {path}")
     return payload
+
+
+def read_step_manifest(
+    root: str | Path,
+    step_id: str,
+    *,
+    remote: str | None = None,
+    allow_missing: bool = False,
+) -> dict[str, Any] | None:
+    path = Path(root) / "steps" / str(step_id) / "step.yaml"
+    if not exp_io.path_exists_at(path, remote=remote):
+        if allow_missing:
+            return None
+        raise FileNotFoundError(f"Managed step manifest does not exist: {path}")
+    return _validated_step_manifest(exp_io.read_text_at(path, remote=remote), path, str(step_id))
+
+
+def commit_step_manifest(
+    root: str | Path,
+    incoming: dict[str, Any],
+    *,
+    remote: str | None = None,
+) -> tuple[dict[str, Any], bool]:
+    root = Path(root)
+    step = incoming.get("step") if isinstance(incoming.get("step"), dict) else {}
+    step_id = str(step.get("id") or "")
+    if not step_id:
+        raise ValueError("Incoming step manifest is missing step.id.")
+    path = root / "steps" / step_id / "step.yaml"
+    exp_io.validate_managed_output_paths(root, [path], remote=remote)
+    for _attempt in range(3):
+        exists = exp_io.path_exists_at(path, remote=remote)
+        current_text = exp_io.read_text_at(path, remote=remote) if exists else ""
+        existing = _validated_step_manifest(current_text, path, step_id) if exists else {}
+        merged = merge_step_manifest(existing, incoming)
+        if merged == existing:
+            return merged, False
+        replacement = yaml.safe_dump(merged, sort_keys=False)
+        _validated_step_manifest(replacement, path, step_id)
+        expected_sha256 = hashlib.sha256(current_text.encode()).hexdigest() if exists else None
+        if exp_io.conditional_atomic_replace_text_at(
+            path,
+            replacement,
+            expected_sha256,
+            remote=remote,
+        ):
+            return merged, not exists
+        # A competing planner won the compare-and-swap; merge its plan on the next attempt.
+    raise RuntimeError(f"Managed step manifest changed during three commit attempts: {path}")
 
 
 def initialize_run_manifest(root: str | Path, *, remote: str | None = None) -> Path:
@@ -466,14 +504,12 @@ def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) 
         plan_path = (Path.cwd() / plan_path).resolve()
     else:
         plan_path = plan_path.resolve()
-    existing_step_payload = read_step_manifest(root, str(step["id"]), allow_missing=True)
     step_payload = {
         "step": step,
         "experiment_id": experiment["id"],
         "recipe_path": recipe.get("_recipe_path", ""),
         "plans": [str(plan_path)],
     }
-    merged_step_payload = merge_step_manifest(existing_step_payload or {}, step_payload)
     step_manifest = root / "steps" / str(step["id"]) / "step.yaml"
     exp_io.validate_managed_output_paths(
         root,
@@ -487,9 +523,8 @@ def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) 
     if not manifest_exists:
         write_initial_experiment_manifest(root, experiment)
         append_event(root, "experiment_initialized", {"experiment_id": experiment["id"]})
-    if merged_step_payload != existing_step_payload:
-        step_manifest.write_text(yaml.safe_dump(merged_step_payload, sort_keys=False))
-    if existing_step_payload is None:
+    _merged_step_payload, created_step = commit_step_manifest(root, step_payload)
+    if created_step:
         append_event(root, "step_registered", {"step_id": step["id"], "phase": step["phase"]})
     _write_readme(root, experiment)
     return root, step_dir
@@ -698,7 +733,11 @@ def validate_frozen_run_update(
         if field not in FROZEN_RUN_FIELDS and field not in incoming_parameters:
             continue
         existing_value = existing.get(field)
-        if field in EXECUTION_IDENTITY_FIELDS:
+        if field in PROCESS_IDENTITY_FIELDS:
+            if existing_value in (None, "") and allow_execution_identity_fill:
+                continue
+            changed = str(json_ready(incoming_value)) != str(json_ready(existing_value))
+        elif field in EXECUTION_IDENTITY_FIELDS:
             if not execution_identity_initialized:
                 if allow_execution_identity_fill:
                     continue
@@ -803,7 +842,21 @@ def merge_run_manifest(
                 break
         else:
             raise RuntimeError(f"Canonical run manifest changed during three commit attempts: {path}")
-        write_run_matrix(root, committed, remote=remote)
+        if remote:
+            projection_rows = committed
+            projection_manifest_text = replacement
+            for _projection_attempt in range(3):
+                if _write_remote_run_matrix_if_current(root, projection_rows, projection_manifest_text, remote):
+                    committed = projection_rows
+                    break
+                # A concurrent canonical commit won the shared lock; project only its newly observed version.
+                current_text = exp_io.read_text_at(path, remote=remote)
+                projection_rows = _parse_run_manifest(current_text, path)
+                projection_manifest_text = current_text
+            else:
+                raise RuntimeError(f"Canonical run manifest changed during three projection attempts: {path}")
+        else:
+            write_run_matrix(root, committed)
     finally:
         if lock_file is not None:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -811,15 +864,16 @@ def merge_run_manifest(
     return committed
 
 
-def write_run_matrix(root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> Path:
-    root = Path(root)
-    validate_managed_run_rows(rows, source="run_manifest.tsv", cardinality="one_per_run")
-    matrix_path = root / "run_matrix.csv"
+def _run_matrix_text(rows: list[dict[str, Any]]) -> tuple[str, str]:
     if rows:
-        exp_io.write_rows_at(matrix_path, rows, remote=remote)
+        buffer = io.StringIO()
+        fieldnames = sorted({key for row in rows for key in row})
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+        matrix_text = buffer.getvalue()
     else:
-        exp_io.write_text_at(matrix_path, "step_id,run_id\n", remote=remote)
-    path = root / "reports" / "run_matrix.md"
+        matrix_text = "step_id,run_id\n"
     lines = ["# Run Matrix", ""]
     if not rows:
         lines.append("No runs registered.")
@@ -843,7 +897,86 @@ def write_run_matrix(root: str | Path, rows: list[dict[str, Any]], *, remote: st
                     wandb=row.get("wandb_url", ""),
                 )
             )
-    exp_io.write_text_at(path, "\n".join(lines) + "\n", remote=remote)
+    return matrix_text, "\n".join(lines) + "\n"
+
+
+def _write_remote_run_matrix_if_current(
+    root: Path,
+    rows: list[dict[str, Any]],
+    manifest_text: str,
+    remote: str,
+) -> bool:
+    matrix_path = root / "run_matrix.csv"
+    report_path = root / "reports" / "run_matrix.md"
+    matrix_text, report_text = _run_matrix_text(rows)
+    script = f"""
+import fcntl
+import hashlib
+import json
+import os
+import sys
+import tempfile
+
+manifest_path, matrix_path, report_path, expected = sys.argv[1:]
+payload = json.load(sys.stdin)
+with open(manifest_path + ".lock", "a+") as lock_file:
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    try:
+        with open(manifest_path, "rb") as file_obj:
+            current = file_obj.read()
+    except FileNotFoundError:
+        raise SystemExit({exp_io.REMOTE_CONFLICT_RETURN_CODE})
+    if hashlib.sha256(current).hexdigest() != expected:
+        raise SystemExit({exp_io.REMOTE_CONFLICT_RETURN_CODE})
+    staged = []
+    try:
+        for path, text in ((matrix_path, payload["matrix"]), (report_path, payload["report"])):
+            parent = os.path.dirname(path) or "."
+            os.makedirs(parent, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=parent)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as file_obj:
+                file_obj.write(text)
+                os.fchmod(file_obj.fileno(), 0o644)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            staged.append((temporary, path))
+        for temporary, path in staged:
+            os.replace(temporary, path)
+    finally:
+        for temporary, _path in staged:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+"""
+    result = transport.run_ssh(
+        remote,
+        transport.remote_python_command(
+            script,
+            str(root / "run_manifest.tsv"),
+            str(matrix_path),
+            str(report_path),
+            hashlib.sha256(manifest_text.encode()).hexdigest(),
+        ),
+        input=json.dumps({"matrix": matrix_text, "report": report_text}),
+        text=True,
+    )
+    if result.returncode == exp_io.REMOTE_CONFLICT_RETURN_CODE:
+        return False
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"Remote run-matrix projection failed on {remote}: {detail}")
+    return True
+
+
+def write_run_matrix(root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> Path:
+    root = Path(root)
+    validate_managed_run_rows(rows, source="run_manifest.tsv", cardinality="one_per_run")
+    matrix_path = root / "run_matrix.csv"
+    matrix_text, report_text = _run_matrix_text(rows)
+    exp_io.write_text_at(matrix_path, matrix_text, remote=remote)
+    path = root / "reports" / "run_matrix.md"
+    exp_io.write_text_at(path, report_text, remote=remote)
     return matrix_path
 
 

@@ -14,17 +14,18 @@ from .infer_evaluate import EVALUATE_ADAPTER, INFER_ADAPTER
 from .preset_prepare import PRESET_PREPARE_ADAPTER
 from .sleep2stat import SLEEP2STAT_ADAPTER
 
-TASK_ADAPTERS: dict[str, TaskAdapter] = {
-    adapter.task: adapter
-    for adapter in (
-        SLEEP2STAT_ADAPTER,
-        PRESET_PREPARE_ADAPTER,
-        INFER_ADAPTER,
-        EVALUATE_ADAPTER,
-        FINETUNE_ADAPTER,
-        HPARAM_TUNE_ADAPTER,
-    )
-}
+_REGISTERED_ADAPTERS = (
+    SLEEP2STAT_ADAPTER,
+    PRESET_PREPARE_ADAPTER,
+    INFER_ADAPTER,
+    EVALUATE_ADAPTER,
+    FINETUNE_ADAPTER,
+    HPARAM_TUNE_ADAPTER,
+)
+if len({adapter.task for adapter in _REGISTERED_ADAPTERS}) != len(_REGISTERED_ADAPTERS):
+    raise RuntimeError("TaskAdapter.task values must be unique")
+TASK_ADAPTERS: dict[str, TaskAdapter] = {adapter.task: adapter for adapter in _REGISTERED_ADAPTERS}
+SUPPORTED_TASKS = frozenset(TASK_ADAPTERS)
 
 
 def get_adapter(task: Any) -> TaskAdapter | None:

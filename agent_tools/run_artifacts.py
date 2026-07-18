@@ -441,7 +441,8 @@ def sortable_score(value: Any, reverse: bool) -> float:
         score = float(value)
     except (TypeError, ValueError):
         return -math.inf if reverse else math.inf
-    return score
+    # NaN is unordered, so every non-finite score must use the same worst-value sentinel.
+    return score if math.isfinite(score) else (-math.inf if reverse else math.inf)
 
 
 def assign_ranks(
