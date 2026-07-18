@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import hashlib
 import io
 import json
@@ -344,29 +345,50 @@ def write_text_at(path: str | Path, text: str, *, remote: str | None = None) -> 
 def conditional_atomic_replace_text_at(
     path: str | Path,
     text: str,
-    expected_sha256: str,
+    expected_sha256: str | None,
     *,
     remote: str | None = None,
 ) -> bool:
     target = Path(str(path))
     payload = text.encode()
     if not remote:
-        with target.open("rb") as file_obj:
-            current = file_obj.read()
-            target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
-        if hashlib.sha256(current).hexdigest() != expected_sha256:
-            return False
-        file_descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-        try:
-            with os.fdopen(file_descriptor, "wb") as file_obj:
-                file_obj.write(payload)
-                os.fchmod(file_obj.fileno(), target_mode)
-                file_obj.flush()
-                os.fsync(file_obj.fileno())
-            os.replace(temporary, target)
-        except BaseException:
-            Path(temporary).unlink(missing_ok=True)
-            raise
+        target.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = target.with_name(f".{target.name}.cas.lock")
+        with lock_path.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            if expected_sha256 is None:
+                if target.exists():
+                    return False
+                target_mode = 0o644
+            else:
+                try:
+                    with target.open("rb") as file_obj:
+                        current = file_obj.read()
+                        target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
+                except FileNotFoundError:
+                    return False
+                if hashlib.sha256(current).hexdigest() != expected_sha256:
+                    return False
+            file_descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+            try:
+                with os.fdopen(file_descriptor, "wb") as file_obj:
+                    file_obj.write(payload)
+                    os.fchmod(file_obj.fileno(), target_mode)
+                    file_obj.flush()
+                    os.fsync(file_obj.fileno())
+                if expected_sha256 is None:
+                    # A hard-link publishes complete bytes without replacing a concurrently created owner file.
+                    try:
+                        os.link(temporary, target)
+                    except FileExistsError:
+                        Path(temporary).unlink(missing_ok=True)
+                        return False
+                    Path(temporary).unlink()
+                else:
+                    os.replace(temporary, target)
+            except BaseException:
+                Path(temporary).unlink(missing_ok=True)
+                raise
         return True
 
     script = f"""
@@ -379,19 +401,26 @@ import tempfile
 
 path = sys.argv[1]
 expected = sys.argv[2]
+expect_missing = not expected
 lock_path = path + ".lock"
 parent = os.path.dirname(path) or "."
+os.makedirs(parent, exist_ok=True)
 
 with open(lock_path, "a+") as lock_file:
     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-    try:
-        with open(path, "rb") as file_obj:
-            current = file_obj.read()
-            target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
-    except FileNotFoundError:
-        raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-    if hashlib.sha256(current).hexdigest() != expected:
-        raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+    if expect_missing:
+        if os.path.exists(path):
+            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+        target_mode = 0o644
+    else:
+        try:
+            with open(path, "rb") as file_obj:
+                current = file_obj.read()
+                target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
+        except FileNotFoundError:
+            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+        if hashlib.sha256(current).hexdigest() != expected:
+            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
     payload = sys.stdin.buffer.read()
     descriptor, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=parent)
     try:
@@ -400,7 +429,14 @@ with open(lock_path, "a+") as lock_file:
             os.fchmod(file_obj.fileno(), target_mode)
             file_obj.flush()
             os.fsync(file_obj.fileno())
-        os.replace(temporary, path)
+        if expect_missing:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+            os.unlink(temporary)
+        else:
+            os.replace(temporary, path)
     except BaseException:
         try:
             os.unlink(temporary)
@@ -410,7 +446,7 @@ with open(lock_path, "a+") as lock_file:
 """
     result = transport.run_ssh(
         remote,
-        transport.remote_python_command(script, str(target), expected_sha256),
+        transport.remote_python_command(script, str(target), expected_sha256 or ""),
         input=payload,
     )
     if result.returncode == REMOTE_CONFLICT_RETURN_CODE:

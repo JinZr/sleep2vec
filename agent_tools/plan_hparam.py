@@ -22,7 +22,7 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import write_json, write_text
-from .models import REPO_ROOT, coerce_list, load_yaml, resolve_repo_path
+from .models import REPO_ROOT, coerce_list
 from .repo import repo_summary
 
 
@@ -92,7 +92,7 @@ def final_test_checkpoint_issues(
     return issues
 
 
-def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
+def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[DecisionIssue]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
@@ -110,7 +110,9 @@ def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
     if not config_path:
         return []
     try:
-        base_config = load_yaml(config_path)
+        base_config = yaml.safe_load(config_bytes)
+        if not isinstance(base_config, dict):
+            raise ValueError(f"YAML must be a mapping: {config_path}")
         base_data = base_config.get("data") if isinstance(base_config.get("data"), dict) else {}
         data_backend = inputs.get("data_backend")
         if data_backend in (None, ""):
@@ -307,7 +309,8 @@ def write_hparam_plan(
     out: Path,
     *,
     unlock_final_test: bool,
-    source_config_sha256: str | None = None,
+    source_config_bytes: bytes,
+    source_config_sha256: str,
 ) -> None:
     out = out.expanduser()
     if not out.is_absolute():
@@ -322,18 +325,16 @@ def write_hparam_plan(
     runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     source_config_path = inputs.get("config")
-    if source_config_path:
-        resolved_source_config = resolve_repo_path(source_config_path)
-        if resolved_source_config is None:
-            raise FileNotFoundError("Config path is required.")
-        source_config_bytes = resolved_source_config.read_bytes()
-        if source_config_sha256 is not None and hashlib.sha256(source_config_bytes).hexdigest() != source_config_sha256:
-            raise ValueError("Hparam source config does not match the bound SHA-256.")
-        base_config = yaml.safe_load(source_config_bytes)
-        if not isinstance(base_config, dict):
-            raise ValueError(f"YAML must be a mapping: {resolved_source_config}")
-    else:
-        base_config = {}
+    if not source_config_path:
+        raise FileNotFoundError("Config path is required.")
+    if hashlib.sha256(source_config_bytes).hexdigest() != source_config_sha256:
+        raise ValueError("Hparam source config does not match the bound SHA-256.")
+    base_config = yaml.safe_load(source_config_bytes)
+    if not isinstance(base_config, dict):
+        raise ValueError(f"YAML must be a mapping: {source_config_path}")
+    frozen_source_config = out / "config.source.yaml"
+    out.mkdir(parents=True, exist_ok=True)
+    frozen_source_config.write_bytes(source_config_bytes)
     combos = hparam_combos(recipe)
     runs = []
     evaluation = recipe.get("evaluation_policy") or {}
@@ -508,7 +509,7 @@ def write_hparam_plan(
     ]
     if final_allowed:
         ckpt_path = resolved_ckpt_path(recipe)
-        final_config_path = resolved_final_eval_config_path(recipe, source_config_path)
+        final_config_path = resolved_final_eval_config_path(recipe, frozen_source_config)
         final_command = rendering.render_command(
             [
                 execution["python"],

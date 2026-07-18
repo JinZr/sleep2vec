@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
@@ -19,6 +20,7 @@ from agent_tools.experiment_workspace import (
     MANAGED_RUN_PATH_FIELDS,
     append_event,
     canonical_local_experiment_root,
+    commit_step_manifest,
     ensure_experiment_workspace,
     file_sha256,
     initialize_run_manifest,
@@ -315,9 +317,13 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     hparam.launch_hparam_runs(plan_dir, dry_run=False)
     row = list(csv.DictReader((plan_dir / "launch_manifest.tsv").open(), delimiter="\t"))[0]
     pid_path = Path(row["pid_path"])
-    pid_path.write_text("123")
-    monkeypatch.setattr(hparam_runtime.evidence, "read_pid", lambda *_args, **_kwargs: 123)
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda _pid, _signal: None)
+    identity = {"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}
+    pid_path.write_text(json.dumps(identity) + "\n")
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": row["step_id"], "run_id": row["run_id"], **identity}],
+    )
+    monkeypatch.setattr(hparam_runtime.evidence, "stop_process_group", lambda *_args: None)
 
     with pytest.raises(ValueError, match="reason"):
         hparam.stop_hparam_run(plan_dir, "run-000", reason="")
@@ -631,22 +637,19 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
         reads.append((Path(path).name, remote))
         return "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfailed\n"
 
-    def fake_write_rows(path, rows, *, remote=None):
-        writes[Path(path).name] = ([dict(row) for row in rows], remote)
-
-    def fake_write_text(path, text, *, remote=None):
-        writes[Path(path).name] = (text, remote)
-
     def fake_commit(path, text, _expected_sha256, *, remote=None):
         writes[Path(path).name] = (text, remote)
+        return True
+
+    def fake_projection(_root, rows, manifest_text, remote):
+        writes["projection"] = ([dict(row) for row in rows], manifest_text, remote)
         return True
 
     monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
-    monkeypatch.setattr(experiment_io, "write_rows_at", fake_write_rows)
-    monkeypatch.setattr(experiment_io, "write_text_at", fake_write_text)
     monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
+    monkeypatch.setattr(experiment_workspace, "_write_remote_run_matrix_if_current", fake_projection)
 
     committed = merge_run_manifest(
         "/remote/workspace",
@@ -655,12 +658,12 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
     )
 
     assert committed == existing
-    assert reads == [("run_manifest.tsv", "baichuan3")]
+    assert reads and set(reads) == {("run_manifest.tsv", "baichuan3")}
     assert "unit\trun-000\tfailed\ttrain" in writes["run_manifest.tsv"][0]
     assert writes["run_manifest.tsv"][1] == "baichuan3"
-    assert writes["run_matrix.csv"] == (existing, "baichuan3")
-    assert "| failed |" in writes["run_matrix.md"][0]
-    assert writes["run_matrix.md"][1] == "baichuan3"
+    assert writes["projection"][0] == existing
+    assert "unit\trun-000\tfailed\ttrain" in writes["projection"][1]
+    assert writes["projection"][2] == "baichuan3"
 
 
 def test_merge_run_manifest_remote_read_failure_writes_nothing(monkeypatch):
@@ -816,24 +819,26 @@ def test_empty_remote_canonical_commit_preserves_the_valid_matrix_identity_heade
     monkeypatch.setattr(experiment_io, "read_text_at", lambda *_args, **_kwargs: "step_id\trun_id\n")
     monkeypatch.setattr(
         experiment_io,
-        "write_rows_at",
-        lambda path, rows, *, remote=None: writes.update({Path(path).name: (rows, remote)}),
-    )
-    monkeypatch.setattr(
-        experiment_io,
-        "write_text_at",
-        lambda path, text, *, remote=None: writes.update({Path(path).name: (text, remote)}),
-    )
-    monkeypatch.setattr(
-        experiment_io,
         "conditional_atomic_replace_text_at",
         lambda path, text, _expected_sha256, *, remote=None: writes.update({Path(path).name: (text, remote)}) is None,
+    )
+    monkeypatch.setattr(
+        experiment_workspace,
+        "_write_remote_run_matrix_if_current",
+        lambda _root, rows, manifest_text, remote: writes.update(
+            {"projection": (experiment_workspace._run_matrix_text(rows), manifest_text, remote)}
+        )
+        is None,
     )
 
     assert merge_run_manifest("/remote/workspace", [], remote="unit-host") == []
 
     assert writes["run_manifest.tsv"] == ("step_id\trun_id\n", "unit-host")
-    assert writes["run_matrix.csv"] == ("step_id,run_id\n", "unit-host")
+    assert writes["projection"] == (
+        ("step_id,run_id\n", "# Run Matrix\n\nNo runs registered.\n"),
+        "step_id\trun_id\n",
+        "unit-host",
+    )
 
 
 def test_concurrent_local_manifest_writers_preserve_distinct_runs(tmp_path: Path):
@@ -890,7 +895,11 @@ def test_concurrent_local_manifest_writer_holds_lock_through_projection(tmp_path
             return result
         return real_write_run_matrix(root, rows, remote=remote)
 
-    monkeypatch.setattr(experiment_workspace.fcntl, "flock", tracked_flock)
+    monkeypatch.setattr(
+        experiment_workspace,
+        "fcntl",
+        SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, LOCK_UN=fcntl.LOCK_UN, flock=tracked_flock),
+    )
     monkeypatch.setattr(experiment_workspace, "write_run_matrix", delayed_write_run_matrix)
     errors = []
 
@@ -1001,8 +1010,7 @@ def test_remote_manifest_commit_retries_after_digest_conflict_without_losing_row
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
     monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
-    monkeypatch.setattr(experiment_io, "write_rows_at", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_io, "write_text_at", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_workspace, "_write_remote_run_matrix_if_current", lambda *_args: True)
 
     committed = merge_run_manifest(
         "/remote/workspace",
@@ -1013,6 +1021,107 @@ def test_remote_manifest_commit_retries_after_digest_conflict_without_losing_row
     assert state["attempts"] == 2
     assert {row["run_id"] for row in committed} == {"run-000", "run-001"}
     assert "run-000" in state["text"] and "run-001" in state["text"]
+
+
+def test_remote_projection_replays_when_canonical_manifest_advances(monkeypatch):
+    state = {"text": "step_id\trun_id\n", "projection": [], "writes": 0}
+    concurrent_text = (
+        "experiment_id\tstatus\tstep_id\trun_id\n" "unit\tplanned\ttrain\trun-000\n" "unit\tplanned\ttrain\trun-001\n"
+    )
+
+    def fake_read(path, *, remote=None):
+        if Path(path).name == "experiment.yaml":
+            return "experiment:\n  id: unit\n"
+        return state["text"]
+
+    def fake_commit(_path, text, _expected_sha256, *, remote=None):
+        state["text"] = text
+        return True
+
+    def fake_projection(_root, rows, _manifest_text, _remote):
+        state["writes"] += 1
+        if state["writes"] == 1:
+            # Another manager commits and projects first; this writer must not leave its older view behind.
+            state["text"] = concurrent_text
+            return False
+        state["projection"] = [row["run_id"] for row in rows]
+        return True
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
+    monkeypatch.setattr(experiment_workspace, "_write_remote_run_matrix_if_current", fake_projection)
+
+    committed = merge_run_manifest(
+        "/remote/workspace",
+        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
+        remote="unit-host",
+    )
+
+    assert state["writes"] == 2
+    assert state["projection"] == ["run-000", "run-001"]
+    assert {row["run_id"] for row in committed} == {"run-000", "run-001"}
+
+
+def test_remote_projection_holds_the_canonical_manifest_lock(monkeypatch):
+    calls = []
+
+    def fake_run(host, command, **kwargs):
+        calls.append((host, command, kwargs))
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(experiment_workspace.transport, "run_ssh", fake_run)
+    rows = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}]
+
+    assert experiment_workspace._write_remote_run_matrix_if_current(
+        Path("/remote/workspace"), rows, "step_id\trun_id\n", "unit-host"
+    )
+
+    host, command, kwargs = calls[0]
+    assert host == "unit-host"
+    assert 'manifest_path + ".lock"' in command
+    assert "hashlib.sha256(current).hexdigest() != expected" in command
+    payload = json.loads(kwargs["input"])
+    assert "run-000" in payload["matrix"]
+    assert "| planned |" in payload["report"]
+
+
+def test_remote_projection_conflicts_never_publish_a_stale_matrix(monkeypatch):
+    state = {"text": "step_id\trun_id\n", "attempts": 0, "projection": ["preexisting"]}
+
+    def fake_read(path, *, remote=None):
+        if Path(path).name == "experiment.yaml":
+            return "experiment:\n  id: unit\n"
+        return state["text"]
+
+    def fake_commit(_path, text, _expected_sha256, *, remote=None):
+        state["text"] = text
+        return True
+
+    def conflicting_projection(_root, _rows, _manifest_text, _remote):
+        state["attempts"] += 1
+        run_ids = range(state["attempts"] + 1)
+        state["text"] = "experiment_id\tstatus\tstep_id\trun_id\n" + "".join(
+            f"unit\tplanned\ttrain\trun-{run_id:03d}\n" for run_id in run_ids
+        )
+        return False
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
+    monkeypatch.setattr(experiment_workspace, "_write_remote_run_matrix_if_current", conflicting_projection)
+
+    with pytest.raises(RuntimeError, match="three projection attempts"):
+        merge_run_manifest(
+            "/remote/workspace",
+            [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
+            remote="unit-host",
+        )
+
+    assert state["attempts"] == 3
+    assert state["projection"] == ["preexisting"]
 
 
 def test_remote_manifest_commit_fails_after_three_digest_conflicts(monkeypatch):
@@ -1083,48 +1192,23 @@ def test_only_experiment_workspace_reads_or_writes_the_canonical_run_manifest():
     assert offenders == []
 
 
-def test_step_manifest_producers_use_the_workspace_reader_and_merger():
+def test_step_manifest_writes_use_one_compare_and_swap_owner():
     agent_tools_dir = Path(__file__).parents[2] / "agent_tools"
-    producers = {}
-    writer_names = {"write_text", "write_text_at"}
-    for path in agent_tools_dir.glob("*.py"):
-        tree = ast.parse(path.read_text())
-        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
-            locator_names = set()
-            for node in ast.walk(function):
-                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    continue
-                if not any(
-                    isinstance(part, ast.Constant) and part.value == "step.yaml" for part in ast.walk(node.value)
-                ):
-                    continue
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                locator_names.update(
-                    part.id for target in targets for part in ast.walk(target) if isinstance(part, ast.Name)
-                )
-            calls = {
-                node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-                for node in ast.walk(function)
-                if isinstance(node, ast.Call)
-            }
-            writes_step = any(
-                isinstance(node, ast.Call)
-                and (node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", ""))
-                in writer_names
-                and (
-                    any(isinstance(part, ast.Constant) and part.value == "step.yaml" for part in ast.walk(node))
-                    or any(isinstance(part, ast.Name) and part.id in locator_names for part in ast.walk(node))
-                )
-                for node in ast.walk(function)
-            )
-            if writes_step:
-                producers[(path.name, function.name)] = calls
 
-    assert set(producers) == {
-        ("experiment_workspace.py", "ensure_experiment_workspace"),
-        ("experiments.py", "register_experiment_step"),
-    }
-    assert all({"read_step_manifest", "merge_step_manifest"} <= calls for calls in producers.values())
+    def function_calls(filename: str, function_name: str) -> set[str]:
+        tree = ast.parse((agent_tools_dir / filename).read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == function_name)
+        return {
+            node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+        }
+
+    assert {"merge_step_manifest", "conditional_atomic_replace_text_at"} <= function_calls(
+        "experiment_workspace.py", "commit_step_manifest"
+    )
+    assert "commit_step_manifest" in function_calls("experiment_workspace.py", "ensure_experiment_workspace")
+    assert "commit_step_manifest" in function_calls("experiments.py", "register_experiment_step")
 
 
 def test_canonical_local_experiment_root_resolves_aliases(tmp_path: Path):
@@ -1235,6 +1319,9 @@ def test_remote_output_validation_checks_root_itself_before_targets(monkeypatch)
         "workdir",
         "gpus",
         "pid_path",
+        "pid",
+        "process_group_id",
+        "process_start_token",
         "log_path",
         "command",
         "runtime.lr",
@@ -1272,6 +1359,15 @@ def test_frozen_validator_only_allows_trusted_execution_identity_initialization(
     validate_frozen_run_update(existing, incoming, allow_execution_identity_fill=True)
 
 
+def test_frozen_validator_allows_only_one_trusted_process_identity_fill():
+    existing = {"step_id": "train", "run_id": "run-000", "target": "local", "pid": "", "status": "launched"}
+
+    validate_frozen_run_update(existing, {"pid": 123}, allow_execution_identity_fill=True)
+
+    with pytest.raises(ValueError, match="pid"):
+        validate_frozen_run_update({**existing, "pid": 123}, {"pid": 456}, allow_execution_identity_fill=True)
+
+
 def test_semantic_run_name_keeps_boolean_settings_readable():
     assert (
         semantic_run_name({"runtime.lr": 2e-6, "yaml:/model/router_frozen": True, "yaml:/loss/class_weights": False})
@@ -1307,6 +1403,61 @@ def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
     assert merged["step"]["outputs"] == ["ranking.csv"]
     assert merged["recipe_path"] == "recipes/first.yaml"
     assert merged["plans"] == ["/workspace/plan-a", "/workspace/plan-b"]
+
+
+def test_concurrent_step_manifest_commits_preserve_both_plans(tmp_path: Path, monkeypatch):
+    base_payload = {
+        "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
+        "experiment_id": "experiment",
+        "recipe_path": "/workspace/recipe.yaml",
+        "plans": ["/workspace/plan-base"],
+    }
+    commit_step_manifest(tmp_path, base_payload)
+    barrier = threading.Barrier(2)
+    real_exists = experiment_io.path_exists_at
+    initial_probes = 0
+    probe_lock = threading.Lock()
+
+    def synchronized_exists(path, *, remote=None):
+        nonlocal initial_probes
+        if Path(path).name == "step.yaml":
+            with probe_lock:
+                initial_probes += 1
+                should_wait = initial_probes <= 2
+            if should_wait:
+                barrier.wait(timeout=5)
+        return real_exists(path, remote=remote)
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", synchronized_exists)
+    errors = []
+
+    def commit(plan: str):
+        try:
+            commit_step_manifest(
+                tmp_path,
+                {
+                    "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
+                    "experiment_id": "experiment",
+                    "recipe_path": "/workspace/recipe.yaml",
+                    "plans": [plan],
+                },
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=commit, args=(plan,)) for plan in ("/workspace/plan-a", "/workspace/plan-b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert set(read_step_manifest(tmp_path, "train")["plans"]) == {
+        "/workspace/plan-base",
+        "/workspace/plan-a",
+        "/workspace/plan-b",
+    }
 
 
 def test_step_manifest_merge_rejects_metadata_drift():

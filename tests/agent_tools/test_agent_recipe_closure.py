@@ -128,6 +128,22 @@ def test_recipe_rejects_unknown_fields_in_existing_owner_sections(
     assert issue.evidence["preflight_before_workspace"] is True
 
 
+def test_recipe_rejects_unregistered_task_at_the_recipe_boundary(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = "not_registered"
+    payload["decisions"]["task"] = {"value": "not_registered", "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    issue = next(issue for issue in report.blocking_issues() if issue.field == "task")
+    assert report.exit_code == 1
+    assert issue.message == "Unsupported task: not_registered"
+    assert issue.evidence["source_layer"] == "effective"
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
 @pytest.mark.parametrize("section", ["inputs", "runtime", "decisions"])
 def test_recipe_rejects_non_mapping_sections_before_consumers_run(tmp_path: Path, section: str):
     recipe = write_finetune_recipe(tmp_path)
@@ -493,6 +509,34 @@ def test_adaptive_init_closure_failure_leaves_target_and_source_untouched(tmp_pa
 
     assert result.returncode == 1
     assert "search.max_run" in result.stdout + result.stderr
+    assert _snapshot(source) == before
+    assert not workflow.exists()
+
+
+def test_adaptive_init_consults_before_runtime_validation(tmp_path: Path):
+    source = tmp_path / "source"
+    recipe = _write_hparam_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workflow = tmp_path / "workflow"
+    payload["experiment"]["root"] = str(workflow)
+    payload["adaptive"] = {
+        "enabled": True,
+        "objective_mode": "max",
+        "max_rounds": 2,
+        "max_runs_total": 4,
+        "round_size": 1,
+        "suggest": {"strategy": "agent_proposal"},
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = _snapshot(source)
+
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+
+    assert result.returncode == 2
+    assert "Status: NEEDS_USER_INPUT" in result.stdout
+    assert "adaptive.objective_metric" in result.stdout
+    assert "test_feedback_for_selection" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
     assert _snapshot(source) == before
     assert not workflow.exists()
 

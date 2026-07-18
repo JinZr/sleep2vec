@@ -7,8 +7,8 @@ import math
 import os
 from pathlib import Path
 import shlex
-import signal
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any
@@ -18,6 +18,7 @@ import yaml
 from . import experiment_io as exp_io, gpu_rules, run_artifacts as artifacts, run_evidence as evidence, transport
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
+    PROCESS_IDENTITY_FIELDS,
     TERMINAL_STATUSES,
     append_event,
     experiment_root,
@@ -137,6 +138,55 @@ for artifact in artifacts:
         raise SystemExit(2)
 print(json.dumps(payload, sort_keys=True))
 """.strip()
+
+_PROCESS_LAUNCH_SCRIPT = "\n\n".join(
+    [
+        """
+import json
+import os
+import signal
+import subprocess
+import sys
+""".strip(),
+        evidence._PROCESS_START_TOKEN_CODE,
+        """
+
+script, log_path, pid_path, workdir = sys.argv[1:]
+
+with open(log_path, "ab", buffering=0) as log_file:
+    process = subprocess.Popen(
+        ["bash", script],
+        cwd=workdir,
+        env=os.environ.copy(),
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        identity = {
+            "pid": process.pid,
+            "process_group_id": os.getpgid(process.pid),
+            "process_start_token": start_token(process.pid),
+        }
+        if identity["process_start_token"] is None:
+            raise RuntimeError(f"Cannot read process start time for PID {process.pid}")
+        descriptor = os.open(pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file_obj:
+            json.dump(identity, file_obj, sort_keys=True)
+            file_obj.write("\\n")
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+    except BaseException:
+        # An unrecorded process group cannot be managed safely, so stop it before surfacing launch failure.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        raise
+""".strip(),
+    ]
+)
 
 
 def launch_hparam_runs(
@@ -341,7 +391,13 @@ def _launch_hparam_runs(
             continue
         observation = {field: previous[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in previous}
         observation.update({"step_id": key[0], "run_id": key[1], "status": previous.get("status", "")})
-        refreshed[key] = evidence.status_row(run_dir, observation, previous, health=False)
+        refreshed[key] = evidence.status_row(
+            run_dir,
+            observation,
+            previous,
+            script_commits_terminal_status=False,
+            health=False,
+        )
         if refreshed[key].get("status") != previous.get("status"):
             observed_status_changes[key] = (previous.get("status"), refreshed[key].get("status"))
     active_statuses = {"launched", "running", "unknown_remote", "missing_pid"}
@@ -378,7 +434,13 @@ def _launch_hparam_runs(
         if not dry_run and observable:
             observation = {field: row[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in row}
             observation.update({"step_id": key[0], "run_id": key[1], "status": row.get("status", "")})
-            observed = evidence.status_row(run_dir, observation, row, health=False)
+            observed = evidence.status_row(
+                run_dir,
+                observation,
+                row,
+                script_commits_terminal_status=False,
+                health=False,
+            )
             if observed.get("status") != row.get("status"):
                 external_status_changes[key] = (row.get("status"), observed.get("status"))
                 workspace_by_key[key] = observed
@@ -452,6 +514,7 @@ def _launch_hparam_runs(
             "log_path": str(log_path),
             "pid_path": str(pid_path),
             "command": "",
+            **{field: "" for field in PROCESS_IDENTITY_FIELDS},
         }
         execution_identity = (
             {field: previous.get(field, "") for field in launch_identity_by_key[key]}
@@ -632,6 +695,13 @@ def _launch_hparam_runs(
                 continue
             row["status"] = _start_process(execution, row["command"])
             row["launched_at"] = utc_now() if row["status"] == "launched" else ""
+            if row["status"] == "launched":
+                try:
+                    process_identity = evidence.read_process_identity(row["pid_path"], row)
+                except RuntimeError:
+                    process_identity = None
+                if process_identity is not None:
+                    row.update(process_identity)
             committed = merge_run_manifest(workspace, [row], lock_held=manifest_lock_held)
             committed_by_key = {managed_run_key(item): item for item in committed}
             row.clear()
@@ -931,7 +1001,15 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
             continue
         observation = {field: prior[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in prior}
         observation.update({"step_id": key[0], "run_id": key[1], "status": prior.get("status", "")})
-        rows.append(evidence.status_row(root, observation, prior, health=health))
+        rows.append(
+            evidence.status_row(
+                root,
+                observation,
+                prior,
+                script_commits_terminal_status=False,
+                health=health,
+            )
+        )
     out = status_path
     committed = merge_run_manifest(workspace, rows)
     committed_by_key = {managed_run_key(row): row for row in committed}
@@ -994,7 +1072,9 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
     key = managed_run_key(matched[0])
     previous = workspace_by_key[key]
-    missing_execution_identity = {field for field in EXECUTION_IDENTITY_FIELDS if field not in previous}
+    missing_execution_identity = {
+        field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
+    }
     if previous.get("target") in (None, ""):
         missing_execution_identity.add("target")
     if missing_execution_identity:
@@ -1003,37 +1083,44 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         )
     if previous.get("status") in TERMINAL_STATUSES:
         raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
-    remote_host = str(previous["host"]) if previous.get("target") == "ssh" else None
+    target = previous.get("target")
+    if target not in {"local", "ssh"}:
+        raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
+    host = previous.get("host")
+    if target == "ssh" and (not isinstance(host, str) or not host.strip()):
+        raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+    populated_process_fields = {field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")}
+    if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
+        missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
+        raise ValueError(f"Canonical run has partial process identity for {run_id}; missing: {missing}")
+    remote_host = str(host) if target == "ssh" else None
     exp_io.validate_managed_output_paths(
         workspace,
         [previous["pid_path"]],
         remote=remote_host,
     )
-    pid = evidence.read_pid(
-        previous.get("pid_path"),
-        previous,
-        expected_script=previous["script"],
-    )
-    if pid is None:
-        raise ValueError(f"No recorded PID for run_id: {run_id}")
-    if previous.get("target") == "ssh":
-        result = transport.run_ssh(
-            previous["host"],
-            f"kill -TERM {pid}",
-            check=False,
-            capture_output=False,
-            timeout=evidence.SSH_TIMEOUT_SECONDS,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to stop remote run {run_id} on {previous['host']}.")
+    if populated_process_fields:
+        process_identity = evidence.read_process_identity(previous.get("pid_path"), previous)
     else:
-        os.kill(pid, signal.SIGTERM)
+        process_identity = evidence.read_process_identity(
+            previous.get("pid_path"),
+            previous,
+            expected_script=previous.get("script"),
+        )
+    if process_identity is None:
+        raise ValueError(f"No recorded PID for run_id: {run_id}")
+    for field in PROCESS_IDENTITY_FIELDS:
+        frozen_value = previous.get(field)
+        if frozen_value not in (None, "") and str(frozen_value) != str(process_identity[field]):
+            raise RuntimeError(f"Recorded process identity differs from canonical {field} for run_id: {run_id}")
+    evidence.stop_process_group(previous, process_identity)
     stopped_at = utc_now()
     final = merge_run_row(
         previous,
         {
             "step_id": key[0],
             "run_id": key[1],
+            **process_identity,
             "status": "stopped",
             "stopped_at": stopped_at,
             "stop_reason": reason,
@@ -1079,7 +1166,15 @@ def _launch_command(
     env = dict(execution.get("env") or {})
     if gpus:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(item) for item in gpus)
-    run = ["bash", str(script)]
+    run = [
+        str(execution.get("python") or sys.executable),
+        "-c",
+        _PROCESS_LAUNCH_SCRIPT,
+        str(script),
+        str(log_path),
+        str(pid_path),
+        workdir,
+    ]
     verification = None
     if execution_snapshot is not None:
         if config_path is None or not script_sha256 or not config_sha256:
@@ -1126,12 +1221,9 @@ def _launch_command(
     guard = f"{verification_command} >/dev/null && " if verification_command else ""
     if execution.get("target", "local") == "ssh":
         mkdir = f"mkdir -p {_sh(_parent_path(log_path))} {_sh(_parent_path(pid_path))}"
-        inner = (
-            f"{mkdir} && cd {_sh(workdir)} && {guard}"
-            f"(nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"
-        )
+        inner = f"{mkdir} && cd {_sh(workdir)} && {guard}{run_command}"
         return f"ssh {_sh(execution['host'])} {_sh(inner)}"
-    inner = f"cd {_sh(workdir)} && {guard}" f"(nohup {run_command} > {_sh(log_path)} 2>&1 & echo $! > {_sh(pid_path)})"
+    inner = f"cd {_sh(workdir)} && {guard}{run_command}"
     return inner
 
 
@@ -1150,7 +1242,8 @@ def _start_process(execution: dict[str, Any], command: str) -> str:
             timeout=LAUNCH_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return "launch_failed"
+        # A detached child may already exist when the transport times out; monitoring must reconcile it.
+        return "launched"
     return "launched" if result.returncode == 0 else "launch_failed"
 
 

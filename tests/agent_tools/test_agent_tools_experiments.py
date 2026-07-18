@@ -286,6 +286,32 @@ def test_experiment_registers_step_and_finalizes_completed_workspace(tmp_path: P
     assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
 
 
+def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_path: Path, monkeypatch):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n"
+    )
+    report = tmp_path.parent / "final.md"
+    report.write_text("# Final\n\nValidation-selected result.\n")
+    manifest = tmp_path / "experiment.yaml"
+    before = manifest.read_bytes()
+    real_replace = experiment_io.os.replace
+
+    def interrupt_manifest_replace(source, target):
+        if Path(target) == manifest:
+            raise OSError("interrupted")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(experiment_io.os, "replace", interrupt_manifest_replace)
+
+    with pytest.raises(OSError, match="interrupted"):
+        experiments.finalize_experiment(tmp_path, report)
+
+    assert manifest.read_bytes() == before
+    assert (tmp_path / "reports" / "final.md").read_text() == report.read_text()
+
+
 @pytest.mark.parametrize(
     "existing",
     [

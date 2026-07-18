@@ -644,6 +644,58 @@ def test_experiment_monitor_preserves_script_owned_running_without_execution_evi
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
 
+def test_experiment_monitor_treats_hparam_script_with_process_identity_as_monitor_owned(tmp_path: Path, monkeypatch):
+    _initialize_workspace(tmp_path)
+    pid_path = tmp_path / "hparam.pid"
+    identity = {"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}
+    pid_path.write_text(json.dumps(identity) + "\n")
+    log_path = tmp_path / "hparam.log"
+    log_path.write_text("training completed\n")
+    row = {
+        "experiment_id": "unit",
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "run_name": "hparam",
+        "version": "hparam-v1",
+        "script": str(tmp_path / "launch.sh"),
+        "pid_path": str(pid_path),
+        "log_path": str(log_path),
+        "status": "running",
+        **identity,
+    }
+    experiment_io.write_rows_at(tmp_path / "run_manifest.tsv", [row])
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+
+    result = experiments.monitor_experiment(tmp_path)
+
+    assert result["runs"][0]["status"] == "completed"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "completed"
+
+
+def test_experiment_monitor_marks_lifecycle_script_exit_without_terminal_commit_failed(tmp_path: Path):
+    _initialize_workspace(tmp_path)
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-000",
+                "run_name": "managed",
+                "version": "managed-v1",
+                "script": str(tmp_path / "run.sh"),
+                "state": "finished",
+                "status": "running",
+            }
+        ],
+    )
+
+    result = experiments.monitor_experiment(tmp_path)
+
+    assert result["runs"][0]["status"] == "failed"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
+
+
 @pytest.mark.parametrize(
     ("existing_status", "wandb_state", "expected_status"),
     [("stopped", "running", "stopped"), ("completed", "failed", "failed")],
@@ -1000,7 +1052,8 @@ def test_remote_monitor_uses_transport_identity_without_persisting_it(tmp_path: 
         previous.update({"target": canonical_target, "host": ""})
     observed_rows = []
 
-    def fake_status(_root, row, _previous, *, health):
+    def fake_status(_root, row, _previous, *, script_commits_terminal_status, health):
+        assert script_commits_terminal_status is False
         observed_rows.append(dict(row))
         return {**row, "status": "running", "health_status": "running"}
 
@@ -1032,7 +1085,7 @@ def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkey
     monkeypatch.setattr(
         run_evidence,
         "status_row",
-        lambda _root, row, _previous, *, health: {
+        lambda _root, row, _previous, *, script_commits_terminal_status, health: {
             **row,
             "status": "completed",
             "health_status": "completed",
@@ -1171,7 +1224,8 @@ def test_experiment_monitor_does_not_regress_canonical_running_from_stale_status
         "step_id\trun_id\tversion\tstatus\n" "train-model\trun-000\tmanaged-v1\tplanned\n"
     )
 
-    def fake_status(_root, row, previous, *, health):
+    def fake_status(_root, row, previous, *, script_commits_terminal_status, health):
+        assert script_commits_terminal_status is False
         assert health is True
         assert row["status"] == "running"
         assert previous["status"] == "running"
@@ -1370,7 +1424,10 @@ def test_experiment_monitor_keeps_duplicate_versions_scoped_by_step_and_run(tmp_
     monkeypatch.setattr(
         run_evidence,
         "status_row",
-        lambda _root, row, previous, health: {**row, "health_status": "running"},
+        lambda _root, row, previous, *, script_commits_terminal_status, health: {
+            **row,
+            "health_status": "running",
+        },
     )
 
     result = experiments.monitor_experiment(tmp_path)
@@ -1447,7 +1504,8 @@ def test_experiment_monitor_matches_previous_rows_by_managed_identity(tmp_path: 
     ]
     matched = []
 
-    def fake_status(_root, row, previous, *, health):
+    def fake_status(_root, row, previous, *, script_commits_terminal_status, health):
+        assert script_commits_terminal_status is False
         assert health is True
         matched.append((row["step_id"], previous["step_id"], previous["marker"]))
         return {**row, "health_status": "running"}

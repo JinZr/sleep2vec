@@ -78,6 +78,24 @@ class FinetuneAdapter(TaskAdapter):
                         {"config_path": config_summary.get("config_path")},
                     )
                 )
+            # Only the structural config-family marker is a routing gate; variant_guess can be path-derived.
+            config_variant = config_summary.get("authoritative_variant")
+            recipe_variant = recipe.get("variant")
+            # An unresolved variant belongs to the consultation gate; only an explicit conflict is invalid.
+            if (
+                config_variant is not None
+                and recipe_variant not in (None, "", "ASK_USER")
+                and recipe_variant != config_variant
+            ):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "variant",
+                        f"Config family requires variant={config_variant}.",
+                        None,
+                        {"config_variant": config_variant, "recipe_variant": recipe_variant},
+                    )
+                )
         test_after_fit_decision = decisions.get("test_after_fit")
         test_after_fit = (
             test_after_fit_decision.value if test_after_fit_decision is not None else evaluation.get("test_after_fit")
@@ -110,7 +128,7 @@ class FinetuneAdapter(TaskAdapter):
                 )
         if (
             config_summary
-            and config_summary.get("variant_guess") == "sex_age_baseline"
+            and config_summary.get("authoritative_variant") == "sex_age_baseline"
             and config_summary.get("data_backend") == "kaldi"
         ):
             if not data.get("kaldi_data_root") or not data.get("kaldi_manifest"):

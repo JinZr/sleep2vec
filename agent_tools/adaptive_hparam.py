@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import math
@@ -21,6 +22,7 @@ from . import (
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
+from .decision_hparam import DEFAULT_ADAPTIVE_SUGGEST_STRATEGY
 from .experiment_workspace import (
     TERMINAL_STATUSES,
     append_event as _write_experiment_event,
@@ -44,21 +46,25 @@ from .recipes import load_recipe_with_base, recipe_name
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
 
 
+class AdaptivePreflightError(RuntimeError):
+    def __init__(self, report):
+        self.report = report
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in report.blocking_issues())
+        super().__init__(f"Round 000 plan failed preflight with exit code {report.exit_code}: {details}")
+
+
 def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path:
     root = canonical_local_experiment_root(output_dir, Path.cwd())
     resolved_recipe_path = resolve_repo_path(recipe_path)
     if resolved_recipe_path is None:
         raise FileNotFoundError("Path is required.")
     recipe_path = resolved_recipe_path.resolve()
-    recipe = load_recipe_with_base(recipe_path)
-    recipe["_recipe_path"] = str(recipe_path)
-    _validate_adaptive_recipe(recipe)
     adaptive_dir = root / "adaptive"
     round_dir = adaptive_dir / "rounds" / "round_000"
-    _, _, preflight = preflight_plan(recipe_path=recipe_path, output_dir=round_dir)
+    recipe, _, preflight = preflight_plan(recipe_path=recipe_path, output_dir=round_dir)
     if preflight.exit_code != 0:
-        details = "; ".join(f"{issue.field}: {issue.message}" for issue in preflight.blocking_issues())
-        raise RuntimeError(f"Round 000 plan failed preflight with exit code {preflight.exit_code}: {details}")
+        raise AdaptivePreflightError(preflight)
+    _validate_adaptive_recipe(recipe)
     recipe = plan_hparam.freeze_hparam_execution(recipe)
     workspace = experiment_root(recipe)
     if workspace is None:
@@ -187,6 +193,7 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
         raise RuntimeError(
             f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
         )
+    _validate_adaptive_recipe(recipe)
     recipe = _with_workflow_execution(recipe, workflow)
     strategy = _suggest_strategy(recipe)
     if strategy == "agent_proposal" and digest_path is None:
@@ -245,7 +252,9 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
 
 def _suggest_strategy(recipe: dict[str, Any]) -> str:
     suggest = _adaptive(recipe).get("suggest")
-    return str(suggest.get("strategy") or "best_neighborhood") if isinstance(suggest, dict) else "best_neighborhood"
+    if not isinstance(suggest, dict):
+        return DEFAULT_ADAPTIVE_SUGGEST_STRATEGY
+    return str(suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY))
 
 
 def _round_is_terminal(round_dir: Path, workspace: Path) -> bool:
@@ -341,30 +350,102 @@ def _write_agent_proposal_input(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(workspace, [input_path, proposal_path, workspace / "events.jsonl"])
+    events_lock = workspace / "events.jsonl.lock"
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [input_path, proposal_path, workspace / "events.jsonl", events_lock],
+    )
     text = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
     input_sha256 = hashlib.sha256(text.encode()).hexdigest()
-    created = not input_path.exists()
-    if created:
-        input_path.parent.mkdir(parents=True, exist_ok=True)
-        input_path.write_text(text)
-    elif input_path.read_text() != text:
-        raise ValueError(f"Agent proposal input snapshot was modified: {input_path}")
-    if created:
-        _append_event(
-            root,
-            "agent_proposal_requested",
-            {
-                "source_round": source_round,
-                "target_round": target_round,
-                "digest": str(digest),
-                "request_id": request_id,
-                "input_path": str(input_path),
-                "input_sha256": input_sha256,
-                "proposal_path": str(proposal_path),
-            },
-        )
+    events_lock.parent.mkdir(parents=True, exist_ok=True)
+    with events_lock.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if not input_path.exists():
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            input_path.write_text(text)
+        elif input_path.read_text() != text:
+            raise ValueError(f"Agent proposal input snapshot was modified: {input_path}")
+        events = _proposal_request_events(workspace)
+        expected = _proposal_request_event_fields(document, input_path, input_sha256, proposal_path)
+        related = _related_proposal_request_events(events, expected)
+        if related:
+            _validate_proposal_request_event(
+                workspace,
+                document,
+                input_path,
+                input_sha256,
+                proposal_path,
+                events=events,
+            )
+        else:
+            # Only a completely unbound snapshot is the recoverable crash gap between write and issuance.
+            _write_experiment_event(
+                workspace,
+                "agent_proposal_requested",
+                {
+                    "source_round": source_round,
+                    "target_round": target_round,
+                    "digest": str(digest),
+                    "request_id": request_id,
+                    "input_path": str(input_path),
+                    "input_sha256": input_sha256,
+                    "proposal_path": str(proposal_path),
+                },
+            )
     return input_path
+
+
+def _proposal_request_events(workspace: Path) -> list[dict[str, Any]]:
+    events_path = workspace / "events.jsonl"
+    exp_io.validate_managed_output_paths(workspace, [events_path])
+    if not events_path.exists():
+        return []
+    events = []
+    for line in events_path.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed experiment event log: {events_path}") from exc
+        if not isinstance(event, dict):
+            raise ValueError(f"Experiment event log contains a non-object row: {events_path}")
+        if event.get("event_type") == "agent_proposal_requested":
+            events.append(event)
+    return events
+
+
+def _proposal_request_event_fields(
+    proposal_input: dict[str, Any],
+    input_path: Path,
+    input_sha256: str,
+    proposal_path: Path,
+) -> dict[str, Any]:
+    snapshot = proposal_input["input"]
+    return {
+        "source_round": snapshot["source_round"],
+        "target_round": snapshot["target_round"],
+        "request_id": proposal_input["request_id"],
+        "input_path": str(input_path),
+        "input_sha256": input_sha256,
+        "proposal_path": str(proposal_path),
+    }
+
+
+def _related_proposal_request_events(events: list[dict[str, Any]], expected: dict[str, Any]) -> list[dict[str, Any]]:
+    direct_binding_fields = ("request_id", "input_path", "proposal_path")
+    path_fields = ("input_path", "proposal_path")
+    expected_parents = {field: Path(expected[field]).parent for field in path_fields}
+    related = []
+    for event in events:
+        if any(event.get(field) == expected[field] for field in direct_binding_fields):
+            related.append(event)
+            continue
+        same_workflow = any(
+            isinstance(event.get(field), str) and Path(event[field]).parent == expected_parents[field]
+            for field in path_fields
+        )
+        if same_workflow and event.get("target_round") == expected["target_round"]:
+            related.append(event)
+    return related
 
 
 def _validate_proposal_request_event(
@@ -373,35 +454,18 @@ def _validate_proposal_request_event(
     input_path: Path,
     input_sha256: str,
     proposal_path: Path,
+    *,
+    events: list[dict[str, Any]] | None = None,
 ) -> None:
-    snapshot = proposal_input["input"]
     events_path = workspace / "events.jsonl"
-    exp_io.validate_managed_output_paths(workspace, [events_path])
     if not events_path.exists():
         raise ValueError("Agent proposal input was not issued by phase one.")
-    related = []
-    for line in events_path.read_text().splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Malformed experiment event log: {events_path}") from exc
-        if not isinstance(event, dict):
-            raise ValueError(f"Experiment event log contains a non-object row: {events_path}")
-        if event.get("event_type") != "agent_proposal_requested":
-            continue
-        if event.get("request_id") == proposal_input["request_id"]:
-            related.append(event)
+    expected = _proposal_request_event_fields(proposal_input, input_path, input_sha256, proposal_path)
+    all_events = events if events is not None else _proposal_request_events(workspace)
+    related = _related_proposal_request_events(all_events, expected)
     if len(related) != 1:
         raise ValueError("Agent proposal input has no unique phase-one issuance record.")
     event = related[0]
-    expected = {
-        "source_round": snapshot["source_round"],
-        "target_round": snapshot["target_round"],
-        "request_id": proposal_input["request_id"],
-        "input_path": str(input_path),
-        "input_sha256": input_sha256,
-        "proposal_path": str(proposal_path),
-    }
     if any(event.get(field) != value for field, value in expected.items()):
         raise ValueError("Agent proposal input differs from its phase-one issuance record.")
 
@@ -769,6 +833,7 @@ def adaptive_step(
         raise RuntimeError(
             f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
         )
+    _validate_adaptive_recipe(recipe)
     recipe = _with_workflow_execution(recipe, workflow)
     strategy = _suggest_strategy(recipe)
     if strategy == "agent_proposal" and execute and proposal_path is None:
@@ -811,30 +876,26 @@ def adaptive_step(
             raise RuntimeError(
                 f"Adaptive source recipe failed preflight with exit code {current_preflight.exit_code}: {details}"
             )
+        _validate_adaptive_recipe(recipe)
         recipe = _with_workflow_execution(recipe, workflow)
         workspace = experiment_root(recipe)
         if workspace is None:
             raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
-        if not execute:
-            _validated_agent_proposal_input(
-                root,
-                workflow,
-                recipe,
-                workspace,
-                input_path,
-                proposal_file,
-                expected_sha256=input_sha256,
-            )
-            if file_sha256(proposal_file) != proposal_sha256:
-                raise ValueError("Agent proposal submission changed during validation.")
-            return proposal_file
-
-        next_run_count = _hparam_count(next_recipe)
-        next_max_runs = (next_recipe.get("search") or {}).get("max_runs")
-        if next_max_runs not in (None, ""):
-            next_run_count = min(next_run_count, int(next_max_runs))
-        if _budget_exhausted(root, recipe, prospective_runs=next_run_count):
-            raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
+        refreshed_candidate_payload = _agent_suggestion_payload(recipe, workflow, next_round, validated)
+        if refreshed_candidate_payload != candidate_payload:
+            # Effective semantics can stay constant across offsetting base/local edits, so use the refreshed pair.
+            candidate_payload = refreshed_candidate_payload
+            with TemporaryDirectory(prefix="agent-tools-agent-proposal-") as temp_dir:
+                candidate_path = Path(temp_dir) / "suggested.yaml"
+                candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
+                next_recipe, _, candidate_preflight = preflight_plan(recipe_path=candidate_path, output_dir=next_dir)
+            if candidate_preflight.exit_code != 0:
+                details = "; ".join(
+                    f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues()
+                )
+                raise RuntimeError(
+                    f"Agent proposal failed preflight with exit code {candidate_preflight.exit_code}: {details}"
+                )
         proposal_input, _ = _validated_agent_proposal_input(
             root,
             workflow,
@@ -844,6 +905,17 @@ def adaptive_step(
             proposal_file,
             expected_sha256=input_sha256,
         )
+        if file_sha256(proposal_file) != proposal_sha256:
+            raise ValueError("Agent proposal submission changed during validation.")
+        if not execute:
+            return proposal_file
+
+        next_run_count = _hparam_count(next_recipe)
+        next_max_runs = (next_recipe.get("search") or {}).get("max_runs")
+        if next_max_runs not in (None, ""):
+            next_run_count = min(next_run_count, int(next_max_runs))
+        if _budget_exhausted(root, recipe, prospective_runs=next_run_count):
+            raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
         bound_config_sha256 = proposal_input["input"]["source_config_sha256"]
         bound_config_bytes = _bound_source_config_bytes(recipe, bound_config_sha256)
         bound_config_path = next_dir / "source_config.yaml"
@@ -1005,6 +1077,7 @@ def adaptive_step(
 def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     recipe = load_recipe_with_base(_workflow(root)["recipe_path"])
+    _validate_adaptive_recipe(recipe)
     if _suggest_strategy(recipe) == "agent_proposal":
         raise ValueError("hparam-adaptive-loop does not support agent_proposal; use the two-phase adaptive step.")
     workspace = experiment_root(recipe)
@@ -1026,7 +1099,7 @@ def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
 
 def _validate_adaptive_recipe(recipe: dict[str, Any]) -> None:
     adaptive = _adaptive(recipe)
-    if not adaptive.get("enabled"):
+    if adaptive.get("enabled") is not True:
         raise ValueError("adaptive.enabled must be true for adaptive workflow.")
     objective = str(adaptive.get("objective_metric") or "test_auroc")
     uses_external = objective.startswith("test_") or objective.startswith("external_")
@@ -1249,18 +1322,19 @@ def _reconcile_interrupted_launch(
         if row.get("target") in (None, ""):
             continue
         try:
-            pid = evidence.read_pid(row.get("pid_path"), row)
+            process_identity = evidence.read_process_identity(row.get("pid_path"), row)
         except RuntimeError:
             unresolved.add(key)
             continue
-        if pid is not None:
+        if process_identity is not None:
             reconciled.add(key)
             updates.append(
                 {
                     "step_id": row["step_id"],
                     "run_id": row["run_id"],
                     "status": "launched",
-                    "pid": pid,
+                    # The launch may have outlived its first commit; recover the complete immutable identity.
+                    **process_identity,
                     "launched_at": row.get("launched_at") or utc_now(),
                 }
             )
@@ -1309,7 +1383,8 @@ def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
             pid = row.get("pid")
             if row.get("target") not in (None, ""):
                 try:
-                    pid = evidence.read_pid(row.get("pid_path"), row) or pid
+                    process_identity = evidence.read_process_identity(row.get("pid_path"), row)
+                    pid = process_identity["pid"] if process_identity is not None else pid
                 except RuntimeError:
                     unresolved.append((round_index, str(row["run_id"])))
                     continue
@@ -1593,7 +1668,7 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> list[tuple[str, str]
 def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -> set[tuple[str, str]]:
     adaptive = _adaptive(recipe)
     replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
-    if not replacement.get("enabled", True) or not replacement.get("allow_running_stop", False):
+    if replacement.get("enabled", True) is not True or replacement.get("allow_running_stop", False) is not True:
         return set()
     objective = _objective(root, recipe)
     incumbent = _latest_incumbent_score(root)

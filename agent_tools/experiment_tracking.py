@@ -293,11 +293,14 @@ def monitor_run_row(
     remote: str | None = None,
 ) -> dict[str, Any]:
     previous = resolve_run_row(previous_rows, row) or {}
+    has_managed_script = any(source.get("script") not in (None, "") for source in (row, previous))
+    has_process_identity = any(source.get("pid_path") not in (None, "") for source in (row, previous))
     has_execution_evidence = any(
         source.get(field) not in (None, "") for source in (row, previous) for field in ("pid_path", "state")
     )
-    is_script_owned = any(source.get("script") not in (None, "") for source in (row, previous))
-    if (previous.get("status") or row.get("status")) == "running" and is_script_owned and not has_execution_evidence:
+    # Hparam scripts expose process identity for monitor-owned exit inference; lifecycle scripts self-commit.
+    script_commits_terminal_status = has_managed_script and not has_process_identity
+    if (previous.get("status") or row.get("status")) == "running" and has_managed_script and not has_execution_evidence:
         return {
             "step_id": row["step_id"],
             "run_id": row["run_id"],
@@ -310,7 +313,13 @@ def monitor_run_row(
     if transport_override:
         observation_row["target"] = "ssh"
         observation_row["host"] = remote
-    status = evidence.status_row(root, observation_row, previous, health=True)
+    status = evidence.status_row(
+        root,
+        observation_row,
+        previous,
+        script_commits_terminal_status=script_commits_terminal_status,
+        health=True,
+    )
     if status.get("status") == "finished":
         status["status"] = "completed"
     if status.get("health_status") == "finished":

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import decision_paths as paths, plan_rendering as rendering, schema_map
-from .adapters import all_adapters, get_adapter
+from .adapters import SUPPORTED_TASKS, all_adapters, get_adapter
 from .decision_models import (
     DecisionIssue,
     DecisionReport,
@@ -89,6 +89,8 @@ def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
     adapter = get_adapter(task)
     if adapter is not None:
         return adapter.runtime_fields(variant)
+    if task is not None:
+        return frozenset()
     union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
     for registered in all_adapters():
         union = union | registered.runtime_fields(variant)
@@ -140,7 +142,21 @@ def evaluate_consultation_gates(
     issues: list[DecisionIssue] = []
     decisions: dict[str, ResolvedDecision] = {}
     high_impact = _high_impact_by_id(policy)
-    supported_tasks = _supported_tasks(high_impact)
+    policy_tasks = _policy_tasks(high_impact)
+    unknown_policy_tasks = sorted(policy_tasks - SUPPORTED_TASKS)
+    missing_policy_tasks = sorted(SUPPORTED_TASKS - policy_tasks)
+    if unknown_policy_tasks or missing_policy_tasks:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "consultation_policy",
+                "Consultation policy task coverage differs from the registered adapters.",
+                None,
+                {"unknown_tasks": unknown_policy_tasks, "missing_tasks": missing_policy_tasks},
+            )
+        )
+        return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
+    supported_tasks = SUPPORTED_TASKS
     task_decision = _resolve_decision(
         "task",
         recipe,
@@ -309,7 +325,7 @@ def _high_impact_by_id(policy: dict) -> dict[str, dict[str, Any]]:
     }
 
 
-def _supported_tasks(high_impact: dict[str, dict[str, Any]]) -> set[str]:
+def _policy_tasks(high_impact: dict[str, dict[str, Any]]) -> set[str]:
     tasks: set[str] = set()
     for rule in high_impact.values():
         tasks.update(rule.get("required_for_tasks", []))

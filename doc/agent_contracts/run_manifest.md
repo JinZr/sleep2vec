@@ -6,7 +6,7 @@
 
 The canonical managed key is `(step_id, run_id)`. Both fields are required and one canonical table contains at most one row per key. A run uses the next stable step-local `run-NNN` id. `run_name` is human-readable, and `version` is the bounded slug of experiment id, step id, run id, and run name. Version may resolve external evidence only when a complete managed key is absent and the match is unique.
 
-Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Execution identity consists of target, host, workdir, GPUs, PID/log paths, and command. Only the canonical owner may perform its first trusted fill.
+Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Execution identity consists of target, host, workdir, GPUs, PID/log paths, command, and the launched PID, process-group id, and OS process-start token. Only the canonical owner may perform each trusted first fill.
 
 Managed tables declare either one row per run or many rows per run. Both forms require complete managed identity and reject removed `trial_id` or `param.*` formats. Historical formats remain read-only and are never translated into current state.
 
@@ -24,8 +24,10 @@ The current vocabulary includes scheduled `planned`/`pending`, active `launched`
 - Terminal status is sticky, except incoming `failed` evidence may correct `completed` or `finished`.
 - Active status cannot regress through stale `planned` or `pending` evidence.
 - `superseded` commits only when the freshly read canonical state is still `planned` or `pending`.
-- Monitoring preserves the existing finished-to-completed normalization.
-- Monitoring preserves a script-owned `running` state when neither PID nor W&B execution evidence exists; absence of those evidence sources is not process-exit evidence.
+- Monitoring preserves finished-to-completed normalization for evidence whose script does not own terminal commits.
+- Monitoring preserves a managed-script `running` state when neither PID nor W&B execution evidence exists; absence of those evidence sources is not process-exit evidence.
+- A `script` path requires strict managed process-identity checks but does not by itself assign terminal-status ownership.
+- A lifecycle-enabled generated script owns its terminal commit. Confirmed disappearance of its process group without a canonical `completed` or `failed` commit is `failed`, never inferred success. Hparam launch scripts do not own terminal commits, so their monitor infers `finished` or `failed` from confirmed process exit and log evidence.
 
 All lifecycle callers reuse the same row reducer. They do not implement source-specific precedence.
 
@@ -57,7 +59,11 @@ No caller reads or writes `run_manifest.tsv` directly.
 
 ## PID and runtime evidence
 
-Only confirmed absence means no PID. Empty, non-numeric, non-positive, or invalid-encoding local PID content is confirmed corrupt and makes launchable scheduled state non-launchable `missing_pid`. A local path/read `OSError` while scheduled aborts before mutation. Remote permission, type, decoding, transport, and timeout failures produce recoverable `unknown_remote` monitoring evidence. Stop propagates PID uncertainty before signal or mutation and rejects terminal rows before PID access.
+New managed launches create a dedicated session/process group and write one JSON identity file containing exactly `pid`, `process_group_id`, and `process_start_token`. The PID must be the process-group leader. Monitoring compares this file with the frozen canonical values and the live OS start token, so a reused PID is not accepted as the managed workload. Historical integer-only PID files are insufficient for script-owned process control and fail closed.
+
+If those canonical process fields are still blank after an unresolved launch, monitoring or stop may fill them only after the live leader command matches the frozen absolute launch script. Monitoring and stop reject a partially populated canonical process identity.
+
+Only confirmed absence means no process identity. Empty, malformed, non-positive, aliased, or invalid-encoding local identity content is confirmed corrupt and makes launchable scheduled state non-launchable `missing_pid`. A local path/read `OSError` while scheduled aborts before mutation. Remote permission, type, decoding, transport, and timeout failures produce recoverable `unknown_remote` monitoring evidence. A launch-command timeout is also unresolved rather than `launch_failed`: the attempted run remains active until identity monitoring proves its state, preventing a duplicate launch after a transport timeout. Stop propagates identity uncertainty before signal or mutation, rejects terminal rows before identity access, verifies and signals atomically on SSH, sends `SIGTERM` to the complete process group, and commits `stopped` only after the group has exited.
 
 Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair. Both may be empty for a non-checkpoint-producing run; a partial pair is invalid. Existing checkpoint evidence must remain inside the eligible managed keys and frozen directories.
 
