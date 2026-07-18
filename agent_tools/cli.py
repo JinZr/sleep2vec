@@ -5,7 +5,14 @@ import json
 import sys
 from typing import Any
 
-from .adaptive_hparam import adaptive_loop, adaptive_step, digest_hparam_run, init_adaptive_workflow, suggest_next_round
+from .adaptive_hparam import (
+    AdaptivePreflightError,
+    adaptive_loop,
+    adaptive_step,
+    digest_hparam_run,
+    init_adaptive_workflow,
+    suggest_next_round,
+)
 from .configs import config_summary
 from .domain.presets import preset_summary
 from .experiments import (
@@ -552,7 +559,11 @@ def _cmd_hparam_suggest(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_adaptive_init(args: argparse.Namespace) -> int:
-    root = init_adaptive_workflow(args.recipe, args.output_dir)
+    try:
+        root = init_adaptive_workflow(args.recipe, args.output_dir)
+    except AdaptivePreflightError as exc:
+        print(report_text(exc.report))
+        return exc.report.exit_code
     print(f"Wrote {root}")
     return 0
 

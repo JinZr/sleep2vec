@@ -513,6 +513,34 @@ def test_adaptive_init_closure_failure_leaves_target_and_source_untouched(tmp_pa
     assert not workflow.exists()
 
 
+def test_adaptive_init_consults_before_runtime_validation(tmp_path: Path):
+    source = tmp_path / "source"
+    recipe = _write_hparam_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workflow = tmp_path / "workflow"
+    payload["experiment"]["root"] = str(workflow)
+    payload["adaptive"] = {
+        "enabled": True,
+        "objective_mode": "max",
+        "max_rounds": 2,
+        "max_runs_total": 4,
+        "round_size": 1,
+        "suggest": {"strategy": "agent_proposal"},
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = _snapshot(source)
+
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+
+    assert result.returncode == 2
+    assert "Status: NEEDS_USER_INPUT" in result.stdout
+    assert "adaptive.objective_metric" in result.stdout
+    assert "test_feedback_for_selection" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert _snapshot(source) == before
+    assert not workflow.exists()
+
+
 @pytest.mark.parametrize(
     ("suggest", "replacement", "field"),
     [

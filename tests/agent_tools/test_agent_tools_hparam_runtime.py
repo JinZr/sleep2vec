@@ -1080,7 +1080,7 @@ def test_hparam_stop_rejects_unbound_remote_first_process_identity_before_signal
     tmp_path: Path,
     monkeypatch,
 ):
-    rows = _write_runtime_rows(
+    _write_runtime_rows(
         tmp_path,
         [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
     )

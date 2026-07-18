@@ -46,21 +46,25 @@ from .recipes import load_recipe_with_base, recipe_name
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
 
 
+class AdaptivePreflightError(RuntimeError):
+    def __init__(self, report):
+        self.report = report
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in report.blocking_issues())
+        super().__init__(f"Round 000 plan failed preflight with exit code {report.exit_code}: {details}")
+
+
 def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path:
     root = canonical_local_experiment_root(output_dir, Path.cwd())
     resolved_recipe_path = resolve_repo_path(recipe_path)
     if resolved_recipe_path is None:
         raise FileNotFoundError("Path is required.")
     recipe_path = resolved_recipe_path.resolve()
-    recipe = load_recipe_with_base(recipe_path)
-    recipe["_recipe_path"] = str(recipe_path)
-    _validate_adaptive_recipe(recipe)
     adaptive_dir = root / "adaptive"
     round_dir = adaptive_dir / "rounds" / "round_000"
-    _, _, preflight = preflight_plan(recipe_path=recipe_path, output_dir=round_dir)
+    recipe, _, preflight = preflight_plan(recipe_path=recipe_path, output_dir=round_dir)
     if preflight.exit_code != 0:
-        details = "; ".join(f"{issue.field}: {issue.message}" for issue in preflight.blocking_issues())
-        raise RuntimeError(f"Round 000 plan failed preflight with exit code {preflight.exit_code}: {details}")
+        raise AdaptivePreflightError(preflight)
+    _validate_adaptive_recipe(recipe)
     recipe = plan_hparam.freeze_hparam_execution(recipe)
     workspace = experiment_root(recipe)
     if workspace is None:
