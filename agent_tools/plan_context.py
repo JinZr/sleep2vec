@@ -122,7 +122,14 @@ def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
     elif skips_local_path_validation(recipe, paths):
         return None
     try:
-        return index_summary(paths, config=config, split_values=split_values, preset_path=preset_path)
+        # Index and sidecar checks must stay bound to the config snapshot accepted by plan preflight.
+        return index_summary(
+            paths,
+            config=config,
+            config_bytes=(cfg or {}).get("_source_config_bytes"),
+            split_values=split_values,
+            preset_path=preset_path,
+        )
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
 

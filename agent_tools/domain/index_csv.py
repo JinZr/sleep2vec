@@ -17,6 +17,7 @@ def index_summary(
     index_paths: list[str | Path],
     *,
     config: str | Path | None = None,
+    config_bytes: bytes | None = None,
     label_name: str | None = None,
     split_values: list[str] | None = None,
     preset_path: str | Path | None = None,
@@ -25,7 +26,7 @@ def index_summary(
 ) -> dict[str, Any]:
     resolved_paths = [resolve_repo_path(path) for path in index_paths]
     paths = [path for path in resolved_paths if path is not None]
-    cfg = config_summary(config) if config else None
+    cfg = config_summary(config, config_bytes=config_bytes) if config else None
     survival_key_column = _survival_key_column(cfg)
     survival_sidecar_keys = _survival_sidecar_keys(cfg)
     survival_covariate_names = _survival_covariates(cfg)

@@ -289,6 +289,139 @@ def test_agent_proposal_request_recovers_missing_issuance_for_existing_snapshot(
     assert request_events[0]["input_sha256"] == adaptive_hparam.file_sha256(input_path)
 
 
+def test_agent_proposal_request_treats_one_exact_issuance_as_idempotent(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    events_path = tmp_path / "events.jsonl"
+    request_events_before = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event_type") == "agent_proposal_requested"
+    ]
+
+    assert adaptive_hparam.adaptive_step(workflow_dir) == input_path
+
+    request_events_after = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event_type") == "agent_proposal_requested"
+    ]
+    assert request_events_after == request_events_before
+
+
+@pytest.mark.parametrize("shared_binding", ["input_path", "proposal_path", "target_round"])
+def test_agent_proposal_request_rejects_wrong_request_id_sharing_a_binding(tmp_path: Path, shared_binding: str):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    request_index = next(
+        index for index, event in enumerate(events) if event.get("event_type") == "agent_proposal_requested"
+    )
+    conflicting = dict(events[request_index])
+    conflicting["request_id"] = "sha256:" + "f" * 64
+    if shared_binding != "input_path":
+        conflicting["input_path"] = str(input_path.with_name("other-input.json"))
+    if shared_binding != "proposal_path":
+        conflicting["proposal_path"] = str(Path(conflicting["proposal_path"]).with_name("other-proposal.json"))
+    if shared_binding != "target_round":
+        conflicting["target_round"] = 2
+    events[request_index] = conflicting
+    events_path.write_text("".join(json.dumps(event, sort_keys=True) + "\n" for event in events))
+
+    with pytest.raises(ValueError, match="differs from its phase-one issuance"):
+        adaptive_hparam.adaptive_step(workflow_dir)
+
+    request_events = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event_type") == "agent_proposal_requested"
+    ]
+    assert request_events == [conflicting]
+
+
+def test_agent_proposal_request_allows_same_target_round_in_another_workflow(tmp_path: Path):
+    first_recipe = _agent_recipe(tmp_path)
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["name"] = "unit_adaptive_second"
+    second_payload["step"]["id"] = "unit-hparam-tune-second"
+    second_recipe = tmp_path / "adaptive_tune_second.yaml"
+    second_recipe.write_text(yaml.safe_dump(second_payload))
+    first_workflow = tmp_path / "workflow-first"
+    second_workflow = tmp_path / "workflow-second"
+
+    for recipe, workflow in ((first_recipe, first_workflow), (second_recipe, second_workflow)):
+        result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+        assert result.returncode == 0, result.stderr
+        _write_fake_manifest(workflow)
+        _mark_round_terminal(workflow, tmp_path)
+
+    first_input = adaptive_hparam.adaptive_step(first_workflow)
+    second_input = adaptive_hparam.adaptive_step(second_workflow)
+
+    assert first_input is not None
+    assert second_input is not None
+    assert json.loads(first_input.read_text())["input"]["target_round"] == 1
+    assert json.loads(second_input.read_text())["input"]["target_round"] == 1
+    request_events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+        if json.loads(line).get("event_type") == "agent_proposal_requested"
+    ]
+    assert {event["input_path"] for event in request_events} == {str(first_input), str(second_input)}
+
+
+def test_agent_proposal_request_rejects_duplicate_exact_issuance(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    events_path = tmp_path / "events.jsonl"
+    request_event = next(
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event_type") == "agent_proposal_requested"
+    )
+    with events_path.open("a") as file_obj:
+        file_obj.write(json.dumps(request_event, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="no unique phase-one issuance"):
+        adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert events_path.read_text().count('"event_type": "agent_proposal_requested"') == 2
+
+
+def test_agent_proposal_request_validates_events_lock_path(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    (tmp_path / "events.jsonl.lock").symlink_to(tmp_path / "outside-lock")
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()
+
+
 def test_agent_proposal_request_rejects_conflicting_existing_issuance(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"

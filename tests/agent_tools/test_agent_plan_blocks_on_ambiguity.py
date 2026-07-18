@@ -11,7 +11,8 @@ from agent_tool_test_helpers import survival_config_payload, write_finetune_reci
 import pytest
 import yaml
 
-from agent_tools import configs, experiments, plans
+from agent_tools import configs, experiments, plan_context, plans
+from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import collect_runs
@@ -1455,6 +1456,132 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
     assert (output_dir / "config.source.yaml").read_bytes() == validated_bytes
     run_config = Path(_first_run(output_dir)["config"])
     assert yaml.safe_load(run_config.read_text())["finetune"]["task"]["monitor"] == "val_ahi_pearson"
+
+
+def test_hparam_override_checks_captured_config_during_aba_source_swap(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    base_recipe = Path(yaml.safe_load(recipe.read_text())["base_recipe"])
+    config = Path(yaml.safe_load(base_recipe.read_text())["inputs"]["config"])
+    captured_bytes = config.read_bytes()
+    swapped = yaml.safe_load(captured_bytes)
+    swapped["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
+    swapped_bytes = yaml.safe_dump(swapped, sort_keys=False).encode()
+    real_override_issues = HparamTuneAdapter.config_override_issues
+
+    def check_overrides_while_source_is_swapped(self, recipe_payload: dict, config_payload: dict | None):
+        config.write_bytes(swapped_bytes)
+        try:
+            return real_override_issues(self, recipe_payload, config_payload)
+        finally:
+            config.write_bytes(captured_bytes)
+
+    monkeypatch.setattr(HparamTuneAdapter, "config_override_issues", check_overrides_while_source_is_swapped)
+    output_dir = tmp_path / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    assert (output_dir / "config.source.yaml").read_bytes() == captured_bytes
+
+
+def test_hparam_override_does_not_approve_invalid_captured_config_during_aba_source_swap(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    base_recipe = Path(yaml.safe_load(recipe.read_text())["base_recipe"])
+    config = Path(yaml.safe_load(base_recipe.read_text())["inputs"]["config"])
+    valid_bytes = config.read_bytes()
+    captured = yaml.safe_load(valid_bytes)
+    captured["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
+    captured_bytes = yaml.safe_dump(captured, sort_keys=False).encode()
+    config.write_bytes(captured_bytes)
+    real_override_issues = HparamTuneAdapter.config_override_issues
+
+    def check_overrides_while_source_is_swapped(self, recipe_payload: dict, config_payload: dict | None):
+        config.write_bytes(valid_bytes)
+        try:
+            return real_override_issues(self, recipe_payload, config_payload)
+        finally:
+            config.write_bytes(captured_bytes)
+
+    monkeypatch.setattr(HparamTuneAdapter, "config_override_issues", check_overrides_while_source_is_swapped)
+    output_dir = tmp_path / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 1
+    assert any(issue.field == "selection_metric" for issue in report.issues)
+    assert not (output_dir / "plan.json").exists()
+    assert config.read_bytes() == captured_bytes
+
+
+def test_hparam_override_validation_fails_without_bound_config_bytes(tmp_path: Path):
+    recipe_path = _hparam_recipe(tmp_path)
+    recipe, cfg, report = plans.evaluate_recipe(recipe_path)
+    assert report.exit_code == 0
+    assert cfg is not None
+    cfg.pop("_source_config_bytes")
+
+    issues = HparamTuneAdapter().config_override_issues(recipe, cfg)
+
+    assert issues is not None
+    assert len(issues) == 1
+    assert issues[0].status.value == "FAIL"
+    assert issues[0].field == "config"
+
+
+def test_survival_index_summary_checks_captured_config_during_aba_source_swap(tmp_path: Path, monkeypatch):
+    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    config_payload = yaml.safe_load(config.read_text())
+    index = Path(config_payload["data"]["finetune_data_index"])
+    index.write_text("path,split,duration,eid,ppg_mask\na.npz,train,60,001,1\nb.npz,val,60,002,1\n")
+    captured_bytes = config.read_bytes()
+    swapped = yaml.safe_load(captured_bytes)
+    swapped["finetune"]["survival"]["key_column"] = "subject_id"
+    swapped_bytes = yaml.safe_dump(swapped, sort_keys=False).encode()
+    real_index_summary = plan_context.index_summary
+
+    def summarize_while_source_is_swapped(*args, **kwargs):
+        config.write_bytes(swapped_bytes)
+        try:
+            return real_index_summary(*args, **kwargs)
+        finally:
+            config.write_bytes(captured_bytes)
+
+    monkeypatch.setattr(plan_context, "index_summary", summarize_while_source_is_swapped)
+    output_dir = tmp_path / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 0
+    assert Path(_first_run(output_dir)["config"]).read_bytes() == captured_bytes
+
+
+def test_survival_index_summary_does_not_approve_invalid_captured_config_during_aba_source_swap(
+    tmp_path: Path, monkeypatch
+):
+    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    captured_bytes = config.read_bytes()
+    swapped = yaml.safe_load(captured_bytes)
+    swapped["finetune"]["task"]["type"] = "classification"
+    swapped["finetune"].pop("survival")
+    valid_bytes = yaml.safe_dump(swapped, sort_keys=False).encode()
+    real_index_summary = plan_context.index_summary
+
+    def summarize_while_source_is_swapped(*args, **kwargs):
+        config.write_bytes(valid_bytes)
+        try:
+            return real_index_summary(*args, **kwargs)
+        finally:
+            config.write_bytes(captured_bytes)
+
+    monkeypatch.setattr(plan_context, "index_summary", summarize_while_source_is_swapped)
+    output_dir = tmp_path / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 1
+    assert any("survival key values missing from sidecars" in issue.message for issue in report.issues)
+    assert not (output_dir / "run.sh").exists()
+    assert config.read_bytes() == captured_bytes
 
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])

@@ -5,6 +5,7 @@ from pathlib import Path
 import pickle
 import subprocess
 
+import pytest
 import yaml
 
 from agent_tools.configs import config_summary
@@ -263,7 +264,40 @@ def test_sex_age_config_family_blocks_root_infer_and_evaluate_variants(tmp_path:
         )
 
 
-def test_sex_age_config_family_blocks_root_hparam_variant(tmp_path: Path):
+@pytest.mark.parametrize("variant", [None, "", "ASK_USER"], ids=["missing", "blank", "ask-user"])
+@pytest.mark.parametrize("task", ["finetune", "infer", "evaluate"])
+def test_sex_age_config_family_leaves_unresolved_variant_to_consultation(
+    tmp_path: Path,
+    task: str,
+    variant: str | None,
+):
+    config = _write_survival_config(tmp_path)
+    if task == "finetune":
+        recipe = _finetune_recipe(tmp_path, config)
+    else:
+        ckpt = tmp_path / "model.ckpt"
+        ckpt.write_text("checkpoint")
+        recipe = _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = task
+    payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+    if variant is None:
+        payload.pop("variant")
+    else:
+        payload["variant"] = variant
+    _write_yaml(recipe, payload)
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 2
+    assert any(issue.field == "variant" and issue.status.value == "NEEDS_USER_INPUT" for issue in report.issues)
+    assert not any(
+        issue.field == "variant" and "Config family requires variant=" in issue.message for issue in report.issues
+    )
+
+
+@pytest.mark.parametrize("variant", ["sleep2vec", None], ids=["explicit-conflict", "unresolved"])
+def test_sex_age_config_family_handles_hparam_variant(tmp_path: Path, variant: str | None):
     config = _write_survival_config(tmp_path)
     base = _finetune_recipe(tmp_path, config)
     recipe = _write_yaml(
@@ -271,7 +305,7 @@ def test_sex_age_config_family_blocks_root_hparam_variant(tmp_path: Path):
         {
             "name": "unit_sex_age_hparam_wrong_variant",
             "task": "hparam_tune",
-            "variant": "sleep2vec",
+            "variant": variant,
             "base_recipe": str(base),
             "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
             "evaluation_policy": {
@@ -297,11 +331,16 @@ def test_sex_age_config_family_blocks_root_hparam_variant(tmp_path: Path):
 
     _recipe, _cfg, report = evaluate_recipe(recipe)
 
-    assert report.exit_code == 1
-    assert any(
-        issue.field == "base_finetune.variant" and "requires variant=sex_age_baseline" in issue.message
-        for issue in report.issues
-    )
+    if variant is None:
+        assert report.exit_code == 2
+        assert any(issue.field == "variant" and issue.status.value == "NEEDS_USER_INPUT" for issue in report.issues)
+        assert not any("Config family requires variant=" in issue.message for issue in report.issues)
+    else:
+        assert report.exit_code == 1
+        assert any(
+            issue.field == "base_finetune.variant" and "requires variant=sex_age_baseline" in issue.message
+            for issue in report.issues
+        )
 
 
 def test_sex_age_baseline_finetune_plan_renders_standalone_module(tmp_path: Path):

@@ -173,8 +173,10 @@ the terminal experiment manifest. Managed launches create a dedicated process
 group and freeze its PID, process-group id, and OS start token. Launch timeout
 is unresolved evidence rather than permission to retry; stop verifies that
 identity, signals the full group, and records `stopped` only after exit.
-Generated scripts own their terminal success/failure commit, so an uncommitted
-process-group disappearance is failure rather than inferred success.
+Lifecycle-enabled scripts own their terminal success/failure commit, so their
+uncommitted process-group disappearance is failure rather than inferred
+success. Hparam launch scripts instead leave terminal inference to their
+monitor after confirmed process exit.
 
 Public facades are `decisions.py`, `plans.py`, `hparam.py`, and
 `experiments.py`. Task-specific behavior extends the adapter/domain layers;

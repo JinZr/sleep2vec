@@ -22,7 +22,7 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import write_json, write_text
-from .models import REPO_ROOT, coerce_list, load_yaml
+from .models import REPO_ROOT, coerce_list
 from .repo import repo_summary
 
 
@@ -92,7 +92,7 @@ def final_test_checkpoint_issues(
     return issues
 
 
-def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
+def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[DecisionIssue]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
@@ -110,7 +110,9 @@ def hparam_yaml_override_issues(recipe: dict) -> list[DecisionIssue]:
     if not config_path:
         return []
     try:
-        base_config = load_yaml(config_path)
+        base_config = yaml.safe_load(config_bytes)
+        if not isinstance(base_config, dict):
+            raise ValueError(f"YAML must be a mapping: {config_path}")
         base_data = base_config.get("data") if isinstance(base_config.get("data"), dict) else {}
         data_backend = inputs.get("data_backend")
         if data_backend in (None, ""):

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
-from ..decision_models import DecisionIssue, DecisionReport, ResolvedDecision
+from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
 from ..models import coerce_list
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values
 from .base import TaskAdapter
@@ -57,7 +57,19 @@ class HparamTuneAdapter(TaskAdapter):
     ) -> list[DecisionIssue] | None:
         from .. import plan_hparam
 
-        return plan_hparam.hparam_yaml_override_issues(recipe)
+        # Override checks must consume the same snapshot that build_plan will freeze, not reopen a mutable path.
+        config_bytes = (config_summary or {}).get("_source_config_bytes")
+        if not isinstance(config_bytes, bytes):
+            return [
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "config",
+                    "Hparam YAML override validation requires bound source config bytes.",
+                    None,
+                    {"preflight_before_workspace": True},
+                )
+            ]
+        return plan_hparam.hparam_yaml_override_issues(recipe, config_bytes=config_bytes)
 
     def preflight_issues(
         self, recipe: dict[str, Any], config_summary: dict[str, Any] | None, *, unlock_final_test: bool

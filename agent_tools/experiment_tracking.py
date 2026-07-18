@@ -298,6 +298,7 @@ def monitor_run_row(
     has_execution_evidence = any(
         source.get(field) not in (None, "") for source in (row, previous) for field in ("pid_path", "state")
     )
+    # Hparam scripts expose process identity for monitor-owned exit inference; lifecycle scripts self-commit.
     script_commits_terminal_status = has_managed_script and not has_process_identity
     if (previous.get("status") or row.get("status")) == "running" and has_managed_script and not has_execution_evidence:
         return {

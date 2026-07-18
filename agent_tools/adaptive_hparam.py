@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import math
@@ -345,41 +346,57 @@ def _write_agent_proposal_input(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(workspace, [input_path, proposal_path, workspace / "events.jsonl"])
+    events_lock = workspace / "events.jsonl.lock"
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [input_path, proposal_path, workspace / "events.jsonl", events_lock],
+    )
     text = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
     input_sha256 = hashlib.sha256(text.encode()).hexdigest()
-    if not input_path.exists():
-        input_path.parent.mkdir(parents=True, exist_ok=True)
-        input_path.write_text(text)
-    elif input_path.read_text() != text:
-        raise ValueError(f"Agent proposal input snapshot was modified: {input_path}")
-    related = _proposal_request_events(workspace, request_id)
-    if related:
-        _validate_proposal_request_event(workspace, document, input_path, input_sha256, proposal_path)
-    else:
-        # A retry may find the immutable snapshot after a crash between its write and the issuance event.
-        _append_event(
-            root,
-            "agent_proposal_requested",
-            {
-                "source_round": source_round,
-                "target_round": target_round,
-                "digest": str(digest),
-                "request_id": request_id,
-                "input_path": str(input_path),
-                "input_sha256": input_sha256,
-                "proposal_path": str(proposal_path),
-            },
-        )
+    events_lock.parent.mkdir(parents=True, exist_ok=True)
+    with events_lock.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if not input_path.exists():
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            input_path.write_text(text)
+        elif input_path.read_text() != text:
+            raise ValueError(f"Agent proposal input snapshot was modified: {input_path}")
+        events = _proposal_request_events(workspace)
+        expected = _proposal_request_event_fields(document, input_path, input_sha256, proposal_path)
+        related = _related_proposal_request_events(events, expected)
+        if related:
+            _validate_proposal_request_event(
+                workspace,
+                document,
+                input_path,
+                input_sha256,
+                proposal_path,
+                events=events,
+            )
+        else:
+            # Only a completely unbound snapshot is the recoverable crash gap between write and issuance.
+            _write_experiment_event(
+                workspace,
+                "agent_proposal_requested",
+                {
+                    "source_round": source_round,
+                    "target_round": target_round,
+                    "digest": str(digest),
+                    "request_id": request_id,
+                    "input_path": str(input_path),
+                    "input_sha256": input_sha256,
+                    "proposal_path": str(proposal_path),
+                },
+            )
     return input_path
 
 
-def _proposal_request_events(workspace: Path, request_id: str) -> list[dict[str, Any]]:
+def _proposal_request_events(workspace: Path) -> list[dict[str, Any]]:
     events_path = workspace / "events.jsonl"
     exp_io.validate_managed_output_paths(workspace, [events_path])
     if not events_path.exists():
         return []
-    related = []
+    events = []
     for line in events_path.read_text().splitlines():
         try:
             event = json.loads(line)
@@ -387,7 +404,42 @@ def _proposal_request_events(workspace: Path, request_id: str) -> list[dict[str,
             raise ValueError(f"Malformed experiment event log: {events_path}") from exc
         if not isinstance(event, dict):
             raise ValueError(f"Experiment event log contains a non-object row: {events_path}")
-        if event.get("event_type") == "agent_proposal_requested" and event.get("request_id") == request_id:
+        if event.get("event_type") == "agent_proposal_requested":
+            events.append(event)
+    return events
+
+
+def _proposal_request_event_fields(
+    proposal_input: dict[str, Any],
+    input_path: Path,
+    input_sha256: str,
+    proposal_path: Path,
+) -> dict[str, Any]:
+    snapshot = proposal_input["input"]
+    return {
+        "source_round": snapshot["source_round"],
+        "target_round": snapshot["target_round"],
+        "request_id": proposal_input["request_id"],
+        "input_path": str(input_path),
+        "input_sha256": input_sha256,
+        "proposal_path": str(proposal_path),
+    }
+
+
+def _related_proposal_request_events(events: list[dict[str, Any]], expected: dict[str, Any]) -> list[dict[str, Any]]:
+    direct_binding_fields = ("request_id", "input_path", "proposal_path")
+    path_fields = ("input_path", "proposal_path")
+    expected_parents = {field: Path(expected[field]).parent for field in path_fields}
+    related = []
+    for event in events:
+        if any(event.get(field) == expected[field] for field in direct_binding_fields):
+            related.append(event)
+            continue
+        same_workflow = any(
+            isinstance(event.get(field), str) and Path(event[field]).parent == expected_parents[field]
+            for field in path_fields
+        )
+        if same_workflow and event.get("target_round") == expected["target_round"]:
             related.append(event)
     return related
 
@@ -398,23 +450,18 @@ def _validate_proposal_request_event(
     input_path: Path,
     input_sha256: str,
     proposal_path: Path,
+    *,
+    events: list[dict[str, Any]] | None = None,
 ) -> None:
-    snapshot = proposal_input["input"]
     events_path = workspace / "events.jsonl"
-    related = _proposal_request_events(workspace, proposal_input["request_id"])
     if not events_path.exists():
         raise ValueError("Agent proposal input was not issued by phase one.")
+    expected = _proposal_request_event_fields(proposal_input, input_path, input_sha256, proposal_path)
+    all_events = events if events is not None else _proposal_request_events(workspace)
+    related = _related_proposal_request_events(all_events, expected)
     if len(related) != 1:
         raise ValueError("Agent proposal input has no unique phase-one issuance record.")
     event = related[0]
-    expected = {
-        "source_round": snapshot["source_round"],
-        "target_round": snapshot["target_round"],
-        "request_id": proposal_input["request_id"],
-        "input_path": str(input_path),
-        "input_sha256": input_sha256,
-        "proposal_path": str(proposal_path),
-    }
     if any(event.get(field) != value for field, value in expected.items()):
         raise ValueError("Agent proposal input differs from its phase-one issuance record.")
 

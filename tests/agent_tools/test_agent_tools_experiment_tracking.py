@@ -672,6 +672,30 @@ def test_experiment_monitor_treats_hparam_script_with_process_identity_as_monito
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "completed"
 
 
+def test_experiment_monitor_marks_lifecycle_script_exit_without_terminal_commit_failed(tmp_path: Path):
+    _initialize_workspace(tmp_path)
+    experiment_io.write_rows_at(
+        tmp_path / "run_manifest.tsv",
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-000",
+                "run_name": "managed",
+                "version": "managed-v1",
+                "script": str(tmp_path / "run.sh"),
+                "state": "finished",
+                "status": "running",
+            }
+        ],
+    )
+
+    result = experiments.monitor_experiment(tmp_path)
+
+    assert result["runs"][0]["status"] == "failed"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
+
+
 @pytest.mark.parametrize(
     ("existing_status", "wandb_state", "expected_status"),
     [("stopped", "running", "stopped"), ("completed", "failed", "failed")],
