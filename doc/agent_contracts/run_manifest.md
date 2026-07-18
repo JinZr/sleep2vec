@@ -24,9 +24,10 @@ The current vocabulary includes scheduled `planned`/`pending`, active `launched`
 - Terminal status is sticky, except incoming `failed` evidence may correct `completed` or `finished`.
 - Active status cannot regress through stale `planned` or `pending` evidence.
 - `superseded` commits only when the freshly read canonical state is still `planned` or `pending`.
-- Monitoring preserves finished-to-completed normalization for non-script-owned evidence.
-- Monitoring preserves a script-owned `running` state when neither PID nor W&B execution evidence exists; absence of those evidence sources is not process-exit evidence.
-- A generated script owns its terminal commit. Confirmed disappearance of its process group without a canonical `completed` or `failed` commit is `failed`, never inferred success.
+- Monitoring preserves finished-to-completed normalization for evidence whose script does not own terminal commits.
+- Monitoring preserves a managed-script `running` state when neither PID nor W&B execution evidence exists; absence of those evidence sources is not process-exit evidence.
+- A `script` path requires strict managed process-identity checks but does not by itself assign terminal-status ownership.
+- A lifecycle-enabled generated script owns its terminal commit. Confirmed disappearance of its process group without a canonical `completed` or `failed` commit is `failed`, never inferred success. Hparam launch scripts do not own terminal commits, so their monitor infers `finished` or `failed` from confirmed process exit and log evidence.
 
 All lifecycle callers reuse the same row reducer. They do not implement source-specific precedence.
 

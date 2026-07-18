@@ -391,7 +391,13 @@ def _launch_hparam_runs(
             continue
         observation = {field: previous[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in previous}
         observation.update({"step_id": key[0], "run_id": key[1], "status": previous.get("status", "")})
-        refreshed[key] = evidence.status_row(run_dir, observation, previous, health=False)
+        refreshed[key] = evidence.status_row(
+            run_dir,
+            observation,
+            previous,
+            script_commits_terminal_status=False,
+            health=False,
+        )
         if refreshed[key].get("status") != previous.get("status"):
             observed_status_changes[key] = (previous.get("status"), refreshed[key].get("status"))
     active_statuses = {"launched", "running", "unknown_remote", "missing_pid"}
@@ -428,7 +434,13 @@ def _launch_hparam_runs(
         if not dry_run and observable:
             observation = {field: row[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in row}
             observation.update({"step_id": key[0], "run_id": key[1], "status": row.get("status", "")})
-            observed = evidence.status_row(run_dir, observation, row, health=False)
+            observed = evidence.status_row(
+                run_dir,
+                observation,
+                row,
+                script_commits_terminal_status=False,
+                health=False,
+            )
             if observed.get("status") != row.get("status"):
                 external_status_changes[key] = (row.get("status"), observed.get("status"))
                 workspace_by_key[key] = observed
@@ -989,7 +1001,15 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
             continue
         observation = {field: prior[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in prior}
         observation.update({"step_id": key[0], "run_id": key[1], "status": prior.get("status", "")})
-        rows.append(evidence.status_row(root, observation, prior, health=health))
+        rows.append(
+            evidence.status_row(
+                root,
+                observation,
+                prior,
+                script_commits_terminal_status=False,
+                health=health,
+            )
+        )
     out = status_path
     committed = merge_run_manifest(workspace, rows)
     committed_by_key = {managed_run_key(row): row for row in committed}

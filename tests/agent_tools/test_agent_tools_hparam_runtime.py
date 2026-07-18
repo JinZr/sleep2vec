@@ -404,7 +404,7 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
     monkeypatch.setattr(
         run_evidence,
         "status_row",
-        lambda _root, row, previous, health=False: merge_run_row(previous, row),
+        lambda _root, row, previous, *, script_commits_terminal_status, health=False: merge_run_row(previous, row),
     )
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args: None)
     started = []
@@ -983,7 +983,10 @@ def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
         run_evidence.process_identity_running({}, identity)
 
 
-def test_status_marks_a_reused_managed_process_identity_failed(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("script_commits_terminal_status", [False, True])
+def test_status_marks_a_reused_managed_process_identity_failed(
+    tmp_path: Path, monkeypatch, script_commits_terminal_status: bool
+):
     pid_path = tmp_path / "managed.pid"
     identity = _write_process_identity(pid_path)
     reused = {**identity, "process_start_token": "proc:other-start"}
@@ -1004,12 +1007,18 @@ def test_status_marks_a_reused_managed_process_identity_failed(tmp_path: Path, m
         ),
     )
 
-    observed = run_evidence.status_row(tmp_path, row, row)
+    observed = run_evidence.status_row(
+        tmp_path,
+        row,
+        row,
+        script_commits_terminal_status=script_commits_terminal_status,
+    )
 
     assert observed["status"] == "failed"
 
 
-def test_status_marks_legacy_integer_only_managed_identity_failed(tmp_path: Path):
+@pytest.mark.parametrize("script_commits_terminal_status", [False, True])
+def test_status_marks_legacy_integer_only_managed_identity_failed(tmp_path: Path, script_commits_terminal_status: bool):
     pid_path = tmp_path / "managed.pid"
     pid_path.write_text("123")
     row = {
@@ -1019,7 +1028,31 @@ def test_status_marks_legacy_integer_only_managed_identity_failed(tmp_path: Path
         "pid": "123",
     }
 
-    observed = run_evidence.status_row(tmp_path, row, row)
+    observed = run_evidence.status_row(
+        tmp_path,
+        row,
+        row,
+        script_commits_terminal_status=script_commits_terminal_status,
+    )
+
+    assert observed["status"] == "failed"
+
+
+def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "managed.pid"
+    identity = _write_process_identity(pid_path)
+    log_path = tmp_path / "managed.log"
+    log_path.write_text("training completed\n")
+    row = {
+        "script": str(tmp_path / "launch.sh"),
+        "pid_path": str(pid_path),
+        "log_path": str(log_path),
+        "status": "running",
+        **identity,
+    }
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=True)
 
     assert observed["status"] == "failed"
 
@@ -1326,7 +1359,7 @@ def test_local_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypa
     monkeypatch.setattr(run_evidence, "process_running", lambda *_args: True)
 
     with pytest.raises((ValueError, UnicodeError), match="run manifest"):
-        run_evidence.status_row(tmp_path, rows[0], rows[0])
+        run_evidence.status_row(tmp_path, rows[0], rows[0], script_commits_terminal_status=False)
 
 
 @pytest.mark.parametrize(
@@ -1396,7 +1429,7 @@ def test_remote_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeyp
     monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
 
     with pytest.raises(RuntimeError, match="runtime artifact observation failed"):
-        run_evidence.status_row(tmp_path, row, row)
+        run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
 
 
 @pytest.mark.parametrize("state", ["missing", "regular"])
@@ -1431,7 +1464,7 @@ def test_remote_runtime_manifest_distinguishes_missing_and_regular_file(tmp_path
 
     monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
 
-    observed = run_evidence.status_row(tmp_path, row, row)
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
 
     assert observed["run_manifest"] == (str(manifest) if state == "regular" else "")
 
@@ -1688,7 +1721,11 @@ def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_pat
     monkeypatch.setattr(
         hparam_runtime.evidence,
         "status_row",
-        lambda _root, observation, previous, *, health: {**previous, **observation, "status": "finished"},
+        lambda _root, observation, previous, *, script_commits_terminal_status, health: {
+            **previous,
+            **observation,
+            "status": "finished",
+        },
     )
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
 
@@ -1746,7 +1783,7 @@ def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Pa
     monkeypatch.setattr(
         hparam_runtime.evidence,
         "status_row",
-        lambda _root, observation, previous, *, health: {
+        lambda _root, observation, previous, *, script_commits_terminal_status, health: {
             **previous,
             **observation,
             "status": next(observations),
@@ -1780,7 +1817,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
     monkeypatch.setattr(
         hparam_runtime.evidence,
         "status_row",
-        lambda _root, observation, previous, *, health: {
+        lambda _root, observation, previous, *, script_commits_terminal_status, health: {
             **previous,
             **observation,
             "status": "finished" if previous["run_id"] == first_run["run_id"] else previous["status"],
@@ -1829,7 +1866,10 @@ def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_pla
     monkeypatch.setattr(
         hparam_runtime.evidence,
         "status_row",
-        lambda _root, observation, previous, *, health: {**previous, **observation},
+        lambda _root, observation, previous, *, script_commits_terminal_status, health: {
+            **previous,
+            **observation,
+        },
     )
     monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("blocked queue must not start"))
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("blocked queue must not sleep"))
@@ -2980,7 +3020,10 @@ def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonica
     monkeypatch.setattr(
         hparam_runtime.evidence,
         "status_row",
-        lambda _root, observation, _prior, *, health: {**observation, "status": "finished"},
+        lambda _root, observation, _prior, *, script_commits_terminal_status, health: {
+            **observation,
+            "status": "finished",
+        },
     )
 
     hparam_runtime.monitor_hparam_runs(tmp_path)
@@ -2993,7 +3036,7 @@ def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonica
     assert status_event["to"] == "failed"
 
 
-def test_hparam_monitor_without_launch_manifest_uses_canonical_execution_evidence(tmp_path: Path, monkeypatch):
+def test_hparam_monitor_marks_clean_exit_finished_without_launch_manifest(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     _write_process_identity(rows[0]["pid_path"])
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
@@ -3005,8 +3048,8 @@ def test_hparam_monitor_without_launch_manifest_uses_canonical_execution_evidenc
     hparam_runtime.monitor_hparam_runs(tmp_path)
     hparam_runtime.monitor_hparam_runs(tmp_path)
 
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "finished"
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_status_changed") == 1
 
@@ -3083,7 +3126,7 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
     status = {row["run_id"]: row for row in _read_table(tmp_path / "run_status.tsv")}
     manifest = {row["run_id"]: row for row in _read_table(tmp_path / "launch_manifest.tsv")}
     assert started == []
-    assert status["run-000"]["status"] == "failed"
+    assert status["run-000"]["status"] == "finished"
     assert status["run-001"]["status"] == "pending"
     assert manifest["run-001"]["status"] == "pending"
     assert not manifest["run-001"]["launched_at"]
@@ -3109,7 +3152,11 @@ def test_hparam_status_preserves_terminal_state_with_live_pid(tmp_path: Path, mo
     pid_path.write_text("123")
     monkeypatch.setattr(run_evidence, "process_running", lambda row, pid: True)
 
-    row = run_evidence.status_row(tmp_path, {"status": "stopped", "pid_path": str(pid_path)})
+    row = run_evidence.status_row(
+        tmp_path,
+        {"status": "stopped", "pid_path": str(pid_path)},
+        script_commits_terminal_status=False,
+    )
 
     assert row["status"] == "stopped"
 
@@ -3120,7 +3167,7 @@ def test_hparam_status_does_not_infer_terminal_from_corrupt_local_pid(tmp_path: 
     pid_path.write_text(pid_text)
     previous = {"status": "running", "pid_path": str(pid_path)}
 
-    row = run_evidence.status_row(tmp_path, previous, previous)
+    row = run_evidence.status_row(tmp_path, previous, previous, script_commits_terminal_status=False)
 
     assert row["status"] == "running"
 
@@ -3373,7 +3420,7 @@ def test_hparam_monitor_remote_pid_probe_failure_is_unknown_until_recovery(tmp_p
 
 
 @pytest.mark.parametrize("uncertain_returncode", [124, 255, 1])
-def test_hparam_monitor_requires_certain_remote_process_absence_before_script_failure(
+def test_hparam_monitor_requires_certain_remote_process_absence_before_clean_finish(
     tmp_path: Path, monkeypatch, uncertain_returncode: int
 ):
     _write_runtime_rows(
@@ -3399,6 +3446,8 @@ def test_hparam_monitor_requires_certain_remote_process_absence_before_script_fa
             return subprocess.CompletedProcess([], 0, '{"leader": null, "group_running": false}\n', "")
         if "checkpoint_dir = sys.argv[2]" in command:
             return subprocess.CompletedProcess([], 0, '{"run_manifest": "", "checkpoints": []}', "")
+        if "lines = file_obj.readlines()" in command:
+            return subprocess.CompletedProcess([], 0, "", "")
         if command.startswith("tail -n 8"):
             return subprocess.CompletedProcess([], 0, "", "")
         raise AssertionError(f"Unexpected remote command: {command}")
@@ -3416,11 +3465,11 @@ def test_hparam_monitor_requires_certain_remote_process_absence_before_script_fa
     state["uncertain"] = False
     hparam_runtime.monitor_hparam_runs(tmp_path)
 
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [(event["from"], event["to"]) for event in events] == [
         ("running", "unknown_remote"),
-        ("unknown_remote", "failed"),
+        ("unknown_remote", "finished"),
     ]
 
 

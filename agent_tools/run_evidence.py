@@ -103,13 +103,14 @@ def status_row(
     row: dict[str, Any],
     previous: dict[str, Any] | None = None,
     *,
+    script_commits_terminal_status: bool,
     health: bool = False,
 ) -> dict[str, Any]:
     previous = previous or {}
     process_identity = None
-    script_owned = any(source.get("script") not in (None, "") for source in (row, previous))
+    managed_process = any(source.get("script") not in (None, "") for source in (row, previous))
     try:
-        if script_owned:
+        if managed_process:
             process_identity = read_process_identity(row.get("pid_path"), row)
             pid = process_identity["pid"] if process_identity is not None else None
             running_state = process_identity_running(row, process_identity) if process_identity is not None else False
@@ -160,8 +161,8 @@ def status_row(
     elif running:
         observed_status = "running"
     elif observed_status in {"launched", "running", "unknown_remote"}:
-        if script_owned:
-            # Managed scripts commit their own terminal status; disappearance without that commit is failure.
+        if script_commits_terminal_status:
+            # Lifecycle-enabled scripts commit their own terminal status; disappearance without it is failure.
             observed_status = "failed"
         else:
             log_failed = log_has_failure(row.get("log_path"), row)
