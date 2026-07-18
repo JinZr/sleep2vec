@@ -1374,12 +1374,19 @@ def test_variant_controls_generated_finetune_module(tmp_path: Path):
     assert "--no-test-after-fit" in script
 
 
-def test_path_based_variant_guess_does_not_override_recipe_routing(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path / "sleep2vec2", variant="sleep2vec")
-    output_dir = tmp_path / "sleep2vec2" / "plan"
+@pytest.mark.parametrize("misleading_dir", ["sleep2vec2", "sex_age_baseline"])
+def test_path_based_variant_guess_does_not_override_recipe_routing(tmp_path: Path, misleading_dir: str):
+    work_dir = tmp_path / misleading_dir
+    recipe = write_finetune_recipe(work_dir, variant="sleep2vec")
+    output_dir = work_dir / "plan"
+    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+
+    summary = configs.config_summary(config)
 
     report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
 
+    assert summary["variant_guess"] == misleading_dir
+    assert summary.get("authoritative_variant") is None
     assert report.exit_code == 0
     assert "python -m sleep2vec.finetune" in (output_dir / "run.sh").read_text()
 

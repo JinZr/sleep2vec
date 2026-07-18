@@ -223,6 +223,7 @@ def test_sex_age_baseline_config_summary_reports_backend_and_variant(tmp_path: P
     summary = config_summary(config)
 
     assert summary["variant_guess"] == "sex_age_baseline"
+    assert summary["authoritative_variant"] == "sex_age_baseline"
     assert summary["data_backend"] == "npz"
     assert summary["data"]["finetune_data_index"]
 

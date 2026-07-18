@@ -94,7 +94,7 @@ def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
     paths, config, split_values = index_summary_inputs(recipe, cfg)
     data = (cfg or {}).get("data") or {}
     uses_kaldi_manifest = bool(
-        cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi"
+        cfg and cfg.get("authoritative_variant") == "sex_age_baseline" and data.get("backend") == "kaldi"
     )
     preset_path = effective_preset_path(recipe, cfg)
     finetune = (cfg or {}).get(CONFIG_FINETUNE_SECTION) or {}
@@ -106,7 +106,7 @@ def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
         label_sidecars_valid = (finetune.get("multilabel") or {}).get("valid") is True
     uses_sex_age_preset = bool(
         cfg
-        and cfg.get("variant_guess") == "sex_age_baseline"
+        and cfg.get("authoritative_variant") == "sex_age_baseline"
         and data.get("backend") == "npz"
         and preset_path not in (None, "", "ASK_USER")
         and label_sidecars_valid

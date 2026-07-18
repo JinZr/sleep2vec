@@ -128,7 +128,7 @@ class FinetuneAdapter(TaskAdapter):
                 )
         if (
             config_summary
-            and config_summary.get("variant_guess") == "sex_age_baseline"
+            and config_summary.get("authoritative_variant") == "sex_age_baseline"
             and config_summary.get("data_backend") == "kaldi"
         ):
             if not data.get("kaldi_data_root") or not data.get("kaldi_manifest"):

@@ -52,7 +52,7 @@ def index_summary(
         frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     df = _filter_splits(df, split_values, split_column=split_column)
-    if cfg and cfg.get("variant_guess") == "sex_age_baseline":
+    if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
         required_names = (
             data_summary.get("key_column") or "eid",
             split_column,
@@ -142,7 +142,7 @@ def index_summary(
     for column, exists in required_columns.items():
         if not exists:
             blocking_issues.append(f"Index CSV missing required column: {column}")
-    if cfg and cfg.get("variant_guess") == "sex_age_baseline":
+    if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
         blocking_issues.extend(
             _sex_age_metadata_value_issues(
                 df,
@@ -222,14 +222,14 @@ def _survival_key_column(cfg: dict[str, Any] | None) -> str | None:
 
 def _uses_sex_age_kaldi_manifest(cfg: dict[str, Any] | None) -> bool:
     data = (cfg or {}).get("data") or {}
-    return bool(cfg and cfg.get("variant_guess") == "sex_age_baseline" and data.get("backend") == "kaldi")
+    return bool(cfg and cfg.get("authoritative_variant") == "sex_age_baseline" and data.get("backend") == "kaldi")
 
 
 def _uses_sex_age_preset_metadata(cfg: dict[str, Any] | None, preset_path: str | Path | None) -> bool:
     data = (cfg or {}).get("data") or {}
     return bool(
         cfg
-        and cfg.get("variant_guess") == "sex_age_baseline"
+        and cfg.get("authoritative_variant") == "sex_age_baseline"
         and data.get("backend") == "npz"
         and preset_path not in (None, "", "ASK_USER")
     )

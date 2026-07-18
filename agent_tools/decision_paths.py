@@ -134,7 +134,7 @@ def _requires_survival_sidecars(
         return False
     if required is not None:
         return required
-    if config_summary and config_summary.get("variant_guess") == "sex_age_baseline":
+    if config_summary and config_summary.get("authoritative_variant") == "sex_age_baseline":
         return uses_finetune_config
     if uses_finetune_config:
         _field, preset_path = _effective_preset_path(
@@ -248,7 +248,7 @@ def path_issues(
     if (
         validates_dataset_paths
         and config_summary
-        and config_summary.get("variant_guess") == "sex_age_baseline"
+        and config_summary.get("authoritative_variant") == "sex_age_baseline"
         and config_summary.get("data_backend") == "kaldi"
     ):
         data = _config_data(config_summary)
