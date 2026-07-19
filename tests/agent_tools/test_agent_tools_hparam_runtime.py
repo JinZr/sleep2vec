@@ -1306,11 +1306,11 @@ def test_status_binds_first_process_identity_only_to_the_frozen_script(
 @pytest.mark.parametrize(
     ("target", "host", "expected_status"),
     [
-        pytest.param("local", "", "launched", id="local"),
+        pytest.param("local", "", "missing_pid", id="local"),
         pytest.param("ssh", "unit-host", "unknown_remote", id="ssh"),
     ],
 )
-def test_status_keeps_dead_unfrozen_process_identity_unresolved(
+def test_status_keeps_dead_unfrozen_process_identity_unbound(
     tmp_path: Path,
     monkeypatch,
     target: str,
@@ -1342,6 +1342,25 @@ def test_status_keeps_dead_unfrozen_process_identity_unresolved(
     assert observed["pid"] == ""
     assert observed.get("process_group_id", "") == ""
     assert observed.get("process_start_token", "") == ""
+
+
+def test_hparam_run_queue_fails_after_dead_unfrozen_process_identity(tmp_path: Path, monkeypatch):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "launched"}])
+    _write_process_identity(rows[0]["pid_path"])
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+    monkeypatch.setattr(
+        run_evidence,
+        "_require_process_script",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("dead identity must remain unbound")),
+    )
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
+
+    with pytest.raises(RuntimeError, match="cannot advance.*missing_pid"):
+        hparam_runtime.run_hparam_queue(tmp_path, dry_run=False)
+
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
 
 
 def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, monkeypatch):

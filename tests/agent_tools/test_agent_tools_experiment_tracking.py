@@ -1121,7 +1121,7 @@ def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkey
     assert "train-model / run-001" in report
 
 
-def test_experiment_checkpoint_scan_ignores_checkpoint_named_directories(tmp_path: Path):
+def test_experiment_checkpoint_scan_rejects_checkpoint_named_directories(tmp_path: Path):
     checkpoint_dir = tmp_path / "checkpoints"
     checkpoint_dir.mkdir()
     (checkpoint_dir / "epoch=02.ckpt").mkdir()
@@ -1136,7 +1136,8 @@ def test_experiment_checkpoint_scan_ignores_checkpoint_named_directories(tmp_pat
         }
     ]
 
-    assert experiment_tracking._local_checkpoint_rows(runs) == []
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiment_tracking._local_checkpoint_rows(runs)
 
 
 def test_local_checkpoint_scan_prefers_manifest_epoch_over_best_filename(tmp_path: Path):
@@ -1346,12 +1347,64 @@ def test_experiment_checkpoint_evidence_rejects_path_outside_frozen_directory_be
     assert not (tmp_path / "reports" / "experiment_ranking.csv").exists()
 
 
-def test_experiment_rank_ignores_managed_checkpoint_without_requested_metric(tmp_path: Path):
+@pytest.mark.parametrize("failure", ["missing", "hardlink"])
+def test_experiment_rank_revalidates_checkpoint_file_evidence(tmp_path: Path, failure: str):
     _initialize_workspace(tmp_path)
+    checkpoint_dir = tmp_path / "runtime" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "epoch=1.ckpt"
+    if failure == "hardlink":
+        outside = tmp_path / "outside.ckpt"
+        outside.write_text("checkpoint")
+        checkpoint.hardlink_to(outside)
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\tcheckpoint_dir\tstatus\n"
-        "unit\ttrain-model\trun-000\tmanaged-v1\t/runtime\tcompleted\n"
-        "unit\ttrain-model\trun-001\tmanaged-v2\t/runtime\tcompleted\n"
+        f"unit\ttrain-model\trun-000\tmanaged-v1\t{checkpoint_dir}\tcompleted\n"
+    )
+    (tmp_path / "metrics_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tversion\tepoch\tmetric\tvalue\n"
+        "unit\ttrain-model\trun-000\tmanaged-v1\t1\tval_auroc\t0.7\n"
+    )
+    (tmp_path / "checkpoint_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tversion\tepoch\tcheckpoint_path\n"
+        f"unit\ttrain-model\trun-000\tmanaged-v1\t1\t{checkpoint}\n"
+    )
+
+    with pytest.raises(ValueError, match="Checkpoint evidence is missing|independent regular files"):
+        experiments.rank_experiment_candidates(tmp_path, metric="val_auroc", mode="max")
+
+    assert not (tmp_path / "reports" / "experiment_ranking.csv").exists()
+
+
+def test_local_checkpoint_scan_rejects_hardlinked_checkpoint(tmp_path: Path):
+    checkpoint_dir = tmp_path / "runtime" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.ckpt"
+    outside.write_text("checkpoint")
+    (checkpoint_dir / "epoch=1.ckpt").hardlink_to(outside)
+    run = {
+        "experiment_id": "unit",
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "version": "managed-v1",
+        "runtime_dir": str(checkpoint_dir.parent),
+        "checkpoint_dir": str(checkpoint_dir),
+    }
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiment_tracking._local_checkpoint_rows([run])
+
+
+def test_experiment_rank_ignores_managed_checkpoint_without_requested_metric(tmp_path: Path):
+    _initialize_workspace(tmp_path)
+    checkpoint_dir = tmp_path / "runtime"
+    checkpoint_dir.mkdir()
+    checkpoint = checkpoint_dir / "managed-v2.ckpt"
+    checkpoint.write_text("checkpoint")
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tversion\tcheckpoint_dir\tstatus\n"
+        f"unit\ttrain-model\trun-000\tmanaged-v1\t{checkpoint_dir}\tcompleted\n"
+        f"unit\ttrain-model\trun-001\tmanaged-v2\t{checkpoint_dir}\tcompleted\n"
     )
     (tmp_path / "metrics_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\tmetric\tvalue\n"
@@ -1359,7 +1412,7 @@ def test_experiment_rank_ignores_managed_checkpoint_without_requested_metric(tmp
     )
     (tmp_path / "checkpoint_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\tcheckpoint_path\n"
-        "unit\ttrain-model\trun-001\tmanaged-v2\t/runtime/managed-v2.ckpt\n"
+        f"unit\ttrain-model\trun-001\tmanaged-v2\t{checkpoint}\n"
     )
 
     ranking = experiments.rank_experiment_candidates(tmp_path, metric="val_auroc", mode="max")
@@ -1718,6 +1771,8 @@ def test_experiment_remote_checkpoint_index_respects_manifest_epoch(monkeypatch,
             "/remote/runtime/run_a",
             "/remote/runtime/run_a/checkpoints",
             "/remote/runtime/run_a/run_manifest.json",
+            checkpoint_one,
+            checkpoint_two,
         },
     )
     monkeypatch.setattr(experiment_io, "read_rows_at", lambda *_args, **_kwargs: [])
@@ -1767,7 +1822,7 @@ def test_remote_checkpoint_scan_skips_confirmed_missing_run_and_indexes_other_ru
     commands = []
 
     def fake_exists(path, *, remote=None):
-        return str(path) in {ready["runtime_dir"], ready["checkpoint_dir"]}
+        return str(path) in {ready["runtime_dir"], ready["checkpoint_dir"], checkpoint}
 
     def fake_run(command, **kwargs):
         commands.append((command, kwargs))
@@ -1785,6 +1840,31 @@ def test_remote_checkpoint_scan_skips_confirmed_missing_run_and_indexes_other_ru
     assert missing["checkpoint_dir"] not in command[-1]
     assert ready["checkpoint_dir"] in command[-1]
     assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+
+
+def test_remote_checkpoint_scan_rejects_hardlinked_checkpoint(monkeypatch):
+    run = {
+        "experiment_id": "unit",
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "version": "managed-v1",
+        "runtime_dir": "/remote/runtime/run-000",
+        "checkpoint_dir": "/remote/runtime/run-000/checkpoints",
+    }
+    checkpoint = "/remote/runtime/run-000/checkpoints/epoch=1.ckpt"
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiment_io, "read_text_at", lambda *_args, **_kwargs: "")
+
+    def fake_run(command, **kwargs):
+        if "seen_inodes" in command[-1]:
+            return subprocess.CompletedProcess(command, 2, "", f"hardlinked checkpoint: {checkpoint}")
+        return subprocess.CompletedProcess(command, 0, f"{checkpoint}\t123.0\n", "")
+
+    monkeypatch.setattr(experiment_tracking.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="hardlinked checkpoint"):
+        experiment_tracking._remote_checkpoint_rows([run], "unit-host")
 
 
 def test_remote_checkpoint_scan_preserves_inventory_when_directory_disappears(monkeypatch):
@@ -1920,6 +2000,7 @@ def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path
             str(tmp_path / "run_manifest.tsv"),
             "/remote/runtime/run_a",
             "/remote/runtime/run_a/checkpoints",
+            "/remote/runtime/run_a/checkpoints/epoch=1.ckpt",
         }
         or (failure == "empty_manifest" and Path(path).name == "run_manifest.json"),
     )
@@ -1981,8 +2062,8 @@ def test_experiment_rank_remote_reads_and_writes_over_ssh(monkeypatch):
         "train-model\trun-000\trun_a\t2\t/remote/run/run_a/checkpoints/epoch=2.ckpt\ttrue\tfalse\n"
     )
     run_manifest = (
-        "experiment_id\tstep_id\trun_id\trun_name\tversion\tcheckpoint_dir\tstatus\n"
-        "unit\ttrain-model\trun-000\tmanaged\trun_a\t/remote/run/run_a/checkpoints\tcompleted\n"
+        "experiment_id\tstep_id\trun_id\trun_name\tversion\tcheckpoint_dir\ttarget\thost\tstatus\n"
+        "unit\ttrain-model\trun-000\tmanaged\trun_a\t/remote/run/run_a/checkpoints\tssh\tworker\tcompleted\n"
     )
 
     def fake_run(command, **kwargs):
@@ -1999,6 +2080,8 @@ def test_experiment_rank_remote_reads_and_writes_over_ssh(monkeypatch):
         if "run_manifest.tsv" in shell and "sys.stdout.write" in shell:
             return subprocess.CompletedProcess(command, 0, run_manifest, "")
         if "run_manifest.tsv" in shell and "os.lstat" in shell:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "/remote/run/run_a/checkpoints/epoch=2.ckpt" in shell and "os.lstat" in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
         if "os.lstat" in shell:
             return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
@@ -2018,3 +2101,71 @@ def test_experiment_rank_remote_reads_and_writes_over_ssh(monkeypatch):
     )
     assert "0.8" in ranking_write
     assert "/remote/run/run_a/checkpoints/epoch=2.ckpt" in ranking_write
+    evidence_calls = [
+        command
+        for command, _kwargs in calls
+        if "/remote/run/run_a/checkpoints/epoch=2.ckpt" in command[-1] and "os.lstat" in command[-1]
+    ]
+    assert evidence_calls
+    assert all(command[:2] == ["ssh", "worker"] for command in evidence_calls)
+
+
+def test_experiment_rank_remote_rejects_deleted_checkpoint_on_run_host_before_writing(monkeypatch):
+    root = "/remote/workspace"
+    checkpoint = "/remote/runtime/run-000/checkpoints/epoch=1.ckpt"
+    experiment_text = json.dumps(
+        {
+            "experiment": {
+                "id": "unit",
+                "title": "Unit experiment",
+                "objective": "Exercise experiment workspace contracts.",
+                "root": root,
+                "baseline": {"type": "none", "rationale": "Unit fixture."},
+            }
+        }
+    )
+    metrics = (
+        "experiment_id\tstep_id\trun_id\tversion\tepoch\tmetric\tvalue\n"
+        "unit\ttrain-model\trun-000\tmanaged-v1\t1\tval_auroc\t0.7\n"
+    )
+    checkpoints = (
+        "experiment_id\tstep_id\trun_id\tversion\tepoch\tcheckpoint_path\n"
+        f"unit\ttrain-model\trun-000\tmanaged-v1\t1\t{checkpoint}\n"
+    )
+    run_manifest = (
+        "experiment_id\tstep_id\trun_id\tversion\tcheckpoint_dir\ttarget\thost\tstatus\n"
+        "unit\ttrain-model\trun-000\tmanaged-v1\t/remote/runtime/run-000/checkpoints\t"
+        "ssh\tworker\tcompleted\n"
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        shell = command[-1]
+        if "seen_inodes" in shell:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "experiment.yaml" in shell and "sys.stdout.write" in shell:
+            return subprocess.CompletedProcess(command, 0, experiment_text, "")
+        if "metrics_manifest.tsv" in shell and "sys.stdout.write" in shell:
+            return subprocess.CompletedProcess(command, 0, metrics, "")
+        if "checkpoint_manifest.tsv" in shell and "sys.stdout.write" in shell:
+            return subprocess.CompletedProcess(command, 0, checkpoints, "")
+        if "run_manifest.tsv" in shell and "sys.stdout.write" in shell:
+            return subprocess.CompletedProcess(command, 0, run_manifest, "")
+        if command[:2] == ["ssh", "manager-host"] and "run_manifest.tsv" in shell and "os.lstat" in shell:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[:2] == ["ssh", "worker"] and checkpoint in shell and "os.lstat" in shell:
+            return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
+        if "os.lstat" in shell:
+            return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
+
+    with pytest.raises(ValueError, match="Checkpoint evidence is missing"):
+        experiments.rank_experiment_candidates(root, metric="val_auroc", mode="max", remote="manager-host")
+
+    assert not [command for command, _kwargs in calls if "cat >" in command[-1]]
+    evidence_calls = [command for command, _kwargs in calls if checkpoint in command[-1]]
+    assert evidence_calls
+    assert all(command[:2] == ["ssh", "worker"] for command in evidence_calls)

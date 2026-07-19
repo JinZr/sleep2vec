@@ -39,6 +39,17 @@ def _bound_config_summary(recipe: dict) -> dict:
     }
 
 
+def _valid_final_config_bytes(tmp_path: Path) -> bytes:
+    payload = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    payload["model"]["head"].update(
+        {
+            "channel_agg": {"name": "mean"},
+            "temporal_agg": {"name": "mean"},
+        }
+    )
+    return yaml.safe_dump(payload, sort_keys=False).encode()
+
+
 def _hparam_recipe(
     tmp_path: Path,
     *,
@@ -1305,15 +1316,182 @@ def test_unlock_final_test_with_yaml_search_uses_explicit_final_config(tmp_path:
         ckpt_path=ckpt,
         final_config_path=selected_config,
     )
-    selected_config.write_text((tmp_path / "config.yaml").read_text())
+    selected_bytes = _valid_final_config_bytes(tmp_path)
+    selected_config.write_bytes(selected_bytes)
     output_dir = tmp_path / "unlocked"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 0
+    frozen_config = output_dir / "config.final_eval.yaml"
     script = (output_dir / "final_external_test.sh").read_text()
-    assert shlex_quote(str(selected_config)) in script
+    assert frozen_config.read_bytes() == selected_bytes
+    assert shlex_quote(str(frozen_config)) in script
+    assert shlex_quote(str(selected_config)) not in script
     assert "runs/run-000" not in script
+    plan = json.loads((output_dir / "plan.json").read_text())
+    assert plan["final_eval_config"] == {
+        "path": str(frozen_config),
+        "sha256": hashlib.sha256(selected_bytes).hexdigest(),
+        "source_path": str(selected_config),
+    }
+    assert "_final_eval_config_snapshot" not in plan["recipe"]
+    assert "_final_eval_config_snapshot" not in (output_dir / "recipe.resolved.yaml").read_text()
+
+
+def test_unlock_final_test_rejects_invalid_explicit_config_before_workspace_mutation(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "invalid_selected_run.yaml"
+    selected_config.write_text("{}\n")
+    recipe = _hparam_recipe(
+        tmp_path,
+        parameters={"yaml:/finetune/task/output_dim": [31]},
+        ckpt_path=ckpt,
+        final_config_path=selected_config,
+    )
+    output_dir = tmp_path / "unlocked"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 1
+    assert "Final evaluation config is invalid for variant=sleep2vec" in result.stdout
+    assert "Finetune YAML must include a top-level 'finetune' block" in result.stdout
+    assert not output_dir.exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
+
+
+def test_unlock_final_test_rejects_variant_incompatible_explicit_config_before_workspace_mutation(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "sex_age_selected_run.yaml"
+    selected_config.write_bytes((REPO_ROOT / "configs" / "sex_age_baseline" / "cox.yaml").read_bytes())
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    output_dir = tmp_path / "unlocked"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 1
+    assert "Final evaluation config is invalid for variant=sleep2vec" in result.stdout
+    assert not output_dir.exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
+
+
+def test_unlock_final_test_detects_explicit_config_drift_before_workspace_mutation(tmp_path: Path, monkeypatch):
+    from sleep2vec import config as runtime_config
+
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "selected_run.yaml"
+    recipe = _hparam_recipe(
+        tmp_path,
+        parameters={"yaml:/finetune/task/output_dim": [31]},
+        ckpt_path=ckpt,
+        final_config_path=selected_config,
+    )
+    selected_config.write_bytes(_valid_final_config_bytes(tmp_path))
+    real_load_finetune_config = runtime_config.load_finetune_config
+
+    def mutate_source_after_validation(path: Path):
+        bundle = real_load_finetune_config(path)
+        selected_config.write_text("{}\n")
+        return bundle
+
+    monkeypatch.setattr(runtime_config, "load_finetune_config", mutate_source_after_validation)
+    output_dir = tmp_path / "unlocked"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, unlock_final_test=True)
+
+    assert report.exit_code == 1
+    assert any("changed while plan preflight" in issue.message for issue in report.issues)
+    assert not output_dir.exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
+
+
+def test_unlock_final_test_freezes_explicit_config_without_yaml_search(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "selected_run.yaml"
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    selected_bytes = _valid_final_config_bytes(tmp_path)
+    selected_config.write_bytes(selected_bytes)
+    output_dir = tmp_path / "unlocked"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    frozen_config = output_dir / "config.final_eval.yaml"
+    assert frozen_config.read_bytes() == selected_bytes
+    script = (output_dir / "final_external_test.sh").read_text()
+    assert shlex_quote(str(frozen_config)) in script
+    assert shlex_quote(str(selected_config)) not in script
+
+
+def test_unlock_final_test_captures_remote_explicit_config_over_ssh(tmp_path: Path, monkeypatch):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    remote_config = "/remote/selected_run.yaml"
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=Path(remote_config))
+    selected_bytes = _valid_final_config_bytes(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = {
+        "target": "ssh",
+        "host": "unit-host",
+        "path_context": "remote",
+        "path_validation": "ssh",
+        "python": sys.executable,
+        "runtime_commit": _RUNTIME_COMMIT,
+    }
+    write_yaml(recipe, payload)
+    calls = []
+
+    def fake_run_ssh(host: str, command: str, **kwargs):
+        calls.append((host, command, kwargs))
+        if command.startswith("cat -- "):
+            return subprocess.CompletedProcess([], 0, stdout=selected_bytes, stderr=b"")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_tools.transport.run_ssh", fake_run_ssh)
+    output_dir = tmp_path / "unlocked"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, unlock_final_test=True)
+
+    assert report.exit_code == 0
+    frozen_config = output_dir / "config.final_eval.yaml"
+    assert frozen_config.read_bytes() == selected_bytes
+    assert [command for _host, command, _kwargs in calls].count(f"cat -- {remote_config}") == 2
+    assert shlex_quote(str(frozen_config)) in (output_dir / "final_external_test.sh").read_text()
+
+
+def test_unlock_final_test_rejects_deferred_remote_explicit_config_before_workspace_mutation(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    recipe = _hparam_recipe(
+        tmp_path,
+        ckpt_path=ckpt,
+        final_config_path=Path("/remote/selected_run.yaml"),
+    )
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = {
+        "target": "ssh",
+        "host": "unit-host",
+        "path_context": "remote",
+        "path_validation": "defer",
+        "python": sys.executable,
+        "runtime_commit": _RUNTIME_COMMIT,
+    }
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "unlocked"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, unlock_final_test=True)
+
+    assert report.exit_code == 1
+    assert any(
+        "remote final_eval_config_path requires execution.path_validation=ssh" in issue.message
+        for issue in report.issues
+    )
+    assert not output_dir.exists()
+    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
 
 
 def test_infer_user_decision_ckpt_path_must_exist(tmp_path: Path):
@@ -1667,12 +1845,22 @@ def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_pa
     output_dir.mkdir()
     stale_final_script = output_dir / "final_external_test.sh"
     stale_final_script.write_text("# stale final test script\n")
+    stale_final_config = output_dir / "config.final_eval.yaml"
+    stale_final_config.write_text("stale: true\n")
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--output-dir",
+        str(output_dir),
+        "--unlock-final-test",
+    )
 
     assert result.returncode == 1
     assert "Output artifacts already exist" in result.stdout
     assert str(stale_final_script) in result.stdout
+    assert str(stale_final_config) in result.stdout
     assert not (output_dir / "plan.md").exists()
 
 
@@ -1701,11 +1889,14 @@ def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_c
     output_dir.mkdir()
     stale_final_script = output_dir / "final_external_test.sh"
     stale_final_script.write_text("# stale final test script\n")
+    stale_final_config = output_dir / "config.final_eval.yaml"
+    stale_final_config.write_text("stale: true\n")
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert not stale_final_script.exists()
+    assert not stale_final_config.exists()
     plan = (output_dir / "plan.md").read_text()
     assert "explicit checkpoint path is required" in plan
     assert "Final external-test script generated" not in plan

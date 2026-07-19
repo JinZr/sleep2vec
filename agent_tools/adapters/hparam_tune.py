@@ -113,7 +113,12 @@ class HparamTuneAdapter(TaskAdapter):
             paths = [out / "questions.json", out / "questions.md", out / "plan.blocked.md"]
             evaluation = recipe.get("evaluation_policy") or {}
             if plan_hparam.final_test_unlocked(evaluation, unlock_final_test):
-                paths.append(out / "final_external_test.sh")
+                paths.extend(
+                    [
+                        out / "final_external_test.sh",
+                        out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
+                    ]
+                )
             if allow_unresolved and report.exit_code == 2:
                 paths.append(out / "plan.draft.json")
             return paths
@@ -124,6 +129,7 @@ class HparamTuneAdapter(TaskAdapter):
             out / "validation.sh",
             out / "recipe.resolved.yaml",
             out / "config.source.yaml",
+            out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
         ]
         offset = next_run_index(recipe)
         for idx, combo in enumerate(plan_hparam.hparam_combos(recipe)):

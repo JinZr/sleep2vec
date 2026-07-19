@@ -168,6 +168,7 @@ def status_row(
     previous = previous or {}
     process_identity = None
     committed_process_identity = None
+    dead_unbound_process_identity = False
     managed_process = any(source.get("script") not in (None, "") for source in (row, previous))
     try:
         if managed_process:
@@ -195,6 +196,7 @@ def status_row(
                     committed_process_identity = process_identity
                 else:
                     # A dead leader cannot bind previously unfrozen PID evidence to the launch script.
+                    dead_unbound_process_identity = running_state is False
                     running_state = None
         else:
             pid = read_pid(row.get("pid_path"), row)
@@ -240,6 +242,8 @@ def status_row(
     elif running_state is None:
         if is_remote_row(row):
             observed_status = "unknown_remote"
+        elif dead_unbound_process_identity:
+            observed_status = "missing_pid"
     elif running:
         observed_status = "running"
     elif observed_status in {"launched", "running", "unknown_remote"}:

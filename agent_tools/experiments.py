@@ -313,7 +313,13 @@ def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, r
         root / "checkpoint_manifest.tsv", remote=remote, require_managed_identity=True
     )
     _validate_evidence_rows(managed_rows, metric_rows, "metrics_manifest.tsv")
-    _validate_evidence_rows(managed_rows, checkpoint_rows, "checkpoint_manifest.tsv")
+    _validate_evidence_rows(
+        managed_rows,
+        checkpoint_rows,
+        "checkpoint_manifest.tsv",
+        checkpoint_evidence=True,
+        remote=remote,
+    )
     run_rows = tracking.experiment_run_rows(root, remote=remote)
     rows = tracking.candidate_rows(run_rows, metric_rows, metric)
     ranked = tracking.rank_candidates(rows, checkpoint_rows, mode=mode)
@@ -380,6 +386,9 @@ def _validate_evidence_rows(
     managed_rows: list[dict[str, Any]],
     evidence_rows: list[dict[str, Any]],
     source: str,
+    *,
+    checkpoint_evidence: bool = False,
+    remote: str | None = None,
 ) -> None:
     validate_managed_run_rows(evidence_rows, source=source, cardinality="many_per_run")
     managed_by_key = {managed_run_key(row): row for row in managed_rows}
@@ -387,4 +396,6 @@ def _validate_evidence_rows(
         managed = managed_by_key.get(managed_run_key(row))
         if managed is None:
             raise ValueError(f"{source} contains a run outside the canonical manifest.")
-        validate_frozen_run_update(managed, row, require_checkpoint_ownership=True)
+        validate_frozen_run_update(managed, row)
+    if checkpoint_evidence:
+        tracking.validate_checkpoint_evidence_rows(managed_rows, evidence_rows, remote=remote)

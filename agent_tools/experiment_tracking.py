@@ -18,6 +18,7 @@ from .experiment_workspace import (
     read_run_manifest,
     resolve_external_run_row,
     resolve_run_row,
+    validate_checkpoint_ownership,
     validate_frozen_run_update,
     validate_managed_run_rows,
 )
@@ -230,23 +231,27 @@ def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[dict[str, 
                 f"Checkpoint manifest row does not belong to an eligible managed run: "
                 f"{row['step_id']} / {row['run_id']}"
             )
-        validate_frozen_run_update(run, row, require_checkpoint_ownership=True)
+        evidence_host = checkpoint_evidence_host(run, remote)
+        validate_frozen_run_update(run, row, require_checkpoint_ownership=evidence_host is None)
+        if evidence_host:
+            validate_checkpoint_ownership(run, row)
     previous_checkpoint_keys = {
         managed_run_key(row) for row in previous_rows if row.get("checkpoint_path") not in (None, "")
     }
     for run in eligible_runs:
         if managed_run_key(run) not in previous_checkpoint_keys:
             continue
-        if remote:
+        evidence_host = checkpoint_evidence_host(run, remote)
+        if evidence_host:
             try:
-                runtime_exists = exp_io.path_exists_at(run["runtime_dir"], remote=remote)
-                checkpoint_exists = exp_io.path_exists_at(run["checkpoint_dir"], remote=remote)
+                runtime_exists = exp_io.path_exists_at(run["runtime_dir"], remote=evidence_host)
+                checkpoint_exists = exp_io.path_exists_at(run["checkpoint_dir"], remote=evidence_host)
             except RuntimeError as exc:
-                raise RuntimeError(f"SSH checkpoint scan failed on {remote}: {exc}") from exc
+                raise RuntimeError(f"SSH checkpoint scan failed on {evidence_host}: {exc}") from exc
             if not runtime_exists or not checkpoint_exists:
                 raise RuntimeError(
                     f"SSH checkpoint scan found a missing frozen artifact directory with existing inventory on "
-                    f"{remote}: {run['step_id']} / {run['run_id']}"
+                    f"{evidence_host}: {run['step_id']} / {run['run_id']}"
                 )
         else:
             for field in ("runtime_dir", "checkpoint_dir"):
@@ -261,9 +266,16 @@ def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[dict[str, 
                     raise ValueError(
                         f"Managed {field} is not a directory: " f"{run['step_id']} / {run['run_id']} / {run[field]}"
                     )
+    validate_checkpoint_evidence_rows(runs, previous_rows, remote=remote)
     if not eligible_runs:
         return []
-    rows = _remote_checkpoint_rows(eligible_runs, remote) if remote else _local_checkpoint_rows(eligible_runs)
+    rows = []
+    for run in eligible_runs:
+        evidence_host = checkpoint_evidence_host(run, remote)
+        if evidence_host:
+            rows.extend(_remote_checkpoint_rows([run], evidence_host))
+        else:
+            rows.extend(_local_checkpoint_rows([run]))
     validate_managed_run_rows(rows, source="checkpoint scan", cardinality="many_per_run")
     return rows
 
@@ -497,9 +509,12 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         manifest = read_json(manifest_path) if manifest_path else {}
         best_path = artifacts.fixed_checkpoint_path(manifest, checkpoint_dir)
         has_explicit_epoch = manifest.get("epoch") not in (None, "")
-        for path in sorted(checkpoint_dir.glob("*.ckpt")):
-            if not path.is_file() or path.is_symlink():
-                continue
+        paths = sorted(checkpoint_dir.glob("*.ckpt"))
+        validate_checkpoint_evidence_rows(
+            [run],
+            [{**run, "checkpoint_path": str(path)} for path in paths],
+        )
+        for path in paths:
             rows.append(
                 {
                     **{
@@ -554,7 +569,7 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
         'if [ -L "$root" ] || [ ! -d "$root" ]; then '
         "printf 'Managed checkpoint_dir is missing or is not a directory: %s\\n' \"$root\" >&2; exit 1; "
         "fi; "
-        "find \"$root\" -maxdepth 1 -type f -name '*.ckpt' -printf '%p\t%T@\n' || exit $?; "
+        "find \"$root\" -mindepth 1 -maxdepth 1 -name '*.ckpt' -printf '%p\t%T@\n' || exit $?; "
         "done"
     )
     try:
@@ -596,6 +611,7 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
             "is_last": str(name == "last.ckpt").lower(),
         }
     checkpoint_rows = list(rows.values())
+    validate_checkpoint_evidence_rows(available_runs, checkpoint_rows, remote=remote)
     for run in available_runs:
         manifest_path = str(run["runtime_dir"]).rstrip("/") + "/run_manifest.json"
         try:
@@ -630,6 +646,45 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
                 row["checkpoint_path"] == best_path or (not has_explicit_epoch and name.startswith("best-"))
             ).lower()
     return checkpoint_rows
+
+
+def validate_checkpoint_evidence_rows(
+    runs: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    remote: str | None = None,
+) -> None:
+    runs_by_key = {managed_run_key(run): run for run in runs}
+    grouped_paths: dict[tuple[str | None, str], list[Path]] = {}
+    for row in rows:
+        checkpoint_path = row.get("checkpoint_path")
+        if checkpoint_path in (None, ""):
+            continue
+        run = runs_by_key.get(managed_run_key(row))
+        if run is None:
+            raise ValueError(
+                f"Checkpoint evidence is outside the canonical manifest: "
+                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
+            )
+        validate_frozen_run_update(run, row)
+        validate_checkpoint_ownership(run, row)
+        evidence_host = checkpoint_evidence_host(run, remote)
+        checkpoint_dir = str(run["checkpoint_dir"])
+        grouped_paths.setdefault((evidence_host, checkpoint_dir), []).append(Path(str(checkpoint_path)))
+    for (evidence_host, checkpoint_dir), paths in grouped_paths.items():
+        exp_io.validate_managed_output_paths(checkpoint_dir, paths, remote=evidence_host)
+        for path in paths:
+            if not exp_io.path_exists_at(path, remote=evidence_host):
+                raise ValueError(f"Checkpoint evidence is missing: {path}")
+
+
+def checkpoint_evidence_host(run: dict[str, Any], remote: str | None) -> str | None:
+    if run.get("target") != "ssh":
+        return remote
+    host = str(run.get("host") or "")
+    if not host:
+        raise ValueError(f"Managed SSH run is missing its host: {run.get('step_id', '')} / {run.get('run_id', '')}")
+    return host
 
 
 def _checkpoint_for_metric_row(row: dict[str, Any], checkpoints: list[dict[str, str]]) -> str:
