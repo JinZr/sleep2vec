@@ -52,6 +52,17 @@ def consultation_contract_issues(
                         source_layer,
                     )
                 )
+            if "avg_ckpts" in runtime_value and (
+                type(runtime_value["avg_ckpts"]) is not int or runtime_value["avg_ckpts"] < 1
+            ):
+                issues.append(
+                    _contract_issue(
+                        "runtime.avg_ckpts",
+                        "runtime.avg_ckpts must be a positive integer.",
+                        runtime_value["avg_ckpts"],
+                        source_layer,
+                    )
+                )
 
     decisions_value = recipe.get("decisions")
     if "decisions" not in recipe:
@@ -297,6 +308,7 @@ def evaluate_consultation_gates(
             config_summary,
             required_input_paths=task_adapter.required_input_paths(recipe) if task_adapter else None,
             requires_survival_sidecars=task_adapter.requires_survival_sidecars if task_adapter else None,
+            requires_multilabel_sidecars=task_adapter.requires_multilabel_sidecars if task_adapter else None,
             preset_path_recipe_field=task_adapter.preset_path_recipe_field if task_adapter else None,
             validates_dataset_paths=task_adapter.validates_dataset_paths if task_adapter else False,
             uses_finetune_config=task_adapter.uses_finetune_config if task_adapter else None,

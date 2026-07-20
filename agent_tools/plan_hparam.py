@@ -12,9 +12,17 @@ from typing import Any
 
 import yaml
 
-from . import plan_rendering as rendering, transport
+from . import plan_context, plan_rendering as rendering, transport
 from .decision_models import DecisionIssue, DecisionStatus
-from .decision_paths import path_context, path_validation, validate_input_path
+from .decision_paths import (
+    inference_checkpoint_averaging_issue,
+    multilabel_sidecar_issue,
+    path_context,
+    path_issues,
+    path_validation,
+    survival_sidecar_issue,
+    validate_input_path,
+)
 from .experiment_workspace import (
     append_event,
     experiment_root,
@@ -53,6 +61,7 @@ def final_script_allowed(
 
 def final_test_checkpoint_issues(
     recipe: dict,
+    config_summary: dict | None,
     *,
     unlock_final_test: bool,
 ) -> list[DecisionIssue]:
@@ -60,6 +69,8 @@ def final_test_checkpoint_issues(
     if not unlock_final_test and not final_script_allowed(recipe, evaluation, unlock_final_test):
         return []
     issues: list[DecisionIssue] = []
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    avg_ckpts = runtime.get("avg_ckpts", 1)
     ckpt_path = resolved_ckpt_path(recipe)
     if ckpt_path in (None, "", "ASK_USER") or str(ckpt_path).startswith("<"):
         return [
@@ -71,11 +82,23 @@ def final_test_checkpoint_issues(
                 {"ckpt_path": ckpt_path},
             )
         ]
-    ckpt_issue = validate_input_path(recipe, "ckpt_path", ckpt_path, configured=False)
-    if ckpt_issue is not None:
-        issues.append(ckpt_issue)
-        if ckpt_issue.status == DecisionStatus.FAIL:
+    averaging_issue = inference_checkpoint_averaging_issue(recipe, ckpt_path)
+    if averaging_issue is not None:
+        issues.append(averaging_issue)
+        if averaging_issue.status == DecisionStatus.FAIL:
             return issues
+    if not (avg_ckpts > 1 and ckpt_path in ("best", "last")):
+        ckpt_issue = validate_input_path(
+            recipe,
+            "ckpt_path",
+            ckpt_path,
+            configured=False,
+            require_file=True,
+        )
+        if ckpt_issue is not None:
+            issues.append(ckpt_issue)
+            if ckpt_issue.status == DecisionStatus.FAIL:
+                return issues
     final_config = resolved_final_eval_config_path(recipe, None)
     if has_yaml_search_overrides(recipe) and not has_explicit_final_eval_config(recipe):
         issues.append(
@@ -89,7 +112,13 @@ def final_test_checkpoint_issues(
         )
         return issues
     if has_explicit_final_eval_config(recipe):
-        config_issue = validate_input_path(recipe, "final_eval_config_path", final_config, configured=False)
+        config_issue = validate_input_path(
+            recipe,
+            "final_eval_config_path",
+            final_config,
+            configured=False,
+            relative_to_workdir=False,
+        )
         if config_issue is not None:
             issues.append(config_issue)
             if config_issue.status == DecisionStatus.FAIL:
@@ -131,9 +160,48 @@ def final_test_checkpoint_issues(
                 )
             )
             return issues
+        config_summary = plan_context.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
+        for message in (config_summary or {}).get("blocking_issues", []):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "final_eval_config_path",
+                    f"Final evaluation config is not runnable: {message}",
+                    None,
+                    {"final_eval_config_path": str(final_config), "preflight_before_workspace": True},
+                )
+            )
         drift_issue = final_eval_config_drift_issue(recipe)
         if drift_issue is not None:
             issues.append(drift_issue)
+    issues.extend(
+        path_issues(
+            "infer",
+            recipe,
+            config_summary,
+            preset_path_recipe_field="inference_preset_path",
+            validates_dataset_paths=True,
+            uses_finetune_config=True,
+        )
+    )
+    survival_issue = survival_sidecar_issue(
+        "infer",
+        recipe,
+        config_summary,
+        preset_path_recipe_field="inference_preset_path",
+        uses_finetune_config=True,
+    )
+    if survival_issue is not None:
+        issues.append(survival_issue)
+    multilabel_issue = multilabel_sidecar_issue(
+        "infer",
+        recipe,
+        config_summary,
+        preset_path_recipe_field="inference_preset_path",
+        uses_finetune_config=True,
+    )
+    if multilabel_issue is not None:
+        issues.append(multilabel_issue)
     return issues
 
 

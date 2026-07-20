@@ -69,12 +69,17 @@ def execution_contract_issues(
         )
     python_command = execution.get("python")
     if "python" in execution and (
-        not isinstance(python_command, str) or not python_command.strip() or python_command == "ASK_USER"
+        not isinstance(python_command, str)
+        or not python_command.strip()
+        or python_command == "ASK_USER"
+        or python_command.startswith("~")
+        or re.search(r"\s", python_command) is not None
     ):
         issues.append(
             _execution_contract_issue(
                 "execution.python",
-                "execution.python must be an explicit non-empty command or path.",
+                "execution.python must be a single executable name or path without whitespace, arguments, "
+                "or ~ shorthand.",
                 python_command,
                 source_layer,
             )
@@ -166,9 +171,13 @@ def multilabel_sidecar_issue(
     recipe: dict,
     config_summary: dict | None,
     *,
+    required: bool | None = None,
+    preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
 ) -> DecisionIssue | None:
-    if not _requires_multilabel_sidecars(task, recipe, config_summary, uses_finetune_config):
+    if not _requires_multilabel_sidecars(
+        task, recipe, config_summary, required, preset_path_recipe_field, uses_finetune_config
+    ):
         return None
     multilabel = _config_finetune(config_summary).get("multilabel")
     if not isinstance(multilabel, dict) or not multilabel.get("issues"):
@@ -209,12 +218,26 @@ def _requires_survival_sidecars(
 
 
 def _requires_multilabel_sidecars(
-    task: str, recipe: dict, config_summary: dict | None, uses_finetune_config: bool = False
+    task: str,
+    recipe: dict,
+    config_summary: dict | None,
+    required: bool | None = None,
+    preset_path_recipe_field: str | None = None,
+    uses_finetune_config: bool = False,
 ) -> bool:
     task_cfg = _config_finetune(config_summary).get("task")
     if not isinstance(task_cfg, dict) or task_cfg.get("type") != "multilabel_classification":
         return False
-    return uses_finetune_config
+    if required is not None:
+        return required
+    if config_summary and config_summary.get("authoritative_variant") == "sex_age_baseline":
+        return uses_finetune_config
+    if uses_finetune_config:
+        _field, preset_path = _effective_preset_path(
+            task, recipe, config_summary, preset_path_recipe_field, uses_finetune_config=uses_finetune_config
+        )
+        return preset_path in (None, "")
+    return False
 
 
 def _append_remote_survival_sidecar_issues(
@@ -237,10 +260,16 @@ def _append_remote_survival_sidecar_issues(
         value = survival.get(data_field)
         if not value:
             continue
-        context = path_context(recipe, value)
+        context = path_context(recipe, value, relative_to_workdir=True)
         validation = path_validation(recipe, context)
-        if context == "remote" and validation in {"ssh", "remote"}:
-            issue = validate_input_path(recipe, f"finetune.survival.{data_field}", value, configured=True)
+        if str(value).startswith("~") or (context == "remote" and validation in {"ssh", "remote"}):
+            issue = validate_input_path(
+                recipe,
+                f"finetune.survival.{data_field}",
+                value,
+                configured=True,
+                require_file=True,
+            )
             if issue is not None:
                 issues.append(issue)
 
@@ -250,9 +279,13 @@ def _append_remote_multilabel_sidecar_issues(
     task: str,
     recipe: dict,
     config_summary: dict | None,
+    required: bool | None = None,
+    preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
 ) -> None:
-    if not _requires_multilabel_sidecars(task, recipe, config_summary, uses_finetune_config):
+    if not _requires_multilabel_sidecars(
+        task, recipe, config_summary, required, preset_path_recipe_field, uses_finetune_config
+    ):
         return
     multilabel = _config_finetune(config_summary).get("multilabel")
     if not isinstance(multilabel, dict):
@@ -261,10 +294,16 @@ def _append_remote_multilabel_sidecar_issues(
         value = multilabel.get(data_field)
         if not value:
             continue
-        context = path_context(recipe, value)
+        context = path_context(recipe, value, relative_to_workdir=True)
         validation = path_validation(recipe, context)
-        if context == "remote" and validation in {"ssh", "remote"}:
-            issue = validate_input_path(recipe, f"finetune.multilabel.{data_field}", value, configured=True)
+        if str(value).startswith("~") or (context == "remote" and validation in {"ssh", "remote"}):
+            issue = validate_input_path(
+                recipe,
+                f"finetune.multilabel.{data_field}",
+                value,
+                configured=True,
+                require_file=True,
+            )
             if issue is not None:
                 issues.append(issue)
 
@@ -276,19 +315,27 @@ def path_issues(
     *,
     required_input_paths: list[tuple[str, Any]] | None = None,
     requires_survival_sidecars: bool | None = None,
+    requires_multilabel_sidecars: bool | None = None,
     preset_path_recipe_field: str | None = None,
     validates_dataset_paths: bool = False,
     uses_finetune_config: bool = False,
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    required_paths: list[tuple[str, Any]] = []
+    required_paths: list[tuple[str, Any, bool]] = []
     if inputs.get("config"):
-        required_paths.append(("config", inputs.get("config")))
-    required_paths.extend(required_input_paths or [])
+        required_paths.append(("config", inputs.get("config"), False))
+    required_paths.extend((field, path, True) for field, path in required_input_paths or [])
 
-    for path_field, raw_path in required_paths:
-        issue = validate_input_path(recipe, path_field, raw_path, configured=False)
+    for path_field, raw_path, relative_to_workdir in required_paths:
+        issue = validate_input_path(
+            recipe,
+            path_field,
+            raw_path,
+            configured=False,
+            relative_to_workdir=relative_to_workdir,
+            require_file=True,
+        )
         if issue is not None:
             issues.append(issue)
 
@@ -299,27 +346,46 @@ def path_issues(
         )
         if preset_path not in (None, ""):
             issue = validate_input_path(
-                recipe, preset_field, preset_path, configured=preset_field == "finetune_preset_path"
+                recipe,
+                preset_field,
+                preset_path,
+                configured=preset_field == "finetune_preset_path",
+                require_file=True,
             )
             if issue is not None:
                 issues.append(issue)
         else:
             value = data.get("finetune_data_index")
             if value:
-                issue = validate_input_path(recipe, "finetune_data_index", value, configured=True)
+                issue = validate_input_path(recipe, "finetune_data_index", value, configured=True, require_file=True)
                 if issue is not None:
                     issues.append(issue)
-    if (
-        validates_dataset_paths
-        and config_summary
-        and config_summary.get("authoritative_variant") == "sex_age_baseline"
-        and config_summary.get("data_backend") == "kaldi"
-    ):
+    if validates_dataset_paths and config_summary and config_summary.get("data_backend") == "kaldi":
         data = _config_data(config_summary)
+        preset_field, preset_path = _effective_preset_path(
+            task, recipe, config_summary, preset_path_recipe_field, uses_finetune_config=uses_finetune_config
+        )
+        if preset_path not in (None, ""):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    preset_field,
+                    "Kaldi backend does not support an NPZ inference or finetune preset.",
+                    None,
+                    {"data_backend": "kaldi", "preset_path": str(preset_path)},
+                )
+            )
         for data_field in ("kaldi_data_root", "kaldi_manifest"):
             value = data.get(data_field)
             if value:
-                issue = validate_input_path(recipe, data_field, value, configured=True)
+                issue = validate_input_path(
+                    recipe,
+                    data_field,
+                    value,
+                    configured=True,
+                    require_directory=data_field == "kaldi_data_root",
+                    require_file=data_field == "kaldi_manifest",
+                )
                 if issue is not None:
                     issues.append(issue)
     _append_remote_survival_sidecar_issues(
@@ -331,12 +397,38 @@ def path_issues(
         preset_path_recipe_field,
         uses_finetune_config,
     )
-    _append_remote_multilabel_sidecar_issues(issues, task, recipe, config_summary, uses_finetune_config)
+    _append_remote_multilabel_sidecar_issues(
+        issues,
+        task,
+        recipe,
+        config_summary,
+        requires_multilabel_sidecars,
+        preset_path_recipe_field,
+        uses_finetune_config,
+    )
     return issues
 
 
-def validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: bool) -> DecisionIssue | None:
-    context = path_context(recipe, raw_path)
+def validate_input_path(
+    recipe: dict,
+    field: str,
+    raw_path: Any,
+    *,
+    configured: bool,
+    relative_to_workdir: bool = True,
+    require_directory: bool = False,
+    require_file: bool = False,
+) -> DecisionIssue | None:
+    if relative_to_workdir and str(raw_path).startswith("~"):
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            field,
+            "Runtime input paths must not use ~ home-directory shorthand; use an absolute or workdir-relative path.",
+            None,
+            {"path": str(raw_path), "preflight_before_workspace": True},
+        )
+    execution = _execution(recipe)
+    context = path_context(recipe, raw_path, relative_to_workdir=relative_to_workdir)
     validation = path_validation(recipe, context)
     if context not in {"local", "remote"}:
         return DecisionIssue(
@@ -365,7 +457,7 @@ def validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: 
             {"path": str(raw_path), "path_context": "remote", "path_validation": "defer"},
         )
     if context == "remote" and validation == "ssh":
-        host = _execution(recipe).get("host")
+        host = execution.get("host")
         if not host:
             return DecisionIssue(
                 DecisionStatus.FAIL,
@@ -374,29 +466,87 @@ def validate_input_path(recipe: dict, field: str, raw_path: Any, *, configured: 
                 None,
                 {"path": str(raw_path)},
             )
-        result = transport.run_ssh(str(host), f"test -e {_sh(raw_path)}", text=True, timeout=None)
+        validation_path = raw_path
+        if relative_to_workdir and not Path(str(raw_path)).is_absolute():
+            workdir = execution.get("workdir") or REPO_ROOT
+            if Path(str(workdir)).is_absolute():
+                validation_path = Path(str(workdir)) / str(raw_path)
+        test_flag = "-d" if require_directory else "-f" if require_file else "-e"
+        result = transport.run_ssh(str(host), f"test {test_flag} {_sh(validation_path)}", text=True, timeout=None)
         if result.returncode != 0:
+            expected = "directory" if require_directory else "file" if require_file else "path"
             return DecisionIssue(
                 DecisionStatus.FAIL,
                 field,
-                f"{_path_label(configured)} remote path does not exist: {raw_path}",
+                f"{_path_label(configured)} remote {expected} does not exist: {raw_path}",
                 None,
                 {"path": str(raw_path), "host": str(host), "stderr": result.stderr.strip()},
             )
         return None
 
-    path = Path(str(raw_path)).expanduser()
+    path = Path(str(raw_path))
+    if not relative_to_workdir:
+        path = path.expanduser()
     if not path.is_absolute():
-        path = REPO_ROOT / path
-    if path.exists():
+        base = REPO_ROOT
+        workdir = execution.get("workdir")
+        if relative_to_workdir and workdir not in (None, "") and Path(str(workdir)).is_absolute():
+            base = Path(str(workdir))
+        path = base / path
+    path_exists = path.is_dir() if require_directory else path.is_file() if require_file else path.exists()
+    if path_exists:
         return None
+    expected = "directory" if require_directory else "file" if require_file else "path"
     return DecisionIssue(
         DecisionStatus.FAIL,
         field,
-        f"{_path_label(configured)} path does not exist: {raw_path}",
+        f"{_path_label(configured)} {expected} does not exist: {raw_path}",
         None,
         {"path": str(raw_path), "path_context": "local", "path_validation": validation},
     )
+
+
+def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> DecisionIssue | None:
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    avg_ckpts_value = runtime.get("avg_ckpts", 1)
+    avg_ckpts = avg_ckpts_value if type(avg_ckpts_value) is int and avg_ckpts_value > 0 else 1
+    if recipe.get("variant") == "sex_age_baseline" and avg_ckpts != 1:
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            "runtime.avg_ckpts",
+            "sex_age_baseline inference does not support checkpoint averaging.",
+            None,
+            {"avg_ckpts": runtime.get("avg_ckpts")},
+        )
+    if avg_ckpts <= 1:
+        return None
+    if inputs.get("label_name") == "ahi":
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            "runtime.avg_ckpts",
+            "AHI inference does not support checkpoint averaging.",
+            None,
+            {"avg_ckpts": runtime.get("avg_ckpts")},
+        )
+    avg_ckpt_dir = runtime.get("avg_ckpt_dir")
+    if ckpt_path in ("best", "last") and avg_ckpt_dir in (None, "", "ASK_USER"):
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            "runtime.avg_ckpt_dir",
+            "Checkpoint averaging with ckpt_path=best/last requires avg_ckpt_dir.",
+            None,
+            {"ckpt_path": ckpt_path, "avg_ckpts": avg_ckpts},
+        )
+    if avg_ckpt_dir not in (None, "", "ASK_USER"):
+        return validate_input_path(
+            recipe,
+            "avg_ckpt_dir",
+            avg_ckpt_dir,
+            configured=False,
+            require_directory=True,
+        )
+    return None
 
 
 def sex_age_pretrained_backbone_issue(recipe: dict) -> DecisionIssue | None:
@@ -419,12 +569,15 @@ def _path_label(configured: bool) -> str:
     return "Configured input" if configured else "Required input"
 
 
-def path_context(recipe: dict, raw_path: Any) -> str:
+def path_context(recipe: dict, raw_path: Any, *, relative_to_workdir: bool = False) -> str:
     execution = _execution(recipe)
     explicit = execution.get("path_context")
     if explicit:
         return str(explicit)
-    if execution.get("target") == "ssh" and Path(str(raw_path)).expanduser().is_absolute():
+    path = Path(str(raw_path))
+    if not relative_to_workdir:
+        path = path.expanduser()
+    if execution.get("target") == "ssh" and (relative_to_workdir or path.is_absolute()):
         return "remote"
     return "local"
 

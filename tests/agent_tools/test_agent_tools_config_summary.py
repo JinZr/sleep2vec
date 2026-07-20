@@ -6,6 +6,7 @@ import sys
 from agent_tool_test_helpers import config_payload, survival_config_payload, write_survival_sidecars, write_yaml
 
 from agent_tools.configs import config_summary
+from agent_tools.models import REPO_ROOT
 
 
 def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Path):
@@ -42,6 +43,31 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     assert summary["preset_build"]["required_channels"] == ["ppg", "ahi", "stage5"]
 
 
+def test_config_summary_closes_generic_kaldi_runtime_inputs(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration\nx.npz,train,60\n")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}\n")
+    preset = tmp_path / "preset.pickle"
+    preset.write_bytes(b"preset")
+    payload = config_payload(index)
+    payload["data"].update(
+        {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": str(preset),
+            "kaldi_data_root": None,
+            "kaldi_manifest": str(manifest),
+        }
+    )
+    config = write_yaml(tmp_path / "kaldi.yaml", payload)
+
+    blocking = config_summary(config)["blocking_issues"]
+
+    assert "data.backend=kaldi but data.kaldi_data_root is missing." in blocking
+    assert "data.backend=kaldi does not support data.finetune_preset_path." in blocking
+
+
 def test_config_summary_validates_survival_sidecars(tmp_path: Path):
     index = tmp_path / "index.csv"
     index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")
@@ -60,6 +86,42 @@ def test_config_summary_validates_survival_sidecars(tmp_path: Path):
     assert survival["disease_count"] == 2
     assert survival["sidecar_key_count"] == 2
     assert survival["issues"] == []
+
+
+def test_config_summary_resolves_relative_survival_sidecars_from_runtime_base(tmp_path: Path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    index = runtime / "index.csv"
+    index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")
+    sidecars = write_survival_sidecars(runtime)
+    payload = survival_config_payload(index.name, {field: Path(path).name for field, path in sidecars.items()})
+    config = write_yaml(tmp_path / "survival.yaml", payload)
+
+    survival = config_summary(config, local_path_base=runtime)["finetune"]["survival"]
+
+    assert survival["valid"] is True
+    assert survival["issues"] == []
+
+
+def test_config_summary_does_not_expand_tilde_in_runtime_sidecars(tmp_path: Path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    raw_path = "~/" + str((REPO_ROOT / "AGENTS.md").relative_to(Path.home()))
+    payload = survival_config_payload(
+        "index.csv",
+        {
+            "disease_columns_index": raw_path,
+            "event_time_index": raw_path,
+            "is_event_index": raw_path,
+            "has_label_index": raw_path,
+        },
+    )
+    config = write_yaml(tmp_path / "survival_tilde.yaml", payload)
+
+    survival = config_summary(config, local_path_base=runtime)["finetune"]["survival"]
+
+    assert len(survival["issues"]) == 4
+    assert all("does not exist" in issue for issue in survival["issues"])
 
 
 def test_config_summary_reports_survival_covariates(tmp_path: Path):

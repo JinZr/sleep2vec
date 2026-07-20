@@ -2092,6 +2092,8 @@ def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     ("execution", "field"),
     [
         ({"python": ""}, "execution.python"),
+        ({"python": "conda run -n exp python"}, "execution.python"),
+        ({"python": "~/miniconda/bin/python"}, "execution.python"),
         ({"runtime_commit": "abc123"}, "execution.runtime_commit"),
     ],
 )

@@ -197,6 +197,16 @@ def test_schema_rejects_non_string_runtime_identity(tmp_path: Path, field: str):
         experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
 
 
+@pytest.mark.parametrize("python_command", ["conda run -n exp python", "~/miniconda/bin/python"])
+def test_schema_rejects_non_executable_runtime_python(tmp_path: Path, python_command: str):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec["runtime"]["python"] = python_command
+
+    with pytest.raises(ValueError, match=r"runtime\.python must be a single executable"):
+        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+
+
 @pytest.mark.parametrize(
     "section,field,value,message",
     [

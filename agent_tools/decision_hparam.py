@@ -455,12 +455,18 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
             )
         )
     python = execution.get("python")
-    if python not in (None, "ASK_USER") and (not isinstance(python, str) or not python.strip()):
+    if python not in (None, "ASK_USER") and (
+        not isinstance(python, str)
+        or not python.strip()
+        or python.startswith("~")
+        or re.search(r"\s", python) is not None
+    ):
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
                 "execution.python",
-                "execution.python must be a non-empty command or path when set.",
+                "execution.python must be a single executable name or path without whitespace, arguments, "
+                "or ~ shorthand.",
                 None,
                 {"python": python},
             )
@@ -483,7 +489,7 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
     )
     if not manager_runtime:
         for field, question in (
-            ("python", "What Python command or absolute path should the target runtime use?"),
+            ("python", "What Python executable name or absolute path should the target runtime use?"),
             ("runtime_commit", "What full Git commit hash should the target runtime use?"),
         ):
             if field not in execution or execution.get(field) in (None, "ASK_USER"):

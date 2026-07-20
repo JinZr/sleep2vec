@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from agent_tools import configs, experiments, plan_context, plans
 from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
+from agent_tools.plan_hparam import final_test_checkpoint_issues
 from agent_tools.plans import collect_runs
 from agent_tools.run_artifacts import read_hparam_plan
 
@@ -94,6 +96,10 @@ def _hparam_recipe(
             },
         },
     )
+
+
+def _local_runtime_execution(workdir: Path) -> dict:
+    return {"workdir": str(workdir), "python": sys.executable, "runtime_commit": _RUNTIME_COMMIT}
 
 
 def _survival_recipe_with_missing_sidecar_key(tmp_path: Path) -> tuple[Path, Path]:
@@ -1339,6 +1345,211 @@ def test_unlock_final_test_with_yaml_search_uses_explicit_final_config(tmp_path:
     assert "_final_eval_config_snapshot" not in (output_dir / "recipe.resolved.yaml").read_text()
 
 
+def test_relative_final_eval_config_remains_repo_relative_with_execution_workdir(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "selected_run.yaml"
+    recipe = _hparam_recipe(
+        tmp_path,
+        parameters={"yaml:/finetune/task/output_dim": [31]},
+        ckpt_path=ckpt,
+        final_config_path=selected_config,
+    )
+    selected_bytes = _valid_final_config_bytes(tmp_path)
+    selected_config.write_bytes(selected_bytes)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["final_eval_config_path"] = os.path.relpath(selected_config, REPO_ROOT)
+    payload["execution"] = _local_runtime_execution(tmp_path / "runtime")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = tmp_path / "unlocked"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (output_dir / "config.final_eval.yaml").read_bytes() == selected_bytes
+
+
+def test_hparam_final_inference_resolves_preset_from_execution_workdir(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["inference_preset_path"] = "AGENTS.md"
+    payload["execution"] = _local_runtime_execution(runtime)
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "unlocked_relative_preset"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 1
+    assert "inference_preset_path" in result.stdout
+    assert "AGENTS.md" in result.stdout
+    assert not (output_dir / "final_external_test.sh").exists()
+
+
+def test_hparam_final_inference_rejects_npz_preset_for_kaldi_backend(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    config_path = Path(payload["base_recipe"]).parent / "config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    kaldi_root = tmp_path / "kaldi"
+    kaldi_root.mkdir()
+    manifest = kaldi_root / "manifest.json"
+    manifest.write_text("{}\n")
+    config["data"].update(
+        {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "finetune_preset_path": None,
+            "kaldi_data_root": str(kaldi_root),
+            "kaldi_manifest": str(manifest),
+        }
+    )
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "external.pickle").write_bytes(b"preset")
+    payload["inputs"]["inference_preset_path"] = "external.pickle"
+    payload["execution"] = _local_runtime_execution(runtime)
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "unlocked_kaldi_preset"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 1
+    assert "inference_preset_path" in result.stdout
+    assert "Kaldi backend does not support" in result.stdout
+    assert not (output_dir / "final_external_test.sh").exists()
+
+
+def test_hparam_final_inference_rejects_ahi_checkpoint_averaging(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    averages = tmp_path / "averages"
+    averages.mkdir()
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["runtime"] = {"avg_ckpts": 2, "avg_ckpt_dir": str(averages)}
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "unlocked_ahi_averages"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 1
+    assert "runtime.avg_ckpts" in result.stdout
+    assert "AHI inference does not support checkpoint averaging" in result.stdout
+    assert not (output_dir / "plan.json").exists()
+    assert not (output_dir / "final_external_test.sh").exists()
+
+
+def test_hparam_final_checkpoint_must_be_a_file(tmp_path: Path):
+    checkpoint_dir = tmp_path / "checkpoint-directory"
+    checkpoint_dir.mkdir()
+
+    issues = final_test_checkpoint_issues(
+        {"variant": "sleep2vec", "inputs": {"ckpt_path": str(checkpoint_dir)}},
+        None,
+        unlock_final_test=True,
+    )
+
+    assert [(issue.field, issue.status.value) for issue in issues] == [("ckpt_path", "FAIL")]
+
+
+def test_hparam_final_config_resolves_runtime_inputs_from_execution_workdir(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "selected_run.yaml"
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    selected_payload = yaml.safe_load(_valid_final_config_bytes(tmp_path))
+    selected_payload["data"]["finetune_data_index"] = "AGENTS.md"
+    selected_config.write_text(yaml.safe_dump(selected_payload, sort_keys=False))
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = _local_runtime_execution(runtime)
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "unlocked_relative_final_input"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 1
+    assert "finetune_data_index" in result.stdout
+    assert "AGENTS.md" in result.stdout
+    assert not (output_dir / "final_external_test.sh").exists()
+
+
+def test_hparam_final_config_resolves_generic_kaldi_inputs_from_execution_workdir(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "selected_kaldi.yaml"
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    selected_payload = yaml.safe_load(_valid_final_config_bytes(tmp_path))
+    selected_payload["data"].update(
+        {
+            "backend": "kaldi",
+            "finetune_data_index": None,
+            "kaldi_data_root": "AGENTS.md",
+            "kaldi_manifest": "AGENTS.md",
+        }
+    )
+    selected_config.write_text(yaml.safe_dump(selected_payload, sort_keys=False))
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = _local_runtime_execution(runtime)
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "unlocked_relative_kaldi"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 1
+    assert "kaldi_data_root" in result.stdout
+    assert "kaldi_manifest" in result.stdout
+    assert "AGENTS.md" in result.stdout
+    assert not (output_dir / "final_external_test.sh").exists()
+
+
+def test_hparam_final_config_resolves_multilabel_sidecars_from_execution_workdir(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "selected_multilabel.yaml"
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    selected_payload = yaml.safe_load(_valid_final_config_bytes(tmp_path))
+    selected_payload["finetune"]["task"].update(
+        {
+            "type": "multilabel_classification",
+            "output_dim": 2,
+            "is_seq": False,
+            "monitor": "val_loss",
+            "monitor_mod": "min",
+        }
+    )
+    selected_payload["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": "AGENTS.md",
+        "label_index": "AGENTS.md",
+        "has_label_index": "AGENTS.md",
+    }
+    selected_config.write_text(yaml.safe_dump(selected_payload, sort_keys=False))
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = _local_runtime_execution(runtime)
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "unlocked_relative_multilabel"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+
+    assert result.returncode == 2
+    assert "multilabel_sidecars" in result.stdout
+    assert "AGENTS.md" in result.stdout
+    assert not (output_dir / "final_external_test.sh").exists()
+
+
 def test_unlock_final_test_rejects_invalid_explicit_config_before_workspace_mutation(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
@@ -2307,6 +2518,41 @@ def test_preset_plan_blocks_survival_config_with_invalid_sidecars(tmp_path: Path
     assert not (output_dir / "run.sh").exists()
 
 
+def test_preset_plan_blocks_multilabel_sidecars_missing_from_execution_workdir(tmp_path: Path):
+    base = write_finetune_recipe(tmp_path / "source")
+    config = Path(yaml.safe_load(base.read_text())["inputs"]["config"])
+    config_payload = yaml.safe_load(config.read_text())
+    config_payload["finetune"]["task"].update({"type": "multilabel_classification", "output_dim": 2, "is_seq": False})
+    config_payload["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": "AGENTS.md",
+        "label_index": "AGENTS.md",
+        "has_label_index": "AGENTS.md",
+    }
+    config_payload["preset_build"] = {"required_channels": ["ppg"], "min_channels": 1}
+    Path(config_payload["data"]["finetune_data_index"]).write_text(
+        "path,split,duration,eid,ppg_mask\nx.npz,train,60,001,1\n"
+    )
+    config.write_text(yaml.safe_dump(config_payload, sort_keys=False))
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    recipe = _write_preset_recipe(
+        tmp_path,
+        config=config,
+        index=config_payload["data"]["finetune_data_index"],
+        execution={"workdir": str(runtime)},
+        name="preset_multilabel_relative_sidecars",
+    )
+    output_dir = tmp_path / "plan_multilabel_sidecars"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "multilabel_sidecars" in result.stdout
+    assert "AGENTS.md" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
 def test_preset_plan_checks_survival_sidecar_keys_only_for_requested_split(tmp_path: Path):
     index = tmp_path / "preset_survival_index.csv"
     index.write_text("path,split,duration,eid,ppg_mask\n" "train.npz,train,60,001,1\n" "test.npz,test,60,003,1\n")
@@ -2715,6 +2961,26 @@ def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path):
     assert plan["runs"][0]["command"].startswith("/runtime/bin/python3 -m ")
     resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
     assert resolved["execution"]["runtime_commit"] == "a" * 40
+
+
+def test_hparam_plan_rejects_compound_target_python_before_plan_write(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = {
+        "workdir": "/separate/runtime",
+        "python": "conda run -n exp python",
+        "runtime_commit": "a" * 40,
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "execution.python must be a single executable" in result.stdout
+    assert not (output_dir / "plan.json").exists()
+    assert not (output_dir / "recipe.resolved.yaml").exists()
+    assert not (output_dir / "run_all.sh").exists()
 
 
 @pytest.mark.parametrize(
@@ -3382,8 +3648,8 @@ def test_hparam_yaml_parameter_rejects_negative_list_index(tmp_path: Path):
 
 
 def test_importing_decisions_does_not_import_torch_or_lightning(monkeypatch):
-    sys.modules.pop("torch", None)
-    sys.modules.pop("pytorch_lightning", None)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.delitem(sys.modules, "pytorch_lightning", raising=False)
 
     import agent_tools.decisions  # noqa: F401
 

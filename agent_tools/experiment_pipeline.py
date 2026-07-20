@@ -200,10 +200,21 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
 
     runtime = _mapping(spec, "runtime")
     _reject_unknown_fields(runtime, _RUNTIME_FIELDS, "runtime")
-    for field in ("workdir", "python", "runtime_commit"):
+    for field in ("workdir", "runtime_commit"):
         value = runtime.get(field)
         if not isinstance(value, str) or not value.strip() or value == "ASK_USER":
             raise ValueError(f"runtime.{field} must be an explicit non-empty string.")
+    python_command = runtime.get("python")
+    if (
+        not isinstance(python_command, str)
+        or not python_command.strip()
+        or python_command == "ASK_USER"
+        or python_command.startswith("~")
+        or re.search(r"\s", python_command) is not None
+    ):
+        raise ValueError(
+            "runtime.python must be a single executable name or path without whitespace, arguments, or ~ shorthand."
+        )
     for field in ("accelerator", "device", "precision"):
         if runtime.get(field) in (None, ""):
             raise ValueError(f"runtime.{field} is required.")

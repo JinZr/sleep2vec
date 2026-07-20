@@ -165,6 +165,11 @@ The control flow is:
    pending work;
 6. finalization requires no active runs and a non-empty report.
 
+Runnable preflight validates relative runtime paths from the same frozen
+workdir used by the generated command, while planning-source config locators
+remain repository-relative. Frozen Python identity is one executable token;
+Conda wrapping is a separate hparam execution field.
+
 `experiment-run` adds one explicit, resumable external-evaluation flow:
 
 1. dry-run validates the strict v1 spec and starts no process;

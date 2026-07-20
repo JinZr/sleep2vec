@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
+from ..decision_paths import (
+    inference_checkpoint_averaging_issue,
+    multilabel_sidecar_issue,
+    sex_age_pretrained_backbone_issue,
+    survival_sidecar_issue,
+)
 from ..models import coerce_list
 from ..plan_rendering import (
     INFER_RUNTIME_FIELDS,
@@ -82,10 +87,20 @@ class InferEvaluateAdapter(TaskAdapter):
         return INFER_RUNTIME_FIELDS
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
-        ckpt_path = _inputs(recipe).get("ckpt_path")
-        if ckpt_path not in (None, "", "ASK_USER"):
-            return [("ckpt_path", ckpt_path)]
-        return []
+        inputs = _inputs(recipe)
+        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        avg_ckpts = runtime.get("avg_ckpts", 1)
+        averages_checkpoints = type(avg_ckpts) is int and avg_ckpts > 1
+        required: list[tuple[str, Any]] = []
+        for input_field in ("ckpt_path", "pretrained_backbone_path"):
+            if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
+                continue
+            value = inputs.get(input_field)
+            if input_field == "ckpt_path" and averages_checkpoints and value in ("best", "last"):
+                continue
+            if value not in (None, "", "ASK_USER"):
+                required.append((input_field, value))
+        return required
 
     def task_issues(
         self,
@@ -142,6 +157,9 @@ class InferEvaluateAdapter(TaskAdapter):
                     {"inputs": inputs},
                 )
             )
+        averaging_issue = inference_checkpoint_averaging_issue(recipe, inputs.get("ckpt_path"))
+        if averaging_issue is not None:
+            issues.append(averaging_issue)
         if str(recipe.get("task")) in _SEX_AGE_PRETRAINED_GUARD_TASKS:
             pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
             if pretrained_issue is not None:
@@ -162,6 +180,7 @@ class InferEvaluateAdapter(TaskAdapter):
             str(recipe.get("task")),
             recipe,
             config_summary,
+            preset_path_recipe_field=_recipe_preset_field(recipe),
             uses_finetune_config=str(recipe.get("task")) in _FINETUNE_CONFIG_GUARD_TASKS,
         )
         if multilabel_issue is not None:

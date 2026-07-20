@@ -76,10 +76,12 @@ def repo_relative(path: str | Path | None) -> str | None:
         return str(raw)
 
 
-def resolve_repo_path(path: str | Path | None) -> Path | None:
+def resolve_repo_path(path: str | Path | None, *, relative_to: str | Path | None = None) -> Path | None:
     if path in (None, ""):
         return None
-    candidate = Path(path).expanduser()
+    candidate = Path(path)
+    if relative_to is None:
+        candidate = candidate.expanduser()
     if not candidate.is_absolute():
-        candidate = REPO_ROOT / candidate
+        candidate = Path(relative_to) / candidate if relative_to is not None else REPO_ROOT / candidate
     return candidate

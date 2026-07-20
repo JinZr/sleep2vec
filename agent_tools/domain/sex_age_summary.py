@@ -16,6 +16,7 @@ def sex_age_baseline_config_summary(
     config_path: str | Path,
     *,
     validate_survival_local_paths: bool = True,
+    local_path_base: str | Path | None = None,
 ) -> dict[str, Any]:
     from ..models import load_yaml
 
@@ -49,11 +50,13 @@ def sex_age_baseline_config_summary(
         raw_finetune,
         raw_task,
         validate_local_paths=validate_survival_local_paths,
+        local_path_base=local_path_base,
     )
     multilabel = multilabel_summary(
         raw_finetune,
         raw_task,
         validate_local_paths=validate_survival_local_paths,
+        local_path_base=local_path_base,
     )
     finetune_data_index = cfg.data.finetune_data_index
     finetune_preset_path = cfg.data.finetune_preset_path

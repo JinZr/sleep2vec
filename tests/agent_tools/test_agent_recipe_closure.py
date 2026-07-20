@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import pytest
 import yaml
 
 from agent_tools import plans
+from agent_tools.models import REPO_ROOT
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_recipe_with_base, load_yaml_file
 
@@ -89,6 +91,21 @@ def _write_infer_recipe(tmp_path: Path) -> Path:
             },
         },
     )
+
+
+def _infer_recipe_payload(tmp_path: Path) -> tuple[Path, dict]:
+    recipe = _write_infer_recipe(tmp_path)
+    return recipe, yaml.safe_load(recipe.read_text())
+
+
+def _evaluate_payload(recipe: Path, payload: dict):
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    return evaluate_recipe(recipe)[2]
+
+
+def _set_explicit_input(payload: dict, field: str, value: object) -> None:
+    payload["inputs"][field] = value
+    payload["decisions"][field] = {"value": value, "source": "explicit_recipe"}
 
 
 @pytest.mark.parametrize(
@@ -287,6 +304,162 @@ def test_infer_evaluate_accepts_workdir_without_runtime_identity(tmp_path: Path,
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
 
 
+def test_infer_relative_checkpoint_is_resolved_from_execution_workdir(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "runtime-only.ckpt").write_text("checkpoint")
+    _set_explicit_input(payload, "ckpt_path", "runtime-only.ckpt")
+    payload["execution"] = {"workdir": str(runtime)}
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+@pytest.mark.parametrize("input_field", ["ckpt_path", "pretrained_backbone_path"])
+def test_infer_relative_model_input_does_not_fall_back_to_repo_root(tmp_path: Path, input_field: str):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    _set_explicit_input(payload, input_field, "AGENTS.md")
+    payload["execution"] = {"workdir": str(runtime)}
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 1
+    assert any(issue.field == input_field for issue in report.blocking_issues())
+
+
+@pytest.mark.parametrize("input_field", ["ckpt_path", "pretrained_backbone_path"])
+def test_infer_checkpoint_inputs_must_be_files(tmp_path: Path, input_field: str):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    directory = tmp_path / f"{input_field}-directory"
+    directory.mkdir()
+    _set_explicit_input(payload, input_field, str(directory))
+
+    report = _evaluate_payload(recipe, payload)
+    issue = next(issue for issue in report.blocking_issues() if issue.field == input_field)
+    assert report.exit_code == 1
+    assert "file does not exist" in issue.message
+
+
+def test_infer_relative_average_checkpoint_dir_is_resolved_from_execution_workdir(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    relative_dir = f"{tmp_path.name}-averages"
+    (runtime / relative_dir).mkdir()
+    assert not (REPO_ROOT / relative_dir).exists()
+    _set_explicit_input(payload, "label_name", "stage5")
+    payload["runtime"].update({"avg_ckpts": 2, "avg_ckpt_dir": relative_dir})
+    payload["execution"] = {"workdir": str(runtime)}
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+def test_infer_average_checkpoint_dir_must_be_a_directory(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    averages = tmp_path / "averages"
+    averages.write_text("not a directory")
+    _set_explicit_input(payload, "label_name", "stage5")
+    payload["runtime"].update({"avg_ckpts": 2, "avg_ckpt_dir": str(averages)})
+
+    report = _evaluate_payload(recipe, payload)
+    issue = next(issue for issue in report.blocking_issues() if issue.field == "avg_ckpt_dir")
+    assert report.exit_code == 1
+    assert "directory does not exist" in issue.message
+
+
+def test_infer_rejects_ahi_checkpoint_averaging(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    averages = tmp_path / "averages"
+    averages.mkdir()
+    payload["runtime"].update({"avg_ckpts": 2, "avg_ckpt_dir": str(averages)})
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 1
+    assert any(issue.field == "runtime.avg_ckpts" for issue in report.blocking_issues())
+
+
+@pytest.mark.parametrize("value", [True, "2", 0])
+def test_infer_rejects_invalid_avg_ckpts(tmp_path: Path, value: object):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    payload["runtime"]["avg_ckpts"] = value
+
+    report = _evaluate_payload(recipe, payload)
+    issue = next(issue for issue in report.blocking_issues() if issue.field == "runtime.avg_ckpts")
+    assert report.exit_code == 1
+    assert issue.message == "runtime.avg_ckpts must be a positive integer."
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
+def test_infer_checkpoint_alias_is_valid_with_average_checkpoint_dir(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    runtime = tmp_path / "runtime"
+    averages = runtime / "averages"
+    averages.mkdir(parents=True)
+    _set_explicit_input(payload, "ckpt_path", "best")
+    _set_explicit_input(payload, "label_name", "stage5")
+    payload["runtime"].update({"avg_ckpts": 2, "avg_ckpt_dir": "averages"})
+    payload["execution"] = {"workdir": str(runtime)}
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+def test_infer_multilabel_preset_does_not_require_runtime_sidecars(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    config_path = Path(payload["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    config["finetune"]["task"].update({"type": "multilabel_classification", "output_dim": 2, "is_seq": False})
+    config["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": "missing-diseases.txt",
+        "label_index": "missing-labels.csv",
+        "has_label_index": "missing-has-label.csv",
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    preset = tmp_path / "multilabel.pickle"
+    preset.write_bytes(b"preset")
+    payload["inputs"]["inference_preset_path"] = str(preset)
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+def test_infer_relative_checkpoint_defaults_to_repo_root_without_workdir(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    _set_explicit_input(payload, "ckpt_path", "AGENTS.md")
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+def test_infer_source_config_remains_repo_relative_with_execution_workdir(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    payload["inputs"]["config"] = os.path.relpath(payload["inputs"]["config"], REPO_ROOT)
+    payload["execution"] = {"workdir": str(tmp_path / "runtime")}
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+def test_infer_configured_relative_index_is_summarized_from_execution_workdir(tmp_path: Path):
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    config_path = Path(payload["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    source_index = Path(config["data"]["finetune_data_index"])
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "runtime-index.csv").write_bytes(source_index.read_bytes())
+    config["data"]["finetune_data_index"] = "runtime-index.csv"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    payload["execution"] = {"workdir": str(runtime)}
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
 @pytest.mark.parametrize("task", ["infer", "evaluate"])
 @pytest.mark.parametrize("missing_field", ["python", "runtime_commit", "workdir"])
 def test_infer_evaluate_execution_identity_is_all_or_none(tmp_path: Path, task: str, missing_field: str):
@@ -316,6 +489,8 @@ def test_infer_evaluate_execution_identity_is_all_or_none(tmp_path: Path, task: 
         ("workdir", []),
         ("python", "ASK_USER"),
         ("python", []),
+        ("python", "conda run -n exp python"),
+        ("python", "~/miniconda/bin/python"),
         ("runtime_commit", "A" * 40),
         ("runtime_commit", []),
         ("target", "ssh"),

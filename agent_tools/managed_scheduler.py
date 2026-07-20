@@ -973,7 +973,7 @@ def inspect_execution_target(
     if len(modules) != 1:
         raise ValueError(f"A {plan_label} plan must use exactly one target runtime module.")
     if len(python_commands) != 1:
-        raise ValueError(f"A {plan_label} plan must use exactly one target Python command.")
+        raise ValueError(f"A {plan_label} plan must use exactly one target Python executable.")
     module = next(iter(modules))
     python_command = next(iter(python_commands))
     expected_python = execution.get("python")

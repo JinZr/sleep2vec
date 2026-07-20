@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from ..decision_paths import survival_sidecar_issue
+from ..decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
 from ..models import coerce_list
 from ..plan_rendering import PRESET_FIELDS, preset_cli_args, render_command
 from .base import TaskAdapter
@@ -24,6 +24,7 @@ class PresetPrepareAdapter(TaskAdapter):
     }
     unsupported_variants = frozenset({"sex_age_baseline"})
     requires_survival_sidecars = True
+    requires_multilabel_sidecars = True
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
@@ -86,6 +87,14 @@ class PresetPrepareAdapter(TaskAdapter):
         )
         if survival_issue is not None:
             issues.append(survival_issue)
+        multilabel_issue = multilabel_sidecar_issue(
+            self.task,
+            recipe,
+            config_summary,
+            required=self.requires_multilabel_sidecars,
+        )
+        if multilabel_issue is not None:
+            issues.append(multilabel_issue)
         return issues
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:

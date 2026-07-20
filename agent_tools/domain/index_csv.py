@@ -18,20 +18,21 @@ def index_summary(
     *,
     config: str | Path | None = None,
     config_bytes: bytes | None = None,
+    local_path_base: str | Path | None = None,
     label_name: str | None = None,
     split_values: list[str] | None = None,
     preset_path: str | Path | None = None,
     sample_path_check: int = 0,
     sample_npz_check: int = 0,
 ) -> dict[str, Any]:
-    resolved_paths = [resolve_repo_path(path) for path in index_paths]
+    resolved_paths = [resolve_repo_path(path, relative_to=local_path_base) for path in index_paths]
     paths = [path for path in resolved_paths if path is not None]
-    cfg = config_summary(config, config_bytes=config_bytes) if config else None
+    cfg = config_summary(config, config_bytes=config_bytes, local_path_base=local_path_base) if config else None
     survival_key_column = _survival_key_column(cfg)
-    survival_sidecar_keys = _survival_sidecar_keys(cfg)
+    survival_sidecar_keys = _survival_sidecar_keys(cfg, local_path_base=local_path_base)
     survival_covariate_names = _survival_covariates(cfg)
     multilabel_key_column = _multilabel_key_column(cfg)
-    multilabel_sidecar_keys = _multilabel_sidecar_keys(cfg)
+    multilabel_sidecar_keys = _multilabel_sidecar_keys(cfg, local_path_base=local_path_base)
     data_summary = (cfg or {}).get("data") or {}
     split_column = str(data_summary.get("split_column") or "split")
     read_csv_kwargs: dict[str, Any] = {"low_memory": False}
@@ -40,12 +41,17 @@ def index_summary(
         read_csv_kwargs["converters"] = converters
     source_issues: list[str] = []
     if not paths and _uses_sex_age_preset_metadata(cfg, preset_path):
-        frames, paths, missing_inputs, source_issues = _sex_age_preset_frames(cfg, preset_path)
+        frames, paths, missing_inputs, source_issues = _sex_age_preset_frames(
+            cfg,
+            preset_path,
+            local_path_base=local_path_base,
+        )
     elif not paths and _uses_sex_age_kaldi_manifest(cfg):
         frames, paths, missing_inputs, source_issues = _kaldi_manifest_frames(
             cfg,
             split_column=split_column,
             read_csv_kwargs=read_csv_kwargs,
+            local_path_base=local_path_base,
         )
     else:
         missing_inputs = [str(path) for path in paths if not path.exists()]
@@ -238,8 +244,10 @@ def _uses_sex_age_preset_metadata(cfg: dict[str, Any] | None, preset_path: str |
 def _sex_age_preset_frames(
     cfg: dict[str, Any] | None,
     preset_path: str | Path | None,
+    *,
+    local_path_base: str | Path | None = None,
 ) -> tuple[list[pd.DataFrame], list[Path], list[str], list[str]]:
-    resolved = resolve_repo_path(preset_path)
+    resolved = resolve_repo_path(preset_path, relative_to=local_path_base)
     if resolved is None or not resolved.exists():
         return [], [], [], [f"Preset not found: {preset_path}"]
 
@@ -335,10 +343,11 @@ def _kaldi_manifest_frames(
     *,
     split_column: str,
     read_csv_kwargs: dict[str, Any],
+    local_path_base: str | Path | None = None,
 ) -> tuple[list[pd.DataFrame], list[Path], list[str], list[str]]:
     data = (cfg or {}).get("data") or {}
-    root = resolve_repo_path(data.get("kaldi_data_root"))
-    manifest_path = resolve_repo_path(data.get("kaldi_manifest"))
+    root = resolve_repo_path(data.get("kaldi_data_root"), relative_to=local_path_base)
+    manifest_path = resolve_repo_path(data.get("kaldi_manifest"), relative_to=local_path_base)
     issues: list[str] = []
     if root is None or not root.exists():
         issues.append(f"Kaldi data root not found: {data.get('kaldi_data_root')}")
@@ -396,14 +405,14 @@ def _multilabel_key_column(cfg: dict[str, Any] | None) -> str | None:
     return str(key_column)
 
 
-def _survival_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
+def _survival_sidecar_keys(cfg: dict[str, Any] | None, *, local_path_base: str | Path | None = None) -> set[str] | None:
     if not cfg:
         return None
     survival = (cfg.get("finetune") or {}).get("survival") or {}
     if not survival.get("valid"):
         return None
     key_column = survival.get("key_column")
-    event_time_path = resolve_repo_path(survival.get("event_time_index"))
+    event_time_path = resolve_repo_path(survival.get("event_time_index"), relative_to=local_path_base)
     if not key_column or event_time_path is None:
         return None
 
@@ -413,14 +422,16 @@ def _survival_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
     return {normalize_survival_key(value, str(key_column)) for value in frame[str(key_column)]}
 
 
-def _multilabel_sidecar_keys(cfg: dict[str, Any] | None) -> set[str] | None:
+def _multilabel_sidecar_keys(
+    cfg: dict[str, Any] | None, *, local_path_base: str | Path | None = None
+) -> set[str] | None:
     if not cfg:
         return None
     multilabel = (cfg.get("finetune") or {}).get("multilabel") or {}
     if not multilabel.get("valid"):
         return None
     key_column = multilabel.get("key_column")
-    label_path = resolve_repo_path(multilabel.get("label_index"))
+    label_path = resolve_repo_path(multilabel.get("label_index"), relative_to=local_path_base)
     if not key_column or label_path is None:
         return None
 
