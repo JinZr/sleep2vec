@@ -655,12 +655,10 @@ class _ReplacementState:
 
 
 def _commit_round(root: Path, round_dir: Path, state: _ReplacementState) -> None:
-    """Commit the replacement round. Order is an invariant: the launch_round event
-    lands first, then the committed flag flips, and only then are the current
-    round's pending runs superseded -- never before a replacement start is confirmed."""
+    """Commit after a replacement start is confirmed, with launch_round written last."""
+    state.superseded_current_keys = _supersede_pending_runs(root, round_dir)
     _append_event(root, "launch_round", {"round": state.next_round, "round_dir": str(state.next_dir)})
     state.round_committed = True
-    state.superseded_current_keys = _supersede_pending_runs(root, round_dir)
 
 
 def _launch_with_recovery(
@@ -1123,9 +1121,11 @@ def _append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
     workflow_path = root / "adaptive" / "workflow.json"
     target = root
     if workflow_path.exists():
-        workflow = json.loads(workflow_path.read_text())
-        recipe = load_recipe_with_base(workflow["recipe_path"])
-        target = experiment_root(recipe) or root
+        initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
+        recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+        target = experiment_root(recipe)
+        if target is None:
+            raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
     _write_experiment_event(target, event_type, payload)
 
 

@@ -1446,6 +1446,21 @@ def test_adaptive_workflow_root_drift_fails_before_suggestion_write(tmp_path: Pa
     assert (tmp_path / "events.jsonl").read_bytes() == events
 
 
+def test_adaptive_events_use_frozen_workspace_after_source_root_changes(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    redirected_root = tmp_path / "redirected-workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(redirected_root)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    adaptive_hparam._append_event(workflow_dir, "ownership_probe", {})
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["event_type"] == "ownership_probe"
+    assert not (redirected_root / "events.jsonl").exists()
+
+
 def test_adaptive_suggest_rejects_source_contract_drift_before_writing(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
@@ -2125,6 +2140,56 @@ def test_adaptive_step_commits_canonical_start_when_initial_launcher_raises(tmp_
     assert adaptive_hparam._latest_round_index(workflow_dir) == 1
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("launch_round") == 1
+
+
+def test_adaptive_round_commit_marker_follows_predecessor_supersede(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    current_run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": current_run["step_id"], "run_id": current_run["run_id"], "status": "pending"}],
+    )
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    launches = []
+
+    def fake_launch(run_dir, *, dry_run=True):
+        launches.append(Path(run_dir))
+        next_runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "launched"} for run in next_runs],
+        )
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    real_append_event = adaptive_hparam._append_event
+
+    def fail_round_commit(root, event_type, payload):
+        if event_type == "launch_round":
+            raise RuntimeError("round commit marker failed")
+        real_append_event(root, event_type, payload)
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_hparam, "_append_event", fail_round_commit)
+
+    with pytest.raises(RuntimeError, match="round commit marker failed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    rows = _read_table(tmp_path / "run_manifest.tsv")
+    assert next(row["status"] for row in rows if row["run_id"] == current_run["run_id"]) == "superseded"
+    assert any(row["status"] == "launched" and row["run_id"] != current_run["run_id"] for row in rows)
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert "supersede_pending_run" in [event["event_type"] for event in events]
+    assert "launch_round" not in [event["event_type"] for event in events]
+
+    with pytest.raises(RuntimeError, match="Uncommitted adaptive launch evidence remains"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert launches == [workflow_dir / "adaptive" / "rounds" / "round_001"]
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
 
 
 def test_adaptive_step_reconciles_pid_after_initial_post_start_commit_failure(tmp_path: Path, monkeypatch):
