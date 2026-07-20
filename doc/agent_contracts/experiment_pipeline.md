@@ -81,6 +81,12 @@ assigned through `CUDA_VISIBLE_DEVICES`; the child inference command receives
 package-local logical device 0. Every attempt has a new, empty `result_root`,
 which is passed to the package-local inference entrypoint through
 `--results-root`.
+Every attempt also freezes the spec's runtime workdir, Python, and commit. The
+generated script verifies that commit before its first `running` mutation and
+uses the same frozen Python for inference and all lifecycle commits. A missing
+interpreter or commit mismatch prevents `running` and inference; any `launched`
+process evidence already committed by the scheduler remains canonical evidence
+for monitor reconciliation under the lifecycle-owner rules.
 Exactly one valid `run_manifest.json` must be discoverable below that root and
 must agree with the frozen checkpoint, config, preset, split, and runtime
 inputs.

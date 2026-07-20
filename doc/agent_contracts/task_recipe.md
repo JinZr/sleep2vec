@@ -42,7 +42,13 @@ Preset preparation routes each variant to its package-local script. Variant scri
 
 `pretrain` and `adapt` have direct runtime skills and CLIs but are not runnable task-recipe values because agent tools have no renderer for them. Missing or unsupported routing blocks command generation.
 
-Runnable non-hparam scripts enter `REPO_ROOT` for cwd and PYTHONPATH. User-authored semantic dataset and checkpoint paths retain their supplied meaning.
+Runnable non-hparam scripts enter an explicit absolute `execution.workdir` for cwd and PYTHONPATH, otherwise `REPO_ROOT`. User-authored semantic dataset and checkpoint paths retain their supplied meaning.
+
+## Non-hparam inference runtime identity
+
+Only `infer` / `evaluate` accept `execution.python` and `execution.runtime_commit`. Declaring either turns the otherwise-common `execution.workdir` into an all-or-none local/default-local runtime identity: Python is a non-empty command or path and the commit is a lowercase 40-character Git commit SHA. Other non-hparam tasks reject Python and commit identity rather than silently rendering commands that ignore them.
+
+When the identity is present, the resolved recipe and plan freeze it. The generated script enters that workdir, verifies its Git HEAD before the first lifecycle mutation, and uses the same frozen Python for the inference command and all `running` / `completed` / `failed` commits. A missing interpreter or commit mismatch fails before `running` is committed and before inference starts. `execution.target` and `execution.host` on other non-hparam tasks remain path-validation context; they do not provide a generic SSH launcher.
 
 ## Hparam workflow
 

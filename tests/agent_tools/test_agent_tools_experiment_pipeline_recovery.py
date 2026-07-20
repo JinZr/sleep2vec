@@ -223,6 +223,12 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
         "phase": "evaluate",
         "purpose": "Exercise atomic external planning.",
     }
+    recipe["execution"] = {
+        "target": "local",
+        "workdir": "/runtime/snapshot",
+        "python": "/runtime/python",
+        "runtime_commit": "a" * 40,
+    }
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     config_bytes = Path(recipe["inputs"]["config"]).read_bytes()
     bound_config = {
@@ -249,7 +255,15 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     plan = json.loads((plan_dir / "plan.json").read_text())
     planned = plan["runs"][0]
     assert planned["command"] == command
-    assert command in Path(planned["script"]).read_text().splitlines()
+    script_lines = Path(planned["script"]).read_text().splitlines()
+    assert command in script_lines
+    helper_index = script_lines.index("_agent_commit_status() {")
+    running_index = script_lines.index("_agent_commit_status running")
+    command_index = script_lines.index(command)
+    assert script_lines[helper_index + 1].startswith("  /runtime/python -c ")
+    assert any(line.startswith("/runtime/python -c ") and "a" * 40 in line for line in script_lines)
+    assert helper_index < running_index < command_index
+    assert plan["recipe"]["execution"] == recipe["execution"]
     canonical = read_run_manifest(workspace)[0]
     assert canonical.get("command") in (None, "")
     experiment_pipeline._validate_attempt_plan(
@@ -350,6 +364,21 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     plan_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir.replace(plan_dir)
     assert read_run_manifest(root) == []
+    frozen_plan = json.loads((plan_dir / "plan.json").read_text())
+    frozen_identity = {
+        "target": "local",
+        "workdir": spec["runtime"]["workdir"],
+        "python": spec["runtime"]["python"],
+        "runtime_commit": spec["runtime"]["runtime_commit"],
+    }
+    assert recipe["execution"] == frozen_identity
+    assert frozen_plan["recipe"]["execution"] == frozen_identity
+    assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == frozen_identity
+    launch_path = Path(frozen_plan["runs"][0]["script"])
+    launch_before = launch_path.read_bytes()
+    launch_lines = launch_before.decode().splitlines()
+    helper_index = launch_lines.index("_agent_commit_status() {")
+    assert launch_lines[helper_index + 1].startswith(f"  {spec['runtime']['python']} -c ")
 
     if tamper:
         (plan_dir / "plan.md").write_text("tampered\n")
@@ -383,6 +412,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     assert row["job_id"] == "age-hsp-i2-psg"
     assert canonical[0]["pipeline_id"] == "external-v1"
     assert canonical[0]["terminal_status_owner"] == "script"
+    assert launch_path.read_bytes() == launch_before
     assert not list(plan_dir.parent.glob(".attempt-001.*.staging"))
 
 

@@ -18,6 +18,9 @@ When present, `terminal_status_owner` is exactly `script` or `monitor`. It
 selects the existing process-exit rule explicitly: script-owned runs must commit
 their own terminal status, while monitor-owned runs leave confirmed-exit
 inference to the monitor.
+Lifecycle-owned inference with explicit runtime identity uses the same frozen
+runtime Python for its workload and every lifecycle commit, after its frozen
+runtime-commit guard succeeds.
 
 Managed tables declare either one row per run or many rows per run. Both forms require complete managed identity and reject removed `trial_id` or `param.*` formats. Historical formats remain read-only and are never translated into current state.
 

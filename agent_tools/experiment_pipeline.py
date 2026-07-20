@@ -200,13 +200,17 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
 
     runtime = _mapping(spec, "runtime")
     _reject_unknown_fields(runtime, _RUNTIME_FIELDS, "runtime")
-    for field in ("workdir", "python", "runtime_commit", "accelerator", "device", "precision"):
+    for field in ("workdir", "python", "runtime_commit"):
+        value = runtime.get(field)
+        if not isinstance(value, str) or not value.strip() or value == "ASK_USER":
+            raise ValueError(f"runtime.{field} must be an explicit non-empty string.")
+    for field in ("accelerator", "device", "precision"):
         if runtime.get(field) in (None, ""):
             raise ValueError(f"runtime.{field} is required.")
-    if not Path(str(runtime["workdir"])).is_absolute():
+    if not Path(runtime["workdir"]).is_absolute():
         raise ValueError("runtime.workdir must be absolute.")
-    if not re.fullmatch(r"[0-9a-f]{40}", str(runtime["runtime_commit"])):
-        raise ValueError("runtime.runtime_commit must be a full Git commit SHA.")
+    if not re.fullmatch(r"[0-9a-f]{40}", runtime["runtime_commit"]):
+        raise ValueError("runtime.runtime_commit must be a lowercase 40-character Git commit SHA.")
     if runtime.get("accelerator") != "gpu" or runtime.get("device") != "cuda":
         raise ValueError("Schema v1 external evaluation requires GPU/CUDA runtime.")
     if str(runtime.get("precision")) not in {"32", "32-true"}:

@@ -2638,6 +2638,22 @@ def test_single_finetune_freezes_runtime_and_checkpoint_paths(tmp_path: Path):
     assert manifest["script_sha256"] == frozen_hash
 
 
+def test_single_finetune_uses_explicit_execution_workdir(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    run_cwd = tmp_path / "runtime cwd"
+    payload["execution"] = {"workdir": str(run_cwd)}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr
+    script = Path(_first_run(output_dir)["script"]).read_text()
+    assert f"cd {shlex_quote(str(run_cwd))}" in script
+    assert f"export PYTHONPATH={shlex_quote(str(run_cwd))}${{PYTHONPATH:+:$PYTHONPATH}}" in script
+
+
 def test_hparam_workdir_is_verbatim_run_cwd_for_all_generated_scripts(tmp_path: Path):
     checkpoint = tmp_path / "selected.ckpt"
     checkpoint.write_text("checkpoint")
@@ -2996,6 +3012,74 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     final_report = tmp_path / "final.md"
     final_report.write_text("# Final\n\nManaged run completed.\n")
     assert experiments.finalize_experiment(workspace, final_report) == workspace / "reports" / "final.md"
+
+
+def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    recipe_path = write_finetune_recipe(source)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    workspace = tmp_path / "workspace"
+    runtime_python = "/runtime/bin/python"
+    recipe.update({"task": "infer", "name": "unit_infer_runtime_identity"})
+    recipe["experiment"]["root"] = str(workspace)
+    recipe["step"] = {"id": "unit-infer", "phase": "evaluate", "purpose": "Exercise runtime identity."}
+    recipe["decisions"]["task"] = {"value": "infer", "source": "explicit_recipe"}
+    recipe["execution"] = {
+        "target": "local",
+        "workdir": str(REPO_ROOT),
+        "python": runtime_python,
+        "runtime_commit": _RUNTIME_COMMIT,
+    }
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
+    command = f"{runtime_python} -m sleep2vec.infer --unit-runtime-identity"
+    monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    plan_dir = workspace / "plan"
+
+    assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
+
+    lines = (plan_dir / "run.sh").read_text().splitlines()
+    helper_index = lines.index("_agent_commit_status() {")
+    running_index = lines.index("_agent_commit_status running")
+    workload_index = lines.index(command)
+    assert lines[helper_index + 1].startswith(f"  {runtime_python} -c ")
+    assert any(line.startswith(f"{runtime_python} -c ") and _RUNTIME_COMMIT in line for line in lines)
+    assert helper_index < running_index < workload_index
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    assert plan["recipe"]["execution"] == recipe["execution"]
+    assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == recipe["execution"]
+
+
+def test_infer_runtime_commit_mismatch_fails_before_running_or_payload(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    recipe_path = write_finetune_recipe(source)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    workspace = tmp_path / "workspace"
+    marker = tmp_path / "payload-ran.txt"
+    recipe.update({"task": "infer", "name": "unit_infer_runtime_commit_guard"})
+    recipe["experiment"]["root"] = str(workspace)
+    recipe["step"] = {"id": "unit-infer", "phase": "evaluate", "purpose": "Exercise commit guard."}
+    recipe["decisions"]["task"] = {"value": "infer", "source": "explicit_recipe"}
+    recipe["execution"] = {
+        "target": "local",
+        "workdir": str(REPO_ROOT),
+        "python": sys.executable,
+        "runtime_commit": "0" * 40,
+    }
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
+    payload_code = "from pathlib import Path; Path(__import__('sys').argv[1]).write_text('ran')"
+    command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", payload_code, marker))
+    monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    plan_dir = workspace / "plan"
+
+    assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], text=True, capture_output=True)
+
+    assert result.returncode != 0
+    assert "Target runtime commit differs from the frozen plan" in result.stderr
+    assert not marker.exists()
+    assert read_run_manifest(workspace)[0]["status"] == "planned"
 
 
 def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(tmp_path: Path, monkeypatch):

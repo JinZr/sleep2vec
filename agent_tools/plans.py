@@ -745,6 +745,13 @@ def build_plan(
         runtime_dir = run_adapter.managed_runtime_dir(runtime_recipe, version) if run_adapter is not None else None
         checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
         artifacts_path = run_dir / "artifacts.json"
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        runtime_identity = (
+            execution
+            if task in {"evaluate", "infer"}
+            and all(field in execution for field in ("python", "runtime_commit", "workdir"))
+            else {}
+        )
         run = {
             "experiment_id": (recipe.get("experiment") or {}).get("id"),
             "step_id": (recipe.get("step") or {}).get("id"),
@@ -766,10 +773,12 @@ def build_plan(
             "\n".join(
                 rendering.script_lines(
                     commands,
-                    run_cwd=Path(str((recipe.get("execution") or {}).get("workdir") or REPO_ROOT)),
+                    run_cwd=Path(str(execution.get("workdir") or REPO_ROOT)),
                     experiment_root=root,
                     step_id=run["step_id"],
                     run_id=run_id,
+                    lifecycle_python=runtime_identity.get("python"),
+                    expected_runtime_commit=runtime_identity.get("runtime_commit"),
                 )
             )
             + "\n",

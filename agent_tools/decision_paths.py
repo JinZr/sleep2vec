@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess  # noqa: F401 -- tests patch decision_paths.subprocess.run (stdlib global)
 from typing import Any
 
@@ -8,15 +9,10 @@ from . import transport
 from .decision_models import DecisionIssue, DecisionStatus
 from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT
 
-_EXECUTION_FIELDS = {
-    "host",
-    "path_context",
-    "path_validation",
-    "python",
-    "runtime_commit",
-    "target",
-    "workdir",
-}
+_EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target", "workdir"}
+_RUNTIME_IDENTITY_FIELDS = {"python", "runtime_commit"}
+_RUNTIME_IDENTITY_REQUIRED_FIELDS = {*_RUNTIME_IDENTITY_FIELDS, "workdir"}
+_RUNTIME_IDENTITY_TASKS = {"evaluate", "infer"}
 
 
 def execution_contract_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
@@ -25,13 +21,73 @@ def execution_contract_issues(recipe: dict, *, source_layer: str) -> list[Decisi
     execution = recipe["execution"]
     if not isinstance(execution, dict):
         return [_execution_contract_issue("execution", "execution must be a mapping.", execution, source_layer)]
+    task = str(recipe.get("task") or "")
+    allowed_fields = _EXECUTION_FIELDS | (_RUNTIME_IDENTITY_FIELDS if task in _RUNTIME_IDENTITY_TASKS else set())
     issues = []
-    for field in sorted(set(execution) - _EXECUTION_FIELDS):
+    for field in sorted(set(execution) - allowed_fields):
         issues.append(
             _execution_contract_issue(
                 f"execution.{field}",
                 f"Unknown execution field for this task: {field}.",
                 execution[field],
+                source_layer,
+            )
+        )
+    identity_fields = set(execution) & _RUNTIME_IDENTITY_FIELDS
+    workdir = execution.get("workdir")
+    if "workdir" in execution and (
+        not isinstance(workdir, str) or not workdir.strip() or workdir == "ASK_USER" or not Path(workdir).is_absolute()
+    ):
+        issues.append(
+            _execution_contract_issue(
+                "execution.workdir",
+                "execution.workdir must be an explicit absolute path.",
+                workdir,
+                source_layer,
+            )
+        )
+    if task not in _RUNTIME_IDENTITY_TASKS or not identity_fields:
+        return issues
+    for field in sorted(_RUNTIME_IDENTITY_REQUIRED_FIELDS - set(execution)):
+        issues.append(
+            _execution_contract_issue(
+                f"execution.{field}",
+                "execution.python, execution.runtime_commit, and execution.workdir must be provided together.",
+                None,
+                source_layer,
+            )
+        )
+    target = execution.get("target")
+    if target not in (None, "", "local"):
+        issues.append(
+            _execution_contract_issue(
+                "execution.target",
+                "Explicit infer/evaluate runtime identity supports only local execution.",
+                target,
+                source_layer,
+            )
+        )
+    python_command = execution.get("python")
+    if "python" in execution and (
+        not isinstance(python_command, str) or not python_command.strip() or python_command == "ASK_USER"
+    ):
+        issues.append(
+            _execution_contract_issue(
+                "execution.python",
+                "execution.python must be an explicit non-empty command or path.",
+                python_command,
+                source_layer,
+            )
+        )
+    runtime_commit = execution.get("runtime_commit")
+    if "runtime_commit" in execution and (
+        not isinstance(runtime_commit, str) or re.fullmatch(r"[0-9a-f]{40}", runtime_commit) is None
+    ):
+        issues.append(
+            _execution_contract_issue(
+                "execution.runtime_commit",
+                "execution.runtime_commit must be a lowercase 40-character Git commit SHA.",
+                runtime_commit,
                 source_layer,
             )
         )

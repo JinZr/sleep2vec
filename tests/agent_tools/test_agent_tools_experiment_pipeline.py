@@ -187,6 +187,16 @@ def test_schema_rejects_duplicate_job_ids_illegal_phase_and_missing_unlock(tmp_p
         experiment_pipeline._validate_spec(spec, root, unlock_final_test=False)
 
 
+@pytest.mark.parametrize("field", ["workdir", "python", "runtime_commit"])
+def test_schema_rejects_non_string_runtime_identity(tmp_path: Path, field: str):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec["runtime"][field] = []
+
+    with pytest.raises(ValueError, match=rf"runtime\.{field}"):
+        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+
+
 def test_dry_run_does_not_freeze_or_mutate_workspace(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     root.mkdir()
@@ -327,6 +337,13 @@ def test_failed_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Path,
     assert [int(row["attempt"]) for row in updated] == [1, 2]
     assert Path(updated[1]["result_root"]).name == "attempt-002"
     assert not Path(updated[1]["result_root"]).exists()
+    retry_recipe = yaml.safe_load((pipeline_dir / "recipes" / "age-hsp-i2-psg" / "attempt-002.yaml").read_text())
+    assert retry_recipe["execution"] == {
+        "target": "local",
+        "workdir": spec["runtime"]["workdir"],
+        "python": spec["runtime"]["python"],
+        "runtime_commit": spec["runtime"]["runtime_commit"],
+    }
 
     updated[1]["status"] = "failed"
     unchanged, created_again = experiment_pipeline._create_needed_retries(
@@ -394,7 +411,12 @@ def test_attempt_recipe_freezes_fp32_batch_workers_and_logical_gpu_zero(tmp_path
         "avg_ckpts": 1,
         "results_root": str(result_root),
     }
-    assert recipe["execution"]["runtime_commit"] == "a" * 40
+    assert recipe["execution"] == {
+        "target": "local",
+        "workdir": "/runtime/snapshot",
+        "python": "/runtime/python",
+        "runtime_commit": "a" * 40,
+    }
     assert recipe["artifacts"]["overwrite"] is False
 
 
