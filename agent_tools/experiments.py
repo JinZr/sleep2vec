@@ -188,7 +188,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         raise RuntimeError(f"Final report changed during publication: {target}")
     manifest["experiment"]["status"] = "completed"
     manifest["experiment"]["completed_at"] = utc_now()
-    exp_io.append_event_at(root, "experiment_finalized", {"report": str(target)}, remote=remote)
+    exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
     if not exp_io.conditional_atomic_replace_text_at(
         root / "experiment.yaml",
