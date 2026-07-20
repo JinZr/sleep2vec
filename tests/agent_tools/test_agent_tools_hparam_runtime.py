@@ -1500,6 +1500,18 @@ def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pi
     assert observed["status"] == "missing_pid"
 
 
+def test_status_marks_lifecycle_owned_script_without_process_identity_exit_failed(tmp_path: Path):
+    row = {
+        "script": str(tmp_path / "launch.sh"),
+        "state": "finished",
+        "status": "running",
+    }
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=True)
+
+    assert observed["status"] == "failed"
+
+
 @pytest.mark.parametrize("status", ["completed", "failed", "finished", "launch_failed", "stopped", "superseded"])
 def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Path, monkeypatch, status: str):
     _write_runtime_rows(

@@ -172,6 +172,9 @@ def status_row(
     dead_unbound_process_identity = False
     process_identity_error = None
     managed_process = any(source.get("script") not in (None, "") for source in (row, previous))
+    managed_process_identity = managed_process and any(
+        source.get("pid_path") not in (None, "") for source in (row, previous)
+    )
     try:
         if managed_process:
             canonical_process_identity = {
@@ -183,6 +186,7 @@ def status_row(
             if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
                 missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
                 raise ProcessIdentityError(f"Canonical run has partial process identity; missing: {missing}")
+            managed_process_identity = managed_process_identity or populated_process_fields == PROCESS_IDENTITY_FIELDS
             process_identity = read_process_identity(row.get("pid_path"), row)
             pid = process_identity["pid"] if process_identity is not None else None
             running_state = process_identity_running(row, process_identity) if process_identity is not None else False
@@ -240,7 +244,12 @@ def status_row(
         }
     ):
         observed_status = "unknown_remote"
-    elif pid is None and running_state is False and managed_process and observed_status in {"launched", "running"}:
+    elif (
+        pid is None
+        and running_state is False
+        and managed_process_identity
+        and observed_status in {"launched", "running"}
+    ):
         observed_status = "missing_pid"
     elif pid is None and observed_status == "launched":
         observed_status = "missing_pid"
