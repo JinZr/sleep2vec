@@ -13,7 +13,7 @@ The main runtime is config-driven:
 5. Lightning modules own loss, optimization, metric reduction, and task-specific evaluation.
 6. result owners write checkpoints, metrics, predictions, manifests, and visualizations.
 
-Preprocessing produces the index, preset, or Kaldi artifacts consumed by the dataset layer. `sleep2stat` consumes raw signals and model outputs to create analysis bundles. `agent_tools` plans and monitors these existing entrypoints; it does not replace their runtimes.
+Preprocessing produces the index, preset, or Kaldi artifacts consumed by the dataset layer. `sleep2stat` consumes raw signals and model outputs to create analysis bundles. `agent_tools` plans, explicitly launches, and monitors these existing entrypoints; it does not replace their runtimes, and monitor commands never launch pending work.
 
 ## Ownership Boundaries
 
@@ -37,6 +37,8 @@ Preprocessing produces the index, preset, or Kaldi artifacts consumed by the dat
 | Config policy check | [`utils/check_configs.py`](../../utils/check_configs.py) | Validate checked-in YAMLs through runtime loaders plus repository recipe policy | repo-wide config policy changes |
 | `sleep2stat` | [`sleep2stat/`](../../sleep2stat/) | Strict analysis config, record loading, analyzers, reducers, bundle writing, plots | derived-analysis behavior changes |
 | Agent control plane | [`agent_tools/`](../../agent_tools/), [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) | Consultation, context, plans, managed experiments, hparam lifecycle, progress, summaries | agent-facing contracts or experiment ownership changes |
+| Managed scheduling | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) | Shared GPU capacity, process observation, execution snapshots, and process starts for managed launchers | hparam and external-pipeline scheduling behavior changes |
+| External evaluation pipeline | [`agent_tools/experiment_pipeline.py`](../../agent_tools/experiment_pipeline.py), [`agent_tools/experiments.py`](../../agent_tools/experiments.py) | Wait for successful managed sources, freeze validation checkpoints, run isolated external jobs, summarize, and finalize | `experiment-run`, external-matrix, retry, or pipeline-resume behavior changes |
 | Adaptive proposal boundary | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py), [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) | Immutable evidence snapshots and bounded external-agent proposals, followed by tool-owned preflight, registration, and launch | adaptive strategy, proposal protocol, or parameter-envelope semantics change |
 | Agent declarations | [`skills/`](../../skills/), [`recipes/`](../../recipes/), [`agent_policies/`](../../agent_policies/), [`doc/agent_contracts/`](../agent_contracts/) | Human playbooks, task recipes, approved decisions, machine-readable contracts | declared workflow or policy changes |
 | Dense standalone variant | [`sleep2vec2/`](../../sleep2vec2/), [`configs/sleep2vec2/`](../../configs/sleep2vec2/) | Package-local dense runtime and RoFormer implementation | `sleep2vec2` behavior or parity changes |
@@ -86,7 +88,7 @@ Channel availability is resolved before loading a batch. A pair-scheduled batch 
 - `DefaultDataset` owns the shared collation path; storage backends override loading hooks, not batch shape.
 - Preprocessing may import dataset/config helpers to validate generated artifacts; runtime modules should not depend on preprocessing CLIs.
 - `sleep2stat` may load namespace-local downstream models and the shared record/data contract; training code does not depend on `sleep2stat`.
-- `agent_tools` renders calls to existing runtime, preprocessing, and analysis entrypoints. Its context collection stays lightweight and avoids importing Torch or Lightning.
+- `agent_tools` renders calls to existing runtime, preprocessing, and analysis entrypoints. Its context collection stays lightweight and avoids importing Torch or Lightning. External pipelines call package-local inference with a unique result root rather than interpreting runtime outputs through a second evaluator.
 
 ## High-Risk Seams And Tests
 

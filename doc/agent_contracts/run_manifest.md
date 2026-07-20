@@ -8,6 +8,17 @@ The canonical managed key is `(step_id, run_id)`. Both fields are required and o
 
 Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Execution identity consists of target, host, workdir, GPUs, PID/log paths, command, and the launched PID, process-group id, and OS process-start token. Only the canonical owner may perform each trusted first fill.
 
+Pipeline-managed inference rows may additionally freeze `pipeline_id`,
+`job_id`, `attempt`, `result_root`, and `terminal_status_owner`. These fields do
+not change the canonical `(step_id, run_id)` key. Older managed rows may omit
+them and retain their existing lifecycle behavior; a present value is immutable
+and must match all later evidence.
+
+When present, `terminal_status_owner` is exactly `script` or `monitor`. It
+selects the existing process-exit rule explicitly: script-owned runs must commit
+their own terminal status, while monitor-owned runs leave confirmed-exit
+inference to the monitor.
+
 Managed tables declare either one row per run or many rows per run. Both forms require complete managed identity and reject removed `trial_id` or `param.*` formats. Historical formats remain read-only and are never translated into current state.
 
 ## Canonical state and projections
@@ -15,6 +26,11 @@ Managed tables declare either one row per run or many rows per run. Both forms r
 `launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. Matrices, Markdown reports, rankings, and events are also derived artifacts.
 
 Runtime `run_manifest.json` supplies metrics and checkpoint evidence only. It does not own lifecycle status. A truly missing runtime manifest means evidence is not yet available; an existing alias, non-regular file, invalid encoding/JSON, or non-mapping payload is corrupt.
+
+For a pipeline attempt, `result_root` is a single-use empty directory and the
+runtime manifest beneath it must be unique and match the frozen inference
+inputs. Pipeline projections cannot infer success from files other than that
+validated manifest.
 
 ## Status reducer
 
@@ -64,6 +80,13 @@ New managed launches create a dedicated session/process group and write one JSON
 If those canonical process fields are still blank after an unresolved launch, monitoring or stop may fill them only after the live leader command matches the frozen absolute launch script. Monitoring and stop reject a partially populated canonical process identity.
 
 Only confirmed absence means no process identity. Empty, malformed, non-positive, aliased, or invalid-encoding local identity content is confirmed corrupt and makes launchable scheduled state non-launchable `missing_pid`. A local identity that names an already-dead leader before the canonical process fields were bound also becomes `missing_pid`; monitoring does not bind it or infer terminal success or failure. The equivalent unbound remote evidence remains `unknown_remote`. A local path/read `OSError` while scheduled aborts before mutation. Remote permission, type, decoding, transport, and timeout failures produce recoverable `unknown_remote` monitoring evidence. A launch-command timeout is also unresolved rather than `launch_failed`: the attempted run remains active until identity monitoring proves its state, preventing a duplicate launch after a transport timeout. Stop propagates identity uncertainty before signal or mutation, rejects terminal rows before identity access, verifies and signals atomically on SSH, sends `SIGTERM` to the complete process group, and commits `stopped` only after the group has exited.
+
+When monitoring proves corrupt, partial, mismatched, or reused managed process
+identity, it records `process_identity_error` with the canonical status update.
+Pipeline runners treat that evidence as a permanent automatic-retry blocker.
+A lifecycle-owned active run whose identity file disappears becomes
+`missing_pid`, not retryable `failed`; a valid identity whose process group is
+confirmed dead may still become `failed` under the normal terminal-owner rule.
 
 Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair. Both may be empty for a non-checkpoint-producing run; a partial pair is invalid. Existing checkpoint evidence must remain inside the eligible managed keys and frozen directories.
 

@@ -46,6 +46,7 @@ bash utils/style_check.sh
 ## Runtime Failure & Output Directory Policy
 - Prefer `let it fail` for repository-owned analysis and derived-artifact pipelines. If an analyzer, reducer, parser, or writer raises, let the command fail with a non-zero exit instead of converting it into a partial-success bundle.
 - Do not add resume, repair, skip-existing, overwrite, or partial-rebuild protocols unless the user explicitly asks for them and the runtime need is concrete. For normal research runs, rerun with a fresh output directory or manually clear the failed output.
+- `experiment-run` is the explicit resumable exception for managed external evaluation. It preserves frozen pipeline state and creates a fresh, empty result root for every attempt; resume never overwrites or reinterprets a prior attempt directory.
 - Treat committed run directories as single-use artifacts. A non-empty output directory should generally fail before expensive work starts unless the tool has an explicit append-only contract.
 - Write terminal manifests only after the run has completed successfully. Interrupted or failed directories should be considered invalid rather than interpreted through sidecars, shards, or partial tables.
 - Keep summary commands read-only unless their contract explicitly says they repair or rebuild data. A `summarize`-style command should inspect committed outputs, not infer completion from partial intermediate files.
@@ -96,6 +97,8 @@ High-impact decisions include label selection, split policy, external-test locki
 - Runs must have both a stable `run-NNN` id and a semantic parameter-derived name. Do not create new `trial_000`-style artifact names that require opening configs to understand.
 - Freeze the resolved recipe, generated config, launch command, and hashes before execution. Do not silently rewrite a planned run after launch.
 - Monitoring may update status and reports but must not start pending runs. Launching is an explicit action.
+- `experiment-run --execute` is an explicit launching action: it may wait for successful managed training sources and then fill its frozen external-evaluation matrix. `hparam-monitor` and `experiment-monitor` remain non-launching.
+- External-evaluation pipelines must select and freeze checkpoints from validation evidence before reading external metrics. Finalization requires every declared external job to have one verified successful manifest and no active attempt.
 - Stopping a run requires a recorded reason. Finalization requires no active runs and a non-empty final report.
 - This policy applies to new work. Do not migrate or rename historical experiment trees unless the user explicitly asks.
 
@@ -200,8 +203,8 @@ python3.10 -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_conf
 
 #### `agent-tooling-maintainer`
 - Owns: `skills/`, `agent_tools/`, `recipes/`, `agent_policies/`, `doc/agent_contracts/`, and agent-facing workflow examples.
-- Responsibilities: task playbooks, machine-readable recipe schemas, context bundle generation, command-plan generation, skill validation, run-manifest conventions, agent documentation consistency, stop-and-consult policy enforcement, and external-test unlock checks.
-- Invoke when: adding or changing agent skills, recipe schemas, context-gathering tools, run-plan generators, consultation policies, user-decision files, or agent-facing documentation.
+- Responsibilities: task playbooks, machine-readable recipe and pipeline schemas, context bundle generation, command-plan generation, managed scheduling, skill validation, run-manifest conventions, agent documentation consistency, stop-and-consult policy enforcement, and external-test unlock checks.
+- Invoke when: adding or changing agent skills, recipe or pipeline schemas, context-gathering tools, run-plan generators, consultation policies, user-decision files, managed experiment pipelines, or agent-facing documentation.
 - Must not be split from: `runtime-orchestrator` when the change affects training/inference command semantics; `preset-pipeline` when the change affects preset preparation; `regression-guard` when adding new agent-tool contracts.
 - Verification gate:
 ```bash

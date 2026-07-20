@@ -629,6 +629,8 @@ def build_plan(
     source_config_sha256: str | None = None,
     expected_recipe: dict[str, Any] | None = None,
     expected_base_recipe: dict[str, Any] | None = None,
+    staging_dir: str | Path | None = None,
+    defer_commit: bool = False,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     recipe, cfg, report = preflight_plan(
@@ -637,6 +639,7 @@ def build_plan(
         user_decisions_path=user_decisions_path,
         allow_unresolved=allow_unresolved,
         unlock_final_test=unlock_final_test,
+        allow_existing_output_artifacts=defer_commit,
     )
     if expected_recipe is not None:
         recipe_source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
@@ -688,9 +691,29 @@ def build_plan(
 
     ensure_experiment_workspace(recipe, out)
 
+    write_out = out
+    if defer_commit and staging_dir is None:
+        raise ValueError("Deferred plan commit requires a staging directory.")
+    if staging_dir is not None:
+        if out.exists() and not defer_commit:
+            raise ValueError(f"Atomic plan output already exists: {out}")
+        write_out = canonical_local_experiment_root(staging_dir, Path.cwd())
+        root = experiment_root(recipe)
+        if root is None:
+            raise ValueError("experiment.root is required.")
+        try:
+            write_out.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Atomic plan staging directory must be inside experiment.root: {write_out}") from exc
+        if write_out.is_symlink() or write_out.exists():
+            raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
+        write_out.mkdir(parents=True)
+
     task = recipe.get("task")
     plan_adapter = get_adapter(task)
     if plan_adapter is not None and plan_adapter.materializes_plan:
+        if staging_dir is not None:
+            raise ValueError("Atomic plan staging is unsupported for adapter-materialized plans.")
         plan_adapter.write_plan(
             recipe,
             out,
@@ -708,13 +731,15 @@ def build_plan(
         run_name = identity["run_name"]
         version = identity["version"]
         run_dir = out / "runs" / f"{run_id}--{run_name}"
-        run_dir.mkdir(parents=True, exist_ok=True)
+        write_run_dir = write_out / "runs" / f"{run_id}--{run_name}"
+        write_run_dir.mkdir(parents=True, exist_ok=True)
         config_path = run_dir / "config.yaml"
-        config_path.write_bytes(validated_config_bytes)
+        write_config_path = write_run_dir / "config.yaml"
+        write_config_path.write_bytes(validated_config_bytes)
         runtime_recipe = copy.deepcopy(recipe)
         runtime_recipe.setdefault("inputs", {})["config"] = str(config_path)
         runtime_recipe.setdefault("artifacts", {})["version_name"] = version
-        runtime_cfg = config_summary(config_path, variant=recipe.get("variant"))
+        runtime_cfg = config_summary(write_config_path, variant=recipe.get("variant"))
         commands = _commands_for_recipe(runtime_recipe, runtime_cfg)
         run_adapter = get_adapter(task)
         runtime_dir = run_adapter.managed_runtime_dir(runtime_recipe, version) if run_adapter is not None else None
@@ -728,20 +753,20 @@ def build_plan(
             "version": version,
             "status": "planned",
             "config": str(config_path),
-            "config_sha256": file_sha256(config_path),
+            "config_sha256": file_sha256(write_config_path),
             "script": str(run_dir / "launch.sh"),
             "run_dir": str(run_dir),
             "artifacts": str(artifacts_path),
             "runtime_dir": str(runtime_dir) if runtime_dir is not None else "",
             "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else "",
         }
-        write_text(out / "plan.md", context.plan_markdown(report, commands))
+        write_text(write_out / "plan.md", context.plan_markdown(report, commands))
         write_text(
-            out / "run.sh",
+            write_out / "run.sh",
             "\n".join(
                 rendering.script_lines(
                     commands,
-                    run_cwd=REPO_ROOT,
+                    run_cwd=Path(str((recipe.get("execution") or {}).get("workdir") or REPO_ROOT)),
                     experiment_root=root,
                     step_id=run["step_id"],
                     run_id=run_id,
@@ -750,9 +775,9 @@ def build_plan(
             + "\n",
             executable=True,
         )
-        launch_path = run_dir / "launch.sh"
-        write_text(launch_path, (out / "run.sh").read_text(), executable=True)
-        run["script_sha256"] = file_sha256(launch_path)
+        write_launch_path = write_run_dir / "launch.sh"
+        write_text(write_launch_path, (write_out / "run.sh").read_text(), executable=True)
+        run["script_sha256"] = file_sha256(write_launch_path)
         artifact_payload = {
             "declared": recipe.get("artifacts") or {},
             "runtime_dir": run["runtime_dir"],
@@ -760,14 +785,22 @@ def build_plan(
             "external_artifacts": True,
         }
         write_json(
-            artifacts_path,
+            write_run_dir / "artifacts.json",
             artifact_payload,
         )
-        write_json(run_dir / "run.json", {**run, "commands": commands})
+        planned_run = {**run, "command": commands[0]} if len(commands) == 1 else dict(run)
+        write_json(write_run_dir / "run.json", {**planned_run, "commands": commands})
         write_json(
-            out / "plan.json",
-            {"status": report.status.value, "commands": commands, "runs": [run], "recipe": recipe},
+            write_out / "plan.json",
+            {"status": report.status.value, "commands": commands, "runs": [planned_run], "recipe": recipe},
         )
+        resolved_recipe = {key: value for key, value in recipe.items() if not str(key).startswith("_")}
+        (write_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
+        if defer_commit:
+            return report
+        if staging_dir is not None:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            write_out.replace(out)
         manifest_row = {
             **run,
             "parameter_summary": "single resolved recipe",
@@ -781,8 +814,6 @@ def build_plan(
             "plan_created",
             {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": 1},
         )
-        resolved_recipe = {key: value for key, value in recipe.items() if not str(key).startswith("_")}
-        (out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     return report
 
 
@@ -793,6 +824,7 @@ def preflight_plan(
     user_decisions_path: str | Path | None = None,
     allow_unresolved: bool = False,
     unlock_final_test: bool = False,
+    allow_existing_output_artifacts: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
     recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path)
     out = canonical_local_experiment_root(output_dir, Path.cwd())
@@ -855,6 +887,7 @@ def preflight_plan(
         _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test),
         _overwrite_policy(recipe),
         root=out,
+        allow_existing=allow_existing_output_artifacts,
     )
     if successful_plan:
         root = experiment_root(recipe)

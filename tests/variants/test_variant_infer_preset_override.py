@@ -8,6 +8,7 @@ import pytest
 
 VARIANT_PACKAGES = ("sleep2vec2", "sleep2expert")
 RUNTIME_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
+INFERENCE_PACKAGES = (*RUNTIME_PACKAGES, "sex_age_baseline")
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)
@@ -33,7 +34,31 @@ def test_variant_infer_parse_args_accepts_inference_preset_path(monkeypatch: pyt
     assert args.inference_preset_path == Path("preset.pkl")
 
 
-@pytest.mark.parametrize("package_name", RUNTIME_PACKAGES)
+@pytest.mark.parametrize("package_name", INFERENCE_PACKAGES)
+def test_infer_parse_args_accepts_results_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, package_name: str):
+    infer_mod = importlib.import_module(f"{package_name}.infer")
+    results_root = tmp_path / "attempt-001"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            f"{package_name}.infer",
+            "--config",
+            "config.yaml",
+            "--ckpt-path",
+            "best.ckpt",
+            "--label-name",
+            "ahi",
+            "--results-root",
+            str(results_root),
+        ],
+    )
+
+    args = infer_mod.parse_args()
+
+    assert args.results_root == results_root
+
+
+@pytest.mark.parametrize("package_name", INFERENCE_PACKAGES)
 def test_infer_parse_args_does_not_require_csv_paths(monkeypatch: pytest.MonkeyPatch, package_name: str):
     infer_mod = importlib.import_module(f"{package_name}.infer")
     monkeypatch.setattr(
@@ -53,6 +78,7 @@ def test_infer_parse_args_does_not_require_csv_paths(monkeypatch: pytest.MonkeyP
 
     assert not hasattr(args, "results_csv_path")
     assert not hasattr(args, "predictions_csv_path")
+    assert args.results_root == Path("results/inference")
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)
@@ -89,6 +115,15 @@ def test_variant_run_inference_applies_inference_preset_override(
         captured["loader_preset_path"] = args.finetune_preset_path
         return "loader"
 
+    def _prepare_paths(args, namespace, root=None, checkpoint_paths=None, timestamp=None):
+        return results_mod.prepare_inference_result_paths(
+            args,
+            namespace=namespace,
+            root=tmp_path / "results" / "inference",
+            checkpoint_paths=checkpoint_paths,
+            timestamp=timestamp or "20260524T000000Z",
+        )
+
     monkeypatch.setattr(infer_mod, "apply_finetune_config", _apply_config)
     monkeypatch.setattr(infer_mod, "_build_inference_loader", _build_loader)
     monkeypatch.setattr(infer_mod, "Sleep2vecFinetuning", _DummyModule)
@@ -97,13 +132,7 @@ def test_variant_run_inference_applies_inference_preset_override(
     monkeypatch.setattr(
         infer_mod,
         "prepare_inference_result_paths",
-        lambda args, namespace, checkpoint_paths=None, timestamp=None: results_mod.prepare_inference_result_paths(
-            args,
-            namespace=namespace,
-            root=tmp_path / "results" / "inference",
-            checkpoint_paths=checkpoint_paths,
-            timestamp=timestamp or "20260524T000000Z",
-        ),
+        _prepare_paths,
     )
     monkeypatch.setattr(infer_mod, "save_result_csv", lambda *args, **kwargs: None)
     monkeypatch.setattr(infer_mod, "save_prediction_csv", lambda *args, **kwargs: None)
@@ -173,6 +202,15 @@ def test_run_inference_writes_automatic_prediction_outputs(
         captured["manifest_prediction_run_id"] = args.prediction_run_id
         captured["manifest_prediction_row_count"] = prediction_row_count
 
+    def _prepare_paths(args, namespace, root=None, checkpoint_paths=None, timestamp=None):
+        return results_mod.prepare_inference_result_paths(
+            args,
+            namespace=namespace,
+            root=root,
+            checkpoint_paths=checkpoint_paths,
+            timestamp=timestamp or "20260524T000000Z",
+        )
+
     monkeypatch.setattr(infer_mod, "apply_finetune_config", _apply_config)
     monkeypatch.setattr(infer_mod, "_build_inference_loader", lambda args: "loader")
     monkeypatch.setattr(infer_mod, "Sleep2vecFinetuning", _DummyModule)
@@ -181,13 +219,7 @@ def test_run_inference_writes_automatic_prediction_outputs(
     monkeypatch.setattr(
         infer_mod,
         "prepare_inference_result_paths",
-        lambda args, namespace, checkpoint_paths=None, timestamp=None: results_mod.prepare_inference_result_paths(
-            args,
-            namespace=namespace,
-            root=tmp_path / "results" / "inference",
-            checkpoint_paths=checkpoint_paths,
-            timestamp=timestamp or "20260524T000000Z",
-        ),
+        _prepare_paths,
     )
     monkeypatch.setattr(infer_mod, "save_result_csv", _save_result)
     monkeypatch.setattr(infer_mod, "save_prediction_csv", _save_prediction)
@@ -207,6 +239,7 @@ def test_run_inference_writes_automatic_prediction_outputs(
         seed=4523,
         wandb=False,
         inference_preset_path=None,
+        results_root=tmp_path / "attempt-001",
     )
 
     infer_mod.run_inference(args)
@@ -216,6 +249,7 @@ def test_run_inference_writes_automatic_prediction_outputs(
         str(args.inference_overview_csv_path),
     ]
     assert args.prediction_run_id in str(args.run_dir)
+    assert args.run_dir.is_relative_to(args.results_root)
     assert args.inference_metrics_csv_path.name == "metrics__sex__test__model.csv"
     assert args.inference_prediction_csv_path.name == "predictions__sex__test__model.csv"
     assert captured["prediction_csv_path"] == str(args.inference_prediction_csv_path)
@@ -263,6 +297,15 @@ def test_run_inference_logs_metrics_and_files_to_wandb(
         args.finetune_preset_path = Path("config.pkl")
         return _DummyBundle(), object()
 
+    def _prepare_paths(args, namespace, root=None, checkpoint_paths=None, timestamp=None):
+        return results_mod.prepare_inference_result_paths(
+            args,
+            namespace=namespace,
+            root=tmp_path / "results" / "inference",
+            checkpoint_paths=checkpoint_paths,
+            timestamp=timestamp or "20260524T000000Z",
+        )
+
     monkeypatch.delenv("RANK", raising=False)
     monkeypatch.delenv("LOCAL_RANK", raising=False)
     monkeypatch.setattr(infer_mod, "apply_finetune_config", _apply_config)
@@ -273,13 +316,7 @@ def test_run_inference_logs_metrics_and_files_to_wandb(
     monkeypatch.setattr(
         infer_mod,
         "prepare_inference_result_paths",
-        lambda args, namespace, checkpoint_paths=None, timestamp=None: results_mod.prepare_inference_result_paths(
-            args,
-            namespace=namespace,
-            root=tmp_path / "results" / "inference",
-            checkpoint_paths=checkpoint_paths,
-            timestamp=timestamp or "20260524T000000Z",
-        ),
+        _prepare_paths,
     )
     monkeypatch.setattr(
         infer_mod.wandb,
@@ -378,6 +415,15 @@ def test_sleep2expert_run_inference_records_active_route_filter_metadata(
         captured["manifest_route_filter_groups"] = list(args.route_filter_groups)
         captured["manifest_route_filter_ids"] = list(args.route_filter_expert_ids)
 
+    def _prepare_paths(args, namespace, root=None, checkpoint_paths=None, timestamp=None):
+        return results_mod.prepare_inference_result_paths(
+            args,
+            namespace=namespace,
+            root=tmp_path / "results" / "inference",
+            checkpoint_paths=checkpoint_paths,
+            timestamp=timestamp or "20260524T000000Z",
+        )
+
     monkeypatch.setattr(infer_mod, "apply_finetune_config", _apply_config)
     monkeypatch.setattr(infer_mod, "_build_inference_loader", lambda args: "loader")
     monkeypatch.setattr(infer_mod, "Sleep2vecFinetuning", _DummyModule)
@@ -387,13 +433,7 @@ def test_sleep2expert_run_inference_records_active_route_filter_metadata(
     monkeypatch.setattr(
         infer_mod,
         "prepare_inference_result_paths",
-        lambda args, namespace, checkpoint_paths=None, timestamp=None: results_mod.prepare_inference_result_paths(
-            args,
-            namespace=namespace,
-            root=tmp_path / "results" / "inference",
-            checkpoint_paths=checkpoint_paths,
-            timestamp=timestamp or "20260524T000000Z",
-        ),
+        _prepare_paths,
     )
     monkeypatch.setattr(infer_mod, "save_result_csv", _save_result)
     monkeypatch.setattr(infer_mod, "save_prediction_csv", lambda *args, **kwargs: None)

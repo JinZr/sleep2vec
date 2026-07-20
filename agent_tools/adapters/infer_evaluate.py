@@ -170,10 +170,11 @@ class InferEvaluateAdapter(TaskAdapter):
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = _inputs(recipe)
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         return [
             render_command(
                 [
-                    "python",
+                    execution.get("python") or "python",
                     "-m",
                     variant_module(recipe, "infer"),
                     "--config",

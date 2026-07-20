@@ -8,7 +8,15 @@ from . import transport
 from .decision_models import DecisionIssue, DecisionStatus
 from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT
 
-_EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target"}
+_EXECUTION_FIELDS = {
+    "host",
+    "path_context",
+    "path_validation",
+    "python",
+    "runtime_commit",
+    "target",
+    "workdir",
+}
 
 
 def execution_contract_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:

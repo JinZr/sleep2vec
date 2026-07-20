@@ -47,10 +47,12 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Managed workspace identity | canonical read/merge/CAS owners in [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py) | hparam, planning, or monitoring-local tables and manifest writers |
 | Local/SSH managed I/O | [`agent_tools/experiment_io.py`](../../agent_tools/experiment_io.py) | each experiment command |
 | Managed process identity and stopping | [`agent_tools/run_evidence.py`](../../agent_tools/run_evidence.py) through [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | PID-only checks or caller-local signals |
+| Managed GPU scheduling and process launch | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) | hparam- or pipeline-local capacity, observation, snapshot, and process-start implementations |
 | Frozen hparam plan reads | `read_hparam_plan` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | launcher/postprocess-specific parsing |
 | Public hparam operations | [`agent_tools/hparam.py`](../../agent_tools/hparam.py) facade with responsibility modules behind it | direct private cross-module imports |
 | Adaptive agent proposal validation | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py) for canonical snapshots, parameter envelopes, and submission validation; [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) for orchestration | provider callbacks, latest-digest lookup during apply, or lifecycle mutation in the proposal kernel |
 | Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade with I/O/tracking owners behind it | skills or CLI handlers |
+| Resumable external evaluation | [`agent_tools/experiment_pipeline.py`](../../agent_tools/experiment_pipeline.py) through the `experiments` facade | shell loops that wait for training, select checkpoints, launch inference, or finalize |
 | Index/config/preset summaries | [`agent_tools/domain/`](../../agent_tools/domain/) through stable top-level facades | shell parsing templates |
 | MoE routing and experts | [`sleep2expert/backbones/roformer/moe.py`](../../sleep2expert/backbones/roformer/moe.py) | trainer-local routing branches |
 | MoE regularization | [`sleep2expert/losses/moe_regularization.py`](../../sleep2expert/losses/moe_regularization.py) | pretrain/finetune loops |
@@ -93,6 +95,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Keep trainer, callback, phase, W&B, and test orchestration in the relevant entrypoint and Lightning module.
 - Use checkpoint helpers for initialization, aliases, selection, and averaging.
 - Use result owners for output directories, CSV schemas, prediction ids, and manifests.
+- Use inference `--results-root` to isolate a managed attempt; consume its unique terminal manifest instead of scanning shared default outputs.
 - Let analysis/export failures terminate instead of emitting partial-success bundles.
 
 ### Preprocessing
@@ -116,6 +119,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
 - Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
+- Reuse `managed_scheduler` for capacity and process lifecycle primitives; keep pipeline policy in `experiment_pipeline`.
+- Use `experiment-run` for validation-selected external matrices. Monitor commands remain non-launching.
 - Keep external-agent suggestions inside the `adaptive_proposals` snapshot/envelope contract; let `adaptive_hparam` own preflight and lifecycle changes.
 - Generate calls to existing model, preprocess, baseline, and sleep2stat entrypoints rather than adding an agent runtime.
 - Follow [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and its layering test for kernel/domain boundaries.
@@ -144,6 +149,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 13. New task-name branches in the agent kernel instead of adapters.
 14. A second trainer, preprocessing engine, or analysis executor created for agent workflows.
 15. Manual MoE checkpoint surgery or persistent reads of transient router auxiliary state.
+16. A shell or heartbeat loop that duplicates the managed external pipeline or treats monitoring as a launcher.
 
 ## Non-Reuse Zones
 

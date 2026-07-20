@@ -41,6 +41,7 @@ _INFER_RUNTIME_OPTIONS = (
     ("device", "--device"),
     ("avg_ckpts", "--avg-ckpts"),
     ("avg_ckpt_dir", "--avg-ckpt-dir"),
+    ("results_root", "--results-root"),
     ("seed", "--seed"),
     ("wandb_mode", "--wandb-mode"),
 )

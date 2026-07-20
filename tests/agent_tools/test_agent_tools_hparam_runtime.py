@@ -14,7 +14,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import decision_hparam, hparam_runtime, manifests, run_artifacts, run_evidence
+from agent_tools import decision_hparam, hparam_runtime, managed_scheduler, manifests, run_artifacts, run_evidence
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
 from agent_tools.models import REPO_ROOT
@@ -851,7 +851,7 @@ def test_hparam_stop_rejects_nonpositive_pid_before_kill(tmp_path: Path, monkeyp
     Path(rows[0]["pid_path"]).write_text(pid_text)
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     killed = []
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     with pytest.raises(RuntimeError, match="PID file is empty or invalid"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="invalid PID evidence")
@@ -878,7 +878,7 @@ def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, mo
         monkeypatch.setattr(Path, "read_text", fail_pid_read)
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     killed = []
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     with pytest.raises(RuntimeError, match="PID file read failed"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unreadable PID evidence")
@@ -906,7 +906,7 @@ def test_hparam_stop_rejects_unsafe_local_pid_topology_before_read_or_kill(tmp_p
         os.mkfifo(pid_path)
     calls = []
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda *_args: calls.append("kill"))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda *_args: calls.append("kill"))
 
     with pytest.raises(ValueError, match="Managed output"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unsafe PID topology")
@@ -1443,6 +1443,7 @@ def test_status_marks_a_reused_managed_process_identity_failed(
     )
 
     assert observed["status"] == "failed"
+    assert "reused by a different process" in observed["process_identity_error"]
 
 
 @pytest.mark.parametrize("script_commits_terminal_status", [False, True])
@@ -1464,6 +1465,7 @@ def test_status_marks_legacy_integer_only_managed_identity_failed(tmp_path: Path
     )
 
     assert observed["status"] == "failed"
+    assert "partial process identity" in observed["process_identity_error"]
 
 
 def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed(tmp_path: Path, monkeypatch):
@@ -1485,6 +1487,19 @@ def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed
     assert observed["status"] == "failed"
 
 
+def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pid(tmp_path: Path):
+    row = {
+        "script": str(tmp_path / "launch.sh"),
+        "pid_path": str(tmp_path / "missing.pid"),
+        "status": "running",
+        **_process_identity(),
+    }
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=True)
+
+    assert observed["status"] == "missing_pid"
+
+
 @pytest.mark.parametrize("status", ["completed", "failed", "finished", "launch_failed", "stopped", "superseded"])
 def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Path, monkeypatch, status: str):
     _write_runtime_rows(
@@ -1495,7 +1510,7 @@ def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Pa
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     calls = []
     monkeypatch.setattr(run_evidence, "read_pid", lambda *_args: calls.append("read_pid") or 123)
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda *_args: calls.append("kill"))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda *_args: calls.append("kill"))
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("merge"))
     monkeypatch.setattr(hparam_runtime, "write_rows", lambda *_args: calls.append("write"))
     monkeypatch.setattr(hparam_runtime, "append_event", lambda *_args: calls.append("event"))
@@ -1532,7 +1547,7 @@ def test_hparam_stop_rejects_dangling_status_manifest_before_kill_or_write(tmp_p
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     killed = []
     monkeypatch.setattr(run_evidence, "read_pid", lambda *_args: 123)
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda *_args: killed.append(True))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda *_args: killed.append(True))
 
     with pytest.raises(ValueError, match="Managed output"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="dangling status")
@@ -1578,7 +1593,7 @@ def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     killed = []
     monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     with pytest.raises(ValueError, match="Managed output"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
@@ -3292,7 +3307,7 @@ def test_hparam_runtime_rejects_legacy_plan_without_side_effects(tmp_path: Path,
     monkeypatch.setattr(
         hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
     )
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     with pytest.raises(ValueError, match="Legacy hparam plan"):
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
@@ -3315,7 +3330,7 @@ def test_hparam_runtime_rewrites_legacy_projection_rows_from_canonical(tmp_path:
     monkeypatch.setattr(
         hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
     )
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=True)
 
@@ -3334,7 +3349,7 @@ def test_hparam_runtime_rewrites_header_only_removed_projection_table(tmp_path: 
     monkeypatch.setattr(
         hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
     )
-    monkeypatch.setattr(hparam_runtime.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=True)
 
@@ -4025,3 +4040,100 @@ def test_hparam_remote_command_timeout_returns_unknown_remote(monkeypatch):
     result = run_evidence.run_row_command({"target": "ssh", "host": "baichuan3"}, "ps")
 
     assert result.returncode == 124
+
+
+def test_managed_scheduler_capacity_balances_around_other_active_runs():
+    execution = {"gpu_pool": [0, 1, 2], "gpus_per_run": 1, "max_concurrent": 3}
+    expected = {
+        ("evaluate", "run-000"): {
+            "step_id": "evaluate",
+            "run_id": "run-000",
+            "status": "planned",
+            "gpus": "",
+        }
+    }
+    workspace = {
+        **expected,
+        ("train", "run-001"): {
+            "step_id": "train",
+            "run_id": "run-001",
+            "status": "running",
+            "target": "local",
+            "gpus": "0",
+        },
+    }
+
+    capacity = managed_scheduler.capacity_state(
+        execution,
+        {},
+        expected,
+        workspace,
+        expected_keys=set(expected),
+    )
+    allocation = capacity.next_allocation([(0, expected[("evaluate", "run-000")])])
+
+    assert capacity.slots == 2
+    assert allocation is not None
+    assert allocation[2] == 1
+
+
+def test_managed_scheduler_row_terminal_owner_overrides_monitor_default(tmp_path: Path, monkeypatch):
+    observed = []
+
+    def status_row(_run_dir, _row, previous, *, script_commits_terminal_status, health):
+        observed.append((script_commits_terminal_status, health))
+        return dict(previous)
+
+    monkeypatch.setattr(managed_scheduler.evidence, "status_row", status_row)
+    row = {
+        "step_id": "evaluate",
+        "run_id": "run-000",
+        "status": "running",
+        "terminal_status_owner": "script",
+    }
+
+    assert managed_scheduler.observe_run(tmp_path, row, row) == row
+    assert observed == [(True, False)]
+
+
+def test_managed_scheduler_validates_result_root_against_explicit_output_root(tmp_path: Path):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
+    runtime_workdir = tmp_path / "immutable-runtime"
+    runtime_workdir.mkdir()
+    result_root = tmp_path / "pipelines" / "external" / "results" / "job" / "attempt-001"
+    plan = json.loads((tmp_path / "plan.json").read_text())
+    run = plan["runs"][0]
+    run["result_root"] = str(result_root)
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "result_root": str(result_root),
+                "terminal_status_owner": "script",
+            }
+        ],
+    )
+    starts = []
+    hooks = managed_scheduler.SchedulerHooks(
+        validated_snapshot=lambda *_args, **_kwargs: (None, False),
+        start_process=lambda _execution, command: starts.append(command) or "launched",
+    )
+
+    result = managed_scheduler.launch_managed_runs(
+        tmp_path,
+        tmp_path,
+        [run],
+        {"target": "local", "workdir": str(runtime_workdir)},
+        {},
+        dry_run=False,
+        default_script_commits_terminal_status=True,
+        runtime_output_fields=("result_root",),
+        runtime_output_root=tmp_path,
+        hooks=hooks,
+    )
+
+    assert len(starts) == 1
+    assert result.committed_rows[0]["status"] == "launched"
+    assert rows[0]["run_id"] == "run-000"

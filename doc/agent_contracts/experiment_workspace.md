@@ -15,6 +15,23 @@ An experiment workspace is the durable, human-readable record for related prepar
 │   ├── ranking.csv
 │   ├── experiment_ranking.csv
 │   └── final.md
+├── pipelines/<pipeline-id>/  # optional managed external-evaluation state
+│   ├── spec.source.yaml
+│   ├── spec.resolved.yaml
+│   ├── pipeline.json
+│   ├── checkpoints.json
+│   ├── preflight.json
+│   ├── jobs.tsv
+│   ├── execution_snapshot.json
+│   ├── results.csv
+│   ├── metrics.csv
+│   ├── summary.md
+│   ├── final.md
+│   ├── recipes/<job-id>/attempt-NNN.yaml
+│   ├── plans/<job-id>/attempt-NNN/
+│   ├── preflight_retries/<job-id>/attempt-NNN.json
+│   ├── retry_schedulers/<job-id>/execution_snapshot.json
+│   └── results/<job-id>/attempt-NNN/
 ├── steps/<step.id>/step.yaml
 └── <plan directory>/
     ├── recipe.resolved.yaml
@@ -47,8 +64,14 @@ A new plan must be contained by its experiment root and registered in its step m
 - `hparam-stop` requires a reason, verifies the canonical PID/process-group/start-token identity, stops the complete process group, and records terminal state only after exit is confirmed.
 - `hparam-select` writes step-scoped validation ranking.
 - `hparam-adaptive-*` appends rounds and commits replacements through the canonical owner.
+- `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes validation-selected checkpoints, and manages the declared job matrix.
 - `experiment-rank` writes experiment-wide ranking.
 - `experiment-finalize` requires no active runs and a non-empty final report.
+
+`hparam-monitor` and `experiment-monitor` remain non-launching even when a
+pipeline has pending jobs. Pipeline locking, frozen state, attempt isolation,
+and finalization sequencing belong to
+[experiment_pipeline.md](experiment_pipeline.md).
 
 Every mutation other than fresh initialization requires a parseable, root-matching workspace owner. Managed output targets are preflighted before mutation: existing targets must be independent regular files under valid directory ancestry. Local and SSH uncertainty fails closed.
 
