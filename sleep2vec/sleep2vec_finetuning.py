@@ -1275,7 +1275,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             )
 
         if stage == "test" and prediction_export_enabled(self.args):
-            records = self._gather_prediction_records(self._prediction_records["test"])
+            records = self._gather_prediction_records(list(self._prediction_records["test"]))
             self._prediction_records["test"].clear()
             self.prediction_rows = build_prediction_rows(records)
 
