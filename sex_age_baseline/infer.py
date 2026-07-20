@@ -4,6 +4,8 @@ import argparse
 import logging
 from pathlib import Path
 
+from sleep2vec.results import DEFAULT_INFERENCE_RESULTS_ROOT
+
 from .config import load_config
 from .runtime import run_inference_and_save
 
@@ -14,6 +16,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ckpt-path", type=str, required=True, help="Sex/age baseline checkpoint path.")
     parser.add_argument("--label-name", type=str, required=True, help="Downstream label namespace for result files.")
     parser.add_argument("--inference-preset-path", type=Path, default=None, help="NPZ preset metadata for inference.")
+    parser.add_argument(
+        "--results-root",
+        type=Path,
+        default=DEFAULT_INFERENCE_RESULTS_ROOT,
+        help="Root directory for inference result artifacts.",
+    )
     parser.add_argument(
         "--eval-split", type=str, default="test", choices=["train", "val", "test"], help="Split to evaluate."
     )

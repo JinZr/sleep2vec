@@ -42,6 +42,11 @@ FROZEN_RUN_FIELDS = {
     "artifacts",
     "runtime_dir",
     "checkpoint_dir",
+    "pipeline_id",
+    "job_id",
+    "attempt",
+    "result_root",
+    "terminal_status_owner",
 } | EXECUTION_IDENTITY_FIELDS
 MANAGED_RUN_PATH_FIELDS = {
     "artifacts",
@@ -52,6 +57,7 @@ MANAGED_RUN_PATH_FIELDS = {
     "pid_path",
     "progress_dir",
     "round_dir",
+    "result_root",
     "run_dir",
     "run_manifest",
     "runtime_dir",

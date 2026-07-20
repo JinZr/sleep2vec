@@ -13,21 +13,21 @@ L0-level domain leaf.
 
 | Layer | Contents | Role |
 |---|---|---|
-| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
+| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
 | **L1 `adapters/`** | `base` (TaskAdapter protocol), `registry` (get_adapter / all_adapters / composite_adapter), 6 per-task plugins, `config_providers` | Generic plugin skeleton + domain plugins. Kernel dispatches through the registry and never hardcodes task names. |
-| **L2 kernel** | configs, decision_rules, decisions, plan_context, plans | Orchestration. Consumes adapter declarations; holds no per-task field knowledge (see schema_map). |
+| **L2 kernel** | configs, decision_rules, decisions, plan_context, plans, experiment_pipeline | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
 | **`domain/`** | sidecar_summaries, finetune_summary, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
 
 ## Module ownership
 
 Mirrors the three frozensets in `layering.py`.
 
-### Kernel — reusable (24, zero domain signal)
+### Kernel — reusable (26, zero domain signal)
 decision_models, transport, manifests, schema_map, gpu_rules, repo,
 experiment_io, experiment_workspace, experiment_tracking, experiments,
 run_artifacts, run_evidence, hparam, hparam_runtime, hparam_selection,
 adaptive_hparam, adaptive_proposals, recipes, progress, markdown, skills,
-decisions, plans, decision_rules.
+decisions, plans, decision_rules, managed_scheduler, experiment_pipeline.
 
 These must stay domain-free — the layering guard allows them **no** domain
 imports.
@@ -35,6 +35,11 @@ imports.
 `adaptive_proposals` owns the pure snapshot, parameter-envelope, and external
 submission-validation contract. `adaptive_hparam` owns the surrounding digest,
 preflight, round registration, launch, and lifecycle orchestration.
+
+`managed_scheduler` owns the reusable GPU-capacity, process-observation,
+execution-snapshot, and process-start primitives shared by managed launchers.
+`experiment_pipeline` owns the strict validation-to-external-test state machine
+and exposes it through the `experiments` facade.
 
 ### Domain — sleep2vec-specific
 `domain/` (sidecar_summaries, finetune_summary, sex_age_summary, presets,
@@ -57,16 +62,16 @@ sleep2stat / preset_prepare / finetune / infer_evaluate / hparam_tune.
 The guard freezes this set: adding a module here requires updating `layering.py`
 and this table, so a module can't silently slide into "mixed".
 
-## CLI command triage (32 subcommands)
+## CLI command triage (33 subcommands)
 
-`cli_contract` freezes the 32 names; this is the ownership read.
+`cli_contract` freezes the 33 names; this is the ownership read.
 
-- **Kernel (21)**: repo-summary, collect-runs, hparam-launch, hparam-run-queue,
+- **Kernel (22)**: repo-summary, collect-runs, hparam-launch, hparam-run-queue,
   hparam-monitor, hparam-stop, hparam-select, hparam-checkpoint-scan,
   hparam-digest, hparam-suggest, hparam-adaptive-init, hparam-adaptive-step,
   hparam-adaptive-loop, progress, experiment-init, experiment-register-step,
   experiment-finalize, experiment-wandb-sync, experiment-index-checkpoints,
-  experiment-monitor, experiment-rank.
+  experiment-monitor, experiment-rank, experiment-run.
 - **Domain (7)**: config-summary, index-summary, preset-summary,
   hparam-external-eval, hparam-export-logits, hparam-threshold, hparam-ensemble.
 - **Mixed (4)**: skills, doctor, context, plan — generic orchestration whose
@@ -97,7 +102,7 @@ Legal edges outside the reverse-edge table:
 
 ## Frozen surfaces
 
-- `cli_contract`: 32 subcommand names + argument contracts + task/variant
+- `cli_contract`: 33 subcommand names + argument contracts + task/variant
   routing matrix + the `cli.export_hparam_logits` attribute name (a monkeypatch
   anchor).
 - The adapter-boundary guard's `KERNEL_MODULES` file list (7 modules, resolved

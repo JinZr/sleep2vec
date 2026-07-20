@@ -194,6 +194,152 @@ def test_runtime_fields_are_rejected_when_the_task_or_variant_does_not_consume_t
     assert issue.evidence["source_layer"] == "effective"
 
 
+@pytest.mark.parametrize("task", ["finetune", "preset_prepare", "sleep2stat"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("python", "/runtime/python"),
+        ("runtime_commit", "a" * 40),
+    ],
+)
+def test_execution_identity_fields_are_rejected_when_task_does_not_consume_them(
+    tmp_path: Path, task: str, field: str, value: object
+):
+    case = tmp_path / task
+    if task == "finetune":
+        recipe = write_finetune_recipe(case)
+    elif task == "preset_prepare":
+        recipe = write_yaml(
+            case / "preset.yaml",
+            {"name": "unit_preset", "task": "preset_prepare", "variant": "sleep2vec"},
+        )
+    else:
+        recipe = write_yaml(case / "sleep2stat.yaml", load_yaml_file("recipes/examples/tiny_fixture_sleep2stat.yaml"))
+    payload = yaml.safe_load(recipe.read_text())
+    payload.setdefault("execution", {})[field] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    issue = next(issue for issue in report.blocking_issues() if issue.field == f"execution.{field}")
+    assert report.exit_code == 1
+    assert issue.evidence["source_layer"] == "effective"
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
+@pytest.mark.parametrize("task", ["finetune", "preset_prepare", "sleep2stat"])
+def test_non_identity_tasks_accept_absolute_execution_workdir(tmp_path: Path, task: str):
+    case = tmp_path / task
+    if task == "finetune":
+        recipe = write_finetune_recipe(case)
+    elif task == "preset_prepare":
+        recipe = write_yaml(
+            case / "preset.yaml",
+            {"name": "unit_preset", "task": "preset_prepare", "variant": "sleep2vec"},
+        )
+    else:
+        recipe = write_yaml(case / "sleep2stat.yaml", load_yaml_file("recipes/examples/tiny_fixture_sleep2stat.yaml"))
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = {"workdir": str(tmp_path / "runtime")}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    assert all(issue.field != "execution.workdir" for issue in report.blocking_issues())
+
+
+@pytest.mark.parametrize("task", ["infer", "evaluate"])
+def test_infer_evaluate_accepts_complete_execution_identity(tmp_path: Path, task: str):
+    recipe = _write_infer_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = task
+    payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+    if task == "evaluate":
+        payload["evaluation_policy"]["final_test_unlocked"] = True
+        payload["decisions"]["final_eval_unlock"] = {"value": True, "source": "explicit_recipe"}
+    payload["execution"] = {
+        "target": "local",
+        "workdir": str(tmp_path / "runtime"),
+        "python": "/runtime/python",
+        "runtime_commit": "a" * 40,
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+@pytest.mark.parametrize("task", ["infer", "evaluate"])
+def test_infer_evaluate_accepts_workdir_without_runtime_identity(tmp_path: Path, task: str):
+    recipe = _write_infer_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = task
+    payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+    if task == "evaluate":
+        payload["evaluation_policy"]["final_test_unlocked"] = True
+        payload["decisions"]["final_eval_unlock"] = {"value": True, "source": "explicit_recipe"}
+    payload["execution"] = {"workdir": str(tmp_path / "runtime")}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+@pytest.mark.parametrize("task", ["infer", "evaluate"])
+@pytest.mark.parametrize("missing_field", ["python", "runtime_commit", "workdir"])
+def test_infer_evaluate_execution_identity_is_all_or_none(tmp_path: Path, task: str, missing_field: str):
+    recipe = _write_infer_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = task
+    payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+    payload["execution"] = {
+        "workdir": str(tmp_path / "runtime"),
+        "python": "/runtime/python",
+        "runtime_commit": "a" * 40,
+    }
+    payload["execution"].pop(missing_field)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    issue = next(issue for issue in report.blocking_issues() if issue.field == f"execution.{missing_field}")
+    assert report.exit_code == 1
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workdir", "relative/runtime"),
+        ("workdir", []),
+        ("python", "ASK_USER"),
+        ("python", []),
+        ("runtime_commit", "A" * 40),
+        ("runtime_commit", []),
+        ("target", "ssh"),
+    ],
+)
+def test_infer_rejects_invalid_execution_identity(tmp_path: Path, field: str, value: object):
+    recipe = _write_infer_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"] = {
+        "target": "local",
+        "workdir": str(tmp_path / "runtime"),
+        "python": "/runtime/python",
+        "runtime_commit": "a" * 40,
+    }
+    payload["execution"][field] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    issue = next(issue for issue in report.blocking_issues() if issue.field == f"execution.{field}")
+    assert report.exit_code == 1
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
 @pytest.mark.parametrize("field", ["_recipe_path", "_base_recipe", "_local_recipe", "_private"])
 def test_raw_recipe_cannot_inject_reserved_internal_fields(tmp_path: Path, field: str):
     path = tmp_path / "recipe.yaml"

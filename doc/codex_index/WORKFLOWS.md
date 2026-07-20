@@ -125,6 +125,10 @@ Inference reuses finetune config, model, loader, metric, and prediction owners:
    inference manifest under one prediction run id;
 6. optionally log the same artifact family to W&B.
 
+`--results-root` redirects that complete artifact family without changing its
+schema. Managed pipeline attempts use one fresh root each and accept only the
+unique terminal `run_manifest.json` below it.
+
 Checkpoint averaging is a runtime policy and must preserve the task contract.
 AHI rejects averaging when thresholds are checkpoint-specific. Result paths and
 CSV schemas belong in `results.py` and `sleep2vec_inference.py`, not in a new
@@ -161,6 +165,27 @@ The control flow is:
    pending work;
 6. finalization requires no active runs and a non-empty report.
 
+`experiment-run` adds one explicit, resumable external-evaluation flow:
+
+1. dry-run validates the strict v1 spec and starts no process;
+2. execute waits until every declared hparam source is successful and inactive;
+3. the validation-ranking owner selects and freezes one checkpoint per source;
+4. all external recipes pass consultation and final-test unlock preflight before
+   launch;
+5. managed jobs run package-local inference on assigned physical GPUs with
+   package-local logical device 0 and isolated result roots;
+6. only confirmed failure or `launch_failed` receives one fresh retry, for at
+   most two attempts;
+7. after every job frozen from the user-selected `--spec` has one verified
+   success, the pipeline writes its N/N report before the final experiment
+   commit.
+
+Existing pipeline state requires explicit `--resume --execute` and exact frozen
+spec, source, checkpoint, config, and runtime identity. Uncertain process
+identity is never permission to retry. External metrics are report-only and do
+not feed checkpoint selection. `hparam-monitor` and `experiment-monitor` remain
+non-launching throughout this flow.
+
 A successful plan binds the exact config bytes accepted by consultation and
 materializes from that immutable snapshot even if the source path changes
 later. Structural config-family ownership may constrain recipe `variant`;
@@ -180,8 +205,10 @@ success. Hparam launch scripts instead leave terminal inference to their
 monitor after confirmed process exit.
 
 Public facades are `decisions.py`, `plans.py`, `hparam.py`, and
-`experiments.py`. Task-specific behavior extends the adapter/domain layers;
-managed workspace identity and `run_manifest.tsv` remain canonical owners.
+`experiments.py`. Shared managed scheduling lives in `managed_scheduler`, while
+external-matrix policy lives in `experiment_pipeline`. Task-specific behavior
+extends the adapter/domain layers; managed workspace identity and
+`run_manifest.tsv` remain canonical owners.
 Follow [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and
 [`doc/agent_contracts/`](../agent_contracts/) for detailed machine contracts.
 

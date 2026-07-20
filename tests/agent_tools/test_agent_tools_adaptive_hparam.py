@@ -4,6 +4,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
@@ -2826,14 +2827,31 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     started = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
+
+    def start_with_pid(_execution, command):
+        started.append(command)
+        pid = 122 + len(started)
+        pid_path = Path(shlex.split(command)[-2])
+        pid_path.write_text(
+            json.dumps(
+                {
+                    "pid": pid,
+                    "process_group_id": pid,
+                    "process_start_token": f"proc:unit-start-{pid}",
+                }
+            )
+            + "\n"
+        )
+        return "launched"
+
+    monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
     hparam_runtime.launch_hparam_runs(round_dir, dry_run=False)
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     launch = _read_table(round_dir / "launch_manifest.tsv")[0]
+    assert launch["pid"] == "123"
+    assert launch["process_group_id"] == "123"
+    assert launch["process_start_token"] == "proc:unit-start-123"
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
     Path(launch["log_path"]).write_text("Traceback\nRuntimeError: failed\n")
     merge_run_manifest(
         tmp_path,

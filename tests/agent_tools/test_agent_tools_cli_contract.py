@@ -26,6 +26,7 @@ SUBCOMMANDS = {
     "experiment-init",
     "experiment-register-step",
     "experiment-finalize",
+    "experiment-run",
     "experiment-wandb-sync",
     "experiment-index-checkpoints",
     "experiment-monitor",
@@ -74,11 +75,39 @@ def _actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
     return {action.dest: action for action in parser._actions if action.option_strings}
 
 
-def test_cli_has_exactly_32_subcommands():
+def test_cli_has_exactly_33_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == SUBCOMMANDS
-    assert len(subcommands) == 32
+    assert len(subcommands) == 33
+
+
+def test_experiment_run_cli_contract():
+    parser, subcommands = _parser_contract()
+    actions = _actions(subcommands["experiment-run"])
+    args = parser.parse_args(["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml"])
+
+    assert {name for name, action in actions.items() if action.required} == {"run_dir", "spec"}
+    assert args.dry_run is True
+    assert args.execute is False
+    assert args.resume is False
+    assert args.unlock_final_test is False
+    assert args.poll_seconds == 60
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml", "--dry-run", "--execute"]
+        )
+
+
+@pytest.mark.parametrize(("status", "exit_code"), [("completed", 0), ("failed", 1), ("blocked", 1)])
+def test_experiment_run_execute_exit_code_reflects_terminal_status(monkeypatch, status: str, exit_code: int):
+    parser, _subcommands = _parser_contract()
+    args = parser.parse_args(["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml", "--execute"])
+    monkeypatch.setattr(cli, "run_experiment_pipeline", lambda *_args, **_kwargs: {"status": status})
+    monkeypatch.setattr(cli, "_emit", lambda *_args, **_kwargs: None)
+
+    assert cli._cmd_experiment_run(args) == exit_code
 
 
 def test_hparam_adaptive_step_cli_contract():

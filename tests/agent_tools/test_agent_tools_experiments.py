@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -284,6 +285,42 @@ def test_experiment_registers_step_and_finalizes_completed_workspace(tmp_path: P
     assert finalized.returncode == 0, finalized.stderr
     assert (tmp_path / "reports" / "final.md").read_text() == report.read_text()
     assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    prepared = [event for event in events if event["event_type"] == "experiment_finalization_prepared"]
+    assert len(prepared) == 1
+    assert prepared[0]["report"] == str(tmp_path / "reports" / "final.md")
+    assert "experiment_finalized" not in {event["event_type"] for event in events}
+
+
+def test_experiment_finalize_records_preparation_before_manifest_conflict(tmp_path: Path, monkeypatch):
+    spec = _experiment_spec(tmp_path.parent)
+    experiments.init_experiment(tmp_path, spec)
+    (tmp_path / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n"
+    )
+    report = tmp_path.parent / "final.md"
+    report.write_text("# Final\n\nValidation-selected result.\n")
+    manifest = tmp_path / "experiment.yaml"
+    before = manifest.read_bytes()
+    real_commit = experiment_io.conditional_atomic_replace_text_at
+
+    def conflict_manifest(path, text, expected_sha256, *, remote=None):
+        if Path(path) == manifest:
+            events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+            assert events[-1]["event_type"] == "experiment_finalization_prepared"
+            return False
+        return real_commit(path, text, expected_sha256, remote=remote)
+
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", conflict_manifest)
+
+    with pytest.raises(RuntimeError, match="manifest changed during finalization"):
+        experiments.finalize_experiment(tmp_path, report)
+
+    assert manifest.read_bytes() == before
+    assert (tmp_path / "reports" / "final.md").read_text() == report.read_text()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("experiment_finalization_prepared") == 1
+    assert "experiment_finalized" not in {event["event_type"] for event in events}
 
 
 def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_path: Path, monkeypatch):
@@ -310,6 +347,9 @@ def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_pat
 
     assert manifest.read_bytes() == before
     assert (tmp_path / "reports" / "final.md").read_text() == report.read_text()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("experiment_finalization_prepared") == 1
+    assert "experiment_finalized" not in {event["event_type"] for event in events}
 
 
 @pytest.mark.parametrize(

@@ -194,7 +194,8 @@ class FinetuneAdapter(TaskAdapter):
         return [render_command(pieces)]
 
     def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
-        return REPO_ROOT / "log-finetune" / version
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        return Path(str(execution.get("workdir") or REPO_ROOT)) / "log-finetune" / version
 
     def index_summary_inputs_override(
         self, recipe: dict[str, Any], config_summary: dict[str, Any] | None

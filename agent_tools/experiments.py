@@ -25,6 +25,28 @@ from .experiment_workspace import (
 from .manifests import utc_now
 
 
+def run_experiment_pipeline(
+    run_dir: str | Path,
+    spec_path: str | Path,
+    *,
+    unlock_final_test: bool = False,
+    execute: bool = False,
+    resume: bool = False,
+    poll_seconds: float = 60,
+) -> dict[str, Any]:
+    from .experiment_pipeline import run_experiment_pipeline as run_pipeline
+
+    return run_pipeline(
+        run_dir,
+        spec_path,
+        unlock_final_test=unlock_final_test,
+        execute=execute,
+        resume=resume,
+        poll_seconds=poll_seconds,
+        finalize_callback=lambda root, report: finalize_experiment(root, report),
+    )
+
+
 def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str | None = None) -> Path:
     root = _target_root(run_dir, remote)
     raw = read_managed_yaml_mapping(Path(spec_path).read_text(), source=f"Experiment spec {spec_path}")
@@ -166,6 +188,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         raise RuntimeError(f"Final report changed during publication: {target}")
     manifest["experiment"]["status"] = "completed"
     manifest["experiment"]["completed_at"] = utc_now()
+    exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
     if not exp_io.conditional_atomic_replace_text_at(
         root / "experiment.yaml",
@@ -174,7 +197,6 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         remote=remote,
     ):
         raise RuntimeError("Experiment manifest changed during finalization.")
-    exp_io.append_event_at(root, "experiment_finalized", {"report": str(target)}, remote=remote)
     return target
 
 

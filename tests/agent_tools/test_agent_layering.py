@@ -161,6 +161,15 @@ def test_adapter_guard_catches_relative_and_absolute_l2_imports():
     assert ("adapters.finetune", "plans", 1) in relative
     assert ("adapters.finetune", "plans", 1) in absolute
 
+    pipeline_relative = _adapter_l2_offenders(
+        "adapters.finetune", "from ..experiment_pipeline import run_experiment_pipeline\n"
+    )
+    pipeline_absolute = _adapter_l2_offenders(
+        "adapters.finetune", "from agent_tools.experiment_pipeline import run_experiment_pipeline\n"
+    )
+    assert ("adapters.finetune", "experiment_pipeline", 1) in pipeline_relative
+    assert ("adapters.finetune", "experiment_pipeline", 1) in pipeline_absolute
+
 
 def test_every_exemption_is_live():
     # No stale exemptions: each grandfathered edge must still exist in source.

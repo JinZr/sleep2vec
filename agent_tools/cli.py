@@ -22,6 +22,7 @@ from .experiments import (
     monitor_experiment,
     rank_experiment_candidates,
     register_experiment_step,
+    run_experiment_pipeline,
     sync_wandb_runs,
 )
 from .hparam import (
@@ -160,6 +161,17 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_finalize.add_argument("--report", required=True)
     experiment_finalize.add_argument("--remote")
     experiment_finalize.set_defaults(func=_cmd_experiment_finalize)
+
+    experiment_run = sub.add_parser("experiment-run")
+    experiment_run.add_argument("--run-dir", required=True)
+    experiment_run.add_argument("--spec", required=True)
+    experiment_run.add_argument("--unlock-final-test", action="store_true")
+    experiment_run_mode = experiment_run.add_mutually_exclusive_group()
+    experiment_run_mode.add_argument("--dry-run", action="store_true", default=True)
+    experiment_run_mode.add_argument("--execute", action="store_true")
+    experiment_run.add_argument("--resume", action="store_true")
+    experiment_run.add_argument("--poll-seconds", type=float, default=60)
+    experiment_run.set_defaults(func=_cmd_experiment_run)
 
     experiment_wandb = sub.add_parser("experiment-wandb-sync")
     experiment_wandb.add_argument("--run-dir", required=True)
@@ -421,6 +433,19 @@ def _cmd_experiment_finalize(args: argparse.Namespace) -> int:
     path = finalize_experiment(args.run_dir, args.report, remote=args.remote)
     print(f"Wrote {path}")
     return 0
+
+
+def _cmd_experiment_run(args: argparse.Namespace) -> int:
+    result = run_experiment_pipeline(
+        args.run_dir,
+        args.spec,
+        unlock_final_test=args.unlock_final_test,
+        execute=args.execute,
+        resume=args.resume,
+        poll_seconds=args.poll_seconds,
+    )
+    _emit(result, as_json=True)
+    return 1 if args.execute and result.get("status") in {"blocked", "failed"} else 0
 
 
 def _cmd_experiment_wandb_sync(args: argparse.Namespace) -> int:

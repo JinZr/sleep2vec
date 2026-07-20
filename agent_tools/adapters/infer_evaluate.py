@@ -72,6 +72,7 @@ class InferEvaluateAdapter(TaskAdapter):
     preset_path_recipe_field = "inference_preset_path"
     validates_dataset_paths = True
     uses_finetune_config = True
+    supports_runtime_identity = True
 
     def __init__(self, task: str, extra_decision_fields: frozenset[str]) -> None:
         self.task = task
@@ -170,10 +171,11 @@ class InferEvaluateAdapter(TaskAdapter):
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = _inputs(recipe)
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         return [
             render_command(
                 [
-                    "python",
+                    execution.get("python") or "python",
                     "-m",
                     variant_module(recipe, "infer"),
                     "--config",

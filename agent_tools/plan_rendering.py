@@ -41,6 +41,7 @@ _INFER_RUNTIME_OPTIONS = (
     ("device", "--device"),
     ("avg_ckpts", "--avg-ckpts"),
     ("avg_ckpt_dir", "--avg-ckpt-dir"),
+    ("results_root", "--results-root"),
     ("seed", "--seed"),
     ("wandb_mode", "--wandb-mode"),
 )
@@ -218,6 +219,8 @@ def script_lines(
     experiment_root: str | Path | None = None,
     step_id: str | None = None,
     run_id: str | None = None,
+    lifecycle_python: str | Path | None = None,
+    expected_runtime_commit: str | None = None,
 ) -> list[str]:
     cwd_lines = []
     if run_cwd is not None:
@@ -225,6 +228,7 @@ def script_lines(
         cwd_lines = [f"cd {root}", f"export PYTHONPATH={root}${{PYTHONPATH:+:$PYTHONPATH}}", ""]
     lifecycle_lines = []
     if experiment_root is not None:
+        lifecycle_interpreter = lifecycle_python or sys.executable
         commit_code = (
             "import sys; "
             "from agent_tools.experiment_workspace import merge_run_manifest; "
@@ -235,7 +239,22 @@ def script_lines(
             "(row is not None and row.get('status') == sys.argv[4]) or "
             "sys.exit('Canonical run status did not commit as ' + sys.argv[4])"
         )
-        commit_command = render_command([sys.executable, "-c", commit_code, experiment_root, step_id, run_id]) + ' "$1"'
+        commit_command = (
+            render_command([lifecycle_interpreter, "-c", commit_code, experiment_root, step_id, run_id]) + ' "$1"'
+        )
+        runtime_identity_lines = []
+        if expected_runtime_commit is not None:
+            runtime_commit_code = (
+                "import subprocess, sys; "
+                "observed = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(); "
+                "observed == sys.argv[1] or "
+                "sys.exit('Target runtime commit differs from the frozen plan: expected ' "
+                "+ sys.argv[1] + ', observed ' + observed)"
+            )
+            runtime_identity_lines = [
+                render_command([lifecycle_interpreter, "-c", runtime_commit_code, expected_runtime_commit]),
+                "",
+            ]
         lifecycle_lines = [
             "_agent_commit_status() {",
             f"  {commit_command}",
@@ -257,6 +276,7 @@ def script_lines(
             '  exit "$_agent_commit_status_code"',
             "}",
             "",
+            *runtime_identity_lines,
             "_agent_commit_status running",
             # The trap is installed only after the owner accepts running, so terminal runs never execute again.
             "trap _agent_finish_run EXIT",

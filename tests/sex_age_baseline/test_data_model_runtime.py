@@ -790,3 +790,58 @@ def test_infer_run_inference_callable_validates_and_delegates(tmp_path: Path, mo
         ("load_config", config, True),
         ("run", str(ckpt), "cpu", cfg),
     ]
+
+
+def test_inference_runtime_passes_custom_results_root(tmp_path: Path, monkeypatch):
+    results_root = tmp_path / "attempt-001"
+    captured = {}
+    args = Namespace(
+        ckpt_path=str(tmp_path / "model.ckpt"),
+        label_name="age",
+        eval_split="test",
+        batch_size=2,
+        num_workers=0,
+        device="cpu",
+        seed=4523,
+        inference_preset_path=None,
+        results_root=results_root,
+    )
+    cfg = Namespace(
+        finetune=Namespace(task=Namespace(type="regression")),
+        outputs=Namespace(prediction_csv=False, per_disease_metrics_csv=False),
+    )
+
+    class _DummyModel:
+        def to(self, device):
+            return self
+
+    def _prepare_paths(runtime_args, *, namespace, root):
+        captured["namespace"] = namespace
+        captured["root"] = root
+        runtime_args.inference_metrics_csv_path = root / "metrics.csv"
+        runtime_args.inference_overview_csv_path = root / "overview.csv"
+        runtime_args.manifest_path = root / "run_manifest.json"
+
+    monkeypatch.setattr(baseline_runtime, "configure_result_args", lambda *args: None)
+    monkeypatch.setattr(baseline_runtime, "_seed_everything", lambda *args: None)
+    monkeypatch.setattr(baseline_runtime, "SexAgeMLP", lambda cfg: _DummyModel())
+    monkeypatch.setattr(baseline_runtime, "load_checkpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(baseline_runtime, "prepare_inference_result_paths", _prepare_paths)
+    monkeypatch.setattr(baseline_runtime, "_required_dataset", lambda *args, **kwargs: "dataset")
+    monkeypatch.setattr(baseline_runtime, "make_dataloader", lambda *args, **kwargs: "loader")
+    monkeypatch.setattr(
+        baseline_runtime,
+        "evaluate_model",
+        lambda *args, **kwargs: baseline_runtime.EvaluationResult(
+            metrics={"test_mae": 1.0},
+            prediction_rows=[],
+            survival_per_disease_rows=[],
+            multilabel_per_disease_rows=[],
+        ),
+    )
+    monkeypatch.setattr(baseline_runtime, "save_result_csv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(baseline_runtime, "save_inference_manifest", lambda *args, **kwargs: None)
+
+    baseline_runtime.run_inference_and_save(args, cfg)
+
+    assert captured == {"namespace": "sex_age_baseline", "root": results_root}

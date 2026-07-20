@@ -26,6 +26,7 @@ RUN_EVIDENCE_FIELDS = {
     "pid",
     "process_group_id",
     "process_start_token",
+    "process_identity_error",
     "log_path",
     "log_tail",
     "log_age_seconds",
@@ -169,7 +170,11 @@ def status_row(
     process_identity = None
     committed_process_identity = None
     dead_unbound_process_identity = False
+    process_identity_error = None
     managed_process = any(source.get("script") not in (None, "") for source in (row, previous))
+    managed_process_identity = managed_process and any(
+        source.get("pid_path") not in (None, "") for source in (row, previous)
+    )
     try:
         if managed_process:
             canonical_process_identity = {
@@ -181,6 +186,7 @@ def status_row(
             if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
                 missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
                 raise ProcessIdentityError(f"Canonical run has partial process identity; missing: {missing}")
+            managed_process_identity = managed_process_identity or populated_process_fields == PROCESS_IDENTITY_FIELDS
             process_identity = read_process_identity(row.get("pid_path"), row)
             pid = process_identity["pid"] if process_identity is not None else None
             running_state = process_identity_running(row, process_identity) if process_identity is not None else False
@@ -201,11 +207,12 @@ def status_row(
         else:
             pid = read_pid(row.get("pid_path"), row)
             running_state = process_running(row, pid) if pid is not None else False
-    except ProcessIdentityError:
+    except ProcessIdentityError as exc:
         # Corrupt, incomplete, or reused identity is confirmed unsafe evidence, not a transient probe failure.
         observed_status = previous.get("status") or row.get("status") or "missing_pid"
         pid = to_int(previous.get("pid") or row.get("pid"))
         running_state = None
+        process_identity_error = str(exc)
         if observed_status not in TERMINAL_STATUSES:
             observed_status = "missing_pid" if observed_status in {"planned", "pending"} else "failed"
     except RuntimeError as exc:
@@ -237,6 +244,13 @@ def status_row(
         }
     ):
         observed_status = "unknown_remote"
+    elif (
+        pid is None
+        and running_state is False
+        and managed_process_identity
+        and observed_status in {"launched", "running"}
+    ):
+        observed_status = "missing_pid"
     elif pid is None and observed_status == "launched":
         observed_status = "missing_pid"
     elif running_state is None:
@@ -272,6 +286,8 @@ def status_row(
         "checkpoints": ";".join(checkpoints),
         "monitored_at": utc_now(),
     }
+    if process_identity_error:
+        observation["process_identity_error"] = process_identity_error
     output = merge_run_row(previous, observation)
     if health:
         output.update(health_fields(run_dir, row, previous, pid, running_state, output["status"], checkpoints))

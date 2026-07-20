@@ -20,6 +20,7 @@ from sleep2expert.checkpoints import average_checkpoints, select_checkpoints
 from sleep2expert.common import apply_finetune_config
 from sleep2expert.distributed import is_rank_zero_process
 from sleep2expert.results import (
+    DEFAULT_INFERENCE_RESULTS_ROOT,
     _route_filter_flat_metadata,
     _route_filter_payload,
     prepare_inference_result_paths,
@@ -195,7 +196,12 @@ def run_inference(args):
         active_expert_ids = apply_route_expert_filter(model, model_cfg.backbone.moe, route_expert_groups)
     set_route_filter_metadata(args, route_expert_groups, active_expert_ids)
 
-    prepare_inference_result_paths(args, namespace="sleep2expert", checkpoint_paths=selected_ckpt_paths)
+    prepare_inference_result_paths(
+        args,
+        namespace="sleep2expert",
+        root=getattr(args, "results_root", DEFAULT_INFERENCE_RESULTS_ROOT),
+        checkpoint_paths=selected_ckpt_paths,
+    )
     logging.info("Running inference on split=%s with %s samples/batch", args.eval_split, args.batch_size)
     wandb_run = _init_wandb(args)
     try:
@@ -207,6 +213,7 @@ def run_inference(args):
             prepare_inference_result_paths(
                 args,
                 namespace="sleep2expert",
+                root=getattr(args, "results_root", DEFAULT_INFERENCE_RESULTS_ROOT),
                 checkpoint_paths=selected_ckpt_paths,
                 timestamp=args.timestamp_utc,
             )
@@ -319,6 +326,12 @@ def parse_args():
         type=Path,
         default=None,
         help="Optional preset pickle path for this inference run; overrides data.finetune_preset_path from YAML.",
+    )
+    parser.add_argument(
+        "--results-root",
+        type=Path,
+        default=DEFAULT_INFERENCE_RESULTS_ROOT,
+        help="Root directory for inference result artifacts.",
     )
     parser.add_argument(
         "--precision",

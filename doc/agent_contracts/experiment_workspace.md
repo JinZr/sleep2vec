@@ -15,6 +15,23 @@ An experiment workspace is the durable, human-readable record for related prepar
 │   ├── ranking.csv
 │   ├── experiment_ranking.csv
 │   └── final.md
+├── pipelines/<pipeline-id>/  # optional managed external-evaluation state
+│   ├── spec.source.yaml
+│   ├── spec.resolved.yaml
+│   ├── pipeline.json
+│   ├── checkpoints.json
+│   ├── preflight.json
+│   ├── jobs.tsv
+│   ├── execution_snapshot.json
+│   ├── results.csv
+│   ├── metrics.csv
+│   ├── summary.md
+│   ├── final.md
+│   ├── recipes/<job-id>/attempt-NNN.yaml
+│   ├── plans/<job-id>/attempt-NNN/
+│   ├── preflight_retries/<job-id>/attempt-NNN.json
+│   ├── retry_schedulers/<job-id>/execution_snapshot.json
+│   └── results/<job-id>/attempt-NNN/
 ├── steps/<step.id>/step.yaml
 └── <plan directory>/
     ├── recipe.resolved.yaml
@@ -47,12 +64,20 @@ A new plan must be contained by its experiment root and registered in its step m
 - `hparam-stop` requires a reason, verifies the canonical PID/process-group/start-token identity, stops the complete process group, and records terminal state only after exit is confirmed.
 - `hparam-select` writes step-scoped validation ranking.
 - `hparam-adaptive-*` appends rounds and commits replacements through the canonical owner.
+- `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes validation-selected checkpoints, and manages the declared job matrix.
 - `experiment-rank` writes experiment-wide ranking.
 - `experiment-finalize` requires no active runs and a non-empty final report.
 
+`hparam-monitor` and `experiment-monitor` remain non-launching even when a
+pipeline has pending jobs. Pipeline locking, frozen state, attempt isolation,
+and finalization sequencing belong to
+[experiment_pipeline.md](experiment_pipeline.md).
+
 Every mutation other than fresh initialization requires a parseable, root-matching workspace owner. Managed output targets are preflighted before mutation: existing targets must be independent regular files under valid directory ancestry. Local and SSH uncertainty fails closed.
 
-Planning freezes `execution.python` and `execution.runtime_commit`. Only the canonical manager runtime—a local target at `REPO_ROOT` without a conda wrapper—may omit them; planning then freezes the current manager interpreter and manager repository HEAD. SSH targets, separate local workdirs, and conda-wrapped targets must provide both values explicitly.
+Managed hparam planning freezes `execution.python` and `execution.runtime_commit`. Only the canonical manager runtime—a local target at `REPO_ROOT` without a conda wrapper—may omit them; planning then freezes the current manager interpreter and manager repository HEAD. SSH targets, separate local workdirs, and conda-wrapped targets must provide both values explicitly.
+
+Lifecycle-owned `infer` / `evaluate` plans may declare an all-or-none local `execution.workdir`, `execution.python`, and `execution.runtime_commit` identity. `experiment-run` requires that identity for every attempt. Its generated scripts verify the frozen commit before committing `running`, then use the frozen Python for both inference and all lifecycle commits; the managed scheduler's execution snapshot and pre-start probe remain the authoritative launch checks.
 
 The first `hparam-launch --execute` or `hparam-run-queue --execute` with an eligible slot probes that exact Python command through the configured target, workdir, conda wrapper, and explicit environment. It requires the planned Git commit, no tracked worktree changes, no untracked or ignored importable Python or extension-module code, target-reported host identity, a runtime module whose resolved origin is inside the verified repository, and successful `argparse` validation of every frozen argument vector from that origin. Untracked experiment artifacts and data remain allowed. The snapshot stores the module origin, normalized supported options, and digests of those options, every validated argv vector, and the explicit execution environment; rendered CLI text is not snapshot evidence. The evidence is atomically written to `execution_snapshot.json`, and every later eligible launch wave re-probes and requires exact equality. Immediately before each process-group start, the same target/env/conda/PYTHONPATH wrapper rechecks Python/version, commit, repository root, hostname, module origin, untracked or ignored importable code, and the selected run's frozen script/config hashes. Target and leaf `PYTHONPATH` contain only `execution.workdir`, so another manager checkout cannot satisfy missing imports.
 

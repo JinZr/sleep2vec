@@ -20,6 +20,7 @@ from sleep2vec.metrics import (
     compute_survival_c_index_by_disease,
 )
 from sleep2vec.results import (
+    DEFAULT_INFERENCE_RESULTS_ROOT,
     prepare_inference_result_paths,
     save_inference_manifest,
     save_multilabel_per_disease_metrics_csv,
@@ -228,7 +229,11 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     model = SexAgeMLP(cfg).to(device)
     load_checkpoint(model, args.ckpt_path, device=device, cfg=cfg)
     args.ckpt_resolved_path = str(args.ckpt_path)
-    prepare_inference_result_paths(args, namespace="sex_age_baseline")
+    prepare_inference_result_paths(
+        args,
+        namespace="sex_age_baseline",
+        root=getattr(args, "results_root", DEFAULT_INFERENCE_RESULTS_ROOT),
+    )
     args.task_family = cfg.finetune.task.type
 
     dataset = _required_dataset(cfg, args.eval_split, loaded_splits=[args.eval_split])
