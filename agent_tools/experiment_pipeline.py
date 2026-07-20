@@ -1359,12 +1359,14 @@ def _run_attempts(
             if row.get("runtime_commit") != runtime_commit:
                 row["runtime_commit"] = runtime_commit
                 changed = True
-            if status in SUCCESS_STATUSES and str(row.get("verified") or "").lower() != "true":
+            if (
+                status in SUCCESS_STATUSES
+                and str(row.get("verified") or "").lower() != "true"
+                and row.get("validation_error") in (None, "")
+            ):
                 try:
                     manifest_path = _validate_result_manifest(spec, row, run)
                 except ValueError as exc:
-                    merge_run_manifest(root, [{"step_id": key[0], "run_id": key[1], "status": "failed"}])
-                    row["status"] = "failed"
                     row["verified"] = "false"
                     row["validation_error"] = str(exc)
                 else:
@@ -1594,6 +1596,8 @@ def _logical_job_states(spec: dict[str, Any], attempts: list[dict[str, Any]]) ->
             status = "blocked"
         elif rows and rows[-1].get("retry_blocker") not in (None, ""):
             status = "blocked"
+        elif rows and rows[-1].get("validation_error") not in (None, ""):
+            status = "failed"
         elif rows and rows[-1].get("retry_preparation_error") not in (None, ""):
             status = "failed"
         elif (

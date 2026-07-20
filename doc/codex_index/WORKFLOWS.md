@@ -179,8 +179,9 @@ Conda wrapping is a separate hparam execution field.
    launch;
 5. managed jobs run package-local inference on assigned physical GPUs with
    package-local logical device 0 and isolated result roots;
-6. only confirmed failure or `launch_failed` receives one fresh retry, for at
-   most two attempts;
+6. only canonical runtime `failed` or `launch_failed` receives one fresh retry;
+   result-manifest verification failures remain logical, non-retryable job
+   failures;
 7. after every job frozen from the user-selected `--spec` has one verified
    success, the pipeline writes its N/N report before the final experiment
    commit.

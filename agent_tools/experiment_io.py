@@ -376,16 +376,7 @@ def conditional_atomic_replace_text_at(
                     os.fchmod(file_obj.fileno(), target_mode)
                     file_obj.flush()
                     os.fsync(file_obj.fileno())
-                if expected_sha256 is None:
-                    # A hard-link publishes complete bytes without replacing a concurrently created owner file.
-                    try:
-                        os.link(temporary, target)
-                    except FileExistsError:
-                        Path(temporary).unlink(missing_ok=True)
-                        return False
-                    Path(temporary).unlink()
-                else:
-                    os.replace(temporary, target)
+                os.replace(temporary, target)
             except BaseException:
                 Path(temporary).unlink(missing_ok=True)
                 raise
@@ -429,14 +420,7 @@ with open(lock_path, "a+") as lock_file:
             os.fchmod(file_obj.fileno(), target_mode)
             file_obj.flush()
             os.fsync(file_obj.fileno())
-        if expect_missing:
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-            os.unlink(temporary)
-        else:
-            os.replace(temporary, path)
+        os.replace(temporary, path)
     except BaseException:
         try:
             os.unlink(temporary)

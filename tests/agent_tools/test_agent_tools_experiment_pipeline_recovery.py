@@ -693,6 +693,97 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
     assert persisted["runtime_commit"] == "a" * 40
 
 
+def test_run_attempts_result_validation_failure_is_terminal_without_changing_canonical_status(
+    tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    attempt = {
+        "step_id": "external-evaluate",
+        "run_id": "run-001",
+        "pipeline_id": "external-v1",
+        "job_id": "age-hsp-i2-psg",
+        "variant": "sleep2vec2",
+        "attempt": 1,
+        "status": "completed",
+        "verified": "false",
+        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
+        "runtime_commit": "",
+        "terminal_status_owner": "script",
+    }
+    write_rows(pipeline_dir / "jobs.tsv", [attempt])
+    canonical = dict(attempt)
+    validations = []
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_planned_runs",
+        lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical)])
+    monkeypatch.setattr(experiment_pipeline.time, "sleep", lambda *_args: pytest.fail("must not poll"))
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: pytest.fail("result verification must not change canonical lifecycle status"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.managed_scheduler,
+        "launch_managed_runs",
+        lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(canonical)]),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_attempt_recipe",
+        lambda *_args, **_kwargs: pytest.fail("result verification failures must not be retried"),
+    )
+
+    def reject_result(*_args):
+        validations.append("result")
+        raise ValueError("manifest invalid")
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_result_manifest", reject_result)
+
+    result = experiment_pipeline._run_attempts(
+        root,
+        pipeline_dir,
+        _spec(root),
+        {"age": {}},
+        [attempt],
+        poll_seconds=0,
+    )
+
+    persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
+    assert result["status"] == "failed"
+    assert result["jobs"][0]["status"] == "failed"
+    assert result["jobs"][0]["attempt_count"] == 1
+    assert persisted["status"] == "completed"
+    assert persisted["verified"] == "false"
+    assert persisted["validation_error"] == "manifest invalid"
+    assert validations == ["result"]
+
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_result_manifest",
+        lambda *_args: pytest.fail("resume must preserve the terminal validation failure"),
+    )
+    resumed = experiment_pipeline._run_attempts(
+        root,
+        pipeline_dir,
+        _spec(root),
+        {"age": {}},
+        [persisted],
+        poll_seconds=0,
+    )
+
+    assert resumed["status"] == "failed"
+    assert experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv") == [persisted]
+
+
 def test_run_attempts_mixed_group_validates_live_snapshot_before_launch(tmp_path: Path, monkeypatch):
     class LaunchObserved(Exception):
         pass

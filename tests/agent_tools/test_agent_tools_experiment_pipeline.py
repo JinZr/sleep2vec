@@ -478,7 +478,8 @@ def test_frozen_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Pat
         experiment_pipeline._read_frozen_selections(path, spec)
 
 
-def test_failed_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("retryable_status", ["failed", "launch_failed"])
+def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Path, monkeypatch, retryable_status: str):
     root = tmp_path / "workspace"
     _write_experiment(root)
     pipeline_dir = root / "pipelines" / "external-v1"
@@ -505,7 +506,7 @@ def test_failed_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Path,
     )
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
-    attempts = [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": "failed", "verified": "false"}]
+    attempts = [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": retryable_status, "verified": "false"}]
 
     updated, created = experiment_pipeline._create_needed_retries(
         root,
@@ -527,7 +528,7 @@ def test_failed_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Path,
         "runtime_commit": spec["runtime"]["runtime_commit"],
     }
 
-    updated[1]["status"] = "failed"
+    updated[1]["status"] = retryable_status
     unchanged, created_again = experiment_pipeline._create_needed_retries(
         root,
         pipeline_dir,
