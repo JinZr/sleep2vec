@@ -416,6 +416,67 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     assert not list(plan_dir.parent.glob(".attempt-001.*.staging"))
 
 
+def test_attempt_config_drift_fails_before_plan_publication(tmp_path: Path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    experiment = {
+        "id": "unit",
+        "title": "Unit",
+        "objective": "Reject attempt config drift before publication.",
+        "root": str(root),
+        "baseline": {"type": "none"},
+        "status": "active",
+    }
+    (root / "experiment.yaml").write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
+    (root / "run_manifest.tsv").write_text("step_id\trun_id\n")
+
+    source_recipe = yaml.safe_load(write_finetune_recipe(tmp_path / "source", variant="sleep2vec2").read_text())
+    config = Path(source_recipe["inputs"]["config"])
+    checkpoint = tmp_path / "model.ckpt"
+    checkpoint.write_bytes(b"checkpoint")
+    spec = _spec(root)
+    preset = Path(spec["jobs"][0]["inference_preset_path"])
+    preset.parent.mkdir(parents=True)
+    preset.write_bytes(b"preset")
+    selection = {
+        "source_id": "age",
+        "config": str(config),
+        "config_sha256": file_sha256(config),
+        "checkpoint": str(checkpoint),
+        "checkpoint_sha256": file_sha256(checkpoint),
+        "variant": "sleep2vec2",
+        "label_name": "age",
+    }
+    pipeline_dir = root / "pipelines" / "external-v1"
+    recipe, recipe_path, plan_dir, result_root = experiment_pipeline._attempt_recipe(
+        pipeline_dir,
+        spec,
+        spec["jobs"][0],
+        selection,
+        1,
+    )
+    recipe_path.parent.mkdir(parents=True)
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+    config.write_text(config.read_text() + "\n# drifted after checkpoint selection\n")
+
+    with pytest.raises(ValueError, match="externally bound SHA-256"):
+        experiment_pipeline._materialize_attempt(
+            root,
+            spec,
+            spec["jobs"][0],
+            selection,
+            1,
+            recipe_path=recipe_path,
+            plan_dir=plan_dir,
+            result_root=result_root,
+        )
+
+    assert not plan_dir.exists()
+    assert not list(plan_dir.parent.glob(f".{plan_dir.name}.*.staging"))
+    assert not result_root.exists()
+    assert read_run_manifest(root) == []
+
+
 def test_jobs_exceeding_capacity_launch_only_available_gpu_slots(tmp_path: Path):
     root = tmp_path / "workspace"
     root.mkdir()

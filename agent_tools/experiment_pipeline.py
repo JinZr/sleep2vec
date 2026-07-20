@@ -925,6 +925,7 @@ def _materialize_attempt(
             recipe_path=recipe_path,
             output_dir=plan_dir,
             unlock_final_test=True,
+            source_config_sha256=selection["config_sha256"],
             staging_dir=staging_dir,
             defer_commit=True,
         )
