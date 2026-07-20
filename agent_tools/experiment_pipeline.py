@@ -180,7 +180,7 @@ def run_experiment_pipeline(
 
 def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> None:
     _reject_unknown_fields(spec, _TOP_LEVEL_FIELDS, "spec")
-    if spec.get("schema_version") != SCHEMA_VERSION:
+    if type(spec.get("schema_version")) is not int or spec["schema_version"] != SCHEMA_VERSION:
         raise ValueError(f"schema_version must be {SCHEMA_VERSION}.")
     pipeline = _mapping(spec, "pipeline")
     _reject_unknown_fields(pipeline, _PIPELINE_FIELDS, "pipeline")
@@ -215,7 +215,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
         raise ValueError("Schema v1 external evaluation requires GPU/CUDA runtime.")
     if str(runtime.get("precision")) not in {"32", "32-true"}:
         raise ValueError("Schema v1 external evaluation requires FP32 precision.")
-    if runtime.get("batch_size") != 128:
+    if type(runtime.get("batch_size")) is not int or runtime["batch_size"] != 128:
         raise ValueError("Schema v1 external evaluation requires runtime.batch_size=128.")
     if isinstance(runtime.get("seed"), bool) or not isinstance(runtime.get("seed"), int):
         raise ValueError("runtime.seed must be an integer.")
@@ -231,7 +231,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
         raise ValueError("execution.gpu_pool must be a non-empty list of GPU integers.")
     if len(gpu_pool) != len(set(gpu_pool)):
         raise ValueError("execution.gpu_pool contains duplicate GPUs.")
-    if execution.get("gpus_per_run") != 1:
+    if type(execution.get("gpus_per_run")) is not int or execution["gpus_per_run"] != 1:
         raise ValueError("Schema v1 requires execution.gpus_per_run=1.")
     max_concurrent = execution.get("max_concurrent")
     if (
@@ -240,7 +240,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
         or not 1 <= max_concurrent <= len(gpu_pool)
     ):
         raise ValueError("execution.max_concurrent must be between 1 and the GPU pool size.")
-    if execution.get("max_attempts") != 2:
+    if type(execution.get("max_attempts")) is not int or execution["max_attempts"] != 2:
         raise ValueError("Schema v1 requires execution.max_attempts=2.")
 
     evaluation = _mapping(spec, "evaluation_policy")
@@ -252,7 +252,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
 
     checkpoint_policy = _mapping(spec, "checkpoint_policy")
     _reject_unknown_fields(checkpoint_policy, _CHECKPOINT_POLICY_FIELDS, "checkpoint_policy")
-    if checkpoint_policy.get("avg_ckpts") != 1:
+    if type(checkpoint_policy.get("avg_ckpts")) is not int or checkpoint_policy["avg_ckpts"] != 1:
         raise ValueError("checkpoint_policy.avg_ckpts must be 1.")
     if checkpoint_policy.get("require_no_model_averaging") is not True:
         raise ValueError("checkpoint_policy.require_no_model_averaging must be true.")
@@ -1649,7 +1649,7 @@ def _validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run
         raise ValueError("Inference result manifest label or split differs from the frozen job.")
     checkpoint = manifest.get("checkpoint") or {}
     runtime = manifest.get("runtime") or {}
-    if checkpoint.get("avg_ckpts") != 1:
+    if type(checkpoint.get("avg_ckpts")) is not int or checkpoint["avg_ckpts"] != 1:
         raise ValueError("Inference result manifest does not prove avg_ckpts=1.")
     expected_runtime = spec["runtime"]
     for field in ("batch_size", "accelerator"):

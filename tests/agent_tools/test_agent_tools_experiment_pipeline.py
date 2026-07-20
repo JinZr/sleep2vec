@@ -197,6 +197,42 @@ def test_schema_rejects_non_string_runtime_identity(tmp_path: Path, field: str):
         experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
 
 
+@pytest.mark.parametrize(
+    "section,field,value,message",
+    [
+        (None, "schema_version", True, "schema_version"),
+        (None, "schema_version", 1.0, "schema_version"),
+        (None, "schema_version", 2, "schema_version"),
+        ("runtime", "batch_size", True, r"runtime\.batch_size"),
+        ("runtime", "batch_size", 128.0, r"runtime\.batch_size"),
+        ("runtime", "batch_size", 64, r"runtime\.batch_size"),
+        ("execution", "gpus_per_run", True, r"execution\.gpus_per_run"),
+        ("execution", "gpus_per_run", 1.0, r"execution\.gpus_per_run"),
+        ("execution", "gpus_per_run", 2, r"execution\.gpus_per_run"),
+        ("execution", "max_attempts", True, r"execution\.max_attempts"),
+        ("execution", "max_attempts", 2.0, r"execution\.max_attempts"),
+        ("execution", "max_attempts", 3, r"execution\.max_attempts"),
+        ("checkpoint_policy", "avg_ckpts", True, r"checkpoint_policy\.avg_ckpts"),
+        ("checkpoint_policy", "avg_ckpts", 1.0, r"checkpoint_policy\.avg_ckpts"),
+        ("checkpoint_policy", "avg_ckpts", 2, r"checkpoint_policy\.avg_ckpts"),
+    ],
+)
+def test_schema_rejects_non_integer_or_wrong_fixed_values(
+    tmp_path: Path,
+    section: str | None,
+    field: str,
+    value: object,
+    message: str,
+):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    target = spec if section is None else spec[section]
+    target[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+
+
 def test_dry_run_does_not_freeze_or_mutate_workspace(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     root.mkdir()
@@ -427,6 +463,16 @@ def test_result_manifest_validation_accepts_exact_manifest_and_rejects_mismatch(
     manifest["runtime"]["devices"] = [1]
     manifest_path.write_text(json.dumps(manifest) + "\n")
     with pytest.raises(ValueError, match="logical device 0"):
+        experiment_pipeline._validate_result_manifest(spec, attempt, run)
+
+
+@pytest.mark.parametrize("avg_ckpts", [True, 1.0, 2.0, 2])
+def test_result_manifest_validation_rejects_non_integer_or_wrong_avg_ckpts(tmp_path: Path, avg_ckpts: object):
+    spec, attempt, run, manifest_path, manifest = _result_manifest_context(tmp_path)
+    manifest["checkpoint"]["avg_ckpts"] = avg_ckpts
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    with pytest.raises(ValueError, match="does not prove avg_ckpts=1"):
         experiment_pipeline._validate_result_manifest(spec, attempt, run)
 
 
