@@ -2326,8 +2326,14 @@ def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_pla
     monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("blocked queue must not start"))
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("blocked queue must not sleep"))
 
-    with pytest.raises(RuntimeError, match=f"{first_run['run_id']} has status missing_pid"):
+    with pytest.raises(
+        managed_scheduler.MissingPidCapacityError,
+        match=f"{first_run['run_id']} has status missing_pid",
+    ) as exc_info:
         hparam_runtime.run_hparam_queue(second_plan, dry_run=False)
+
+    assert exc_info.value.step_id == first_run["step_id"]
+    assert exc_info.value.run_id == first_run["run_id"]
 
 
 def test_hparam_launch_freezes_verified_execution_target_before_start(tmp_path: Path, monkeypatch):
@@ -3272,6 +3278,42 @@ def test_hparam_launch_does_not_retry_missing_pid(tmp_path: Path, monkeypatch):
     assert status == {"run-000": "missing_pid", "run-001": "pending"}
 
 
+def test_hparam_launch_fail_flag_reports_owned_missing_pid_before_start(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    payload["execution"].update({"workdir": str(tmp_path), "max_concurrent": 1})
+    recipe.write_text(yaml.safe_dump(payload))
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launched",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    assert len(started) == 1
+    started.clear()
+
+    with pytest.raises(managed_scheduler.MissingPidCapacityError) as exc_info:
+        hparam_runtime.launch_hparam_runs(
+            plan_dir,
+            dry_run=False,
+            fail_on_missing_pid_blocker=True,
+        )
+
+    assert exc_info.value.step_id == runs[0]["step_id"]
+    assert exc_info.value.run_id == runs[0]["run_id"]
+    assert started == []
+    expected = {runs[0]["run_id"]: "missing_pid", runs[1]["run_id"]: "pending"}
+    assert {row["run_id"]: row["status"] for row in _read_table(plan_dir / "launch_manifest.tsv")} == expected
+    assert {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")} == expected
+
+
 def test_hparam_launch_validates_every_snapshot_before_starting(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -4075,6 +4117,47 @@ def test_managed_scheduler_capacity_balances_around_other_active_runs():
     assert capacity.slots == 2
     assert allocation is not None
     assert allocation[2] == 1
+
+
+def test_managed_scheduler_ignores_external_missing_pid_when_expected_runs_are_terminal(tmp_path: Path, monkeypatch):
+    rows = _write_runtime_rows(
+        tmp_path,
+        [
+            {"run_id": "complete", "status": "finished", "gpus": "0"},
+            {"run_id": "blocker", "status": "missing_pid", "gpus": "0"},
+        ],
+    )
+    planned = json.loads((tmp_path / "plan.json").read_text())["runs"]
+    monkeypatch.setattr(
+        managed_scheduler,
+        "observe_run",
+        lambda _run_dir, _row, previous, **_kwargs: dict(previous),
+    )
+    hooks = managed_scheduler.SchedulerHooks(
+        validated_snapshot=lambda *_args, **_kwargs: (None, False),
+        build_command=lambda *_args, **_kwargs: pytest.fail("terminal runs must not build a command"),
+        start_process=lambda *_args, **_kwargs: pytest.fail("terminal runs must not start"),
+    )
+
+    result = managed_scheduler.launch_managed_runs(
+        tmp_path,
+        tmp_path,
+        [planned[0]],
+        {
+            "target": "local",
+            "workdir": str(tmp_path),
+            "gpu_pool": [0],
+            "gpus_per_run": 1,
+            "max_concurrent": 1,
+        },
+        {"devices": [0]},
+        dry_run=False,
+        fail_on_missing_pid_blocker=True,
+        hooks=hooks,
+    )
+
+    assert result.committed_rows[0]["run_id"] == rows[0]["run_id"]
+    assert result.committed_rows[0]["status"] == "finished"
 
 
 def test_managed_scheduler_row_terminal_owner_overrides_monitor_default(tmp_path: Path, monkeypatch):

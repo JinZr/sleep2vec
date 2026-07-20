@@ -563,6 +563,333 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
     assert not (pipeline_dir / "execution_snapshot.json").exists()
 
 
+def test_run_attempts_blocks_on_external_missing_pid_capacity_blocker(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    spec = _spec(root)
+    spec["jobs"].append(
+        {
+            **spec["jobs"][0],
+            "id": "age-hsp-i2-bcg",
+            "modality": "bcg",
+            "num_workers": 16,
+        }
+    )
+    attempts = [
+        {
+            "step_id": "external-evaluate",
+            "run_id": "run-001",
+            "pipeline_id": "external-v1",
+            "job_id": "age-hsp-i2-psg",
+            "variant": "sleep2vec",
+            "attempt": 1,
+            "status": "pending",
+            "verified": "false",
+            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
+            "runtime_commit": "",
+        },
+        {
+            "step_id": "external-evaluate",
+            "run_id": "run-002",
+            "pipeline_id": "external-v1",
+            "job_id": "age-hsp-i2-bcg",
+            "variant": "sleep2vec2",
+            "attempt": 1,
+            "status": "pending",
+            "verified": "false",
+            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-bcg" / "attempt-001"),
+            "runtime_commit": "",
+        },
+    ]
+    write_rows(pipeline_dir / "jobs.tsv", attempts)
+    blocker = {
+        "step_id": "train-age",
+        "run_id": "run-099",
+        "status": "missing_pid",
+        "target": "local",
+        "gpus": "0",
+    }
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_planned_runs",
+        lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "read_run_manifest",
+        lambda _root: [*[dict(row) for row in attempts], dict(blocker)],
+    )
+    launches = []
+
+    def blocked_launch(*_args, **kwargs):
+        launches.append(kwargs["fail_on_missing_pid_blocker"])
+        raise managed_scheduler.MissingPidCapacityError(blocker["step_id"], blocker["run_id"])
+
+    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", blocked_launch)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_create_needed_retries",
+        lambda *_args, **_kwargs: pytest.fail("a missing_pid capacity blocker must not create retries"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.time,
+        "sleep",
+        lambda *_args: pytest.fail("a missing_pid capacity blocker must not sleep"),
+    )
+
+    result = experiment_pipeline._run_attempts(
+        root,
+        pipeline_dir,
+        spec,
+        {"age": {}},
+        attempts,
+        poll_seconds=1,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["missing_pid_blocker"] == {
+        "status": "missing_pid",
+        "step_id": blocker["step_id"],
+        "run_id": blocker["run_id"],
+    }
+    assert launches == [True]
+    assert [row["status"] for row in experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")] == [
+        "pending",
+        "pending",
+    ]
+    assert not list(pipeline_dir.rglob(managed_scheduler.EXECUTION_SNAPSHOT_NAME))
+
+
+def test_run_attempts_blocks_before_retry_when_external_run_has_missing_pid(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    attempt = {
+        "step_id": "external-evaluate",
+        "run_id": "run-001",
+        "pipeline_id": "external-v1",
+        "job_id": "age-hsp-i2-psg",
+        "variant": "sleep2vec2",
+        "attempt": 1,
+        "status": "failed",
+        "verified": "false",
+        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
+        "runtime_commit": "",
+    }
+    blocker = {
+        "step_id": "train-age",
+        "run_id": "run-099",
+        "status": "missing_pid",
+        "target": "local",
+        "gpus": "0",
+    }
+    write_rows(pipeline_dir / "jobs.tsv", [attempt])
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_planned_runs",
+        lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "read_run_manifest",
+        lambda _root: [dict(attempt), dict(blocker)],
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.managed_scheduler,
+        "launch_managed_runs",
+        lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(attempt)]),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_create_needed_retries",
+        lambda *_args, **_kwargs: pytest.fail("capacity blocker must be handled before retry creation"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.time,
+        "sleep",
+        lambda *_args: pytest.fail("capacity blocker must not sleep"),
+    )
+
+    result = experiment_pipeline._run_attempts(
+        root,
+        pipeline_dir,
+        _spec(root),
+        {"age": {}},
+        [attempt],
+        poll_seconds=1,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["missing_pid_blocker"] == {
+        "status": "missing_pid",
+        "step_id": blocker["step_id"],
+        "run_id": blocker["run_id"],
+    }
+    persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")
+    assert [(row["attempt"], row["status"]) for row in persisted] == [("1", "failed")]
+
+
+def test_run_attempts_syncs_owned_missing_pid_and_blocks_pending_sibling(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    spec = _spec(root)
+    spec["jobs"].append(
+        {
+            **spec["jobs"][0],
+            "id": "age-hsp-i2-bcg",
+            "modality": "bcg",
+            "num_workers": 16,
+        }
+    )
+    attempts = [
+        {
+            "step_id": "external-evaluate",
+            "run_id": "run-001",
+            "pipeline_id": "external-v1",
+            "job_id": "age-hsp-i2-psg",
+            "variant": "sleep2vec2",
+            "attempt": 1,
+            "status": "running",
+            "verified": "false",
+            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
+            "runtime_commit": "",
+        },
+        {
+            "step_id": "external-evaluate",
+            "run_id": "run-002",
+            "pipeline_id": "external-v1",
+            "job_id": "age-hsp-i2-bcg",
+            "variant": "sleep2vec2",
+            "attempt": 1,
+            "status": "pending",
+            "verified": "false",
+            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-bcg" / "attempt-001"),
+            "runtime_commit": "",
+        },
+    ]
+    write_rows(pipeline_dir / "jobs.tsv", attempts)
+    canonical = [{**attempts[0], "status": "missing_pid"}, dict(attempts[1])]
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_planned_runs",
+        lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(row) for row in canonical])
+    launches = []
+
+    def blocked_launch(*_args, **kwargs):
+        launches.append(kwargs["fail_on_missing_pid_blocker"])
+        raise managed_scheduler.MissingPidCapacityError(canonical[0]["step_id"], canonical[0]["run_id"])
+
+    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", blocked_launch)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_create_needed_retries",
+        lambda *_args, **_kwargs: pytest.fail("an owned missing_pid attempt must not create retries"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.time,
+        "sleep",
+        lambda *_args: pytest.fail("an owned missing_pid attempt must not sleep"),
+    )
+
+    result = experiment_pipeline._run_attempts(
+        root,
+        pipeline_dir,
+        spec,
+        {"age": {}},
+        attempts,
+        poll_seconds=1,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["missing_pid_blocker"] == {
+        "status": "missing_pid",
+        "step_id": canonical[0]["step_id"],
+        "run_id": canonical[0]["run_id"],
+    }
+    assert launches == [True]
+    persisted = {row["run_id"]: row for row in experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")}
+    assert persisted["run-001"]["status"] == "missing_pid"
+    assert persisted["run-002"]["status"] == "pending"
+    assert not list(pipeline_dir.rglob(managed_scheduler.EXECUTION_SNAPSHOT_NAME))
+
+
+def test_execute_pipeline_persists_and_clears_missing_pid_blocker_on_resume(tmp_path: Path, monkeypatch):
+    class ResumeObserved(Exception):
+        pass
+
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "running_external"}) + "\n")
+    blocker = {"status": "missing_pid", "step_id": "train-age", "run_id": "run-099"}
+    blocked_result = {
+        "status": "blocked",
+        "jobs": [{"job_id": "age-hsp-i2-psg", "status": "running"}],
+        "missing_pid_blocker": blocker,
+    }
+
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_frozen_pipeline",
+        lambda *_args: json.loads((pipeline_dir / "pipeline.json").read_text()),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_inspect_sources",
+        lambda *_args, **_kwargs: [{"failed_runs": [], "uncertain_runs": [], "complete": True}],
+    )
+    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: {})
+    monkeypatch.setattr(experiment_pipeline, "_load_or_create_initial_attempts", lambda *_args: [])
+    monkeypatch.setattr(experiment_pipeline, "_run_attempts", lambda *_args, **_kwargs: blocked_result)
+
+    result = experiment_pipeline._execute_pipeline(
+        root,
+        pipeline_dir,
+        _spec(root),
+        poll_seconds=1,
+        finalize_callback=None,
+    )
+
+    assert result == blocked_result
+    state = json.loads((pipeline_dir / "pipeline.json").read_text())
+    assert state["status"] == "blocked"
+    assert state["missing_pid_blocker"] == blocker
+
+    def observe_resume(*_args, **_kwargs):
+        resumed_state = json.loads((pipeline_dir / "pipeline.json").read_text())
+        assert resumed_state["status"] == "running_external"
+        assert resumed_state["missing_pid_blocker"] is None
+        raise ResumeObserved
+
+    monkeypatch.setattr(experiment_pipeline, "_run_attempts", observe_resume)
+
+    with pytest.raises(ResumeObserved):
+        experiment_pipeline._execute_pipeline(
+            root,
+            pipeline_dir,
+            _spec(root),
+            poll_seconds=1,
+            finalize_callback=None,
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "drifted"),
     [

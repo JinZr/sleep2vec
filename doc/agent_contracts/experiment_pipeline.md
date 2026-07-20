@@ -98,6 +98,14 @@ evidence is persisted on the canonical run, so a runner interruption cannot
 turn that blocker into a retry. Independent jobs may
 continue after another job fails, but a failed logical job blocks finalization.
 
+If a current attempt has canonical status `missing_pid`, or an unfinished
+pipeline shares execution capacity with another such run, scheduling commits
+the latest observations without starting another process, syncs the attempt
+table, and persists the pipeline as `blocked` with the blocking run identity.
+After that identity is resolved manually, `--resume --execute` may continue the
+same frozen pipeline. An already-terminal matrix does not need that capacity
+and may still aggregate and complete.
+
 `run_manifest.tsv` remains the only lifecycle owner. Pipeline status, job
 tables, and reports are projections. The optional pipeline fields carried by a
 managed row are defined in [run_manifest.md](run_manifest.md).

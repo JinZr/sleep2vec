@@ -555,10 +555,15 @@ def _execute_pipeline(
 
     selections = _load_or_freeze_selections(root, pipeline_dir, spec)
     attempts = _load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
-    _update_state(pipeline_dir, status="running_external")
+    _update_state(pipeline_dir, status="running_external", missing_pid_blocker=None)
     result = _run_attempts(root, pipeline_dir, spec, selections, attempts, poll_seconds=poll_seconds)
     if result["status"] != "completed":
-        _update_state(pipeline_dir, status=result["status"], logical_jobs=result["jobs"])
+        _update_state(
+            pipeline_dir,
+            status=result["status"],
+            logical_jobs=result["jobs"],
+            missing_pid_blocker=result.get("missing_pid_blocker"),
+        )
         return result
     _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
     report = _aggregate_results(root, pipeline_dir, spec, selections, result["jobs"])
@@ -1284,24 +1289,29 @@ def _run_attempts(
                 continue
             groups.append((pipeline_dir / "retry_schedulers" / row["job_id"], _planned_runs([row])))
 
+        missing_pid_blocker = None
         for owner_dir, runs in groups:
             owner_dir.mkdir(parents=True, exist_ok=True)
             snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
             if snapshot_path.exists():
                 canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
                 managed_scheduler.validated_execution_snapshot(owner_dir, execution, runs, canonical)
-            managed_scheduler.launch_managed_runs(
-                root,
-                owner_dir,
-                runs,
-                execution,
-                runtime,
-                dry_run=False,
-                fail_on_missing_pid_blocker=False,
-                default_script_commits_terminal_status=True,
-                runtime_output_fields=("result_root",),
-                runtime_output_root=root,
-            )
+            try:
+                managed_scheduler.launch_managed_runs(
+                    root,
+                    owner_dir,
+                    runs,
+                    execution,
+                    runtime,
+                    dry_run=False,
+                    fail_on_missing_pid_blocker=True,
+                    default_script_commits_terminal_status=True,
+                    runtime_output_fields=("result_root",),
+                    runtime_output_root=root,
+                )
+            except managed_scheduler.MissingPidCapacityError as exc:
+                missing_pid_blocker = exc
+                break
 
         canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
         if any(
@@ -1345,6 +1355,31 @@ def _run_attempts(
                 changed = True
         if changed:
             _write_jobs(jobs_path, attempts)
+
+        logical = _logical_job_states(spec, attempts)
+        if missing_pid_blocker is None and any(job["status"] == "running" for job in logical):
+            expected_keys = {managed_run_key(row) for row in attempts}
+            capacity = managed_scheduler.capacity_state(
+                execution,
+                runtime,
+                {key: canonical[key] for key in expected_keys},
+                canonical,
+                expected_keys=expected_keys,
+            )
+            if capacity.external_missing_pid:
+                missing_pid_blocker = managed_scheduler.MissingPidCapacityError(
+                    *sorted(capacity.external_missing_pid)[0]
+                )
+        if missing_pid_blocker is not None:
+            return {
+                "status": "blocked",
+                "jobs": logical,
+                "missing_pid_blocker": {
+                    "status": "missing_pid",
+                    "step_id": missing_pid_blocker.step_id,
+                    "run_id": missing_pid_blocker.run_id,
+                },
+            }
 
         try:
             attempts, retry_created = _create_needed_retries(root, pipeline_dir, spec, selections, attempts)

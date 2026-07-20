@@ -36,12 +36,21 @@ LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
 LAUNCH_TIMEOUT_SECONDS = 60
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
 
+
+class MissingPidCapacityError(RuntimeError):
+    def __init__(self, step_id: str, run_id: str):
+        self.step_id = step_id
+        self.run_id = run_id
+        super().__init__(f"Managed launch capacity is blocked because {step_id} / {run_id} has status missing_pid.")
+
+
 __all__ = [
     "ACTIVE_STATUSES",
     "CapacityState",
     "EXECUTION_SNAPSHOT_NAME",
     "LAUNCH_TIMEOUT_SECONDS",
     "LaunchResult",
+    "MissingPidCapacityError",
     "SchedulerHooks",
     "build_launch_command",
     "capacity_state",
@@ -621,9 +630,14 @@ def _launch_managed_runs(
         workspace_by_key,
         expected_keys=expected_keys,
     )
-    if not dry_run and fail_on_missing_pid_blocker and capacity.external_missing_pid:
-        step_id, run_id = sorted(capacity.external_missing_pid)[0]
-        raise RuntimeError(f"Managed launch capacity is blocked because {step_id} / {run_id} has status missing_pid.")
+    missing_pid_blocker = None
+    if not dry_run and fail_on_missing_pid_blocker:
+        current_missing_pid = [key for key, row in refreshed.items() if row.get("status") == "missing_pid"]
+        capacity_needed = any(row.get("status") in ACTIVE_STATUSES | LAUNCHABLE_STATUSES for row in refreshed.values())
+        external_missing_pid = capacity.external_missing_pid if capacity_needed else []
+        blockers = sorted(set(current_missing_pid) | set(external_missing_pid))
+        if blockers:
+            missing_pid_blocker = MissingPidCapacityError(*blockers[0])
 
     target = str(execution.get("target", "local") or "local")
     launch_identity_by_key: dict[RunKey, dict[str, Any]] = {}
@@ -695,7 +709,7 @@ def _launch_managed_runs(
         exp_io.validate_managed_output_paths(workspace, run_output_paths)
 
     execution_snapshot = None
-    if not dry_run:
+    if not dry_run and missing_pid_blocker is None:
         launchable = [row for row in rows if row["status"] in LAUNCHABLE_STATUSES]
         has_launch_candidate = False
         if capacity.slots > 0:
@@ -760,7 +774,7 @@ def _launch_managed_runs(
                 preview_loads[group_index] += 1
     else:
         launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in LAUNCHABLE_STATUSES]
-        while launchable and capacity.slots > 0:
+        while missing_pid_blocker is None and launchable and capacity.slots > 0:
             allocation = capacity.next_allocation(launchable)
             if allocation is None:
                 break
@@ -866,6 +880,8 @@ def _launch_managed_runs(
                 {"step_id": key[0], "run_id": key[1], "gpus": row.get("gpus", "")},
             )
     hooks.write_status_report(workspace)
+    if missing_pid_blocker is not None:
+        raise missing_pid_blocker
     return result
 
 
