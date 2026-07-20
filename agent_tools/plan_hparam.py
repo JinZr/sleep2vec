@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from importlib import import_module
 from itertools import product
 from pathlib import Path
+import subprocess
 import sys
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 import yaml
 
-from . import plan_rendering as rendering
+from . import plan_rendering as rendering, transport
 from .decision_models import DecisionIssue, DecisionStatus
-from .decision_paths import validate_input_path
+from .decision_paths import path_context, path_validation, validate_input_path
 from .experiment_workspace import (
     append_event,
     experiment_root,
@@ -22,8 +25,11 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import write_json, write_text
-from .models import REPO_ROOT, coerce_list
+from .models import REPO_ROOT, coerce_list, resolve_repo_path
 from .repo import repo_summary
+
+FROZEN_FINAL_EVAL_CONFIG_NAME = "config.final_eval.yaml"
+_FINAL_EVAL_CONFIG_SNAPSHOT = "_final_eval_config_snapshot"
 
 
 def final_test_unlocked(evaluation: dict, unlock_final_test: bool = False) -> bool:
@@ -70,26 +76,137 @@ def final_test_checkpoint_issues(
         issues.append(ckpt_issue)
         if ckpt_issue.status == DecisionStatus.FAIL:
             return issues
-    if has_yaml_search_overrides(recipe):
-        final_config = resolved_final_eval_config_path(recipe, None)
-        if final_config in (None, "", "ASK_USER") or str(final_config).startswith("<"):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "final_eval_config_path",
-                    (
-                        "Final external-test evaluation for YAML-overridden hparam runs "
-                        "requires an explicit config path."
-                    ),
-                    "Which selected run config should be used for final external-test evaluation?",
-                    {"final_eval_config_path": final_config},
-                )
+    final_config = resolved_final_eval_config_path(recipe, None)
+    if has_yaml_search_overrides(recipe) and not has_explicit_final_eval_config(recipe):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "final_eval_config_path",
+                "Final external-test evaluation for YAML-overridden hparam runs requires an explicit config path.",
+                "Which selected run config should be used for final external-test evaluation?",
+                {"final_eval_config_path": final_config},
             )
-            return issues
+        )
+        return issues
+    if has_explicit_final_eval_config(recipe):
         config_issue = validate_input_path(recipe, "final_eval_config_path", final_config, configured=False)
         if config_issue is not None:
             issues.append(config_issue)
+            if config_issue.status == DecisionStatus.FAIL:
+                return issues
+        try:
+            config_bytes = read_final_eval_config_bytes(recipe, final_config)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "final_eval_config_path",
+                    f"Final evaluation config cannot be frozen as exact bytes: {exc}",
+                    None,
+                    {
+                        "final_eval_config_path": str(final_config),
+                        "preflight_before_workspace": True,
+                    },
+                )
+            )
+            return issues
+        recipe[_FINAL_EVAL_CONFIG_SNAPSHOT] = {
+            "source_path": str(final_config),
+            "bytes": config_bytes,
+            "sha256": hashlib.sha256(config_bytes).hexdigest(),
+        }
+        try:
+            validate_final_eval_config_bytes(recipe, config_bytes)
+        except Exception as exc:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "final_eval_config_path",
+                    f"Final evaluation config is invalid for variant={recipe.get('variant')}: {exc}",
+                    None,
+                    {
+                        "final_eval_config_path": str(final_config),
+                        "preflight_before_workspace": True,
+                    },
+                )
+            )
+            return issues
+        drift_issue = final_eval_config_drift_issue(recipe)
+        if drift_issue is not None:
+            issues.append(drift_issue)
     return issues
+
+
+def final_eval_config_snapshot(recipe: dict) -> dict[str, Any] | None:
+    snapshot = recipe.get(_FINAL_EVAL_CONFIG_SNAPSHOT)
+    return snapshot if isinstance(snapshot, dict) else None
+
+
+def validate_final_eval_config_bytes(recipe: dict, config_bytes: bytes) -> None:
+    config_module = import_module(rendering.variant_module(recipe, "config"))
+    with NamedTemporaryFile(suffix=".yaml") as snapshot:
+        snapshot.write(config_bytes)
+        snapshot.flush()
+        bundle = config_module.load_finetune_config(Path(snapshot.name))
+        config_module.validate_model_config(bundle.model)
+
+
+def read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
+    context = path_context(recipe, config_path)
+    validation = path_validation(recipe, context)
+    if context == "remote":
+        if validation == "remote":
+            validation = "ssh"
+        if validation != "ssh":
+            raise ValueError(
+                "remote final_eval_config_path requires execution.path_validation=ssh; "
+                f"{validation} cannot capture exact bytes"
+            )
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        host = execution.get("host")
+        if not host:
+            raise ValueError("execution.host is required to freeze a remote final_eval_config_path")
+        result = transport.run_ssh(str(host), f"cat -- {transport.sh(config_path)}", text=False)
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else str(result.stderr)
+            raise ValueError(f"remote config read failed on {host}: {stderr.strip() or 'unknown SSH error'}")
+        if not isinstance(result.stdout, bytes):
+            raise ValueError("remote config read did not return exact bytes")
+        return result.stdout
+    if context != "local":
+        raise ValueError(f"unsupported final_eval_config_path context: {context}")
+    resolved = resolve_repo_path(config_path)
+    if resolved is None or not resolved.is_file():
+        raise ValueError(f"config is not a readable local file: {config_path}")
+    return resolved.read_bytes()
+
+
+def final_eval_config_drift_issue(recipe: dict) -> DecisionIssue | None:
+    snapshot = final_eval_config_snapshot(recipe)
+    if snapshot is None:
+        return None
+    try:
+        current_bytes = read_final_eval_config_bytes(recipe, snapshot.get("source_path"))
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            "final_eval_config_path",
+            f"Final evaluation config could not be re-read before planning: {exc}",
+            None,
+            {"preflight_before_workspace": True},
+        )
+    if current_bytes == snapshot.get("bytes"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "final_eval_config_path",
+        "Final evaluation config changed while plan preflight was validating it.",
+        None,
+        {
+            "final_eval_config_path": snapshot.get("source_path"),
+            "preflight_before_workspace": True,
+        },
+    )
 
 
 def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[DecisionIssue]:
@@ -192,6 +309,11 @@ def resolved_ckpt_path(recipe: dict) -> Any:
 def resolved_final_eval_config_path(recipe: dict, fallback: Any) -> Any:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     return inputs.get("final_eval_config_path", fallback)
+
+
+def has_explicit_final_eval_config(recipe: dict) -> bool:
+    value = resolved_final_eval_config_path(recipe, None)
+    return value not in (None, "", "ASK_USER") and not str(value).startswith("<")
 
 
 def has_yaml_search_overrides(recipe: dict) -> bool:
@@ -324,6 +446,19 @@ def write_hparam_plan(
     run_inputs = {key: value for key, value in inputs.items() if key != "ckpt_path"}
     runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") or {}
+    final_allowed = final_script_allowed(recipe, evaluation, unlock_final_test)
+    frozen_final_eval_config = out / FROZEN_FINAL_EVAL_CONFIG_NAME
+    final_config_snapshot = final_eval_config_snapshot(recipe)
+    if final_allowed and has_explicit_final_eval_config(recipe):
+        if final_config_snapshot is None:
+            raise ValueError("Explicit final evaluation config requires bound config bytes.")
+        final_config_bytes = final_config_snapshot.get("bytes")
+        final_config_sha256 = final_config_snapshot.get("sha256")
+        if not isinstance(final_config_bytes, bytes) or not isinstance(final_config_sha256, str):
+            raise ValueError("Bound final evaluation config is incomplete.")
+        if hashlib.sha256(final_config_bytes).hexdigest() != final_config_sha256:
+            raise ValueError("Final evaluation config bytes do not match their bound SHA-256.")
     source_config_path = inputs.get("config")
     if not source_config_path:
         raise FileNotFoundError("Config path is required.")
@@ -335,9 +470,12 @@ def write_hparam_plan(
     frozen_source_config = out / "config.source.yaml"
     out.mkdir(parents=True, exist_ok=True)
     frozen_source_config.write_bytes(source_config_bytes)
+    if final_allowed and has_explicit_final_eval_config(recipe):
+        frozen_final_eval_config.write_bytes(final_config_bytes)
+    elif frozen_final_eval_config.exists():
+        frozen_final_eval_config.unlink()
     combos = hparam_combos(recipe)
     runs = []
-    evaluation = recipe.get("evaluation_policy") or {}
     test_after_fit = evaluation.get("test_after_fit")
     run_index_offset = next_run_index(recipe)
     for idx, combo in enumerate(combos):
@@ -458,7 +596,15 @@ def write_hparam_plan(
         + "\n",
         executable=True,
     )
-    write_json(out / "plan.json", {"status": "PASS", "runs": runs, "recipe": recipe})
+    plan_recipe = {key: value for key, value in recipe.items() if key != _FINAL_EVAL_CONFIG_SNAPSHOT}
+    plan_payload = {"status": "PASS", "runs": runs, "recipe": plan_recipe}
+    if final_allowed and has_explicit_final_eval_config(recipe):
+        plan_payload["final_eval_config"] = {
+            "path": str(frozen_final_eval_config),
+            "sha256": file_sha256(frozen_final_eval_config),
+            "source_path": final_config_snapshot["source_path"],
+        }
+    write_json(out / "plan.json", plan_payload)
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
@@ -490,11 +636,12 @@ def write_hparam_plan(
         "plan_created",
         {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": len(runs)},
     )
-    resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
+    resolved_recipe = {
+        key: value for key, value in recipe.items() if key not in {"_recipe_path", _FINAL_EVAL_CONFIG_SNAPSHOT}
+    }
     (out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     final_script_path = out / "final_external_test.sh"
     final_unlocked = final_test_unlocked(evaluation, unlock_final_test)
-    final_allowed = final_script_allowed(recipe, evaluation, unlock_final_test)
     test_after_fit_message = (
         "Run commands evaluate the configured test split because test_after_fit is explicitly unlocked."
         if test_after_fit is True
@@ -509,7 +656,7 @@ def write_hparam_plan(
     ]
     if final_allowed:
         ckpt_path = resolved_ckpt_path(recipe)
-        final_config_path = resolved_final_eval_config_path(recipe, frozen_source_config)
+        final_config_path = frozen_final_eval_config if has_explicit_final_eval_config(recipe) else frozen_source_config
         final_command = rendering.render_command(
             [
                 execution["python"],
