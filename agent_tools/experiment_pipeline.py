@@ -701,6 +701,7 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[st
         checkpoint_dir = Path(str(canonical_row.get("checkpoint_dir") or ""))
         if checkpoint.parent != checkpoint_dir or checkpoint_dir.is_symlink():
             raise ValueError(f"Selected checkpoint is outside its frozen checkpoint directory: {checkpoint}")
+        exp_io.validate_managed_output_paths(checkpoint_dir, [checkpoint])
         config_payload = read_managed_yaml_mapping(config.read_text(), source=f"Selected config {config}")
         averaging_paths = _mapping_key_paths(config_payload, "model_averaging")
         if policy["require_no_model_averaging"] and averaging_paths:
@@ -762,6 +763,8 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
             raise ValueError(f"Frozen checkpoint score is not finite: {source_id}")
         for path_field, hash_field in (("config", "config_sha256"), ("checkpoint", "checkpoint_sha256")):
             selected_path = Path(str(selection.get(path_field) or ""))
+            if path_field == "checkpoint":
+                exp_io.validate_managed_output_paths(selected_path.parent, [selected_path])
             if (
                 selected_path.is_symlink()
                 or not selected_path.is_file()
@@ -1427,6 +1430,8 @@ def _planned_runs(attempt_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "attempt": int(row["attempt"]),
                 "result_root": row["result_root"],
                 "terminal_status_owner": "script",
+                "checkpoint": row["checkpoint"],
+                "checkpoint_sha256": row["checkpoint_sha256"],
             }
         )
         runs.append(run)
@@ -1615,6 +1620,7 @@ def _validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run
     if len(manifests) != 1:
         raise ValueError(f"Inference result root must contain exactly one run_manifest.json: {result_root}")
     manifest_path = manifests[0]
+    exp_io.validate_managed_output_paths(result_root, [manifest_path])
     manifest = read_json(manifest_path)
     if not isinstance(manifest, dict) or not manifest:
         raise ValueError(f"Inference result manifest is malformed: {manifest_path}")

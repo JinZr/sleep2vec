@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import experiment_io as exp_io, run_artifacts as artifacts
+from . import experiment_io as exp_io, experiment_tracking as tracking, run_artifacts as artifacts
 from .experiment_workspace import (
     append_event,
     experiment_root,
@@ -63,9 +63,16 @@ def select_hparam_candidates(
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
         validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
+    tracking.validate_checkpoint_evidence_rows(canonical_rows, existing_ranked)
     for row in existing_ranked:
         score = row.get("score")
-        if row.get("step_id") != step_id and (isinstance(score, bool) or artifacts.float_or_none(score) is None):
+        score_is_finite = not isinstance(score, bool) and artifacts.float_or_none(score) is not None
+        if score_is_finite and row.get("checkpoint_path") in (None, ""):
+            raise ValueError(
+                f"Existing ranking row with a finite score lacks checkpoint evidence: "
+                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
+            )
+        if row.get("step_id") != step_id and not score_is_finite:
             raise ValueError(
                 f"Existing ranking row for another step has an invalid score: "
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
@@ -113,7 +120,10 @@ def select_hparam_candidates(
             "status": canonical.get("status", ""),
             **managed_run_parameters(run),
         }
-        if isinstance(score, bool) or artifacts.float_or_none(score) is None:
+        valid_score = not isinstance(score, bool) and artifacts.float_or_none(score) is not None
+        if valid_score and ckpt:
+            tracking.validate_checkpoint_evidence_rows(canonical_rows, [row])
+        if not valid_score or not ckpt:
             unscored_rows.append(row)
         else:
             rows.append(row)

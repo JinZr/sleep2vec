@@ -644,7 +644,17 @@ def test_experiment_monitor_preserves_script_owned_running_without_execution_evi
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
 
-def test_experiment_monitor_treats_hparam_script_with_process_identity_as_monitor_owned(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    ("terminal_status_owner", "expected_status"),
+    [(None, "completed"), ("script", "failed")],
+    ids=["legacy-monitor-owner", "explicit-script-owner"],
+)
+def test_experiment_monitor_respects_terminal_owner_for_dead_process(
+    tmp_path: Path,
+    monkeypatch,
+    terminal_status_owner: str | None,
+    expected_status: str,
+):
     _initialize_workspace(tmp_path)
     pid_path = tmp_path / "hparam.pid"
     identity = {"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}
@@ -663,13 +673,51 @@ def test_experiment_monitor_treats_hparam_script_with_process_identity_as_monito
         "status": "running",
         **identity,
     }
+    if terminal_status_owner is not None:
+        row["terminal_status_owner"] = terminal_status_owner
     experiment_io.write_rows_at(tmp_path / "run_manifest.tsv", [row])
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
 
     result = experiments.monitor_experiment(tmp_path)
 
-    assert result["runs"][0]["status"] == "completed"
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "completed"
+    assert result["runs"][0]["status"] == expected_status
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == expected_status
+
+
+@pytest.mark.parametrize(
+    ("canonical_owner", "incoming_owner", "expected_script_owner"),
+    [
+        ("script", "monitor", True),
+        ("monitor", "script", False),
+    ],
+)
+def test_experiment_monitor_uses_canonical_terminal_status_owner(
+    tmp_path: Path,
+    monkeypatch,
+    canonical_owner: str,
+    incoming_owner: str,
+    expected_script_owner: bool,
+):
+    observed = []
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "script": "/plan/run.sh",
+        "pid_path": "/run.pid",
+        "terminal_status_owner": incoming_owner,
+        "status": "running",
+    }
+    previous = {**row, "terminal_status_owner": canonical_owner}
+
+    def fake_status(_root, current, previous, *, script_commits_terminal_status, health):
+        observed.append(script_commits_terminal_status)
+        return {**previous, **current, "health_status": "running"}
+
+    monkeypatch.setattr(run_evidence, "status_row", fake_status)
+
+    experiment_tracking.monitor_run_row(tmp_path, row, [previous])
+
+    assert observed == [expected_script_owner]
 
 
 def test_experiment_monitor_marks_lifecycle_script_exit_without_terminal_commit_failed(tmp_path: Path):

@@ -1138,6 +1138,28 @@ def test_planned_runs_rejects_managed_key_drift(tmp_path: Path, field: str, drif
         experiment_pipeline._planned_runs([attempt])
 
 
+def test_planned_runs_carries_frozen_checkpoint_evidence_to_scheduler(tmp_path: Path):
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    planned = {"step_id": "external-evaluate", "run_id": "run-001"}
+    (plan_dir / "plan.json").write_text(json.dumps({"runs": [planned]}) + "\n")
+    attempt = {
+        **planned,
+        "plan_dir": str(plan_dir),
+        "pipeline_id": "external-v1",
+        "job_id": "age-hsp-i2-psg",
+        "attempt": 1,
+        "result_root": str(tmp_path / "results" / "attempt-001"),
+        "checkpoint": str(tmp_path / "model.ckpt"),
+        "checkpoint_sha256": "a" * 64,
+    }
+
+    run = experiment_pipeline._planned_runs([attempt])[0]
+
+    assert run["checkpoint"] == attempt["checkpoint"]
+    assert run["checkpoint_sha256"] == attempt["checkpoint_sha256"]
+
+
 def test_frozen_pipeline_rejects_external_preset_byte_drift(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     spec = _spec(root)

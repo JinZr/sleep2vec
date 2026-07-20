@@ -162,7 +162,7 @@ if changed:
     raise SystemExit(2)
 for artifact in artifacts:
     path = Path(artifact["path"])
-    if path.is_symlink() or not path.is_file():
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
         print(f"Frozen run artifact is not an independent file: {path}", file=sys.stderr)
         raise SystemExit(2)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -551,6 +551,7 @@ def _launch_managed_runs(
     projection_writer: Callable[[LaunchResult], None] | None,
     hooks: SchedulerHooks,
 ) -> LaunchResult:
+    planned_by_key = {managed_run_key(run): run for run in runs}
     snapshot_path = owner_dir / EXECUTION_SNAPSHOT_NAME
     exp_io.validate_managed_output_paths(
         workspace,
@@ -786,6 +787,17 @@ def _launch_managed_runs(
                 gpus = list(capacity.gpu_groups[group_index]) if group_index is not None else []
                 identity = dict(launch_identity_by_key[managed_run_key(row)])
                 identity["gpus"] = ",".join(str(item) for item in gpus)
+                planned = planned_by_key[managed_run_key(row)]
+                checkpoint_path = planned.get("checkpoint")
+                checkpoint_sha256 = planned.get("checkpoint_sha256")
+                checkpoint_args = (
+                    {
+                        "checkpoint_path": Path(str(checkpoint_path)) if checkpoint_path not in (None, "") else None,
+                        "checkpoint_sha256": (str(checkpoint_sha256) if checkpoint_sha256 not in (None, "") else None),
+                    }
+                    if checkpoint_path not in (None, "") or checkpoint_sha256 not in (None, "")
+                    else {}
+                )
                 identity["command"] = build_command(
                     execution,
                     Path(str(row["script"])),
@@ -796,6 +808,7 @@ def _launch_managed_runs(
                     config_path=Path(str(row["config"])),
                     script_sha256=str(row["script_sha256"]),
                     config_sha256=str(row["config_sha256"]),
+                    **checkpoint_args,
                 )
                 row.update(identity)
                 hooks.validate_run_update(
@@ -1119,6 +1132,8 @@ def build_launch_command(
     config_path: Path | None = None,
     script_sha256: str | None = None,
     config_sha256: str | None = None,
+    checkpoint_path: Path | None = None,
+    checkpoint_sha256: str | None = None,
 ) -> str:
     workdir = str(execution.get("workdir") or REPO_ROOT)
     env = dict(execution.get("env") or {})
@@ -1141,6 +1156,10 @@ def build_launch_command(
             {"path": str(script), "sha256": script_sha256},
             {"path": str(config_path), "sha256": config_sha256},
         ]
+        if (checkpoint_path is None) != (checkpoint_sha256 is None):
+            raise ValueError("Verified launch requires both frozen checkpoint path and hash.")
+        if checkpoint_path is not None:
+            artifacts.append({"path": str(checkpoint_path), "sha256": checkpoint_sha256})
         verification_inner = (
             "export PYTHONPATH="
             + _sh(workdir)

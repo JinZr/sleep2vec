@@ -411,6 +411,63 @@ def test_checkpoint_selection_stays_with_frozen_source_plan(tmp_path: Path, monk
     assert selected[0]["score"] == 4.5
 
 
+def test_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    selection = _selection(tmp_path)
+    checkpoint = Path(selection["checkpoint"])
+    (tmp_path / "checkpoint-alias.ckpt").hardlink_to(checkpoint)
+    source_run = {"step_id": "train-age", "run_id": "run-001"}
+    source_plan = {
+        "recipe": {
+            "task": "hparam_tune",
+            "variant": "sleep2vec2",
+            "step": {"id": "train-age"},
+            "inputs": {"label_name": "age"},
+        },
+        "runs": [source_run],
+    }
+    ranking = [
+        {
+            **source_run,
+            "run_name": "source-best",
+            "rank": "1",
+            "score": "4.5",
+            "config": selection["config"],
+            "checkpoint_path": str(checkpoint),
+        }
+    ]
+    canonical = [{**source_run, "status": "completed", "checkpoint_dir": str(checkpoint.parent)}]
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: source_plan)
+    monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: canonical)
+    monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: ranking)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiment_pipeline._select_checkpoint_sources(root, spec)
+
+
+def test_frozen_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    selection = _selection(tmp_path)
+    checkpoint = Path(selection["checkpoint"])
+    (tmp_path / "checkpoint-alias.ckpt").hardlink_to(checkpoint)
+    selection.update(
+        {
+            "plan": spec["checkpoint_sources"]["age"]["plan"],
+            "source_task": "age",
+            "source_plan_task": "hparam_tune",
+            "inference_task": "infer",
+        }
+    )
+    path = tmp_path / "checkpoints.json"
+    path.write_text(json.dumps({"pipeline_id": "external-v1", "sources": [selection]}) + "\n")
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiment_pipeline._read_frozen_selections(path, spec)
+
+
 def test_failed_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     _write_experiment(root)
@@ -563,6 +620,14 @@ def test_result_manifest_validation_rejects_missing_and_corrupt_manifest(tmp_pat
 
     manifest_path.write_text("{not-json\n")
     with pytest.raises(json.JSONDecodeError):
+        experiment_pipeline._validate_result_manifest(spec, attempt, run)
+
+
+def test_result_manifest_validation_rejects_hardlinked_manifest(tmp_path: Path):
+    spec, attempt, run, manifest_path, _manifest = _result_manifest_context(tmp_path)
+    (tmp_path / "manifest-alias.json").hardlink_to(manifest_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
         experiment_pipeline._validate_result_manifest(spec, attempt, run)
 
 
