@@ -2649,7 +2649,19 @@ def test_single_finetune_uses_explicit_execution_workdir(tmp_path: Path):
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr
-    script = Path(_first_run(output_dir)["script"]).read_text()
+    run = _first_run(output_dir)
+    expected_runtime = run_cwd / "log-finetune" / run["version"]
+    expected_checkpoint = expected_runtime / "checkpoints"
+    assert run["runtime_dir"] == str(expected_runtime)
+    assert run["checkpoint_dir"] == str(expected_checkpoint)
+    artifacts = json.loads(Path(run["artifacts"]).read_text())
+    assert artifacts["runtime_dir"] == str(expected_runtime)
+    assert artifacts["checkpoint_dir"] == str(expected_checkpoint)
+    with (tmp_path / "run_manifest.tsv").open(newline="") as file_obj:
+        manifest = next(csv.DictReader(file_obj, delimiter="\t"))
+    assert manifest["runtime_dir"] == str(expected_runtime)
+    assert manifest["checkpoint_dir"] == str(expected_checkpoint)
+    script = Path(run["script"]).read_text()
     assert f"cd {shlex_quote(str(run_cwd))}" in script
     assert f"export PYTHONPATH={shlex_quote(str(run_cwd))}${{PYTHONPATH:+:$PYTHONPATH}}" in script
 

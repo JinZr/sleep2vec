@@ -1294,7 +1294,12 @@ def _run_attempts(
             snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
             if snapshot_path.exists():
                 canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
-                managed_scheduler.validated_execution_snapshot(owner_dir, execution, runs, canonical)
+                if any(
+                    (canonical[managed_run_key(run)].get("status") or "planned")
+                    in managed_scheduler.LAUNCHABLE_STATUSES
+                    for run in runs
+                ):
+                    managed_scheduler.validated_execution_snapshot(owner_dir, execution, runs, canonical)
             try:
                 managed_scheduler.launch_managed_runs(
                     root,

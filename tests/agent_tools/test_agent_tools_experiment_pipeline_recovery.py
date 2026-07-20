@@ -563,6 +563,158 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
     assert not (pipeline_dir / "execution_snapshot.json").exists()
 
 
+def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_result(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+    snapshot_path.write_text(json.dumps({"runtime_commit": "a" * 40}) + "\n")
+    attempt = {
+        "step_id": "external-evaluate",
+        "run_id": "run-001",
+        "pipeline_id": "external-v1",
+        "job_id": "age-hsp-i2-psg",
+        "variant": "sleep2vec2",
+        "attempt": 1,
+        "status": "completed",
+        "verified": "false",
+        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
+        "runtime_commit": "",
+    }
+    write_rows(pipeline_dir / "jobs.tsv", [attempt])
+    validations = []
+    launches = []
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_attempt_rows",
+        lambda *_args: validations.append("attempts"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_planned_runs",
+        lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(attempt)])
+    monkeypatch.setattr(
+        experiment_pipeline.managed_scheduler,
+        "validated_execution_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("terminal attempts must not probe the live runtime"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.managed_scheduler,
+        "launch_managed_runs",
+        lambda *_args, **_kwargs: launches.append(True) or SimpleNamespace(committed_rows=[dict(attempt)]),
+    )
+    result_manifest = pipeline_dir / "result_manifest.json"
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_result_manifest",
+        lambda *_args: validations.append("result") or result_manifest,
+    )
+
+    result = experiment_pipeline._run_attempts(
+        root,
+        pipeline_dir,
+        _spec(root),
+        {"age": {}},
+        [attempt],
+        poll_seconds=0,
+    )
+
+    persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
+    assert result["status"] == "completed"
+    assert launches == [True]
+    assert validations == ["attempts", "result"]
+    assert persisted["verified"] == "true"
+    assert persisted["runtime_commit"] == "a" * 40
+
+
+def test_run_attempts_mixed_group_validates_live_snapshot_before_launch(tmp_path: Path, monkeypatch):
+    class LaunchObserved(Exception):
+        pass
+
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    (pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
+    spec = _spec(root)
+    spec["jobs"].append(
+        {
+            **spec["jobs"][0],
+            "id": "age-hsp-i2-bcg",
+            "modality": "bcg",
+            "num_workers": 16,
+        }
+    )
+    attempts = [
+        {
+            "step_id": "external-evaluate",
+            "run_id": "run-001",
+            "pipeline_id": "external-v1",
+            "job_id": "age-hsp-i2-psg",
+            "variant": "sleep2vec2",
+            "attempt": 1,
+            "status": "completed",
+            "verified": "true",
+            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
+            "runtime_commit": "a" * 40,
+        },
+        {
+            "step_id": "external-evaluate",
+            "run_id": "run-002",
+            "pipeline_id": "external-v1",
+            "job_id": "age-hsp-i2-bcg",
+            "variant": "sleep2vec2",
+            "attempt": 1,
+            "status": "pending",
+            "verified": "false",
+            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-bcg" / "attempt-001"),
+            "runtime_commit": "",
+        },
+    ]
+    write_rows(pipeline_dir / "jobs.tsv", attempts)
+    calls = []
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_planned_runs",
+        lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(row) for row in attempts])
+
+    def validate_snapshot(owner_dir, _execution, runs, _canonical):
+        assert owner_dir == pipeline_dir
+        assert [run["run_id"] for run in runs] == ["run-001", "run-002"]
+        calls.append("snapshot")
+
+    def observe_launch(_root, owner_dir, runs, *_args, **_kwargs):
+        assert owner_dir == pipeline_dir
+        assert [run["run_id"] for run in runs] == ["run-001", "run-002"]
+        calls.append("launch")
+        raise LaunchObserved
+
+    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "validated_execution_snapshot", validate_snapshot)
+    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", observe_launch)
+
+    with pytest.raises(LaunchObserved):
+        experiment_pipeline._run_attempts(
+            root,
+            pipeline_dir,
+            spec,
+            {"age": {}},
+            attempts,
+            poll_seconds=0,
+        )
+
+    assert calls == ["snapshot", "launch"]
+
+
 def test_run_attempts_blocks_on_external_missing_pid_capacity_blocker(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "external-v1"
