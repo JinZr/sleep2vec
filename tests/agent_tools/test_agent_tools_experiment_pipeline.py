@@ -332,6 +332,85 @@ def test_checkpoint_validation_rejects_averaging_and_requires_ahi_threshold(tmp_
         experiment_pipeline._validate_checkpoint_payload(checkpoint, "age", policy)
 
 
+@pytest.mark.parametrize("other_status", ["completed", "running"])
+def test_checkpoint_selection_stays_with_frozen_source_plan(tmp_path: Path, monkeypatch, other_status: str):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    source_plan_dir = Path(spec["checkpoint_sources"]["age"]["plan"])
+    source_config = tmp_path / "source-config.yaml"
+    source_config.write_text("model: source\n")
+    source_checkpoint_dir = tmp_path / "source-checkpoints"
+    source_checkpoint_dir.mkdir()
+    source_checkpoint = source_checkpoint_dir / "source.ckpt"
+    source_checkpoint.write_bytes(b"source")
+    other_config = tmp_path / "other-config.yaml"
+    other_config.write_text("model: other\n")
+    other_checkpoint_dir = tmp_path / "other-checkpoints"
+    other_checkpoint_dir.mkdir()
+    other_checkpoint = other_checkpoint_dir / "other.ckpt"
+    other_checkpoint.write_bytes(b"other")
+    step_id = "train-age"
+    source_run = {"step_id": step_id, "run_id": "run-001"}
+    source_plan = {
+        "recipe": {
+            "task": "hparam_tune",
+            "variant": "sleep2vec2",
+            "experiment": {"root": str(root)},
+            "step": {"id": step_id},
+            "inputs": {"label_name": "age"},
+        },
+        "runs": [source_run],
+    }
+    ranking = [
+        {
+            "step_id": step_id,
+            "run_id": "run-000",
+            "run_name": "other-plan-best",
+            "rank": "1",
+            "score": "3.0",
+            "config": str(other_config),
+            "checkpoint_path": str(other_checkpoint),
+        },
+        {
+            **source_run,
+            "run_name": "source-plan-best",
+            "rank": "2",
+            "score": "4.5",
+            "config": str(source_config),
+            "checkpoint_path": str(source_checkpoint),
+        },
+    ]
+    canonical = [
+        {
+            "step_id": step_id,
+            "run_id": "run-000",
+            "status": other_status,
+            "checkpoint_dir": str(other_checkpoint_dir),
+        },
+        {
+            **source_run,
+            "status": "completed",
+            "checkpoint_dir": str(source_checkpoint_dir),
+        },
+    ]
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda plan_dir: source_plan)
+    monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: canonical)
+    monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: ranking)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_checkpoint_payload",
+        lambda *_args: {"state_dict_key_count": 1, "has_ahi_eval_threshold": False},
+    )
+
+    selected = experiment_pipeline._select_checkpoint_sources(root, spec)
+
+    assert selected[0]["plan"] == str(source_plan_dir)
+    assert selected[0]["run_id"] == source_run["run_id"]
+    assert selected[0]["checkpoint"] == str(source_checkpoint)
+    assert selected[0]["score"] == 4.5
+
+
 def test_failed_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     _write_experiment(root)

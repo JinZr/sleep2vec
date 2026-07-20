@@ -683,12 +683,11 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[st
         step_id = str(recipe["step"]["id"])
         select_hparam_candidates(plan_dir, source["selection_metric"], source["selection_mode"])
         ranking = read_rows(root / "reports" / "ranking.csv", require_managed_identity=True)
-        selected = [
-            row for row in ranking if row.get("step_id") == step_id and str(row.get("rank") or "") in {"1", "1.0"}
-        ]
-        if len(selected) != 1:
-            raise ValueError(f"Expected one rank-1 checkpoint selection for source {source_id}.")
-        row = selected[0]
+        source_run_keys = {managed_run_key(run) for run in plan["runs"]}
+        candidates = [row for row in ranking if managed_run_key(row) in source_run_keys]
+        if not candidates:
+            raise ValueError(f"No ranked checkpoint selection is owned by source plan {source_id}.")
+        row = min(candidates, key=lambda candidate: int(candidate["rank"]))
         key = (str(row["step_id"]), str(row["run_id"]))
         canonical_row = canonical.get(key)
         if canonical_row is None or canonical_row.get("status") not in SUCCESS_STATUSES:
