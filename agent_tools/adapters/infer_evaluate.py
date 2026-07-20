@@ -72,6 +72,7 @@ class InferEvaluateAdapter(TaskAdapter):
     preset_path_recipe_field = "inference_preset_path"
     validates_dataset_paths = True
     uses_finetune_config = True
+    supports_runtime_identity = True
 
     def __init__(self, task: str, extra_decision_fields: frozenset[str]) -> None:
         self.task = task

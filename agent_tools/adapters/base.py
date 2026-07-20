@@ -82,6 +82,8 @@ class TaskAdapter:
     #: the kernel skips the generic single-run materialization and the flat
     #: command-emptiness preflight check.
     materializes_plan: bool = False
+    #: Task accepts a frozen Python/workdir/commit execution identity.
+    supports_runtime_identity: bool = False
 
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         """Full replacement for the kernel's per-section recipe contract walk

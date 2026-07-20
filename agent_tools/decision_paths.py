@@ -12,17 +12,17 @@ from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target", "workdir"}
 _RUNTIME_IDENTITY_FIELDS = {"python", "runtime_commit"}
 _RUNTIME_IDENTITY_REQUIRED_FIELDS = {*_RUNTIME_IDENTITY_FIELDS, "workdir"}
-_RUNTIME_IDENTITY_TASKS = {"evaluate", "infer"}
 
 
-def execution_contract_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
+def execution_contract_issues(
+    recipe: dict, *, source_layer: str, supports_runtime_identity: bool
+) -> list[DecisionIssue]:
     if "execution" not in recipe:
         return []
     execution = recipe["execution"]
     if not isinstance(execution, dict):
         return [_execution_contract_issue("execution", "execution must be a mapping.", execution, source_layer)]
-    task = str(recipe.get("task") or "")
-    allowed_fields = _EXECUTION_FIELDS | (_RUNTIME_IDENTITY_FIELDS if task in _RUNTIME_IDENTITY_TASKS else set())
+    allowed_fields = _EXECUTION_FIELDS | (_RUNTIME_IDENTITY_FIELDS if supports_runtime_identity else set())
     issues = []
     for field in sorted(set(execution) - allowed_fields):
         issues.append(
@@ -46,7 +46,7 @@ def execution_contract_issues(recipe: dict, *, source_layer: str) -> list[Decisi
                 source_layer,
             )
         )
-    if task not in _RUNTIME_IDENTITY_TASKS or not identity_fields:
+    if not supports_runtime_identity or not identity_fields:
         return issues
     for field in sorted(_RUNTIME_IDENTITY_REQUIRED_FIELDS - set(execution)):
         issues.append(
@@ -62,7 +62,7 @@ def execution_contract_issues(recipe: dict, *, source_layer: str) -> list[Decisi
         issues.append(
             _execution_contract_issue(
                 "execution.target",
-                "Explicit infer/evaluate runtime identity supports only local execution.",
+                "Explicit runtime identity supports only local execution.",
                 target,
                 source_layer,
             )

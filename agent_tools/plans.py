@@ -174,7 +174,13 @@ def _source_recipe_contract_issues(
         issues.extend(adapter_contract)
     else:
         issues.extend(task_rules.task_recipe_contract_issues(task, recipe, source_layer=source_layer))
-        issues.extend(path_rules.execution_contract_issues(recipe, source_layer=source_layer))
+        issues.extend(
+            path_rules.execution_contract_issues(
+                recipe,
+                source_layer=source_layer,
+                supports_runtime_identity=bool(adapter and adapter.supports_runtime_identity),
+            )
+        )
     issues.extend(_artifact_contract_issues(task, recipe, source_layer))
     return issues
 
@@ -748,7 +754,8 @@ def build_plan(
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         runtime_identity = (
             execution
-            if task in {"evaluate", "infer"}
+            if run_adapter is not None
+            and run_adapter.supports_runtime_identity
             and all(field in execution for field in ("python", "runtime_commit", "workdir"))
             else {}
         )
