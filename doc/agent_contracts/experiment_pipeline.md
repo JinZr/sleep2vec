@@ -113,11 +113,12 @@ managed row are defined in [run_manifest.md](run_manifest.md).
 ## Completion and finalization
 
 The pipeline succeeds only when every declared logical job has one verified
-successful attempt and no attempt remains active. The fixed v1 rollout requires
-all 19 jobs (19/19). It then writes `results.csv`, `metrics.csv`, `summary.md`,
-and `final.md` from all scalar manifest metrics, preserving non-finite values
-explicitly, including the frozen checkpoint, preset, runtime, and result path
-for each job.
+successful attempt and no attempt remains active. The user-selected `--spec`
+defines the job set; schema v1 does not impose a fixed matrix size. Every job
+frozen from that spec must complete (N/N). The pipeline then writes
+`results.csv`, `metrics.csv`, `summary.md`, and `final.md` from all scalar
+manifest metrics, preserving non-finite values explicitly, including the
+frozen checkpoint, preset, runtime, and result path for each job.
 
 The report is committed before `experiment-finalize`; the terminal experiment
 commit is the final mutation. A partial matrix, invalid manifest, exhausted

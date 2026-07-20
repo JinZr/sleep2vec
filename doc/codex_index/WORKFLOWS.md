@@ -176,7 +176,8 @@ The control flow is:
    package-local logical device 0 and isolated result roots;
 6. only confirmed failure or `launch_failed` receives one fresh retry, for at
    most two attempts;
-7. the complete 19-job v1 matrix writes its report before the final experiment
+7. after every job frozen from the user-selected `--spec` has one verified
+   success, the pipeline writes its N/N report before the final experiment
    commit.
 
 Existing pipeline state requires explicit `--resume --execute` and exact frozen

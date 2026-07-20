@@ -416,13 +416,13 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     assert not list(plan_dir.parent.glob(".attempt-001.*.staging"))
 
 
-def test_nineteen_job_matrix_launches_only_eight_parallel_gpu_attempts(tmp_path: Path):
+def test_jobs_exceeding_capacity_launch_only_available_gpu_slots(tmp_path: Path):
     root = tmp_path / "workspace"
     root.mkdir()
     experiment = {
         "id": "unit",
         "title": "Unit",
-        "objective": "Exercise the 19-job external scheduler.",
+        "objective": "Exercise external scheduler capacity.",
         "root": str(root),
         "baseline": {"type": "none"},
         "status": "active",
@@ -431,7 +431,7 @@ def test_nineteen_job_matrix_launches_only_eight_parallel_gpu_attempts(tmp_path:
     owner_dir = root / "pipelines" / "external-v1"
     owner_dir.mkdir(parents=True)
     runs = []
-    for index in range(19):
+    for index in range(9):
         run_id = f"run-{index:03d}"
         job_id = f"job-{index:02d}"
         run_dir = owner_dir / "plans" / job_id / "attempt-001" / "runs" / f"{run_id}--{job_id}"
@@ -503,7 +503,7 @@ def test_nineteen_job_matrix_launches_only_eight_parallel_gpu_attempts(tmp_path:
     assert started == [f"gpu={index}" for index in range(8)]
     assert built == started
     assert [row["status"] for row in result.committed_rows].count("launched") == 8
-    assert [row["status"] for row in result.committed_rows].count("pending") == 11
+    assert [row["status"] for row in result.committed_rows].count("pending") == 1
     assert sorted(row["gpus"] for row in result.committed_rows if row["status"] == "launched") == [
         str(index) for index in range(8)
     ]
