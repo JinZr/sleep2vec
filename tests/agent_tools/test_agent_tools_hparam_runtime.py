@@ -2289,6 +2289,67 @@ def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path
         hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
 
 
+def test_hparam_run_queue_fails_after_unbound_remote_launch_remains_unknown(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(
+        tmp_path,
+        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "launched"}],
+    )
+    observations = []
+    monkeypatch.setattr(
+        hparam_runtime.evidence,
+        "status_row",
+        lambda _root, observation, previous, **_kwargs: observations.append(observation)
+        or {**previous, **observation, "status": "unknown_remote"},
+    )
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
+
+    with pytest.raises(RuntimeError, match="unknown_remote without complete process identity"):
+        hparam_runtime.run_hparam_queue(tmp_path, dry_run=False)
+
+    assert len(observations) == 1
+    row = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert row["status"] == "unknown_remote"
+    assert all(row.get(field, "") == "" for field in ("pid", "process_group_id", "process_start_token"))
+
+
+def test_hparam_run_queue_keeps_monitoring_bound_unknown_remote(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(
+        tmp_path,
+        [
+            {
+                "run_id": "run-000",
+                "target": "ssh",
+                "host": "unit-host",
+                "status": "unknown_remote",
+                **_process_identity(),
+            }
+        ],
+    )
+    observations = iter(["unknown_remote", "finished"])
+    monkeypatch.setattr(
+        hparam_runtime.evidence,
+        "status_row",
+        lambda _root, observation, previous, **_kwargs: {
+            **previous,
+            **observation,
+            "status": next(observations),
+        },
+    )
+    launch_calls = []
+    sleeps = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "launch_hparam_runs",
+        lambda *_args, **_kwargs: launch_calls.append(True) or tmp_path / "launch_manifest.tsv",
+    )
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert hparam_runtime.run_hparam_queue(tmp_path, dry_run=False, poll_seconds=1) == tmp_path / "run_status.tsv"
+    assert launch_calls == [True]
+    assert sleeps == [1]
+
+
 def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

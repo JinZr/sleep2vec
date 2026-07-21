@@ -95,6 +95,18 @@ def run_hparam_queue(
         if missing_pid:
             step_id, run_id = missing_pid[0]
             raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
+        unbound_unknown_remote = sorted(
+            key
+            for key in expected_keys
+            if rows_by_key[key].get("status") == "unknown_remote"
+            and any(rows_by_key[key].get(field) in (None, "") for field in PROCESS_IDENTITY_FIELDS)
+        )
+        if unbound_unknown_remote:
+            step_id, run_id = unbound_unknown_remote[0]
+            raise RuntimeError(
+                f"Hparam queue cannot advance because {step_id} / {run_id} has status "
+                "unknown_remote without complete process identity; launch outcome is uncertain."
+            )
 
         launch_hparam_runs(run_dir, dry_run=False, fail_on_missing_pid_blocker=True)
         rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
