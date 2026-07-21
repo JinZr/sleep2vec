@@ -93,8 +93,8 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
         "execution_identity": {field: recipe["execution"][field] for field in _EXECUTION_IDENTITY_FIELDS},
         "root": str(root),
         "external_optimized": True,
-        "objective_metric": _adaptive(recipe).get("objective_metric", "test_auroc"),
-        "objective_mode": _adaptive(recipe).get("objective_mode", "max"),
+        "objective_metric": str(_adaptive(recipe).get("objective_metric") or "test_auroc"),
+        "objective_mode": str(_adaptive(recipe).get("objective_mode") or "max"),
     }
     write_json(adaptive_dir / "workflow.json", workflow)
     _append_event(root, "adaptive_init", {"round": 0, "recipe_path": str(recipe_path), "round_dir": str(round_dir)})
@@ -1251,6 +1251,10 @@ def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -
         or any(frozen.get(field) in (None, "") for field in _EXECUTION_IDENTITY_FIELDS)
     ):
         raise ValueError("Adaptive workflow lacks frozen execution identity.")
+    adaptive = _adaptive(recipe)
+    for field, default in (("objective_metric", "test_auroc"), ("objective_mode", "max")):
+        if str(adaptive.get(field) or default) != str(workflow.get(field) or default):
+            raise ValueError(f"Adaptive source adaptive.{field} differs from the frozen workflow.")
     current = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     for field in _EXECUTION_IDENTITY_FIELDS:
         value = current.get(field)

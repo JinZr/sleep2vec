@@ -4,7 +4,23 @@ User-decision files resolve high-impact ambiguity with explicit user intent. The
 
 Decision names are task-aware: each name must be applicable to the current task through `agent_policies/consultation_policy.yaml` or an existing owner-local optional decision. Mapping entries accept only `value`, `source`, `meaning`, `question`, and `rationale`; scalar shorthand is also accepted. Unknown names and misspelled entry fields fail before context or plan output is written.
 
-Concrete values with a task-owned canonical field are materialized into the effective recipe's existing `inputs`, `evaluation_policy`, `preset`, `search`, or artifact fields before config inspection and consultation are rerun. Policy-only choices remain under `decisions` rather than creating inert canonical fields. In particular, non-preset `required_channels` is checked against the selected config, `preset_regeneration` remains decision evidence while `preset.overwrite` controls the rendered overwrite flag, and hparam `ckpt_path` selects only the final-evaluation checkpoint. A user `task` may fill a missing recipe task but cannot replace an explicit recipe task. For layered hparam recipes, the user task is compared with the local overlay rather than the base finetune task. `train_val_test_policy` must be exactly `train`, `val`, or `test`; descriptive text is not interpreted as a split.
+Concrete values with a task-owned canonical field are materialized into the
+effective recipe's existing `inputs`, `evaluation_policy`, `preset`, `search`,
+or artifact fields before config inspection and consultation are rerun.
+Policy-only choices remain under `decisions` rather than creating inert
+canonical fields.
+
+Special cases are explicit:
+
+- Non-preset `required_channels` is checked against the selected config.
+- `preset_regeneration` remains decision evidence; `preset.overwrite` controls
+  the rendered overwrite flag.
+- Hparam `ckpt_path` selects only the final-evaluation checkpoint.
+- A user `task` may fill a missing recipe task but cannot replace an explicit
+  recipe task. For layered hparam recipes, it is compared with the local
+  overlay rather than the base finetune task.
+- `train_val_test_policy` must be exactly `train`, `val`, or `test`;
+  descriptive text is not interpreted as a split.
 
 ```yaml
 decisions:
@@ -32,4 +48,9 @@ Resolution precedence is:
 5. explicit config field
 6. ambiguous or missing
 
-An empty or `ASK_USER` config decision remains unresolved. For other fields, empty values are not materialized and the field-specific consultation rule determines whether they block. The one intentional null semantic is `pretrained_backbone_path: null`, which explicitly selects training without a pretrained backbone. Concrete materialized values use only the canonical field and do not create an alternate semantic source.
+An empty or `ASK_USER` config decision remains unresolved. For other fields,
+empty values are not materialized, and the field-specific consultation rule
+determines whether they block. The one intentional null semantic is
+`pretrained_backbone_path: null`, which explicitly selects training without a
+pretrained backbone. Concrete materialized values use only the canonical field
+and do not create an alternate semantic source.

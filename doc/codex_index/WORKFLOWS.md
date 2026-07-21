@@ -165,78 +165,63 @@ The control flow is:
    pending work;
 6. finalization requires no active runs and a non-empty report.
 
-Runnable preflight validates relative runtime paths from the same frozen
-workdir used by the generated command, while planning-source config locators
-remain repository-relative. Frozen Python identity is one executable token;
-Conda wrapping is a separate hparam execution field.
+Runnable plans bind the exact config bytes accepted by consultation and
+materialize from that immutable snapshot. Runtime-semantic relative paths are
+validated from the frozen workdir, while planning-source config locators remain
+repository-relative. Structural config ownership may constrain recipe
+`variant`; filename- or directory-derived guesses are diagnostic only. See
+[task_recipe.md](../agent_contracts/task_recipe.md) for recipe, path, runtime
+identity, and adaptive semantics.
 
-`experiment-run` adds one explicit, resumable external-evaluation flow:
+### Managed state and launching
 
-1. dry-run validates the strict v1 spec and starts no process;
-2. execute waits until every declared hparam source is successful and inactive;
-3. the validation-ranking owner selects and freezes one checkpoint per source;
-4. all external recipes pass consultation and final-test unlock preflight before
-   launch;
-5. managed jobs run package-local inference on assigned physical GPUs with
-   package-local logical device 0 and isolated result roots;
-6. only canonical runtime `failed` or `launch_failed` receives one fresh retry;
-   result-manifest verification failures remain logical, non-retryable job
-   failures;
-7. after every job frozen from the user-selected `--spec` has one verified
-   success, the pipeline writes its N/N report before the final experiment
-   commit.
+`run_manifest.tsv` is the only lifecycle and execution-identity owner. Status
+tables, matrices, events, and reports are projections. Managed launches use a
+dedicated process group with PID, group, and OS start-token evidence; uncertain
+identity never authorizes relaunch or retry. Stop verifies and signals the full
+group before committing `stopped`.
 
-Existing pipeline state requires explicit `--resume --execute` and exact frozen
-spec, source, checkpoint, config, and runtime identity. Uncertain process
-identity is never permission to retry. External metrics are report-only and do
-not feed checkpoint selection. `hparam-monitor` and `experiment-monitor` remain
-non-launching throughout this flow.
+`hparam-launch` starts one capacity-limited wave, while
+`hparam-run-queue --execute` owns continuous queue advancement. Monitor commands
+remain non-launching. Workspace layout and lifecycle entrypoints are defined in
+[experiment_workspace.md](../agent_contracts/experiment_workspace.md); reducer,
+commit, process, and evidence rules are defined in
+[run_manifest.md](../agent_contracts/run_manifest.md).
 
-A successful plan binds the exact config bytes accepted by consultation and
-materializes from that immutable snapshot even if the source path changes
-later. Structural config-family ownership may constrain recipe `variant`;
-filename- or directory-derived variant guesses are diagnostic only.
+### External evaluation
 
-Step and run manifests commit through their canonical merge-and-compare-swap
-owners. Remote run matrices are version-checked projections of
-`run_manifest.tsv`, and experiment finalization publishes the report before
-the terminal experiment manifest. Managed launches create a dedicated process
-group and freeze its PID, process-group id, and OS start token. Launch timeout
-is unresolved evidence rather than permission to retry; a timeout-derived first
-fill also matches the live leader command to the frozen launch script. Stop
-verifies that identity, signals the full group, and records `stopped` only after exit.
-Lifecycle-enabled scripts own their terminal success/failure commit, so their
-uncommitted process-group disappearance is failure rather than inferred
-success. Hparam launch scripts instead leave terminal inference to their
-monitor after confirmed process exit.
+`experiment-run` owns the resumable validation-to-external-test flow. It
+validates the strict spec without launching in dry-run mode, waits for successful
+managed sources, freezes validation-selected checkpoints, preflights every
+external recipe, and runs package-local inference in isolated result roots.
+Existing state resumes only with its exact frozen identity. Only explicit
+retryable canonical failures receive a fresh attempt; uncertain identity or
+result-manifest validation failure does not. External metrics remain report-only,
+and finalization requires one verified success for every declared job.
 
-Public facades are `decisions.py`, `plans.py`, `hparam.py`, and
-`experiments.py`. Shared managed scheduling lives in `managed_scheduler`, while
-external-matrix policy lives in `experiment_pipeline`. Task-specific behavior
-extends the adapter/domain layers; managed workspace identity and
-`run_manifest.tsv` remain canonical owners.
-Follow [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and
-[`doc/agent_contracts/`](../agent_contracts/) for detailed machine contracts.
+The complete spec, retry, result-manifest, and finalization contract is in
+[experiment_pipeline.md](../agent_contracts/experiment_pipeline.md).
 
-Adaptive tuning defaults to `agent_proposal` when strategy is omitted. It uses
-a terminal-only two-phase handshake: `hparam-adaptive-step` writes and records
-the full-file hash of a tool-issued proposal-input v2 snapshot under
-`adaptive/proposal_inputs/`. Explicit `best_neighborhood` remains available
-for automatic neighborhood suggestions and active-round replacement. The
-default proposal workflow also binds its request id to the exact source config
-bytes. An external agent may write only the
-named submission under `adaptive/proposal_submissions/`; a second invocation
-previews or explicitly executes the bounded proposal. Phase two requires the
-matching issuance and snapshot bytes, then rebuilds the input from current
-canonical workflow state before and after candidate preflight. Config or
-canonical-state drift therefore fails before lifecycle mutation. Execute
-freezes the verified source-config bytes inside the next round and materializes
-from the validated in-memory proposal rather than re-reading the suggestion.
-Existing v1 input snapshots must be regenerated. Agent proposals cannot own
-replacement, planning, launch, or `run_manifest.tsv` lifecycle state.
+### Adaptive proposals
 
-The shared Codex index only supplies navigation paths in context bundles. It
-does not authorize commands or replace live repository inspection.
+Adaptive tuning defaults to terminal-only `agent_proposal`; automatic
+neighborhood suggestions and active replacement require explicit
+`best_neighborhood`. The proposal flow uses a tool-issued input v2 snapshot that
+binds the exact source config bytes and a single named external submission.
+Phase two authenticates the issuance, reconstructs current canonical evidence,
+and repeats validation around candidate preflight before any lifecycle mutation.
+The external agent proposes only the search space; planning, launch, and
+`run_manifest.tsv` state remain tool-owned.
+
+The detailed handshake is defined in
+[task_recipe.md](../agent_contracts/task_recipe.md). Public facades remain
+`decisions.py`, `plans.py`, `hparam.py`, and `experiments.py`; shared scheduling
+lives in `managed_scheduler`, external-matrix policy in `experiment_pipeline`,
+and task-specific behavior in adapters/domain modules. See
+[`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) for layering.
+
+This index supplies navigation only. It does not authorize commands or replace
+live repository inspection.
 
 ## Variants And Routing
 

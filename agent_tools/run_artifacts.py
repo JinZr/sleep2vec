@@ -326,13 +326,6 @@ def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str
     if manifest_epoch is not None:
         matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
         return str(matched) if matched else ""
-    checkpoints = [
-        path
-        for path in sorted(checkpoint_dir.glob("epoch=*.ckpt"))
-        if not path.is_symlink() and path.is_file() and path.resolve().parent == resolved_dir
-    ]
-    if checkpoints:
-        return str(checkpoints[-1])
     return ""
 
 
@@ -377,8 +370,7 @@ def fixed_checkpoint_path_from_names(
             if candidate.startswith("epoch=") and epoch_number_from_checkpoint_name(candidate) == manifest_epoch:
                 return str(checkpoint_dir / candidate)
         return ""
-    epochs = sorted(name for name in names if name.startswith("epoch="))
-    return str(checkpoint_dir / epochs[-1]) if epochs else ""
+    return ""
 
 
 def checkpoint_names(run: dict[str, Any]) -> list[str]:

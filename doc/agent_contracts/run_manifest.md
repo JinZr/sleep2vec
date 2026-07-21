@@ -78,11 +78,40 @@ No caller reads or writes `run_manifest.tsv` directly.
 
 ## PID and runtime evidence
 
-New managed launches create a dedicated session/process group and write one JSON identity file containing exactly `pid`, `process_group_id`, and `process_start_token`. The PID must be the process-group leader. Monitoring compares this file with the frozen canonical values and the live OS start token, so a reused PID is not accepted as the managed workload. Historical integer-only PID files are insufficient for script-owned process control and fail closed.
+New managed launches create a dedicated OS session and process group. They
+write one JSON identity file containing exactly `pid`, `process_group_id`, and
+`process_start_token`.
+
+- The PID must be the process-group leader.
+- Monitoring compares the file with frozen canonical values and the live OS
+  start token, so a reused PID is not accepted as the managed workload.
+- Historical integer-only PID files are insufficient for script-owned process
+  control and fail closed.
 
 If those canonical process fields are still blank after an unresolved launch, monitoring or stop may fill them only after the live leader command matches the frozen absolute launch script. Monitoring and stop reject a partially populated canonical process identity.
 
-Only confirmed absence means no process identity. Empty, malformed, non-positive, aliased, or invalid-encoding local identity content is confirmed corrupt and makes launchable scheduled state non-launchable `missing_pid`. A local identity that names an already-dead leader before the canonical process fields were bound also becomes `missing_pid`; monitoring does not bind it or infer terminal success or failure. The equivalent unbound remote evidence remains `unknown_remote`. A local path/read `OSError` while scheduled aborts before mutation. Remote permission, type, decoding, transport, and timeout failures produce recoverable `unknown_remote` monitoring evidence. A launch-command timeout is also unresolved rather than `launch_failed`: the attempted run remains active until identity monitoring proves its state, preventing a duplicate launch after a transport timeout. Stop propagates identity uncertainty before signal or mutation, rejects terminal rows before identity access, verifies and signals atomically on SSH, sends `SIGTERM` to the complete process group, and commits `stopped` only after the group has exited.
+Only confirmed absence means no process identity. Other evidence is handled as
+follows:
+
+- Empty, malformed, non-positive, aliased, or invalid-encoding local identity
+  content is corrupt and makes launchable scheduled state non-launchable
+  `missing_pid`.
+- A local identity naming an already-dead leader before canonical process fields
+  were bound also becomes `missing_pid`; monitoring does not bind it or infer a
+  terminal result.
+- Equivalent unbound remote evidence remains `unknown_remote`.
+- A local path/read `OSError` while scheduled aborts before mutation. Remote
+  permission, type, decoding, transport, and timeout failures produce
+  recoverable `unknown_remote` monitoring evidence.
+- A launch-command timeout or SSH transport return code `255` is unresolved
+  rather than `launch_failed`. The attempted run remains active until identity
+  monitoring proves its state, preventing a duplicate launch after transport
+  uncertainty.
+
+Stop propagates identity uncertainty before signal or mutation and rejects
+terminal rows before identity access. On SSH it verifies and signals atomically.
+It sends `SIGTERM` to the complete process group and commits `stopped` only
+after the group has exited.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
 identity, it records `process_identity_error` with the canonical status update.

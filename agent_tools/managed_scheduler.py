@@ -1198,7 +1198,6 @@ def build_launch_command(
 
 
 def start_process(execution: dict[str, Any], command: str) -> str:
-    del execution
     try:
         result = subprocess.run(
             ["bash", "-lc", command],
@@ -1208,6 +1207,9 @@ def start_process(execution: dict[str, Any], command: str) -> str:
         )
     except subprocess.TimeoutExpired:
         # A detached child may already exist when the transport times out; monitoring must reconcile it.
+        return "launched"
+    if execution.get("target", "local") == "ssh" and result.returncode == 255:
+        # SSH may disconnect after starting the detached child; monitoring must reconcile its identity.
         return "launched"
     return "launched" if result.returncode == 0 else "launch_failed"
 
