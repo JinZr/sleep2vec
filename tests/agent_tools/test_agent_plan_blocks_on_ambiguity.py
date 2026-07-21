@@ -906,6 +906,72 @@ def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: 
     assert not (output_dir / "run.sh").exists()
 
 
+@pytest.mark.parametrize("value", ["true", "false", 0, 1, [], {}])
+def test_plan_rejects_non_boolean_external_test_lock(tmp_path: Path, value: object):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = tmp_path / "workspace"
+    payload["experiment"]["root"] = str(workspace)
+    payload["evaluation_policy"]["external_test_locked"] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = workspace / "plans" / "invalid"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "external_test_locked must be a YAML boolean" in result.stdout
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize("value", [None, "", "ASK_USER"])
+def test_plan_blocks_unresolved_external_test_lock(tmp_path: Path, value: object):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = tmp_path / "workspace"
+    payload["experiment"]["root"] = str(workspace)
+    payload["evaluation_policy"]["external_test_locked"] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = workspace / "plans" / "unresolved"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "external_test_locked must be explicitly true or false" in result.stdout
+    assert not workspace.exists()
+
+
+def test_plan_rejects_non_boolean_external_test_lock_user_decision(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"external_test_locked": {"value": 1, "source": "explicit_user"}}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "external_test_locked must be a YAML boolean" in result.stdout
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize("value", [None, "", "ASK_USER"])
+def test_plan_reports_unresolved_external_test_lock_user_decision_once(tmp_path: Path, value: object):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"external_test_locked": {"value": value, "source": "explicit_user"}}},
+    )
+
+    _, _, report = plans.evaluate_recipe(recipe, decisions)
+
+    matching = [issue for issue in report.blocking_issues() if issue.field == "external_test_locked"]
+    assert report.exit_code == 2
+    assert len(matching) == 1
+
+
 @pytest.mark.parametrize(
     ("field", "value", "config_field"),
     [

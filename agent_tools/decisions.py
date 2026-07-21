@@ -298,6 +298,33 @@ def evaluate_consultation_gates(
     ):
         decisions[optional_field] = _resolve_decision(optional_field, recipe, config_summary, cli_args, user_decisions)
 
+    external_test_locked = decisions["external_test_locked"]
+    if external_test_locked.source != "missing":
+        unresolved_recipe_value = external_test_locked.value in (None, "") and "recipe" in external_test_locked.evidence
+        if external_test_locked.value == "ASK_USER" or unresolved_recipe_value:
+            if not any(issue.field == "external_test_locked" for issue in issues):
+                issues.append(
+                    needs_issue(
+                        "external_test_locked",
+                        "external_test_locked must be explicitly true or false.",
+                        high_impact,
+                        {
+                            "value": external_test_locked.value,
+                            "source": external_test_locked.source,
+                            "preflight_before_workspace": True,
+                        },
+                    )
+                )
+        elif external_test_locked.value not in (None, "") and type(external_test_locked.value) is not bool:
+            issues.append(
+                _contract_issue(
+                    "external_test_locked",
+                    "external_test_locked must be a YAML boolean.",
+                    external_test_locked.value,
+                    external_test_locked.source,
+                )
+            )
+
     if task_adapter is not None and task_adapter.base_task is not None:
         issues.extend(_base_task_issues(task_adapter.base_task, recipe, config_summary, cli_args, policy))
     issues.extend(_task_specific_issues(str(task_value), recipe, config_summary, decisions, high_impact))
