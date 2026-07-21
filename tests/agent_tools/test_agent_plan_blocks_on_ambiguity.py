@@ -957,6 +957,74 @@ def test_plan_rejects_non_boolean_external_test_lock_user_decision(tmp_path: Pat
     assert not output_dir.exists()
 
 
+@pytest.mark.parametrize("decision_owner", ["recipe", "user"])
+@pytest.mark.parametrize("value", ["false", 0])
+def test_plan_rejects_non_boolean_external_test_lock_with_missing_declared_source(
+    tmp_path: Path, decision_owner: str, value: object
+):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source)
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = tmp_path / "workspace"
+    payload["experiment"]["root"] = str(workspace)
+    decisions = None
+    if decision_owner == "recipe":
+        payload["decisions"]["external_test_locked"] = {"value": value, "source": "missing"}
+    else:
+        decisions = write_yaml(
+            tmp_path / "decisions.yaml",
+            {"decisions": {"external_test_locked": {"value": value, "source": "missing"}}},
+        )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = workspace / "plans" / "invalid"
+    args = ["plan", "--recipe", str(recipe), "--output-dir", str(output_dir)]
+    if decisions is not None:
+        args.extend(["--user-decisions", str(decisions)])
+
+    result = _run(*args)
+
+    assert result.returncode == 1
+    assert "external_test_locked must be a YAML boolean" in result.stdout
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize("decision_owner", ["recipe", "user"])
+@pytest.mark.parametrize("value", [None, "", "ASK_USER"])
+def test_plan_reports_unresolved_external_test_lock_with_missing_declared_source_once(
+    tmp_path: Path, decision_owner: str, value: object
+):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = None
+    if decision_owner == "recipe":
+        payload = yaml.safe_load(recipe.read_text())
+        payload["decisions"]["external_test_locked"] = {"value": value, "source": "missing"}
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    else:
+        decisions = write_yaml(
+            tmp_path / "decisions.yaml",
+            {"decisions": {"external_test_locked": {"value": value, "source": "missing"}}},
+        )
+
+    _, _, report = plans.evaluate_recipe(recipe, decisions)
+
+    matching = [issue for issue in report.blocking_issues() if issue.field == "external_test_locked"]
+    assert report.exit_code == 2
+    assert len(matching) == 1
+
+
+def test_plan_keeps_missing_external_test_lock_task_owned(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("external_test_locked")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _, _, report = plans.evaluate_recipe(recipe)
+
+    matching = [issue for issue in report.blocking_issues() if issue.field == "external_test_locked"]
+    assert report.exit_code == 2
+    assert [issue.message for issue in matching] == ["external_test_locked must be explicit for finetune."]
+
+
 @pytest.mark.parametrize("value", [None, "", "ASK_USER"])
 def test_plan_reports_unresolved_external_test_lock_user_decision_once(tmp_path: Path, value: object):
     recipe = write_finetune_recipe(tmp_path)
