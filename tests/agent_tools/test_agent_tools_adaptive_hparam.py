@@ -1376,6 +1376,74 @@ def test_adaptive_source_rejects_frozen_execution_identity_drift_before_suggesti
     assert events_path.read_bytes() == events_before
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("objective_metric", "val_loss"), ("objective_mode", "min")],
+)
+def test_adaptive_source_rejects_frozen_objective_drift_before_suggestion_write(tmp_path: Path, field: str, value: str):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73, "val_loss": 0.42}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"][field] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match=rf"adaptive\.{field} differs"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert events_path.read_bytes() == events_before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("objective_metric", "val_loss"), ("objective_mode", "min")],
+)
+def test_agent_proposal_source_rejects_frozen_objective_drift_before_digest_write(
+    tmp_path: Path, field: str, value: str
+):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"][field] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match=rf"adaptive\.{field} differs"):
+        adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "digests").exists()
+    assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()
+    assert events_path.read_bytes() == events_before
+
+
+def test_adaptive_source_accepts_equivalent_default_objective_after_init(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["objective_metric"] = None
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"].pop("objective_metric")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    suggestion = adaptive_hparam.suggest_next_round(workflow_dir)
+
+    workflow = json.loads((workflow_dir / "adaptive" / "workflow.json").read_text())
+    assert workflow["objective_metric"] == "test_auroc"
+    assert suggestion.exists()
+
+
 def test_adaptive_init_initializes_fresh_experiment_root(tmp_path: Path):
     source_dir = tmp_path / "source"
     recipe = _adaptive_recipe(source_dir)

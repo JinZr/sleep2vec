@@ -188,12 +188,14 @@ The optional `adaptive` block defines append-only rounds bounded by
   positive YAML integers; replacement grace and margin values must be finite
   and non-negative.
 - Test or external objectives require explicit test-feedback authorization.
-- Initialization resolves `execution.python` and `execution.runtime_commit`
-  once for round 000 and stores them as workflow-wide execution identity.
-- Later rounds re-read the mutable source recipe, reject conflicting identity,
-  and carry the frozen identity forward. Other operational execution fields,
-  including concurrency, GPU allocation, and `env`, remain source-controlled
-  subject to normal preflight. Each round plan remains immutable.
+- Initialization resolves `execution.python`, `execution.runtime_commit`,
+  `adaptive.objective_metric`, and `adaptive.objective_mode` once for round 000
+  and stores them as workflow-wide frozen values.
+- Later rounds re-read the mutable source recipe, reject conflicting execution
+  identity or objective values, and carry the frozen values forward. Other
+  operational execution fields, including concurrency, GPU allocation, and
+  `env`, remain source-controlled subject to normal preflight. Each round plan
+  remains immutable.
 - The source recipe and every suggestion pass read-only preflight before digest,
   suggestion, or event artifacts are written. Earlier round plans, configs,
   logs, and checkpoints are not rewritten.
