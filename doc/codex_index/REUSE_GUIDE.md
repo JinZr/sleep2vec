@@ -134,22 +134,20 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 
 ## Major Duplication Risks
 
-1. Manual model construction beside the registry/builder path.
-2. A second interpretation of `available_channels` or batch channel selection.
-3. A Kaldi-only collate shape that diverges from `DefaultDataset`.
-4. Separate AHI metric or threshold logic in inference, sleep2stat reducers, or plots.
-5. Trainer-local survival/multilabel sidecar parsing or disease ordering.
-6. Result CSV writers outside `results.py` for the same artifact family.
-7. Repeated checkpoint state-dict selection or averaging code.
-8. Split and preset tools using different `*_mask` truthiness.
-9. Cross-imports between root, `sleep2vec2`, and `sleep2expert` namespaces.
-10. A second sleep2stat stage-mask or denominator implementation.
-11. An analyzer writing bundle files directly instead of returning results to the writer.
-12. Agent commands parsing canonical manifests independently of workspace owners.
-13. New task-name branches in the agent kernel instead of adapters.
-14. A second trainer, preprocessing engine, or analysis executor created for agent workflows.
-15. Manual MoE checkpoint surgery or persistent reads of transient router auxiliary state.
-16. A shell or heartbeat loop that duplicates the managed external pipeline or treats monitoring as a launcher.
+- Keep model construction, checkpoint selection/averaging, metrics, and result
+  writing in their existing builders and artifact owners.
+- Preserve one `DefaultDataset` batch contract across NPZ and Kaldi. Do not
+  reinterpret channel availability, mask truthiness, sidecars, or disease order
+  in callers.
+- Keep root, `sleep2vec2`, and `sleep2expert` package-local. Use the MoE owners
+  for routing, regularization, and compact export instead of checkpoint surgery.
+- Reuse sleep2stat stage-source, reducer, and bundle-writer owners; analyzers
+  return results rather than writing bundle artifacts directly.
+- Extend agent tasks through adapters and canonical workspace owners. Do not
+  parse managed manifests in callers or create an agent-specific trainer,
+  preprocessing engine, or analysis executor.
+- Use the managed external pipeline for wait/select/launch/finalize loops;
+  monitoring remains observational.
 
 ## Non-Reuse Zones
 
