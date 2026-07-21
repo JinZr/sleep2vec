@@ -22,7 +22,8 @@ An experiment workspace is the durable, human-readable record for related prepar
 │   ├── checkpoints.json
 │   ├── preflight.json
 │   ├── jobs.tsv
-│   ├── execution_snapshot.json
+│   ├── execution_snapshot.json  # single-variant initial scheduler
+│   ├── initial_schedulers/<variant>/execution_snapshot.json  # multi-variant initial schedulers
 │   ├── results.csv
 │   ├── metrics.csv
 │   ├── summary.md
