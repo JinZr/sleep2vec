@@ -452,6 +452,9 @@ def test_hparam_select_requires_checkpoint_evidence_for_finite_score(tmp_path: P
     run = _first_run(plan_dir)
     runtime_dir = Path(run["runtime_dir"])
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "epoch=1.ckpt").write_text("unbound checkpoint")
     (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
 
     with pytest.raises(ValueError, match="No valid val_ahi_pearson scores"):
@@ -524,6 +527,17 @@ def test_fixed_checkpoint_requires_the_manifest_epoch_from_remote_names(tmp_path
     )
 
     assert path == ""
+
+
+def test_fixed_checkpoint_rejects_unbound_local_and_remote_epochs(tmp_path: Path):
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    for epoch in (1, 2):
+        (checkpoint_dir / f"epoch={epoch}.ckpt").write_text("checkpoint")
+    names = ["epoch=1.ckpt", "epoch=2.ckpt", "last.ckpt"]
+
+    assert run_artifacts.fixed_checkpoint_path({}, checkpoint_dir) == ""
+    assert run_artifacts.fixed_checkpoint_path_from_names({}, checkpoint_dir, names) == ""
 
 
 def test_fixed_checkpoint_accepts_same_epoch_best_only_locally_and_remotely(tmp_path: Path):
