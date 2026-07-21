@@ -257,6 +257,7 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
         root / "run_manifest.tsv",
         rows,
     )
+    (root / "run_manifest.tsv.lock").touch()
     manifests.write_rows(root / "launch_manifest.tsv", rows)
     manifests.write_rows(root / "run_status.tsv", rows)
     return rows
@@ -1615,29 +1616,81 @@ def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path
     assert not (tmp_path / "events.jsonl").exists()
 
 
-def test_hparam_stop_mirrors_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
+def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
         [{"run_id": "run-000", "status": "running", **_process_identity()}],
     )
-    _write_process_identity(rows[0]["pid_path"])
-    merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": "running"}])
+    identity = _write_process_identity(rows[0]["pid_path"])
     real_merge = merge_run_manifest
+    monitor_commit_ready = threading.Event()
+    release_monitor_commit = threading.Event()
+    monitor_failures = []
 
-    def merge_after_wandb_update(root, rows, **_kwargs):
-        real_merge(root, [{"step_id": "train-model", "run_id": "run-000", "status": "failed"}])
-        return real_merge(root, rows)
+    def competing_merge(root, rows, **kwargs):
+        if threading.current_thread().name == "competing-hparam-monitor":
+            monitor_commit_ready.set()
+            assert release_monitor_commit.wait(timeout=5)
+        return real_merge(root, rows, **kwargs)
 
-    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_wandb_update)
-    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args: None)
+    def monitor():
+        try:
+            hparam_runtime.monitor_hparam_runs(tmp_path)
+        except Exception as exc:
+            monitor_failures.append(exc)
+
+    monitor_thread = threading.Thread(target=monitor, name="competing-hparam-monitor")
+    stopped = []
+
+    def stop_while_monitor_commits(_row, observed):
+        stopped.append(observed)
+        monitor_thread.start()
+        assert monitor_commit_ready.wait(timeout=5)
+        lock_probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import fcntl, sys\n"
+                    "with open(sys.argv[1], 'a+') as lock_file:\n"
+                    "    try:\n"
+                    "        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                    "    except BlockingIOError:\n"
+                    "        raise SystemExit(1)\n"
+                    "raise SystemExit(0)\n"
+                ),
+                str(tmp_path / "run_manifest.tsv.lock"),
+            ],
+        )
+        try:
+            assert lock_probe.returncode == 1
+        finally:
+            release_monitor_commit.set()
+
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", competing_merge)
+    monkeypatch.setattr(
+        hparam_runtime.scheduler,
+        "observe_run",
+        lambda _root, observation, _prior, **_kwargs: {**observation, "status": "finished"},
+    )
+    monkeypatch.setattr(run_evidence, "stop_process_group", stop_while_monitor_commits)
 
     hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
+    monitor_thread.join(timeout=5)
 
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
-    assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "failed"
+    assert not monitor_thread.is_alive()
+    assert monitor_failures == []
+    assert stopped == [identity]
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == "manual stop"
+    assert _read_table(tmp_path / "run_status.tsv")[0] == canonical
+    assert _read_table(tmp_path / "launch_manifest.tsv")[0] == canonical
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
+    assert not any(
+        event.get("event_type") == "run_status_changed" and event.get("to") == "finished" for event in events
+    )
 
 
 @pytest.mark.parametrize(

@@ -344,74 +344,75 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
             root / "run_status.tsv",
         ],
     )
-    workspace_rows = read_run_manifest(workspace)
-    workspace_by_key = {managed_run_key(item): item for item in workspace_rows}
-    missing = expected_keys - set(workspace_by_key)
-    if missing:
-        step_id, missing_run_id = sorted(missing)[0]
-        raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {missing_run_id}")
-    matched = [run for run in plan["runs"] if run.get("run_id") == run_id]
-    if not matched:
-        raise ValueError(f"Unknown run_id: {run_id}")
-    if len(matched) > 1:
-        raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
-    key = managed_run_key(matched[0])
-    previous = workspace_by_key[key]
-    missing_execution_identity = {
-        field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
-    }
-    if previous.get("target") in (None, ""):
-        missing_execution_identity.add("target")
-    if missing_execution_identity:
-        raise ValueError(
-            f"Canonical run is missing execution identity for {run_id}: {', '.join(sorted(missing_execution_identity))}"
+    with scheduler.managed_run_lock(workspace):
+        workspace_rows = read_run_manifest(workspace)
+        workspace_by_key = {managed_run_key(item): item for item in workspace_rows}
+        missing = expected_keys - set(workspace_by_key)
+        if missing:
+            step_id, missing_run_id = sorted(missing)[0]
+            raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {missing_run_id}")
+        matched = [run for run in plan["runs"] if run.get("run_id") == run_id]
+        if not matched:
+            raise ValueError(f"Unknown run_id: {run_id}")
+        if len(matched) > 1:
+            raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
+        key = managed_run_key(matched[0])
+        previous = workspace_by_key[key]
+        missing_execution_identity = {
+            field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
+        }
+        if previous.get("target") in (None, ""):
+            missing_execution_identity.add("target")
+        if missing_execution_identity:
+            raise ValueError(
+                f"Canonical run is missing execution identity for {run_id}: {', '.join(sorted(missing_execution_identity))}"
+            )
+        if previous.get("status") in TERMINAL_STATUSES:
+            raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
+        target = previous.get("target")
+        if target not in {"local", "ssh"}:
+            raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
+        host = previous.get("host")
+        if target == "ssh" and (not isinstance(host, str) or not host.strip()):
+            raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+        populated_process_fields = {field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")}
+        if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
+            missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
+            raise ValueError(f"Canonical run has partial process identity for {run_id}; missing: {missing}")
+        remote_host = str(host) if target == "ssh" else None
+        exp_io.validate_managed_output_paths(
+            workspace,
+            [previous["pid_path"]],
+            remote=remote_host,
         )
-    if previous.get("status") in TERMINAL_STATUSES:
-        raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
-    target = previous.get("target")
-    if target not in {"local", "ssh"}:
-        raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
-    host = previous.get("host")
-    if target == "ssh" and (not isinstance(host, str) or not host.strip()):
-        raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
-    populated_process_fields = {field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")}
-    if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
-        missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
-        raise ValueError(f"Canonical run has partial process identity for {run_id}; missing: {missing}")
-    remote_host = str(host) if target == "ssh" else None
-    exp_io.validate_managed_output_paths(
-        workspace,
-        [previous["pid_path"]],
-        remote=remote_host,
-    )
-    if populated_process_fields:
-        process_identity = evidence.read_process_identity(previous.get("pid_path"), previous)
-    else:
-        process_identity = evidence.read_process_identity(
-            previous.get("pid_path"),
+        if populated_process_fields:
+            process_identity = evidence.read_process_identity(previous.get("pid_path"), previous)
+        else:
+            process_identity = evidence.read_process_identity(
+                previous.get("pid_path"),
+                previous,
+                expected_script=previous.get("script"),
+            )
+        if process_identity is None:
+            raise ValueError(f"No recorded PID for run_id: {run_id}")
+        for field in PROCESS_IDENTITY_FIELDS:
+            frozen_value = previous.get(field)
+            if frozen_value not in (None, "") and str(frozen_value) != str(process_identity[field]):
+                raise RuntimeError(f"Recorded process identity differs from canonical {field} for run_id: {run_id}")
+        evidence.stop_process_group(previous, process_identity)
+        stopped_at = utc_now()
+        final = merge_run_row(
             previous,
-            expected_script=previous.get("script"),
+            {
+                "step_id": key[0],
+                "run_id": key[1],
+                **process_identity,
+                "status": "stopped",
+                "stopped_at": stopped_at,
+                "stop_reason": reason,
+            },
         )
-    if process_identity is None:
-        raise ValueError(f"No recorded PID for run_id: {run_id}")
-    for field in PROCESS_IDENTITY_FIELDS:
-        frozen_value = previous.get(field)
-        if frozen_value not in (None, "") and str(frozen_value) != str(process_identity[field]):
-            raise RuntimeError(f"Recorded process identity differs from canonical {field} for run_id: {run_id}")
-    evidence.stop_process_group(previous, process_identity)
-    stopped_at = utc_now()
-    final = merge_run_row(
-        previous,
-        {
-            "step_id": key[0],
-            "run_id": key[1],
-            **process_identity,
-            "status": "stopped",
-            "stopped_at": stopped_at,
-            "stop_reason": reason,
-        },
-    )
-    committed = merge_run_manifest(workspace, [final])
+        committed = merge_run_manifest(workspace, [final], lock_held=True)
     committed_by_key = {managed_run_key(item): item for item in committed}
     final_status_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
     write_rows(status_path, final_status_rows)
