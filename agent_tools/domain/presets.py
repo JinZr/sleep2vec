@@ -9,8 +9,8 @@ from typing import Any
 from ..models import REPO_ROOT, repo_relative, resolve_repo_path
 
 
-def preset_summary(preset_path: str | Path) -> dict[str, Any]:
-    resolved = resolve_repo_path(preset_path)
+def preset_summary(preset_path: str | Path, *, local_path_base: str | Path | None = None) -> dict[str, Any]:
+    resolved = resolve_repo_path(preset_path, relative_to=local_path_base)
     if resolved is None:
         raise FileNotFoundError("Preset path is required.")
     warnings: list[str] = []

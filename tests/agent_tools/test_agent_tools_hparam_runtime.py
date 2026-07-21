@@ -2092,6 +2092,8 @@ def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     ("execution", "field"),
     [
         ({"python": ""}, "execution.python"),
+        ({"python": "conda run -n exp python"}, "execution.python"),
+        ({"python": "~/miniconda/bin/python"}, "execution.python"),
         ({"runtime_commit": "abc123"}, "execution.runtime_commit"),
     ],
 )
@@ -2544,6 +2546,8 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
     (artifact_dir / "plan.json").write_text("{}\n")
     config = artifact_dir / "config.yaml"
     config.write_text("value: ok\n")
+    checkpoint = artifact_dir / "model.ckpt"
+    checkpoint.write_bytes(b"checkpoint")
     (repo / "dataset.csv").write_text("value\nok\n")
     ignored_tools = repo / ".codex-tmp"
     ignored_tools.mkdir()
@@ -2561,7 +2565,7 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
     assert snapshot["runtime_repo_root"] == str(repo)
     assert snapshot["module_origin"] == str(repo / "runtime_cli.py")
     assert "--value" in snapshot["supported_options"]
-    launch = hparam_runtime._launch_command(
+    launch = managed_scheduler.build_launch_command(
         {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
         script,
         artifact_dir / "stdout.log",
@@ -2571,6 +2575,8 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
         config_path=config,
         script_sha256=file_sha256(script),
         config_sha256=file_sha256(config),
+        checkpoint_path=checkpoint,
+        checkpoint_sha256=file_sha256(checkpoint),
     )
     config.write_text("value: changed\n")
 
@@ -2586,6 +2592,14 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
 
     assert script_result.returncode != 0
     assert "Frozen run artifact changed before process start" in script_result.stderr
+    assert not (artifact_dir / "pid").exists()
+    script.write_text(f"#!/usr/bin/env bash\n{command}\n")
+    (artifact_dir / "checkpoint-alias.ckpt").hardlink_to(checkpoint)
+
+    checkpoint_result = subprocess.run(["bash", "-lc", launch], text=True, capture_output=True)
+
+    assert checkpoint_result.returncode != 0
+    assert f"Frozen run artifact is not an independent file: {checkpoint}" in checkpoint_result.stderr
     assert not (artifact_dir / "pid").exists()
 
 

@@ -6,8 +6,10 @@ import subprocess
 import sys
 
 from agent_tool_test_helpers import write_yaml
+import pytest
 import yaml
 
+from agent_tools.adapters.sleep2stat import SLEEP2STAT_ADAPTER
 from agent_tools.configs import sleep2stat_config_summary
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import build_context, build_plan, evaluate_recipe
@@ -346,6 +348,47 @@ def test_sleep2stat_config_summary_omits_removed_run_controls():
 
     assert "overwrite" not in summary["sleep2stat"]["run"]
     assert "skip_existing" not in summary["sleep2stat"]["run"]
+
+
+@pytest.mark.parametrize(
+    ("data_field", "configured_as_directory"),
+    [("index", True), ("kaldi_manifest", True), ("kaldi_data_root", False)],
+)
+def test_sleep2stat_data_inputs_enforce_file_and_directory_types(
+    tmp_path: Path,
+    data_field: str,
+    configured_as_directory: bool,
+):
+    value = tmp_path / data_field
+    if configured_as_directory:
+        value.mkdir()
+    else:
+        value.write_text("not a directory")
+    summary = {
+        "is_sleep2stat": True,
+        "sleep2stat": {"data": {data_field: str(value)}, "analyzers": []},
+    }
+
+    issues = SLEEP2STAT_ADAPTER.configured_input_issues({}, summary)
+
+    assert [issue.field for issue in issues] == [f"sleep2stat.data.{data_field}"]
+
+
+@pytest.mark.parametrize("analyzer_field", ["config", "ckpt_path"])
+def test_sleep2stat_analyzer_inputs_must_be_files(tmp_path: Path, analyzer_field: str):
+    directory = tmp_path / analyzer_field
+    directory.mkdir()
+    summary = {
+        "is_sleep2stat": True,
+        "sleep2stat": {
+            "data": {},
+            "analyzers": [{"name": "model", "enabled": True, analyzer_field: str(directory)}],
+        },
+    }
+
+    issues = SLEEP2STAT_ADAPTER.configured_input_issues({}, summary)
+
+    assert [issue.field for issue in issues] == [f"sleep2stat.analyzer.model.{analyzer_field}"]
 
 
 def test_sleep2stat_kaldi_relative_manifest_is_not_resolved_under_data_root(tmp_path: Path):

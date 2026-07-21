@@ -82,21 +82,26 @@ package-local logical device 0. Every attempt has a new, empty `result_root`,
 which is passed to the package-local inference entrypoint through
 `--results-root`.
 Every attempt also freezes the spec's runtime workdir, Python, and commit. The
-generated script verifies that commit before its first `running` mutation and
-uses the same frozen Python for inference and all lifecycle commits. A missing
-interpreter or commit mismatch prevents `running` and inference; any `launched`
+runtime Python field is one executable name or path without whitespace,
+arguments, or `~` shorthand. The generated script verifies that commit before its first `running`
+mutation and uses the same frozen Python for inference and all lifecycle
+commits. A missing interpreter or commit mismatch prevents `running` and inference; any `launched`
 process evidence already committed by the scheduler remains canonical evidence
 for monitor reconciliation under the lifecycle-owner rules.
 Exactly one valid `run_manifest.json` must be discoverable below that root and
 must agree with the frozen checkpoint, config, preset, split, and runtime
 inputs.
 
-Only a confirmed failure or `launch_failed` attempt may receive one fresh
-retry. Missing or uncertain process identity, a still-live process, or an
-explicitly stopped run is not retried automatically. Unsafe process-identity
-evidence is persisted on the canonical run, so a runner interruption cannot
-turn that blocker into a retry. Independent jobs may
-continue after another job fails, but a failed logical job blocks finalization.
+Only a canonical runtime `failed` or `launch_failed` attempt may receive one
+fresh retry. A `completed` or `finished` lifecycle commit whose result manifest
+fails verification retains that canonical lifecycle status, while the jobs
+projection records the validation error and marks the logical job failed
+without retrying it.
+Missing or uncertain process identity, a still-live process, or an explicitly
+stopped run is not retried automatically. Unsafe process-identity evidence is
+persisted on the canonical run, so a runner interruption cannot turn that
+blocker into a retry. Independent jobs may continue after another job fails,
+but a failed logical job blocks finalization.
 
 If a current attempt has canonical status `missing_pid`, or an unfinished
 pipeline shares execution capacity with another such run, scheduling commits

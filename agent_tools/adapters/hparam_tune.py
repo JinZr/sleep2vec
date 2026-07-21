@@ -76,7 +76,11 @@ class HparamTuneAdapter(TaskAdapter):
     ) -> list[DecisionIssue]:
         from .. import plan_hparam
 
-        return plan_hparam.final_test_checkpoint_issues(recipe, unlock_final_test=unlock_final_test)
+        return plan_hparam.final_test_checkpoint_issues(
+            recipe,
+            config_summary,
+            unlock_final_test=unlock_final_test,
+        )
 
     def write_plan(
         self,

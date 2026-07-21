@@ -5,9 +5,11 @@ import subprocess
 import sys
 
 from agent_tool_test_helpers import config_payload, survival_config_payload, write_finetune_recipe, write_yaml
+import pytest
 import yaml
 
 from agent_tools.configs import config_summary
+from agent_tools.decision_paths import path_issues, validate_input_path
 from agent_tools.decisions import DecisionStatus, evaluate_consultation_gates
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_consultation_policy
@@ -15,6 +17,29 @@ from agent_tools.recipes import load_consultation_policy
 
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], cwd=cwd, text=True, capture_output=True)
+
+
+@pytest.fixture
+def ssh_calls(monkeypatch):
+    calls = []
+
+    def fake_run_ssh(host: str, command: str, **kwargs):
+        calls.append((host, command, kwargs))
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr("agent_tools.transport.run_ssh", fake_run_ssh)
+    return calls
+
+
+def _remote_runtime_recipe() -> dict:
+    return {
+        "execution": {
+            "target": "ssh",
+            "host": "baichuan3",
+            "workdir": "/remote/runtime",
+            "path_validation": "ssh",
+        }
+    }
 
 
 def test_doctor_returns_exit_2_when_label_name_missing_for_finetune(tmp_path: Path):
@@ -166,7 +191,7 @@ def test_local_missing_config_path_still_fails(tmp_path: Path):
     result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
 
     assert result.returncode == 1
-    assert "Required input path does not exist" in result.stdout
+    assert "Required input file does not exist" in result.stdout
 
 
 def test_local_config_path_expands_home_before_validation(tmp_path: Path, monkeypatch):
@@ -205,7 +230,113 @@ def test_remote_ssh_path_validation_uses_short_test_command(tmp_path: Path, monk
     report = evaluate_consultation_gates("finetune", payload, None, {}, policy)
 
     assert report.exit_code == 0
-    assert calls == [["ssh", "baichuan3", "test -e /wujidata/example/config.yaml"]]
+    assert calls == [["ssh", "baichuan3", "test -f /wujidata/example/config.yaml"]]
+
+
+def test_remote_relative_runtime_path_is_validated_from_execution_workdir(ssh_calls):
+    issue = validate_input_path(_remote_runtime_recipe(), "ckpt_path", "model.ckpt", configured=False)
+
+    assert issue is None
+    assert ssh_calls == [("baichuan3", "test -e /remote/runtime/model.ckpt", {"text": True, "timeout": None})]
+
+
+def test_remote_relative_survival_sidecars_are_validated_from_execution_workdir(ssh_calls):
+    fields = ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index")
+    config = {
+        "finetune": {
+            "task": {"type": "survival"},
+            "survival": {field: f"{field}.csv" for field in fields},
+        }
+    }
+
+    issues = path_issues("infer", _remote_runtime_recipe(), config, requires_survival_sidecars=True)
+
+    assert issues == []
+    assert [command for _host, command, _kwargs in ssh_calls] == [
+        f"test -f /remote/runtime/{field}.csv" for field in fields
+    ]
+
+
+def test_explicit_local_path_context_overrides_ssh_runtime_default(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "model.ckpt").write_text("checkpoint")
+
+    def unexpected_ssh(*_args, **_kwargs):
+        raise AssertionError("explicit local path context must not use SSH")
+
+    monkeypatch.setattr("agent_tools.transport.run_ssh", unexpected_ssh)
+    recipe = {
+        "execution": {
+            "target": "ssh",
+            "path_context": "local",
+            "workdir": str(runtime),
+            "path_validation": "local",
+        }
+    }
+
+    issue = validate_input_path(recipe, "ckpt_path", "model.ckpt", configured=False)
+
+    assert issue is None
+
+
+def test_runtime_paths_reject_tilde_but_source_locators_expand_it(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "source.yaml").write_text("source")
+    monkeypatch.setenv("HOME", str(home))
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    raw_path = "~/source.yaml"
+    literal_runtime_path = runtime / raw_path
+    literal_runtime_path.parent.mkdir(parents=True)
+    literal_runtime_path.write_text("literal runtime path")
+    recipe = {"execution": {"workdir": str(runtime)}}
+
+    runtime_issue = validate_input_path(recipe, "ckpt_path", raw_path, configured=False)
+    source_issue = validate_input_path(
+        recipe,
+        "config",
+        raw_path,
+        configured=False,
+        relative_to_workdir=False,
+    )
+
+    assert runtime_issue is not None
+    assert runtime_issue.field == "ckpt_path"
+    assert "must not use ~" in runtime_issue.message
+    assert source_issue is None
+
+
+@pytest.mark.parametrize(
+    ("task_type", "section", "fields", "path_kwargs"),
+    [
+        (
+            "survival",
+            "survival",
+            ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index"),
+            {"requires_survival_sidecars": True},
+        ),
+        (
+            "multilabel_classification",
+            "multilabel",
+            ("disease_columns_index", "label_index", "has_label_index"),
+            {"requires_multilabel_sidecars": True},
+        ),
+    ],
+)
+def test_local_runtime_sidecars_reject_tilde(task_type, section, fields, path_kwargs):
+    config = {
+        "finetune": {
+            "task": {"type": task_type},
+            section: {field: f"~/sidecars/{field}.csv" for field in fields},
+        }
+    }
+
+    issues = path_issues("infer", {}, config, **path_kwargs)
+
+    assert {issue.field for issue in issues} == {f"finetune.{section}.{field}" for field in fields}
+    assert all("must not use ~" in issue.message for issue in issues)
 
 
 def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path: Path, monkeypatch):

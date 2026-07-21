@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models import CONFIG_FINETUNE_SECTION, load_yaml, repo_relative, resolve_repo_path
-from .sidecar_summaries import survival_summary
+from .sidecar_summaries import multilabel_summary, survival_summary
 
 BUILTIN_LABELS = ("stage3", "stage4", "stage5", "ahi", "sex", "age")
 
@@ -34,6 +34,7 @@ def finetune_summary_body(
     config_path: str | Path,
     *,
     validate_survival_local_paths: bool = True,
+    local_path_base: str | Path | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_repo_path(config_path)
     if resolved is None:
@@ -43,7 +44,18 @@ def finetune_summary_body(
     data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
     finetune = data.get(CONFIG_FINETUNE_SECTION) if isinstance(data.get(CONFIG_FINETUNE_SECTION), dict) else {}
     task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
-    survival = survival_summary(finetune, task, validate_local_paths=validate_survival_local_paths)
+    survival = survival_summary(
+        finetune,
+        task,
+        validate_local_paths=validate_survival_local_paths,
+        local_path_base=local_path_base,
+    )
+    multilabel = multilabel_summary(
+        finetune,
+        task,
+        validate_local_paths=validate_survival_local_paths,
+        local_path_base=local_path_base,
+    )
     preset_build = data.get("preset_build") if isinstance(data.get("preset_build"), dict) else {}
     head = model.get("head") if isinstance(model.get("head"), dict) else {}
     temporal_agg = head.get("temporal_agg") if isinstance(head.get("temporal_agg"), dict) else {}
@@ -61,8 +73,13 @@ def finetune_summary_body(
 
     if data_channel_names and model_channel_names and list(data_channel_names) != model_channel_names:
         blocking_issues.append("data.data_channel_names differs from model.channels.")
-    if backend == "kaldi" and not data_block.get("kaldi_manifest"):
-        blocking_issues.append("data.backend=kaldi but data.kaldi_manifest is missing.")
+    if backend == "kaldi":
+        if not data_block.get("kaldi_data_root"):
+            blocking_issues.append("data.backend=kaldi but data.kaldi_data_root is missing.")
+        if not data_block.get("kaldi_manifest"):
+            blocking_issues.append("data.backend=kaldi but data.kaldi_manifest is missing.")
+        if data_block.get("finetune_preset_path"):
+            blocking_issues.append("data.backend=kaldi does not support data.finetune_preset_path.")
     if (
         backend == "npz"
         and finetune
@@ -88,6 +105,8 @@ def finetune_summary_body(
     }
     if survival is not None:
         finetune_summary["survival"] = survival
+    if multilabel is not None:
+        finetune_summary["multilabel"] = multilabel
 
     summary = {
         "config_path": repo_relative(resolved),

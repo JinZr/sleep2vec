@@ -328,7 +328,14 @@ class Sleep2statAdapter(TaskAdapter):
         for data_field in ("index", "kaldi_data_root", "kaldi_manifest"):
             value = data.get(data_field)
             if value:
-                issue = validate_input_path(recipe, f"sleep2stat.data.{data_field}", value, configured=True)
+                issue = validate_input_path(
+                    recipe,
+                    f"sleep2stat.data.{data_field}",
+                    value,
+                    configured=True,
+                    require_directory=data_field == "kaldi_data_root",
+                    require_file=data_field != "kaldi_data_root",
+                )
                 if issue is not None:
                     issues.append(issue)
         for analyzer in sleep2stat.get("analyzers", []):
@@ -343,6 +350,7 @@ class Sleep2statAdapter(TaskAdapter):
                     f"sleep2stat.analyzer.{analyzer.get('name')}.{analyzer_field}",
                     value,
                     configured=True,
+                    require_file=True,
                 )
                 if issue is not None:
                     issues.append(issue)

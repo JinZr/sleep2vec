@@ -200,10 +200,21 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
 
     runtime = _mapping(spec, "runtime")
     _reject_unknown_fields(runtime, _RUNTIME_FIELDS, "runtime")
-    for field in ("workdir", "python", "runtime_commit"):
+    for field in ("workdir", "runtime_commit"):
         value = runtime.get(field)
         if not isinstance(value, str) or not value.strip() or value == "ASK_USER":
             raise ValueError(f"runtime.{field} must be an explicit non-empty string.")
+    python_command = runtime.get("python")
+    if (
+        not isinstance(python_command, str)
+        or not python_command.strip()
+        or python_command == "ASK_USER"
+        or python_command.startswith("~")
+        or re.search(r"\s", python_command) is not None
+    ):
+        raise ValueError(
+            "runtime.python must be a single executable name or path without whitespace, arguments, or ~ shorthand."
+        )
     for field in ("accelerator", "device", "precision"):
         if runtime.get(field) in (None, ""):
             raise ValueError(f"runtime.{field} is required.")
@@ -701,6 +712,7 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[st
         checkpoint_dir = Path(str(canonical_row.get("checkpoint_dir") or ""))
         if checkpoint.parent != checkpoint_dir or checkpoint_dir.is_symlink():
             raise ValueError(f"Selected checkpoint is outside its frozen checkpoint directory: {checkpoint}")
+        exp_io.validate_managed_output_paths(checkpoint_dir, [checkpoint])
         config_payload = read_managed_yaml_mapping(config.read_text(), source=f"Selected config {config}")
         averaging_paths = _mapping_key_paths(config_payload, "model_averaging")
         if policy["require_no_model_averaging"] and averaging_paths:
@@ -762,6 +774,8 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
             raise ValueError(f"Frozen checkpoint score is not finite: {source_id}")
         for path_field, hash_field in (("config", "config_sha256"), ("checkpoint", "checkpoint_sha256")):
             selected_path = Path(str(selection.get(path_field) or ""))
+            if path_field == "checkpoint":
+                exp_io.validate_managed_output_paths(selected_path.parent, [selected_path])
             if (
                 selected_path.is_symlink()
                 or not selected_path.is_file()
@@ -1345,12 +1359,14 @@ def _run_attempts(
             if row.get("runtime_commit") != runtime_commit:
                 row["runtime_commit"] = runtime_commit
                 changed = True
-            if status in SUCCESS_STATUSES and str(row.get("verified") or "").lower() != "true":
+            if (
+                status in SUCCESS_STATUSES
+                and str(row.get("verified") or "").lower() != "true"
+                and row.get("validation_error") in (None, "")
+            ):
                 try:
                     manifest_path = _validate_result_manifest(spec, row, run)
                 except ValueError as exc:
-                    merge_run_manifest(root, [{"step_id": key[0], "run_id": key[1], "status": "failed"}])
-                    row["status"] = "failed"
                     row["verified"] = "false"
                     row["validation_error"] = str(exc)
                 else:
@@ -1427,6 +1443,8 @@ def _planned_runs(attempt_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "attempt": int(row["attempt"]),
                 "result_root": row["result_root"],
                 "terminal_status_owner": "script",
+                "checkpoint": row["checkpoint"],
+                "checkpoint_sha256": row["checkpoint_sha256"],
             }
         )
         runs.append(run)
@@ -1578,6 +1596,8 @@ def _logical_job_states(spec: dict[str, Any], attempts: list[dict[str, Any]]) ->
             status = "blocked"
         elif rows and rows[-1].get("retry_blocker") not in (None, ""):
             status = "blocked"
+        elif rows and rows[-1].get("validation_error") not in (None, ""):
+            status = "failed"
         elif rows and rows[-1].get("retry_preparation_error") not in (None, ""):
             status = "failed"
         elif (
@@ -1615,6 +1635,7 @@ def _validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run
     if len(manifests) != 1:
         raise ValueError(f"Inference result root must contain exactly one run_manifest.json: {result_root}")
     manifest_path = manifests[0]
+    exp_io.validate_managed_output_paths(result_root, [manifest_path])
     manifest = read_json(manifest_path)
     if not isinstance(manifest, dict) or not manifest:
         raise ValueError(f"Inference result manifest is malformed: {manifest_path}")

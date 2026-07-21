@@ -12,7 +12,7 @@ from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .decision_paths import path_context, path_validation
 from .domain.presets import preset_summary
 from .index_csv import index_summary
-from .models import CONFIG_FINETUNE_SECTION, coerce_list, resolve_repo_path
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, coerce_list, resolve_repo_path
 from .skills import list_skills
 
 
@@ -35,16 +35,25 @@ def load_config_summary_for_recipe(recipe: dict, *, config_bytes: bytes | None =
             recipe,
             survival_validation_paths(config_data),
         ),
+        local_path_base=_runtime_path_base(recipe),
         config_bytes=config_bytes,
     )
 
 
 def skips_local_path_validation(recipe: dict, raw_paths: list[Any] | None = None) -> bool:
     for raw_path in raw_paths or [""]:
-        context = path_context(recipe, raw_path)
+        context = path_context(recipe, raw_path, relative_to_workdir=True)
         if context == "remote" and path_validation(recipe, context) in {"defer", "ssh", "remote"}:
             return True
     return False
+
+
+def _runtime_path_base(recipe: dict) -> Path:
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    workdir = execution.get("workdir")
+    if workdir not in (None, "") and Path(str(workdir)).is_absolute():
+        return Path(str(workdir))
+    return REPO_ROOT
 
 
 def survival_validation_paths(config_data: dict | None) -> list[Any]:
@@ -127,6 +136,7 @@ def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
             paths,
             config=config,
             config_bytes=(cfg or {}).get("_source_config_bytes"),
+            local_path_base=_runtime_path_base(recipe),
             split_values=split_values,
             preset_path=preset_path,
         )
@@ -174,7 +184,7 @@ def context_preset_summary(recipe: dict, cfg: dict | None) -> dict | None:
     if preset_path in (None, ""):
         return None
     try:
-        return preset_summary(preset_path)
+        return preset_summary(preset_path, local_path_base=_runtime_path_base(recipe))
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize preset: {exc}"]}
 

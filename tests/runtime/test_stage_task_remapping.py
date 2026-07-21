@@ -377,6 +377,65 @@ def test_build_scalar_classification_prediction_row_averages_probabilities(packa
 
 
 @pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_finalize_epoch_preserves_single_device_prediction_records(package_name: str, monkeypatch: pytest.MonkeyPatch):
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    object.__setattr__(
+        module,
+        "args",
+        argparse.Namespace(
+            inference_prediction_csv_path="predictions.csv",
+            is_survival=False,
+            is_classification=True,
+            is_multilabel=False,
+            multilabel=None,
+            label_name="sex",
+            output_dim=2,
+        ),
+    )
+    object.__setattr__(
+        module,
+        "_stage_outputs",
+        {
+            "train": [],
+            "val": [],
+            "test": [(np.array([[0.1, 0.9]], dtype=np.float32), np.array([1], dtype=np.int64))],
+        },
+    )
+    object.__setattr__(
+        module,
+        "_prediction_records",
+        {
+            "test": [
+                {
+                    "path": "sample.npz",
+                    "token_start": 0,
+                    "kind": "classification",
+                    "groundtruth": 1,
+                    "probabilities": [0.1, 0.9],
+                    "logits": [0.0, 2.0],
+                    "prediction": 1,
+                    "is_sequence": False,
+                }
+            ]
+        },
+    )
+    object.__setattr__(module, "_eval_loss_sums", {})
+    object.__setattr__(module, "prediction_rows", [])
+    module.__dict__["_trainer"] = argparse.Namespace(is_global_zero=False)
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: False)
+    monkeypatch.setattr(finetuning_mod, "compute_downstream_metrics", lambda *_args, **_kwargs: {})
+
+    finetuning_cls._finalize_epoch(module, "test")
+
+    assert module._prediction_records["test"] == []
+    assert len(module.prediction_rows) == 1
+    assert module.prediction_rows[0]["path"] == "sample.npz"
+    assert module.prediction_rows[0]["prediction"] == 1
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
 def test_extract_scalar_classification_prediction_records_preserves_logits(package_name: str):
     inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
     args = argparse.Namespace(is_multilabel=False, is_classification=True)

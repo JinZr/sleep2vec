@@ -25,6 +25,7 @@ def survival_summary(
     task: dict[str, Any],
     *,
     validate_local_paths: bool = True,
+    local_path_base: str | Path | None = None,
 ) -> dict[str, Any] | None:
     if task.get("type") != "survival":
         return None
@@ -63,7 +64,7 @@ def survival_summary(
             continue
         if not validate_local_paths:
             continue
-        resolved = resolve_repo_path(value)
+        resolved = resolve_repo_path(value, relative_to=local_path_base)
         if resolved is None or not resolved.exists():
             issues.append(f"finetune.survival.{field} does not exist: {value}")
         else:
@@ -95,6 +96,7 @@ def multilabel_summary(
     task: dict[str, Any],
     *,
     validate_local_paths: bool = True,
+    local_path_base: str | Path | None = None,
 ) -> dict[str, Any] | None:
     if task.get("type") != "multilabel_classification":
         return None
@@ -127,7 +129,7 @@ def multilabel_summary(
             continue
         if not validate_local_paths:
             continue
-        resolved = resolve_repo_path(value)
+        resolved = resolve_repo_path(value, relative_to=local_path_base)
         if resolved is None or not resolved.exists():
             issues.append(f"finetune.multilabel.{field} does not exist: {value}")
         else:

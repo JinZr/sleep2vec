@@ -10,7 +10,13 @@ import stat
 import subprocess
 from typing import Any
 
-from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence, transport
+from . import (
+    experiment_io as exp_io,
+    managed_scheduler,
+    run_artifacts as artifacts,
+    run_evidence as evidence,
+    transport,
+)
 from .experiment_workspace import (
     managed_run_key,
     merge_run_row,
@@ -311,7 +317,12 @@ def monitor_run_row(
         source.get(field) not in (None, "") for source in (row, previous) for field in ("pid_path", "state")
     )
     # Hparam scripts expose process identity for monitor-owned exit inference; lifecycle scripts self-commit.
-    script_commits_terminal_status = has_managed_script and not has_process_identity
+    legacy_script_owner = has_managed_script and not has_process_identity
+    owner_row = previous if previous.get("terminal_status_owner") not in (None, "") else row
+    script_commits_terminal_status = managed_scheduler.script_commits_terminal_status(
+        owner_row,
+        default=legacy_script_owner,
+    )
     if (previous.get("status") or row.get("status")) == "running" and has_managed_script and not has_execution_evidence:
         return {
             "step_id": row["step_id"],

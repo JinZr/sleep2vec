@@ -61,6 +61,9 @@ class TaskAdapter:
     #: True/False forces the survival-sidecar requirement for this task;
     #: None keeps the kernel's own inference (decision_paths).
     requires_survival_sidecars: bool | None = None
+    #: True/False forces the multilabel-sidecar requirement for this task;
+    #: None keeps the kernel's own inference (decision_paths).
+    requires_multilabel_sidecars: bool | None = None
     #: Recipe inputs field holding this task's preset path override
     #: (e.g. inference_preset_path); None means the task has no
     #: recipe-level preset override and the kernel's config fallback applies.
