@@ -365,7 +365,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
             missing_execution_identity.add("target")
         if missing_execution_identity:
             raise ValueError(
-                f"Canonical run is missing execution identity for {run_id}: {', '.join(sorted(missing_execution_identity))}"
+                f"Canonical run is missing execution identity for {run_id}: "
+                f"{', '.join(sorted(missing_execution_identity))}"
             )
         if previous.get("status") in TERMINAL_STATUSES:
             raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
