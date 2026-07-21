@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import ctypes
+import errno
 import fcntl
 import hashlib
 import io
@@ -357,7 +359,7 @@ def conditional_atomic_replace_text_at(
         with lock_path.open("a+") as lock_file:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             if expected_sha256 is None:
-                if target.exists():
+                if os.path.lexists(target):
                     return False
                 target_mode = 0o644
             else:
@@ -376,13 +378,38 @@ def conditional_atomic_replace_text_at(
                     os.fchmod(file_obj.fileno(), target_mode)
                     file_obj.flush()
                     os.fsync(file_obj.fileno())
-                os.replace(temporary, target)
+                if expected_sha256 is None:
+                    libc = ctypes.CDLL(None, use_errno=True)
+                    source = os.fsencode(temporary)
+                    destination = os.fsencode(target)
+                    if hasattr(libc, "renameat2"):
+                        rename = libc.renameat2
+                        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                        rename.restype = ctypes.c_int
+                        result = rename(-100, source, -100, destination, 1)
+                    elif hasattr(libc, "renamex_np"):
+                        rename = libc.renamex_np
+                        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+                        rename.restype = ctypes.c_int
+                        result = rename(source, destination, 4)
+                    else:
+                        raise RuntimeError("Atomic no-replace rename is unavailable on this platform.")
+                    if result != 0:
+                        error = ctypes.get_errno()
+                        if error == errno.EEXIST:
+                            Path(temporary).unlink(missing_ok=True)
+                            return False
+                        raise OSError(error, os.strerror(error), str(target))
+                else:
+                    os.replace(temporary, target)
             except BaseException:
                 Path(temporary).unlink(missing_ok=True)
                 raise
         return True
 
     script = f"""
+import ctypes
+import errno
 import fcntl
 import hashlib
 import os
@@ -400,7 +427,7 @@ os.makedirs(parent, exist_ok=True)
 with open(lock_path, "a+") as lock_file:
     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
     if expect_missing:
-        if os.path.exists(path):
+        if os.path.lexists(path):
             raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
         target_mode = 0o644
     else:
@@ -420,7 +447,29 @@ with open(lock_path, "a+") as lock_file:
             os.fchmod(file_obj.fileno(), target_mode)
             file_obj.flush()
             os.fsync(file_obj.fileno())
-        os.replace(temporary, path)
+        if expect_missing:
+            libc = ctypes.CDLL(None, use_errno=True)
+            source = os.fsencode(temporary)
+            destination = os.fsencode(path)
+            if hasattr(libc, "renameat2"):
+                rename = libc.renameat2
+                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                result = rename(-100, source, -100, destination, 1)
+            elif hasattr(libc, "renamex_np"):
+                rename = libc.renamex_np
+                rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                result = rename(source, destination, 4)
+            else:
+                raise RuntimeError("Atomic no-replace rename is unavailable on this platform.")
+            if result != 0:
+                error = ctypes.get_errno()
+                if error == errno.EEXIST:
+                    raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+                raise OSError(error, os.strerror(error), path)
+        else:
+            os.replace(temporary, path)
     except BaseException:
         try:
             os.unlink(temporary)

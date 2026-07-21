@@ -407,7 +407,7 @@ def test_infer_checkpoint_alias_is_valid_with_average_checkpoint_dir(tmp_path: P
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
 
 
-def test_infer_multilabel_preset_does_not_require_runtime_sidecars(tmp_path: Path):
+def test_infer_multilabel_preset_still_requires_runtime_sidecars(tmp_path: Path):
     recipe, payload = _infer_recipe_payload(tmp_path)
     config_path = Path(payload["inputs"]["config"])
     config = yaml.safe_load(config_path.read_text())
@@ -424,7 +424,8 @@ def test_infer_multilabel_preset_does_not_require_runtime_sidecars(tmp_path: Pat
     payload["inputs"]["inference_preset_path"] = str(preset)
 
     report = _evaluate_payload(recipe, payload)
-    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+    assert report.exit_code == 2
+    assert any(issue.field == "multilabel_sidecars" for issue in report.blocking_issues())
 
 
 def test_infer_relative_checkpoint_defaults_to_repo_root_without_workdir(tmp_path: Path):

@@ -6,7 +6,6 @@ import sys
 from agent_tool_test_helpers import config_payload, survival_config_payload, write_survival_sidecars, write_yaml
 
 from agent_tools.configs import config_summary
-from agent_tools.models import REPO_ROOT
 
 
 def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Path):
@@ -103,10 +102,14 @@ def test_config_summary_resolves_relative_survival_sidecars_from_runtime_base(tm
     assert survival["issues"] == []
 
 
-def test_config_summary_does_not_expand_tilde_in_runtime_sidecars(tmp_path: Path):
+def test_config_summary_does_not_expand_tilde_in_runtime_sidecars(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "sidecar.csv").write_text("exists only after tilde expansion\n")
+    monkeypatch.setenv("HOME", str(home))
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    raw_path = "~/" + str((REPO_ROOT / "AGENTS.md").relative_to(Path.home()))
+    raw_path = "~/sidecar.csv"
     payload = survival_config_payload(
         "index.csv",
         {

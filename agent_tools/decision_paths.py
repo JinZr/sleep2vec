@@ -230,14 +230,7 @@ def _requires_multilabel_sidecars(
         return False
     if required is not None:
         return required
-    if config_summary and config_summary.get("authoritative_variant") == "sex_age_baseline":
-        return uses_finetune_config
-    if uses_finetune_config:
-        _field, preset_path = _effective_preset_path(
-            task, recipe, config_summary, preset_path_recipe_field, uses_finetune_config=uses_finetune_config
-        )
-        return preset_path in (None, "")
-    return False
+    return uses_finetune_config
 
 
 def _append_remote_survival_sidecar_issues(

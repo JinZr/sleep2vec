@@ -11,7 +11,6 @@ import yaml
 from agent_tools.configs import config_summary
 from agent_tools.decision_paths import path_issues, validate_input_path
 from agent_tools.decisions import DecisionStatus, evaluate_consultation_gates
-from agent_tools.models import REPO_ROOT
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_consultation_policy
 
@@ -281,10 +280,14 @@ def test_explicit_local_path_context_overrides_ssh_runtime_default(tmp_path: Pat
     assert issue is None
 
 
-def test_runtime_paths_reject_tilde_but_source_locators_expand_it(tmp_path: Path):
+def test_runtime_paths_reject_tilde_but_source_locators_expand_it(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "source.yaml").write_text("source")
+    monkeypatch.setenv("HOME", str(home))
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    raw_path = "~/" + str((REPO_ROOT / "AGENTS.md").relative_to(Path.home()))
+    raw_path = "~/source.yaml"
     literal_runtime_path = runtime / raw_path
     literal_runtime_path.parent.mkdir(parents=True)
     literal_runtime_path.write_text("literal runtime path")

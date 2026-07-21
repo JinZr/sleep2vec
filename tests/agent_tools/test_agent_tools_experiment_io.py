@@ -96,6 +96,31 @@ def test_local_conditional_create_never_replaces_an_existing_file(tmp_path: Path
     assert path.read_text() == "first\n"
 
 
+def test_local_conditional_create_preserves_a_dangling_symlink(tmp_path: Path):
+    path = tmp_path / "state.tsv"
+    missing = tmp_path / "missing.tsv"
+    path.symlink_to(missing)
+
+    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", None)
+    assert path.is_symlink()
+    assert path.readlink() == missing
+
+
+def test_local_conditional_create_preserves_a_publish_time_competitor(tmp_path: Path, monkeypatch):
+    path = tmp_path / "state.tsv"
+    original_mkstemp = experiment_io.tempfile.mkstemp
+
+    def create_competitor(*args, **kwargs):
+        descriptor, temporary = original_mkstemp(*args, **kwargs)
+        path.write_text("competitor\n")
+        return descriptor, temporary
+
+    monkeypatch.setattr(experiment_io.tempfile, "mkstemp", create_competitor)
+
+    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", None)
+    assert path.read_text() == "competitor\n"
+
+
 def test_local_conditional_create_avoids_trash_retained_hardlinks(tmp_path: Path, monkeypatch):
     path = tmp_path / "state.tsv"
     trash = tmp_path / ".trash"
@@ -137,7 +162,7 @@ def test_remote_conditional_replace_reports_conflict_and_writes_exact_bytes(monk
     assert kwargs["input"] == b"new\r\n"
 
 
-def test_remote_conditional_create_uses_locked_replace_without_hardlink(monkeypatch):
+def test_remote_conditional_create_uses_atomic_no_replace_without_hardlink(monkeypatch):
     calls = []
 
     def fake_run(command, **kwargs):
@@ -149,7 +174,10 @@ def test_remote_conditional_create_uses_locked_replace_without_hardlink(monkeypa
     assert experiment_io.conditional_atomic_replace_text_at("/remote/state.tsv", "new\n", None, remote="host")
     command, kwargs = calls[0]
     assert "expect_missing = not expected" in command[-1]
-    assert "os.replace(temporary, path)" in command[-1]
+    assert "os.path.lexists(path)" in command[-1]
+    assert "renameat2" in command[-1]
+    assert "renamex_np" in command[-1]
+    assert "errno.EEXIST" in command[-1]
     assert "os.link(" not in command[-1]
     assert kwargs["input"] == b"new\n"
 
