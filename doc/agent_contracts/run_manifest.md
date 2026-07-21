@@ -103,9 +103,10 @@ follows:
 - A local path/read `OSError` while scheduled aborts before mutation. Remote
   permission, type, decoding, transport, and timeout failures produce
   recoverable `unknown_remote` monitoring evidence.
-- A launch-command timeout is unresolved rather than `launch_failed`. The
-  attempted run remains active until identity monitoring proves its state,
-  preventing a duplicate launch after a transport timeout.
+- A launch-command timeout or SSH transport return code `255` is unresolved
+  rather than `launch_failed`. The attempted run remains active until identity
+  monitoring proves its state, preventing a duplicate launch after transport
+  uncertainty.
 
 Stop propagates identity uncertainty before signal or mutation and rejects
 terminal rows before identity access. On SSH it verifies and signals atomically.

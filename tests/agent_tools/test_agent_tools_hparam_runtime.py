@@ -2557,6 +2557,23 @@ def test_launch_timeout_remains_nonterminal_until_process_evidence_reconciles(mo
     assert hparam_runtime._start_process({}, "managed launch") == "launched"
 
 
+@pytest.mark.parametrize(
+    ("execution", "expected_status"),
+    [
+        pytest.param({"target": "ssh", "host": "unit-host"}, "launched", id="ssh"),
+        pytest.param({"target": "local"}, "launch_failed", id="local"),
+    ],
+)
+def test_launch_returncode_255_is_uncertain_only_over_ssh(monkeypatch, execution: dict, expected_status: str):
+    monkeypatch.setattr(
+        hparam_runtime.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 255, "", "connection lost"),
+    )
+
+    assert hparam_runtime._start_process(execution, "managed launch") == expected_status
+
+
 def test_unresolved_launch_timeout_is_not_relaunched(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     starts = []
