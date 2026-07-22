@@ -1282,7 +1282,7 @@ def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
     ("process_args", "expected_status", "expected_pid"),
     [
         pytest.param("/bin/bash {script}", "running", 123, id="matching-script"),
-        pytest.param("python unrelated_job.py", "failed", "", id="unrelated-process"),
+        pytest.param("python unrelated_job.py", "missing_pid", "", id="unrelated-process"),
     ],
 )
 def test_status_binds_first_process_identity_only_to_the_frozen_script(
@@ -1434,7 +1434,7 @@ def test_local_stop_checks_once_more_at_the_deadline_for_a_zombie_only_group(mon
 
 
 @pytest.mark.parametrize("script_commits_terminal_status", [False, True])
-def test_status_marks_a_reused_managed_process_identity_failed(
+def test_status_keeps_a_reused_managed_process_identity_capacity_blocking(
     tmp_path: Path, monkeypatch, script_commits_terminal_status: bool
 ):
     pid_path = tmp_path / "managed.pid"
@@ -1464,12 +1464,14 @@ def test_status_marks_a_reused_managed_process_identity_failed(
         script_commits_terminal_status=script_commits_terminal_status,
     )
 
-    assert observed["status"] == "failed"
+    assert observed["status"] == "missing_pid"
     assert "reused by a different process" in observed["process_identity_error"]
 
 
 @pytest.mark.parametrize("script_commits_terminal_status", [False, True])
-def test_status_marks_legacy_integer_only_managed_identity_failed(tmp_path: Path, script_commits_terminal_status: bool):
+def test_status_keeps_legacy_integer_only_managed_identity_capacity_blocking(
+    tmp_path: Path, script_commits_terminal_status: bool
+):
     pid_path = tmp_path / "managed.pid"
     pid_path.write_text("123")
     row = {
@@ -1486,7 +1488,7 @@ def test_status_marks_legacy_integer_only_managed_identity_failed(tmp_path: Path
         script_commits_terminal_status=script_commits_terminal_status,
     )
 
-    assert observed["status"] == "failed"
+    assert observed["status"] == "missing_pid"
     assert "partial process identity" in observed["process_identity_error"]
 
 
@@ -2390,6 +2392,26 @@ def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path
 
     with pytest.raises(RuntimeError, match="cannot advance.*missing_pid"):
         hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+
+
+def test_hparam_run_queue_blocks_after_unsafe_process_identity(tmp_path: Path, monkeypatch):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    _write_process_identity(rows[0]["pid_path"])
+
+    def reject_identity(*_args, **_kwargs):
+        raise run_evidence.ProcessIdentityError("PID 123 was reused by a different process")
+
+    monkeypatch.setattr(run_evidence, "process_identity_running", reject_identity)
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
+
+    with pytest.raises(RuntimeError, match="cannot advance.*missing_pid"):
+        hparam_runtime.run_hparam_queue(tmp_path, dry_run=False)
+
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert canonical["status"] == "missing_pid"
+    assert "reused by a different process" in canonical["process_identity_error"]
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
 
 
 def test_hparam_run_queue_fails_after_unbound_remote_launch_remains_unknown(tmp_path: Path, monkeypatch):

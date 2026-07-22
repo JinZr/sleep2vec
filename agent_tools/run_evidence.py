@@ -214,7 +214,7 @@ def status_row(
         running_state = None
         process_identity_error = str(exc)
         if observed_status not in TERMINAL_STATUSES:
-            observed_status = "missing_pid" if observed_status in {"planned", "pending"} else "failed"
+            observed_status = "missing_pid"
     except RuntimeError as exc:
         observed_status = previous.get("status") or row.get("status") or "missing_pid"
         if not is_remote_row(row) and observed_status in {"planned", "pending"} and isinstance(exc.__cause__, OSError):

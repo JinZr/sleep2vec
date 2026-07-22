@@ -125,10 +125,10 @@ after the group has exited.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
 identity, it records `process_identity_error` with the canonical status update.
-Pipeline runners treat that evidence as a permanent automatic-retry blocker.
-A lifecycle-owned active run whose identity file disappears becomes
-`missing_pid`, not retryable `failed`; a valid identity whose process group is
-confirmed dead may still become `failed` under the normal terminal-owner rule.
+Any affected non-terminal run remains active `missing_pid`, so queues and
+pipeline runners cannot release its capacity or retry it automatically. A valid
+identity whose process group is confirmed dead may still become `failed` under
+the normal terminal-owner rule.
 
 Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair. Both may be empty for a non-checkpoint-producing run; a partial pair is invalid. Existing checkpoint evidence must remain inside the eligible managed keys and frozen directories.
 
