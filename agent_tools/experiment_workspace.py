@@ -524,6 +524,9 @@ def ensure_experiment_workspace(
         root,
         [manifest_path, root / "run_manifest.tsv", root / "events.jsonl", root / "README.md", step_manifest],
     )
+    existing_step = read_step_manifest(root, step["id"], allow_missing=True)
+    if existing_step is not None:
+        merge_step_manifest(existing_step, step_payload)
 
     root.mkdir(parents=True, exist_ok=True)
     (root / "reports").mkdir(exist_ok=True)

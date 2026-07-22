@@ -1317,7 +1317,6 @@ def _stage_initial_round(
                 source_config_sha256=source_config_sha256,
                 staging_dir=staging_dir,
                 defer_commit=True,
-                defer_registration=True,
                 registered_recipe_path=round_dir / "round_recipe.yaml",
             )
         if report.exit_code != 0:

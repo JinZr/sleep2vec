@@ -963,6 +963,16 @@ def _materialize_attempt(
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
     canonical = canonical_by_key.get(managed_run_key(run))
     if canonical is None:
+        plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+        commit_step_manifest(
+            root,
+            {
+                "step": plan_recipe["step"],
+                "experiment_id": plan_recipe["experiment"]["id"],
+                "recipe_path": plan_recipe.get("_recipe_path", ""),
+                "plans": [str(plan_dir.resolve())],
+            },
+        )
         committed = merge_run_manifest(root, [{**base_run, "parameter_summary": "single resolved recipe"}])
         canonical = {managed_run_key(row): row for row in committed}[managed_run_key(run)]
     else:

@@ -637,7 +637,6 @@ def build_plan(
     expected_base_recipe: dict[str, Any] | None = None,
     staging_dir: str | Path | None = None,
     defer_commit: bool = False,
-    defer_registration: bool = False,
     registered_recipe_path: str | Path | None = None,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
@@ -714,14 +713,7 @@ def build_plan(
 
     task = recipe.get("task")
     plan_adapter = get_adapter(task)
-    if defer_registration and (
-        not defer_commit or staging_dir is None or plan_adapter is None or not plan_adapter.materializes_plan
-    ):
-        raise ValueError("Deferred plan registration requires a staged adapter-materialized plan.")
-    if defer_registration:
-        ensure_experiment_workspace(recipe, out, register_step=False)
-    else:
-        ensure_experiment_workspace(recipe, out)
+    ensure_experiment_workspace(recipe, out, register_step=False)
 
     write_out = out
     if defer_commit and staging_dir is None:
@@ -846,6 +838,7 @@ def build_plan(
         if staging_dir is not None:
             out.parent.mkdir(parents=True, exist_ok=True)
             write_out.replace(out)
+        ensure_experiment_workspace(recipe, out)
         manifest_row = {
             **run,
             "parameter_summary": "single resolved recipe",

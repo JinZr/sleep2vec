@@ -1490,6 +1490,15 @@ def test_step_manifest_merge_rejects_metadata_drift():
             "recipe_path: /tmp/recipe.yaml\n"
             "plans: []\n"
         ),
+        (
+            "step:\n"
+            "  id: unit-hparam-tune\n"
+            "  phase: analyze\n"
+            "  purpose: Tune hyperparameters.\n"
+            "experiment_id: unit-experiment\n"
+            "recipe_path: /tmp/recipe.yaml\n"
+            "plans: []\n"
+        ),
     ],
 )
 def test_planner_rejects_corrupt_existing_step_manifest_without_writing(tmp_path: Path, existing: str):
@@ -1506,6 +1515,7 @@ def test_planner_rejects_corrupt_existing_step_manifest_without_writing(tmp_path
 
     assert result.returncode == 1
     assert "step manifest" in result.stderr
+    assert not plan_dir.exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
