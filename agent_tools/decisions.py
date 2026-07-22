@@ -507,7 +507,7 @@ def _base_task_issues(
     base_decisions = dict(base_recipe.get("decisions") or {})
     base_decision_fields = _decision_fields_for_task(base_task, policy)
     for decision_field, value in local_decisions.items():
-        if decision_field in base_decision_fields and decision_field not in base_decisions:
+        if decision_field in base_decision_fields:
             base_decisions[decision_field] = value
     base_gate["decisions"] = base_decisions
 

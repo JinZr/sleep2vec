@@ -3029,6 +3029,45 @@ def test_hparam_blocks_when_base_finetune_pretrained_decision_is_missing(tmp_pat
     assert not (output_dir / "run_all.sh").exists()
 
 
+def test_hparam_local_ask_user_overrides_base_test_after_fit_decision(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["evaluation_policy"].update({"external_test_locked": False, "test_after_fit": True})
+    base_payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_recipe"},
+            "test_after_fit": {"value": True, "source": "explicit_recipe"},
+        }
+    )
+    write_yaml(base_recipe, base_payload)
+    payload["evaluation_policy"].pop("test_after_fit")
+    payload["evaluation_policy"].update(
+        {
+            "external_test_locked": False,
+            "final_test_unlocked": True,
+            "require_manual_unlock_for_final_test": False,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_recipe"},
+            "final_eval_unlock": {"value": True, "source": "explicit_recipe"},
+            "test_after_fit": {"value": "ASK_USER", "source": "unresolved"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "base_finetune.test_after_fit" in result.stdout
+    assert not (output_dir / "plan.json").exists()
+    assert not (output_dir / "runs").exists()
+
+
 def test_hparam_outer_workspace_owns_base_finetune_metadata(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
