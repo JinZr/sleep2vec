@@ -173,6 +173,11 @@ repository-relative. Structural config ownership may constrain recipe
 [task_recipe.md](../agent_contracts/task_recipe.md) for recipe, path, runtime
 identity, and adaptive semantics.
 
+Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
+`external_test_locked=false` and `final_test_unlocked=true`. Other splits do
+not require this unlock. See
+[external_test_locking.md](../agent_contracts/external_test_locking.md).
+
 Staged plan bytes still freeze the final semantic paths. A plan becomes
 runnable only after the complete bundle is published and its step and run rows
 are canonically registered. Adaptive round 000 then publishes
