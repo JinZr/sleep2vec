@@ -91,12 +91,23 @@ def _first_run(plan_dir: Path) -> dict:
     return json.loads((plan_dir / "plan.json").read_text())["runs"][0]
 
 
+def _set_run_status(plan_dir: Path, runs: dict | list[dict], status: str = "completed") -> None:
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    workspace = Path(plan["recipe"]["experiment"]["root"])
+    selected_runs = runs if isinstance(runs, list) else [runs]
+    merge_run_manifest(
+        workspace,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": status} for run in selected_runs],
+    )
+
+
 def _ranking_path(plan_dir: Path) -> Path:
     recipe = json.loads((plan_dir / "plan.json").read_text())["recipe"]
     return Path(recipe["experiment"]["root"]) / "reports" / "ranking.csv"
 
 
-def test_hparam_external_eval_uses_run_runtime_from_candidate_ranking(tmp_path: Path):
+@pytest.mark.parametrize("canonical_status", ["completed", "finished"])
+def test_hparam_external_eval_uses_run_runtime_from_candidate_ranking(tmp_path: Path, canonical_status: str):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["parameters"] = {"runtime.batch_size": [48]}
@@ -113,6 +124,7 @@ def test_hparam_external_eval_uses_run_runtime_from_candidate_ranking(tmp_path: 
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
+    _set_run_status(plan_dir, run, canonical_status)
     version = run["version"]
     run_dir = Path(run["runtime_dir"])
     ckpt_dir = Path(run["checkpoint_dir"])
@@ -167,6 +179,7 @@ def test_hparam_external_eval_uses_frozen_plan_fields_and_workdir(tmp_path: Path
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
+    _set_run_status(plan_dir, run)
     selected = plan_dir / "selected.csv"
     with selected.open("w", newline="") as file_obj:
         writer = csv.DictWriter(
@@ -215,6 +228,79 @@ def test_hparam_external_eval_uses_frozen_plan_fields_and_workdir(tmp_path: Path
     assert "--batch-size 999" not in script
     assert f"cd {shlex.quote(str(run_cwd))}" in script
     assert f"export PYTHONPATH={shlex.quote(str(run_cwd))}${{PYTHONPATH:+:$PYTHONPATH}}" in script
+
+
+@pytest.mark.parametrize("canonical_status", ["failed", "planned"])
+def test_hparam_external_eval_rejects_unsuccessful_canonical_run_before_writing(tmp_path: Path, canonical_status: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": canonical_status}],
+    )
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,rank,status,checkpoint_path\n"
+        f"{run['step_id']},{run['run_id']},1,completed,{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
+    )
+
+    result = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--unlock-final-test",
+    )
+
+    assert result.returncode == 1
+    assert "Selected candidate is not canonically successful" in result.stderr
+    assert f"status={canonical_status}" in result.stderr
+    assert not (plan_dir / "external_eval_configs").exists()
+    assert not (plan_dir / "external_eval_manifest.tsv").exists()
+    assert not (plan_dir / "external_eval.sh").exists()
+
+
+def test_hparam_external_eval_checks_status_after_top_k_filtering(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, run_count=2)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    _set_run_status(plan_dir, runs[0])
+    _set_run_status(plan_dir, runs[1], "failed")
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,rank,status,checkpoint_path\n"
+        f"{runs[0]['step_id']},{runs[0]['run_id']},1,completed,"
+        f"{Path(runs[0]['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
+        f"{runs[1]['step_id']},{runs[1]['run_id']},2,completed,"
+        f"{Path(runs[1]['checkpoint_dir']) / 'epoch=2.ckpt'}\n"
+    )
+
+    top = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--unlock-final-test",
+    )
+    all_candidates = _run(
+        "hparam-external-eval",
+        "--run-dir",
+        str(plan_dir),
+        "--selected",
+        str(selected),
+        "--unlock-final-test",
+        "--all-candidates",
+    )
+
+    assert top.returncode == 0, top.stderr
+    assert [row["run_id"] for row in _read_table(plan_dir / "external_eval_manifest.tsv")] == [runs[0]["run_id"]]
+    assert all_candidates.returncode == 1
+    assert f"{runs[1]['step_id']} / {runs[1]['run_id']} (status=failed)" in all_candidates.stderr
 
 
 @pytest.mark.parametrize("snapshot_field", ["config", "script"])
@@ -316,6 +402,7 @@ def test_hparam_external_eval_filters_workspace_ranking_to_current_step(tmp_path
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
+    _set_run_status(plan_dir, run)
     other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
         tmp_path,
@@ -378,6 +465,7 @@ def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_pa
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
+    _set_run_status(plan_dir, run)
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_text("checkpoint")
@@ -442,6 +530,7 @@ def test_hparam_postprocess_preflights_outputs_before_side_effects(tmp_path: Pat
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
+    _set_run_status(plan_dir, run)
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_text("checkpoint")
@@ -856,6 +945,7 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    _set_run_status(plan_dir, runs)
     run_config = Path(runs[0]["config"])
     selected = plan_dir / "selected.csv"
     selected.write_text(
@@ -960,6 +1050,7 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
     owner_result = _run("plan", "--recipe", str(owner_recipe), "--output-dir", str(owner_plan_dir))
     assert owner_result.returncode == 0, owner_result.stderr
     owner_run = _first_run(owner_plan_dir)
+    _set_run_status(owner_plan_dir, owner_run)
 
     caller_workdir = tmp_path / "caller-workdir"
     caller_recipe = _hparam_recipe(tmp_path, execution={"workdir": str(caller_workdir)})
@@ -967,6 +1058,7 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
     caller_result = _run("plan", "--recipe", str(caller_recipe), "--output-dir", str(caller_plan_dir))
     assert caller_result.returncode == 0, caller_result.stderr
     caller_run = _first_run(caller_plan_dir)
+    _set_run_status(caller_plan_dir, caller_run)
 
     owner_checkpoint = Path(owner_run["checkpoint_dir"]) / "epoch=1.ckpt"
     caller_checkpoint = Path(caller_run["checkpoint_dir"]) / "epoch=2.ckpt"

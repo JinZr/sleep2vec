@@ -203,6 +203,10 @@ commit, process, and evidence rules are defined in
 
 ### External evaluation
 
+`hparam-external-eval` rechecks final top-k candidates against canonical
+`run_manifest.tsv`; only `completed` or `finished` runs may enter its runnable
+script.
+
 `experiment-run` owns the resumable validation-to-external-test flow. It
 validates the strict spec without launching in dry-run mode, waits for successful
 managed sources, freezes validation-selected checkpoints, preflights every

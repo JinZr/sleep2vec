@@ -127,6 +127,8 @@ Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair
 
 Every hparam mutation first validates workspace ownership, step registration, frozen hashes, and equality between the complete effective recipe in `plan.json` and `recipe.resolved.yaml`. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 
+Selected-candidate postprocessing refreshes lifecycle status from the current canonical manifest rather than trusting ranking or candidate-table status. `hparam-external-eval` accepts only `completed` or `finished` runs after final rank/top-k filtering and before writing configs, manifests, or runnable scripts.
+
 An adaptive plan under `adaptive/rounds/round_NNN` is runnable only after the
 root-matching `adaptive/workflow.json` commit marker exists as an independent
 regular file. Planning and initialization may inspect an uncommitted plan with
