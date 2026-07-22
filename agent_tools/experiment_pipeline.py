@@ -685,7 +685,6 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
 def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[str, Any]]:
     policy = spec["checkpoint_policy"]
     frozen = []
-    canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
         plan = artifacts.read_hparam_plan(plan_dir)
@@ -699,6 +698,7 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[st
             raise ValueError(f"No ranked checkpoint selection is owned by source plan {source_id}.")
         row = min(candidates, key=lambda candidate: int(candidate["rank"]))
         key = (str(row["step_id"]), str(row["run_id"]))
+        canonical = {managed_run_key(item): item for item in read_run_manifest(root)}
         canonical_row = canonical.get(key)
         if canonical_row is None or canonical_row.get("status") not in SUCCESS_STATUSES:
             raise ValueError(f"Selected checkpoint source is not successful: {source_id}")
