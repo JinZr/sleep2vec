@@ -2246,6 +2246,16 @@ def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     assert "must be a positive integer" in issues[0].message
 
 
+@pytest.mark.parametrize("max_concurrent", [True, 1.0, 1.5, "1", 0])
+def test_hparam_execution_reports_invalid_max_concurrent(max_concurrent):
+    issues = decision_hparam._hparam_execution_issues({"max_concurrent": max_concurrent}, {})
+
+    assert len(issues) == 1
+    assert issues[0].field == "execution.max_concurrent"
+    assert issues[0].status.value == "FAIL"
+    assert "must be a positive integer" in issues[0].message
+
+
 @pytest.mark.parametrize(
     ("execution", "field"),
     [
@@ -4539,6 +4549,18 @@ def test_hparam_remote_command_timeout_returns_unknown_remote(monkeypatch):
     result = run_evidence.run_row_command({"target": "ssh", "host": "baichuan3"}, "ps")
 
     assert result.returncode == 124
+
+
+@pytest.mark.parametrize("max_concurrent", [True, 1.0, 1.5, "1", 0])
+def test_managed_scheduler_rejects_invalid_max_concurrent(max_concurrent):
+    with pytest.raises(ValueError, match="execution.max_concurrent must be a positive integer"):
+        managed_scheduler.capacity_state(
+            {"max_concurrent": max_concurrent},
+            {},
+            {},
+            {},
+            expected_keys=set(),
+        )
 
 
 def test_managed_scheduler_capacity_balances_around_other_active_runs():

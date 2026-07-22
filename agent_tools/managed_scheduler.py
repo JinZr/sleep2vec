@@ -395,9 +395,10 @@ def capacity_state(
     expected_keys: set[RunKey],
 ) -> CapacityState:
     groups = gpu_groups(execution, runtime)
-    max_concurrent = int(execution["max_concurrent"]) if "max_concurrent" in execution else max(len(groups), 1)
-    if max_concurrent <= 0:
+    raw_max_concurrent = execution.get("max_concurrent", max(len(groups), 1))
+    if type(raw_max_concurrent) is not int or raw_max_concurrent <= 0:
         raise ValueError("execution.max_concurrent must be a positive integer.")
+    max_concurrent = raw_max_concurrent
     allow_gpu_oversubscription = bool(groups) and max_concurrent > len(groups)
     target = str(execution.get("target", "local") or "local")
     current_host = str(execution.get("host") or "") if target == "ssh" else ""

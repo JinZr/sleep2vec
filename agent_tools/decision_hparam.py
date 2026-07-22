@@ -524,11 +524,8 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
         )
     max_concurrent = None
     if "max_concurrent" in execution:
-        try:
-            max_concurrent = int(execution["max_concurrent"])
-            if max_concurrent <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
+        raw_max_concurrent = execution["max_concurrent"]
+        if type(raw_max_concurrent) is not int or raw_max_concurrent <= 0:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
@@ -538,6 +535,8 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
                     {"max_concurrent": execution.get("max_concurrent")},
                 )
             )
+        else:
+            max_concurrent = raw_max_concurrent
     if "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list):
         issues.append(
             DecisionIssue(
