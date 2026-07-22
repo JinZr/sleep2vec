@@ -12,7 +12,16 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, experiments, hparam_runtime, manifests, plan_hparam, plans, run_evidence
+from agent_tools import (
+    adaptive_hparam,
+    experiments,
+    hparam_runtime,
+    manifests,
+    plan_hparam,
+    plans,
+    run_artifacts,
+    run_evidence,
+)
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.models import REPO_ROOT
 
@@ -1289,6 +1298,64 @@ def test_adaptive_init_creates_round_zero_without_modifying_original_recipe(tmp_
     assert (workflow_dir / "adaptive" / "rounds" / "round_000" / "plan.json").exists()
     assert (workflow_dir / "adaptive" / "run_registry.tsv").exists()
     assert "adaptive_init" in (tmp_path / "events.jsonl").read_text()
+
+
+def test_adaptive_workflow_commit_accepts_relative_round_path(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    monkeypatch.chdir(tmp_path)
+
+    plan = run_artifacts.read_hparam_plan(Path("workflow/adaptive/rounds/round_000"))
+
+    assert [run["run_id"] for run in plan["runs"]] == ["run-000"]
+
+
+def test_adaptive_workflow_commit_resolves_symlink_ancestor_before_dot_dot(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    real_parent = tmp_path / "real-parent"
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, real_parent / "fresh-workflow")
+    anchor = real_parent / "anchor"
+    anchor.mkdir()
+    access = tmp_path / "access"
+    access.mkdir()
+    (access / "hop").symlink_to(anchor, target_is_directory=True)
+    round_dir = access / "hop" / ".." / "fresh-workflow" / "adaptive" / "rounds" / "round_000"
+
+    plan = run_artifacts.read_hparam_plan(round_dir)
+
+    assert round_dir.resolve() == workflow_dir / "adaptive" / "rounds" / "round_000"
+    assert [run["run_id"] for run in plan["runs"]] == ["run-000"]
+
+
+@pytest.mark.parametrize("marker_state", ["missing", "root_drift"])
+def test_adaptive_workflow_commit_cannot_be_skipped_by_dot_dot_path(tmp_path: Path, marker_state: str):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    round_dir = workflow_dir / "adaptive" / "rounds" / ".." / "rounds" / "round_000"
+    if marker_state == "missing":
+        workflow_path.unlink()
+        expected_error = FileNotFoundError
+        expected_message = "initialization is not committed"
+    else:
+        workflow = json.loads(workflow_path.read_text())
+        workflow["root"] = str(tmp_path / "other-workflow")
+        workflow_path.write_text(json.dumps(workflow))
+        expected_error = ValueError
+        expected_message = "commit marker differs"
+
+    with pytest.raises(expected_error, match=expected_message):
+        run_artifacts.read_hparam_plan(round_dir)
+
+
+def test_adaptive_workflow_commit_rejects_round_symlink(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    alias = tmp_path / "round-alias"
+    alias.symlink_to(workflow_dir / "adaptive" / "rounds" / "round_000", target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        run_artifacts.read_hparam_plan(alias)
 
 
 def test_adaptive_init_materialization_failure_keeps_round_unpublished_and_retries(tmp_path: Path, monkeypatch):

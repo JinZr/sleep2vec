@@ -202,6 +202,9 @@ def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any]) ->
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
     if adaptive.get("enabled") is not True:
         return
+    if run_dir.is_symlink():
+        raise ValueError(f"Adaptive plan directory must not be a symlink: {run_dir}")
+    run_dir = run_dir.resolve()
     if run_dir.parent.name != "rounds" or run_dir.parent.parent.name != "adaptive":
         return
     workflow_root = run_dir.parent.parent.parent
