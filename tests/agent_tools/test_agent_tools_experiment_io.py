@@ -1,7 +1,10 @@
+import errno
+import fcntl
 import hashlib
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -85,6 +88,84 @@ def test_local_conditional_replace_requires_expected_digest(tmp_path: Path):
     )
     assert path.read_bytes() == b"new\n"
     assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_local_conditional_replace_retries_transient_flock_eio(tmp_path: Path, monkeypatch):
+    path = tmp_path / "state.tsv"
+    path.write_text("old\n")
+    attempts = 0
+    delays = []
+    real_flock = fcntl.flock
+
+    def flaky_flock(file_descriptor, operation):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        real_flock(file_descriptor, operation)
+
+    monkeypatch.setattr(experiment_io, "fcntl", SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, flock=flaky_flock))
+    monkeypatch.setattr(experiment_io, "time", SimpleNamespace(sleep=delays.append))
+
+    assert experiment_io.conditional_atomic_replace_text_at(
+        path,
+        "new\n",
+        hashlib.sha256(b"old\n").hexdigest(),
+    )
+    assert attempts == 2
+    assert delays == [0.1]
+    assert path.read_bytes() == b"new\n"
+
+
+def test_local_conditional_replace_fails_closed_after_persistent_flock_eio(tmp_path: Path, monkeypatch):
+    path = tmp_path / "state.tsv"
+    path.write_text("old\n")
+    attempts = 0
+    delays = []
+
+    def failing_flock(_file_descriptor, _operation):
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    monkeypatch.setattr(experiment_io, "fcntl", SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, flock=failing_flock))
+    monkeypatch.setattr(experiment_io, "time", SimpleNamespace(sleep=delays.append))
+
+    with pytest.raises(OSError) as error:
+        experiment_io.conditional_atomic_replace_text_at(
+            path,
+            "new\n",
+            hashlib.sha256(b"old\n").hexdigest(),
+        )
+
+    assert error.value.errno == errno.EIO
+    assert attempts == 4
+    assert delays == [0.1, 0.2, 0.4]
+    assert path.read_bytes() == b"old\n"
+
+
+def test_local_conditional_replace_does_not_retry_other_flock_errors(tmp_path: Path, monkeypatch):
+    path = tmp_path / "state.tsv"
+    path.write_text("old\n")
+    attempts = 0
+
+    def failing_flock(_file_descriptor, _operation):
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(experiment_io, "fcntl", SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, flock=failing_flock))
+
+    with pytest.raises(OSError) as error:
+        experiment_io.conditional_atomic_replace_text_at(
+            path,
+            "new\n",
+            hashlib.sha256(b"old\n").hexdigest(),
+        )
+
+    assert error.value.errno == errno.EPERM
+    assert attempts == 1
+    assert path.read_bytes() == b"old\n"
 
 
 def test_local_conditional_create_never_replaces_an_existing_file(tmp_path: Path):

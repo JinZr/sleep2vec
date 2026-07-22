@@ -12,6 +12,7 @@ from pathlib import Path
 import stat
 import subprocess  # noqa: F401 -- tests patch experiment_io.subprocess.run (stdlib global)
 import tempfile
+import time
 from typing import Any
 
 from . import transport
@@ -356,8 +357,19 @@ def conditional_atomic_replace_text_at(
     if not remote:
         target.parent.mkdir(parents=True, exist_ok=True)
         lock_path = target.with_name(f".{target.name}.cas.lock")
-        with lock_path.open("a+") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        for attempt in range(4):
+            lock_file = lock_path.open("a+")
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                lock_file.close()
+                if exc.errno != errno.EIO or attempt == 3:
+                    raise
+                # Do not reuse a JuiceFS-backed descriptor after flock reports EIO.
+                time.sleep(0.1 * (2**attempt))
+            else:
+                break
+        with lock_file:
             if expected_sha256 is None:
                 if os.path.lexists(target):
                     return False
