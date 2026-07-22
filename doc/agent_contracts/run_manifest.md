@@ -125,7 +125,7 @@ Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair
 
 ## Consumer requirements
 
-Every hparam mutation first validates workspace ownership, step registration, frozen hashes, and equality between the complete effective recipe in `plan.json` and `recipe.resolved.yaml`. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
+Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 
 Selected-candidate postprocessing refreshes lifecycle status from the current canonical manifest rather than trusting ranking or candidate-table status. `hparam-external-eval` accepts only `completed` or `finished` runs after final rank/top-k filtering and before writing configs, manifests, or runnable scripts.
 

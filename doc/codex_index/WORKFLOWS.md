@@ -173,6 +173,10 @@ repository-relative. Structural config ownership may constrain recipe
 [task_recipe.md](../agent_contracts/task_recipe.md) for recipe, path, runtime
 identity, and adaptive semantics.
 
+Hparam `plan.json` independently records the exact byte digest of
+`recipe.resolved.yaml`; every managed consumer verifies that digest before
+trusting the frozen recipe.
+
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do
 not require this unlock. See

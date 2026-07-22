@@ -240,26 +240,20 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
             **spec,
         }
         rows.append(row)
+    resolved_recipe = {
+        "experiment": experiment,
+        "step": step,
+        "execution": {"workdir": str(root)},
+    }
+    resolved_path = root / "recipe.resolved.yaml"
+    resolved_path.write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     (root / "plan.json").write_text(
         json.dumps(
             {
                 "runs": runs,
-                "recipe": {
-                    "experiment": experiment,
-                    "step": step,
-                    "execution": {"workdir": str(root)},
-                },
+                "recipe": resolved_recipe,
+                "resolved_recipe_sha256": file_sha256(resolved_path),
             }
-        )
-    )
-    (root / "recipe.resolved.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "experiment": experiment,
-                "step": step,
-                "execution": {"workdir": str(root)},
-            },
-            sort_keys=False,
         )
     )
     manifests.write_rows(
@@ -593,6 +587,8 @@ def test_hparam_launch_preserves_first_commit_when_second_start_raises(tmp_path:
     resolved = yaml.safe_load(resolved_path.read_text())
     resolved["execution"]["max_concurrent"] = 2
     resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = file_sha256(resolved_path)
+    plan_path.write_text(json.dumps(plan))
     starts = 0
 
     def fail_second_start(_execution, _command):
@@ -1854,6 +1850,33 @@ def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
+def test_hparam_launch_rejects_synchronized_recipe_drift_before_side_effects(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"].setdefault("execution", {})["max_concurrent"] = 2
+    plan_path.write_text(json.dumps(plan))
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved.setdefault("execution", {})["max_concurrent"] = 2
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    calls = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args, **_kwargs: calls.append("start") or "launched",
+    )
+
+    with pytest.raises(ValueError, match="Frozen hparam recipe SHA-256"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_hparam_launch_rejects_base_runtime_drift_before_side_effects(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -2586,6 +2609,8 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
         payload["execution"].pop("runtime_commit")
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = file_sha256(plan_dir / "recipe.resolved.yaml")
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
     monkeypatch.setattr(

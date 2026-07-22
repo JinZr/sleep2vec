@@ -743,7 +743,12 @@ def write_hparam_plan(
     write_text(physical_out / "plan.md", "\n".join(plan_lines) + "\n")
 
     plan_recipe = {key: value for key, value in recipe.items() if key != _FINAL_EVAL_CONFIG_SNAPSHOT}
-    plan_payload = {"status": "PASS", "runs": runs, "recipe": plan_recipe}
+    plan_payload = {
+        "status": "PASS",
+        "runs": runs,
+        "recipe": plan_recipe,
+        "resolved_recipe_sha256": file_sha256(physical_out / "recipe.resolved.yaml"),
+    }
     if final_allowed and has_explicit_final_eval_config(recipe):
         plan_payload["final_eval_config"] = {
             "path": str(frozen_final_eval_config),

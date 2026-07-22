@@ -55,6 +55,9 @@ Materialization follows these rules:
 `plan.json` and `recipe.resolved.yaml` must contain the same complete effective
 recipe. Retained base/local recipe copies are source audit only; launch,
 selection, adaptive, and postprocess consumers read the effective recipe.
+For hparam plans, top-level `plan.json.resolved_recipe_sha256` binds the exact
+bytes of `recipe.resolved.yaml`; consumers verify that digest before parsing the
+recipe and then verify complete semantic equality between the two copies.
 Frozen recipes containing trusted `_base_recipe` or `_local_recipe` metadata
 are consumed through `run_artifacts.read_hparam_plan`; they are not re-entered
 through the authored-recipe loader.

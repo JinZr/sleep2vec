@@ -43,8 +43,11 @@ def read_hparam_plan(
     resolved_recipe_path = run_dir / "recipe.resolved.yaml"
     if not resolved_recipe_path.exists():
         raise FileNotFoundError(f"Missing frozen hparam recipe: {resolved_recipe_path}")
+    resolved_recipe_bytes = resolved_recipe_path.read_bytes()
+    if plan.get("resolved_recipe_sha256") != hashlib.sha256(resolved_recipe_bytes).hexdigest():
+        raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
     resolved_recipe = read_managed_yaml_mapping(
-        resolved_recipe_path.read_text(), source=f"Frozen hparam recipe {resolved_recipe_path}"
+        resolved_recipe_bytes.decode(), source=f"Frozen hparam recipe {resolved_recipe_path}"
     )
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
