@@ -113,11 +113,17 @@ class TaskAdapter:
         recipe: dict[str, Any],
         out: Path,
         *,
+        write_out: Path | None = None,
         unlock_final_test: bool,
         source_config_bytes: bytes,
         source_config_sha256: str,
     ) -> None:
-        """Materialize the full plan bundle; called only when
+        """Materialize the full plan bundle; ``out`` is the final semantic
+        root and ``write_out`` may be a physical staging root."""
+        raise NotImplementedError
+
+    def commit_plan(self, out: Path) -> None:
+        """Register a fully materialized plan; called only when
         materializes_plan is True."""
         raise NotImplementedError
 

@@ -72,6 +72,21 @@ and checkpoint paths are not normalized by this management rule.
 
 A new plan must be contained by its experiment root and registered in its step manifest. A non-empty unmanaged root is rejected rather than adopted, and a completed experiment cannot accept another plan. Historical workspaces are not migrated or renamed.
 
+Hparam plan publication separates physical materialization from canonical
+registration. When staging is used, every frozen path and command names the
+final plan directory while all bytes are written to a hidden sibling on the
+same filesystem. `plan.json` is written only after the rest of the frozen
+bundle, the complete directory is published by one rename, and only then are
+the step manifest and all planned `run_manifest.tsv` rows committed.
+
+Adaptive round 000 adds one final commit boundary: its registry is validated
+and its README is written after canonical plan registration, then
+`adaptive/workflow.json` is created atomically as the readiness marker. Launch, queue, and monitor reject
+an adaptive round while that marker is absent. A retry may accept a complete
+unregistered round only when deterministic regeneration produces an identical
+plan tree; incomplete, partial-canonical, or differing visible rounds remain
+invalid and are not repaired in place.
+
 ## Lifecycle entrypoints
 
 - `plan` freezes the effective recipe, configs, commands, hashes, and planned runs.

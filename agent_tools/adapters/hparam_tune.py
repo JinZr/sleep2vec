@@ -87,6 +87,7 @@ class HparamTuneAdapter(TaskAdapter):
         recipe: dict[str, Any],
         out: Path,
         *,
+        write_out: Path | None = None,
         unlock_final_test: bool,
         source_config_bytes: bytes,
         source_config_sha256: str,
@@ -96,10 +97,16 @@ class HparamTuneAdapter(TaskAdapter):
         plan_hparam.write_hparam_plan(
             recipe,
             out,
+            write_out=write_out,
             unlock_final_test=unlock_final_test,
             source_config_bytes=source_config_bytes,
             source_config_sha256=source_config_sha256,
         )
+
+    def commit_plan(self, out: Path) -> None:
+        from .. import plan_hparam
+
+        plan_hparam.commit_hparam_plan(out)
 
     def planned_plan_paths(
         self,

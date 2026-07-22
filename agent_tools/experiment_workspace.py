@@ -489,7 +489,9 @@ def write_initial_experiment_manifest(root: Path, experiment: dict[str, Any], *,
     initialize_run_manifest(root, remote=remote)
 
 
-def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) -> tuple[Path, Path]:
+def ensure_experiment_workspace(
+    recipe: dict[str, Any], output_dir: str | Path, *, register_step: bool = True
+) -> tuple[Path, Path]:
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
@@ -530,9 +532,10 @@ def ensure_experiment_workspace(recipe: dict[str, Any], output_dir: str | Path) 
     if not manifest_exists:
         write_initial_experiment_manifest(root, experiment)
         append_event(root, "experiment_initialized", {"experiment_id": experiment["id"]})
-    _merged_step_payload, created_step = commit_step_manifest(root, step_payload)
-    if created_step:
-        append_event(root, "step_registered", {"step_id": step["id"], "phase": step["phase"]})
+    if register_step:
+        _merged_step_payload, created_step = commit_step_manifest(root, step_payload)
+        if created_step:
+            append_event(root, "step_registered", {"step_id": step["id"], "phase": step["phase"]})
     _write_readme(root, experiment)
     return root, step_dir
 

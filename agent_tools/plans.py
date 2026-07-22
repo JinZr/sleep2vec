@@ -637,6 +637,8 @@ def build_plan(
     expected_base_recipe: dict[str, Any] | None = None,
     staging_dir: str | Path | None = None,
     defer_commit: bool = False,
+    defer_registration: bool = False,
+    registered_recipe_path: str | Path | None = None,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     recipe, cfg, report = preflight_plan(
@@ -664,6 +666,21 @@ def build_plan(
         expected_base_json = json.dumps(expected_base_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
         if actual_base_json != expected_base_json:
             raise ValueError("Plan base recipe does not match the bound adaptive recipe.")
+    if registered_recipe_path is not None:
+        frozen_recipe_path = Path(registered_recipe_path).expanduser()
+        if not frozen_recipe_path.is_absolute():
+            frozen_recipe_path = (Path.cwd() / frozen_recipe_path).resolve()
+        else:
+            frozen_recipe_path = frozen_recipe_path.resolve()
+        try:
+            frozen_recipe_path.relative_to(out)
+        except ValueError as exc:
+            raise ValueError(
+                f"Registered plan recipe must be inside the final plan directory: {frozen_recipe_path}"
+            ) from exc
+        recipe["_recipe_path"] = str(frozen_recipe_path)
+        if isinstance(recipe.get("_local_recipe"), dict):
+            recipe["_local_recipe"]["_recipe_path"] = str(frozen_recipe_path)
     validated_config_bytes = cfg.get("_source_config_bytes") if isinstance(cfg, dict) else None
     validated_config_sha256 = cfg.get("_source_config_sha256") if isinstance(cfg, dict) else None
     if report.exit_code == 0:
@@ -695,7 +712,16 @@ def build_plan(
             )
         return report
 
-    ensure_experiment_workspace(recipe, out)
+    task = recipe.get("task")
+    plan_adapter = get_adapter(task)
+    if defer_registration and (
+        not defer_commit or staging_dir is None or plan_adapter is None or not plan_adapter.materializes_plan
+    ):
+        raise ValueError("Deferred plan registration requires a staged adapter-materialized plan.")
+    if defer_registration:
+        ensure_experiment_workspace(recipe, out, register_step=False)
+    else:
+        ensure_experiment_workspace(recipe, out)
 
     write_out = out
     if defer_commit and staging_dir is None:
@@ -715,18 +741,21 @@ def build_plan(
             raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
         write_out.mkdir(parents=True)
 
-    task = recipe.get("task")
-    plan_adapter = get_adapter(task)
     if plan_adapter is not None and plan_adapter.materializes_plan:
-        if staging_dir is not None:
-            raise ValueError("Atomic plan staging is unsupported for adapter-materialized plans.")
         plan_adapter.write_plan(
             recipe,
             out,
+            write_out=write_out,
             unlock_final_test=unlock_final_test,
             source_config_bytes=validated_config_bytes,
             source_config_sha256=validated_config_sha256,
         )
+        if defer_commit:
+            return report
+        if staging_dir is not None:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            write_out.replace(out)
+        plan_adapter.commit_plan(out)
     else:
         root = experiment_root(recipe)
         if root is None:

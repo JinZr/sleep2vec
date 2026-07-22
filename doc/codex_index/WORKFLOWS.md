@@ -173,6 +173,14 @@ repository-relative. Structural config ownership may constrain recipe
 [task_recipe.md](../agent_contracts/task_recipe.md) for recipe, path, runtime
 identity, and adaptive semantics.
 
+Staged plan bytes still freeze the final semantic paths. A plan becomes
+runnable only after the complete bundle is published and its step and run rows
+are canonically registered. Adaptive round 000 then publishes
+`adaptive/workflow.json` last; launch and queue fail closed without that marker.
+An unregistered complete round may be resumed only after exact deterministic
+plan-tree comparison, while incomplete or partial-canonical rounds are not
+repaired.
+
 ### Managed state and launching
 
 `run_manifest.tsv` is the only lifecycle and execution-identity owner. Status

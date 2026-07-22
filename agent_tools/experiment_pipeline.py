@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import stat
 import time
 from typing import Any, Callable
 
@@ -946,7 +945,7 @@ def _materialize_attempt(
         if report.exit_code != 0:
             raise RuntimeError(f"External job plan unexpectedly failed after preflight: {job['id']}")
         if plan_dir.exists():
-            if _plan_tree_sha256(plan_dir) != _plan_tree_sha256(staging_dir):
+            if artifacts.plan_tree_sha256(plan_dir) != artifacts.plan_tree_sha256(staging_dir):
                 raise ValueError(
                     f"Uncommitted external attempt plan differs from deterministic regeneration: {plan_dir}"
                 )
@@ -1842,29 +1841,6 @@ def _assert_source_semantics(source_id: str, source: dict[str, Any], recipe: dic
 
 def _text_sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
-
-
-def _plan_tree_sha256(root: Path) -> str:
-    if root.is_symlink() or not root.is_dir():
-        raise ValueError(f"Managed attempt plan is missing or aliased: {root}")
-    digest = hashlib.sha256()
-    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-        info = os.lstat(path)
-        relative = path.relative_to(root).as_posix().encode()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(stat.S_IMODE(info.st_mode).to_bytes(4, "big"))
-        if stat.S_ISDIR(info.st_mode):
-            digest.update(b"directory")
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"Managed attempt plan contains an unsafe artifact: {path}")
-        digest.update(b"file")
-        digest.update(info.st_size.to_bytes(8, "big"))
-        with path.open("rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
