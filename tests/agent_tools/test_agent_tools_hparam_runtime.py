@@ -4087,6 +4087,42 @@ def test_hparam_monitor_preserves_nonterminal_status_for_unreadable_local_pid(
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
 
+def test_gpu_summary_matches_managed_process_group_children(monkeypatch):
+    def fake_command(_row, command):
+        if "--query-compute-apps" in command:
+            return subprocess.CompletedProcess(
+                [],
+                0,
+                "456, GPU-managed, 1024\n789, GPU-foreign, 2048\n",
+                "",
+            )
+        if command == "ps -eo pid=,pgid=":
+            return subprocess.CompletedProcess([], 0, "123 123\n456 123\n789 789\n", "")
+        if "--query-gpu" in command:
+            return subprocess.CompletedProcess([], 0, "0, 90, 4096\n", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
+
+    summary = run_evidence.gpu_summary({"gpus": "0", "process_group_id": 123}, 123)
+
+    assert "456, GPU-managed, 1024" in summary
+    assert "789, GPU-foreign, 2048" not in summary
+
+
+def test_gpu_summary_preserves_process_group_probe_uncertainty(monkeypatch):
+    def fake_command(_row, command):
+        if "--query-compute-apps" in command:
+            return subprocess.CompletedProcess([], 0, "456, GPU-managed, 1024\n", "")
+        if command == "ps -eo pid=,pgid=":
+            return subprocess.CompletedProcess([], 1, "", "ps failed")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
+
+    assert run_evidence.gpu_summary({"gpus": "0", "process_group_id": 123}, 123) is None
+
+
 def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     _write_process_identity(pid_path)
@@ -4182,6 +4218,13 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
             },
         ],
     )
+    merge_run_manifest(
+        tmp_path,
+        [
+            {"step_id": "train-model", "run_id": "stalled", "checkpoint_count": 0},
+            {"step_id": "train-model", "run_id": "remote", "checkpoint_count": 0},
+        ],
+    )
 
     def fake_running(row, _identity):
         return None if row["run_id"] == "remote" else True
@@ -4197,6 +4240,72 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
     status = {row["run_id"]: row["health_status"] for row in _read_table(tmp_path / "run_status.tsv")}
     assert status["stalled"] == "possibly_stalled"
     assert status["remote"] == "unknown_remote"
+
+
+def test_health_requires_a_comparable_checkpoint_observation():
+    inputs = {
+        "status": "running",
+        "running_state": True,
+        "gpu_summary": "",
+        "io_read_delta": None,
+        "io_write_delta": None,
+        "progress": {"status": "missing"},
+        "progress_is_fresh": False,
+        "log_age_seconds": 500,
+        "checkpoint_count": 0,
+    }
+
+    assert run_evidence.classify_health(**inputs, previous_checkpoint_count=None) == "health_unknown"
+    assert run_evidence.classify_health(**inputs, previous_checkpoint_count=0) == "possibly_stalled"
+    assert (
+        run_evidence.classify_health(**{**inputs, "gpu_summary": None}, previous_checkpoint_count=0) == "health_unknown"
+    )
+    assert (
+        run_evidence.classify_health(
+            **{**inputs, "gpu_summary": "456, GPU-managed, 1024", "checkpoint_count": None},
+            previous_checkpoint_count=0,
+        )
+        == "compute_active"
+    )
+
+
+def test_health_preserves_checkpoint_inventory_when_remote_probe_is_unavailable(tmp_path: Path, monkeypatch):
+    identity = _process_identity()
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "running",
+        "target": "ssh",
+        "host": "unit-host",
+        "script": "/remote/run.sh",
+        "pid_path": "/remote/run.pid",
+        "log_path": "/remote/run.log",
+        "gpus": "0",
+        "checkpoints": "epoch=1.ckpt",
+        "checkpoint_count": 1,
+        **identity,
+    }
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: identity)
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: True)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
+    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(run_evidence, "gpu_summary", lambda _row, _pid: "")
+    monkeypatch.setattr(run_evidence, "proc_io", lambda _row, _pid: {})
+    monkeypatch.setattr(run_evidence, "log_age_seconds", lambda _path, _row: 500)
+    monkeypatch.setattr(run_evidence, "read_run_progress", lambda _run_dir, _row: {"status": "missing"})
+
+    observed = run_evidence.status_row(
+        tmp_path,
+        row,
+        row,
+        script_commits_terminal_status=False,
+        health=True,
+    )
+
+    assert observed["status"] == "running"
+    assert observed["checkpoints"] == "epoch=1.ckpt"
+    assert observed["checkpoint_count"] == ""
+    assert observed["health_status"] == "health_unknown"
 
 
 @pytest.mark.parametrize("failure", ["timeout", "ssh_error", "permission", "wrong_type", "missing", "ps_error"])
@@ -4367,6 +4476,18 @@ def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypat
         }
     )
     manifests.write_rows(tmp_path / "run_status.tsv", rows)
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": "train-model",
+                "run_id": "running",
+                "progress_processed": 5,
+                "progress_updated_at": "2000-01-01T00:00:00Z",
+                "checkpoint_count": 0,
+            }
+        ],
+    )
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda _row, _identity: True)
     monkeypatch.setattr(run_evidence, "gpu_summary", lambda row, pid: "")
     monkeypatch.setattr(run_evidence, "proc_io", lambda row, pid: {})

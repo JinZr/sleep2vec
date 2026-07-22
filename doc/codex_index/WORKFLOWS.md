@@ -196,7 +196,10 @@ repaired.
 tables, matrices, events, and reports are projections. Managed launches use a
 dedicated process group with PID, group, and OS start-token evidence; uncertain
 identity never authorizes relaunch or retry. Stop verifies and signals the full
-group before committing `stopped`.
+group before committing `stopped`. Optional health labels remain observational:
+DDP child GPU activity follows the managed process group, and unavailable
+required probes or first-baseline observations report `health_unknown` rather
+than `possibly_stalled`.
 
 `hparam-launch` starts one capacity-limited wave, while
 `hparam-run-queue --execute` owns continuous queue advancement. Monitor commands

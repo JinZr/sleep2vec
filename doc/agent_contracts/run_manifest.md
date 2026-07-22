@@ -29,6 +29,15 @@ Managed tables declare either one row per run or many rows per run. Both forms r
 
 `launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. Matrices, Markdown reports, rankings, and events are also derived artifacts.
 
+Health labels are observational and never own lifecycle state. Managed GPU
+activity is attributed to the frozen process group so DDP child processes count
+as active. Without another positive progress signal, an unavailable checkpoint
+probe, an unavailable GPU probe for a GPU-assigned run, or the first checkpoint
+observation without a comparison baseline reports `health_unknown`;
+`possibly_stalled` requires a later, comparable observation with no detected
+progress. Remote artifact uncertainty preserves the last checkpoint inventory
+while leaving the current health poll's `checkpoint_count` blank.
+
 Runtime `run_manifest.json` supplies metrics and checkpoint evidence only. It does not own lifecycle status. A truly missing runtime manifest means evidence is not yet available; an existing alias, non-regular file, invalid encoding/JSON, or non-mapping payload is corrupt.
 
 For a pipeline attempt, `result_root` is a single-use empty directory and the
