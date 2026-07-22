@@ -90,7 +90,9 @@ process evidence already committed by the scheduler remains canonical evidence
 for monitor reconciliation under the lifecycle-owner rules.
 Exactly one valid `run_manifest.json` must be discoverable below that root and
 must agree with the frozen checkpoint, config, preset, split, and runtime
-inputs.
+inputs. Its `metrics_csv_path` and `prediction_csv_path` must identify existing,
+independent regular files below the result root. Per-disease metric tables remain
+optional when the corresponding task emits no per-disease rows.
 
 Only a canonical runtime `failed` or `launch_failed` attempt may receive one
 fresh retry. A `completed` or `finished` lifecycle commit whose result manifest

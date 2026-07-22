@@ -363,6 +363,8 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     assert report.exit_code == 0
     plan_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir.replace(plan_dir)
+    step_manifest = root / "steps" / spec["pipeline"]["step"]["id"] / "step.yaml"
+    assert not step_manifest.exists()
     assert read_run_manifest(root) == []
     frozen_plan = json.loads((plan_dir / "plan.json").read_text())
     frozen_identity = {
@@ -394,6 +396,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
                 result_root=result_root,
             )
         assert read_run_manifest(root) == []
+        assert not step_manifest.exists()
         return
 
     row = experiment_pipeline._materialize_attempt(
@@ -412,6 +415,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     assert row["job_id"] == "age-hsp-i2-psg"
     assert canonical[0]["pipeline_id"] == "external-v1"
     assert canonical[0]["terminal_status_owner"] == "script"
+    assert yaml.safe_load(step_manifest.read_text())["plans"] == [str(plan_dir.resolve())]
     assert launch_path.read_bytes() == launch_before
     assert not list(plan_dir.parent.glob(".attempt-001.*.staging"))
 

@@ -12,7 +12,7 @@ from agent_tool_test_helpers import survival_config_payload, write_finetune_reci
 import pytest
 import yaml
 
-from agent_tools import configs, experiments, plan_context, plans
+from agent_tools import configs, experiments, plan_context, plan_hparam, plans
 from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
@@ -1973,11 +1973,11 @@ def test_finetune_plan_freezes_config_bytes_validated_before_workspace_setup(tmp
     validated_bytes = config.read_bytes()
     real_ensure_workspace = plans.ensure_experiment_workspace
 
-    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path):
+    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, *, register_step: bool = True):
         payload = yaml.safe_load(config.read_text())
         payload["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
         config.write_text(yaml.safe_dump(payload, sort_keys=False))
-        return real_ensure_workspace(recipe_payload, output_dir)
+        return real_ensure_workspace(recipe_payload, output_dir, register_step=register_step)
 
     monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
     output_dir = tmp_path / "plan"
@@ -2024,11 +2024,11 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
     validated_bytes = config.read_bytes()
     real_ensure_workspace = plans.ensure_experiment_workspace
 
-    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path):
+    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, *, register_step: bool = True):
         payload = yaml.safe_load(config.read_text())
         payload["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
         config.write_text(yaml.safe_dump(payload, sort_keys=False))
-        return real_ensure_workspace(recipe_payload, output_dir)
+        return real_ensure_workspace(recipe_payload, output_dir, register_step=register_step)
 
     monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
     output_dir = tmp_path / "plan"
@@ -3027,6 +3027,108 @@ def test_hparam_blocks_when_base_finetune_pretrained_decision_is_missing(tmp_pat
     assert result.returncode == 2
     assert "base_finetune.pretrained_backbone_path" in result.stdout
     assert not (output_dir / "run_all.sh").exists()
+
+
+def test_hparam_local_ask_user_overrides_base_test_after_fit_decision(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["evaluation_policy"].update({"external_test_locked": False, "test_after_fit": True})
+    base_payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_recipe"},
+            "test_after_fit": {"value": True, "source": "explicit_recipe"},
+        }
+    )
+    write_yaml(base_recipe, base_payload)
+    payload["evaluation_policy"].pop("test_after_fit")
+    payload["evaluation_policy"].update(
+        {
+            "external_test_locked": False,
+            "final_test_unlocked": True,
+            "require_manual_unlock_for_final_test": False,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "external_test_locked": {"value": False, "source": "explicit_recipe"},
+            "final_eval_unlock": {"value": True, "source": "explicit_recipe"},
+            "test_after_fit": {"value": "ASK_USER", "source": "unresolved"},
+        }
+    )
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "base_finetune.test_after_fit" in result.stdout
+    assert not (output_dir / "plan.json").exists()
+    assert not (output_dir / "runs").exists()
+
+
+def test_hparam_materialization_failure_does_not_register_plan(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    effective_recipe, _, _ = plans.evaluate_recipe(recipe)
+    workspace = Path(effective_recipe["experiment"]["root"])
+    step_id = effective_recipe["step"]["id"]
+    output_dir = workspace / "failed-plan"
+    original_write_text = plan_hparam.write_text
+
+    def fail_plan_markdown(path, text, *, executable=False):
+        if Path(path).name == "plan.md":
+            raise OSError("injected plan materialization failure")
+        return original_write_text(path, text, executable=executable)
+
+    monkeypatch.setattr(plan_hparam, "write_text", fail_plan_markdown)
+
+    with pytest.raises(OSError, match="injected plan materialization failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert not (workspace / "steps" / step_id / "step.yaml").exists()
+    assert read_run_manifest(workspace) == []
+    assert output_dir.exists()
+    assert not (output_dir / "plan.json").exists()
+
+    monkeypatch.setattr(plan_hparam, "write_text", original_write_text)
+    successful_dir = workspace / "successful-plan"
+    report = plans.build_plan(recipe_path=recipe, output_dir=successful_dir)
+
+    assert report.exit_code == 0
+    step_manifest = yaml.safe_load((workspace / "steps" / step_id / "step.yaml").read_text())
+    assert step_manifest["plans"] == [str(successful_dir.resolve())]
+
+
+def test_single_run_materialization_failure_does_not_register_plan(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path / "source")
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = Path(payload["experiment"]["root"])
+    output_dir = workspace / "failed-plan"
+    original_write_json = plans.write_json
+
+    def fail_plan_manifest(path, value):
+        if Path(path).name == "plan.json":
+            raise OSError("injected plan materialization failure")
+        return original_write_json(path, value)
+
+    monkeypatch.setattr(plans, "write_json", fail_plan_manifest)
+
+    with pytest.raises(OSError, match="injected plan materialization failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    step_path = workspace / "steps" / payload["step"]["id"] / "step.yaml"
+    assert not step_path.exists()
+    assert read_run_manifest(workspace) == []
+    assert output_dir.exists()
+    assert not (output_dir / "plan.json").exists()
+
+    monkeypatch.setattr(plans, "write_json", original_write_json)
+    successful_dir = workspace / "successful-plan"
+    report = plans.build_plan(recipe_path=recipe, output_dir=successful_dir)
+
+    assert report.exit_code == 0
+    assert yaml.safe_load(step_path.read_text())["plans"] == [str(successful_dir.resolve())]
 
 
 def test_hparam_outer_workspace_owns_base_finetune_metadata(tmp_path: Path):

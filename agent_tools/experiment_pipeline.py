@@ -963,6 +963,16 @@ def _materialize_attempt(
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
     canonical = canonical_by_key.get(managed_run_key(run))
     if canonical is None:
+        plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+        commit_step_manifest(
+            root,
+            {
+                "step": plan_recipe["step"],
+                "experiment_id": plan_recipe["experiment"]["id"],
+                "recipe_path": plan_recipe.get("_recipe_path", ""),
+                "plans": [str(plan_dir.resolve())],
+            },
+        )
         committed = merge_run_manifest(root, [{**base_run, "parameter_summary": "single resolved recipe"}])
         canonical = {managed_run_key(row): row for row in committed}[managed_run_key(run)]
     else:
@@ -1634,7 +1644,6 @@ def _validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run
     if len(manifests) != 1:
         raise ValueError(f"Inference result root must contain exactly one run_manifest.json: {result_root}")
     manifest_path = manifests[0]
-    exp_io.validate_managed_output_paths(result_root, [manifest_path])
     manifest = read_json(manifest_path)
     if not isinstance(manifest, dict) or not manifest:
         raise ValueError(f"Inference result manifest is malformed: {manifest_path}")
@@ -1652,6 +1661,16 @@ def _validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run
             raise ValueError(f"Inference result manifest path escapes result_root: {field}") from exc
     if Path(str(manifest_paths.get("manifest_path") or "")).resolve() != manifest_path.resolve():
         raise ValueError("Inference result manifest path does not identify itself.")
+    required_result_paths = {}
+    for field in ("metrics_csv_path", "prediction_csv_path"):
+        raw_path = manifest_paths.get(field)
+        if raw_path in (None, ""):
+            raise ValueError(f"Inference result manifest paths.{field} is required.")
+        required_result_paths[field] = Path(str(raw_path))
+    exp_io.validate_managed_output_paths(result_root, [manifest_path, *required_result_paths.values()])
+    for field, path in required_result_paths.items():
+        if not path.is_file():
+            raise ValueError(f"Inference result manifest path is missing or not a regular file: {field}")
     expected_paths = {
         "config_path": Path(str(run["config"])),
         "checkpoint.input": Path(str(attempt["checkpoint"])),

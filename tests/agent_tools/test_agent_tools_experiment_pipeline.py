@@ -131,6 +131,10 @@ def _result_manifest_context(tmp_path: Path) -> tuple[dict, dict, dict, Path, di
     result_root = tmp_path / "result"
     manifest_path = result_root / "nested" / "run_manifest.json"
     manifest_path.parent.mkdir(parents=True)
+    metrics_path = manifest_path.parent / "metrics.csv"
+    prediction_path = manifest_path.parent / "predictions.csv"
+    metrics_path.write_text("metric,value\naccuracy,0.75\n")
+    prediction_path.write_text("prediction\n0.75\n")
     attempt = {
         "result_root": str(result_root),
         "checkpoint": str(checkpoint),
@@ -159,6 +163,10 @@ def _result_manifest_context(tmp_path: Path) -> tuple[dict, dict, dict, Path, di
         },
         "paths": {
             "run_dir": str(manifest_path.parent),
+            "metrics_csv_path": str(metrics_path),
+            "prediction_csv_path": str(prediction_path),
+            "survival_per_disease_metrics_csv_path": str(manifest_path.parent / "survival_per_disease.csv"),
+            "multilabel_per_disease_metrics_csv_path": str(manifest_path.parent / "multilabel_per_disease.csv"),
             "manifest_path": str(manifest_path),
         },
         "prediction_row_count": 5,
@@ -707,6 +715,34 @@ def test_result_manifest_validation_rejects_missing_and_corrupt_manifest(tmp_pat
 def test_result_manifest_validation_rejects_hardlinked_manifest(tmp_path: Path):
     spec, attempt, run, manifest_path, _manifest = _result_manifest_context(tmp_path)
     (tmp_path / "manifest-alias.json").hardlink_to(manifest_path)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiment_pipeline._validate_result_manifest(spec, attempt, run)
+
+
+@pytest.mark.parametrize("field", ["metrics_csv_path", "prediction_csv_path"])
+def test_result_manifest_validation_requires_result_artifact_path(tmp_path: Path, field: str):
+    spec, attempt, run, manifest_path, manifest = _result_manifest_context(tmp_path)
+    manifest["paths"].pop(field)
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    with pytest.raises(ValueError, match=rf"paths\.{field} is required"):
+        experiment_pipeline._validate_result_manifest(spec, attempt, run)
+
+
+@pytest.mark.parametrize("field", ["metrics_csv_path", "prediction_csv_path"])
+def test_result_manifest_validation_rejects_missing_result_artifact(tmp_path: Path, field: str):
+    spec, attempt, run, _manifest_path, manifest = _result_manifest_context(tmp_path)
+    Path(manifest["paths"][field]).unlink()
+
+    with pytest.raises(ValueError, match=rf"missing or not a regular file: {field}"):
+        experiment_pipeline._validate_result_manifest(spec, attempt, run)
+
+
+@pytest.mark.parametrize("field", ["metrics_csv_path", "prediction_csv_path"])
+def test_result_manifest_validation_rejects_hardlinked_result_artifact(tmp_path: Path, field: str):
+    spec, attempt, run, _manifest_path, manifest = _result_manifest_context(tmp_path)
+    (tmp_path / f"{field}-alias.csv").hardlink_to(Path(manifest["paths"][field]))
 
     with pytest.raises(ValueError, match="independent regular files"):
         experiment_pipeline._validate_result_manifest(spec, attempt, run)
