@@ -111,6 +111,7 @@ def read_hparam_plan(run_dir: Path) -> dict[str, Any]:
             "artifacts",
             "runtime_dir",
             "checkpoint_dir",
+            "terminal_status_owner",
         ):
             if str(workspace_row.get(field) or "") != str(run.get(field) or ""):
                 raise ValueError(

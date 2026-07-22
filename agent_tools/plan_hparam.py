@@ -597,6 +597,7 @@ def write_hparam_plan(
                 rendering.hparam_script_lines(
                     [command],
                     test_after_fit=test_after_fit is True,
+                    record_exit_code=True,
                     run_cwd=run_cwd,
                 )
             )
@@ -616,6 +617,7 @@ def write_hparam_plan(
             "command": command,
             "config_sha256": file_sha256(cfg_copy),
             "script_sha256": file_sha256(script_path),
+            "terminal_status_owner": "monitor",
             **combo,
         }
         runtime_dir = run_cwd / "log-finetune" / version
@@ -695,6 +697,7 @@ def write_hparam_plan(
             "artifacts": run["artifacts"],
             "runtime_dir": run["runtime_dir"],
             "checkpoint_dir": run["checkpoint_dir"],
+            "terminal_status_owner": run["terminal_status_owner"],
         }
         row.update({key: run.get(key) for key in parameter_keys})
         manifest_rows.append(row)

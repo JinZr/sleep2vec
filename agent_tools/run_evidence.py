@@ -12,7 +12,7 @@ from typing import Any
 
 from . import run_artifacts as artifacts, transport
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
-from .experiment_workspace import PROCESS_IDENTITY_FIELDS, TERMINAL_STATUSES, merge_run_row
+from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX, PROCESS_IDENTITY_FIELDS, TERMINAL_STATUSES, merge_run_row
 from .manifests import read_json, utc_now
 from .progress import read_progress
 from .transport import SSH_TIMEOUT_SECONDS
@@ -265,7 +265,12 @@ def status_row(
             # Lifecycle-enabled scripts commit their own terminal status; disappearance without it is failure.
             observed_status = "failed"
         else:
-            log_failed = log_has_failure(row.get("log_path"), row)
+            owner = previous.get("terminal_status_owner") or row.get("terminal_status_owner")
+            log_failed = log_has_failure(
+                row.get("log_path"),
+                row,
+                require_exit_code=owner == "monitor",
+            )
             if log_failed is None and is_remote_row(row):
                 observed_status = "unknown_remote"
             else:
@@ -744,9 +749,14 @@ def stop_process_group(row: dict[str, Any], identity: dict[str, Any], *, timeout
     raise RuntimeError(f"Managed process group did not stop after SIGTERM: {pgid}")
 
 
-def log_has_failure(path: Any, row: dict[str, Any] | None = None) -> bool | None:
+def log_has_failure(
+    path: Any,
+    row: dict[str, Any] | None = None,
+    *,
+    require_exit_code: bool = False,
+) -> bool | None:
     if not path:
-        return False
+        return require_exit_code
     if is_remote_row(row):
         script = f"""
 import os
@@ -775,15 +785,30 @@ sys.stdout.write("".join(lines[-100:]))
             transport.remote_python_command(script, str(path)),
         )
         if result.returncode == REMOTE_MISSING_RETURN_CODE:
-            return False
-        if result.returncode != 0:
+            tail = ""
+        elif result.returncode != 0:
             return None
-        tail = result.stdout
+        else:
+            tail = result.stdout
     else:
         log_path = Path(str(path))
         if not log_path.exists():
-            return False
-        tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
+            tail = ""
+        else:
+            tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
+    lines = tail.splitlines()
+    final_line = lines[-1] if lines else ""
+    if final_line.startswith(MONITOR_EXIT_CODE_PREFIX):
+        raw_exit_code = final_line.removeprefix(MONITOR_EXIT_CODE_PREFIX)
+        valid_exit_code = raw_exit_code and raw_exit_code.isascii() and raw_exit_code.isdecimal()
+        if valid_exit_code:
+            exit_code = int(raw_exit_code)
+            if exit_code <= 255:
+                return exit_code != 0
+        if require_exit_code:
+            return True
+    elif require_exit_code:
+        return True
     return any(
         marker in tail
         for marker in [

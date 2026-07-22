@@ -17,6 +17,7 @@ from .models import REPO_ROOT, json_ready
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
+MONITOR_EXIT_CODE_PREFIX = "AGENT_TOOLS_EXIT_CODE="
 PROCESS_IDENTITY_FIELDS = {"pid", "process_group_id", "process_start_token"}
 EXECUTION_IDENTITY_FIELDS = {
     "target",

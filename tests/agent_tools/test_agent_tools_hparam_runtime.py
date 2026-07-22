@@ -9,13 +9,22 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import decision_hparam, hparam_runtime, managed_scheduler, manifests, run_artifacts, run_evidence
-from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, merge_run_row
+from agent_tools import (
+    decision_hparam,
+    hparam_runtime,
+    managed_scheduler,
+    manifests,
+    plan_rendering,
+    run_artifacts,
+    run_evidence,
+)
+from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
 from agent_tools.models import REPO_ROOT
 
@@ -298,6 +307,22 @@ def test_hparam_plan_canonicalizes_relative_workspace_root_consistently(tmp_path
     manifest = yaml.safe_load((tmp_path / "experiment.yaml").read_text())
     assert plan["recipe"]["experiment"]["root"] == str(tmp_path)
     assert manifest["experiment"]["root"] == str(tmp_path)
+
+
+def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    script = Path(run["script"]).read_text()
+    assert run["terminal_status_owner"] == "monitor"
+    assert canonical["terminal_status_owner"] == "monitor"
+    assert "trap _agent_tools_record_exit EXIT" in script
+    assert MONITOR_EXIT_CODE_PREFIX in script
 
 
 def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_path: Path):
@@ -1488,6 +1513,61 @@ def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed
     assert observed["status"] == "failed"
 
 
+def test_status_fails_closed_without_monitor_owned_exit_code(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "managed.pid"
+    identity = _write_process_identity(pid_path)
+    log_path = tmp_path / "managed.log"
+    log_path.write_text("training completed\n")
+    row = {
+        "script": str(tmp_path / "launch.sh"),
+        "pid_path": str(pid_path),
+        "log_path": str(log_path),
+        "status": "running",
+        "terminal_status_owner": "monitor",
+        **identity,
+    }
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert observed["status"] == "failed"
+
+
+@pytest.mark.parametrize(("exit_code", "expected"), [(0, False), (7, True)])
+def test_log_failure_projection_recognizes_monitor_exit_code(tmp_path: Path, exit_code: int, expected: bool):
+    log_path = tmp_path / "managed.log"
+    log_path.write_text(f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}\n")
+
+    assert run_evidence.log_has_failure(log_path) is expected
+
+
+def test_status_preserves_remote_uncertainty_when_monitor_exit_log_is_unreadable(tmp_path: Path, monkeypatch):
+    identity = _process_identity()
+    row = {
+        "target": "ssh",
+        "host": "unit-host",
+        "script": str(tmp_path / "launch.sh"),
+        "pid_path": str(tmp_path / "managed.pid"),
+        "log_path": str(tmp_path / "managed.log"),
+        "status": "running",
+        "terminal_status_owner": "monitor",
+        **identity,
+    }
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args: identity)
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: None)
+    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args: "")
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda *_args: subprocess.CompletedProcess([], 255, "", "connection lost"),
+    )
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert observed["status"] == "unknown_remote"
+
+
 def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pid(tmp_path: Path):
     row = {
         "script": str(tmp_path / "launch.sh"),
@@ -2606,6 +2686,58 @@ def test_launch_creates_and_stops_a_dedicated_process_group(tmp_path: Path):
     run_evidence.stop_process_group({}, identity)
 
     assert run_evidence.process_identity_running({}, identity) is False
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected_status"),
+    [
+        pytest.param(0, "finished", id="zero"),
+        pytest.param(7, "failed", id="nonzero"),
+    ],
+)
+def test_monitor_owned_launch_uses_shell_exit_code(tmp_path: Path, exit_code: int, expected_status: str):
+    script = tmp_path / "launch.sh"
+    script.write_text(
+        "\n".join(
+            plan_rendering.hparam_script_lines(
+                ["sleep 0.2", f"exit {exit_code}"],
+                record_exit_code=True,
+                run_cwd=tmp_path,
+            )
+        )
+        + "\n"
+    )
+    log_path = tmp_path / "stdout.log"
+    pid_path = tmp_path / "pid"
+    command = hparam_runtime._launch_command(
+        {"workdir": str(tmp_path), "python": sys.executable},
+        script,
+        log_path,
+        pid_path,
+        [],
+    )
+
+    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    identity = run_evidence.read_process_identity(pid_path, {})
+    assert identity is not None
+    deadline = time.monotonic() + 10
+    while run_evidence.process_identity_running({}, identity) is not False:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+
+    row = {
+        "script": str(script),
+        "pid_path": str(pid_path),
+        "log_path": str(log_path),
+        "status": "running",
+        "terminal_status_owner": "monitor",
+        **identity,
+    }
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert log_path.read_text().splitlines()[-1] == f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}"
+    assert observed["status"] == expected_status
 
 
 def test_launch_timeout_remains_nonterminal_until_process_evidence_reconciles(monkeypatch):

@@ -5,6 +5,7 @@ import shlex
 import sys
 from typing import Any
 
+from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX
 from .models import REPO_ROOT, coerce_list, module_for_variant
 
 _FINETUNE_RUNTIME_DEFAULTS = (
@@ -313,6 +314,7 @@ def hparam_script_lines(
     *,
     test_after_fit: bool = False,
     final_external_test: bool = False,
+    record_exit_code: bool = False,
     run_cwd: str | Path = REPO_ROOT,
 ) -> list[str]:
     external_test_policy = "# - This script evaluates the configured final test split."
@@ -325,10 +327,23 @@ def hparam_script_lines(
         )
         final_test_policy = "# - Final test evaluation requires explicit unlock."
     root = shlex.quote(str(run_cwd))
+    exit_code_lines = []
+    if record_exit_code:
+        exit_code_lines = [
+            "_agent_tools_record_exit() {",
+            '    local exit_code="$?"',
+            "    trap - EXIT",
+            f"    printf '\\n{MONITOR_EXIT_CODE_PREFIX}%s\\n' \"$exit_code\" || :",
+            '    exit "$exit_code"',
+            "}",
+            "trap _agent_tools_record_exit EXIT",
+            "",
+        ]
     return [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         "",
+        *exit_code_lines,
         f"cd {root}",
         f"export PYTHONPATH={root}",
         "",

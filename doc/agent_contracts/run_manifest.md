@@ -9,10 +9,11 @@ The canonical managed key is `(step_id, run_id)`. Both fields are required and o
 Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Execution identity consists of target, host, workdir, GPUs, PID/log paths, command, and the launched PID, process-group id, and OS process-start token. Only the canonical owner may perform each trusted first fill.
 
 Pipeline-managed inference rows may additionally freeze `pipeline_id`,
-`job_id`, `attempt`, `result_root`, and `terminal_status_owner`. These fields do
-not change the canonical `(step_id, run_id)` key. Older managed rows may omit
-them and retain their existing lifecycle behavior; a present value is immutable
-and must match all later evidence.
+`job_id`, `attempt`, and `result_root`. Managed rows may freeze
+`terminal_status_owner`. These fields do not change the canonical
+`(step_id, run_id)` key. Older managed rows may omit them and retain their
+existing lifecycle behavior; a present value is immutable and must match all
+later evidence.
 
 When present, `terminal_status_owner` is exactly `script` or `monitor`. It
 selects the existing process-exit rule explicitly: script-owned runs must commit
@@ -46,7 +47,7 @@ The current vocabulary includes scheduled `planned`/`pending`, active `launched`
 - Monitoring preserves finished-to-completed normalization for evidence whose script does not own terminal commits.
 - Monitoring preserves a managed-script `running` state when neither PID nor W&B execution evidence exists; absence of those evidence sources is not process-exit evidence.
 - A `script` path requires strict managed process-identity checks but does not by itself assign terminal-status ownership.
-- A lifecycle-enabled generated script owns its terminal commit. Confirmed disappearance of its process group without a canonical `completed` or `failed` commit is `failed`, never inferred success. Hparam launch scripts do not own terminal commits, so their monitor infers `finished` or `failed` from confirmed process exit and log evidence.
+- A lifecycle-enabled generated script owns its terminal commit. Confirmed disappearance of its process group without a canonical `completed` or `failed` commit is `failed`, never inferred success. New hparam launch scripts are explicitly monitor-owned and append a structured shell exit code to their log: only code `0` becomes `finished`; nonzero, missing, or malformed exit evidence becomes `failed`. Historical owner-less hparam plans retain the legacy failure-marker inference.
 
 All lifecycle callers reuse the same row reducer. They do not implement source-specific precedence.
 
