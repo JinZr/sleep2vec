@@ -9,13 +9,22 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import decision_hparam, hparam_runtime, managed_scheduler, manifests, run_artifacts, run_evidence
-from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, merge_run_row
+from agent_tools import (
+    decision_hparam,
+    hparam_runtime,
+    managed_scheduler,
+    manifests,
+    plan_rendering,
+    run_artifacts,
+    run_evidence,
+)
+from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
 from agent_tools.models import REPO_ROOT
 
@@ -231,26 +240,20 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
             **spec,
         }
         rows.append(row)
+    resolved_recipe = {
+        "experiment": experiment,
+        "step": step,
+        "execution": {"workdir": str(root)},
+    }
+    resolved_path = root / "recipe.resolved.yaml"
+    resolved_path.write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     (root / "plan.json").write_text(
         json.dumps(
             {
                 "runs": runs,
-                "recipe": {
-                    "experiment": experiment,
-                    "step": step,
-                    "execution": {"workdir": str(root)},
-                },
+                "recipe": resolved_recipe,
+                "resolved_recipe_sha256": file_sha256(resolved_path),
             }
-        )
-    )
-    (root / "recipe.resolved.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "experiment": experiment,
-                "step": step,
-                "execution": {"workdir": str(root)},
-            },
-            sort_keys=False,
         )
     )
     manifests.write_rows(
@@ -298,6 +301,22 @@ def test_hparam_plan_canonicalizes_relative_workspace_root_consistently(tmp_path
     manifest = yaml.safe_load((tmp_path / "experiment.yaml").read_text())
     assert plan["recipe"]["experiment"]["root"] == str(tmp_path)
     assert manifest["experiment"]["root"] == str(tmp_path)
+
+
+def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    script = Path(run["script"]).read_text()
+    assert run["terminal_status_owner"] == "monitor"
+    assert canonical["terminal_status_owner"] == "monitor"
+    assert "trap _agent_tools_record_exit EXIT" in script
+    assert MONITOR_EXIT_CODE_PREFIX in script
 
 
 def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_path: Path):
@@ -568,6 +587,8 @@ def test_hparam_launch_preserves_first_commit_when_second_start_raises(tmp_path:
     resolved = yaml.safe_load(resolved_path.read_text())
     resolved["execution"]["max_concurrent"] = 2
     resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = file_sha256(resolved_path)
+    plan_path.write_text(json.dumps(plan))
     starts = 0
 
     def fail_second_start(_execution, _command):
@@ -1488,6 +1509,61 @@ def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed
     assert observed["status"] == "failed"
 
 
+def test_status_fails_closed_without_monitor_owned_exit_code(tmp_path: Path, monkeypatch):
+    pid_path = tmp_path / "managed.pid"
+    identity = _write_process_identity(pid_path)
+    log_path = tmp_path / "managed.log"
+    log_path.write_text("training completed\n")
+    row = {
+        "script": str(tmp_path / "launch.sh"),
+        "pid_path": str(pid_path),
+        "log_path": str(log_path),
+        "status": "running",
+        "terminal_status_owner": "monitor",
+        **identity,
+    }
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert observed["status"] == "failed"
+
+
+@pytest.mark.parametrize(("exit_code", "expected"), [(0, False), (7, True)])
+def test_log_failure_projection_recognizes_monitor_exit_code(tmp_path: Path, exit_code: int, expected: bool):
+    log_path = tmp_path / "managed.log"
+    log_path.write_text(f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}\n")
+
+    assert run_evidence.log_has_failure(log_path) is expected
+
+
+def test_status_preserves_remote_uncertainty_when_monitor_exit_log_is_unreadable(tmp_path: Path, monkeypatch):
+    identity = _process_identity()
+    row = {
+        "target": "ssh",
+        "host": "unit-host",
+        "script": str(tmp_path / "launch.sh"),
+        "pid_path": str(tmp_path / "managed.pid"),
+        "log_path": str(tmp_path / "managed.log"),
+        "status": "running",
+        "terminal_status_owner": "monitor",
+        **identity,
+    }
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args: identity)
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: None)
+    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args: "")
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda *_args: subprocess.CompletedProcess([], 255, "", "connection lost"),
+    )
+
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert observed["status"] == "unknown_remote"
+
+
 def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pid(tmp_path: Path):
     row = {
         "script": str(tmp_path / "launch.sh"),
@@ -1768,6 +1844,33 @@ def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_
     )
 
     with pytest.raises(ValueError, match="recipe.resolved.yaml"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == []
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_launch_rejects_synchronized_recipe_drift_before_side_effects(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"].setdefault("execution", {})["max_concurrent"] = 2
+    plan_path.write_text(json.dumps(plan))
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved.setdefault("execution", {})["max_concurrent"] = 2
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    calls = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args, **_kwargs: calls.append("start") or "launched",
+    )
+
+    with pytest.raises(ValueError, match="Frozen hparam recipe SHA-256"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert calls == []
@@ -2506,6 +2609,8 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
         payload["execution"].pop("runtime_commit")
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = file_sha256(plan_dir / "recipe.resolved.yaml")
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
     monkeypatch.setattr(
@@ -2606,6 +2711,58 @@ def test_launch_creates_and_stops_a_dedicated_process_group(tmp_path: Path):
     run_evidence.stop_process_group({}, identity)
 
     assert run_evidence.process_identity_running({}, identity) is False
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected_status"),
+    [
+        pytest.param(0, "finished", id="zero"),
+        pytest.param(7, "failed", id="nonzero"),
+    ],
+)
+def test_monitor_owned_launch_uses_shell_exit_code(tmp_path: Path, exit_code: int, expected_status: str):
+    script = tmp_path / "launch.sh"
+    script.write_text(
+        "\n".join(
+            plan_rendering.hparam_script_lines(
+                ["sleep 0.2", f"exit {exit_code}"],
+                record_exit_code=True,
+                run_cwd=tmp_path,
+            )
+        )
+        + "\n"
+    )
+    log_path = tmp_path / "stdout.log"
+    pid_path = tmp_path / "pid"
+    command = hparam_runtime._launch_command(
+        {"workdir": str(tmp_path), "python": sys.executable},
+        script,
+        log_path,
+        pid_path,
+        [],
+    )
+
+    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    identity = run_evidence.read_process_identity(pid_path, {})
+    assert identity is not None
+    deadline = time.monotonic() + 10
+    while run_evidence.process_identity_running({}, identity) is not False:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+
+    row = {
+        "script": str(script),
+        "pid_path": str(pid_path),
+        "log_path": str(log_path),
+        "status": "running",
+        "terminal_status_owner": "monitor",
+        **identity,
+    }
+    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
+
+    assert log_path.read_text().splitlines()[-1] == f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}"
+    assert observed["status"] == expected_status
 
 
 def test_launch_timeout_remains_nonterminal_until_process_evidence_reconciles(monkeypatch):
@@ -3930,6 +4087,42 @@ def test_hparam_monitor_preserves_nonterminal_status_for_unreadable_local_pid(
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
 
+def test_gpu_summary_matches_managed_process_group_children(monkeypatch):
+    def fake_command(_row, command):
+        if "--query-compute-apps" in command:
+            return subprocess.CompletedProcess(
+                [],
+                0,
+                "456, GPU-managed, 1024\n789, GPU-foreign, 2048\n",
+                "",
+            )
+        if command == "ps -eo pid=,pgid=":
+            return subprocess.CompletedProcess([], 0, "123 123\n456 123\n789 789\n", "")
+        if "--query-gpu" in command:
+            return subprocess.CompletedProcess([], 0, "0, 90, 4096\n", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
+
+    summary = run_evidence.gpu_summary({"gpus": "0", "process_group_id": 123}, 123)
+
+    assert "456, GPU-managed, 1024" in summary
+    assert "789, GPU-foreign, 2048" not in summary
+
+
+def test_gpu_summary_preserves_process_group_probe_uncertainty(monkeypatch):
+    def fake_command(_row, command):
+        if "--query-compute-apps" in command:
+            return subprocess.CompletedProcess([], 0, "456, GPU-managed, 1024\n", "")
+        if command == "ps -eo pid=,pgid=":
+            return subprocess.CompletedProcess([], 1, "", "ps failed")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
+
+    assert run_evidence.gpu_summary({"gpus": "0", "process_group_id": 123}, 123) is None
+
+
 def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     _write_process_identity(pid_path)
@@ -4025,6 +4218,13 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
             },
         ],
     )
+    merge_run_manifest(
+        tmp_path,
+        [
+            {"step_id": "train-model", "run_id": "stalled", "checkpoint_count": 0},
+            {"step_id": "train-model", "run_id": "remote", "checkpoint_count": 0},
+        ],
+    )
 
     def fake_running(row, _identity):
         return None if row["run_id"] == "remote" else True
@@ -4040,6 +4240,72 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
     status = {row["run_id"]: row["health_status"] for row in _read_table(tmp_path / "run_status.tsv")}
     assert status["stalled"] == "possibly_stalled"
     assert status["remote"] == "unknown_remote"
+
+
+def test_health_requires_a_comparable_checkpoint_observation():
+    inputs = {
+        "status": "running",
+        "running_state": True,
+        "gpu_summary": "",
+        "io_read_delta": None,
+        "io_write_delta": None,
+        "progress": {"status": "missing"},
+        "progress_is_fresh": False,
+        "log_age_seconds": 500,
+        "checkpoint_count": 0,
+    }
+
+    assert run_evidence.classify_health(**inputs, previous_checkpoint_count=None) == "health_unknown"
+    assert run_evidence.classify_health(**inputs, previous_checkpoint_count=0) == "possibly_stalled"
+    assert (
+        run_evidence.classify_health(**{**inputs, "gpu_summary": None}, previous_checkpoint_count=0) == "health_unknown"
+    )
+    assert (
+        run_evidence.classify_health(
+            **{**inputs, "gpu_summary": "456, GPU-managed, 1024", "checkpoint_count": None},
+            previous_checkpoint_count=0,
+        )
+        == "compute_active"
+    )
+
+
+def test_health_preserves_checkpoint_inventory_when_remote_probe_is_unavailable(tmp_path: Path, monkeypatch):
+    identity = _process_identity()
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "running",
+        "target": "ssh",
+        "host": "unit-host",
+        "script": "/remote/run.sh",
+        "pid_path": "/remote/run.pid",
+        "log_path": "/remote/run.log",
+        "gpus": "0",
+        "checkpoints": "epoch=1.ckpt",
+        "checkpoint_count": 1,
+        **identity,
+    }
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: identity)
+    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: True)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
+    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(run_evidence, "gpu_summary", lambda _row, _pid: "")
+    monkeypatch.setattr(run_evidence, "proc_io", lambda _row, _pid: {})
+    monkeypatch.setattr(run_evidence, "log_age_seconds", lambda _path, _row: 500)
+    monkeypatch.setattr(run_evidence, "read_run_progress", lambda _run_dir, _row: {"status": "missing"})
+
+    observed = run_evidence.status_row(
+        tmp_path,
+        row,
+        row,
+        script_commits_terminal_status=False,
+        health=True,
+    )
+
+    assert observed["status"] == "running"
+    assert observed["checkpoints"] == "epoch=1.ckpt"
+    assert observed["checkpoint_count"] == ""
+    assert observed["health_status"] == "health_unknown"
 
 
 @pytest.mark.parametrize("failure", ["timeout", "ssh_error", "permission", "wrong_type", "missing", "ps_error"])
@@ -4210,6 +4476,18 @@ def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypat
         }
     )
     manifests.write_rows(tmp_path / "run_status.tsv", rows)
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": "train-model",
+                "run_id": "running",
+                "progress_processed": 5,
+                "progress_updated_at": "2000-01-01T00:00:00Z",
+                "checkpoint_count": 0,
+            }
+        ],
+    )
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda _row, _identity: True)
     monkeypatch.setattr(run_evidence, "gpu_summary", lambda row, pid: "")
     monkeypatch.setattr(run_evidence, "proc_io", lambda row, pid: {})

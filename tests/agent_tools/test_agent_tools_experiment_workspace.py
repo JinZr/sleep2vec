@@ -83,12 +83,14 @@ def test_managed_plan_writes_semantic_run_workspace_without_schema_version(tmp_p
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
-    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    run = plan["runs"][0]
     assert run["run_id"] == "run-000"
     assert run["run_name"] == "lr-2e-6"
     assert Path(run["run_dir"]).name == "run-000--lr-2e-6"
     assert Path(run["config"]).name == "config.yaml"
     assert Path(run["script"]).name == "launch.sh"
+    assert plan["resolved_recipe_sha256"] == file_sha256(plan_dir / "recipe.resolved.yaml")
     assert (tmp_path / "experiment.yaml").exists()
     assert (tmp_path / "run_matrix.csv").exists()
     assert (tmp_path / "run_manifest.tsv").exists()

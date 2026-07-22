@@ -12,7 +12,7 @@ from typing import Any
 
 from . import run_artifacts as artifacts, transport
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
-from .experiment_workspace import PROCESS_IDENTITY_FIELDS, TERMINAL_STATUSES, merge_run_row
+from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX, PROCESS_IDENTITY_FIELDS, TERMINAL_STATUSES, merge_run_row
 from .manifests import read_json, utc_now
 from .progress import read_progress
 from .transport import SSH_TIMEOUT_SECONDS
@@ -265,7 +265,12 @@ def status_row(
             # Lifecycle-enabled scripts commit their own terminal status; disappearance without it is failure.
             observed_status = "failed"
         else:
-            log_failed = log_has_failure(row.get("log_path"), row)
+            owner = previous.get("terminal_status_owner") or row.get("terminal_status_owner")
+            log_failed = log_has_failure(
+                row.get("log_path"),
+                row,
+                require_exit_code=owner == "monitor",
+            )
             if log_failed is None and is_remote_row(row):
                 observed_status = "unknown_remote"
             else:
@@ -274,8 +279,10 @@ def status_row(
     manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
     checkpoints = [name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name]
     observed_artifacts = runtime_artifacts(row)
+    health_checkpoints = None
     if observed_artifacts is not None:
         manifest, _manifest_data, checkpoints = observed_artifacts
+        health_checkpoints = checkpoints
     observation = {
         **row,
         **(committed_process_identity or {}),
@@ -290,7 +297,7 @@ def status_row(
         observation["process_identity_error"] = process_identity_error
     output = merge_run_row(previous, observation)
     if health:
-        output.update(health_fields(run_dir, row, previous, pid, running_state, output["status"], checkpoints))
+        output.update(health_fields(run_dir, row, previous, pid, running_state, output["status"], health_checkpoints))
     return output
 
 
@@ -744,9 +751,14 @@ def stop_process_group(row: dict[str, Any], identity: dict[str, Any], *, timeout
     raise RuntimeError(f"Managed process group did not stop after SIGTERM: {pgid}")
 
 
-def log_has_failure(path: Any, row: dict[str, Any] | None = None) -> bool | None:
+def log_has_failure(
+    path: Any,
+    row: dict[str, Any] | None = None,
+    *,
+    require_exit_code: bool = False,
+) -> bool | None:
     if not path:
-        return False
+        return require_exit_code
     if is_remote_row(row):
         script = f"""
 import os
@@ -775,15 +787,30 @@ sys.stdout.write("".join(lines[-100:]))
             transport.remote_python_command(script, str(path)),
         )
         if result.returncode == REMOTE_MISSING_RETURN_CODE:
-            return False
-        if result.returncode != 0:
+            tail = ""
+        elif result.returncode != 0:
             return None
-        tail = result.stdout
+        else:
+            tail = result.stdout
     else:
         log_path = Path(str(path))
         if not log_path.exists():
-            return False
-        tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
+            tail = ""
+        else:
+            tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
+    lines = tail.splitlines()
+    final_line = lines[-1] if lines else ""
+    if final_line.startswith(MONITOR_EXIT_CODE_PREFIX):
+        raw_exit_code = final_line.removeprefix(MONITOR_EXIT_CODE_PREFIX)
+        valid_exit_code = raw_exit_code and raw_exit_code.isascii() and raw_exit_code.isdecimal()
+        if valid_exit_code:
+            exit_code = int(raw_exit_code)
+            if exit_code <= 255:
+                return exit_code != 0
+        if require_exit_code:
+            return True
+    elif require_exit_code:
+        return True
     return any(
         marker in tail
         for marker in [
@@ -814,7 +841,7 @@ def health_fields(
     pid: int | None,
     running_state: bool | None,
     status: str,
-    checkpoints: list[str],
+    checkpoints: list[str] | None,
 ) -> dict[str, Any]:
     progress = read_run_progress(run_dir, row)
     io_counts = proc_io(row, pid)
@@ -824,7 +851,7 @@ def health_fields(
     write_delta = delta(write_bytes, previous.get("io_write_bytes"))
     log_age = log_age_seconds(row.get("log_path"), row)
     gpu = gpu_summary(row, pid)
-    checkpoint_count = len(checkpoints)
+    checkpoint_count = len(checkpoints) if checkpoints is not None else None
     health_status = classify_health(
         status=status,
         running_state=running_state,
@@ -839,7 +866,7 @@ def health_fields(
     )
     return {
         "health_status": health_status,
-        "gpu_summary": gpu,
+        "gpu_summary": "" if gpu is None else gpu,
         "io_read_bytes": "" if read_bytes is None else read_bytes,
         "io_write_bytes": "" if write_bytes is None else write_bytes,
         "io_read_delta_bytes": "" if read_delta is None else read_delta,
@@ -850,7 +877,7 @@ def health_fields(
         "progress_updated_at": progress.get("updated_at", ""),
         "progress_age_seconds": progress_age_seconds(progress),
         "log_age_seconds": "" if log_age is None else log_age,
-        "checkpoint_count": checkpoint_count,
+        "checkpoint_count": "" if checkpoint_count is None else checkpoint_count,
     }
 
 
@@ -880,20 +907,40 @@ def proc_io(row: dict[str, Any], pid: int | None) -> dict[str, int]:
     return counts
 
 
-def gpu_summary(row: dict[str, Any], pid: int | None) -> str:
+def gpu_summary(row: dict[str, Any], pid: int | None) -> str | None:
     if pid is None:
         return ""
+    gpu_probe_required = bool(str(row.get("gpus") or "").strip())
     apps = run_row_command(
         row,
         "nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader,nounits",
     )
     if apps.returncode != 0:
-        return ""
-    matched = []
+        return None if gpu_probe_required else ""
+    app_rows = []
     for line in apps.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if parts and parts[0] == str(pid):
-            matched.append(line.strip())
+        app_pid = to_int(parts[0]) if parts else None
+        if app_pid is not None:
+            app_rows.append((app_pid, line.strip()))
+    if not app_rows:
+        return ""
+    managed_pids = {pid}
+    process_group_id = to_int(row.get("process_group_id"))
+    if process_group_id is not None:
+        processes = run_row_command(row, "ps -eo pid=,pgid=")
+        if processes.returncode == 0:
+            for line in processes.stdout.splitlines():
+                parts = line.split()
+                if len(parts) != 2:
+                    continue
+                process_pid = to_int(parts[0])
+                process_pgid = to_int(parts[1])
+                if process_pid is not None and process_pgid == process_group_id:
+                    managed_pids.add(process_pid)
+        elif not any(app_pid == pid for app_pid, _line in app_rows):
+            return None if gpu_probe_required else ""
+    matched = [line for app_pid, line in app_rows if app_pid in managed_pids]
     if not matched:
         return ""
     gpu_state = run_row_command(
@@ -928,13 +975,13 @@ def classify_health(
     *,
     status: str,
     running_state: bool | None,
-    gpu_summary: str,
+    gpu_summary: str | None,
     io_read_delta: int | None,
     io_write_delta: int | None,
     progress: dict[str, Any],
     progress_is_fresh: bool,
     log_age_seconds: int | None,
-    checkpoint_count: int,
+    checkpoint_count: int | None,
     previous_checkpoint_count: int | None,
 ) -> str:
     if status == "unknown_remote" or running_state is None:
@@ -953,8 +1000,14 @@ def classify_health(
         return "healthy_running"
     if log_age_seconds is not None and log_age_seconds < 300:
         return "healthy_running"
-    if previous_checkpoint_count is not None and checkpoint_count > previous_checkpoint_count:
+    if (
+        checkpoint_count is not None
+        and previous_checkpoint_count is not None
+        and checkpoint_count > previous_checkpoint_count
+    ):
         return "healthy_running"
+    if gpu_summary is None or checkpoint_count is None or previous_checkpoint_count is None:
+        return "health_unknown"
     return "possibly_stalled"
 
 

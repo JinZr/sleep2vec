@@ -41,7 +41,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Analysis bundle output | `AnalysisBundleWriter` in [`sleep2stat/io/writers.py`](../../sleep2stat/io/writers.py) | analyzers or CLI branches |
 | Analysis plotting | `plot_record`, `plot_cohort` in [`sleep2stat/plot.py`](../../sleep2stat/plot.py) | scripts that inspect analyzer internals |
 | Agent consultation | `evaluate_consultation_gates` through [`agent_tools/decisions.py`](../../agent_tools/decisions.py) | command renderers |
-| Agent context and plan | `build_context`, `build_plan`, `preflight_plan` through [`agent_tools/plans.py`](../../agent_tools/plans.py) | skills or adapters |
+| Agent context and plan publication | `build_context`, `build_plan`, `preflight_plan` through [`agent_tools/plans.py`](../../agent_tools/plans.py); `plan_tree_sha256` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) for deterministic staged-plan comparison | skills, adapters, or adaptive/pipeline callers |
 | Agent task extension | adapter protocol/registry in [`agent_tools/adapters/`](../../agent_tools/adapters/) | kernel task-name branches |
 | Recipe loading | [`agent_tools/recipes.py`](../../agent_tools/recipes.py) | individual commands |
 | Managed workspace identity | canonical read/merge/CAS owners in [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py) | hparam, planning, or monitoring-local tables and manifest writers |

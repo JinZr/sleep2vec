@@ -3,6 +3,7 @@
 - Hyper-parameter search selects on validation.
 - External test is locked during runs by default.
 - Run test-after-fit may run only when `external_test_locked=false`, `final_test_unlocked=true`, and `test_after_fit=true` are explicit.
+- Direct `infer` or `evaluate` on `eval_split=test` requires both `external_test_locked=false` and `final_test_unlocked=true`.
 - Final external-test evaluation is a separate, explicit command.
 - Final external-test scripts require an explicit existing checkpoint path; unlock does not authorize checkpoint guessing.
 - `experiment-run` may execute a final external-test matrix only with the explicit `--unlock-final-test` gate. It derives and freezes each checkpoint from validation evidence before launch; external metrics never feed selection.

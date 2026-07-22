@@ -9,10 +9,11 @@ The canonical managed key is `(step_id, run_id)`. Both fields are required and o
 Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Execution identity consists of target, host, workdir, GPUs, PID/log paths, command, and the launched PID, process-group id, and OS process-start token. Only the canonical owner may perform each trusted first fill.
 
 Pipeline-managed inference rows may additionally freeze `pipeline_id`,
-`job_id`, `attempt`, `result_root`, and `terminal_status_owner`. These fields do
-not change the canonical `(step_id, run_id)` key. Older managed rows may omit
-them and retain their existing lifecycle behavior; a present value is immutable
-and must match all later evidence.
+`job_id`, `attempt`, and `result_root`. Managed rows may freeze
+`terminal_status_owner`. These fields do not change the canonical
+`(step_id, run_id)` key. Older managed rows may omit them and retain their
+existing lifecycle behavior; a present value is immutable and must match all
+later evidence.
 
 When present, `terminal_status_owner` is exactly `script` or `monitor`. It
 selects the existing process-exit rule explicitly: script-owned runs must commit
@@ -27,6 +28,15 @@ Managed tables declare either one row per run or many rows per run. Both forms r
 ## Canonical state and projections
 
 `launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. Matrices, Markdown reports, rankings, and events are also derived artifacts.
+
+Health labels are observational and never own lifecycle state. Managed GPU
+activity is attributed to the frozen process group so DDP child processes count
+as active. Without another positive progress signal, an unavailable checkpoint
+probe, an unavailable GPU probe for a GPU-assigned run, or the first checkpoint
+observation without a comparison baseline reports `health_unknown`;
+`possibly_stalled` requires a later, comparable observation with no detected
+progress. Remote artifact uncertainty preserves the last checkpoint inventory
+while leaving the current health poll's `checkpoint_count` blank.
 
 Runtime `run_manifest.json` supplies metrics and checkpoint evidence only. It does not own lifecycle status. A truly missing runtime manifest means evidence is not yet available; an existing alias, non-regular file, invalid encoding/JSON, or non-mapping payload is corrupt.
 
@@ -46,7 +56,7 @@ The current vocabulary includes scheduled `planned`/`pending`, active `launched`
 - Monitoring preserves finished-to-completed normalization for evidence whose script does not own terminal commits.
 - Monitoring preserves a managed-script `running` state when neither PID nor W&B execution evidence exists; absence of those evidence sources is not process-exit evidence.
 - A `script` path requires strict managed process-identity checks but does not by itself assign terminal-status ownership.
-- A lifecycle-enabled generated script owns its terminal commit. Confirmed disappearance of its process group without a canonical `completed` or `failed` commit is `failed`, never inferred success. Hparam launch scripts do not own terminal commits, so their monitor infers `finished` or `failed` from confirmed process exit and log evidence.
+- A lifecycle-enabled generated script owns its terminal commit. Confirmed disappearance of its process group without a canonical `completed` or `failed` commit is `failed`, never inferred success. New hparam launch scripts are explicitly monitor-owned and append a structured shell exit code to their log: only code `0` becomes `finished`; nonzero, missing, or malformed exit evidence becomes `failed`. Historical owner-less hparam plans retain the legacy failure-marker inference.
 
 All lifecycle callers reuse the same row reducer. They do not implement source-specific precedence.
 
@@ -124,6 +134,13 @@ Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair
 
 ## Consumer requirements
 
-Every hparam mutation first validates workspace ownership, step registration, frozen hashes, and equality between the complete effective recipe in `plan.json` and `recipe.resolved.yaml`. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
+Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
+
+Selected-candidate postprocessing refreshes lifecycle status from the current canonical manifest rather than trusting ranking or candidate-table status. `hparam-external-eval` accepts only `completed` or `finished` runs after final rank/top-k filtering and before writing configs, manifests, or runnable scripts.
+
+An adaptive plan under `adaptive/rounds/round_NNN` is runnable only after the
+root-matching `adaptive/workflow.json` commit marker exists as an independent
+regular file. Planning and initialization may inspect an uncommitted plan with
+an explicit internal bypass, but lifecycle entrypoints never do.
 
 `collect-runs` requires a valid canonical table, distinguishes a header-only current table from missing/corrupt input, and cannot write to or alias the canonical manifest. Optional non-managed summaries may remain best-effort evidence.

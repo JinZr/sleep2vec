@@ -173,13 +173,33 @@ repository-relative. Structural config ownership may constrain recipe
 [task_recipe.md](../agent_contracts/task_recipe.md) for recipe, path, runtime
 identity, and adaptive semantics.
 
+Hparam `plan.json` independently records the exact byte digest of
+`recipe.resolved.yaml`; every managed consumer verifies that digest before
+trusting the frozen recipe.
+
+Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
+`external_test_locked=false` and `final_test_unlocked=true`. Other splits do
+not require this unlock. See
+[external_test_locking.md](../agent_contracts/external_test_locking.md).
+
+Staged plan bytes still freeze the final semantic paths. A plan becomes
+runnable only after the complete bundle is published and its step and run rows
+are canonically registered. Adaptive round 000 then publishes
+`adaptive/workflow.json` last; launch and queue fail closed without that marker.
+An unregistered complete round may be resumed only after exact deterministic
+plan-tree comparison, while incomplete or partial-canonical rounds are not
+repaired.
+
 ### Managed state and launching
 
 `run_manifest.tsv` is the only lifecycle and execution-identity owner. Status
 tables, matrices, events, and reports are projections. Managed launches use a
 dedicated process group with PID, group, and OS start-token evidence; uncertain
 identity never authorizes relaunch or retry. Stop verifies and signals the full
-group before committing `stopped`.
+group before committing `stopped`. Optional health labels remain observational:
+DDP child GPU activity follows the managed process group, and unavailable
+required probes or first-baseline observations report `health_unknown` rather
+than `possibly_stalled`.
 
 `hparam-launch` starts one capacity-limited wave, while
 `hparam-run-queue --execute` owns continuous queue advancement. Monitor commands
@@ -189,6 +209,10 @@ commit, process, and evidence rules are defined in
 [run_manifest.md](../agent_contracts/run_manifest.md).
 
 ### External evaluation
+
+`hparam-external-eval` rechecks final top-k candidates against canonical
+`run_manifest.tsv`; only `completed` or `finished` runs may enter its runnable
+script.
 
 `experiment-run` owns the resumable validation-to-external-test flow. It
 validates the strict spec without launching in dry-run mode, waits for successful

@@ -143,6 +143,19 @@ class InferEvaluateAdapter(TaskAdapter):
                     )
                 )
         if inputs.get("eval_split") == "test":
+            if "external_test_locked" not in evaluation or evaluation["external_test_locked"] is True:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.NEEDS_USER_INPUT,
+                        "external_test_locked",
+                        "Test evaluation requires external_test_locked=false.",
+                        "Should the external test set be unlocked for this inference/evaluation run?",
+                        {
+                            "evaluation_policy": evaluation,
+                            "external_test_locked": evaluation.get("external_test_locked"),
+                        },
+                    )
+                )
             if evaluation.get("final_test_unlocked") is not True:
                 issues.append(
                     needs_issue("final_eval_unlock", "Test evaluation requires explicit final unlock.", high_impact)

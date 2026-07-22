@@ -25,11 +25,14 @@ from .decision_paths import (
 )
 from .experiment_workspace import (
     append_event,
+    ensure_experiment_workspace,
     experiment_root,
     file_sha256,
+    managed_run_key,
     merge_run_manifest,
     next_run_index,
     parameter_summary,
+    read_run_manifest,
     run_identity,
 )
 from .manifests import write_json, write_text
@@ -498,6 +501,7 @@ def write_hparam_plan(
     recipe: dict,
     out: Path,
     *,
+    write_out: Path | None = None,
     unlock_final_test: bool,
     source_config_bytes: bytes,
     source_config_sha256: str,
@@ -505,6 +509,9 @@ def write_hparam_plan(
     out = out.expanduser()
     if not out.is_absolute():
         out = out.resolve()
+    physical_out = (write_out or out).expanduser()
+    if not physical_out.is_absolute():
+        physical_out = physical_out.resolve()
     recipe = freeze_hparam_execution(recipe)
     execution = recipe["execution"]
     run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
@@ -517,6 +524,7 @@ def write_hparam_plan(
     evaluation = recipe.get("evaluation_policy") or {}
     final_allowed = final_script_allowed(recipe, evaluation, unlock_final_test)
     frozen_final_eval_config = out / FROZEN_FINAL_EVAL_CONFIG_NAME
+    write_frozen_final_eval_config = physical_out / FROZEN_FINAL_EVAL_CONFIG_NAME
     final_config_snapshot = final_eval_config_snapshot(recipe)
     if final_allowed and has_explicit_final_eval_config(recipe):
         if final_config_snapshot is None:
@@ -536,12 +544,13 @@ def write_hparam_plan(
     if not isinstance(base_config, dict):
         raise ValueError(f"YAML must be a mapping: {source_config_path}")
     frozen_source_config = out / "config.source.yaml"
-    out.mkdir(parents=True, exist_ok=True)
-    frozen_source_config.write_bytes(source_config_bytes)
+    write_frozen_source_config = physical_out / "config.source.yaml"
+    physical_out.mkdir(parents=True, exist_ok=True)
+    write_frozen_source_config.write_bytes(source_config_bytes)
     if final_allowed and has_explicit_final_eval_config(recipe):
-        frozen_final_eval_config.write_bytes(final_config_bytes)
-    elif frozen_final_eval_config.exists():
-        frozen_final_eval_config.unlink()
+        write_frozen_final_eval_config.write_bytes(final_config_bytes)
+    elif write_frozen_final_eval_config.exists():
+        write_frozen_final_eval_config.unlink()
     combos = hparam_combos(recipe)
     runs = []
     test_after_fit = evaluation.get("test_after_fit")
@@ -551,11 +560,13 @@ def write_hparam_plan(
         run_id = identity["run_id"]
         run_name = identity["run_name"]
         run_dir = out / "runs" / f"{run_id}--{run_name}"
-        run_dir.mkdir(parents=True, exist_ok=True)
+        write_run_dir = physical_out / "runs" / f"{run_id}--{run_name}"
+        write_run_dir.mkdir(parents=True, exist_ok=True)
         cfg_copy = run_dir / "config.yaml"
+        write_cfg_copy = write_run_dir / "config.yaml"
         run_config = copy.deepcopy(base_config)
         runtime_overrides = apply_search_overrides(run_config, combo)
-        with cfg_copy.open("w") as file_obj:
+        with write_cfg_copy.open("w") as file_obj:
             yaml.safe_dump(run_config, file_obj)
         version = identity["version"]
         runtime = {**runtime_defaults, **runtime_overrides}
@@ -591,12 +602,14 @@ def write_hparam_plan(
             command_parts.append("--no-test-after-fit")
         command = rendering.render_command(command_parts)
         script_path = run_dir / "launch.sh"
+        write_script_path = write_run_dir / "launch.sh"
         write_text(
-            script_path,
+            write_script_path,
             "\n".join(
                 rendering.hparam_script_lines(
                     [command],
                     test_after_fit=test_after_fit is True,
+                    record_exit_code=True,
                     run_cwd=run_cwd,
                 )
             )
@@ -614,26 +627,28 @@ def write_hparam_plan(
             "config": str(cfg_copy),
             "script": str(script_path),
             "command": command,
-            "config_sha256": file_sha256(cfg_copy),
-            "script_sha256": file_sha256(script_path),
+            "config_sha256": file_sha256(write_cfg_copy),
+            "script_sha256": file_sha256(write_script_path),
+            "terminal_status_owner": "monitor",
             **combo,
         }
         runtime_dir = run_cwd / "log-finetune" / version
         checkpoint_dir = runtime_dir / "checkpoints"
         artifacts_path = run_dir / "artifacts.json"
+        write_artifacts_path = write_run_dir / "artifacts.json"
         run["artifacts"] = str(artifacts_path)
         run["runtime_dir"] = str(runtime_dir)
         run["checkpoint_dir"] = str(checkpoint_dir)
         runs.append(run)
         write_json(
-            run_dir / "run.json",
+            write_run_dir / "run.json",
             {
                 "status": "planned",
                 **run,
             },
         )
         write_json(
-            artifacts_path,
+            write_artifacts_path,
             {
                 "runtime_dir": str(runtime_dir),
                 "checkpoint_dir": str(checkpoint_dir),
@@ -641,7 +656,7 @@ def write_hparam_plan(
             },
         )
     write_text(
-        out / "run_all.sh",
+        physical_out / "run_all.sh",
         "\n".join(
             rendering.hparam_script_lines(
                 [
@@ -657,58 +672,18 @@ def write_hparam_plan(
         executable=True,
     )
     write_text(
-        out / "validation.sh",
+        physical_out / "validation.sh",
         "\n".join(
             rendering.script_lines([rendering.render_command(["python", "-m", "agent_tools", "skills", "--validate"])])
         )
         + "\n",
         executable=True,
     )
-    plan_recipe = {key: value for key, value in recipe.items() if key != _FINAL_EVAL_CONFIG_SNAPSHOT}
-    plan_payload = {"status": "PASS", "runs": runs, "recipe": plan_recipe}
-    if final_allowed and has_explicit_final_eval_config(recipe):
-        plan_payload["final_eval_config"] = {
-            "path": str(frozen_final_eval_config),
-            "sha256": file_sha256(frozen_final_eval_config),
-            "source_path": final_config_snapshot["source_path"],
-        }
-    write_json(out / "plan.json", plan_payload)
-    root = experiment_root(recipe)
-    if root is None:
-        raise ValueError("experiment.root is required.")
-    manifest_rows = []
-    parameter_keys = {key for combo in combos for key in combo}
-    for run in runs:
-        row = {
-            "experiment_id": run["experiment_id"],
-            "step_id": run["step_id"],
-            "run_id": run["run_id"],
-            "run_name": run["run_name"],
-            "parameter_summary": run["parameter_summary"],
-            "version": run["version"],
-            "status": "planned",
-            "config": run["config"],
-            "config_sha256": run["config_sha256"],
-            "script": run["script"],
-            "script_sha256": run["script_sha256"],
-            "run_dir": run["run_dir"],
-            "artifacts": run["artifacts"],
-            "runtime_dir": run["runtime_dir"],
-            "checkpoint_dir": run["checkpoint_dir"],
-        }
-        row.update({key: run.get(key) for key in parameter_keys})
-        manifest_rows.append(row)
-    merge_run_manifest(root, manifest_rows)
-    append_event(
-        root,
-        "plan_created",
-        {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": len(runs)},
-    )
     resolved_recipe = {
         key: value for key, value in recipe.items() if key not in {"_recipe_path", _FINAL_EVAL_CONFIG_SNAPSHOT}
     }
-    (out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
-    final_script_path = out / "final_external_test.sh"
+    (physical_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
+    final_script_path = physical_out / "final_external_test.sh"
     final_unlocked = final_test_unlocked(evaluation, unlock_final_test)
     test_after_fit_message = (
         "Run commands evaluate the configured test split because test_after_fit is explicitly unlocked."
@@ -765,7 +740,91 @@ def write_hparam_plan(
             plan_lines.append("Final external-test script not generated; explicit checkpoint path is required.")
         else:
             plan_lines.append("Final external-test script not generated; explicit unlock is required.")
-    write_text(out / "plan.md", "\n".join(plan_lines) + "\n")
+    write_text(physical_out / "plan.md", "\n".join(plan_lines) + "\n")
+
+    plan_recipe = {key: value for key, value in recipe.items() if key != _FINAL_EVAL_CONFIG_SNAPSHOT}
+    plan_payload = {
+        "status": "PASS",
+        "runs": runs,
+        "recipe": plan_recipe,
+        "resolved_recipe_sha256": file_sha256(physical_out / "recipe.resolved.yaml"),
+    }
+    if final_allowed and has_explicit_final_eval_config(recipe):
+        plan_payload["final_eval_config"] = {
+            "path": str(frozen_final_eval_config),
+            "sha256": file_sha256(write_frozen_final_eval_config),
+            "source_path": final_config_snapshot["source_path"],
+        }
+    # plan.json is the terminal physical-plan manifest and is written only after
+    # every frozen file in the bundle is complete.
+    write_json(physical_out / "plan.json", plan_payload)
+
+
+def commit_hparam_plan(out: str | Path, *, emit_event: bool = True) -> dict[str, Any]:
+    from . import run_artifacts as artifacts
+
+    plan_dir = Path(out).expanduser()
+    if not plan_dir.is_absolute():
+        plan_dir = plan_dir.resolve()
+    plan = artifacts.read_hparam_plan(
+        plan_dir,
+        require_workspace_state=False,
+        require_adaptive_commit=False,
+    )
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    root = experiment_root(recipe)
+    if root is None:
+        raise ValueError("experiment.root is required.")
+    ensure_experiment_workspace(recipe, plan_dir)
+    manifest_rows = _hparam_manifest_rows(plan)
+    expected_keys = {managed_run_key(row) for row in manifest_rows}
+    existing_keys = {managed_run_key(row) for row in read_run_manifest(root) if managed_run_key(row) in expected_keys}
+    if existing_keys and existing_keys != expected_keys:
+        missing = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in sorted(expected_keys - existing_keys))
+        raise ValueError(f"Canonical hparam plan registration is partial; missing {missing}")
+    merge_run_manifest(root, manifest_rows)
+    if emit_event:
+        append_event(
+            root,
+            "plan_created",
+            {
+                "step_id": (recipe.get("step") or {}).get("id"),
+                "plan_dir": str(plan_dir),
+                "run_count": len(manifest_rows),
+            },
+        )
+    artifacts.read_hparam_plan(plan_dir, require_adaptive_commit=False)
+    return plan
+
+
+def _hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    runs = plan.get("runs") if isinstance(plan.get("runs"), list) else []
+    parameter_keys = {key for combo in hparam_combos(recipe) for key in combo}
+    rows = []
+    for run in runs:
+        row = {
+            "experiment_id": run["experiment_id"],
+            "step_id": run["step_id"],
+            "run_id": run["run_id"],
+            "run_name": run["run_name"],
+            "parameter_summary": run["parameter_summary"],
+            "version": run["version"],
+            "status": "planned",
+            "config": run["config"],
+            "config_sha256": run["config_sha256"],
+            "script": run["script"],
+            "script_sha256": run["script_sha256"],
+            "run_dir": run["run_dir"],
+            "artifacts": run["artifacts"],
+            "runtime_dir": run["runtime_dir"],
+            "checkpoint_dir": run["checkpoint_dir"],
+        }
+        if "terminal_status_owner" in run:
+            row["terminal_status_owner"] = run["terminal_status_owner"]
+        row.update({key: run.get(key) for key in parameter_keys})
+        rows.append(row)
+    return rows
 
 
 def plan_output_path(out: Path, raw: Any, default: str) -> Path:

@@ -50,6 +50,12 @@ def generate_external_eval(
         top_k=top_k,
         all_candidates=all_candidates,
     )
+    for row in rows:
+        if row.get("status") not in {"completed", "finished"}:
+            raise ValueError(
+                f"Selected candidate is not canonically successful: "
+                f"{row['step_id']} / {row['run_id']} (status={row.get('status', '')})"
+            )
     config_dir = root / "external_eval_configs"
     config_paths = []
     checkpoint_paths = []
@@ -504,7 +510,7 @@ def _selected_candidate_rows(
                 raise ValueError(f"Selected candidate parameter differs from the managed plan: {field}")
         derived = {field: value for field, value in row.items() if field not in candidate_parameters}
         validate_frozen_run_update(run, derived, require_checkpoint_ownership=True)
-        managed_rows.append({**derived, **run})
+        managed_rows.append({**derived, **run, "status": workspace_by_key[key].get("status", "")})
     if not all_candidates and (type(top_k) is not int or top_k <= 0):
         raise ValueError("top_k must be a positive integer.")
     ranked_rows = []
@@ -522,9 +528,7 @@ def _selected_candidate_rows(
         ):
             raise ValueError(f"Selected candidate rank must be a positive integer: {row['step_id']} / {row['run_id']}")
         ranked_rows.append((int(numeric_rank), index, row))
-    if all_candidates:
-        return managed_rows, owner_plans_by_key
-    selected = [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
+    selected = managed_rows if all_candidates else [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
     if not selected:
         raise ValueError("No selected candidates remain after rank/top_k filtering.")
     return selected, owner_plans_by_key

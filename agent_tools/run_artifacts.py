@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 from pathlib import Path
+import stat
 from typing import Any, Iterator
 
 from .experiment_workspace import (
@@ -22,7 +25,12 @@ from .models import REPO_ROOT
 RUN_METADATA_FIELDS = ("experiment_id", "run_name", "version")
 
 
-def read_hparam_plan(run_dir: Path) -> dict[str, Any]:
+def read_hparam_plan(
+    run_dir: Path,
+    *,
+    require_workspace_state: bool = True,
+    require_adaptive_commit: bool = True,
+) -> dict[str, Any]:
     plan_path = run_dir / "plan.json"
     if not plan_path.exists():
         raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
@@ -35,8 +43,11 @@ def read_hparam_plan(run_dir: Path) -> dict[str, Any]:
     resolved_recipe_path = run_dir / "recipe.resolved.yaml"
     if not resolved_recipe_path.exists():
         raise FileNotFoundError(f"Missing frozen hparam recipe: {resolved_recipe_path}")
+    resolved_recipe_bytes = resolved_recipe_path.read_bytes()
+    if plan.get("resolved_recipe_sha256") != hashlib.sha256(resolved_recipe_bytes).hexdigest():
+        raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
     resolved_recipe = read_managed_yaml_mapping(
-        resolved_recipe_path.read_text(), source=f"Frozen hparam recipe {resolved_recipe_path}"
+        resolved_recipe_bytes.decode(), source=f"Frozen hparam recipe {resolved_recipe_path}"
     )
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
@@ -70,63 +81,65 @@ def read_hparam_plan(run_dir: Path) -> dict[str, Any]:
         for field in ("id", "title", "objective", "root", "baseline")
     ):
         raise ValueError(f"Hparam plan experiment metadata differs from the managed workspace: {workspace}")
-    step_manifest = read_step_manifest(workspace, step_id)
     experiment_id = str(expected_experiment["id"])
-    expected_step_manifest = merge_step_manifest(
-        step_manifest,
-        {
-            "step": recipe["step"],
-            "experiment_id": experiment_id,
-            "recipe_path": recipe.get("_recipe_path", ""),
-            "plans": [str(run_dir.resolve())],
-        },
-    )
-    if expected_step_manifest != step_manifest:
-        raise ValueError(f"Hparam plan is not registered by its managed step: {run_dir}")
     for run in runs:
         if str(run["experiment_id"]) != experiment_id or str(run["step_id"]) != step_id:
             raise ValueError("Managed run identity does not match the hparam recipe workspace binding.")
-    workspace_rows = read_run_manifest(workspace)
-    workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
-    missing_keys = [managed_run_key(run) for run in runs if managed_run_key(run) not in workspace_by_key]
-    if missing_keys:
-        missing = ", ".join(f"{step} / {run_id}" for step, run_id in missing_keys)
-        raise ValueError(f"Workspace run_manifest.tsv is missing plan runs: {missing}")
-    for run in runs:
-        workspace_row = workspace_by_key[managed_run_key(run)]
-        if workspace_row.get("status") in (None, ""):
-            raise ValueError(f"Workspace run manifest is missing status: {run['step_id']} / {run['run_id']}")
-        for field in (
-            "experiment_id",
-            "step_id",
-            "run_id",
-            "run_name",
-            "parameter_summary",
-            "version",
-            "config",
-            "config_sha256",
-            "script",
-            "script_sha256",
-            "run_dir",
-            "artifacts",
-            "runtime_dir",
-            "checkpoint_dir",
-        ):
-            if str(workspace_row.get(field) or "") != str(run.get(field) or ""):
-                raise ValueError(
-                    f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
-                )
-        plan_parameters = managed_run_parameters(run)
-        workspace_parameters = managed_run_parameters(workspace_row)
-        if set(plan_parameters) != set(workspace_parameters):
-            raise ValueError(f"Workspace run parameters differ from plan: {run['step_id']} / {run['run_id']}")
-        for field, value in plan_parameters.items():
-            expected_value = "" if value is None else str(value)
-            actual_value = "" if workspace_parameters[field] is None else str(workspace_parameters[field])
-            if actual_value != expected_value:
-                raise ValueError(
-                    f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
-                )
+    if require_workspace_state:
+        step_manifest = read_step_manifest(workspace, step_id)
+        expected_step_manifest = merge_step_manifest(
+            step_manifest,
+            {
+                "step": recipe["step"],
+                "experiment_id": experiment_id,
+                "recipe_path": recipe.get("_recipe_path", ""),
+                "plans": [str(run_dir.resolve())],
+            },
+        )
+        if expected_step_manifest != step_manifest:
+            raise ValueError(f"Hparam plan is not registered by its managed step: {run_dir}")
+        workspace_rows = read_run_manifest(workspace)
+        workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
+        missing_keys = [managed_run_key(run) for run in runs if managed_run_key(run) not in workspace_by_key]
+        if missing_keys:
+            missing = ", ".join(f"{step} / {run_id}" for step, run_id in missing_keys)
+            raise ValueError(f"Workspace run_manifest.tsv is missing plan runs: {missing}")
+        for run in runs:
+            workspace_row = workspace_by_key[managed_run_key(run)]
+            if workspace_row.get("status") in (None, ""):
+                raise ValueError(f"Workspace run manifest is missing status: {run['step_id']} / {run['run_id']}")
+            for field in (
+                "experiment_id",
+                "step_id",
+                "run_id",
+                "run_name",
+                "parameter_summary",
+                "version",
+                "config",
+                "config_sha256",
+                "script",
+                "script_sha256",
+                "run_dir",
+                "artifacts",
+                "runtime_dir",
+                "checkpoint_dir",
+                "terminal_status_owner",
+            ):
+                if str(workspace_row.get(field) or "") != str(run.get(field) or ""):
+                    raise ValueError(
+                        f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
+                    )
+            plan_parameters = managed_run_parameters(run)
+            workspace_parameters = managed_run_parameters(workspace_row)
+            if set(plan_parameters) != set(workspace_parameters):
+                raise ValueError(f"Workspace run parameters differ from plan: {run['step_id']} / {run['run_id']}")
+            for field, value in plan_parameters.items():
+                expected_value = "" if value is None else str(value)
+                actual_value = "" if workspace_parameters[field] is None else str(workspace_parameters[field])
+                if actual_value != expected_value:
+                    raise ValueError(
+                        f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
+                    )
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
@@ -157,7 +170,50 @@ def read_hparam_plan(run_dir: Path) -> dict[str, Any]:
         raise ValueError(f"Hparam plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
     for run in runs:
         verify_run_snapshot(run)
+    if require_adaptive_commit:
+        _validate_adaptive_workflow_commit(run_dir, recipe)
     return plan
+
+
+def plan_tree_sha256(root: Path) -> str:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"Managed plan is missing or aliased: {root}")
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        info = os.lstat(path)
+        relative = path.relative_to(root).as_posix().encode()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(stat.S_IMODE(info.st_mode).to_bytes(4, "big"))
+        if stat.S_ISDIR(info.st_mode):
+            digest.update(b"directory")
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"Managed plan contains an unsafe artifact: {path}")
+        digest.update(b"file")
+        digest.update(info.st_size.to_bytes(8, "big"))
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any]) -> None:
+    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    if adaptive.get("enabled") is not True:
+        return
+    if run_dir.is_symlink():
+        raise ValueError(f"Adaptive plan directory must not be a symlink: {run_dir}")
+    run_dir = run_dir.resolve()
+    if run_dir.parent.name != "rounds" or run_dir.parent.parent.name != "adaptive":
+        return
+    workflow_root = run_dir.parent.parent.parent
+    workflow_path = workflow_root / "adaptive" / "workflow.json"
+    if workflow_path.is_symlink() or not workflow_path.is_file():
+        raise FileNotFoundError(f"Adaptive workflow initialization is not committed: {workflow_path}")
+    workflow = read_json(workflow_path)
+    if not isinstance(workflow, dict) or str(workflow.get("root") or "") != str(workflow_root):
+        raise ValueError(f"Adaptive workflow commit marker differs from the plan root: {workflow_path}")
 
 
 def iter_registered_hparam_plans(

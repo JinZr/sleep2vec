@@ -1313,6 +1313,59 @@ def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
     assert not (output_dir / "run.sh").exists()
 
 
+@pytest.mark.parametrize("task", ["infer", "evaluate"])
+@pytest.mark.parametrize("external_test_locked", [False, True, None], ids=["unlocked", "locked", "omitted"])
+def test_direct_test_evaluation_requires_external_test_unlock(
+    tmp_path: Path, task: str, external_test_locked: bool | None
+):
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("checkpoint")
+    config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]
+    payload = {
+        "name": f"unit_{task}",
+        "task": task,
+        "variant": "sleep2vec",
+        "inputs": {
+            "config": config,
+            "label_name": "ahi",
+            "ckpt_path": str(ckpt),
+            "eval_split": "test",
+        },
+        "evaluation_policy": {"final_test_unlocked": True},
+        "artifacts": {"overwrite": False},
+        "decisions": {
+            "task": {"value": task, "source": "explicit_recipe"},
+            "label_name": {"value": "ahi", "source": "explicit_recipe"},
+            "ckpt_path": {"value": str(ckpt), "source": "explicit_recipe"},
+            "final_eval_unlock": {"value": True, "source": "explicit_recipe"},
+            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+        },
+    }
+    if external_test_locked is not None:
+        payload["evaluation_policy"]["external_test_locked"] = external_test_locked
+        payload["decisions"]["external_test_locked"] = {
+            "value": external_test_locked,
+            "source": "explicit_recipe",
+        }
+    recipe = write_yaml(tmp_path / f"{task}.yaml", payload)
+    output_dir = tmp_path / "plan"
+
+    _, _, report = plans.evaluate_recipe(recipe)
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    matching = [issue.message for issue in report.blocking_issues() if issue.field == "external_test_locked"]
+    if external_test_locked is False:
+        assert report.exit_code == 0
+        assert result.returncode == 0
+        assert "--eval-split test" in (output_dir / "run.sh").read_text()
+    else:
+        assert report.exit_code == 2
+        assert matching == ["Test evaluation requires external_test_locked=false."]
+        assert result.returncode == 2
+        assert "Test evaluation requires external_test_locked=false." in result.stdout
+        assert not (output_dir / "run.sh").exists()
+
+
 def test_infer_invalid_eval_split_blocks_command_generation(tmp_path: Path):
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("checkpoint")

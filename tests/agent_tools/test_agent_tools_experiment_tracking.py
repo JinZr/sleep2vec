@@ -1670,8 +1670,8 @@ def test_experiment_monitor_observes_remote_artifacts_over_ssh_and_preserves_the
         run_evidence,
         "health_fields",
         lambda _root, _row, _previous, _pid, _running, status, checkpoints: {
-            "health_status": status,
-            "checkpoint_count": len(checkpoints),
+            "health_status": "health_unknown" if checkpoints is None else status,
+            "checkpoint_count": "" if checkpoints is None else len(checkpoints),
         },
     )
 
@@ -1684,7 +1684,8 @@ def test_experiment_monitor_observes_remote_artifacts_over_ssh_and_preserves_the
     else:
         assert observation["run_manifest"] == previous["run_manifest"]
         assert observation["checkpoints"] == previous["checkpoints"]
-        assert observation["checkpoint_count"] == 1
+        assert observation["checkpoint_count"] == ""
+        assert observation["health_status"] == "health_unknown"
     assert any("/remote/runtime/run-000" in command for command in commands)
 
 

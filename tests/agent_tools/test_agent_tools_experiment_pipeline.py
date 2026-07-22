@@ -421,6 +421,76 @@ def test_checkpoint_selection_stays_with_frozen_source_plan(tmp_path: Path, monk
     assert selected[0]["score"] == 4.5
 
 
+@pytest.mark.parametrize(
+    ("initial_status", "current_status", "should_select"),
+    [("running", "completed", True), ("completed", "failed", False)],
+)
+def test_checkpoint_selection_uses_canonical_status_after_ranking(
+    tmp_path: Path,
+    monkeypatch,
+    initial_status: str,
+    current_status: str,
+    should_select: bool,
+):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    config = tmp_path / "source-config.yaml"
+    config.write_text("model: source\n")
+    checkpoint_dir = tmp_path / "source-checkpoints"
+    checkpoint_dir.mkdir()
+    checkpoint = checkpoint_dir / "source.ckpt"
+    checkpoint.write_bytes(b"source")
+    source_run = {"step_id": "train-age", "run_id": "run-001"}
+    source_plan = {
+        "recipe": {
+            "task": "hparam_tune",
+            "variant": "sleep2vec2",
+            "step": {"id": "train-age"},
+            "inputs": {"label_name": "age"},
+        },
+        "runs": [source_run],
+    }
+    ranking = [
+        {
+            **source_run,
+            "run_name": "source-plan-best",
+            "rank": "1",
+            "score": "4.5",
+            "config": str(config),
+            "checkpoint_path": str(checkpoint),
+            "status": initial_status,
+        }
+    ]
+    canonical = {
+        **source_run,
+        "status": initial_status,
+        "checkpoint_dir": str(checkpoint_dir),
+    }
+
+    def select_candidates(*_args):
+        canonical["status"] = current_status
+
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: source_plan)
+    monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", select_candidates)
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical)])
+    monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: ranking)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_checkpoint_payload",
+        lambda *_args: {"state_dict_key_count": 1, "has_ahi_eval_threshold": False},
+    )
+
+    if not should_select:
+        with pytest.raises(ValueError, match="Selected checkpoint source is not successful"):
+            experiment_pipeline._select_checkpoint_sources(root, spec)
+        return
+
+    selected = experiment_pipeline._select_checkpoint_sources(root, spec)
+
+    assert selected[0]["run_id"] == source_run["run_id"]
+    assert selected[0]["checkpoint"] == str(checkpoint)
+
+
 def test_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     spec = _spec(root)
