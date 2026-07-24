@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,9 @@ import yaml
 
 from . import experiment_io as exp_io, experiment_tracking as tracking
 from .experiment_workspace import (
+    RESEARCH_LOG_NAME,
     TERMINAL_STATUSES,
+    append_research_log,
     canonical_local_experiment_root,
     commit_step_manifest,
     experiment_metadata_issues,
@@ -79,6 +82,7 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
         [
             root / "experiment.yaml",
             root / "run_manifest.tsv",
+            root / RESEARCH_LOG_NAME,
             root / "events.jsonl",
             root / "README.md",
             manifest,
@@ -120,6 +124,28 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
         }
     exp_io.write_rows_at(manifest, [row], remote=remote)
     return manifest
+
+
+def append_experiment_note(
+    run_dir: str | Path,
+    entry_path: str | Path,
+    *,
+    remote: str | None = None,
+) -> dict[str, Any]:
+    root = _target_root(run_dir, remote)
+    experiment, rows = _managed_workspace(root, remote=remote, allow_completed=True)
+    entry = read_managed_yaml_mapping(
+        Path(entry_path).read_text(),
+        source=f"Research log entry {entry_path}",
+    )
+    path, entry_id, appended = append_research_log(
+        root,
+        entry,
+        experiment_id=str(experiment["id"]),
+        managed_rows=rows,
+        remote=remote,
+    )
+    return {"path": str(path), "entry_id": entry_id, "appended": appended}
 
 
 def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remote: str | None = None) -> Path:
@@ -364,6 +390,16 @@ def _target_root(run_dir: str | Path, remote: str | None) -> Path:
 
 
 def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
+    _experiment, rows = _managed_workspace(root, remote=remote)
+    return rows
+
+
+def _managed_workspace(
+    root: Path,
+    *,
+    remote: str | None,
+    allow_completed: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     manifest_path = root / "experiment.yaml"
     exp_io.validate_managed_output_paths(root, [manifest_path], remote=remote)
     experiment_text = exp_io.read_text_at(manifest_path, remote=remote)
@@ -371,9 +407,25 @@ def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
         raise ValueError("experiment.yaml is missing. Initialize the experiment first.")
     manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
     experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
+    validated_experiment = experiment
+    if allow_completed and isinstance(experiment, dict) and ("status" in experiment or "completed_at" in experiment):
+        if set(experiment) - {"id", "title", "objective", "root", "baseline"} != {"status", "completed_at"}:
+            raise ValueError("Completed experiment metadata must define only status and completed_at.")
+        completed_at = experiment.get("completed_at")
+        if experiment.get("status") != "completed" or not isinstance(completed_at, str):
+            raise ValueError("Completed experiment metadata is invalid.")
+        try:
+            completed_time = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Completed experiment completed_at must be an ISO timestamp.") from exc
+        if completed_time.tzinfo is None or completed_time.utcoffset() != timezone.utc.utcoffset(completed_time):
+            raise ValueError("Completed experiment completed_at must be in UTC.")
+        validated_experiment = {
+            field: value for field, value in experiment.items() if field not in {"status", "completed_at"}
+        }
     issues = experiment_metadata_issues(
         {
-            "experiment": experiment,
+            "experiment": validated_experiment,
             "step": {"id": "preflight", "phase": "prepare", "purpose": "validate experiment workspace"},
         }
     )
@@ -401,7 +453,7 @@ def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
     for row in rows:
         if row["experiment_id"] != experiment["id"]:
             raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")
-    return rows
+    return experiment, rows
 
 
 def _validate_evidence_rows(

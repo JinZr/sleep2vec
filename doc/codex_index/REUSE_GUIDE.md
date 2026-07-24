@@ -119,6 +119,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
 - Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
+- Reuse `experiments.append_experiment_note` and the workspace research-log owner for semantic notes; do not append Markdown directly or infer lifecycle state from narrative.
 - Reuse `managed_scheduler` for capacity and process lifecycle primitives; keep pipeline policy in `experiment_pipeline`.
 - Use `experiment-run` for validation-selected external matrices. Monitor commands remain non-launching.
 - Keep external-agent suggestions inside the `adaptive_proposals` snapshot/envelope contract; let `adaptive_hparam` own preflight and lifecycle changes.

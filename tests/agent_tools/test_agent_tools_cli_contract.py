@@ -24,6 +24,7 @@ SUBCOMMANDS = {
     "hparam-monitor",
     "progress",
     "experiment-init",
+    "experiment-note",
     "experiment-register-step",
     "experiment-finalize",
     "experiment-run",
@@ -75,11 +76,20 @@ def _actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
     return {action.dest: action for action in parser._actions if action.option_strings}
 
 
-def test_cli_has_exactly_33_subcommands():
+def test_cli_has_exactly_34_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == SUBCOMMANDS
-    assert len(subcommands) == 33
+    assert len(subcommands) == 34
+
+
+def test_experiment_note_cli_contract():
+    parser, subcommands = _parser_contract()
+    actions = _actions(subcommands["experiment-note"])
+    args = parser.parse_args(["experiment-note", "--run-dir", "experiment", "--entry", "entry.yaml"])
+
+    assert {name for name, action in actions.items() if action.required} == {"run_dir", "entry"}
+    assert args.remote is None
 
 
 def test_experiment_run_cli_contract():

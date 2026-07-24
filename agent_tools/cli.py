@@ -16,6 +16,7 @@ from .adaptive_hparam import (
 from .configs import config_summary
 from .domain.presets import preset_summary
 from .experiments import (
+    append_experiment_note,
     finalize_experiment,
     index_checkpoints,
     init_experiment,
@@ -149,6 +150,12 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_init.add_argument("--spec", required=True)
     experiment_init.add_argument("--remote")
     experiment_init.set_defaults(func=_cmd_experiment_init)
+
+    experiment_note = sub.add_parser("experiment-note")
+    experiment_note.add_argument("--run-dir", required=True)
+    experiment_note.add_argument("--entry", required=True)
+    experiment_note.add_argument("--remote")
+    experiment_note.set_defaults(func=_cmd_experiment_note)
 
     experiment_step = sub.add_parser("experiment-register-step")
     experiment_step.add_argument("--run-dir", required=True)
@@ -420,6 +427,13 @@ def _cmd_progress(args: argparse.Namespace) -> int:
 def _cmd_experiment_init(args: argparse.Namespace) -> int:
     manifest = init_experiment(args.run_dir, args.spec, remote=args.remote)
     print(f"Wrote {manifest}")
+    return 0
+
+
+def _cmd_experiment_note(args: argparse.Namespace) -> int:
+    result = append_experiment_note(args.run_dir, args.entry, remote=args.remote)
+    status = "appended" if result["appended"] else "already present"
+    print(f"Research log {result['path']}: {result['entry_id']} {status}")
     return 0
 
 
