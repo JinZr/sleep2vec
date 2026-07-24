@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import csv
-import fcntl
 import hashlib
 import io
 import json
@@ -809,10 +809,9 @@ def merge_run_manifest(
         remote=remote,
     )
     validate_managed_run_rows(rows, source="incoming run manifest", cardinality="one_per_run")
-    lock_file = None
+    lock_stack = ExitStack()
     if not remote and not lock_held:
-        lock_file = lock_path.open("a+")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        lock_stack.enter_context(exp_io.blocking_file_lock(lock_path))
     try:
         for _attempt in range(3 if remote else 1):
             if not exp_io.path_exists_at(path, remote=remote):
@@ -884,9 +883,7 @@ def merge_run_manifest(
         else:
             write_run_matrix(root, committed)
     finally:
-        if lock_file is not None:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            lock_file.close()
+        lock_stack.close()
     return committed
 
 

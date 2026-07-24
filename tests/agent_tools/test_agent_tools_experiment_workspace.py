@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 import csv
+import errno
 import fcntl
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -861,6 +864,33 @@ def test_concurrent_local_manifest_writers_preserve_distinct_runs(tmp_path: Path
     assert {row["run_id"] for row in read_run_manifest(tmp_path)} == {"run-000", "run-001"}
 
 
+def test_merge_run_manifest_retries_transient_file_lock_eio(tmp_path: Path, monkeypatch):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    attempts = 0
+    delays = []
+    real_flock = fcntl.flock
+
+    def flaky_flock(file_descriptor, operation):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        real_flock(file_descriptor, operation)
+
+    monkeypatch.setattr(experiment_io, "fcntl", SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, flock=flaky_flock))
+    monkeypatch.setattr(experiment_io, "time", SimpleNamespace(sleep=delays.append))
+
+    committed = merge_run_manifest(
+        tmp_path,
+        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
+    )
+
+    assert committed[0]["status"] == "planned"
+    assert attempts == 3
+    assert delays == [0.1]
+
+
 def test_concurrent_local_manifest_writer_holds_lock_through_projection(tmp_path: Path, monkeypatch):
     (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
     initialize_run_manifest(tmp_path)
@@ -870,23 +900,29 @@ def test_concurrent_local_manifest_writer_holds_lock_through_projection(tmp_path
     second_lock_attempted = threading.Event()
     local_lock = threading.Lock()
     lock_violations = []
-    real_flock = fcntl.flock
+    real_blocking_file_lock = experiment_io.blocking_file_lock
     real_write_run_matrix = experiment_workspace.write_run_matrix
 
-    def tracked_flock(_fd, operation):
-        if operation == fcntl.LOCK_EX:
-            if threading.current_thread().name == "second-merge":
-                if local_lock.acquire(blocking=False):
-                    if not first_projection_done.is_set():
-                        lock_violations.append("second writer acquired the lock before the first projection completed")
-                    second_lock_attempted.set()
-                    return
+    @contextmanager
+    def tracked_blocking_file_lock(path):
+        if Path(path) != tmp_path / "run_manifest.tsv.lock":
+            with real_blocking_file_lock(path):
+                yield
+            return
+        if threading.current_thread().name == "second-merge":
+            if local_lock.acquire(blocking=False):
+                if not first_projection_done.is_set():
+                    lock_violations.append("second writer acquired the lock before the first projection completed")
                 second_lock_attempted.set()
-            local_lock.acquire()
-        elif operation == fcntl.LOCK_UN:
-            local_lock.release()
+            else:
+                second_lock_attempted.set()
+                local_lock.acquire()
         else:
-            real_flock(_fd, operation)
+            local_lock.acquire()
+        try:
+            yield
+        finally:
+            local_lock.release()
 
     def delayed_write_run_matrix(root, rows, *, remote=None):
         if {row["run_id"] for row in rows} == {"run-000"}:
@@ -897,11 +933,7 @@ def test_concurrent_local_manifest_writer_holds_lock_through_projection(tmp_path
             return result
         return real_write_run_matrix(root, rows, remote=remote)
 
-    monkeypatch.setattr(
-        experiment_workspace,
-        "fcntl",
-        SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, LOCK_UN=fcntl.LOCK_UN, flock=tracked_flock),
-    )
+    monkeypatch.setattr(experiment_io, "blocking_file_lock", tracked_blocking_file_lock)
     monkeypatch.setattr(experiment_workspace, "write_run_matrix", delayed_write_run_matrix)
     errors = []
 

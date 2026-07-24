@@ -90,6 +90,40 @@ def test_local_conditional_replace_requires_expected_digest(tmp_path: Path):
     assert path.stat().st_mode & 0o777 == 0o640
 
 
+def test_blocking_file_lock_reopens_descriptor_after_transient_eio(tmp_path: Path, monkeypatch):
+    lock_path = tmp_path / "state.lock"
+    attempts = 0
+    delays = []
+    opened_lock_files = []
+    real_flock = fcntl.flock
+    real_open = Path.open
+
+    def tracked_open(candidate, *args, **kwargs):
+        file_obj = real_open(candidate, *args, **kwargs)
+        if candidate == lock_path:
+            opened_lock_files.append(file_obj)
+        return file_obj
+
+    def flaky_flock(file_descriptor, operation):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        real_flock(file_descriptor, operation)
+
+    monkeypatch.setattr(experiment_io, "fcntl", SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, flock=flaky_flock))
+    monkeypatch.setattr(experiment_io, "time", SimpleNamespace(sleep=delays.append))
+    monkeypatch.setattr(Path, "open", tracked_open)
+
+    with experiment_io.blocking_file_lock(lock_path):
+        pass
+
+    assert attempts == 2
+    assert delays == [0.1]
+    assert len(opened_lock_files) == 2
+    assert all(file_obj.closed for file_obj in opened_lock_files)
+
+
 def test_local_conditional_replace_retries_transient_flock_eio(tmp_path: Path, monkeypatch):
     path = tmp_path / "state.tsv"
     path.write_text("old\n")
@@ -166,6 +200,25 @@ def test_local_conditional_replace_does_not_retry_other_flock_errors(tmp_path: P
     assert error.value.errno == errno.EPERM
     assert attempts == 1
     assert path.read_bytes() == b"old\n"
+
+
+def test_blocking_file_lock_does_not_retry_post_lock_eio(tmp_path: Path, monkeypatch):
+    attempts = 0
+    real_flock = fcntl.flock
+
+    def tracked_flock(file_descriptor, operation):
+        nonlocal attempts
+        attempts += 1
+        real_flock(file_descriptor, operation)
+
+    monkeypatch.setattr(experiment_io, "fcntl", SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, flock=tracked_flock))
+
+    with pytest.raises(OSError) as error:
+        with experiment_io.blocking_file_lock(tmp_path / "state.lock"):
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    assert error.value.errno == errno.EIO
+    assert attempts == 1
 
 
 def test_local_conditional_create_never_replaces_an_existing_file(tmp_path: Path):

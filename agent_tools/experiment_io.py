@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import csv
 import ctypes
 import errno
@@ -13,7 +14,7 @@ import stat
 import subprocess  # noqa: F401 -- tests patch experiment_io.subprocess.run (stdlib global)
 import tempfile
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from . import transport
 from .manifests import read_rows, utc_now, validate_managed_header, write_rows, write_text
@@ -23,6 +24,25 @@ from .transport import (  # noqa: F401 -- SSH_TIMEOUT_SECONDS re-exported for ex
     REMOTE_MISSING_RETURN_CODE,
     SSH_TIMEOUT_SECONDS,
 )
+
+
+@contextmanager
+def blocking_file_lock(path: str | Path) -> Iterator[None]:
+    lock_path = Path(path)
+    for attempt in range(4):
+        lock_file = lock_path.open("a+")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except OSError as exc:
+            lock_file.close()
+            if exc.errno != errno.EIO or attempt == 3:
+                raise
+            # Do not reuse a JuiceFS-backed descriptor after flock reports EIO.
+            time.sleep(0.1 * (2**attempt))
+        else:
+            break
+    with lock_file:
+        yield
 
 
 def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
@@ -357,19 +377,7 @@ def conditional_atomic_replace_text_at(
     if not remote:
         target.parent.mkdir(parents=True, exist_ok=True)
         lock_path = target.with_name(f".{target.name}.cas.lock")
-        for attempt in range(4):
-            lock_file = lock_path.open("a+")
-            try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            except OSError as exc:
-                lock_file.close()
-                if exc.errno != errno.EIO or attempt == 3:
-                    raise
-                # Do not reuse a JuiceFS-backed descriptor after flock reports EIO.
-                time.sleep(0.1 * (2**attempt))
-            else:
-                break
-        with lock_file:
+        with blocking_file_lock(lock_path):
             if expected_sha256 is None:
                 if os.path.lexists(target):
                     return False
