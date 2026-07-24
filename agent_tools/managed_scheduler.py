@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-import fcntl
 import hashlib
 import json
 import os
@@ -299,12 +298,8 @@ def managed_run_lock(workspace: str | Path):
     root = Path(workspace)
     lock_path = root / "run_manifest.tsv.lock"
     exp_io.validate_managed_output_paths(root, [lock_path])
-    with lock_path.open("a+") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    with exp_io.blocking_file_lock(lock_path):
+        yield
 
 
 def gpu_groups(execution: dict[str, Any], runtime: dict[str, Any]) -> list[list[Any]]:

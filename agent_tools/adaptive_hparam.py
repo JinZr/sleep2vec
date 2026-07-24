@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
-import fcntl
 import hashlib
 import json
 import math
@@ -324,7 +323,8 @@ def _round_is_terminal(round_dir: Path, workspace: Path) -> bool:
 def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, str]]:
     source_round = _latest_round_index(root)
     rows = _digest_rows(_round_dir(root, source_round), source_round, workspace)
-    return [{key: "" if value is None else str(value) for key, value in row.items()} for row in rows]
+    fieldnames = sorted({key for row in rows for key in row})
+    return [{key: "" if row.get(key) is None else str(row.get(key)) for key in fieldnames} for row in rows]
 
 
 def _source_config_sha256(recipe: dict[str, Any]) -> str:
@@ -415,8 +415,7 @@ def _write_agent_proposal_input(
     text = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
     input_sha256 = hashlib.sha256(text.encode()).hexdigest()
     events_lock.parent.mkdir(parents=True, exist_ok=True)
-    with events_lock.open("a+") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    with exp_io.blocking_file_lock(events_lock):
         if not input_path.exists():
             input_path.parent.mkdir(parents=True, exist_ok=True)
             input_path.write_text(text)

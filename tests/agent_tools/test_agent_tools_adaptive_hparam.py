@@ -299,6 +299,26 @@ def test_agent_proposal_request_recovers_missing_issuance_for_existing_snapshot(
     assert request_events[0]["input_sha256"] == adaptive_hparam.file_sha256(input_path)
 
 
+def test_agent_proposal_request_uses_blocking_events_lock(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    real_lock = adaptive_hparam.exp_io.blocking_file_lock
+    locked_paths = []
+
+    def tracked_lock(path):
+        locked_paths.append(Path(path))
+        return real_lock(path)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "blocking_file_lock", tracked_lock)
+
+    assert adaptive_hparam.adaptive_step(workflow_dir) is not None
+    assert locked_paths.count(tmp_path / "events.jsonl.lock") == 1
+
+
 def test_agent_proposal_request_treats_one_exact_issuance_as_idempotent(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
@@ -471,6 +491,34 @@ def test_agent_proposal_can_request_after_all_runs_fail_without_a_score(tmp_path
     assert row["run_id"] == run["run_id"]
     assert row["status"] == "failed"
     assert "test_auroc" not in row
+
+
+def test_agent_proposal_authoritative_snapshot_normalizes_sparse_digest_fields(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    payload["adaptive"]["round_size"] = 2
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    runs = json.loads((workflow_dir / "adaptive" / "rounds" / "round_000" / "plan.json").read_text())["runs"]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": runs[1]["step_id"], "run_id": runs[1]["run_id"], "status": "failed"}],
+    )
+
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert input_path is not None
+    digest_rows = json.loads(input_path.read_text())["input"]["digest_rows"]
+    assert digest_rows[0]["best_model_score"] == "0.5"
+    assert digest_rows[1]["best_model_score"] == ""
+    proposal_path = _write_agent_submission(input_path)
+    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
 
 
 def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp_path: Path, monkeypatch):
