@@ -4658,6 +4658,27 @@ def test_managed_scheduler_row_terminal_owner_overrides_monitor_default(tmp_path
     assert observed == [(True, False)]
 
 
+def test_managed_scheduler_observe_run_preserves_artifact_context(tmp_path: Path, monkeypatch):
+    row = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])[0]
+    runtime_dir = Path(row["runtime_dir"])
+    checkpoint_dir = Path(row["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True)
+    manifest = runtime_dir / "run_manifest.json"
+    manifest.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
+    (checkpoint_dir / "epoch=1.ckpt").write_text("checkpoint")
+    (checkpoint_dir / "epoch=2.ckpt").write_text("checkpoint")
+    (checkpoint_dir / "notes.txt").write_text("not a checkpoint")
+    monkeypatch.setattr(run_evidence, "gpu_summary", lambda _row, _pid: "")
+
+    observed = managed_scheduler.observe_run(tmp_path, row, row, health=True)
+
+    assert "runtime_dir" not in run_evidence.RUN_EVIDENCE_FIELDS
+    assert "checkpoint_dir" not in run_evidence.RUN_EVIDENCE_FIELDS
+    assert observed["run_manifest"] == str(manifest)
+    assert observed["checkpoints"] == "epoch=1.ckpt;epoch=2.ckpt"
+    assert observed["checkpoint_count"] == 2
+
+
 def test_managed_scheduler_validates_result_root_against_explicit_output_root(tmp_path: Path):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     runtime_workdir = tmp_path / "immutable-runtime"
