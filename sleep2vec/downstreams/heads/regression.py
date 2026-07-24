@@ -9,7 +9,7 @@ from .base import FeatureFusion
 
 
 class RegressionHead(nn.Module):
-    """Two-layer regression head that reuses the shared fusion logic."""
+    """Regression head that reuses the shared fusion logic."""
 
     def __init__(
         self,
@@ -23,6 +23,7 @@ class RegressionHead(nn.Module):
         dropout: float = 0.1,
         act: t.Type[nn.Module] = nn.ELU,
         extra_feature_dim: int = 0,
+        num_layers: int = 2,
     ):
         super().__init__()
         self.target = target
@@ -32,9 +33,18 @@ class RegressionHead(nn.Module):
         in_dim = self.fusion.output_dim + extra_feature_dim
         hidden_dim = hidden_dim or in_dim
 
-        layers: t.List[nn.Module] = [nn.Linear(in_dim, hidden_dim), act()]
-        if dropout and dropout > 0:
-            layers.append(nn.Dropout(dropout))
+        if not isinstance(num_layers, int) or isinstance(num_layers, bool) or num_layers not in {1, 2, 3}:
+            raise ValueError("num_layers must be 1, 2, or 3.")
+        if num_layers == 1:
+            self.regressor = nn.Sequential(nn.Linear(in_dim, out_dim))
+            return
+
+        layers: t.List[nn.Module] = []
+        for layer_idx in range(num_layers - 1):
+            layer_in_dim = in_dim if layer_idx == 0 else hidden_dim
+            layers.extend([nn.Linear(layer_in_dim, hidden_dim), act()])
+            if dropout and dropout > 0:
+                layers.append(nn.Dropout(dropout))
         layers.append(nn.Linear(hidden_dim, out_dim))
         self.regressor = nn.Sequential(*layers)
 
@@ -74,6 +84,7 @@ def build_regression_head(
     dropout: float = 0.1,
     act: t.Type[nn.Module] = nn.ELU,
     extra_feature_dim: int = 0,
+    num_layers: int = 2,
     **_,
 ) -> nn.Module:
     return RegressionHead(
@@ -86,6 +97,7 @@ def build_regression_head(
         dropout=dropout,
         act=act,
         extra_feature_dim=extra_feature_dim,
+        num_layers=num_layers,
     )
 
 
