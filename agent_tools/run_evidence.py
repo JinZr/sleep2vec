@@ -278,7 +278,11 @@ def status_row(
     # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
     manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
     checkpoints = [name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name]
-    observed_artifacts = runtime_artifacts(row)
+    artifact_row = {
+        **row,
+        **{field: previous[field] for field in ("runtime_dir", "checkpoint_dir") if field in previous},
+    }
+    observed_artifacts = runtime_artifacts(artifact_row)
     health_checkpoints = None
     if observed_artifacts is not None:
         manifest, _manifest_data, checkpoints = observed_artifacts
