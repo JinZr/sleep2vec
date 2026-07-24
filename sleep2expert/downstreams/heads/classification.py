@@ -26,6 +26,7 @@ class ClassificationHead(nn.Module):
         dropout: float = 0.1,
         act: t.Type[nn.Module] = nn.ELU,
         extra_feature_dim: int = 0,
+        num_layers: int = 2,
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -37,7 +38,14 @@ class ClassificationHead(nn.Module):
 
         self.fusion = FeatureFusion(feature_dim, n_mods, agg)
         in_dim = self.fusion.output_dim + extra_feature_dim
-        self.mlp = self._build_two_layer_mlp(
+        builders = {
+            1: self._build_single_layer_mlp,
+            2: self._build_two_layer_mlp,
+            3: self._build_three_layer_mlp,
+        }
+        if not isinstance(num_layers, int) or isinstance(num_layers, bool) or num_layers not in builders:
+            raise ValueError("num_layers must be 1, 2, or 3.")
+        self.mlp = builders[num_layers](
             in_dim=in_dim,
             hidden_dim=hidden_dim or in_dim,
             out_dim=n_classes,
@@ -126,6 +134,7 @@ def build_classification_head(
     dropout: float = 0.1,
     act: t.Type[nn.Module] = nn.ELU,
     extra_feature_dim: int = 0,
+    num_layers: int = 2,
     **_,
 ) -> nn.Module:
     return ClassificationHead(
@@ -137,6 +146,7 @@ def build_classification_head(
         dropout=dropout,
         act=act,
         extra_feature_dim=extra_feature_dim,
+        num_layers=num_layers,
     )
 
 
