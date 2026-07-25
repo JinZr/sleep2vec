@@ -244,7 +244,7 @@ def test_experiment_note_validates_step_and_run_scope(tmp_path: Path):
     assert result["appended"] is True
     text = (root / "RESEARCH_LOG.md").read_text()
     assert "- Step: `train-model`" in text
-    assert "- Runs: `run-001`" in text
+    assert "- Runs:\n  - `run-001`" in text
 
     with pytest.raises(ValueError, match="unknown managed runs"):
         experiments.append_experiment_note(
@@ -255,6 +255,41 @@ def test_experiment_note_validates_step_and_run_scope(tmp_path: Path):
                 scope={"step_id": "train-model", "run_ids": ["run-999"]},
             ),
         )
+
+
+def test_experiment_note_rejects_same_id_with_ambiguously_rendered_run_ids(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    step = tmp_path / "step.yaml"
+    step.write_text(
+        "id: train-model\n"
+        "phase: train\n"
+        "purpose: Train a candidate.\n"
+        "inputs: [data]\n"
+        "outputs: [checkpoint]\n"
+    )
+    experiments.register_experiment_step(root, step)
+    (root / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tstatus\n"
+        "unit\ttrain-model\ta`, `b\tcompleted\n"
+        "unit\ttrain-model\ta\tcompleted\n"
+        "unit\ttrain-model\tb\tcompleted\n"
+    )
+    entry_path = _research_entry(
+        tmp_path,
+        "obs-run-scope",
+        scope={"step_id": "train-model", "run_ids": ["a`, `b"]},
+    )
+    experiments.append_experiment_note(root, entry_path)
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    entry = json.loads(entry_path.read_text())
+    entry["scope"]["run_ids"] = ["a", "b"]
+    entry_path.write_text(json.dumps(entry))
+
+    with pytest.raises(ValueError, match="already exists with different content"):
+        experiments.append_experiment_note(root, entry_path)
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
 
 
 def test_experiment_note_allows_retrospective_conclusion_after_finalization(tmp_path: Path):

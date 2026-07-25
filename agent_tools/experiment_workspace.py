@@ -719,7 +719,8 @@ def _research_log_block(entry: dict[str, Any], experiment_id: str) -> str:
     if "step_id" in scope:
         lines.append(f"- Step: `{scope['step_id']}`")
     if "run_ids" in scope:
-        lines.append("- Runs: " + ", ".join(f"`{run_id}`" for run_id in scope["run_ids"]))
+        lines.append("- Runs:")
+        lines.extend(f"  - `{run_id}`" for run_id in scope["run_ids"])
     if "authority" in entry:
         lines.append(f"- Authority: `{entry['authority']}`")
     if "supersedes" in entry:
