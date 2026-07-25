@@ -100,6 +100,8 @@ High-impact decisions include label selection, split policy, external-test locki
 - `experiment-run --execute` is an explicit launching action: it may wait for successful managed training sources and then fill its frozen external-evaluation matrix. `hparam-monitor` and `experiment-monitor` remain non-launching.
 - External-evaluation pipelines must select and freeze checkpoints from validation evidence before reading external metrics. Finalization requires every declared external job to have one verified successful manifest and no active attempt.
 - Stopping a run requires a recorded reason. Finalization requires no active runs and a non-empty final report.
+- On takeover, read `experiment.yaml`, `RESEARCH_LOG.md` when present, and the current canonical manifests before acting. Treat `run_manifest.tsv` as the only lifecycle owner.
+- Use `experiment-note` to append evidence-backed, meaningful research actions, observations, interpretations, decisions, conclusions, and corrections. Do not log unchanged monitoring polls, rewrite prior entries, or use narrative text to infer lifecycle state.
 - This policy applies to new work. Do not migrate or rename historical experiment trees unless the user explicitly asks.
 
 ## Config Strictness Policy

@@ -163,7 +163,9 @@ The control flow is:
 4. explicit launch commands execute the existing runtime entrypoints;
 5. monitor and summary commands observe canonical artifacts but do not launch
    pending work;
-6. finalization requires no active runs and a non-empty report.
+6. `experiment-note` appends evidence-backed research milestones without
+   changing lifecycle state;
+7. finalization requires no active runs and a non-empty report.
 
 Runnable plans bind the exact config bytes accepted by consultation and
 materialize from that immutable snapshot. Runtime-semantic relative paths are
@@ -193,7 +195,8 @@ repaired.
 ### Managed state and launching
 
 `run_manifest.tsv` is the only lifecycle and execution-identity owner. Status
-tables, matrices, events, and reports are projections. Managed launches use a
+tables, matrices, events, and reports are projections. `RESEARCH_LOG.md` is an
+append-only narrative record and is never a status source. Managed launches use a
 dedicated process group with PID, group, and OS start-token evidence; uncertain
 identity never authorizes relaunch or retry. Stop verifies and signals the full
 group before committing `stopped`. Optional health labels remain observational:
@@ -207,6 +210,11 @@ remain non-launching. Workspace layout and lifecycle entrypoints are defined in
 [experiment_workspace.md](../agent_contracts/experiment_workspace.md); reducer,
 commit, process, and evidence rules are defined in
 [run_manifest.md](../agent_contracts/run_manifest.md).
+
+At task handoff, read the experiment metadata, research log when present, and
+then current canonical manifests. Add a note only when there is a meaningful
+new action, observation, interpretation, decision, conclusion, or correction;
+unchanged polling does not produce a log entry.
 
 ### External evaluation
 

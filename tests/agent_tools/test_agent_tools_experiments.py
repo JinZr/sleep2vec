@@ -6,10 +6,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import pytest
 
-from agent_tools import experiment_io, experiments
+from agent_tools import experiment_io, experiment_workspace, experiments
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -39,6 +40,37 @@ def _workspace_files(root: Path) -> dict[Path, bytes]:
     return {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 
+def _research_entry(
+    tmp_path: Path,
+    entry_id: str,
+    *,
+    kind: str = "observation",
+    body: str = "Validation loss decreased after the scheduler change.",
+    authority: str | None = None,
+    scope: dict | None = None,
+    supersedes: list[str] | None = None,
+) -> Path:
+    entry = {
+        "id": entry_id,
+        "recorded_at": "2026-07-25T02:03:04Z",
+        "kind": kind,
+        "title": f"Research entry {entry_id}",
+        "actor": "agent:test",
+        "source": "codex-task:test",
+        "evidence": [{"label": "validation report", "locator": "reports/validation.md"}],
+        "body": body,
+    }
+    if authority is not None:
+        entry["authority"] = authority
+    if scope is not None:
+        entry["scope"] = scope
+    if supersedes is not None:
+        entry["supersedes"] = supersedes
+    path = tmp_path / f"{entry_id}.yaml"
+    path.write_text(json.dumps(entry))
+    return path
+
+
 def test_experiment_init_creates_manifest(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     result = _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec))
@@ -49,6 +81,528 @@ def test_experiment_init_creates_manifest(tmp_path: Path):
     assert rows[0]["remote_host"] == ""
     assert (tmp_path / "reports").exists()
     assert (tmp_path / "run_manifest.tsv").read_text() == "step_id\trun_id\n"
+    assert (tmp_path / "RESEARCH_LOG.md").read_text().startswith("# Research Log\n")
+    assert "`run_manifest.tsv` remains the sole authority" in (tmp_path / "RESEARCH_LOG.md").read_text()
+    assert "`RESEARCH_LOG.md`" in (tmp_path / "README.md").read_text()
+
+
+def test_experiment_note_appends_idempotently_and_preserves_evidence_locator(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    entry = _research_entry(tmp_path, "obs-001")
+
+    first = experiments.append_experiment_note(root, entry)
+    after_first = (root / "RESEARCH_LOG.md").read_bytes()
+    second = experiments.append_experiment_note(root, entry)
+
+    assert first == {
+        "path": str(root / "RESEARCH_LOG.md"),
+        "entry_id": "obs-001",
+        "appended": True,
+    }
+    assert second["appended"] is False
+    assert (root / "RESEARCH_LOG.md").read_bytes() == after_first
+    text = after_first.decode()
+    assert text.count('id="obs-001"') == 1
+    assert "- Label: validation report" in text
+    assert "  Locator: reports/validation.md" in text
+
+
+def test_experiment_note_cli_reports_append_and_idempotent_retry(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    entry = _research_entry(tmp_path, "obs-cli")
+
+    first = _run("experiment-note", "--run-dir", str(root), "--entry", str(entry))
+    second = _run("experiment-note", "--run-dir", str(root), "--entry", str(entry))
+
+    assert first.returncode == 0, first.stderr
+    assert f"Research log {root / 'RESEARCH_LOG.md'}: obs-cli appended" in first.stdout
+    assert second.returncode == 0, second.stderr
+    assert f"Research log {root / 'RESEARCH_LOG.md'}: obs-cli already present" in second.stdout
+
+
+def test_experiment_note_rejects_same_id_with_different_content_without_writing(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    experiments.append_experiment_note(root, _research_entry(tmp_path, "obs-001"))
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    changed = _research_entry(tmp_path, "obs-001", body="A different interpretation.")
+
+    with pytest.raises(ValueError, match="already exists with different content"):
+        experiments.append_experiment_note(root, changed)
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_experiment_note_rejects_same_id_with_ambiguously_rendered_evidence(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    entry_path = _research_entry(tmp_path, "obs-evidence")
+    entry = json.loads(entry_path.read_text())
+    entry["evidence"] = [{"label": "a: b", "locator": "c"}]
+    entry_path.write_text(json.dumps(entry))
+    experiments.append_experiment_note(root, entry_path)
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    entry["evidence"] = [{"label": "a", "locator": "b: c"}]
+    entry_path.write_text(json.dumps(entry))
+
+    with pytest.raises(ValueError, match="already exists with different content"):
+        experiments.append_experiment_note(root, entry_path)
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_experiment_note_idempotency_uses_normalized_content(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    entry_path = _research_entry(tmp_path, "obs-normalized")
+    experiments.append_experiment_note(root, entry_path)
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    entry = json.loads(entry_path.read_text())
+    entry["recorded_at"] = "2026-07-25T02:03:04+00:00"
+    entry["body"] = f"\n{entry['body']}\n"
+    entry["supersedes"] = []
+    entry_path.write_text(json.dumps(entry))
+
+    result = experiments.append_experiment_note(root, entry_path)
+
+    assert result["appended"] is False
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_experiment_note_requires_decision_authority_and_existing_superseded_entries(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+
+    with pytest.raises(ValueError, match="require authority"):
+        experiments.append_experiment_note(root, _research_entry(tmp_path, "decision-001", kind="decision"))
+    with pytest.raises(ValueError, match="unknown entry ids"):
+        experiments.append_experiment_note(
+            root,
+            _research_entry(
+                tmp_path,
+                "decision-002",
+                kind="decision",
+                authority="human",
+                supersedes=["missing-entry"],
+            ),
+        )
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_experiment_note_appends_correction_without_rewriting_superseded_entry(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    experiments.append_experiment_note(root, _research_entry(tmp_path, "interpretation-001"))
+    original = (root / "RESEARCH_LOG.md").read_text()
+
+    result = experiments.append_experiment_note(
+        root,
+        _research_entry(
+            tmp_path,
+            "interpretation-002",
+            kind="interpretation",
+            body="The earlier interpretation did not control for cohort size.",
+            supersedes=["interpretation-001"],
+        ),
+    )
+
+    text = (root / "RESEARCH_LOG.md").read_text()
+    assert result["appended"] is True
+    assert text.startswith(original)
+    assert "- Supersedes: `interpretation-001`" in text
+
+
+def test_experiment_note_validates_step_and_run_scope(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    step = tmp_path / "step.yaml"
+    step.write_text(
+        "id: train-model\n"
+        "phase: train\n"
+        "purpose: Train a candidate.\n"
+        "inputs: [data]\n"
+        "outputs: [checkpoint]\n"
+    )
+    experiments.register_experiment_step(root, step)
+    (root / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain-model\trun-001\tcompleted\n"
+    )
+
+    result = experiments.append_experiment_note(
+        root,
+        _research_entry(
+            tmp_path,
+            "obs-scoped",
+            scope={"step_id": "train-model", "run_ids": ["run-001"]},
+        ),
+    )
+
+    assert result["appended"] is True
+    text = (root / "RESEARCH_LOG.md").read_text()
+    assert "- Step: `train-model`" in text
+    assert "- Runs:\n  - `run-001`" in text
+
+    with pytest.raises(ValueError, match="unknown managed runs"):
+        experiments.append_experiment_note(
+            root,
+            _research_entry(
+                tmp_path,
+                "obs-unknown-run",
+                scope={"step_id": "train-model", "run_ids": ["run-999"]},
+            ),
+        )
+
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    with pytest.raises(ValueError, match="scope.run_ids must be a non-empty list"):
+        experiments.append_experiment_note(
+            root,
+            _research_entry(
+                tmp_path,
+                "obs-null-run-scope",
+                scope={"step_id": "train-model", "run_ids": None},
+            ),
+        )
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_experiment_note_rejects_same_id_with_ambiguously_rendered_run_ids(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    step = tmp_path / "step.yaml"
+    step.write_text(
+        "id: train-model\n"
+        "phase: train\n"
+        "purpose: Train a candidate.\n"
+        "inputs: [data]\n"
+        "outputs: [checkpoint]\n"
+    )
+    experiments.register_experiment_step(root, step)
+    (root / "run_manifest.tsv").write_text(
+        "experiment_id\tstep_id\trun_id\tstatus\n"
+        "unit\ttrain-model\ta`, `b\tcompleted\n"
+        "unit\ttrain-model\ta\tcompleted\n"
+        "unit\ttrain-model\tb\tcompleted\n"
+    )
+    entry_path = _research_entry(
+        tmp_path,
+        "obs-run-scope",
+        scope={"step_id": "train-model", "run_ids": ["a`, `b"]},
+    )
+    experiments.append_experiment_note(root, entry_path)
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    entry = json.loads(entry_path.read_text())
+    entry["scope"]["run_ids"] = ["a", "b"]
+    entry_path.write_text(json.dumps(entry))
+
+    with pytest.raises(ValueError, match="already exists with different content"):
+        experiments.append_experiment_note(root, entry_path)
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_experiment_note_allows_retrospective_conclusion_after_finalization(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    (root / "run_manifest.tsv").write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n")
+    report = tmp_path / "final.md"
+    report.write_text("# Final\n\nValidation-selected result.\n")
+    experiments.finalize_experiment(root, report)
+
+    result = experiments.append_experiment_note(
+        root,
+        _research_entry(tmp_path, "conclusion-001", kind="conclusion"),
+    )
+
+    assert result["appended"] is True
+    assert "status: completed" in (root / "experiment.yaml").read_text()
+    assert "conclusion-001" in (root / "RESEARCH_LOG.md").read_text()
+
+
+def test_experiment_note_cannot_change_canonical_run_state(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    run_manifest = root / "run_manifest.tsv"
+    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\trunning\n")
+    before = run_manifest.read_bytes()
+
+    experiments.append_experiment_note(
+        root,
+        _research_entry(tmp_path, "conclusion-001", kind="conclusion", body="The experiment is complete."),
+    )
+
+    assert run_manifest.read_bytes() == before
+    with pytest.raises(ValueError, match="unresolved runs"):
+        experiments.finalize_experiment(root, tmp_path / "missing-report.md")
+
+
+def test_experiment_finalization_does_not_read_research_log_as_state(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    (root / "run_manifest.tsv").write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n")
+    (root / "RESEARCH_LOG.md").write_text("corrupt narrative that claims the run is active\n")
+    report = tmp_path / "final.md"
+    report.write_text("# Final\n\nCanonical state is terminal.\n")
+
+    target = experiments.finalize_experiment(root, report)
+
+    assert target.read_text() == report.read_text()
+    assert "status: completed" in (root / "experiment.yaml").read_text()
+
+
+def test_experiment_note_rejects_embedded_entry_marker_before_writing(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    injected_marker = '<!-- agent-tools-research-entry id="injected" ' f'sha256="{"0" * 64}" -->'
+
+    with pytest.raises(ValueError, match="digest differs"):
+        experiments.append_experiment_note(
+            root,
+            _research_entry(tmp_path, "obs-marker", body=injected_marker),
+        )
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+@pytest.mark.parametrize("target_name", ["RESEARCH_LOG.md", ".RESEARCH_LOG.md.cas.lock"])
+def test_experiment_note_rejects_aliased_log_or_lock_before_writing(tmp_path: Path, target_name: str):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    target = root / target_name
+    if target.exists():
+        target.unlink()
+    os.link(root / "run_manifest.tsv", target)
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.append_experiment_note(root, _research_entry(tmp_path, "obs-alias"))
+
+    assert _workspace_files(root) == before
+
+
+def test_concurrent_experiment_notes_preserve_both_entries(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    entries = [_research_entry(tmp_path, entry_id) for entry_id in ("obs-a", "obs-b")]
+    errors = []
+
+    def append(entry: Path) -> None:
+        try:
+            experiments.append_experiment_note(root, entry)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=append, args=(entry,)) for entry in entries]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not errors
+    assert not any(thread.is_alive() for thread in threads)
+    text = (root / "RESEARCH_LOG.md").read_text()
+    assert text.count('id="obs-a"') == 1
+    assert text.count('id="obs-b"') == 1
+
+
+def test_historical_workspace_creates_research_log_only_on_explicit_note(tmp_path: Path):
+    root = tmp_path / "workspace"
+    spec = _experiment_spec(tmp_path)
+    experiments.init_experiment(root, spec)
+    (root / "RESEARCH_LOG.md").unlink()
+
+    experiments.init_experiment(root, spec)
+    experiments.monitor_experiment(root)
+
+    assert not (root / "RESEARCH_LOG.md").exists()
+
+    result = experiments.append_experiment_note(root, _research_entry(tmp_path, "retrospective-001"))
+
+    assert result["appended"] is True
+    assert (root / "RESEARCH_LOG.md").read_text().startswith("# Research Log\n")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ({"unexpected": True}, "Unexpected research log entry fields"),
+        ({"kind": "guess"}, "kind must be one of"),
+        ({"evidence": []}, "evidence must be a non-empty list"),
+        ({"scope": None}, "scope must be a non-empty mapping"),
+        ({"scope": {"step_id": None}}, "scope.step_id must be a non-empty string"),
+        ({"scope": {"run_ids": None}}, "requires scope.step_id"),
+        ({"scope": {"run_ids": ["run-001"]}}, "requires scope.step_id"),
+    ],
+)
+def test_experiment_note_rejects_invalid_closed_schema_without_writing(
+    tmp_path: Path,
+    mutation: dict,
+    error: str,
+):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    entry_path = _research_entry(tmp_path, "invalid-001")
+    entry = json.loads(entry_path.read_text())
+    entry.update(mutation)
+    entry_path.write_text(json.dumps(entry))
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+
+    with pytest.raises(ValueError, match=error):
+        experiments.append_experiment_note(root, entry_path)
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_experiment_note_rejects_aliased_scoped_step_before_reading_it(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    step = tmp_path / "step.yaml"
+    step.write_text(
+        "id: train-model\n"
+        "phase: train\n"
+        "purpose: Train a candidate.\n"
+        "inputs: [data]\n"
+        "outputs: [checkpoint]\n"
+    )
+    experiments.register_experiment_step(root, step)
+    step_manifest = root / "steps" / "train-model" / "step.yaml"
+    step_manifest.unlink()
+    os.link(root / "run_manifest.tsv", step_manifest)
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiments.append_experiment_note(
+            root,
+            _research_entry(tmp_path, "obs-step-alias", scope={"step_id": "train-model"}),
+        )
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_path: Path, monkeypatch):
+    root = Path("/remote/workspace")
+    entry = json.loads(_research_entry(tmp_path, "obs-new").read_text())
+    competing = dict(entry)
+    competing.update({"id": "obs-competing", "title": "Competing observation"})
+    competing_block = experiment_workspace._research_log_block(competing, "unit")
+    competing_digest = experiment_workspace.hashlib.sha256(competing_block.encode()).hexdigest()
+    state = {
+        "text": experiment_workspace.RESEARCH_LOG_PREAMBLE,
+        "attempts": 0,
+        "paths": [],
+    }
+
+    def validate(_root, paths, *, remote=None):
+        state["paths"] = [Path(path) for path in paths]
+        assert remote == "unit-host"
+
+    def commit(_path, replacement, _expected_sha256, *, remote=None):
+        state["attempts"] += 1
+        if state["attempts"] == 1:
+            marker = "<!-- agent-tools-research-entry " f'id="obs-competing" sha256="{competing_digest}" -->\n'
+            state["text"] += marker + competing_block
+            return False
+        state["text"] = replacement
+        return True
+
+    monkeypatch.setattr(experiment_workspace.exp_io, "validate_managed_output_paths", validate)
+    monkeypatch.setattr(experiment_workspace.exp_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        experiment_workspace.exp_io,
+        "read_text_at",
+        lambda *_args, **_kwargs: state["text"],
+    )
+    monkeypatch.setattr(experiment_workspace.exp_io, "conditional_atomic_replace_text_at", commit)
+
+    _path, _entry_id, appended = experiment_workspace.append_research_log(
+        root,
+        entry,
+        experiment_id="unit",
+        managed_rows=[],
+        remote="unit-host",
+    )
+
+    assert appended is True
+    assert state["attempts"] == 2
+    assert root / "RESEARCH_LOG.md.lock" in state["paths"]
+    assert state["text"].count('id="obs-competing"') == 1
+    assert state["text"].count('id="obs-new"') == 1
+
+
+def test_uncertain_remote_research_log_commit_is_idempotent_on_retry(tmp_path: Path, monkeypatch):
+    root = Path("/remote/workspace")
+    entry = json.loads(_research_entry(tmp_path, "obs-timeout").read_text())
+    state = {"text": experiment_workspace.RESEARCH_LOG_PREAMBLE, "raise_timeout": True}
+
+    def commit(_path, replacement, _expected_sha256, *, remote=None):
+        state["text"] = replacement
+        if state["raise_timeout"]:
+            state["raise_timeout"] = False
+            raise RuntimeError("SSH response timed out after commit")
+        return True
+
+    monkeypatch.setattr(experiment_workspace.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_workspace.exp_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        experiment_workspace.exp_io,
+        "read_text_at",
+        lambda *_args, **_kwargs: state["text"],
+    )
+    monkeypatch.setattr(experiment_workspace.exp_io, "conditional_atomic_replace_text_at", commit)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        experiment_workspace.append_research_log(
+            root,
+            entry,
+            experiment_id="unit",
+            managed_rows=[],
+            remote="unit-host",
+        )
+
+    _path, _entry_id, appended = experiment_workspace.append_research_log(
+        root,
+        entry,
+        experiment_id="unit",
+        managed_rows=[],
+        remote="unit-host",
+    )
+
+    assert appended is False
+    assert state["text"].count('id="obs-timeout"') == 1
+
+
+def test_remote_research_log_fails_after_three_conflicts(tmp_path: Path, monkeypatch):
+    root = Path("/remote/workspace")
+    entry = json.loads(_research_entry(tmp_path, "obs-conflict").read_text())
+    attempts = []
+
+    monkeypatch.setattr(experiment_workspace.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_workspace.exp_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        experiment_workspace.exp_io,
+        "read_text_at",
+        lambda *_args, **_kwargs: experiment_workspace.RESEARCH_LOG_PREAMBLE,
+    )
+    monkeypatch.setattr(
+        experiment_workspace.exp_io,
+        "conditional_atomic_replace_text_at",
+        lambda *_args, **_kwargs: attempts.append("conflict") is None and False,
+    )
+
+    with pytest.raises(RuntimeError, match="three append attempts"):
+        experiment_workspace.append_research_log(
+            root,
+            entry,
+            experiment_id="unit",
+            managed_rows=[],
+            remote="unit-host",
+        )
+
+    assert attempts == ["conflict", "conflict", "conflict"]
 
 
 def test_experiment_init_rejects_non_string_id_before_writing(tmp_path: Path):
@@ -636,6 +1190,7 @@ def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypa
     assert any("mkdir -p" in command[-1] for command, _kwargs in calls)
     write_targets = [command[-1] for command, _kwargs in calls if "cat >" in command[-1]]
     assert any("/wujidata/remote_run/experiment.yaml" in target for target in write_targets)
+    assert any("/wujidata/remote_run/RESEARCH_LOG.md" in target for target in write_targets)
     assert any("/wujidata/remote_run/README.md" in target for target in write_targets)
     assert any("/wujidata/remote_run/events.jsonl" in target for target in write_targets)
     assert any("/wujidata/remote_run/experiment_manifest.tsv" in target for target in write_targets)

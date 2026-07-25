@@ -27,7 +27,7 @@ Managed tables declare either one row per run or many rows per run. Both forms r
 
 ## Canonical state and projections
 
-`launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. Matrices, Markdown reports, rankings, and events are also derived artifacts.
+`launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. Matrices, status reports, rankings, and events are also derived artifacts. `RESEARCH_LOG.md` is an append-only narrative record rather than a projection, but it likewise never owns or restores lifecycle state.
 
 Health labels are observational and never own lifecycle state. Managed GPU
 activity is attributed to the frozen process group so DDP child processes count

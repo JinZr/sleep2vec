@@ -7,6 +7,7 @@ An experiment workspace is the durable, human-readable record for related prepar
 ├── experiment.yaml
 ├── experiment_manifest.tsv  # optional experiment-CLI index
 ├── README.md
+├── RESEARCH_LOG.md
 ├── events.jsonl
 ├── run_manifest.tsv
 ├── run_matrix.csv
@@ -72,6 +73,70 @@ and checkpoint paths are not normalized by this management rule.
 
 A new plan must be contained by its experiment root and registered in its step manifest. A non-empty unmanaged root is rejected rather than adopted, and a completed experiment cannot accept another plan. Historical workspaces are not migrated or renamed.
 
+## Research log
+
+`RESEARCH_LOG.md` is the append-only, human-readable record of meaningful
+research actions, observations, interpretations, decisions, and conclusions.
+It is chronological narrative, not a current-state summary and not a lifecycle
+owner. Agents taking over an experiment read `experiment.yaml`, the research
+log when present, and then the current canonical manifests before acting.
+
+Append one entry with:
+
+```bash
+python -m agent_tools experiment-note \
+  --run-dir <experiment.root> \
+  --entry <entry.yaml> \
+  [--remote <host>]
+```
+
+The entry YAML is a closed mapping:
+
+```yaml
+id: observation-20260725-001
+recorded_at: "2026-07-25T02:03:04Z"
+occurred_at: "2026-07-25T01:58:00Z"  # optional
+kind: observation  # action | observation | interpretation | decision | conclusion
+title: Validation loss stopped improving
+actor: agent:codex
+source: codex-task:019f...
+authority: human  # optional; required for decision
+scope:             # optional
+  step_id: train-model
+  run_ids: [run-001]
+evidence:
+  - label: validation report
+    locator: reports/validation.md
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+supersedes: []     # optional list of existing entry ids
+body: |
+  The validation curve plateaued after epoch 12.
+```
+
+Required fields are `id`, `recorded_at`, `kind`, `title`, `actor`, `source`,
+non-empty `evidence`, and non-empty `body`. Timestamps must be UTC ISO
+timestamps. `authority`, when present, is `human`, `policy`, or
+`canonical_decision`; every `decision` requires it. Evidence locators are
+preserved exactly. A scoped step and run must already belong to the workspace,
+and `run_ids` requires `step_id`.
+
+The caller supplies the entry id as its idempotency key. The owner normalizes
+the entry and stores an entry id plus content digest in a hidden Markdown
+marker. Repeating the same id and normalized content is a successful no-op;
+reusing the id for different content fails. Corrections append a new entry and
+list the old ids in `supersedes`; existing entries are never rewritten.
+Malformed preambles, markers, digests, aliases, or lock targets fail before
+append. Local and SSH writers use compare-and-swap and retry conflicts without
+dropping a competing entry.
+
+Fresh CLI- and plan-created workspaces receive the preamble. A valid historical
+workspace without the file is not migrated by init, planning, or monitoring;
+the first explicit `experiment-note` creates it. Completed experiments may
+accept retrospective notes, but notes never authorize plans, launches,
+external-test access, status changes, or finalization. Log write failure does
+not rewrite or roll back canonical state. Polling without a meaningful new
+fact should not create an entry.
+
 Hparam plan publication separates physical materialization from canonical
 registration. When staging is used, every frozen path and command names the
 final plan directory while all bytes are written to a hidden sibling on the
@@ -96,6 +161,7 @@ invalid and are not repaired in place.
 - `hparam-stop` requires a reason, verifies the canonical PID/process-group/start-token identity, stops the complete process group, and records terminal state only after exit is confirmed.
 - `hparam-select` writes step-scoped validation ranking.
 - `hparam-adaptive-*` appends rounds and commits replacements through the canonical owner.
+- `experiment-note` atomically appends one evidence-backed research-log entry and never changes lifecycle state.
 - `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes validation-selected checkpoints, and manages the declared job matrix.
 - `experiment-rank` writes experiment-wide ranking.
 - `experiment-finalize` requires no active runs and a non-empty final report.

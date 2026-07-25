@@ -4,4 +4,10 @@ New runnable plans, configs, and scripts belong inside the declared `experiment.
 
 Every run has a stable `run-NNN` id and a semantic parameter-derived name. Monitoring must not start pending runs, stopping requires a reason, and historical run trees are not renamed unless the user explicitly asks.
 
+On experiment takeover, read `experiment.yaml`, `RESEARCH_LOG.md` when present,
+and the current canonical manifests before acting. Append an evidence-backed
+`experiment-note` only for a meaningful action, observation, interpretation,
+decision, conclusion, or correction—not for unchanged monitor polls.
+`run_manifest.tsv` remains the only lifecycle owner.
+
 Diagnostic-only context bundles may still use ignored `artifacts/agent_context/` paths.

@@ -84,7 +84,6 @@ def test_managed_plan_writes_semantic_run_workspace_without_schema_version(tmp_p
     plan_dir = tmp_path / "steps" / "tune" / "plan"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-
     assert result.returncode == 0, result.stderr
     plan = json.loads((plan_dir / "plan.json").read_text())
     run = plan["runs"][0]
@@ -97,6 +96,7 @@ def test_managed_plan_writes_semantic_run_workspace_without_schema_version(tmp_p
     assert (tmp_path / "experiment.yaml").exists()
     assert (tmp_path / "run_matrix.csv").exists()
     assert (tmp_path / "run_manifest.tsv").exists()
+    assert "`RESEARCH_LOG.md`" in (tmp_path / "README.md").read_text()
     with (tmp_path / "run_matrix.csv").open(newline="") as file_obj:
         matrix = list(csv.DictReader(file_obj))
     assert matrix[0]["run_name"] == "lr-2e-6"
@@ -113,6 +113,29 @@ def test_managed_plan_writes_semantic_run_workspace_without_schema_version(tmp_p
     assert "schema_version" not in managed_text
     assert "runtime.lr" in managed_text
     assert "param.runtime.lr" not in managed_text
+
+
+def test_new_plan_owned_workspace_initializes_research_log(tmp_path: Path):
+    root = tmp_path / "workspace"
+    recipe = {
+        "experiment": {
+            "id": "unit",
+            "title": "Unit experiment",
+            "objective": "Exercise research log initialization.",
+            "root": str(root),
+            "baseline": {"type": "none"},
+        },
+        "step": {
+            "id": "prepare",
+            "phase": "prepare",
+            "purpose": "Prepare a plan.",
+        },
+    }
+
+    ensure_experiment_workspace(recipe, root / "steps" / "prepare" / "plan")
+
+    assert (root / "RESEARCH_LOG.md").read_text().startswith("# Research Log\n")
+    assert "`RESEARCH_LOG.md`" in (root / "README.md").read_text()
 
 
 def test_registered_step_is_extended_by_plan_and_allows_dry_run_launch(tmp_path: Path):
