@@ -256,6 +256,18 @@ def test_experiment_note_validates_step_and_run_scope(tmp_path: Path):
             ),
         )
 
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    with pytest.raises(ValueError, match="scope.run_ids must be a non-empty list"):
+        experiments.append_experiment_note(
+            root,
+            _research_entry(
+                tmp_path,
+                "obs-null-run-scope",
+                scope={"step_id": "train-model", "run_ids": None},
+            ),
+        )
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
 
 def test_experiment_note_rejects_same_id_with_ambiguously_rendered_run_ids(tmp_path: Path):
     root = tmp_path / "workspace"
@@ -420,6 +432,9 @@ def test_historical_workspace_creates_research_log_only_on_explicit_note(tmp_pat
         ({"unexpected": True}, "Unexpected research log entry fields"),
         ({"kind": "guess"}, "kind must be one of"),
         ({"evidence": []}, "evidence must be a non-empty list"),
+        ({"scope": None}, "scope must be a non-empty mapping"),
+        ({"scope": {"step_id": None}}, "scope.step_id must be a non-empty string"),
+        ({"scope": {"run_ids": None}}, "requires scope.step_id"),
         ({"scope": {"run_ids": ["run-001"]}}, "requires scope.step_id"),
     ],
 )

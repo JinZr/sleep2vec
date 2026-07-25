@@ -602,27 +602,25 @@ def _normalized_research_log_entry(
 
     scope = entry.get("scope")
     normalized_scope: dict[str, Any] = {}
-    if scope is not None:
+    if "scope" in entry:
         if not isinstance(scope, dict) or not scope:
             raise ValueError("Research log entry scope must be a non-empty mapping.")
         unexpected_scope = sorted(set(scope) - {"step_id", "run_ids"})
         if unexpected_scope:
             raise ValueError(f"Unexpected research log entry scope fields: {', '.join(unexpected_scope)}")
-        step_id = scope.get("step_id")
-        run_ids = scope.get("run_ids")
-        if run_ids is not None and step_id is None:
+        if "step_id" not in scope:
             raise ValueError("Research log entry scope.run_ids requires scope.step_id.")
-        if step_id is not None:
-            step_id = _research_log_single_line(step_id, "scope.step_id")
-            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", step_id):
-                raise ValueError(
-                    "Research log entry scope.step_id must use lowercase letters, digits, hyphens, and underscores."
-                )
-            step_manifest = read_step_manifest(root, step_id, remote=remote)
-            if step_manifest["experiment_id"] != experiment_id:
-                raise ValueError("Research log entry scope.step_id belongs to a different experiment.")
-            normalized_scope["step_id"] = step_id
-        if run_ids is not None:
+        step_id = _research_log_single_line(scope["step_id"], "scope.step_id")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", step_id):
+            raise ValueError(
+                "Research log entry scope.step_id must use lowercase letters, digits, hyphens, and underscores."
+            )
+        step_manifest = read_step_manifest(root, step_id, remote=remote)
+        if step_manifest["experiment_id"] != experiment_id:
+            raise ValueError("Research log entry scope.step_id belongs to a different experiment.")
+        normalized_scope["step_id"] = step_id
+        if "run_ids" in scope:
+            run_ids = scope["run_ids"]
             if not isinstance(run_ids, list) or not run_ids:
                 raise ValueError("Research log entry scope.run_ids must be a non-empty list.")
             normalized_run_ids = [
