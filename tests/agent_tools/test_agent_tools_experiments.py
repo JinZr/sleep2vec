@@ -104,7 +104,8 @@ def test_experiment_note_appends_idempotently_and_preserves_evidence_locator(tmp
     assert (root / "RESEARCH_LOG.md").read_bytes() == after_first
     text = after_first.decode()
     assert text.count('id="obs-001"') == 1
-    assert "- validation report: reports/validation.md" in text
+    assert "- Label: validation report" in text
+    assert "  Locator: reports/validation.md" in text
 
 
 def test_experiment_note_cli_reports_append_and_idempotent_retry(tmp_path: Path):
@@ -130,6 +131,24 @@ def test_experiment_note_rejects_same_id_with_different_content_without_writing(
 
     with pytest.raises(ValueError, match="already exists with different content"):
         experiments.append_experiment_note(root, changed)
+
+    assert (root / "RESEARCH_LOG.md").read_bytes() == before
+
+
+def test_experiment_note_rejects_same_id_with_ambiguously_rendered_evidence(tmp_path: Path):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    entry_path = _research_entry(tmp_path, "obs-evidence")
+    entry = json.loads(entry_path.read_text())
+    entry["evidence"] = [{"label": "a: b", "locator": "c"}]
+    entry_path.write_text(json.dumps(entry))
+    experiments.append_experiment_note(root, entry_path)
+    before = (root / "RESEARCH_LOG.md").read_bytes()
+    entry["evidence"] = [{"label": "a", "locator": "b: c"}]
+    entry_path.write_text(json.dumps(entry))
+
+    with pytest.raises(ValueError, match="already exists with different content"):
+        experiments.append_experiment_note(root, entry_path)
 
     assert (root / "RESEARCH_LOG.md").read_bytes() == before
 

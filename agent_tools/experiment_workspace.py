@@ -726,7 +726,8 @@ def _research_log_block(entry: dict[str, Any], experiment_id: str) -> str:
         lines.append("- Supersedes: " + ", ".join(f"`{entry_id}`" for entry_id in entry["supersedes"]))
     lines.extend(["", "### Evidence", ""])
     for item in entry["evidence"]:
-        lines.append(f"- {item['label']}: {item['locator']}")
+        lines.append(f"- Label: {item['label']}")
+        lines.append(f"  Locator: {item['locator']}")
         if "sha256" in item:
             lines.append(f"  - SHA-256: `{item['sha256']}`")
     lines.extend(["", "### Record", "", entry["body"], ""])
