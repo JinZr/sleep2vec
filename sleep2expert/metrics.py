@@ -8,6 +8,7 @@ from scipy.stats import pearsonr
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    brier_score_loss,
     cohen_kappa_score,
     confusion_matrix,
     f1_score,
@@ -25,7 +26,9 @@ AHI_MIN_EVENT_DURATION = 10
 AHI_MIN_TST_HOURS = 2.0
 
 
-def binary_positive_scores_from_two_logits(gts, preds) -> tuple[np.ndarray, np.ndarray]:
+def binary_positive_scores_from_two_logits(
+    gts, preds, *, from_logits: bool | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """Return binary labels and positive-class scores from (N, 2) logits or probabilities."""
     y_true = np.asarray(gts)
     y_pred = np.asarray(preds)
@@ -37,8 +40,12 @@ def binary_positive_scores_from_two_logits(gts, preds) -> tuple[np.ndarray, np.n
     if y_pred.ndim != 2 or y_pred.shape[1] != 2:
         raise ValueError(f"preds must be (N, 2), got {y_pred.shape}")
 
-    row_sum = y_pred.sum(axis=1, keepdims=True)
-    looks_like_prob = y_pred.min() >= 0.0 and y_pred.max() <= 1.0 and np.allclose(row_sum, 1.0, atol=1e-4)
+    # Keep heuristic detection for existing ranking-only callers; calibration callers choose explicitly.
+    if from_logits is None:
+        row_sum = y_pred.sum(axis=1, keepdims=True)
+        looks_like_prob = y_pred.min() >= 0.0 and y_pred.max() <= 1.0 and np.allclose(row_sum, 1.0, atol=1e-4)
+    else:
+        looks_like_prob = not from_logits
     if looks_like_prob:
         y_score = y_pred[:, 1].astype(np.float32)
     else:
@@ -63,6 +70,22 @@ def roc_auc_from_two_logits(gts, preds) -> float:
         return float(roc_auc_score(y_true, y_score))
     except Exception:
         return np.nan
+
+
+def compute_binary_probability_metrics(gts, preds, *, from_logits: bool) -> dict[str, float]:
+    y_true, y_score = binary_positive_scores_from_two_logits(gts, preds, from_logits=from_logits)
+
+    auprc = float(average_precision_score(y_true, y_score)) if np.unique(y_true).size >= 2 else float("nan")
+    brier = float(brier_score_loss(y_true, y_score, pos_label=1))
+
+    bin_edges = np.linspace(0.0, 1.0, 11, dtype=y_score.dtype)
+    # Search only internal edges so p=1 remains in the final [0.9, 1] bin.
+    bin_indices = np.searchsorted(bin_edges[1:-1], y_score, side="right")
+    score_sums = np.bincount(bin_indices, weights=y_score.astype(np.float64), minlength=10)
+    label_sums = np.bincount(bin_indices, weights=y_true.astype(np.float64), minlength=10)
+    ece = float(np.abs(score_sums - label_sums).sum() / y_true.size)
+
+    return {"auprc": auprc, "brier": brier, "ece": ece}
 
 
 def _as_numpy_array(value) -> np.ndarray:
@@ -846,6 +869,7 @@ def compute_downstream_metrics(
     is_multilabel: bool = False,
     output_dim: int | None = None,
     stage_names=None,
+    include_binary_probability_metrics: bool = True,
 ):
     """统一的下游任务指标计算。"""
     if is_multilabel:
@@ -867,6 +891,8 @@ def compute_downstream_metrics(
 
         if output_dim == 2:
             result["roc_auc"] = roc_auc_from_two_logits(gts, preds)
+            if include_binary_probability_metrics:
+                result.update(compute_binary_probability_metrics(gts, preds, from_logits=False))
             result["recall"] = float(recall_score(y_true, y_pred, zero_division=0))
             result["specificity"] = binary_specificity(y_true, y_pred)
         else:

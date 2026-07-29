@@ -10,6 +10,12 @@ import types
 
 import pytest
 
+BINARY_PROBABILITY_RESULTS = {
+    "test_auprc": 0.5,
+    "test_brier": 0.460625,
+    "test_ece": 0.4125,
+}
+
 
 @pytest.mark.parametrize(
     ("namespace", "default_project"),
@@ -77,6 +83,7 @@ def test_training_run_manifest_writer_serializes_checkpoint_and_score(tmp_path: 
         best_model_score=0.5,
         last_checkpoint_path=tmp_path / "last.ckpt",
         survival_per_disease_metrics_csv_path=tmp_path / "survival_per_disease_metrics.csv",
+        metrics=BINARY_PROBABILITY_RESULTS,
     )
 
     manifest = json.loads(manifest_path.read_text())
@@ -85,6 +92,7 @@ def test_training_run_manifest_writer_serializes_checkpoint_and_score(tmp_path: 
     assert manifest["best_model_score"] == 0.5
     assert manifest["test_after_fit"] is False
     assert manifest["survival_per_disease_metrics_csv_path"].endswith("survival_per_disease_metrics.csv")
+    assert manifest["metrics"] == BINARY_PROBABILITY_RESULTS
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec", "sleep2vec2", "sleep2expert"])

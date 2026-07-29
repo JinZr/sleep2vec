@@ -164,14 +164,25 @@ def build_prediction_rows(records: list[dict[str, object]]) -> list[dict[str, ob
 
 def _group_prediction_records(records: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
     grouped: dict[str, list[dict[str, object]]] = {}
-    seen: set[tuple[str, int]] = set()
+    seen: dict[tuple[str, int], dict[str, object]] = {}
     for record in records:
         path = str(record["path"])
         token_start = int(record.get("token_start", 0))
         key = (path, token_start)
         if key in seen:
+            previous = seen[key]
+            # DDP samplers may pad with duplicate windows; check labels before dropping the duplicate.
+            if (
+                record.get("kind") == previous.get("kind") == "classification"
+                and not bool(record.get("is_sequence"))
+                and not bool(previous.get("is_sequence"))
+                and int(record["groundtruth"]) != int(previous["groundtruth"])
+            ):
+                raise ValueError(
+                    f"Classification labels differ for duplicate window path {path!r}, token_start={token_start}."
+                )
             continue
-        seen.add(key)
+        seen[key] = record
         grouped.setdefault(path, []).append(record)
     for items in grouped.values():
         items.sort(key=lambda item: int(item.get("token_start", 0)))
@@ -204,11 +215,14 @@ def _build_classification_prediction_row(path: str, items: list[dict[str, object
             row["logit"] = (logits[:, 1] - logits[:, 0]).tolist()
         return row
 
+    groundtruth = int(items[0]["groundtruth"])
+    if any(int(item["groundtruth"]) != groundtruth for item in items[1:]):
+        raise ValueError(f"Classification labels differ across windows for path {path!r}.")
     probs = np.asarray([item["probabilities"] for item in items], dtype=np.float32).mean(axis=0)
     logits = np.asarray([item["logits"] for item in items], dtype=np.float32).mean(axis=0)
     row = {
         "path": path,
-        "groundtruth": int(items[0]["groundtruth"]),
+        "groundtruth": groundtruth,
         "prediction": int(probs.argmax()),
         "n_predictions": len(items),
         "n_windows": len(items),

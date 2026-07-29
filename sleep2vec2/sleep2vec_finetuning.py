@@ -266,12 +266,18 @@ class Sleep2vecFinetuning(pl.LightningModule):
             if records:
                 self._stage_outputs[stage].extend(records)
         else:
-            preds = self._extract_valid_predictions(batch, logits)
-            if preds is not None:
-                self._stage_outputs[stage].append(preds)
-            if stage == "test" and prediction_export_enabled(self.args):
+            if self._is_scalar_binary_classification_task() and stage in {"val", "test"}:
                 targets = self._get_targets(batch)
-                self._prediction_records["test"].extend(extract_prediction_records(self.args, batch, logits, targets))
+                self._stage_outputs[stage].extend(extract_prediction_records(self.args, batch, logits, targets))
+            else:
+                preds = self._extract_valid_predictions(batch, logits)
+                if preds is not None:
+                    self._stage_outputs[stage].append(preds)
+                if stage == "test" and prediction_export_enabled(self.args):
+                    targets = self._get_targets(batch)
+                    self._prediction_records["test"].extend(
+                        extract_prediction_records(self.args, batch, logits, targets)
+                    )
 
         return loss if stage == "train" else None
 
@@ -915,6 +921,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def _is_multilabel_classification_task(self) -> bool:
         return getattr(self.args, "multilabel", None) is not None
 
+    def _is_scalar_binary_classification_task(self) -> bool:
+        return bool(
+            self.args.is_classification
+            and not getattr(self.args, "is_multilabel", False)
+            and not getattr(self.args, "is_seq", False)
+            and int(getattr(self.args, "output_dim", 0)) == 2
+        )
+
     def _accumulate_ahi_train_pointwise_counts(self, batch, logits) -> None:
         labels = self._get_targets(batch)
         valid_mask = labels != -1.0
@@ -1229,11 +1243,26 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 trainer.strategy.barrier(f"ahi_{stage}_epoch_end")
             return records
 
-        preds, gts = self._concat_epoch_outputs(outputs)
-        outputs.clear()
+        episode_rows = None
+        if self._is_scalar_binary_classification_task() and stage in {"val", "test"}:
+            records = list(outputs)
+            outputs.clear()
+            records = self._gather_prediction_records(records)
+            episode_rows = build_prediction_rows(records)
+            if episode_rows:
+                gts = np.asarray([row["groundtruth"] for row in episode_rows], dtype=np.int64)
+                preds = np.asarray(
+                    [[row["prob_0"], row["prob_1"]] for row in episode_rows],
+                    dtype=np.float32,
+                )
+            else:
+                preds, gts = self._empty_epoch_outputs()
+        else:
+            preds, gts = self._concat_epoch_outputs(outputs)
+            outputs.clear()
 
-        if stage in {"val", "test"}:
-            preds, gts = self._gather_eval_outputs(preds, gts)
+            if stage in {"val", "test"}:
+                preds, gts = self._gather_eval_outputs(preds, gts)
         if preds.size == 0 or gts.size == 0:
             if stage == "test" and prediction_export_enabled(self.args):
                 self._prediction_records["test"].clear()
@@ -1246,6 +1275,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
             is_multilabel=getattr(self.args, "is_multilabel", False),
             output_dim=getattr(self.args, "output_dim", None),
             stage_names=getattr(self.args, "stage_names", None),
+            include_binary_probability_metrics=(
+                stage in {"val", "test"} and self._is_scalar_binary_classification_task()
+            ),
         )
         for k, v in metrics.items():
             self.log(
@@ -1276,9 +1308,12 @@ class Sleep2vecFinetuning(pl.LightningModule):
             )
 
         if stage == "test" and prediction_export_enabled(self.args):
-            records = self._gather_prediction_records(list(self._prediction_records["test"]))
-            self._prediction_records["test"].clear()
-            self.prediction_rows = build_prediction_rows(records)
+            if episode_rows is not None:
+                self.prediction_rows = episode_rows
+            else:
+                records = self._gather_prediction_records(list(self._prediction_records["test"]))
+                self._prediction_records["test"].clear()
+                self.prediction_rows = build_prediction_rows(records)
 
         return preds, gts
 
