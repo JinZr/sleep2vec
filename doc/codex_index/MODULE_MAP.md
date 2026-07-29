@@ -52,7 +52,7 @@ Preprocessing produces the index, preset, or Kaldi artifacts consumed by the dat
 
 `data.default_dataset.SampleIndex` is the canonical window descriptor:
 
-- `id` identifies the sample window;
+- `id` identifies the source sample;
 - `start` and `end` are token-window bounds;
 - `payload` carries storage/runtime fields, including `available_channels` in missing-channel presets;
 - `metadata` carries split, source, path, demographic, task, and sidecar values.
@@ -63,7 +63,7 @@ Preset files are pickled `list[SampleIndex]` artifacts. Do not introduce a paral
 
 | Key | Contract |
 | --- | --- |
-| `id` | sample ids in batch order |
+| `id` | stable source-sample ids in batch order |
 | `tokens` | channel name to padded tensor |
 | `mlm_mask` | channel name to padded boolean token mask |
 | `length` | valid token length per sample after within-sample channel alignment |
@@ -73,6 +73,9 @@ Preset files are pickled `list[SampleIndex]` artifacts. Do not introduce a paral
 | `w`, `h` | age/sex/source/path relationship matrices consumed by weighted contrastive loss |
 
 Channel availability is resolved before loading a batch. A pair-scheduled batch must use one pair throughout, and channel sequences within each sample are cropped to a common valid length before batch padding.
+Ordinary classification/regression prediction reduction uses
+`(path, id, token_start)` as the concrete window identity for
+distributed-padding removal; the later subject or episode aggregation key is separate.
 
 ### Task sidecars
 

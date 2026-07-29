@@ -16,6 +16,11 @@ from sleep2vec.results import (
 )
 
 RESULT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
+BINARY_PROBABILITY_RESULTS = {
+    "test_episode_auprc": 0.5,
+    "test_episode_brier": 0.460625,
+    "test_episode_ece": 0.4125,
+}
 
 
 def _finetune_args(*, version: str) -> argparse.Namespace:
@@ -142,12 +147,18 @@ def test_finetune_result_csv_omits_inference_metadata(tmp_path, monkeypatch, pac
     monkeypatch.delenv("LOCAL_RANK", raising=False)
     csv_path = tmp_path / "results.csv"
 
-    results_mod.save_result_csv({"test_loss": 1.0}, str(csv_path), _finetune_args(version="exp-a"))
+    results_mod.save_result_csv(
+        {"test_loss": 1.0, **BINARY_PROBABILITY_RESULTS},
+        str(csv_path),
+        _finetune_args(version="exp-a"),
+    )
 
     df = pd.read_csv(csv_path)
     assert "prediction_run_id" not in df.columns
     assert "run_dir" not in df.columns
     assert "prediction_csv_path" not in df.columns
+    for key, value in BINARY_PROBABILITY_RESULTS.items():
+        assert df.loc[0, key] == pytest.approx(value)
 
 
 def test_prepare_inference_result_paths_builds_run_directory(tmp_path):
@@ -577,8 +588,9 @@ def test_prediction_csv_append_overview_and_manifest_across_namespaces(tmp_path,
         timestamp="20260524T000000Z",
     )
 
-    results_mod.save_result_csv({"test_loss": 0.1}, str(args.inference_metrics_csv_path), args)
-    results_mod.save_result_csv({"test_loss": 0.1}, str(args.inference_overview_csv_path), args)
+    metrics = {"test_loss": 0.1, **BINARY_PROBABILITY_RESULTS}
+    results_mod.save_result_csv(metrics, str(args.inference_metrics_csv_path), args)
+    results_mod.save_result_csv(metrics, str(args.inference_overview_csv_path), args)
     results_mod.save_prediction_csv(
         [
             {
@@ -628,7 +640,7 @@ def test_prediction_csv_append_overview_and_manifest_across_namespaces(tmp_path,
         str(args.inference_multilabel_per_disease_metrics_csv_path),
         args,
     )
-    results_mod.save_inference_manifest(args, {"test_loss": 0.1}, prediction_row_count=2)
+    results_mod.save_inference_manifest(args, metrics, prediction_row_count=2)
 
     result_df = pd.read_csv(args.inference_metrics_csv_path)
     overview_df = pd.read_csv(args.inference_overview_csv_path)
@@ -653,6 +665,10 @@ def test_prediction_csv_append_overview_and_manifest_across_namespaces(tmp_path,
     assert manifest["paths"]["multilabel_per_disease_metrics_csv_path"] == str(
         args.inference_multilabel_per_disease_metrics_csv_path
     )
+    for key, value in BINARY_PROBABILITY_RESULTS.items():
+        assert result_df.loc[0, key] == pytest.approx(value)
+        assert overview_df.loc[0, key] == pytest.approx(value)
+        assert manifest["metrics"][key] == pytest.approx(value)
 
 
 @pytest.mark.parametrize("package_name", RESULT_PACKAGES)

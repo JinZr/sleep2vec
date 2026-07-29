@@ -110,6 +110,11 @@ with the checkpoint. Survival and multilabel tasks load explicit subject-level
 sidecars, aggregate repeated windows by the configured key, and retain
 path/window provenance in prediction outputs.
 
+For ordinary scalar binary classification, unprefixed validation/test metrics
+retain their historical window denominator. The parallel `episode_*` metrics
+average window probabilities by path before scoring; AUPRC, Brier, and ECE are
+reported only in that explicitly episode-denominated family.
+
 External or final test data stays locked until the recorded decision allows it.
 Hyperparameter ranking is validation evidence, not final-test evidence.
 

@@ -15,6 +15,7 @@ from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import _build_finetune_loader
 
 PREDICTION_EXPORT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
+PROBABILITY_METRIC_KEYS = {"auprc", "brier", "ece"}
 
 
 class _DummyDataset:
@@ -339,6 +340,7 @@ def test_build_scalar_classification_prediction_row_averages_probabilities(packa
     inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
     records = [
         {
+            "sample_id": "sample-0",
             "path": "sample.npz",
             "token_start": 0,
             "kind": "classification",
@@ -349,6 +351,7 @@ def test_build_scalar_classification_prediction_row_averages_probabilities(packa
             "is_sequence": False,
         },
         {
+            "sample_id": "sample-5",
             "path": "sample.npz",
             "token_start": 5,
             "kind": "classification",
@@ -400,15 +403,22 @@ def test_finalize_epoch_preserves_single_device_prediction_records(package_name:
         {
             "train": [],
             "val": [],
-            "test": [(np.array([[0.1, 0.9]], dtype=np.float32), np.array([1], dtype=np.int64))],
+            "test": [
+                (
+                    np.array([[0.1, 0.9]], dtype=np.float32),
+                    np.array([1], dtype=np.int64),
+                )
+            ],
         },
     )
     object.__setattr__(
         module,
         "_prediction_records",
         {
+            "val": [],
             "test": [
                 {
+                    "sample_id": "sample-0",
                     "path": "sample.npz",
                     "token_start": 0,
                     "kind": "classification",
@@ -418,7 +428,7 @@ def test_finalize_epoch_preserves_single_device_prediction_records(package_name:
                     "prediction": 1,
                     "is_sequence": False,
                 }
-            ]
+            ],
         },
     )
     object.__setattr__(module, "_eval_loss_sums", {})
@@ -435,11 +445,332 @@ def test_finalize_epoch_preserves_single_device_prediction_records(package_name:
     assert module.prediction_rows[0]["prediction"] == 1
 
 
+def _scalar_binary_record(
+    path: str,
+    token_start: int,
+    groundtruth: int,
+    positive_probability: float,
+    *,
+    sample_id: str | None = None,
+):
+    probabilities = [1.0 - positive_probability, positive_probability]
+    return {
+        "sample_id": sample_id or f"{path}:{token_start}",
+        "path": path,
+        "token_start": token_start,
+        "kind": "classification",
+        "groundtruth": groundtruth,
+        "probabilities": probabilities,
+        "logits": probabilities,
+        "prediction": int(positive_probability >= 0.5),
+        "is_sequence": False,
+    }
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_build_scalar_classification_prediction_row_rejects_inconsistent_window_labels(package_name: str):
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    records = [
+        _scalar_binary_record("episode.npz", 0, 0, 0.2),
+        _scalar_binary_record("episode.npz", 5, 1, 0.8),
+    ]
+
+    with pytest.raises(ValueError, match="Classification labels differ across windows"):
+        inference_mod.build_prediction_rows(records)
+
+
+def _binary_epoch_module(
+    finetuning_cls,
+    stage: str,
+    outputs,
+    *,
+    episode_records=None,
+    export_predictions: bool = False,
+):
+    module = finetuning_cls.__new__(finetuning_cls)
+    object.__setattr__(
+        module,
+        "args",
+        argparse.Namespace(
+            inference_prediction_csv_path="predictions.csv" if export_predictions else None,
+            is_survival=False,
+            is_classification=True,
+            is_multilabel=False,
+            is_seq=False,
+            multilabel=None,
+            label_name="sex",
+            output_dim=2,
+            stage_names=None,
+            class_labels=None,
+        ),
+    )
+    stage_outputs = {"train": [], "val": [], "test": []}
+    stage_outputs[stage] = list(outputs)
+    object.__setattr__(module, "_stage_outputs", stage_outputs)
+    prediction_records = {"val": [], "test": []}
+    if stage in prediction_records:
+        prediction_records[stage] = list(episode_records or [])
+    object.__setattr__(module, "_prediction_records", prediction_records)
+    object.__setattr__(module, "_eval_loss_sums", {})
+    object.__setattr__(module, "prediction_rows", [])
+    module.__dict__["_trainer"] = argparse.Namespace(is_global_zero=False)
+    return module
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_scalar_binary_val_shared_step_collects_prediction_records(
+    package_name: str,
+):
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = _binary_epoch_module(finetuning_cls, "val", [])
+    module.args.device = "cpu"
+    object.__setattr__(module, "_eval_loss_counts", {})
+    object.__setattr__(
+        module,
+        "_compute_loss",
+        lambda _logits, _batch: None,
+    )
+    logits = torch.tensor([[-1.0, 2.0], [3.0, 0.0]], dtype=torch.float32)
+    batch = {
+        "id": ["sample-a", "sample-b"],
+        "metadata": {
+            "path": ["episode-a.npz", "episode-b.npz"],
+            "sex": torch.tensor([1, 0], dtype=torch.int64),
+        },
+        "token_start": torch.tensor([0, 5], dtype=torch.int64),
+    }
+
+    finetuning_cls._shared_step(module, batch, stage="val", model=lambda _batch: logits)
+
+    assert len(module._stage_outputs["val"]) == 1
+    window_preds, window_gts = module._stage_outputs["val"][0]
+    np.testing.assert_allclose(window_preds, torch.softmax(logits, dim=-1).numpy())
+    np.testing.assert_array_equal(window_gts, np.array([1, 0], dtype=np.int64))
+
+    records = module._prediction_records["val"]
+    assert len(records) == 2
+    assert [record["sample_id"] for record in records] == ["sample-a", "sample-b"]
+    assert [record["path"] for record in records] == ["episode-a.npz", "episode-b.npz"]
+    assert [record["token_start"] for record in records] == [0, 5]
+    assert [record["groundtruth"] for record in records] == [1, 0]
+    assert records[0]["probabilities"] == pytest.approx(torch.softmax(logits[0], dim=-1).tolist())
+    assert records[1]["probabilities"] == pytest.approx(torch.softmax(logits[1], dim=-1).tolist())
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+@pytest.mark.parametrize("stage", ["val", "test"])
+def test_binary_epoch_metrics_use_one_probability_row_per_episode(
+    package_name: str,
+    stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    records = [
+        _scalar_binary_record("episode-a.npz", 0, 1, 0.2),
+        _scalar_binary_record("episode-a.npz", 5, 1, 0.8),
+        _scalar_binary_record("episode-b.npz", 0, 0, 0.1),
+    ]
+    window_output = (
+        np.asarray([record["probabilities"] for record in records], dtype=np.float32),
+        np.asarray([record["groundtruth"] for record in records], dtype=np.int64),
+    )
+    module = _binary_epoch_module(
+        finetuning_cls,
+        stage,
+        [window_output],
+        episode_records=records,
+        export_predictions=(stage == "test"),
+    )
+    captured = []
+    logged = {}
+    original_compute = finetuning_mod.compute_downstream_metrics
+
+    def capture_compute(gts, preds, **kwargs):
+        captured.append(
+            {
+                "gts": np.asarray(gts).copy(),
+                "preds": np.asarray(preds).copy(),
+                "kwargs": dict(kwargs),
+            }
+        )
+        return original_compute(gts, preds, **kwargs)
+
+    object.__setattr__(
+        module,
+        "log",
+        lambda name, value, **_kwargs: logged.__setitem__(name, float(value)),
+    )
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: False)
+    monkeypatch.setattr(finetuning_mod, "compute_downstream_metrics", capture_compute)
+
+    finetuning_cls._finalize_epoch(module, stage)
+
+    assert len(captured) == 2
+    np.testing.assert_array_equal(captured[0]["gts"], np.array([1, 1, 0], dtype=np.int64))
+    np.testing.assert_allclose(
+        captured[0]["preds"],
+        np.array([[0.8, 0.2], [0.2, 0.8], [0.9, 0.1]], dtype=np.float32),
+    )
+    assert captured[0]["kwargs"]["include_binary_probability_metrics"] is False
+    np.testing.assert_array_equal(captured[1]["gts"], np.array([1, 0], dtype=np.int64))
+    np.testing.assert_allclose(
+        captured[1]["preds"],
+        np.array([[0.5, 0.5], [0.9, 0.1]], dtype=np.float32),
+    )
+    assert captured[1]["kwargs"]["include_binary_probability_metrics"] is True
+    assert logged[f"{stage}_accuracy"] == pytest.approx(2 / 3)
+    assert logged[f"{stage}_episode_accuracy"] == pytest.approx(0.5)
+    assert logged[f"{stage}_episode_auprc"] == pytest.approx(1.0)
+    assert logged[f"{stage}_episode_brier"] == pytest.approx(0.13)
+    assert logged[f"{stage}_episode_ece"] == pytest.approx(0.3)
+    assert {f"{stage}_{key}" for key in PROBABILITY_METRIC_KEYS}.isdisjoint(logged)
+    assert module._stage_outputs[stage] == []
+    assert module._prediction_records[stage] == []
+    if stage == "test":
+        assert [row["path"] for row in module.prediction_rows] == ["episode-a.npz", "episode-b.npz"]
+        assert module.prediction_rows[0]["n_windows"] == 2
+        assert module.prediction_rows[0]["prob_1"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_binary_epoch_metrics_deduplicate_distributed_sampler_records(
+    package_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    local_records = [_scalar_binary_record("episode-a.npz", 0, 1, 0.2)]
+    remote_records = [
+        _scalar_binary_record("episode-a.npz", 0, 1, 0.2),
+        _scalar_binary_record("episode-a.npz", 5, 1, 0.8),
+        _scalar_binary_record("episode-b.npz", 0, 0, 0.1),
+    ]
+    local_window_output = (
+        np.array([[0.8, 0.2]], dtype=np.float32),
+        np.array([1], dtype=np.int64),
+    )
+    gathered_window_preds = np.array(
+        [[0.8, 0.2], [0.8, 0.2], [0.2, 0.8], [0.9, 0.1]],
+        dtype=np.float32,
+    )
+    gathered_window_gts = np.array([1, 1, 1, 0], dtype=np.int64)
+    module = _binary_epoch_module(
+        finetuning_cls,
+        "val",
+        [local_window_output],
+        episode_records=local_records,
+    )
+    captured = []
+    original_compute = finetuning_mod.compute_downstream_metrics
+
+    def capture_compute(gts, preds, **kwargs):
+        captured.append((np.asarray(gts).copy(), np.asarray(preds).copy(), dict(kwargs)))
+        return original_compute(gts, preds, **kwargs)
+
+    object.__setattr__(module, "log", lambda *_args, **_kwargs: None)
+    object.__setattr__(
+        module,
+        "_gather_eval_outputs",
+        lambda _preds, _gts: (gathered_window_preds, gathered_window_gts),
+    )
+    object.__setattr__(
+        module,
+        "_gather_prediction_records",
+        lambda records: records + remote_records,
+    )
+    monkeypatch.setattr(finetuning_mod, "compute_downstream_metrics", capture_compute)
+
+    finetuning_cls._finalize_epoch(module, "val")
+
+    assert len(captured) == 2
+    np.testing.assert_array_equal(captured[0][0], gathered_window_gts)
+    np.testing.assert_allclose(captured[0][1], gathered_window_preds)
+    assert captured[0][2]["include_binary_probability_metrics"] is False
+    np.testing.assert_array_equal(captured[1][0], np.array([1, 0], dtype=np.int64))
+    np.testing.assert_allclose(
+        captured[1][1],
+        np.array([[0.5, 0.5], [0.9, 0.1]], dtype=np.float32),
+    )
+    assert captured[1][2]["include_binary_probability_metrics"] is True
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_binary_train_epoch_omits_probability_metrics(package_name: str, monkeypatch: pytest.MonkeyPatch):
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    outputs = [
+        (
+            np.array([[0.9, 0.1], [0.1, 0.9]], dtype=np.float32),
+            np.array([0, 1], dtype=np.int64),
+        )
+    ]
+    module = _binary_epoch_module(finetuning_cls, "train", outputs)
+    captured = {}
+    logged = {}
+    original_compute = finetuning_mod.compute_downstream_metrics
+
+    def capture_compute(gts, preds, **kwargs):
+        captured["kwargs"] = dict(kwargs)
+        return original_compute(gts, preds, **kwargs)
+
+    object.__setattr__(
+        module,
+        "log",
+        lambda name, value, **_kwargs: logged.__setitem__(name, float(value)),
+    )
+    monkeypatch.setattr(finetuning_mod, "compute_downstream_metrics", capture_compute)
+
+    finetuning_cls._finalize_epoch(module, "train")
+
+    assert captured["kwargs"]["include_binary_probability_metrics"] is False
+    assert {f"train_{key}" for key in PROBABILITY_METRIC_KEYS}.isdisjoint(logged)
+
+
+@pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
+def test_binary_sequence_val_epoch_omits_scalar_probability_metrics(
+    package_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    outputs = [
+        (
+            np.array([[0.9, 0.1], [0.1, 0.9]], dtype=np.float32),
+            np.array([0, 1], dtype=np.int64),
+        )
+    ]
+    module = _binary_epoch_module(finetuning_cls, "val", outputs)
+    module.args.is_seq = True
+    captured = {}
+    logged = {}
+    original_compute = finetuning_mod.compute_downstream_metrics
+
+    def capture_compute(gts, preds, **kwargs):
+        captured["kwargs"] = dict(kwargs)
+        return original_compute(gts, preds, **kwargs)
+
+    object.__setattr__(
+        module,
+        "log",
+        lambda name, value, **_kwargs: logged.__setitem__(name, float(value)),
+    )
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: False)
+    monkeypatch.setattr(finetuning_mod, "compute_downstream_metrics", capture_compute)
+
+    finetuning_cls._finalize_epoch(module, "val")
+
+    assert captured["kwargs"]["include_binary_probability_metrics"] is False
+    assert {f"val_{key}" for key in PROBABILITY_METRIC_KEYS}.isdisjoint(logged)
+
+
 @pytest.mark.parametrize("package_name", PREDICTION_EXPORT_PACKAGES)
 def test_extract_scalar_classification_prediction_records_preserves_logits(package_name: str):
     inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
     args = argparse.Namespace(is_multilabel=False, is_classification=True)
     batch = {
+        "id": ["sample-a", "sample-b"],
         "metadata": {"path": ["a.npz", "b.npz"]},
         "token_start": torch.tensor([0, 5]),
     }
@@ -448,6 +779,7 @@ def test_extract_scalar_classification_prediction_records_preserves_logits(packa
 
     records = inference_mod.extract_prediction_records(args, batch, logits, targets)
 
+    assert [record["sample_id"] for record in records] == ["sample-a", "sample-b"]
     assert records[0]["logits"] == pytest.approx([-1.0, 2.0])
     assert records[0]["probabilities"] == pytest.approx(torch.softmax(logits[0], dim=-1).tolist())
     assert records[1]["logits"] == pytest.approx([3.0, 0.0])
@@ -459,6 +791,7 @@ def test_build_scalar_regression_prediction_row_averages_windows(package_name: s
     inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
     records = [
         {
+            "sample_id": "sample-0",
             "path": "sample.npz",
             "token_start": 0,
             "kind": "regression",
@@ -467,6 +800,7 @@ def test_build_scalar_regression_prediction_row_averages_windows(package_name: s
             "is_sequence": False,
         },
         {
+            "sample_id": "sample-5",
             "path": "sample.npz",
             "token_start": 5,
             "kind": "regression",
@@ -492,6 +826,7 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
     inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
     records = [
         {
+            "sample_id": "night-2",
             "path": "night.npz",
             "token_start": 2,
             "kind": "classification",
@@ -502,6 +837,7 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
             "is_sequence": True,
         },
         {
+            "sample_id": "night-0",
             "path": "night.npz",
             "token_start": 0,
             "kind": "classification",
@@ -512,13 +848,14 @@ def test_build_sequence_classification_prediction_row_concatenates_by_token_star
             "is_sequence": True,
         },
         {
+            "sample_id": "night-0",
             "path": "night.npz",
             "token_start": 0,
             "kind": "classification",
-            "groundtruth": [2, 2],
-            "probabilities": [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
-            "logits": [[-1.0, -1.0, 3.0], [-1.0, -1.0, 3.0]],
-            "prediction": [2, 2],
+            "groundtruth": [0, 1],
+            "probabilities": [[0.9, 0.1, 0.0], [0.1, 0.8, 0.1]],
+            "logits": [[2.0, 0.0, -1.0], [0.0, 2.0, 0.0]],
+            "prediction": [0, 1],
             "is_sequence": True,
         },
     ]
