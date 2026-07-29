@@ -17,9 +17,9 @@ from sleep2vec.results import (
 
 RESULT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
 BINARY_PROBABILITY_RESULTS = {
-    "test_auprc": 0.5,
-    "test_brier": 0.460625,
-    "test_ece": 0.4125,
+    "test_episode_auprc": 0.5,
+    "test_episode_brier": 0.460625,
+    "test_episode_ece": 0.4125,
 }
 
 

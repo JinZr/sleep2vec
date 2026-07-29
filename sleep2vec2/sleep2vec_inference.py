@@ -11,6 +11,7 @@ def prediction_export_enabled(args) -> bool:
 def extract_prediction_records(args, batch, logits, targets) -> list[dict[str, object]]:
     labels = targets.detach().cpu()
     logits = logits.detach().cpu()
+    sample_ids = list(batch["id"])
     paths = list(batch["metadata"]["path"])
     token_starts = batch.get("token_start")
     if token_starts is None:
@@ -19,13 +20,13 @@ def extract_prediction_records(args, batch, logits, targets) -> list[dict[str, o
         starts = [int(value) for value in token_starts.detach().cpu().tolist()]
 
     if getattr(args, "is_multilabel", False):
-        return _extract_multilabel_prediction_records(paths, starts, labels, logits)
+        return _extract_multilabel_prediction_records(sample_ids, paths, starts, labels, logits)
     if args.is_classification:
-        return _extract_classification_prediction_records(paths, starts, labels, logits)
-    return _extract_regression_prediction_records(args, paths, starts, labels, logits)
+        return _extract_classification_prediction_records(sample_ids, paths, starts, labels, logits)
+    return _extract_regression_prediction_records(args, sample_ids, paths, starts, labels, logits)
 
 
-def _extract_multilabel_prediction_records(paths, starts, labels, logits) -> list[dict[str, object]]:
+def _extract_multilabel_prediction_records(sample_ids, paths, starts, labels, logits) -> list[dict[str, object]]:
     probs = torch.sigmoid(logits).to(torch.float32)
     records: list[dict[str, object]] = []
     for idx, path in enumerate(paths):
@@ -38,6 +39,7 @@ def _extract_multilabel_prediction_records(paths, starts, labels, logits) -> lis
         valid_labels = sample_labels[mask].to(torch.int64).numpy()
         records.append(
             {
+                "sample_id": sample_ids[idx],
                 "path": str(path),
                 "token_start": starts[idx],
                 "kind": "multilabel",
@@ -50,7 +52,7 @@ def _extract_multilabel_prediction_records(paths, starts, labels, logits) -> lis
     return records
 
 
-def _extract_classification_prediction_records(paths, starts, labels, logits) -> list[dict[str, object]]:
+def _extract_classification_prediction_records(sample_ids, paths, starts, labels, logits) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     if logits.dim() == 3:
         raw_logits = logits.to(torch.float32)
@@ -67,6 +69,7 @@ def _extract_classification_prediction_records(paths, starts, labels, logits) ->
             valid_labels = sample_labels[mask].to(torch.int64).numpy()
             records.append(
                 {
+                    "sample_id": sample_ids[idx],
                     "path": str(path),
                     "token_start": starts[idx],
                     "kind": "classification",
@@ -89,6 +92,7 @@ def _extract_classification_prediction_records(paths, starts, labels, logits) ->
         logit = raw_logits[idx].numpy()
         records.append(
             {
+                "sample_id": sample_ids[idx],
                 "path": str(path),
                 "token_start": starts[idx],
                 "kind": "classification",
@@ -102,7 +106,7 @@ def _extract_classification_prediction_records(paths, starts, labels, logits) ->
     return records
 
 
-def _extract_regression_prediction_records(args, paths, starts, labels, logits) -> list[dict[str, object]]:
+def _extract_regression_prediction_records(args, sample_ids, paths, starts, labels, logits) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     if getattr(args, "is_seq", False):
         preds = logits.to(torch.float32)
@@ -118,6 +122,7 @@ def _extract_regression_prediction_records(args, paths, starts, labels, logits) 
             valid_labels = sample_labels[mask].numpy()
             records.append(
                 {
+                    "sample_id": sample_ids[idx],
                     "path": str(path),
                     "token_start": starts[idx],
                     "kind": "regression",
@@ -135,6 +140,7 @@ def _extract_regression_prediction_records(args, paths, starts, labels, logits) 
             continue
         records.append(
             {
+                "sample_id": sample_ids[idx],
                 "path": str(path),
                 "token_start": starts[idx],
                 "kind": "regression",
@@ -164,11 +170,13 @@ def build_prediction_rows(records: list[dict[str, object]]) -> list[dict[str, ob
 
 def _group_prediction_records(records: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
     grouped: dict[str, list[dict[str, object]]] = {}
-    seen: dict[tuple[str, int], dict[str, object]] = {}
+    seen: dict[tuple[str, int | str, int], dict[str, object]] = {}
     for record in records:
+        sample_id = record["sample_id"]
         path = str(record["path"])
         token_start = int(record.get("token_start", 0))
-        key = (path, token_start)
+        # Sample identity removes exact DDP padding copies; path separately defines episode aggregation.
+        key = (path, sample_id, token_start)
         if key in seen:
             previous = seen[key]
             # DDP samplers may pad with duplicate windows; check labels before dropping the duplicate.
@@ -179,7 +187,8 @@ def _group_prediction_records(records: list[dict[str, object]]) -> dict[str, lis
                 and int(record["groundtruth"]) != int(previous["groundtruth"])
             ):
                 raise ValueError(
-                    f"Classification labels differ for duplicate window path {path!r}, token_start={token_start}."
+                    f"Classification labels differ for duplicate sample {sample_id!r}, "
+                    f"path {path!r}, token_start={token_start}."
                 )
             continue
         seen[key] = record

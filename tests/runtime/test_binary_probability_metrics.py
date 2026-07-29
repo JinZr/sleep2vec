@@ -68,10 +68,26 @@ def test_binary_probability_metrics_match_for_two_logits_and_softmax_probabiliti
 
 
 @pytest.mark.parametrize("package_name", METRIC_PACKAGES)
-def test_prediction_rows_reject_conflicting_labels_before_duplicate_window_removal(package_name: str):
+def test_downstream_binary_logits_omit_probability_metrics_by_default(package_name: str):
+    metrics_mod = importlib.import_module(f"{package_name}.metrics")
+    metrics = metrics_mod.compute_downstream_metrics(
+        np.array([0, 1], dtype=np.int64),
+        np.array([[4.0, -2.0], [-3.0, 5.0]], dtype=np.float32),
+        is_classification=True,
+        output_dim=2,
+    )
+
+    assert metrics["accuracy"] == pytest.approx(1.0)
+    assert metrics["roc_auc"] == pytest.approx(1.0)
+    assert PROBABILITY_METRIC_KEYS.isdisjoint(metrics)
+
+
+@pytest.mark.parametrize("package_name", METRIC_PACKAGES)
+def test_prediction_rows_reject_conflicting_labels_for_duplicate_sample_window(package_name: str):
     inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
     records = [
         {
+            "sample_id": "sample-1",
             "path": "episode.npz",
             "token_start": 0,
             "kind": "classification",
@@ -84,8 +100,53 @@ def test_prediction_rows_reject_conflicting_labels_before_duplicate_window_remov
         for label in (0, 1)
     ]
 
-    with pytest.raises(ValueError, match="Classification labels differ for duplicate window"):
+    with pytest.raises(ValueError, match="Classification labels differ for duplicate sample"):
         inference_mod.build_prediction_rows(records)
+
+
+@pytest.mark.parametrize("package_name", METRIC_PACKAGES)
+def test_prediction_rows_keep_distinct_samples_with_same_path_and_start(package_name: str):
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    records = [
+        {
+            "sample_id": sample_id,
+            "path": "episode.npz",
+            "token_start": 0,
+            "kind": "classification",
+            "groundtruth": 1,
+            "probabilities": [1.0 - probability, probability],
+            "logits": [1.0 - probability, probability],
+            "prediction": int(probability >= 0.5),
+            "is_sequence": False,
+        }
+        for sample_id, probability in (("sample-1", 0.2), ("sample-2", 0.8))
+    ]
+
+    row = inference_mod.build_prediction_rows(records)[0]
+
+    assert row["n_windows"] == 2
+    assert row["prob_1"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("package_name", METRIC_PACKAGES)
+def test_prediction_rows_drop_exact_distributed_sample_duplicate(package_name: str):
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    record = {
+        "sample_id": "sample-1",
+        "path": "episode.npz",
+        "token_start": 0,
+        "kind": "classification",
+        "groundtruth": 1,
+        "probabilities": [0.2, 0.8],
+        "logits": [0.0, 1.0],
+        "prediction": 1,
+        "is_sequence": False,
+    }
+
+    row = inference_mod.build_prediction_rows([record, dict(record)])[0]
+
+    assert row["n_windows"] == 1
+    assert row["prob_1"] == pytest.approx(0.8)
 
 
 @pytest.mark.parametrize("package_name", METRIC_PACKAGES)

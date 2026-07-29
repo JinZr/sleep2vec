@@ -899,7 +899,7 @@ def compute_downstream_metrics(
     is_multilabel: bool = False,
     output_dim: int | None = None,
     stage_names=None,
-    include_binary_probability_metrics: bool = True,
+    include_binary_probability_metrics: bool = False,
 ):
     """统一的下游任务指标计算。"""
     if is_multilabel:
@@ -922,6 +922,7 @@ def compute_downstream_metrics(
         if output_dim == 2:
             result["roc_auc"] = roc_auc_from_two_logits(gts, preds)
             if include_binary_probability_metrics:
+                # Legacy callers may pass logits, so this explicit opt-in requires probabilities.
                 result.update(compute_binary_probability_metrics(gts, preds, from_logits=False))
             result["recall"] = float(recall_score(y_true, y_pred, zero_division=0))
             result["specificity"] = binary_specificity(y_true, y_pred)

@@ -97,7 +97,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self.backbone.set_tokenizers_trainable(True)
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
-        self._prediction_records = {"test": []}
+        self._prediction_records = {"val": [], "test": []}
         self.prediction_rows = []
         self.multilabel_per_disease_metric_rows = []
         self.survival_per_disease_metric_rows = []
@@ -266,18 +266,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
             if records:
                 self._stage_outputs[stage].extend(records)
         else:
+            preds = self._extract_valid_predictions(batch, logits)
+            if preds is not None:
+                self._stage_outputs[stage].append(preds)
             if self._is_scalar_binary_classification_task() and stage in {"val", "test"}:
+                # Keep episode records separate from the window arrays used by historical metrics.
                 targets = self._get_targets(batch)
-                self._stage_outputs[stage].extend(extract_prediction_records(self.args, batch, logits, targets))
-            else:
-                preds = self._extract_valid_predictions(batch, logits)
-                if preds is not None:
-                    self._stage_outputs[stage].append(preds)
-                if stage == "test" and prediction_export_enabled(self.args):
-                    targets = self._get_targets(batch)
-                    self._prediction_records["test"].extend(
-                        extract_prediction_records(self.args, batch, logits, targets)
-                    )
+                self._prediction_records[stage].extend(extract_prediction_records(self.args, batch, logits, targets))
+            elif stage == "test" and prediction_export_enabled(self.args):
+                targets = self._get_targets(batch)
+                self._prediction_records["test"].extend(extract_prediction_records(self.args, batch, logits, targets))
 
         return loss if stage == "train" else None
 
@@ -1243,31 +1241,24 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 trainer.strategy.barrier(f"ahi_{stage}_epoch_end")
             return records
 
+        preds, gts = self._concat_epoch_outputs(outputs)
+        outputs.clear()
+        if stage in {"val", "test"}:
+            preds, gts = self._gather_eval_outputs(preds, gts)
+
         episode_rows = None
         if self._is_scalar_binary_classification_task() and stage in {"val", "test"}:
-            records = list(outputs)
-            outputs.clear()
+            records = list(self._prediction_records[stage])
+            self._prediction_records[stage].clear()
             records = self._gather_prediction_records(records)
             episode_rows = build_prediction_rows(records)
-            if episode_rows:
-                gts = np.asarray([row["groundtruth"] for row in episode_rows], dtype=np.int64)
-                preds = np.asarray(
-                    [[row["prob_0"], row["prob_1"]] for row in episode_rows],
-                    dtype=np.float32,
-                )
-            else:
-                preds, gts = self._empty_epoch_outputs()
-        else:
-            preds, gts = self._concat_epoch_outputs(outputs)
-            outputs.clear()
-
-            if stage in {"val", "test"}:
-                preds, gts = self._gather_eval_outputs(preds, gts)
         if preds.size == 0 or gts.size == 0:
             if stage == "test" and prediction_export_enabled(self.args):
                 self._prediction_records["test"].clear()
             return None
 
+        # Keep unprefixed metrics window-level so historical CSV columns and monitor names
+        # retain their denominator.
         metrics = compute_downstream_metrics(
             gts,
             preds,
@@ -1275,9 +1266,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             is_multilabel=getattr(self.args, "is_multilabel", False),
             output_dim=getattr(self.args, "output_dim", None),
             stage_names=getattr(self.args, "stage_names", None),
-            include_binary_probability_metrics=(
-                stage in {"val", "test"} and self._is_scalar_binary_classification_task()
-            ),
+            include_binary_probability_metrics=False,
         )
         for k, v in metrics.items():
             self.log(
@@ -1288,6 +1277,32 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 sync_dist=(stage == "train"),
                 on_epoch=True,
             )
+
+        if episode_rows:
+            episode_gts = np.asarray([row["groundtruth"] for row in episode_rows], dtype=np.int64)
+            episode_preds = np.asarray(
+                [[row["prob_0"], row["prob_1"]] for row in episode_rows],
+                dtype=np.float32,
+            )
+            # Episode-prefixed metrics average window probabilities by path before scoring.
+            episode_metrics = compute_downstream_metrics(
+                episode_gts,
+                episode_preds,
+                is_classification=self.args.is_classification,
+                is_multilabel=getattr(self.args, "is_multilabel", False),
+                output_dim=getattr(self.args, "output_dim", None),
+                stage_names=getattr(self.args, "stage_names", None),
+                include_binary_probability_metrics=True,
+            )
+            for k, v in episode_metrics.items():
+                self.log(
+                    f"{stage}_episode_{k}",
+                    v,
+                    prog_bar=True,
+                    logger=True,
+                    sync_dist=False,
+                    on_epoch=True,
+                )
 
         trainer = getattr(self, "trainer", None)
         if (
