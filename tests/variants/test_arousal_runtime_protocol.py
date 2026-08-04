@@ -125,6 +125,7 @@ def test_arousal_export_counts_come_from_truth_raster_across_variants(package_na
 
     rows = inference_mod.build_arousal_prediction_rows([record], {name: 0.5 for name in metrics_mod.AROUSAL_SUBTYPES})
 
+    assert rows[0]["n_predictions"] == truth.size
     assert rows[0]["true_arousal_res_event_count"] == 1
     assert rows[0]["true_arousal_event_count"] == 1
     assert rows[0]["true_arousal_res_index_per_hour"] == 0.0

@@ -345,7 +345,7 @@ def build_arousal_prediction_rows(
             "total_groundtruth": evaluated["total_truth"].tolist(),
             "total_prediction": evaluated["total_prediction"].tolist(),
             "arousal_subtypes": list(AROUSAL_SUBTYPES),
-            "n_predictions": int(truth.shape[0]),
+            "n_predictions": int(truth.size),
             "n_windows": int(record.get("n_windows", 1)),
             "token_starts": list(record.get("token_starts", [int(record.get("token_start", 0))])),
             "tst_hours": tst_hours,
