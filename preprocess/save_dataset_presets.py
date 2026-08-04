@@ -693,6 +693,11 @@ def main() -> None:
             print("Overlap windows enabled; excluding val/test splits unless --include-overlap-eval-splits is set.")
         if not splits:
             raise ValueError("Overlap windows excluded val/test splits and no splits remain.")
+    if "arousal" in channel_names and stride_tokens != args.n_tokens and {"val", "test"} & set(splits):
+        raise ValueError(
+            "Built-in arousal val/test presets require contiguous non-overlapping windows: "
+            "--stride-tokens must equal --n-tokens."
+        )
 
     print(f"Dataset name: {dataset_name}")
     print(f"Config YAML: {args.config}")

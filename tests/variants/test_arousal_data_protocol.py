@@ -131,6 +131,38 @@ def test_variant_arousal_converter_supports_multiple_ark_shards(
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])
+def test_variant_arousal_converter_rejects_overlapping_eval_windows(namespace: str, tmp_path: Path) -> None:
+    converter_module = importlib.import_module(f"{namespace}.preprocess.convert_npz_to_kaldi")
+    config_path = tmp_path / "config.yaml"
+    index_path = tmp_path / "index.csv"
+    config_path.write_text("model:\n  channels:\n    - name: ppg\n      input_dim: 8\n")
+    index_path.write_text(
+        "path,duration,split,dataset,source,session_id,arousal_event_mask,stage_mask\n"
+        "missing.npz,60,val,center-a,center-a,record-1,1,1\n"
+    )
+    args = converter_module.parse_args(
+        [
+            "--index",
+            str(index_path),
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(tmp_path / "kaldi"),
+            "--max-tokens",
+            "2",
+            "--stride-tokens",
+            "1",
+            "--include-overlap-eval-splits",
+            "--extra-channels",
+            "arousal",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="contiguous non-overlapping windows"):
+        converter_module.convert(args)
+
+
+@pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])
 @pytest.mark.parametrize(
     ("mutation", "match"),
     [

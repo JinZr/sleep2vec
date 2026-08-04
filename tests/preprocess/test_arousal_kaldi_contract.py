@@ -246,6 +246,33 @@ def test_arousal_kaldi_conversion_requires_thirty_second_tokens(tmp_path: Path) 
         convert(args)
 
 
+def test_arousal_kaldi_conversion_rejects_overlapping_eval_windows(tmp_path: Path) -> None:
+    config_path, index_path, _ = _write_source(tmp_path)
+    frame = pd.read_csv(index_path)
+    frame["split"] = "val"
+    frame.to_csv(index_path, index=False)
+    args = parse_args(
+        [
+            "--index",
+            str(index_path),
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(tmp_path / "kaldi"),
+            "--max-tokens",
+            "2",
+            "--stride-tokens",
+            "1",
+            "--include-overlap-eval-splits",
+            "--extra-channels",
+            "arousal",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="contiguous non-overlapping windows"):
+        convert(args)
+
+
 def test_arousal_kaldi_conversion_supports_ark_shards(tmp_path: Path) -> None:
     config_path, index_path, events = _write_source(tmp_path)
     output_dir = tmp_path / "kaldi"

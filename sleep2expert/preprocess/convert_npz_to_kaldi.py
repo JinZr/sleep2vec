@@ -545,6 +545,18 @@ def convert(args: argparse.Namespace) -> Path:
         df = df[df["split"].astype(str).isin(requested_splits)].copy()
         if df.empty:
             raise ValueError(f"No rows matched requested --split values: {sorted(requested_splits)}.")
+    eval_stride_tokens = stride_tokens
+    if 0 < stride_tokens < args.max_tokens and not args.include_overlap_eval_splits:
+        eval_stride_tokens = args.max_tokens
+    if (
+        "arousal" in channel_names
+        and eval_stride_tokens != args.max_tokens
+        and df["split"].astype(str).isin({"val", "test"}).any()
+    ):
+        raise ValueError(
+            "Built-in arousal val/test Kaldi conversion requires contiguous non-overlapping windows: "
+            "the effective eval stride must equal --max-tokens."
+        )
     if 0 < stride_tokens < args.max_tokens and not args.include_overlap_eval_splits:
         if df["split"].astype(str).isin({"val", "test"}).any():
             print(

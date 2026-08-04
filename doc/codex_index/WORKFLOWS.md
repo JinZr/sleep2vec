@@ -47,7 +47,9 @@ files. Preset loading turns each 30-second block into one width-120 token. Kaldi
 conversion writes the same logical channel as one uncompressed width-120 matrix
 and repeats the total and four subtype ArI scalars plus `tst` in the manifest.
 Both backends must converge element-for-element on tokens, metadata, path, and
-token offsets.
+token offsets. Validation and test artifacts use contiguous, non-overlapping
+windows whose stride equals the maximum window length; training artifacts may
+use other stride policies.
 
 Variant recipes use their package-local preprocessing modules. A shared
 contract change requires explicit parity review rather than a root import.
