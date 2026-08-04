@@ -10,7 +10,8 @@ import pytest
 import torch
 import yaml
 
-from sleep2vec.metrics import compute_ahi_pointwise_metrics, compute_downstream_metrics
+from sleep2vec.metrics.ahi import compute_ahi_pointwise_metrics
+from sleep2vec.metrics.core import compute_downstream_metrics
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec.utils import _build_finetune_loader
 

@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from sleep2vec.common import persist_run_config_and_args
 from sleep2vec.losses.cox import CoxPHLossVectorized
-from sleep2vec.metrics import (
+from sleep2vec.metrics.core import (
     compute_multilabel_classification_metrics,
     compute_multilabel_metrics_by_disease,
     compute_survival_c_index_by_disease,

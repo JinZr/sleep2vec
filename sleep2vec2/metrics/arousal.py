@@ -6,7 +6,7 @@ from typing import Any, Mapping
 import numpy as np
 from sklearn.metrics import average_precision_score
 
-from sleep2vec.metrics import binary_sequence_to_segments, filter_segments_by_duration, vectorized_event_stats
+from sleep2vec2.metrics.core import binary_sequence_to_segments, filter_segments_by_duration, vectorized_event_stats
 
 # Source contract: these names and their order describe the source/exporter taxonomy used by this task;
 # they are not a universal AASM arousal subtype ontology.

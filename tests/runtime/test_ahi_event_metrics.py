@@ -13,20 +13,19 @@ import torch
 import sleep2vec.finetune as finetune
 from sleep2vec.finetune import supervised
 from sleep2vec.infer import parse_args, run_inference
-import sleep2vec.metrics as metrics_mod
-from sleep2vec.metrics import (
+import sleep2vec.metrics.ahi as metrics_mod
+from sleep2vec.metrics.ahi import (
     AHI_COARSE_THRESHOLD_GRID,
     AHI_FINE_THRESHOLD_GRID,
+    AHI_MIN_EVENT_DURATION,
     _evaluate_single_ahi_record,
-    binary_sequence_to_segments,
     compute_ahi_event_metrics,
     extract_ahi_summary_scatter_arrays,
-    filter_segments_by_duration,
     filter_segments_by_stage,
     merge_intervals,
     select_best_ahi_threshold,
-    vectorized_event_stats,
 )
+from sleep2vec.metrics.core import binary_sequence_to_segments, filter_segments_by_duration, vectorized_event_stats
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 
 
@@ -93,7 +92,7 @@ def test_filter_segments_by_stage_keeps_sleep_overlap_at_segment_end():
 
 
 def test_filter_segments_by_duration_uses_inclusive_duration_semantics():
-    filtered = filter_segments_by_duration([[0, 8], [0, 9], [0, 10], [20, 35]])
+    filtered = filter_segments_by_duration([[0, 8], [0, 9], [0, 10], [20, 35]], min_duration=AHI_MIN_EVENT_DURATION)
     assert filtered == [[0, 9], [0, 10], [20, 35]]
 
 

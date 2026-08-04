@@ -158,7 +158,7 @@ python3.10 -m pytest -q \
 ```
 
 #### `runtime-orchestrator`
-- Owns: `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `sleep2vec/checkpoints.py`, `sleep2vec/metrics.py`, `sleep2vec/callbacks/pair_acc_logger.py`, `sleep2vec/diagnostics.py`.
+- Owns: `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `sleep2vec/checkpoints.py`, `sleep2vec/metrics/`, `sleep2vec/callbacks/pair_acc_logger.py`, `sleep2vec/diagnostics.py`.
 - Responsibilities: trainer wiring, W&B behavior, checkpoint naming and averaging, inference execution, results CSV schema, diagnostics mode, runtime callbacks and logging.
 - Invoke when: changing CLI flags, trainer strategies, checkpoint alias behavior, runtime logging, diagnostics flow, or evaluation/export behavior.
 - Must not be split from: `tests/runtime/test_checkpoints.py` and config/task guard tests when runtime flags or monitor names change.
@@ -235,7 +235,7 @@ python -m agent_tools skills --validate
 - Keep `data/default_dataset.py`, `data/psg_pretrain_dataset.py`, `data/utils.py`, and `data/samplers.py` under one owner for a single change.
 - Keep `sleep2vec/config.py`, `sleep2vec/common.py`, and `sleep2vec/builders.py` under one owner for a single change.
 - Keep `sleep2vec/pretrain_model.py`, `sleep2vec/downstream_model.py`, `sleep2vec/sleep2vec_modelling.py`, and `sleep2vec/sleep2vec_finetuning.py` under one owner for a single change.
-- Keep `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `sleep2vec/checkpoints.py`, and `sleep2vec/metrics.py` under one owner for a single change.
+- Keep `sleep2vec/pretrain.py`, `sleep2vec/finetune.py`, `sleep2vec/infer.py`, `sleep2vec/checkpoints.py`, and `sleep2vec/metrics/` under one owner for a single change.
 
 ### Handoff Format
 - Every subagent report should include:

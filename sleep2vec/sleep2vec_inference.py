@@ -1,14 +1,14 @@
 import numpy as np
 import torch
 
-from sleep2vec.arousal_metrics import (
+from sleep2vec.metrics.ahi import _evaluate_single_ahi_record, _merge_ahi_window_records
+from sleep2vec.metrics.arousal import (
     AROUSAL_SUBTYPE_SLUGS,
     AROUSAL_SUBTYPES,
     evaluate_arousal_record,
     merge_arousal_window_records,
     validate_arousal_thresholds,
 )
-from sleep2vec.metrics import _evaluate_single_ahi_record, _merge_ahi_window_records
 
 
 def prediction_export_enabled(args) -> bool:

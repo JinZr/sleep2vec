@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from sleep2vec.arousal_metrics import (
+from sleep2vec.metrics.arousal import (
     AROUSAL_SUBTYPES,
     AROUSAL_THRESHOLD_GRID,
     compute_arousal_metrics,

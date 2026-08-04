@@ -12,7 +12,7 @@ PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
 @pytest.mark.parametrize("package_name", PACKAGES)
 def test_arousal_builtin_runtime_contract_is_package_local(package_name: str):
     common = importlib.import_module(f"{package_name}.common")
-    arousal_metrics = importlib.import_module(f"{package_name}.arousal_metrics")
+    arousal_metrics = importlib.import_module(f"{package_name}.metrics.arousal")
     inference = importlib.import_module(f"{package_name}.sleep2vec_inference")
     finetuning = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
     results = importlib.import_module(f"{package_name}.results")
@@ -26,8 +26,8 @@ def test_arousal_builtin_runtime_contract_is_package_local(package_name: str):
     assert args.label_source_name == "arousal"
     assert args.auxiliary_label_source_names == ["stage5"]
     assert args.monitor == "val_arousal_subtype_macro_event_f1"
-    assert arousal_metrics.compute_arousal_metrics.__module__ == f"{package_name}.arousal_metrics"
-    assert arousal_metrics.vectorized_event_stats.__module__ == f"{package_name}.metrics"
+    assert arousal_metrics.compute_arousal_metrics.__module__ == f"{package_name}.metrics.arousal"
+    assert arousal_metrics.vectorized_event_stats.__module__ == f"{package_name}.metrics.core"
     assert inference.build_arousal_prediction_rows.__module__ == f"{package_name}.sleep2vec_inference"
     assert finetuning.Sleep2vecFinetuning._is_arousal_task.__module__ == f"{package_name}.sleep2vec_finetuning"
     assert results._resolve_task_family(args) == "arousal_sequence"
@@ -35,7 +35,7 @@ def test_arousal_builtin_runtime_contract_is_package_local(package_name: str):
 
 @pytest.mark.parametrize("package_name", PACKAGES)
 def test_arousal_metric_protocol_matches_across_variants(package_name: str):
-    metrics_mod = importlib.import_module(f"{package_name}.arousal_metrics")
+    metrics_mod = importlib.import_module(f"{package_name}.metrics.arousal")
     truth = np.zeros((30, 4), dtype=np.int64)
     truth[2:5, :] = 1
     record = {
@@ -61,7 +61,7 @@ def test_arousal_metric_protocol_matches_across_variants(package_name: str):
 
 @pytest.mark.parametrize("package_name", PACKAGES)
 def test_arousal_metric_rejects_fractional_truth_across_variants(package_name: str):
-    metrics_mod = importlib.import_module(f"{package_name}.arousal_metrics")
+    metrics_mod = importlib.import_module(f"{package_name}.metrics.arousal")
     truth = np.zeros((30, 4), dtype=np.float32)
     truth[0, 0] = 0.5
     record = {
@@ -84,7 +84,7 @@ def test_arousal_metric_rejects_fractional_truth_across_variants(package_name: s
 
 @pytest.mark.parametrize("package_name", PACKAGES)
 def test_arousal_duplicate_window_identity_is_strict_across_variants(package_name: str):
-    metrics_mod = importlib.import_module(f"{package_name}.arousal_metrics")
+    metrics_mod = importlib.import_module(f"{package_name}.metrics.arousal")
     truth = np.zeros((30, 4), dtype=np.int64)
     record = {
         "sample_id": "sample-a",
@@ -108,7 +108,7 @@ def test_arousal_duplicate_window_identity_is_strict_across_variants(package_nam
 
 @pytest.mark.parametrize("package_name", PACKAGES)
 def test_arousal_export_counts_come_from_truth_raster_across_variants(package_name: str):
-    metrics_mod = importlib.import_module(f"{package_name}.arousal_metrics")
+    metrics_mod = importlib.import_module(f"{package_name}.metrics.arousal")
     inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
     truth = np.zeros((30, 4), dtype=np.int64)
     truth[0:3, 0] = 1
@@ -123,9 +123,7 @@ def test_arousal_export_counts_come_from_truth_raster_across_variants(package_na
         "arousal_index_per_hour": 0.0,
     }
 
-    rows = inference_mod.build_arousal_prediction_rows(
-        [record], {name: 0.5 for name in metrics_mod.AROUSAL_SUBTYPES}
-    )
+    rows = inference_mod.build_arousal_prediction_rows([record], {name: 0.5 for name in metrics_mod.AROUSAL_SUBTYPES})
 
     assert rows[0]["true_arousal_res_event_count"] == 1
     assert rows[0]["true_arousal_event_count"] == 1

@@ -26,8 +26,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Multilabel sidecars | load, attach, and stack owners in [`data/multilabel.py`](../../data/multilabel.py) | preset, trainer, or inference-local parsers |
 | Pretrain/finetune loader assembly | `get_pretrain_dataloader`, `get_finetune_dataloaders` in [`sleep2vec/utils.py`](../../sleep2vec/utils.py) | CLI entrypoints |
 | Checkpoint initialization and averaging | [`sleep2vec/checkpoints.py`](../../sleep2vec/checkpoints.py) | inference or variant scripts |
-| Downstream metric definitions | [`sleep2vec/metrics.py`](../../sleep2vec/metrics.py) | result writers or plots |
-| Arousal event metrics and threshold protocol | [`sleep2vec/arousal_metrics.py`](../../sleep2vec/arousal_metrics.py) | finetune, inference, result writers, or plots |
+| Shared downstream metrics and event primitives | [`sleep2vec/metrics/core.py`](../../sleep2vec/metrics/core.py) | result writers or task-specific metrics |
+| AHI event metrics and threshold protocol | [`sleep2vec/metrics/ahi.py`](../../sleep2vec/metrics/ahi.py) | finetune, inference, result writers, or plots |
+| Arousal event metrics and threshold protocol | [`sleep2vec/metrics/arousal.py`](../../sleep2vec/metrics/arousal.py) | finetune, inference, result writers, or plots |
 | Task-aware epoch reduction | `Sleep2vecFinetuning` in [`sleep2vec/sleep2vec_finetuning.py`](../../sleep2vec/sleep2vec_finetuning.py) | a separate inference evaluator |
 | Result and inference artifact paths | [`sleep2vec/results.py`](../../sleep2vec/results.py) | task-specific CSV writers |
 | Prediction row extraction | [`sleep2vec/sleep2vec_inference.py`](../../sleep2vec/sleep2vec_inference.py) | result serialization code |
@@ -85,8 +86,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 
 ### AHI, arousal, survival, or multilabel behavior
 
-- Keep AHI event metrics and threshold fitting in the shared metric/finetune path.
-- Keep arousal event matching, window merging, threshold fitting, and ArI summaries in the package-local `arousal_metrics.py`; finetuning owns only stage reduction and distributed coordination.
+- Keep AHI event metrics and threshold fitting in the package-local `metrics/ahi.py`; finetuning owns only stage reduction and distributed coordination.
+- Keep arousal event matching, window merging, threshold fitting, and ArI summaries in the package-local `metrics/arousal.py`; finetuning owns only stage reduction and distributed coordination.
 - Keep survival and multilabel sidecar parsing in `data.survival` and `data.multilabel`.
 - Aggregate repeated windows by the configured subject key for subject-level loss/metrics.
 - Keep prediction rows traceable to path/window and disease-column order.

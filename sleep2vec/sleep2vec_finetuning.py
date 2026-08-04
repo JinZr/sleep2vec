@@ -12,7 +12,18 @@ import yaml
 from data.multilabel import load_multilabel_disease_columns
 from data.survival import load_survival_disease_columns
 from sleep2vec import diagnostics
-from sleep2vec.arousal_metrics import (
+from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
+from sleep2vec.common import remap_stage_labels
+from sleep2vec.distributed import get_rank_world_size, is_torch_distributed_ready
+from sleep2vec.losses.cox import CoxPHLossVectorized
+from sleep2vec.metrics.ahi import (
+    AHI_FINE_THRESHOLD_GRID,
+    _aggregate_prepared_ahi_records,
+    _compute_ahi_event_metrics_from_prepared,
+    _prepare_ahi_records,
+    extract_ahi_summary_scatter_arrays,
+)
+from sleep2vec.metrics.arousal import (
     AROUSAL_SUBTYPE_INDEX_KEYS,
     AROUSAL_SUBTYPES,
     AROUSAL_THRESHOLD_GRID,
@@ -22,20 +33,11 @@ from sleep2vec.arousal_metrics import (
     validate_arousal_threshold_protocol,
     validate_arousal_thresholds,
 )
-from sleep2vec.averagings.base import BaseModelAverager, build_model_averager
-from sleep2vec.common import remap_stage_labels
-from sleep2vec.distributed import get_rank_world_size, is_torch_distributed_ready
-from sleep2vec.losses.cox import CoxPHLossVectorized
-from sleep2vec.metrics import (
-    AHI_FINE_THRESHOLD_GRID,
-    _aggregate_prepared_ahi_records,
-    _compute_ahi_event_metrics_from_prepared,
-    _prepare_ahi_records,
+from sleep2vec.metrics.core import (
     compute_downstream_metrics,
     compute_multilabel_classification_metrics,
     compute_multilabel_metrics_by_disease,
     compute_survival_c_index_by_disease,
-    extract_ahi_summary_scatter_arrays,
 )
 from sleep2vec.schedulers import build_warmup_cosine_scheduler
 from sleep2vec.sleep2vec_inference import (
