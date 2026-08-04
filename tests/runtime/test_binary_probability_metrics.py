@@ -7,11 +7,51 @@ import pytest
 
 METRIC_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
 PROBABILITY_METRIC_KEYS = {"auprc", "brier", "ece"}
+PACKAGE_LEVEL_METRICS_API = {
+    "AHI_COARSE_THRESHOLD_GRID",
+    "AHI_FINE_THRESHOLD_GRID",
+    "AHI_MIN_EVENT_DURATION",
+    "AHI_MIN_TST_HOURS",
+    "AHI_SEGMENT_MERGE_TOLERANCE",
+    "AHI_SEVERITY_THRESHOLDS",
+    "AHI_THRESHOLD_GRID",
+    "PreparedAHIRecord",
+    "binary_positive_scores_from_two_logits",
+    "binary_sequence_to_segments",
+    "binary_specificity",
+    "compute_ahi_event_metrics",
+    "compute_ahi_pointwise_metrics",
+    "compute_binary_label_metrics",
+    "compute_binary_probability_metrics",
+    "compute_downstream_metrics",
+    "compute_multilabel_classification_metrics",
+    "compute_multilabel_metrics_by_disease",
+    "compute_survival_c_index",
+    "compute_survival_c_index_by_disease",
+    "extract_ahi_summary_scatter_arrays",
+    "filter_segments_by_duration",
+    "filter_segments_by_stage",
+    "icc2_two_raters_arrays",
+    "macro_specificity",
+    "merge_intervals",
+    "roc_auc_from_two_logits",
+    "select_best_ahi_threshold",
+    "vectorized_event_stats",
+}
 
 
 def _two_class_probabilities(positive_probability) -> np.ndarray:
     positive_probability = np.asarray(positive_probability, dtype=np.float32)
     return np.column_stack((1.0 - positive_probability, positive_probability))
+
+
+@pytest.mark.parametrize("package_name", METRIC_PACKAGES)
+def test_metrics_package_preserves_pre_split_public_api(package_name: str):
+    metrics_mod = importlib.import_module(f"{package_name}.metrics")
+
+    assert set(metrics_mod.__all__) == PACKAGE_LEVEL_METRICS_API
+    assert all(hasattr(metrics_mod, name) for name in PACKAGE_LEVEL_METRICS_API)
+    assert metrics_mod.filter_segments_by_duration([[0, 8], [0, 9]]) == [[0, 9]]
 
 
 @pytest.mark.parametrize("package_name", METRIC_PACKAGES)
