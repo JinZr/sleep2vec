@@ -353,12 +353,12 @@ def build_arousal_prediction_rows(
         for subtype_idx, (subtype, slug) in enumerate(zip(AROUSAL_SUBTYPES, AROUSAL_SUBTYPE_SLUGS)):
             true_index = float(evaluated["true_indices"][subtype_idx])
             row[f"arousal_{slug}_threshold"] = float(thresholds[subtype])
-            row[f"true_arousal_{slug}_event_count"] = int(round(true_index * tst_hours))
+            row[f"true_arousal_{slug}_event_count"] = len(evaluated["gt_segments"][subtype_idx])
             row[f"pred_arousal_{slug}_event_count"] = len(evaluated["pred_segments"][subtype_idx])
             row[f"true_arousal_{slug}_index_per_hour"] = true_index
             row[f"pred_arousal_{slug}_index_per_hour"] = float(evaluated["pred_indices"][subtype_idx])
         true_total_index = float(evaluated["true_indices"][-1])
-        row["true_arousal_event_count"] = int(round(true_total_index * tst_hours))
+        row["true_arousal_event_count"] = len(evaluated["total_gt_segments"])
         row["pred_arousal_event_count"] = len(evaluated["total_pred_segments"])
         row["true_arousal_index_per_hour"] = true_total_index
         row["pred_arousal_index_per_hour"] = float(evaluated["pred_indices"][-1])

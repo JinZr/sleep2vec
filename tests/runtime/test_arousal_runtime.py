@@ -246,6 +246,8 @@ def test_arousal_prediction_row_contains_protocol_and_summary_fields():
     truth = np.zeros((30, 4), dtype=np.int64)
     truth[0:3, 0] = 1
     record = _record(truth=truth, path="night.npz", token_start=0)
+    record["arousal_res_index_per_hour"] = 0.0
+    record["arousal_index_per_hour"] = 0.0
 
     rows = build_arousal_prediction_rows([record], {name: 0.5 for name in AROUSAL_SUBTYPES})
 
@@ -255,6 +257,9 @@ def test_arousal_prediction_row_contains_protocol_and_summary_fields():
     assert rows[0]["arousal_subtypes"] == ["RES", "SPONT", "Limb", "PLM"]
     assert rows[0]["arousal_res_threshold"] == 0.5
     assert rows[0]["true_arousal_res_event_count"] == 1
+    assert rows[0]["true_arousal_event_count"] == 1
+    assert rows[0]["true_arousal_res_index_per_hour"] == 0.0
+    assert rows[0]["true_arousal_index_per_hour"] == 0.0
     assert rows[0]["pred_arousal_event_count"] == 1
     assert rows[0]["token_starts"] == [0]
 

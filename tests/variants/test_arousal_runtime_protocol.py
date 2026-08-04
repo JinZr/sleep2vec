@@ -104,3 +104,30 @@ def test_arousal_duplicate_window_identity_is_strict_across_variants(package_nam
 
     with pytest.raises(ValueError, match="different sample_id"):
         metrics_mod.merge_arousal_window_records([record, conflicting])
+
+
+@pytest.mark.parametrize("package_name", PACKAGES)
+def test_arousal_export_counts_come_from_truth_raster_across_variants(package_name: str):
+    metrics_mod = importlib.import_module(f"{package_name}.arousal_metrics")
+    inference_mod = importlib.import_module(f"{package_name}.sleep2vec_inference")
+    truth = np.zeros((30, 4), dtype=np.int64)
+    truth[0:3, 0] = 1
+    record = {
+        "truth": truth,
+        "score": truth.astype(np.float32),
+        "tst_hours": 3.0,
+        "arousal_res_index_per_hour": 0.0,
+        "arousal_spont_index_per_hour": 0.0,
+        "arousal_limb_index_per_hour": 0.0,
+        "arousal_plm_index_per_hour": 0.0,
+        "arousal_index_per_hour": 0.0,
+    }
+
+    rows = inference_mod.build_arousal_prediction_rows(
+        [record], {name: 0.5 for name in metrics_mod.AROUSAL_SUBTYPES}
+    )
+
+    assert rows[0]["true_arousal_res_event_count"] == 1
+    assert rows[0]["true_arousal_event_count"] == 1
+    assert rows[0]["true_arousal_res_index_per_hour"] == 0.0
+    assert rows[0]["true_arousal_index_per_hour"] == 0.0
