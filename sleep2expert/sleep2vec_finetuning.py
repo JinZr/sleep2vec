@@ -1460,7 +1460,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 return None
             return self._compute_arousal_metrics_for_stage(stage, records)
 
-        rank, _ = get_rank_world_size()
+        rank, world_size = get_rank_world_size()
         payload: list[dict[str, object] | None] = [None]
         if rank == 0:
             try:
@@ -1493,8 +1493,17 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     "error_message": str(exc),
                 }
 
-        dist.broadcast_object_list(payload, src=0)
-        result = payload[0]
+        if hasattr(dist, "broadcast_object_list"):
+            dist.broadcast_object_list(payload, src=0)
+            result = payload[0]
+        elif hasattr(dist, "all_gather_object"):
+            gathered: list[dict[str, object] | None] = [None] * world_size
+            dist.all_gather_object(gathered, payload[0])
+            result = gathered[0]
+        else:
+            raise RuntimeError(
+                "Torch distributed object collectives are unavailable; cannot synchronize arousal validation metrics."
+            )
         error_message = result["error_message"]
         if error_message is not None:
             if result["error_type"] == "ValueError":
@@ -1557,7 +1566,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 return None
             return self._compute_ahi_metrics_for_stage(stage, records)
 
-        rank, _ = get_rank_world_size()
+        rank, world_size = get_rank_world_size()
         payload: list[dict[str, object] | None] = [None]
         scatter_arrays: tuple[np.ndarray, np.ndarray] | None = None
         if rank == 0:
@@ -1585,8 +1594,17 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     "error_message": str(exc),
                 }
 
-        dist.broadcast_object_list(payload, src=0)
-        result = payload[0]
+        if hasattr(dist, "broadcast_object_list"):
+            dist.broadcast_object_list(payload, src=0)
+            result = payload[0]
+        elif hasattr(dist, "all_gather_object"):
+            gathered: list[dict[str, object] | None] = [None] * world_size
+            dist.all_gather_object(gathered, payload[0])
+            result = gathered[0]
+        else:
+            raise RuntimeError(
+                "Torch distributed object collectives are unavailable; cannot synchronize AHI validation metrics."
+            )
         error_message = result["error_message"]
         if error_message is not None:
             if result["error_type"] == "ValueError":
@@ -1644,10 +1662,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return records
 
         rank, world_size = get_rank_world_size()
-        gathered: list[list[dict[str, np.ndarray]] | None] | None = [None] * world_size if rank == 0 else None
-        dist.gather_object(records, gathered, dst=0)
-        if gathered is None:
-            return []
+        if not hasattr(dist, "gather_object"):
+            if not hasattr(dist, "all_gather_object"):
+                return records
+            gathered: list[list[dict[str, np.ndarray]] | None] = [None] * world_size
+            dist.all_gather_object(gathered, records)
+        else:
+            gathered: list[list[dict[str, np.ndarray]] | None] | None = [None] * world_size if rank == 0 else None
+            dist.gather_object(records, gathered, dst=0)
+            if gathered is None:
+                return []
 
         merged: list[dict[str, np.ndarray]] = []
         for item in gathered:
@@ -1660,10 +1684,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return records
 
         rank, world_size = get_rank_world_size()
-        gathered: list[list[dict[str, object]] | None] | None = [None] * world_size if rank == 0 else None
-        dist.gather_object(records, gathered, dst=0)
-        if gathered is None:
-            return []
+        if not hasattr(dist, "gather_object"):
+            if not hasattr(dist, "all_gather_object"):
+                return records
+            gathered: list[list[dict[str, object]] | None] = [None] * world_size
+            dist.all_gather_object(gathered, records)
+        else:
+            gathered: list[list[dict[str, object]] | None] | None = [None] * world_size if rank == 0 else None
+            dist.gather_object(records, gathered, dst=0)
+            if gathered is None:
+                return []
 
         merged: list[dict[str, object]] = []
         for item in gathered:
