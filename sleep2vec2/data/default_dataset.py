@@ -22,6 +22,9 @@ from sleep2vec2.data.multilabel import stack_multilabel_metadata
 from sleep2vec2.data.survival import stack_survival_metadata
 from sleep2vec2.data.utils import (
     AROUSAL_METADATA_KEYS,
+    _extract_builtin_arousal_window,
+    _load_builtin_arousal_events,
+    _load_builtin_arousal_metadata_values,
     filter_valid_sample_indices,
     load_builtin_ahi_metadata,
     load_builtin_arousal_metadata,
@@ -229,7 +232,15 @@ class DefaultDataset(BaseDataset):
         chosen_channels: list[str],
     ) -> tuple[dict, dict, dict, dict]:
         with load_npz(src.path) as npz:
-            payload = {k: self.extractors[k](npz, src.start, src.end) for k in chosen_channels}
+            arousal_events = _load_builtin_arousal_events(npz) if "arousal" in chosen_channels else None
+            payload = {
+                k: (
+                    _extract_builtin_arousal_window(arousal_events, src.start, src.end)
+                    if k == "arousal"
+                    else self.extractors[k](npz, src.start, src.end)
+                )
+                for k in chosen_channels
+            }
             tokens = {k: self.tokenizers[k](payload[k]) for k in chosen_channels}
             masks = {k: self.mask_generators[k](tokens[k]) for k in chosen_channels}
             metadata = dict(src.metadata)
@@ -238,7 +249,7 @@ class DefaultDataset(BaseDataset):
                 metadata["ahi"] = ahi_value
                 metadata["tst"] = tst_value
             if "arousal" in chosen_channels:
-                metadata.update(load_builtin_arousal_metadata(npz))
+                metadata.update(_load_builtin_arousal_metadata_values(npz))
         return payload, tokens, masks, metadata
 
     def filter_with_metadata(

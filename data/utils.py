@@ -124,8 +124,7 @@ def _load_builtin_arousal_events(npz) -> np.ndarray:
     return events
 
 
-def builtin_arousal_extractor(npz, start: int, end: int) -> torch.Tensor:
-    events = _load_builtin_arousal_events(npz)
+def _extract_builtin_arousal_window(events: np.ndarray, start: int, end: int) -> torch.Tensor:
     extracted = events[start * 30 : end * 30]
     expected_rows = (end - start) * 30
     if extracted.shape[0] != expected_rows:
@@ -134,6 +133,10 @@ def builtin_arousal_extractor(npz, start: int, end: int) -> torch.Tensor:
             f"[{start}, {end}), got {extracted.shape[0]}."
         )
     return torch.as_tensor(extracted, dtype=torch.float32)
+
+
+def builtin_arousal_extractor(npz, start: int, end: int) -> torch.Tensor:
+    return _extract_builtin_arousal_window(_load_builtin_arousal_events(npz), start, end)
 
 
 def builtin_arousal_tokenizer(data: torch.Tensor) -> torch.Tensor:
@@ -171,8 +174,7 @@ def load_builtin_ahi_metadata(npz) -> tuple[float, float]:
     return ahi_value, tst_value
 
 
-def load_builtin_arousal_metadata(npz) -> dict[str, float]:
-    _load_builtin_arousal_events(npz)
+def _load_builtin_arousal_metadata_values(npz) -> dict[str, float]:
     values: dict[str, float] = {}
     for key in AROUSAL_METADATA_KEYS:
         if key not in npz:
@@ -193,6 +195,11 @@ def load_builtin_arousal_metadata(npz) -> dict[str, float]:
             raise ValueError(f"Built-in arousal contract requires scalar '{key}' >= 0, got {value}.")
         values[key] = value
     return values
+
+
+def load_builtin_arousal_metadata(npz) -> dict[str, float]:
+    _load_builtin_arousal_events(npz)
+    return _load_builtin_arousal_metadata_values(npz)
 
 
 def pad(x, max_len: int, pad_value: torch.types.Number = 0, dim: int = 0) -> torch.Tensor:
@@ -249,7 +256,7 @@ def filter_valid_sample_indices(
     requires_builtin_ahi = "ahi" in extractors
     requires_builtin_arousal = "arousal" in extractors
 
-    def _available_from_npz(npz):
+    def _available_from_npz(npz, *, has_valid_arousal: bool):
         available = []
         for ch in channel_names:
             if ch == "ahi":
@@ -260,6 +267,9 @@ def filter_valid_sample_indices(
                 available.append(ch)
                 continue
             if ch == "arousal":
+                if has_valid_arousal:
+                    available.append(ch)
+                    continue
                 try:
                     load_builtin_arousal_metadata(npz)
                 except Exception:
@@ -280,12 +290,24 @@ def filter_valid_sample_indices(
         filtered_samples: list[t.Any] = []
         try:
             with load_npz(path) as npz:
+                arousal_events_for_path = None
                 arousal_metadata_for_path = None
                 if requires_builtin_arousal:
-                    arousal_metadata_for_path = load_builtin_arousal_metadata(npz)
+                    arousal_events_for_path = _load_builtin_arousal_events(npz)
+                    arousal_metadata_for_path = _load_builtin_arousal_metadata_values(npz)
                     for sample_index in samples:
-                        payload = extractors["arousal"](npz, sample_index.start, sample_index.end)
+                        payload = _extract_builtin_arousal_window(
+                            arousal_events_for_path, sample_index.start, sample_index.end
+                        )
                         tokenizers["arousal"](payload)
+
+                def extract_payload(key: str, sample_index: t.Any):
+                    if key == "arousal":
+                        return _extract_builtin_arousal_window(
+                            arousal_events_for_path, sample_index.start, sample_index.end
+                        )
+                    return extractors[key](npz, sample_index.start, sample_index.end)
+
                 for sample_index in samples:
                     try:
                         if requires_builtin_ahi:
@@ -300,7 +322,7 @@ def filter_valid_sample_indices(
                                 metadata.update(arousal_metadata_for_path)
 
                         if allow_missing_channels:
-                            available = _available_from_npz(npz)
+                            available = _available_from_npz(npz, has_valid_arousal=arousal_events_for_path is not None)
                             if len(available) < min_channels:
                                 logging.info(
                                     "[Skip] Not enough channels at %s: have=%d need>=%d. Meta: %s",
@@ -310,14 +332,10 @@ def filter_valid_sample_indices(
                                     getattr(sample_index, "metadata", {}),
                                 )
                                 continue
-                            payload = {
-                                key: extractors[key](npz, sample_index.start, sample_index.end) for key in available
-                            }
+                            payload = {key: extract_payload(key, sample_index) for key in available}
                             tokens = {key: tokenizers[key](payload[key]) for key in available}
                         else:
-                            payload = {
-                                key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()
-                            }
+                            payload = {key: extract_payload(key, sample_index) for key in extractors}
                             tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
 
                         if requires_builtin_ahi and not bool((tokens["ahi"].reshape(-1) != -1.0).any().item()):
