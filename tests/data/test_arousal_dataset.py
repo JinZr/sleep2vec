@@ -33,6 +33,7 @@ def _dataset(index_path: Path, *, max_tokens: int = 2, token_sec: int = 30) -> P
         index=str(index_path),
         split=["train"],
         max_tokens=max_tokens,
+        stride_tokens=max_tokens,
         token_sec=token_sec,
         mask_rate=0.9,
         meta_data_names=list(AROUSAL_METADATA_KEYS),
@@ -78,6 +79,16 @@ def test_arousal_extractor_rejects_short_requested_window() -> None:
 
     with pytest.raises(ValueError, match=r"exactly 60 rows.*got 30"):
         builtin_arousal_extractor(npz, 0, 2)
+
+
+def test_arousal_dataset_rejects_record_when_any_window_is_truncated(tmp_path: Path) -> None:
+    path = tmp_path / "truncated.npz"
+    _write_arousal_npz(path, np.zeros((30, 4), dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": str(path), "split": "train", "duration": 60}]).to_csv(index_path, index=False)
+
+    with pytest.raises(ValueError, match="Invalid built-in arousal recording"):
+        _dataset(index_path, max_tokens=1)
 
 
 def test_arousal_dataset_backfills_scalars_and_pads_with_minus_one(tmp_path: Path) -> None:

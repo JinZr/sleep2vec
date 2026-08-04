@@ -280,6 +280,12 @@ def filter_valid_sample_indices(
         filtered_samples: list[t.Any] = []
         try:
             with load_npz(path) as npz:
+                arousal_metadata_for_path = None
+                if requires_builtin_arousal:
+                    arousal_metadata_for_path = load_builtin_arousal_metadata(npz)
+                    for sample_index in samples:
+                        payload = extractors["arousal"](npz, sample_index.start, sample_index.end)
+                        tokenizers["arousal"](payload)
                 for sample_index in samples:
                     try:
                         if requires_builtin_ahi:
@@ -289,10 +295,9 @@ def filter_valid_sample_indices(
                                 metadata["ahi"] = ahi_value
                                 metadata["tst"] = tst_value
                         if requires_builtin_arousal:
-                            arousal_metadata = load_builtin_arousal_metadata(npz)
                             metadata = getattr(sample_index, "metadata", None)
                             if isinstance(metadata, dict):
-                                metadata.update(arousal_metadata)
+                                metadata.update(arousal_metadata_for_path)
 
                         if allow_missing_channels:
                             available = _available_from_npz(npz)
@@ -341,6 +346,8 @@ def filter_valid_sample_indices(
                     except Exception as e:
                         logging.info(f"[Skip] Error loading sample {getattr(sample_index, 'id', '?')}: {e}")
         except Exception as e:
+            if requires_builtin_arousal:
+                raise ValueError(f"Invalid built-in arousal recording {path!r}: {e}") from e
             for sample_index in samples:
                 logging.info(f"[Skip] Error loading sample {getattr(sample_index, 'id', '?')}: {e}")
         return filtered_samples

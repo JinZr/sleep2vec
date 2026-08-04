@@ -1,10 +1,38 @@
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+
+
+@pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])
+def test_variant_arousal_filter_rejects_truncated_record_atomically(namespace: str, tmp_path: Path) -> None:
+    utils_module = importlib.import_module(f"{namespace}.data.utils")
+    path = tmp_path / f"{namespace}.npz"
+    payload = {
+        "arousal_event": np.zeros((30, 4), dtype=np.float32),
+        **{key: np.asarray(0.0, dtype=np.float32) for key in utils_module.AROUSAL_METADATA_KEYS},
+        "tst": np.asarray(3.0, dtype=np.float32),
+    }
+    np.savez(path, **payload)
+    samples = [
+        SimpleNamespace(id="window-0", path=str(path), start=0, end=1, payload={}, metadata={}),
+        SimpleNamespace(id="window-1", path=str(path), start=1, end=2, payload={}, metadata={}),
+    ]
+
+    with pytest.raises(ValueError, match="Invalid built-in arousal recording"):
+        utils_module.filter_valid_sample_indices(
+            samples,
+            {"arousal": utils_module.builtin_arousal_extractor},
+            {"arousal": utils_module.builtin_arousal_tokenizer},
+            allow_missing_channels=False,
+            channel_names=["arousal"],
+            min_channels=1,
+            max_workers=1,
+        )
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])
