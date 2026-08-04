@@ -1519,10 +1519,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return None
         return tuple(float(value) for value in thresholds)
 
-    @staticmethod
-    def _can_broadcast_ahi_metrics() -> bool:
-        return is_torch_distributed_ready() and hasattr(dist, "broadcast_object_list")
-
     def _compute_ahi_metrics_for_stage(
         self,
         stage: str,
@@ -1555,22 +1551,32 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self,
         stage: str,
         records: list[dict[str, np.ndarray]],
-    ) -> tuple[dict[str, float], float, tuple[np.ndarray, np.ndarray] | None]:
-        trainer = getattr(self, "trainer", None)
-        if trainer is None or not self._can_broadcast_ahi_metrics():
+    ) -> tuple[dict[str, float], float, tuple[np.ndarray, np.ndarray] | None] | None:
+        if not is_torch_distributed_ready():
+            if not records:
+                return None
             return self._compute_ahi_metrics_for_stage(stage, records)
 
+        rank, _ = get_rank_world_size()
         payload: list[dict[str, object] | None] = [None]
         scatter_arrays: tuple[np.ndarray, np.ndarray] | None = None
-        if trainer.is_global_zero:
+        if rank == 0:
             try:
-                metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
-                payload[0] = {
-                    "metrics": metrics,
-                    "eval_threshold": float(eval_threshold),
-                    "error_type": None,
-                    "error_message": None,
-                }
+                if not records:
+                    payload[0] = {
+                        "metrics": None,
+                        "eval_threshold": None,
+                        "error_type": None,
+                        "error_message": None,
+                    }
+                else:
+                    metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
+                    payload[0] = {
+                        "metrics": metrics,
+                        "eval_threshold": float(eval_threshold),
+                        "error_type": None,
+                        "error_message": None,
+                    }
             except Exception as exc:  # pragma: no cover - distributed error fan-out
                 payload[0] = {
                     "metrics": None,
@@ -1580,18 +1586,19 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 }
 
         dist.broadcast_object_list(payload, src=0)
-        result = payload[0] or {}
-        error_message = result.get("error_message")
+        result = payload[0]
+        error_message = result["error_message"]
         if error_message is not None:
-            if result.get("error_type") == "ValueError":
+            if result["error_type"] == "ValueError":
                 raise ValueError(str(error_message))
             raise RuntimeError(str(error_message))
+        if result["metrics"] is None:
+            return None
 
-        metrics = result["metrics"]
         eval_threshold = float(result["eval_threshold"])
         if stage == "val":
             self._ahi_eval_threshold = eval_threshold
-        return metrics, eval_threshold, scatter_arrays
+        return result["metrics"], eval_threshold, scatter_arrays
 
     @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):
@@ -1633,12 +1640,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return np.concatenate(gathered_preds, axis=0), np.concatenate(gathered_gts, axis=0)
 
     def _gather_ahi_event_records(self, records: list[dict[str, np.ndarray]]) -> list[dict[str, np.ndarray]]:
-        if not is_torch_distributed_ready() or not hasattr(dist, "all_gather_object"):
+        if not is_torch_distributed_ready():
             return records
 
-        _, world_size = get_rank_world_size()
-        gathered: list[list[dict[str, np.ndarray]] | None] = [None] * world_size
-        dist.all_gather_object(gathered, records)
+        rank, world_size = get_rank_world_size()
+        gathered: list[list[dict[str, np.ndarray]] | None] | None = [None] * world_size if rank == 0 else None
+        dist.gather_object(records, gathered, dst=0)
+        if gathered is None:
+            return []
 
         merged: list[dict[str, np.ndarray]] = []
         for item in gathered:
@@ -1841,10 +1850,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             records = list(outputs)
             outputs.clear()
             records = self._gather_ahi_event_records(records)
-            if not records:
+            result = self._compute_or_broadcast_ahi_metrics(stage, records)
+            if result is None:
                 return None
-
-            metrics, eval_threshold, scatter_arrays = self._compute_or_broadcast_ahi_metrics(stage, records)
+            metrics, eval_threshold, scatter_arrays = result
 
             for k, v in metrics.items():
                 self.log(
@@ -1856,6 +1865,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     on_epoch=True,
                 )
             trainer = getattr(self, "trainer", None)
+            rank, _ = get_rank_world_size()
             if trainer is not None and trainer.is_global_zero:
                 if scatter_arrays is None:
                     true_ahi, pred_ahi = extract_ahi_summary_scatter_arrays(records, threshold=eval_threshold)
@@ -1868,7 +1878,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     label_name=self.args.label_name,
                     current_epoch=int(self.current_epoch),
                 )
-            if stage == "test" and prediction_export_enabled(self.args):
+            if stage == "test" and rank == 0 and prediction_export_enabled(self.args):
                 self.prediction_rows = build_ahi_prediction_rows(records, eval_threshold)
             if trainer is not None and is_torch_distributed_ready() and hasattr(trainer, "strategy"):
                 trainer.strategy.barrier(f"ahi_{stage}_epoch_end")
