@@ -202,6 +202,16 @@ def _build_finetune_loader(
     elif args.label_name == "ahi":
         meta_data_names = ["ahi", "tst"]
         meta_data_regression_names = ["ahi", "tst"]
+    elif args.label_name == "arousal":
+        meta_data_names = [
+            "arousal_index_per_hour",
+            "arousal_res_index_per_hour",
+            "arousal_spont_index_per_hour",
+            "arousal_limb_index_per_hour",
+            "arousal_plm_index_per_hour",
+            "tst",
+        ]
+        meta_data_regression_names = list(meta_data_names)
     else:
         meta_data_names = [] if args.label_name in {"age", "sex"} or is_seq_task else [args.label_name]
         meta_data_regression_names = [] if args.is_classification else list(meta_data_names)

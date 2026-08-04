@@ -20,7 +20,13 @@ from data.metadata import (
 )
 from data.multilabel import stack_multilabel_metadata
 from data.survival import stack_survival_metadata
-from data.utils import filter_valid_sample_indices, load_builtin_ahi_metadata, load_npz
+from data.utils import (
+    AROUSAL_METADATA_KEYS,
+    filter_valid_sample_indices,
+    load_builtin_ahi_metadata,
+    load_builtin_arousal_metadata,
+    load_npz,
+)
 
 
 @dataclass
@@ -123,6 +129,11 @@ class DefaultDataset(BaseDataset):
                     "No valid samples remain for the Built-in AHI contract. "
                     "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
                 )
+            if "arousal" in channel_names and not self.data:
+                raise ValueError(
+                    "No valid samples remain for the built-in arousal contract. "
+                    "Expected float32 'arousal_event' [T,4] and all arousal index/TST scalars."
+                )
             if save_preset_path:
                 with open(save_preset_path, "wb") as f:
                     pickle.dump(self.data, f)
@@ -139,6 +150,11 @@ class DefaultDataset(BaseDataset):
             raise ValueError(
                 "No valid samples remain for the Built-in AHI contract. "
                 "Expected NPZ keys 'ah_event', scalar 'ahi', and scalar 'tst' for every retained sample."
+            )
+        if "arousal" in getattr(self, "channel_names", []) and not self.data:
+            raise ValueError(
+                "No valid samples remain for the built-in arousal contract. "
+                "Expected float32 'arousal_event' [T,4] and all arousal index/TST scalars."
             )
 
         # few-shot 筛选
@@ -180,6 +196,13 @@ class DefaultDataset(BaseDataset):
                             continue
                         avail.append(channel_name)
                         continue
+                    if channel_name == "arousal":
+                        try:
+                            load_builtin_arousal_metadata(npz)
+                        except Exception:
+                            continue
+                        avail.append(channel_name)
+                        continue
                     if channel_name in npz:
                         avail.append(channel_name)
         return {str(k) for k in avail if str(k) in channel_name_set}
@@ -198,6 +221,8 @@ class DefaultDataset(BaseDataset):
                 ahi_value, tst_value = load_builtin_ahi_metadata(npz)
                 metadata["ahi"] = ahi_value
                 metadata["tst"] = tst_value
+            if "arousal" in chosen_channels:
+                metadata.update(load_builtin_arousal_metadata(npz))
         return payload, tokens, masks, metadata
 
     def filter_with_metadata(
@@ -208,12 +233,16 @@ class DefaultDataset(BaseDataset):
 
         random.seed(self.seed)
         selected = []
-        built_in_ahi_runtime_metadata = "ahi" in getattr(self, "channel_names", [])
+        built_in_runtime_metadata = set()
+        if "ahi" in getattr(self, "channel_names", []):
+            built_in_runtime_metadata.update({"ahi", "tst"})
+        if "arousal" in getattr(self, "channel_names", []):
+            built_in_runtime_metadata.update(AROUSAL_METADATA_KEYS)
 
         for d in self.data:
             keep = True
             for meta_data_name in itertools.chain(self.meta_data_names, self.required_metadata_names):
-                if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
+                if meta_data_name in built_in_runtime_metadata:
                     continue
                 value = d.metadata.get(meta_data_name, None)
 
@@ -507,7 +536,7 @@ class DefaultDataset(BaseDataset):
             tokens = {}
             for key in samples[0].tokens.keys():
                 token_seqs = [s.tokens[key] for s in samples]
-                pad_value = -1.0 if key in {"stage5", "ahi"} else 0.0
+                pad_value = -1.0 if key in {"stage5", "ahi", "arousal"} else 0.0
                 padded = pad_sequence(token_seqs, batch_first=True, padding_value=pad_value)
                 # padded = pad_sequence(token_seqs, batch_first=True, padding_value=0.0).to(device)
                 tokens[key] = padded

@@ -914,7 +914,7 @@ def _prediction_export_supports_task(task) -> bool:
         return task.type in {"classification", "regression"}
     if task.type != "classification":
         return False
-    return int(task.output_dim) in {3, 4, 5, 30}
+    return int(task.output_dim) in {3, 4, 5, 30, 120}
 
 
 def test_prediction_export_supports_all_finetune_recipe_task_families():

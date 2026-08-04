@@ -7,6 +7,17 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+# Source contract: fixed exporter taxonomy and order, not a universal AASM arousal subtype ontology.
+AROUSAL_SUBTYPES = ("RES", "SPONT", "Limb", "PLM")
+AROUSAL_INDEX_KEYS = (
+    "arousal_index_per_hour",
+    "arousal_res_index_per_hour",
+    "arousal_spont_index_per_hour",
+    "arousal_limb_index_per_hour",
+    "arousal_plm_index_per_hour",
+)
+AROUSAL_METADATA_KEYS = (*AROUSAL_INDEX_KEYS, "tst")
+
 
 def load_npz(path: str, mmap_mode: str | None = "r"):
     """
@@ -93,6 +104,42 @@ def default_mlm_mask_generator(mask_ratio: float = 0.15):
     return generate_mask
 
 
+def _load_builtin_arousal_events(npz) -> np.ndarray:
+    # Clinical reference: this source-scored raster cannot verify an >=3 s abrupt EEG frequency shift after
+    # >=10 s continuous sleep, or the REM >=1 s chin-EMG increase
+    # (https://isr.aasm.org/helpv5/ScoringArousalsA.html; doi:10.1093/sleep/15.2.173).
+    if "arousal_event" not in npz:
+        raise KeyError("Built-in arousal contract requires NPZ key 'arousal_event'.")
+    events = np.asarray(npz["arousal_event"])
+    if events.dtype != np.float32:
+        raise ValueError(
+            "Built-in arousal contract requires NPZ key 'arousal_event' to have dtype float32, " f"got {events.dtype}."
+        )
+    if events.ndim != 2 or events.shape[1] != len(AROUSAL_SUBTYPES):
+        raise ValueError(
+            "Built-in arousal contract requires NPZ key 'arousal_event' to have shape [T, 4], " f"got {events.shape}."
+        )
+    if not np.isin(events, (0.0, 1.0)).all():
+        raise ValueError("Built-in arousal contract requires NPZ key 'arousal_event' to contain only 0/1 values.")
+    return events
+
+
+def builtin_arousal_extractor(npz, start: int, end: int) -> torch.Tensor:
+    events = _load_builtin_arousal_events(npz)
+    return torch.as_tensor(events[start * 30 : end * 30], dtype=torch.float32)
+
+
+def builtin_arousal_tokenizer(data: torch.Tensor) -> torch.Tensor:
+    if data.dim() != 2 or data.shape[1] != len(AROUSAL_SUBTYPES):
+        raise ValueError(f"Built-in arousal tokenizer expects shape [T, 4], got {tuple(data.shape)}.")
+    if data.shape[0] % 30 != 0:
+        raise ValueError(
+            "Built-in arousal tokenizer requires a whole number of 30-second tokens, " f"got T={data.shape[0]}."
+        )
+    # Task contract: flatten each 30x4 block second-major, with subtype order RES/SPONT/Limb/PLM.
+    return data.contiguous().view(data.shape[0] // 30, 30 * len(AROUSAL_SUBTYPES))
+
+
 def _load_scalar_npz_value(npz, key: str) -> float:
     if key not in npz:
         raise KeyError(f"Built-in AHI contract requires NPZ key '{key}'.")
@@ -115,6 +162,30 @@ def load_builtin_ahi_metadata(npz) -> tuple[float, float]:
     if tst_value <= 0:
         raise ValueError(f"Built-in AHI contract requires scalar 'tst' > 0, got {tst_value}.")
     return ahi_value, tst_value
+
+
+def load_builtin_arousal_metadata(npz) -> dict[str, float]:
+    _load_builtin_arousal_events(npz)
+    values: dict[str, float] = {}
+    for key in AROUSAL_METADATA_KEYS:
+        if key not in npz:
+            raise KeyError(f"Built-in arousal contract requires NPZ key '{key}'.")
+        raw = np.asarray(npz[key])
+        if raw.ndim != 0:
+            raise ValueError(f"Built-in arousal contract requires NPZ key '{key}' to be scalar, got shape {raw.shape}.")
+        if raw.dtype != np.float32:
+            raise ValueError(
+                f"Built-in arousal contract requires NPZ key '{key}' to have dtype float32, got {raw.dtype}."
+            )
+        value = float(raw)
+        if not np.isfinite(value):
+            raise ValueError(f"Built-in arousal contract requires NPZ key '{key}' to be finite, got {value}.")
+        if key == "tst" and value <= 0:
+            raise ValueError(f"Built-in arousal contract requires scalar 'tst' > 0, got {value}.")
+        if key != "tst" and value < 0:
+            raise ValueError(f"Built-in arousal contract requires scalar '{key}' >= 0, got {value}.")
+        values[key] = value
+    return values
 
 
 def pad(x, max_len: int, pad_value: torch.types.Number = 0, dim: int = 0) -> torch.Tensor:
@@ -169,6 +240,7 @@ def filter_valid_sample_indices(
     channel_names = list(channel_names or [])
     channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
     requires_builtin_ahi = "ahi" in extractors
+    requires_builtin_arousal = "arousal" in extractors
 
     def _available_from_npz(npz):
         available = []
@@ -176,6 +248,13 @@ def filter_valid_sample_indices(
             if ch == "ahi":
                 try:
                     load_builtin_ahi_metadata(npz)
+                except Exception:
+                    continue
+                available.append(ch)
+                continue
+            if ch == "arousal":
+                try:
+                    load_builtin_arousal_metadata(npz)
                 except Exception:
                     continue
                 available.append(ch)
@@ -202,6 +281,11 @@ def filter_valid_sample_indices(
                             if isinstance(metadata, dict):
                                 metadata["ahi"] = ahi_value
                                 metadata["tst"] = tst_value
+                        if requires_builtin_arousal:
+                            arousal_metadata = load_builtin_arousal_metadata(npz)
+                            metadata = getattr(sample_index, "metadata", None)
+                            if isinstance(metadata, dict):
+                                metadata.update(arousal_metadata)
 
                         if allow_missing_channels:
                             available = _available_from_npz(npz)

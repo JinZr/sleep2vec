@@ -40,6 +40,15 @@ Preset payloads remain `list[SampleIndex]`; missing-channel presets preserve
 not the collated batch shape. Split policy, label selection, required channels,
 and preset regeneration are high-impact decisions and must not be inferred.
 
+Built-in arousal preset generation consumes existing NPZ files whose
+`arousal_event` target is a 1 Hz `[T, 4]` array in fixed
+`[RES, SPONT, Limb, PLM]` order; it does not build labels from source event
+files. Preset loading turns each 30-second block into one width-120 token. Kaldi
+conversion writes the same logical channel as one uncompressed width-120 matrix
+and repeats the total and four subtype ArI scalars plus `tst` in the manifest.
+Both backends must converge element-for-element on tokens, metadata, path, and
+token offsets.
+
 Variant recipes use their package-local preprocessing modules. A shared
 contract change requires explicit parity review rather than a root import.
 
@@ -106,7 +115,11 @@ The finetune flow is:
 
 Built-in stage tasks remap raw `stage5` labels where appropriate. AHI uses
 event-aware validation/test reduction and a validation-fitted threshold stored
-with the checkpoint. Survival and multilabel tasks load explicit subject-level
+with the checkpoint. Arousal fits one validation event threshold for each fixed
+subtype, stores all four thresholds and any no-positive fallback subtype names
+in the checkpoint, and monitors subtype macro event F1. Training metrics use a
+fixed 0.5 threshold; test and inference require the stored validation thresholds
+and never refit them. Survival and multilabel tasks load explicit subject-level
 sidecars, aggregate repeated windows by the configured key, and retain
 path/window provenance in prediction outputs.
 
@@ -135,9 +148,11 @@ schema. Managed pipeline attempts use one fresh root each and accept only the
 unique terminal `run_manifest.json` below it.
 
 Checkpoint averaging is a runtime policy and must preserve the task contract.
-AHI rejects averaging when thresholds are checkpoint-specific. Result paths and
-CSV schemas belong in `results.py` and `sleep2vec_inference.py`, not in a new
-evaluation script.
+AHI and arousal reject averaging when thresholds are checkpoint-specific.
+Arousal inference emits the `arousal_sequence` record family with four-column
+truth, probability, and prediction timelines plus total-union and ArI summaries;
+it does not create a parallel prediction NPZ. Result paths and CSV schemas belong
+in `results.py` and `sleep2vec_inference.py`, not in a new evaluation script.
 
 ## sleep2stat
 

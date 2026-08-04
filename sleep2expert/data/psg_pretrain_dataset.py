@@ -7,7 +7,15 @@ import pandas as pd
 from sleep2expert.data.default_dataset import DefaultDataset, SampleIndex
 from sleep2expert.data.multilabel import attach_multilabel_metadata, load_multilabel_label_table
 from sleep2expert.data.survival import attach_survival_metadata, load_survival_label_table
-from sleep2expert.data.utils import default_extractor, default_mlm_mask_generator, default_tokenizer, window
+from sleep2expert.data.utils import (
+    AROUSAL_METADATA_KEYS,
+    builtin_arousal_extractor,
+    builtin_arousal_tokenizer,
+    default_extractor,
+    default_mlm_mask_generator,
+    default_tokenizer,
+    window,
+)
 
 PAD_STAGE = -1
 
@@ -28,6 +36,8 @@ def _build_channel_registry(
     mask_rate: float,
 ) -> dict[str, tuple[t.Callable, t.Callable, t.Callable]]:
     channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
+    if "arousal" in channel_names and channel_input_dims.get("arousal", 120) != 120:
+        raise ValueError("Built-in arousal channel requires input_dim=120.")
     registry: dict[str, tuple[t.Callable, t.Callable, t.Callable]] = {
         "stage5": (
             default_extractor("stage5", 1),
@@ -37,6 +47,11 @@ def _build_channel_registry(
         "ahi": (
             default_extractor("ahi", 30, source_name="ah_event"),
             default_tokenizer(30),
+            default_mlm_mask_generator(0.0),
+        ),
+        "arousal": (
+            builtin_arousal_extractor,
+            builtin_arousal_tokenizer,
             default_mlm_mask_generator(0.0),
         ),
     }
@@ -110,10 +125,16 @@ class PSGPretrainDataset(DefaultDataset):
         self.train_pair_probs = None if train_pair_probs is None else dict(train_pair_probs)
         self.train_pair_track_unique_samples = bool(train_pair_track_unique_samples)
         self.token_sec = token_sec
+        if "arousal" in channel_names and token_sec != 30:
+            raise ValueError("Built-in arousal NPZ data requires token_sec=30.")
         self.generative = generative
         self.is_train_set = is_train_set
         meta_data_names = meta_data_names or []
-        built_in_ahi_runtime_metadata = "ahi" in channel_names
+        built_in_runtime_metadata = set()
+        if "ahi" in channel_names:
+            built_in_runtime_metadata.update({"ahi", "tst"})
+        if "arousal" in channel_names:
+            built_in_runtime_metadata.update(AROUSAL_METADATA_KEYS)
         sources = sources or []
         survival_labels = None
         multilabel_labels = None
@@ -199,8 +220,8 @@ class PSGPretrainDataset(DefaultDataset):
                     attach_multilabel_metadata(metadata, row[multilabel_labels.key_column], multilabel_labels)
 
                 for meta_data_name in meta_data_names:
-                    # Built-in AHI summary scalars come from NPZ backfill, not CSV columns.
-                    if built_in_ahi_runtime_metadata and meta_data_name in {"ahi", "tst"}:
+                    # Built-in summary scalars come from NPZ backfill, not CSV columns.
+                    if meta_data_name in built_in_runtime_metadata:
                         continue
                     if meta_data_name not in row.index:
                         raise ValueError(f"Required metadata column '{meta_data_name}' is missing from index CSV.")

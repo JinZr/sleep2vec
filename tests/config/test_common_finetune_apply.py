@@ -175,6 +175,21 @@ def _multilabel_payload() -> dict:
             },
         ),
         (
+            "arousal",
+            {
+                "output_dim": 120,
+                "is_classification": True,
+                "is_seq": True,
+                "is_multilabel": True,
+                "monitor": "val_arousal_subtype_macro_event_f1",
+                "monitor_mod": "max",
+                "label_source_name": "arousal",
+                "auxiliary_label_source_names": ["stage5"],
+                "stage_names": None,
+                "class_labels": None,
+            },
+        ),
+        (
             "sex",
             {
                 "output_dim": 2,
@@ -277,6 +292,34 @@ def test_apply_task_flags_rejects_ahi_builtin_conflict_from_yaml_task():
     )
 
     with pytest.raises(ValueError, match="output_dim must be 30 when --label-name is 'ahi'"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_arousal_builtin_conflict_from_yaml_task():
+    args = argparse.Namespace(label_name="arousal")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=4,
+        is_seq=True,
+        monitor="val_arousal_subtype_macro_event_f1",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="output_dim must be 120 when --label-name is 'arousal'"):
+        apply_task_flags(args, task_cfg)
+
+
+def test_apply_task_flags_rejects_arousal_noncanonical_monitor():
+    args = argparse.Namespace(label_name="arousal")
+    task_cfg = TaskConfig(
+        type="classification",
+        output_dim=120,
+        is_seq=True,
+        monitor="val_f1_macro",
+        monitor_mod="max",
+    )
+
+    with pytest.raises(ValueError, match="finetune.task.monitor must be one of"):
         apply_task_flags(args, task_cfg)
 
 
@@ -470,6 +513,26 @@ def test_apply_finetune_config_expands_scalar_ahi_pos_weight(tmp_path: Path):
     assert args.class_weights is None
     assert args.pos_weight == [2.5] * 30
     assert args.weighted_random_sampler is False
+
+
+def test_apply_finetune_config_expands_scalar_arousal_pos_weight(tmp_path: Path):
+    payload = _finetune_payload()
+    payload["finetune"]["task"] = {
+        "type": "classification",
+        "output_dim": 120,
+        "is_seq": True,
+        "monitor": "val_arousal_subtype_macro_event_f1",
+        "monitor_mod": "max",
+    }
+    payload["finetune"]["loss"] = {"class_weights": None, "pos_weight": 2.5}
+    config_path = _write_yaml(tmp_path, payload)
+    args = argparse.Namespace(config=config_path, label_name="arousal")
+
+    apply_finetune_config(args)
+
+    assert args.label_source_name == "arousal"
+    assert args.auxiliary_label_source_names == ["stage5"]
+    assert args.pos_weight == [2.5] * 120
 
 
 def test_apply_finetune_config_expands_scalar_multilabel_pos_weight(tmp_path: Path):

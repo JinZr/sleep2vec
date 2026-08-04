@@ -24,7 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agent_tools.progress import write_progress
 from data.psg_pretrain_dataset import _build_channel_registry
-from data.utils import load_builtin_ahi_metadata, load_npz, window
+from data.utils import AROUSAL_METADATA_KEYS, load_builtin_ahi_metadata, load_builtin_arousal_metadata, load_npz, window
 from preprocess.save_dataset_presets import (
     _load_config_mapping,
     _load_model_channel_aliases,
@@ -36,7 +36,7 @@ from preprocess.save_dataset_presets import (
 )
 from preprocess.split_index_by_dataset import normalize_mask_frame
 
-UNCOMPRESSED_BUILTIN_CHANNELS = {"stage5", "ahi"}
+UNCOMPRESSED_BUILTIN_CHANNELS = {"stage5", "ahi", "arousal"}
 
 
 def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
@@ -73,7 +73,7 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         "--compress-ark",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Compress non-label ark matrices. Built-in stage5 and ahi stay uncompressed.",
+        help="Compress non-label ark matrices. Built-in stage5, ahi, and arousal stay uncompressed.",
     )
     parser.add_argument("--max-tokens", type=int, required=True, help="Maximum tokens per output sample.")
     parser.add_argument(
@@ -97,7 +97,7 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         "--extra-channels",
         nargs="*",
         default=[],
-        help="Additional channels to include, such as built-ins stage5 and ahi.",
+        help="Additional channels to include, such as built-ins stage5, ahi, and arousal.",
     )
     parser.add_argument(
         "--source-field",
@@ -279,6 +279,8 @@ def _try_extract_channel(
         if channel == "ahi":
             ahi_value, tst_value = load_builtin_ahi_metadata(npz)
             metadata = {"ahi": ahi_value, "tst": tst_value}
+        elif channel == "arousal":
+            metadata = load_builtin_arousal_metadata(npz)
         matrix = _extract_channel_matrix(
             npz=npz,
             channel=channel,
@@ -513,6 +515,10 @@ def convert(args: argparse.Namespace) -> Path:
         raise FileNotFoundError(f"Index CSV not found: {missing_indexes}")
 
     channel_names, channel_input_dims, effective_min_channels = _resolve_channels(args)
+    if "arousal" in channel_names and args.token_sec != 30:
+        raise ValueError("Built-in arousal Kaldi conversion requires --token-sec 30.")
+    if "arousal" in channel_names and args.ark_shards != 1:
+        raise ValueError("Built-in arousal Kaldi conversion requires --ark-shards 1.")
     config_data = _load_config_mapping(args.config)
     model_channel_aliases = _load_model_channel_aliases(config_data)
     channel_aliases = {name: alias for name, alias in model_channel_aliases.items() if name in channel_names}
@@ -584,6 +590,10 @@ def convert(args: argparse.Namespace) -> Path:
             manifest_columns.append(column)
     if "ahi" in channel_names:
         for column in ("ahi", "tst"):
+            if column not in manifest_columns:
+                manifest_columns.append(column)
+    if "arousal" in channel_names:
+        for column in AROUSAL_METADATA_KEYS:
             if column not in manifest_columns:
                 manifest_columns.append(column)
 
