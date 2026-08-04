@@ -429,6 +429,54 @@ def test_main_include_overlap_eval_splits_keeps_requested_eval_split(
         "sleep2vec2.preprocess.save_dataset_presets",
     ],
 )
+def test_main_rejects_overlapping_arousal_eval_presets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str
+) -> None:
+    module = importlib.import_module(module_name)
+    config_path = _write_yaml(
+        tmp_path,
+        {
+            "model": {"channels": [{"name": "ppg", "input_dim": 8}]},
+            "preset_build": {"required_channels": ["ppg", "arousal", "stage5"], "min_channels": 3},
+        },
+    )
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": "val.npz", "split": "val", "duration": 60}]).to_csv(index_path, index=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "save_dataset_presets.py",
+            "--config",
+            str(config_path),
+            "--index",
+            str(index_path),
+            "--output-template",
+            str(tmp_path / "{dataset}_{split}.pkl"),
+            "--split",
+            "val",
+            "--n-tokens",
+            "4",
+            "--stride-tokens",
+            "2",
+            "--include-overlap-eval-splits",
+            "--min-channels",
+            "3",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="contiguous non-overlapping windows"):
+        module.main()
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "preprocess.save_dataset_presets",
+        "sleep2expert.preprocess.save_dataset_presets",
+        "sleep2vec2.preprocess.save_dataset_presets",
+    ],
+)
 def test_main_keeps_eval_split_when_stride_is_not_overlapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str
 ):

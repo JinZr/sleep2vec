@@ -790,6 +790,8 @@ def _as_int(value: Any, default: int | None) -> int | None:
 def _resolve_task_family(args: Any) -> str:
     if getattr(args, "label_name", None) == "ahi":
         return "ahi_sequence"
+    if getattr(args, "label_name", None) == "arousal":
+        return "arousal_sequence"
     if getattr(args, "multilabel", None) is not None:
         return "multilabel_classification"
     if getattr(args, "is_multilabel", False):

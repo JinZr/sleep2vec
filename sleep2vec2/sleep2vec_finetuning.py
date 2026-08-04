@@ -16,20 +16,33 @@ from sleep2vec2.data.multilabel import load_multilabel_disease_columns
 from sleep2vec2.data.survival import load_survival_disease_columns
 from sleep2vec2.distributed import get_rank_world_size, is_torch_distributed_ready
 from sleep2vec2.losses.cox import CoxPHLossVectorized
-from sleep2vec2.metrics import (
+from sleep2vec2.metrics.ahi import (
     AHI_FINE_THRESHOLD_GRID,
     _aggregate_prepared_ahi_records,
     _compute_ahi_event_metrics_from_prepared,
     _prepare_ahi_records,
+    extract_ahi_summary_scatter_arrays,
+)
+from sleep2vec2.metrics.arousal import (
+    AROUSAL_SUBTYPE_INDEX_KEYS,
+    AROUSAL_SUBTYPES,
+    AROUSAL_THRESHOLD_GRID,
+    AROUSAL_TOTAL_INDEX_KEY,
+    compute_arousal_metrics,
+    validate_arousal_fallback_subtypes,
+    validate_arousal_threshold_protocol,
+    validate_arousal_thresholds,
+)
+from sleep2vec2.metrics.core import (
     compute_downstream_metrics,
     compute_multilabel_classification_metrics,
     compute_multilabel_metrics_by_disease,
     compute_survival_c_index_by_disease,
-    extract_ahi_summary_scatter_arrays,
 )
 from sleep2vec2.schedulers import build_warmup_cosine_scheduler
 from sleep2vec2.sleep2vec_inference import (
     build_ahi_prediction_rows,
+    build_arousal_prediction_rows,
     build_prediction_rows,
     extract_prediction_records,
     prediction_export_enabled,
@@ -115,6 +128,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._survival_loss = CoxPHLossVectorized()
         self._ahi_eval_threshold: float | None = None
         self._ahi_train_pointwise_counts = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
+        self._arousal_eval_thresholds: dict[str, float] | None = None
+        self._arousal_eval_threshold_fallback_subtypes: list[str] | None = None
+        self._arousal_train_pointwise_counts = np.zeros((len(AROUSAL_SUBTYPES), 3), dtype=np.int64)
         self._eval_loss_sums = {"val": 0.0, "test": 0.0}
         self._eval_loss_counts = {"val": 0, "test": 0}
 
@@ -151,6 +167,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 checkpoint["layer_mix_weights_eval"] = eval_layer_mix
         if self._is_ahi_task() and self._ahi_eval_threshold is not None:
             checkpoint["ahi_eval_threshold"] = float(self._ahi_eval_threshold)
+        if self._is_arousal_task() and self._arousal_eval_thresholds is not None:
+            if self._arousal_eval_threshold_fallback_subtypes is None:
+                raise ValueError("Arousal fallback subtype metadata is unavailable while saving thresholds.")
+            thresholds, fallback_subtypes = validate_arousal_threshold_protocol(
+                self._arousal_eval_thresholds, self._arousal_eval_threshold_fallback_subtypes
+            )
+            checkpoint["arousal_eval_thresholds"] = thresholds
+            checkpoint["arousal_eval_threshold_fallback_subtypes"] = fallback_subtypes
 
     # ---------- Lightning hooks ----------
     def training_step(self, batch, batch_idx):
@@ -187,6 +211,15 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if self._is_ahi_task():
             threshold = checkpoint.get("ahi_eval_threshold")
             self._ahi_eval_threshold = None if threshold is None else float(threshold)
+        if self._is_arousal_task():
+            thresholds = checkpoint.get("arousal_eval_thresholds")
+            fallback_subtypes = checkpoint.get("arousal_eval_threshold_fallback_subtypes")
+            if thresholds is not None and fallback_subtypes is not None:
+                thresholds, fallback_subtypes = validate_arousal_threshold_protocol(thresholds, fallback_subtypes)
+            self._arousal_eval_thresholds = None if thresholds is None else validate_arousal_thresholds(thresholds)
+            self._arousal_eval_threshold_fallback_subtypes = (
+                None if fallback_subtypes is None else validate_arousal_fallback_subtypes(fallback_subtypes)
+            )
 
     def on_test_start(self):
         super().on_test_start()
@@ -195,6 +228,24 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 "AHI test/inference requires a validation-fitted threshold stored in the checkpoint. "
                 "This checkpoint does not contain `ahi_eval_threshold`."
             )
+        if self._is_arousal_task():
+            if self._arousal_eval_thresholds is None or self._arousal_eval_threshold_fallback_subtypes is None:
+                raise ValueError(
+                    "Arousal test/inference requires validation-fitted thresholds and fallback metadata stored in "
+                    "the checkpoint. This checkpoint must contain `arousal_eval_thresholds` and "
+                    "`arousal_eval_threshold_fallback_subtypes`."
+                )
+            self._arousal_eval_thresholds, self._arousal_eval_threshold_fallback_subtypes = (
+                validate_arousal_threshold_protocol(
+                    self._arousal_eval_thresholds, self._arousal_eval_threshold_fallback_subtypes
+                )
+            )
+            for subtype in self._arousal_eval_threshold_fallback_subtypes:
+                logging.warning(
+                    "Arousal checkpoint used validation fallback threshold 0.5 for subtype %s because its "
+                    "validation split had no ground-truth events.",
+                    subtype,
+                )
 
     def load_state_dict(self, state_dict, strict: bool = True):
         # Allow missing/extra layer-mix weights when loading older checkpoints.
@@ -259,7 +310,13 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 self._collect_multilabel_eval_batch(stage, logits, batch)
             return loss if stage == "train" else None
 
-        if self._is_ahi_task() and stage == "train":
+        if self._is_arousal_task() and stage == "train":
+            self._accumulate_arousal_train_pointwise_counts(batch, logits)
+        elif self._is_arousal_task() and stage in {"val", "test"}:
+            records = self._extract_arousal_event_records(batch, logits)
+            if records:
+                self._stage_outputs[stage].extend(records)
+        elif self._is_ahi_task() and stage == "train":
             self._accumulate_ahi_train_pointwise_counts(batch, logits)
         elif self._is_ahi_task() and stage in {"val", "test"}:
             records = self._extract_ahi_event_records(batch, logits)
@@ -893,6 +950,51 @@ class Sleep2vecFinetuning(pl.LightningModule):
             records.append(record)
         return records
 
+    def _extract_arousal_event_records(self, batch, logits) -> list[dict[str, object]]:
+        labels = batch["tokens"]["arousal"].detach().cpu()
+        probs = torch.sigmoid(logits).to(torch.float32).detach().cpu()
+        if labels.ndim != 3 or labels.shape[-1] != 120 or probs.shape != labels.shape:
+            raise ValueError(
+                "Built-in arousal expects matching label/logit tensors with shape [B, L, 120], got "
+                f"{tuple(labels.shape)} and {tuple(probs.shape)}."
+            )
+
+        metadata = batch["metadata"]
+        # Task contract: stage5 is an auxiliary availability channel only; it never masks or rewrites
+        # source-scored arousal truth. ArI summaries use the supplied scalar TST.
+        token_start = batch["token_start"].to(torch.long).detach().cpu()
+        sample_ids = list(batch["id"])
+        paths = list(metadata["path"])
+        scalar_keys = (*AROUSAL_SUBTYPE_INDEX_KEYS, AROUSAL_TOTAL_INDEX_KEY, "tst")
+        scalar_values = {key: metadata[key].to(torch.float32).detach().cpu() for key in scalar_keys}
+        records: list[dict[str, object]] = []
+        for idx in range(labels.size(0)):
+            # Task contract: each token is flattened second-major as [30 seconds, 4 subtypes].
+            sample_labels = labels[idx].reshape(-1, 30, len(AROUSAL_SUBTYPES)).reshape(-1, len(AROUSAL_SUBTYPES))
+            sample_probs = probs[idx].reshape(-1, 30, len(AROUSAL_SUBTYPES)).reshape(-1, len(AROUSAL_SUBTYPES))
+            valid_values = sample_labels != -1.0
+            if not torch.equal(valid_values.all(dim=1), valid_values.any(dim=1)):
+                raise ValueError("Arousal padding must mask all four subtype values for a second together.")
+            valid_seconds = valid_values.all(dim=1)
+            if not valid_seconds.any():
+                continue
+            valid_count = int(valid_seconds.sum().item())
+            if valid_count % 30 != 0 or not valid_seconds[:valid_count].all() or valid_seconds[valid_count:].any():
+                raise ValueError("Arousal valid seconds must be a prefix spanning whole 30-second tokens.")
+            record: dict[str, object] = {
+                "sample_id": sample_ids[idx],
+                "path": str(paths[idx]),
+                "token_start": int(token_start[idx].item()),
+                "n_tokens": valid_count // 30,
+                "truth": sample_labels[valid_seconds].numpy(),
+                "score": sample_probs[valid_seconds].numpy(),
+                "tst_hours": float(scalar_values["tst"][idx].item()),
+            }
+            for key in (*AROUSAL_SUBTYPE_INDEX_KEYS, AROUSAL_TOTAL_INDEX_KEY):
+                record[key] = float(scalar_values[key][idx].item())
+            records.append(record)
+        return records
+
     def _get_targets(self, batch):
         if self._is_survival_task():
             raise ValueError("Survival tasks use event_time/is_event/has_label metadata, not label_name targets.")
@@ -912,6 +1014,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def _is_ahi_task(self) -> bool:
         return getattr(self.args, "label_name", None) == "ahi"
+
+    def _is_arousal_task(self) -> bool:
+        return getattr(self.args, "label_name", None) == "arousal"
 
     def _is_survival_task(self) -> bool:
         return bool(getattr(self.args, "is_survival", False))
@@ -970,6 +1075,141 @@ class Sleep2vecFinetuning(pl.LightningModule):
             "ahi_pointwise_f1": float(f1),
         }
 
+    def _accumulate_arousal_train_pointwise_counts(self, batch, logits) -> None:
+        labels = self._get_targets(batch)
+        if labels.ndim != 3 or labels.shape[-1] != 120 or logits.shape != labels.shape:
+            raise ValueError("Built-in arousal training expects label/logit tensors with shape [B, L, 120].")
+        labels = labels.reshape(-1, 30, len(AROUSAL_SUBTYPES)).reshape(-1, len(AROUSAL_SUBTYPES))
+        probs = torch.sigmoid(logits).reshape(-1, 30, len(AROUSAL_SUBTYPES)).reshape(-1, len(AROUSAL_SUBTYPES))
+        for subtype_idx in range(len(AROUSAL_SUBTYPES)):
+            valid = labels[:, subtype_idx] != -1.0
+            targets = labels[valid, subtype_idx].to(torch.int64)
+            predictions = (probs[valid, subtype_idx] >= 0.5).to(torch.int64)
+            self._arousal_train_pointwise_counts[subtype_idx, 0] += int(
+                ((predictions == 1) & (targets == 1)).sum().item()
+            )
+            self._arousal_train_pointwise_counts[subtype_idx, 1] += int(
+                ((predictions == 1) & (targets == 0)).sum().item()
+            )
+            self._arousal_train_pointwise_counts[subtype_idx, 2] += int(
+                ((predictions == 0) & (targets == 1)).sum().item()
+            )
+
+    def _compute_reduced_arousal_train_pointwise_metrics(self) -> dict[str, float]:
+        stats = torch.tensor(
+            self._arousal_train_pointwise_counts,
+            dtype=torch.float64,
+            device=torch.device(getattr(self.args, "device", "cpu")),
+        )
+        trainer = getattr(self, "trainer", None)
+        if is_torch_distributed_ready():
+            if trainer is not None and hasattr(trainer, "strategy"):
+                stats = trainer.strategy.reduce(stats, reduce_op="sum")
+            else:  # pragma: no cover - trainer-less distributed fallback
+                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        values = stats.detach().cpu().numpy()
+        precisions = []
+        recalls = []
+        f1s = []
+        for tp, fp, fn in values:
+            precision = tp / (tp + fp) if tp + fp > 0 else 0.0
+            recall = tp / (tp + fn) if tp + fn > 0 else 0.0
+            f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
+            precisions.append(precision)
+            recalls.append(recall)
+            f1s.append(f1)
+        self._arousal_train_pointwise_counts = np.zeros((len(AROUSAL_SUBTYPES), 3), dtype=np.int64)
+        return {
+            "arousal_subtype_macro_pointwise_precision_at_0p5": float(np.mean(precisions)),
+            "arousal_subtype_macro_pointwise_recall_at_0p5": float(np.mean(recalls)),
+            "arousal_subtype_macro_pointwise_f1_at_0p5": float(np.mean(f1s)),
+        }
+
+    def _compute_arousal_metrics_for_stage(
+        self, stage: str, records: list[dict[str, object]]
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        if stage == "val":
+            metrics, resolved_thresholds, fallback_subtypes = compute_arousal_metrics(
+                records, thresholds=None, search_thresholds=AROUSAL_THRESHOLD_GRID
+            )
+            self._arousal_eval_thresholds = resolved_thresholds
+            self._arousal_eval_threshold_fallback_subtypes = fallback_subtypes
+            return metrics, resolved_thresholds
+        if self._arousal_eval_thresholds is None:
+            raise ValueError(
+                "Arousal evaluation requires validation-fitted thresholds. "
+                "No `arousal_eval_thresholds` are available for test/inference."
+            )
+        metrics, resolved_thresholds, _ = compute_arousal_metrics(records, thresholds=self._arousal_eval_thresholds)
+        return metrics, resolved_thresholds
+
+    def _compute_or_broadcast_arousal_metrics(
+        self, stage: str, records: list[dict[str, object]]
+    ) -> tuple[dict[str, float], dict[str, float]] | None:
+        if not is_torch_distributed_ready():
+            if not records:
+                return None
+            return self._compute_arousal_metrics_for_stage(stage, records)
+
+        rank, world_size = get_rank_world_size()
+        payload: list[dict[str, object] | None] = [None]
+        if rank == 0:
+            try:
+                if not records:
+                    payload[0] = {
+                        "metrics": None,
+                        "thresholds": None,
+                        "fallback_subtypes": None,
+                        "error_type": None,
+                        "error_message": None,
+                    }
+                else:
+                    metrics, thresholds = self._compute_arousal_metrics_for_stage(stage, records)
+                    thresholds, fallback_subtypes = validate_arousal_threshold_protocol(
+                        thresholds, self._arousal_eval_threshold_fallback_subtypes
+                    )
+                    payload[0] = {
+                        "metrics": metrics,
+                        "thresholds": thresholds,
+                        "fallback_subtypes": fallback_subtypes,
+                        "error_type": None,
+                        "error_message": None,
+                    }
+            except Exception as exc:  # pragma: no cover - distributed error fan-out
+                payload[0] = {
+                    "metrics": None,
+                    "thresholds": None,
+                    "fallback_subtypes": None,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+
+        if hasattr(dist, "broadcast_object_list"):
+            dist.broadcast_object_list(payload, src=0)
+            result = payload[0]
+        elif hasattr(dist, "all_gather_object"):
+            gathered: list[dict[str, object] | None] = [None] * world_size
+            dist.all_gather_object(gathered, payload[0])
+            result = gathered[0]
+        else:
+            raise RuntimeError(
+                "Torch distributed object collectives are unavailable; cannot synchronize arousal validation metrics."
+            )
+        error_message = result["error_message"]
+        if error_message is not None:
+            if result["error_type"] == "ValueError":
+                raise ValueError(str(error_message))
+            raise RuntimeError(str(error_message))
+        if result["metrics"] is None:
+            return None
+
+        thresholds, fallback_subtypes = validate_arousal_threshold_protocol(
+            result["thresholds"], result["fallback_subtypes"]
+        )
+        self._arousal_eval_thresholds = thresholds
+        self._arousal_eval_threshold_fallback_subtypes = fallback_subtypes
+        return result["metrics"], thresholds
+
     def _ahi_search_thresholds_for_stage(self, stage: str) -> tuple[float, ...] | None:
         if stage != "val":
             return None
@@ -1006,6 +1246,68 @@ class Sleep2vecFinetuning(pl.LightningModule):
         metrics, _ = _compute_ahi_event_metrics_from_prepared(prepared_records, threshold=eval_threshold)
         aggregate = _aggregate_prepared_ahi_records(prepared_records, threshold=eval_threshold)
         return metrics, eval_threshold, (aggregate["true_ahi"], aggregate["pred_ahi"])
+
+    def _compute_or_broadcast_ahi_metrics(
+        self,
+        stage: str,
+        records: list[dict[str, np.ndarray]],
+    ) -> tuple[dict[str, float], float, tuple[np.ndarray, np.ndarray] | None] | None:
+        if not is_torch_distributed_ready():
+            if not records:
+                return None
+            return self._compute_ahi_metrics_for_stage(stage, records)
+
+        rank, world_size = get_rank_world_size()
+        payload: list[dict[str, object] | None] = [None]
+        scatter_arrays: tuple[np.ndarray, np.ndarray] | None = None
+        if rank == 0:
+            try:
+                if not records:
+                    payload[0] = {
+                        "metrics": None,
+                        "eval_threshold": None,
+                        "error_type": None,
+                        "error_message": None,
+                    }
+                else:
+                    metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
+                    payload[0] = {
+                        "metrics": metrics,
+                        "eval_threshold": float(eval_threshold),
+                        "error_type": None,
+                        "error_message": None,
+                    }
+            except Exception as exc:  # pragma: no cover - distributed error fan-out
+                payload[0] = {
+                    "metrics": None,
+                    "eval_threshold": None,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+
+        if hasattr(dist, "broadcast_object_list"):
+            dist.broadcast_object_list(payload, src=0)
+            result = payload[0]
+        elif hasattr(dist, "all_gather_object"):
+            gathered: list[dict[str, object] | None] = [None] * world_size
+            dist.all_gather_object(gathered, payload[0])
+            result = gathered[0]
+        else:
+            raise RuntimeError(
+                "Torch distributed object collectives are unavailable; cannot synchronize AHI validation metrics."
+            )
+        error_message = result["error_message"]
+        if error_message is not None:
+            if result["error_type"] == "ValueError":
+                raise ValueError(str(error_message))
+            raise RuntimeError(str(error_message))
+        if result["metrics"] is None:
+            return None
+
+        eval_threshold = float(result["eval_threshold"])
+        if stage == "val":
+            self._ahi_eval_threshold = eval_threshold
+        return result["metrics"], eval_threshold, scatter_arrays
 
     @staticmethod
     def _layer_mix_snapshot(model: torch.nn.Module):
@@ -1047,14 +1349,50 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return np.concatenate(gathered_preds, axis=0), np.concatenate(gathered_gts, axis=0)
 
     def _gather_ahi_event_records(self, records: list[dict[str, np.ndarray]]) -> list[dict[str, np.ndarray]]:
-        if not is_torch_distributed_ready() or not hasattr(dist, "all_gather_object"):
+        if not is_torch_distributed_ready():
             return records
 
-        _, world_size = get_rank_world_size()
-        gathered: list[list[dict[str, np.ndarray]] | None] = [None] * world_size
-        dist.all_gather_object(gathered, records)
+        rank, world_size = get_rank_world_size()
+        if world_size == 1:
+            return records
+        if not hasattr(dist, "gather_object"):
+            if not hasattr(dist, "all_gather_object"):
+                raise RuntimeError("Torch distributed object collectives are unavailable; cannot gather AHI records.")
+            gathered: list[list[dict[str, np.ndarray]] | None] = [None] * world_size
+            dist.all_gather_object(gathered, records)
+        else:
+            gathered: list[list[dict[str, np.ndarray]] | None] | None = [None] * world_size if rank == 0 else None
+            dist.gather_object(records, gathered, dst=0)
+            if gathered is None:
+                return []
 
         merged: list[dict[str, np.ndarray]] = []
+        for item in gathered:
+            if isinstance(item, list):
+                merged.extend(item)
+        return merged
+
+    def _gather_arousal_event_records(self, records: list[dict[str, object]]) -> list[dict[str, object]]:
+        if not is_torch_distributed_ready():
+            return records
+
+        rank, world_size = get_rank_world_size()
+        if world_size == 1:
+            return records
+        if not hasattr(dist, "gather_object"):
+            if not hasattr(dist, "all_gather_object"):
+                raise RuntimeError(
+                    "Torch distributed object collectives are unavailable; cannot gather arousal records."
+                )
+            gathered: list[list[dict[str, object]] | None] = [None] * world_size
+            dist.all_gather_object(gathered, records)
+        else:
+            gathered: list[list[dict[str, object]] | None] | None = [None] * world_size if rank == 0 else None
+            dist.gather_object(records, gathered, dst=0)
+            if gathered is None:
+                return []
+
+        merged: list[dict[str, object]] = []
         for item in gathered:
             if isinstance(item, list):
                 merged.extend(item)
@@ -1191,6 +1529,37 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if stage in getattr(self, "_eval_loss_sums", {}):
             self._log_eval_loss(stage)
 
+        if self._is_arousal_task() and stage == "train":
+            metrics = self._compute_reduced_arousal_train_pointwise_metrics()
+            for k, v in metrics.items():
+                self.log(f"{stage}_{k}", v, prog_bar=False, logger=True, sync_dist=True, on_epoch=True)
+            return None
+
+        if self._is_arousal_task() and stage in {"val", "test"}:
+            records = list(outputs)
+            outputs.clear()
+            records = self._gather_arousal_event_records(records)
+            result = self._compute_or_broadcast_arousal_metrics(stage, records)
+            if result is None:
+                return None
+            metrics, thresholds = result
+            for k, v in metrics.items():
+                self.log(
+                    f"{stage}_{k}",
+                    v,
+                    prog_bar=(k == "arousal_subtype_macro_event_f1"),
+                    logger=True,
+                    sync_dist=False,
+                    on_epoch=True,
+                )
+            trainer = getattr(self, "trainer", None)
+            rank, _ = get_rank_world_size()
+            if stage == "test" and rank == 0 and prediction_export_enabled(self.args):
+                self.prediction_rows = build_arousal_prediction_rows(records, thresholds)
+            if trainer is not None and is_torch_distributed_ready() and hasattr(trainer, "strategy"):
+                trainer.strategy.barrier(f"arousal_{stage}_epoch_end")
+            return records
+
         if self._is_ahi_task() and stage == "train":
             metrics = self._compute_reduced_ahi_train_pointwise_metrics()
             for k, v in metrics.items():
@@ -1208,10 +1577,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             records = list(outputs)
             outputs.clear()
             records = self._gather_ahi_event_records(records)
-            if not records:
+            result = self._compute_or_broadcast_ahi_metrics(stage, records)
+            if result is None:
                 return None
-
-            metrics, eval_threshold, scatter_arrays = self._compute_ahi_metrics_for_stage(stage, records)
+            metrics, eval_threshold, scatter_arrays = result
 
             for k, v in metrics.items():
                 self.log(
@@ -1223,6 +1592,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     on_epoch=True,
                 )
             trainer = getattr(self, "trainer", None)
+            rank, _ = get_rank_world_size()
             if trainer is not None and trainer.is_global_zero:
                 if scatter_arrays is None:
                     true_ahi, pred_ahi = extract_ahi_summary_scatter_arrays(records, threshold=eval_threshold)
@@ -1235,7 +1605,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     label_name=self.args.label_name,
                     current_epoch=int(self.current_epoch),
                 )
-            if stage == "test" and prediction_export_enabled(self.args):
+            if stage == "test" and rank == 0 and prediction_export_enabled(self.args):
                 self.prediction_rows = build_ahi_prediction_rows(records, eval_threshold)
             if trainer is not None and is_torch_distributed_ready() and hasattr(trainer, "strategy"):
                 trainer.strategy.barrier(f"ahi_{stage}_epoch_end")

@@ -13,20 +13,19 @@ import torch
 import sleep2vec.finetune as finetune
 from sleep2vec.finetune import supervised
 from sleep2vec.infer import parse_args, run_inference
-import sleep2vec.metrics as metrics_mod
-from sleep2vec.metrics import (
+import sleep2vec.metrics.ahi as metrics_mod
+from sleep2vec.metrics.ahi import (
     AHI_COARSE_THRESHOLD_GRID,
     AHI_FINE_THRESHOLD_GRID,
+    AHI_MIN_EVENT_DURATION,
     _evaluate_single_ahi_record,
-    binary_sequence_to_segments,
     compute_ahi_event_metrics,
     extract_ahi_summary_scatter_arrays,
-    filter_segments_by_duration,
     filter_segments_by_stage,
     merge_intervals,
     select_best_ahi_threshold,
-    vectorized_event_stats,
 )
+from sleep2vec.metrics.core import binary_sequence_to_segments, filter_segments_by_duration, vectorized_event_stats
 from sleep2vec.sleep2vec_finetuning import Sleep2vecFinetuning
 
 
@@ -93,7 +92,7 @@ def test_filter_segments_by_stage_keeps_sleep_overlap_at_segment_end():
 
 
 def test_filter_segments_by_duration_uses_inclusive_duration_semantics():
-    filtered = filter_segments_by_duration([[0, 8], [0, 9], [0, 10], [20, 35]])
+    filtered = filter_segments_by_duration([[0, 8], [0, 9], [0, 10], [20, 35]], min_duration=AHI_MIN_EVENT_DURATION)
     assert filtered == [[0, 9], [0, 10], [20, 35]]
 
 
@@ -1537,32 +1536,159 @@ def test_ahi_test_epoch_uses_saved_threshold_without_fallback_search(monkeypatch
     assert calls == [(0.37, None)]
 
 
-def test_ahi_test_epoch_computes_metrics_on_nonzero_rank_without_broadcast(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_available", lambda: True)
-    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
-    monkeypatch.setattr(
-        "sleep2vec.sleep2vec_finetuning.dist.broadcast_object_list",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("AHI metrics must not use broadcast")),
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("rank", [0, 1])
+def test_ahi_ddp_records_are_gathered_only_on_rank_zero(
+    package_name: str, rank: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    local_records = [{"rank": rank}]
+
+    def fake_gather_object(records, gathered, *, dst):
+        assert records == local_records
+        assert dst == 0
+        if rank == 0:
+            assert gathered is not None
+            gathered[:] = [[{"rank": 0}], [{"rank": 1}]]
+        else:
+            assert gathered is None
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (rank, 2))
+    monkeypatch.setattr(finetuning_mod.dist, "gather_object", fake_gather_object)
+
+    gathered = finetuning_cls._gather_ahi_event_records(module, local_records)
+
+    if rank == 0:
+        assert gathered == [{"rank": 0}, {"rank": 1}]
+    else:
+        assert gathered == []
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_ahi_ddp_records_single_rank_returns_local_records_without_object_gather(
+    package_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    local_records = [{"rank": 0}]
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (0, 1))
+    monkeypatch.delattr(finetuning_mod.dist, "gather_object", raising=False)
+    monkeypatch.delattr(finetuning_mod.dist, "all_gather_object", raising=False)
+
+    assert finetuning_cls._gather_ahi_event_records(module, local_records) is local_records
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_ahi_ddp_records_use_all_gather_object_fallback(package_name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    local_records = [{"rank": 1}]
+
+    def fake_all_gather_object(gathered, records):
+        assert records == local_records
+        gathered[:] = [[{"rank": 0}], [{"rank": 1}]]
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (1, 2))
+    monkeypatch.delattr(finetuning_mod.dist, "gather_object", raising=False)
+    monkeypatch.setattr(finetuning_mod.dist, "all_gather_object", fake_all_gather_object)
+
+    assert finetuning_cls._gather_ahi_event_records(module, local_records) == [{"rank": 0}, {"rank": 1}]
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("rank", [0, 1])
+def test_ahi_ddp_records_fail_without_global_object_gather(
+    package_name: str, rank: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (rank, 2))
+    monkeypatch.delattr(finetuning_mod.dist, "gather_object", raising=False)
+    monkeypatch.delattr(finetuning_mod.dist, "all_gather_object", raising=False)
+
+    with pytest.raises(RuntimeError, match="cannot gather AHI records"):
+        finetuning_cls._gather_ahi_event_records(module, [{"rank": rank}])
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_ahi_ddp_nonzero_rank_uses_broadcast_metrics_without_recomputing(
+    package_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    module._ahi_eval_threshold = None
+    object.__setattr__(
+        module,
+        "_compute_ahi_metrics_for_stage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("nonzero rank recomputed AHI metrics")),
     )
 
-    logged: list[tuple[str, float]] = []
-    module = Sleep2vecFinetuning.__new__(Sleep2vecFinetuning)
-    pl.LightningModule.__init__(module)
-    module.args = argparse.Namespace(label_name="ahi", ahi_test_search_thresholds=(0.01, 0.02))
+    def fake_broadcast(payload, *, src):
+        assert src == 0
+        payload[0] = {
+            "metrics": {"ahi_pearson": 0.7},
+            "eval_threshold": 0.33,
+            "error_type": None,
+            "error_message": None,
+        }
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (1, 2))
+    monkeypatch.setattr(finetuning_mod.dist, "broadcast_object_list", fake_broadcast)
+
+    metrics, eval_threshold, scatter_arrays = finetuning_cls._compute_or_broadcast_ahi_metrics(module, "val", [])
+
+    assert metrics == {"ahi_pearson": 0.7}
+    assert eval_threshold == 0.33
+    assert scatter_arrays is None
+    assert module._ahi_eval_threshold == 0.33
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_ahi_ddp_rank_zero_computes_metrics_once_before_broadcast(
+    package_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    records = [{"path": "night.npz"}]
+    calls: list[list[dict[str, object]]] = []
+    scatter_arrays = (np.array([1.0], dtype=np.float32), np.array([1.2], dtype=np.float32))
     module._ahi_eval_threshold = None
-    module._stage_outputs = {
-        "train": [],
-        "val": [],
-        "test": [{"truth": np.array([0]), "score": np.array([0.1]), "true_ahi": 0.0, "tst_hours": 4.0}],
-    }
-    module.log = lambda name, value, **kwargs: logged.append((name, value))
-    module._gather_ahi_event_records = lambda records: records
-    module._compute_ahi_metrics_for_stage = lambda stage, records: ({"ahi_pearson": 0.7}, 0.33, None)
-    module.__dict__["_trainer"] = argparse.Namespace(is_global_zero=False, current_epoch=0)
 
-    module._finalize_epoch("test")
+    def fake_compute(stage, gathered_records):
+        assert stage == "val"
+        calls.append(gathered_records)
+        return {"ahi_pearson": 0.7}, 0.33, scatter_arrays
 
-    assert ("test_ahi_pearson", 0.7) in logged
+    def fake_broadcast(payload, *, src):
+        assert src == 0
+        assert payload[0]["metrics"] == {"ahi_pearson": 0.7}
+
+    object.__setattr__(module, "_compute_ahi_metrics_for_stage", fake_compute)
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (0, 2))
+    monkeypatch.setattr(finetuning_mod.dist, "broadcast_object_list", fake_broadcast)
+
+    metrics, eval_threshold, returned_scatter = finetuning_cls._compute_or_broadcast_ahi_metrics(module, "val", records)
+
+    assert calls == [records]
+    assert metrics == {"ahi_pearson": 0.7}
+    assert eval_threshold == 0.33
+    assert returned_scatter is scatter_arrays
+    assert module._ahi_eval_threshold == 0.33
 
 
 def test_extract_ahi_summary_scatter_arrays_returns_scalar_pairs():

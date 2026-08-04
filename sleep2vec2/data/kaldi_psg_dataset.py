@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import typing as t
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -12,6 +13,7 @@ from sleep2vec2.data.kaldi_io import KaldiChannelSpec, KaldiReaderPool
 from sleep2vec2.data.multilabel import attach_multilabel_metadata, load_multilabel_label_table
 from sleep2vec2.data.psg_pretrain_dataset import _build_channel_registry, _normalize_channel_input_dims
 from sleep2vec2.data.survival import attach_survival_metadata, load_survival_label_table
+from sleep2vec2.data.utils import AROUSAL_METADATA_KEYS
 
 
 def _is_missing(value: t.Any) -> bool:
@@ -79,6 +81,10 @@ class KaldiPSGDataset(DefaultDataset):
             raise ValueError(f"KaldiPSGDataset expects exactly one split, got {split_list}.")
 
         manifest_data = self._load_manifest_json()
+        if "arousal" in self.channel_names:
+            token_sec = manifest_data.get("token_sec")
+            if type(token_sec) not in {int, float} or not np.isfinite(token_sec) or token_sec != 30:
+                raise ValueError("Built-in arousal Kaldi data requires manifest token_sec=30.")
         survival_labels = load_survival_label_table(survival_label_config, survival_output_dim)
         multilabel_labels = load_multilabel_label_table(multilabel_label_config, multilabel_output_dim)
         split_name = str(split_list[0])
@@ -154,11 +160,17 @@ class KaldiPSGDataset(DefaultDataset):
             if not isinstance(raw_spec, dict):
                 raise ValueError(f"Kaldi manifest channel spec for {channel!r} must be a mapping.")
             if "input_dim" in raw_spec:
-                input_dim = int(raw_spec["input_dim"])
+                raw_input_dim = raw_spec["input_dim"]
             elif "hidden_size" in raw_spec:
-                input_dim = int(raw_spec["hidden_size"])
+                raw_input_dim = raw_spec["hidden_size"]
             else:
                 raise ValueError(f"Kaldi manifest channel spec for {channel!r} must contain input_dim or hidden_size.")
+            if channel == "arousal":
+                if type(raw_input_dim) not in {int, float} or not np.isfinite(raw_input_dim) or raw_input_dim != 120:
+                    raise ValueError(f"Built-in arousal Kaldi channel requires input_dim=120, got {raw_input_dim!r}.")
+                if raw_spec.get("ark_storage") != "float_matrix":
+                    raise ValueError("Built-in arousal Kaldi channel requires ark_storage='float_matrix'.")
+            input_dim = int(raw_input_dim)
             if channel in provided_dims and provided_dims[channel] != input_dim:
                 raise ValueError(
                     f"channel_input_dims[{channel!r}]={provided_dims[channel]} does not match "
@@ -262,6 +274,24 @@ class KaldiPSGDataset(DefaultDataset):
                 or _is_missing(row.get("tst"))
             ):
                 continue
+            if "arousal" in selected:
+                missing_arousal_metadata = [key for key in AROUSAL_METADATA_KEYS if key not in row.index]
+                if missing_arousal_metadata:
+                    raise ValueError(
+                        f"Kaldi sample {row['sample_key']!r} is missing arousal metadata columns: "
+                        f"{missing_arousal_metadata}."
+                    )
+                for key in AROUSAL_METADATA_KEYS:
+                    value = float(row[key])
+                    if not np.isfinite(value):
+                        raise ValueError(
+                            f"Kaldi sample {row['sample_key']!r} has non-finite arousal metadata {key}={value}."
+                        )
+                    if key == "tst" and value <= 0:
+                        raise ValueError(f"Kaldi sample {row['sample_key']!r} requires tst > 0, got {value}.")
+                    if key != "tst" and value < 0:
+                        raise ValueError(f"Kaldi sample {row['sample_key']!r} requires {key} >= 0, got {value}.")
+                    metadata[key] = value
 
             data.append(
                 SampleIndex(
@@ -318,5 +348,9 @@ class KaldiPSGDataset(DefaultDataset):
                     f"(token_start={src.start}, token_end={src.end})."
                 )
             tokens[channel] = torch.from_numpy(arr).to(torch.float32)
+            if channel == "arousal" and not np.isin(arr, (0.0, 1.0)).all():
+                raise ValueError(
+                    f"Kaldi arousal matrix for key {src.id!r} must contain only 0/1 values before padding."
+                )
         masks = {channel: self.mask_generators[channel](tokens[channel]) for channel in chosen_channels}
         return {}, tokens, masks, dict(src.metadata)

@@ -7,6 +7,17 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+# Source contract: fixed exporter taxonomy and order, not a universal AASM arousal subtype ontology.
+AROUSAL_SUBTYPES = ("RES", "SPONT", "Limb", "PLM")
+AROUSAL_INDEX_KEYS = (
+    "arousal_index_per_hour",
+    "arousal_res_index_per_hour",
+    "arousal_spont_index_per_hour",
+    "arousal_limb_index_per_hour",
+    "arousal_plm_index_per_hour",
+)
+AROUSAL_METADATA_KEYS = (*AROUSAL_INDEX_KEYS, "tst")
+
 
 def load_npz(path: str, mmap_mode: str | None = "r"):
     """
@@ -93,6 +104,52 @@ def default_mlm_mask_generator(mask_ratio: float = 0.15):
     return generate_mask
 
 
+def _load_builtin_arousal_events(npz) -> np.ndarray:
+    # Clinical reference: this source-scored raster cannot verify an >=3 s abrupt EEG frequency shift after
+    # >=10 s continuous sleep, or the REM >=1 s chin-EMG increase
+    # (https://isr.aasm.org/helpv5/ScoringArousalsA.html; doi:10.1093/sleep/15.2.173).
+    if "arousal_event" not in npz:
+        raise KeyError("Built-in arousal contract requires NPZ key 'arousal_event'.")
+    events = np.asarray(npz["arousal_event"])
+    if events.dtype != np.float32:
+        raise ValueError(
+            "Built-in arousal contract requires NPZ key 'arousal_event' to have dtype float32, " f"got {events.dtype}."
+        )
+    if events.ndim != 2 or events.shape[1] != len(AROUSAL_SUBTYPES):
+        raise ValueError(
+            "Built-in arousal contract requires NPZ key 'arousal_event' to have shape [T, 4], " f"got {events.shape}."
+        )
+    if not np.isin(events, (0.0, 1.0)).all():
+        raise ValueError("Built-in arousal contract requires NPZ key 'arousal_event' to contain only 0/1 values.")
+    return events
+
+
+def _extract_builtin_arousal_window(events: np.ndarray, start: int, end: int) -> torch.Tensor:
+    extracted = events[start * 30 : end * 30]
+    expected_rows = (end - start) * 30
+    if extracted.shape[0] != expected_rows:
+        raise ValueError(
+            f"Built-in arousal window requires exactly {expected_rows} rows for token range "
+            f"[{start}, {end}), got {extracted.shape[0]}."
+        )
+    return torch.as_tensor(extracted, dtype=torch.float32)
+
+
+def builtin_arousal_extractor(npz, start: int, end: int) -> torch.Tensor:
+    return _extract_builtin_arousal_window(_load_builtin_arousal_events(npz), start, end)
+
+
+def builtin_arousal_tokenizer(data: torch.Tensor) -> torch.Tensor:
+    if data.dim() != 2 or data.shape[1] != len(AROUSAL_SUBTYPES):
+        raise ValueError(f"Built-in arousal tokenizer expects shape [T, 4], got {tuple(data.shape)}.")
+    if data.shape[0] % 30 != 0:
+        raise ValueError(
+            "Built-in arousal tokenizer requires a whole number of 30-second tokens, " f"got T={data.shape[0]}."
+        )
+    # Task contract: flatten each 30x4 block second-major, with subtype order RES/SPONT/Limb/PLM.
+    return data.contiguous().view(data.shape[0] // 30, 30 * len(AROUSAL_SUBTYPES))
+
+
 def _load_scalar_npz_value(npz, key: str) -> float:
     if key not in npz:
         raise KeyError(f"Built-in AHI contract requires NPZ key '{key}'.")
@@ -115,6 +172,34 @@ def load_builtin_ahi_metadata(npz) -> tuple[float, float]:
     if tst_value <= 0:
         raise ValueError(f"Built-in AHI contract requires scalar 'tst' > 0, got {tst_value}.")
     return ahi_value, tst_value
+
+
+def _load_builtin_arousal_metadata_values(npz) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for key in AROUSAL_METADATA_KEYS:
+        if key not in npz:
+            raise KeyError(f"Built-in arousal contract requires NPZ key '{key}'.")
+        raw = np.asarray(npz[key])
+        if raw.ndim != 0:
+            raise ValueError(f"Built-in arousal contract requires NPZ key '{key}' to be scalar, got shape {raw.shape}.")
+        if raw.dtype != np.float32:
+            raise ValueError(
+                f"Built-in arousal contract requires NPZ key '{key}' to have dtype float32, got {raw.dtype}."
+            )
+        value = float(raw)
+        if not np.isfinite(value):
+            raise ValueError(f"Built-in arousal contract requires NPZ key '{key}' to be finite, got {value}.")
+        if key == "tst" and value <= 0:
+            raise ValueError(f"Built-in arousal contract requires scalar 'tst' > 0, got {value}.")
+        if key != "tst" and value < 0:
+            raise ValueError(f"Built-in arousal contract requires scalar '{key}' >= 0, got {value}.")
+        values[key] = value
+    return values
+
+
+def load_builtin_arousal_metadata(npz) -> dict[str, float]:
+    _load_builtin_arousal_events(npz)
+    return _load_builtin_arousal_metadata_values(npz)
 
 
 def pad(x, max_len: int, pad_value: torch.types.Number = 0, dim: int = 0) -> torch.Tensor:
@@ -169,13 +254,24 @@ def filter_valid_sample_indices(
     channel_names = list(channel_names or [])
     channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
     requires_builtin_ahi = "ahi" in extractors
+    requires_builtin_arousal = "arousal" in extractors
 
-    def _available_from_npz(npz):
+    def _available_from_npz(npz, *, has_valid_arousal: bool):
         available = []
         for ch in channel_names:
             if ch == "ahi":
                 try:
                     load_builtin_ahi_metadata(npz)
+                except Exception:
+                    continue
+                available.append(ch)
+                continue
+            if ch == "arousal":
+                if has_valid_arousal:
+                    available.append(ch)
+                    continue
+                try:
+                    load_builtin_arousal_metadata(npz)
                 except Exception:
                     continue
                 available.append(ch)
@@ -194,6 +290,24 @@ def filter_valid_sample_indices(
         filtered_samples: list[t.Any] = []
         try:
             with load_npz(path) as npz:
+                arousal_events_for_path = None
+                arousal_metadata_for_path = None
+                if requires_builtin_arousal:
+                    arousal_events_for_path = _load_builtin_arousal_events(npz)
+                    arousal_metadata_for_path = _load_builtin_arousal_metadata_values(npz)
+                    for sample_index in samples:
+                        payload = _extract_builtin_arousal_window(
+                            arousal_events_for_path, sample_index.start, sample_index.end
+                        )
+                        tokenizers["arousal"](payload)
+
+                def extract_payload(key: str, sample_index: t.Any):
+                    if key == "arousal":
+                        return _extract_builtin_arousal_window(
+                            arousal_events_for_path, sample_index.start, sample_index.end
+                        )
+                    return extractors[key](npz, sample_index.start, sample_index.end)
+
                 for sample_index in samples:
                     try:
                         if requires_builtin_ahi:
@@ -202,9 +316,13 @@ def filter_valid_sample_indices(
                             if isinstance(metadata, dict):
                                 metadata["ahi"] = ahi_value
                                 metadata["tst"] = tst_value
+                        if requires_builtin_arousal:
+                            metadata = getattr(sample_index, "metadata", None)
+                            if isinstance(metadata, dict):
+                                metadata.update(arousal_metadata_for_path)
 
                         if allow_missing_channels:
-                            available = _available_from_npz(npz)
+                            available = _available_from_npz(npz, has_valid_arousal=arousal_events_for_path is not None)
                             if len(available) < min_channels:
                                 logging.info(
                                     "[Skip] Not enough channels at %s: have=%d need>=%d. Meta: %s",
@@ -214,14 +332,10 @@ def filter_valid_sample_indices(
                                     getattr(sample_index, "metadata", {}),
                                 )
                                 continue
-                            payload = {
-                                key: extractors[key](npz, sample_index.start, sample_index.end) for key in available
-                            }
+                            payload = {key: extract_payload(key, sample_index) for key in available}
                             tokens = {key: tokenizers[key](payload[key]) for key in available}
                         else:
-                            payload = {
-                                key: fn(npz, sample_index.start, sample_index.end) for key, fn in extractors.items()
-                            }
+                            payload = {key: extract_payload(key, sample_index) for key in extractors}
                             tokens = {key: fn(payload[key]) for key, fn in tokenizers.items()}
 
                         if requires_builtin_ahi and not bool((tokens["ahi"].reshape(-1) != -1.0).any().item()):
@@ -250,6 +364,8 @@ def filter_valid_sample_indices(
                     except Exception as e:
                         logging.info(f"[Skip] Error loading sample {getattr(sample_index, 'id', '?')}: {e}")
         except Exception as e:
+            if requires_builtin_arousal:
+                raise ValueError(f"Invalid built-in arousal recording {path!r}: {e}") from e
             for sample_index in samples:
                 logging.info(f"[Skip] Error loading sample {getattr(sample_index, 'id', '?')}: {e}")
         return filtered_samples

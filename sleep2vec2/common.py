@@ -51,6 +51,16 @@ _BUILTIN_TASK_SPECS = {
         "label_source_name": "ahi",
         "auxiliary_label_source_names": ["stage5"],
     },
+    "arousal": {
+        "type": "classification",
+        "output_dim": 120,
+        "is_seq": True,
+        "is_multilabel": True,
+        "monitor": "val_arousal_subtype_macro_event_f1",
+        "monitor_mod": "max",
+        "label_source_name": "arousal",
+        "auxiliary_label_source_names": ["stage5"],
+    },
     "sex": {
         "type": "classification",
         "output_dim": 2,
@@ -209,15 +219,16 @@ def _validate_builtin_task_cfg(label_name: str, task_cfg: TaskConfig, spec: dict
         raise ValueError(f"finetune.task.type must be '{spec['type']}' when --label-name is '{label_name}'.")
     if task_cfg.is_seq != spec["is_seq"]:
         raise ValueError(f"finetune.task.is_seq must be {spec['is_seq']} when --label-name is '{label_name}'.")
-    if label_name == "ahi":
-        allowed_ahi_monitors = {
-            "val_ahi_pearson": "max",
-        }
-        expected_monitor_mod = allowed_ahi_monitors.get(task_cfg.monitor)
+    if label_name in {"ahi", "arousal"}:
+        allowed_monitors = {
+            "ahi": {"val_ahi_pearson": "max"},
+            "arousal": {"val_arousal_subtype_macro_event_f1": "max"},
+        }[label_name]
+        expected_monitor_mod = allowed_monitors.get(task_cfg.monitor)
         if expected_monitor_mod is None:
             raise ValueError(
                 "finetune.task.monitor must be one of "
-                f"{sorted(allowed_ahi_monitors)} when --label-name is '{label_name}'."
+                f"{sorted(allowed_monitors)} when --label-name is '{label_name}'."
             )
         if task_cfg.monitor_mod != expected_monitor_mod:
             raise ValueError(
@@ -292,11 +303,13 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
         args.monitor_mod = task_cfg.monitor_mod
         if is_builtin_seq_task(args.label_name) and not args.is_seq:
             raise ValueError(
-                "finetune.task.is_seq must be true when --label-name is one of: stage3, stage4, stage5, ahi."
+                "finetune.task.is_seq must be true when --label-name is one of: "
+                "stage3, stage4, stage5, ahi, arousal."
             )
         if args.is_seq and not is_builtin_seq_task(args.label_name):
             raise ValueError(
-                "finetune.task.is_seq is only supported for built-in sequence labels (stage3, stage4, stage5, ahi). "
+                "finetune.task.is_seq is only supported for built-in sequence labels "
+                "(stage3, stage4, stage5, ahi, arousal). "
                 "Extend the dataloader if you need token-level labels for other targets."
             )
         _validate_metadata_label_support(args)

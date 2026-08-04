@@ -15,6 +15,7 @@ EXAMPLE_FINETUNE_CONFIGS = [
     ("stage4", REPO_ROOT / "configs" / "examples" / "stage4" / "FINETUNE_EXAMPLE.yaml"),
     ("stage5", REPO_ROOT / "configs" / "examples" / "stage5" / "FINETUNE_EXAMPLE.yaml"),
     ("ahi", REPO_ROOT / "configs" / "examples" / "ahi" / "FINETUNE_EXAMPLE.yaml"),
+    ("arousal", REPO_ROOT / "configs" / "examples" / "arousal" / "FINETUNE_EXAMPLE.yaml"),
     ("sex", REPO_ROOT / "configs" / "examples" / "sex" / "FINETUNE_EXAMPLE.yaml"),
     ("age", REPO_ROOT / "configs" / "examples" / "age" / "FINETUNE_EXAMPLE.yaml"),
 ]

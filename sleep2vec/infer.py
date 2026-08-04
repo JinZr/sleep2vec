@@ -132,9 +132,12 @@ def run_inference(args):
         if getattr(args, "data_backend", "npz") == "kaldi":
             raise ValueError("Kaldi backend uses manifest.json; legacy NPZ preset pickles are unsupported.")
         args.finetune_preset_path = Path(inference_preset_path)
-    if args.label_name == "ahi" and args.avg_ckpts > 1:
+    if args.label_name in {"ahi", "arousal"} and args.avg_ckpts > 1:
+        task_name = "AHI" if args.label_name == "ahi" else "Arousal"
+        threshold_key = "ahi_eval_threshold" if args.label_name == "ahi" else "arousal_eval_thresholds"
         raise ValueError(
-            "AHI inference does not support average checkpoints because `ahi_eval_threshold` is checkpoint-specific."
+            f"{task_name} inference does not support average checkpoints because `{threshold_key}` is "
+            "checkpoint-specific."
         )
 
     trainer_precision = args.precision
@@ -264,7 +267,7 @@ def parse_args():
         type=str,
         required=True,
         help=(
-            "downstream label to predict (built-ins: age, sex, stage3, stage4, stage5, ahi; "
+            "downstream label to predict (built-ins: age, sex, stage3, stage4, stage5, ahi, arousal; "
             "custom labels require finetune.task in the YAML config)"
         ),
     )

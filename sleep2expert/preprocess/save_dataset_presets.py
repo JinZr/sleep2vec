@@ -23,6 +23,7 @@ DEFAULT_SPLITS = ["test", "val", "train"]
 BUILTIN_CHANNEL_SPECS = {
     "stage5": {"input_dim": 1, "mask_column": "stage_mask"},
     "ahi": {"input_dim": 30, "mask_column": "ah_event_mask"},
+    "arousal": {"input_dim": 120, "mask_column": "arousal_event_mask"},
 }
 
 
@@ -95,7 +96,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional subset of channels declared in YAML model.channels. "
-            "Built-in validation channels 'stage5' and 'ahi' are also allowed."
+            "Built-in validation channels 'stage5', 'ahi', and 'arousal' are also allowed."
         ),
     )
     parser.add_argument(
@@ -360,7 +361,7 @@ def _resolve_validation_channels(
         resolved = list(model_channels)
     else:
         resolved = _dedupe_keep_order(selected_channels)
-    if "ahi" in resolved and "stage5" not in resolved:
+    if ({"ahi", "arousal"} & set(resolved)) and "stage5" not in resolved:
         resolved = [*resolved, "stage5"]
 
     unknown = [name for name in resolved if name not in channel_input_dims and name not in BUILTIN_CHANNEL_SPECS]
@@ -373,7 +374,12 @@ def _resolve_validation_channels(
 
     resolved_dims: dict[str, int] = {}
     for name in resolved:
-        if name in channel_input_dims:
+        if name == "arousal":
+            declared_dim = channel_input_dims.get(name, 120)
+            if declared_dim != 120:
+                raise ValueError(f"Built-in arousal channel requires input_dim=120, got {declared_dim}.")
+            resolved_dims[name] = 120
+        elif name in channel_input_dims:
             resolved_dims[name] = channel_input_dims[name]
         else:
             resolved_dims[name] = int(BUILTIN_CHANNEL_SPECS[name]["input_dim"])
@@ -387,7 +393,7 @@ def _resolve_effective_min_channels(
     preset_min_channels: int | None,
 ) -> int:
     resolved = int(cli_min_channels if preset_min_channels is None else preset_min_channels)
-    if "ahi" in channel_names:
+    if {"ahi", "arousal"} & set(channel_names):
         resolved = len(channel_names)
     if resolved < 1:
         raise ValueError("min_channels must be >= 1.")
@@ -449,6 +455,8 @@ def _load_index_df(
 
 def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: list[str]) -> pd.DataFrame:
     required = _dedupe_keep_order(required_channels)
+    if "arousal" in required and "stage5" not in required:
+        required.append("stage5")
     if not required:
         return df
 
@@ -458,6 +466,15 @@ def _filter_index_df_for_required_channels(df: pd.DataFrame, required_channels: 
             "Built-in AHI strict preset filtering requires index column 'stage_mask' "
             "because validation channels include both 'ahi' and 'stage5'."
         )
+    if "arousal" in required:
+        missing_arousal_masks = [
+            mask_columns[channel] for channel in ("arousal", "stage5") if mask_columns[channel] not in df.columns
+        ]
+        if missing_arousal_masks:
+            raise ValueError(
+                "Built-in arousal strict preset filtering requires index columns "
+                f"{missing_arousal_masks}; arousal presets require both arousal and stage5 availability."
+            )
     available_mask_columns = [mask_columns[channel] for channel in required if mask_columns[channel] in df.columns]
     if not available_mask_columns:
         return df
@@ -496,7 +513,7 @@ def _build_preset_job(
 
     index = [str(_resolve_single_index_path(index_paths))]
     filtered_index_path: str | None = None
-    if not allow_missing_channels:
+    if not allow_missing_channels or "arousal" in channel_names:
         survival_key_column = getattr(survival_label_config, "key_column", None)
         multilabel_key_column = getattr(multilabel_label_config, "key_column", None)
         filtered_index = _filter_index_df_for_required_channels(
@@ -597,6 +614,11 @@ def main() -> None:
             print("Overlap windows enabled; excluding val/test splits unless --include-overlap-eval-splits is set.")
         if not splits:
             raise ValueError("Overlap windows excluded val/test splits and no splits remain.")
+    if "arousal" in channel_names and stride_tokens != args.n_tokens and {"val", "test"} & set(splits):
+        raise ValueError(
+            "Built-in arousal val/test presets require contiguous non-overlapping windows: "
+            "--stride-tokens must equal --n-tokens."
+        )
 
     print(f"Dataset name: {dataset_name}")
     print(f"Config YAML: {args.config}")

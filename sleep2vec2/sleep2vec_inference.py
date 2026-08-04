@@ -1,7 +1,14 @@
 import numpy as np
 import torch
 
-from sleep2vec2.metrics import _evaluate_single_ahi_record, _merge_ahi_window_records
+from sleep2vec2.metrics.ahi import _evaluate_single_ahi_record, _merge_ahi_window_records
+from sleep2vec2.metrics.arousal import (
+    AROUSAL_SUBTYPE_SLUGS,
+    AROUSAL_SUBTYPES,
+    evaluate_arousal_record,
+    merge_arousal_window_records,
+    validate_arousal_thresholds,
+)
 
 
 def prediction_export_enabled(args) -> bool:
@@ -316,4 +323,44 @@ def build_ahi_prediction_rows(records: list[dict[str, np.ndarray]], threshold: f
                 "tst_hours": float(record["tst_hours"]),
             }
         )
+    return rows
+
+
+def build_arousal_prediction_rows(
+    records: list[dict[str, object]], thresholds: dict[str, float]
+) -> list[dict[str, object]]:
+    thresholds = validate_arousal_thresholds(thresholds)
+    rows: list[dict[str, object]] = []
+    for record in merge_arousal_window_records(records):
+        evaluated = evaluate_arousal_record(record, thresholds)
+        truth = evaluated["truth"]
+        score = evaluated["score"]
+        prediction = evaluated["prediction"]
+        tst_hours = float(evaluated["tst_hours"])
+        row: dict[str, object] = {
+            "path": str(record.get("path", "")),
+            "groundtruth": truth.tolist(),
+            "prediction": prediction.tolist(),
+            "prob": score.tolist(),
+            "total_groundtruth": evaluated["total_truth"].tolist(),
+            "total_prediction": evaluated["total_prediction"].tolist(),
+            "arousal_subtypes": list(AROUSAL_SUBTYPES),
+            "n_predictions": int(truth.size),
+            "n_windows": int(record.get("n_windows", 1)),
+            "token_starts": list(record.get("token_starts", [int(record.get("token_start", 0))])),
+            "tst_hours": tst_hours,
+        }
+        for subtype_idx, (subtype, slug) in enumerate(zip(AROUSAL_SUBTYPES, AROUSAL_SUBTYPE_SLUGS)):
+            true_index = float(evaluated["true_indices"][subtype_idx])
+            row[f"arousal_{slug}_threshold"] = float(thresholds[subtype])
+            row[f"true_arousal_{slug}_event_count"] = len(evaluated["gt_segments"][subtype_idx])
+            row[f"pred_arousal_{slug}_event_count"] = len(evaluated["pred_segments"][subtype_idx])
+            row[f"true_arousal_{slug}_index_per_hour"] = true_index
+            row[f"pred_arousal_{slug}_index_per_hour"] = float(evaluated["pred_indices"][subtype_idx])
+        true_total_index = float(evaluated["true_indices"][-1])
+        row["true_arousal_event_count"] = len(evaluated["total_gt_segments"])
+        row["pred_arousal_event_count"] = len(evaluated["total_pred_segments"])
+        row["true_arousal_index_per_hour"] = true_total_index
+        row["pred_arousal_index_per_hour"] = float(evaluated["pred_indices"][-1])
+        rows.append(row)
     return rows

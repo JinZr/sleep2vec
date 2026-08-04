@@ -6,7 +6,7 @@ from matplotlib.ticker import FuncFormatter
 import numpy as np
 from sklearn.metrics import auc, confusion_matrix, roc_curve
 
-from sleep2expert.metrics import binary_positive_scores_from_two_logits
+from sleep2expert.metrics.core import binary_positive_scores_from_two_logits
 from sleep2expert.visualization.curves import render_binary_roc_curve
 from sleep2expert.visualization.heatmaps import add_axis_title_boxes, render_matrix_heatmap
 from sleep2expert.visualization.scatter import render_prediction_scatter

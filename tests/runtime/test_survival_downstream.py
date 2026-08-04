@@ -411,9 +411,9 @@ def _capture_logged_metrics(module):
 @pytest.mark.parametrize(
     "metrics_module",
     [
-        "sleep2vec.metrics",
-        "sleep2vec2.metrics",
-        "sleep2expert.metrics",
+        "sleep2vec.metrics.core",
+        "sleep2vec2.metrics.core",
+        "sleep2expert.metrics.core",
     ],
 )
 def test_survival_c_index_uses_raw_log_risk(metrics_module: str):
@@ -439,9 +439,9 @@ def test_survival_c_index_uses_raw_log_risk(metrics_module: str):
 @pytest.mark.parametrize(
     "metrics_module",
     [
-        "sleep2vec.metrics",
-        "sleep2vec2.metrics",
-        "sleep2expert.metrics",
+        "sleep2vec.metrics.core",
+        "sleep2vec2.metrics.core",
+        "sleep2expert.metrics.core",
     ],
 )
 def test_survival_c_index_skips_unlabeled_and_invalid_diseases(metrics_module: str):

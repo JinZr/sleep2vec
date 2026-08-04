@@ -328,9 +328,9 @@ def test_multilabel_eval_aggregates_duplicate_subject_logits_and_exports_vectors
 @pytest.mark.parametrize(
     "metrics_module",
     [
-        "sleep2vec.metrics",
-        "sleep2vec2.metrics",
-        "sleep2expert.metrics",
+        "sleep2vec.metrics.core",
+        "sleep2vec2.metrics.core",
+        "sleep2expert.metrics.core",
     ],
 )
 def test_multilabel_per_disease_metrics_skip_single_class_diseases(metrics_module: str):
