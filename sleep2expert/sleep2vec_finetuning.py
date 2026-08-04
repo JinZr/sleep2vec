@@ -1450,6 +1450,64 @@ class Sleep2vecFinetuning(pl.LightningModule):
         metrics, resolved_thresholds, _ = compute_arousal_metrics(records, thresholds=self._arousal_eval_thresholds)
         return metrics, resolved_thresholds
 
+    def _compute_or_broadcast_arousal_metrics(
+        self, stage: str, records: list[dict[str, object]]
+    ) -> tuple[dict[str, float], dict[str, float]] | None:
+        if not is_torch_distributed_ready():
+            if not records:
+                return None
+            return self._compute_arousal_metrics_for_stage(stage, records)
+
+        rank, _ = get_rank_world_size()
+        payload: list[dict[str, object] | None] = [None]
+        if rank == 0:
+            try:
+                if not records:
+                    payload[0] = {
+                        "metrics": None,
+                        "thresholds": None,
+                        "fallback_subtypes": None,
+                        "error_type": None,
+                        "error_message": None,
+                    }
+                else:
+                    metrics, thresholds = self._compute_arousal_metrics_for_stage(stage, records)
+                    thresholds, fallback_subtypes = validate_arousal_threshold_protocol(
+                        thresholds, self._arousal_eval_threshold_fallback_subtypes
+                    )
+                    payload[0] = {
+                        "metrics": metrics,
+                        "thresholds": thresholds,
+                        "fallback_subtypes": fallback_subtypes,
+                        "error_type": None,
+                        "error_message": None,
+                    }
+            except Exception as exc:  # pragma: no cover - distributed error fan-out
+                payload[0] = {
+                    "metrics": None,
+                    "thresholds": None,
+                    "fallback_subtypes": None,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+
+        dist.broadcast_object_list(payload, src=0)
+        result = payload[0]
+        error_message = result["error_message"]
+        if error_message is not None:
+            if result["error_type"] == "ValueError":
+                raise ValueError(str(error_message))
+            raise RuntimeError(str(error_message))
+        if result["metrics"] is None:
+            return None
+
+        thresholds, fallback_subtypes = validate_arousal_threshold_protocol(
+            result["thresholds"], result["fallback_subtypes"]
+        )
+        self._arousal_eval_thresholds = thresholds
+        self._arousal_eval_threshold_fallback_subtypes = fallback_subtypes
+        return result["metrics"], thresholds
+
     def _ahi_search_thresholds_for_stage(self, stage: str) -> tuple[float, ...] | None:
         if stage != "val":
             return None
@@ -1587,12 +1645,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return merged
 
     def _gather_arousal_event_records(self, records: list[dict[str, object]]) -> list[dict[str, object]]:
-        if not is_torch_distributed_ready() or not hasattr(dist, "all_gather_object"):
+        if not is_torch_distributed_ready():
             return records
 
-        _, world_size = get_rank_world_size()
-        gathered: list[list[dict[str, object]] | None] = [None] * world_size
-        dist.all_gather_object(gathered, records)
+        rank, world_size = get_rank_world_size()
+        gathered: list[list[dict[str, object]] | None] | None = [None] * world_size if rank == 0 else None
+        dist.gather_object(records, gathered, dst=0)
+        if gathered is None:
+            return []
 
         merged: list[dict[str, object]] = []
         for item in gathered:
@@ -1741,9 +1801,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             records = list(outputs)
             outputs.clear()
             records = self._gather_arousal_event_records(records)
-            if not records:
+            result = self._compute_or_broadcast_arousal_metrics(stage, records)
+            if result is None:
                 return None
-            metrics, thresholds = self._compute_arousal_metrics_for_stage(stage, records)
+            metrics, thresholds = result
             for k, v in metrics.items():
                 self.log(
                     f"{stage}_{k}",
@@ -1754,7 +1815,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     on_epoch=True,
                 )
             trainer = getattr(self, "trainer", None)
-            if stage == "test" and prediction_export_enabled(self.args):
+            rank, _ = get_rank_world_size()
+            if stage == "test" and rank == 0 and prediction_export_enabled(self.args):
                 self.prediction_rows = build_arousal_prediction_rows(records, thresholds)
             if trainer is not None and is_torch_distributed_ready() and hasattr(trainer, "strategy"):
                 trainer.strategy.barrier(f"arousal_{stage}_epoch_end")

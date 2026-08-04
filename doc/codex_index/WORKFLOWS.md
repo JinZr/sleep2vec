@@ -49,7 +49,9 @@ and repeats the total and four subtype ArI scalars plus `tst` in the manifest.
 Both backends must converge element-for-element on tokens, metadata, path, and
 token offsets. Validation and test artifacts use contiguous, non-overlapping
 windows whose stride equals the maximum window length; training artifacts may
-use other stride policies.
+use other stride policies. Distributed validation and test gather event records
+only on global rank zero, compute metrics and thresholds there once, and
+broadcast the resolved metric and threshold state to every rank.
 
 Variant recipes use their package-local preprocessing modules. A shared
 contract change requires explicit parity review rather than a root import.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import importlib
 import logging
 import math
 from pathlib import Path
@@ -466,6 +467,110 @@ def test_arousal_validation_uses_fixed_declared_threshold_grid(monkeypatch):
 
     assert captured["thresholds"] is None
     assert captured["search_thresholds"] == AROUSAL_THRESHOLD_GRID
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("rank", [0, 1])
+def test_arousal_ddp_records_are_gathered_only_on_rank_zero(
+    package_name: str, rank: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    local_records = [{"rank": rank}]
+
+    def fake_gather_object(records, gathered, *, dst):
+        assert records == local_records
+        assert dst == 0
+        if rank == 0:
+            assert gathered is not None
+            gathered[:] = [[{"rank": 0}], [{"rank": 1}]]
+        else:
+            assert gathered is None
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (rank, 2))
+    monkeypatch.setattr(finetuning_mod.dist, "gather_object", fake_gather_object)
+
+    gathered = finetuning_cls._gather_arousal_event_records(module, local_records)
+
+    if rank == 0:
+        assert gathered == [{"rank": 0}, {"rank": 1}]
+    else:
+        assert gathered == []
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_arousal_ddp_nonzero_rank_uses_broadcast_metrics_without_recomputing(
+    package_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    thresholds = {name: 0.5 for name in AROUSAL_SUBTYPES}
+    module._arousal_eval_thresholds = None
+    module._arousal_eval_threshold_fallback_subtypes = None
+    object.__setattr__(
+        module,
+        "_compute_arousal_metrics_for_stage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("nonzero rank recomputed arousal metrics")),
+    )
+
+    def fake_broadcast(payload, *, src):
+        assert src == 0
+        payload[0] = {
+            "metrics": {"arousal_subtype_macro_event_f1": 0.75},
+            "thresholds": thresholds,
+            "fallback_subtypes": ["PLM"],
+            "error_type": None,
+            "error_message": None,
+        }
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (1, 2))
+    monkeypatch.setattr(finetuning_mod.dist, "broadcast_object_list", fake_broadcast)
+
+    metrics, resolved_thresholds = finetuning_cls._compute_or_broadcast_arousal_metrics(module, "val", [])
+
+    assert metrics == {"arousal_subtype_macro_event_f1": 0.75}
+    assert resolved_thresholds == thresholds
+    assert module._arousal_eval_thresholds == thresholds
+    assert module._arousal_eval_threshold_fallback_subtypes == ["PLM"]
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_arousal_ddp_rank_zero_computes_metrics_once_before_broadcast(
+    package_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    thresholds = {name: 0.5 for name in AROUSAL_SUBTYPES}
+    records = [{"path": "night.npz"}]
+    calls: list[list[dict[str, object]]] = []
+    module._arousal_eval_thresholds = None
+    module._arousal_eval_threshold_fallback_subtypes = None
+
+    def fake_compute(stage, gathered_records):
+        assert stage == "val"
+        calls.append(gathered_records)
+        module._arousal_eval_threshold_fallback_subtypes = ["PLM"]
+        return {"arousal_subtype_macro_event_f1": 0.75}, thresholds
+
+    def fake_broadcast(payload, *, src):
+        assert src == 0
+        assert payload[0]["metrics"] == {"arousal_subtype_macro_event_f1": 0.75}
+
+    object.__setattr__(module, "_compute_arousal_metrics_for_stage", fake_compute)
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (0, 2))
+    monkeypatch.setattr(finetuning_mod.dist, "broadcast_object_list", fake_broadcast)
+
+    metrics, resolved_thresholds = finetuning_cls._compute_or_broadcast_arousal_metrics(module, "val", records)
+
+    assert calls == [records]
+    assert metrics == {"arousal_subtype_macro_event_f1": 0.75}
+    assert resolved_thresholds == thresholds
 
 
 def test_run_inference_rejects_arousal_checkpoint_averaging(monkeypatch):
