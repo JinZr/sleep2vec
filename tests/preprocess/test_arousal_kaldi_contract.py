@@ -246,8 +246,9 @@ def test_arousal_kaldi_conversion_requires_thirty_second_tokens(tmp_path: Path) 
         convert(args)
 
 
-def test_arousal_kaldi_conversion_requires_one_ark_per_split(tmp_path: Path) -> None:
-    config_path, index_path, _ = _write_source(tmp_path)
+def test_arousal_kaldi_conversion_supports_ark_shards(tmp_path: Path) -> None:
+    config_path, index_path, events = _write_source(tmp_path)
+    output_dir = tmp_path / "kaldi"
     args = parse_args(
         [
             "--index",
@@ -255,15 +256,26 @@ def test_arousal_kaldi_conversion_requires_one_ark_per_split(tmp_path: Path) -> 
             "--config",
             str(config_path),
             "--output-dir",
-            str(tmp_path / "kaldi"),
+            str(output_dir),
             "--max-tokens",
-            "2",
+            "1",
             "--ark-shards",
             "2",
+            "--num-workers",
+            "1",
             "--extra-channels",
             "arousal",
         ]
     )
 
-    with pytest.raises(ValueError, match="--ark-shards 1"):
-        convert(args)
+    convert(args)
+
+    channel_dir = output_dir / "channels" / "train"
+    keys = ["center-a_record-1_000000_000001", "center-a_record-1_000001_000002"]
+    assert [line.split()[0] for line in (channel_dir / "arousal.1.scp").read_text().splitlines()] == [keys[0]]
+    assert [line.split()[0] for line in (channel_dir / "arousal.2.scp").read_text().splitlines()] == [keys[1]]
+    aggregate_scp = channel_dir / "arousal.scp"
+    assert [line.split()[0] for line in aggregate_scp.read_text().splitlines()] == keys
+    with kaldi_native_io.RandomAccessFloatMatrixReader(f"scp:{aggregate_scp}") as reader:
+        np.testing.assert_array_equal(np.asarray(reader[keys[0]]), events[:30].reshape(1, 120))
+        np.testing.assert_array_equal(np.asarray(reader[keys[1]]), events[30:].reshape(1, 120))

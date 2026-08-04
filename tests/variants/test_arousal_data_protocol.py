@@ -2,6 +2,7 @@ import importlib
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -49,14 +50,26 @@ def test_variant_arousal_registry_and_preset_contract_are_package_local(namespac
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])
-def test_variant_arousal_converter_rejects_multiple_ark_shards(
+def test_variant_arousal_converter_supports_multiple_ark_shards(
     namespace: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     converter_module = importlib.import_module(f"{namespace}.preprocess.convert_npz_to_kaldi")
     config_path = tmp_path / "config.yaml"
     index_path = tmp_path / "index.csv"
-    config_path.write_text("{}\n")
-    index_path.write_text("path,duration,split,dataset\n")
+    npz_path = tmp_path / "sample.npz"
+    config_path.write_text("model:\n  channels:\n    - name: ppg\n      input_dim: 8\n")
+    payload = {
+        "arousal_event": np.zeros((60, 4), dtype=np.float32),
+        "stage5": np.asarray([1.0, 2.0], dtype=np.float32),
+        **{key: np.asarray(0.0, dtype=np.float32) for key in converter_module.AROUSAL_METADATA_KEYS},
+        "tst": np.asarray(3.0, dtype=np.float32),
+    }
+    np.savez(npz_path, **payload)
+    index_path.write_text(
+        "path,duration,split,dataset,source,session_id,arousal_event_mask,stage_mask\n"
+        f"{npz_path},60,train,center-a,center-a,record-1,1,1\n"
+    )
+    output_dir = tmp_path / "kaldi"
     args = converter_module.parse_args(
         [
             "--index",
@@ -64,11 +77,13 @@ def test_variant_arousal_converter_rejects_multiple_ark_shards(
             "--config",
             str(config_path),
             "--output-dir",
-            str(tmp_path / "kaldi"),
+            str(output_dir),
             "--max-tokens",
-            "2",
+            "1",
             "--ark-shards",
             "2",
+            "--num-workers",
+            "1",
             "--extra-channels",
             "arousal",
         ]
@@ -79,8 +94,12 @@ def test_variant_arousal_converter_rejects_multiple_ark_shards(
         lambda unused_args: (["arousal", "stage5"], {"arousal": 120, "stage5": 1}, 2),
     )
 
-    with pytest.raises(ValueError, match="--ark-shards 1"):
-        converter_module.convert(args)
+    converter_module.convert(args)
+
+    channel_dir = output_dir / "channels" / "train"
+    assert len((channel_dir / "arousal.1.scp").read_text().splitlines()) == 1
+    assert len((channel_dir / "arousal.2.scp").read_text().splitlines()) == 1
+    assert len((channel_dir / "arousal.scp").read_text().splitlines()) == 2
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])

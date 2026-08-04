@@ -517,8 +517,6 @@ def convert(args: argparse.Namespace) -> Path:
     channel_names, channel_input_dims, effective_min_channels = _resolve_channels(args)
     if "arousal" in channel_names and args.token_sec != 30:
         raise ValueError("Built-in arousal Kaldi conversion requires --token-sec 30.")
-    if "arousal" in channel_names and args.ark_shards != 1:
-        raise ValueError("Built-in arousal Kaldi conversion requires --ark-shards 1.")
     config_data = _load_config_mapping(args.config)
     model_channel_aliases = _load_model_channel_aliases(config_data)
     channel_aliases = {name: alias for name, alias in model_channel_aliases.items() if name in channel_names}
