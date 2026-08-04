@@ -6,7 +6,12 @@ import pytest
 import torch
 
 from data.psg_pretrain_dataset import PSGPretrainDataset, _build_channel_registry
-from data.utils import AROUSAL_INDEX_KEYS, AROUSAL_METADATA_KEYS, load_builtin_arousal_metadata
+from data.utils import (
+    AROUSAL_INDEX_KEYS,
+    AROUSAL_METADATA_KEYS,
+    builtin_arousal_extractor,
+    load_builtin_arousal_metadata,
+)
 
 
 def _write_arousal_npz(path: Path, events: np.ndarray, *, tst: float = 4.0) -> None:
@@ -66,6 +71,13 @@ def test_arousal_registry_requires_input_dim_120() -> None:
             channel_input_dims={"arousal": 4},
             mask_rate=0.0,
         )
+
+
+def test_arousal_extractor_rejects_short_requested_window() -> None:
+    npz = {"arousal_event": np.zeros((30, 4), dtype=np.float32)}
+
+    with pytest.raises(ValueError, match=r"exactly 60 rows.*got 30"):
+        builtin_arousal_extractor(npz, 0, 2)
 
 
 def test_arousal_dataset_backfills_scalars_and_pads_with_minus_one(tmp_path: Path) -> None:

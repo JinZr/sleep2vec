@@ -126,7 +126,14 @@ def _load_builtin_arousal_events(npz) -> np.ndarray:
 
 def builtin_arousal_extractor(npz, start: int, end: int) -> torch.Tensor:
     events = _load_builtin_arousal_events(npz)
-    return torch.as_tensor(events[start * 30 : end * 30], dtype=torch.float32)
+    extracted = events[start * 30 : end * 30]
+    expected_rows = (end - start) * 30
+    if extracted.shape[0] != expected_rows:
+        raise ValueError(
+            f"Built-in arousal window requires exactly {expected_rows} rows for token range "
+            f"[{start}, {end}), got {extracted.shape[0]}."
+        )
+    return torch.as_tensor(extracted, dtype=torch.float32)
 
 
 def builtin_arousal_tokenizer(data: torch.Tensor) -> torch.Tensor:

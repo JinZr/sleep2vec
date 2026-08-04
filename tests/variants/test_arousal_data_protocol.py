@@ -44,6 +44,8 @@ def test_variant_arousal_registry_and_preset_contract_are_package_local(namespac
             channel_input_dims={"arousal": 4},
             mask_rate=0.0,
         )
+    with pytest.raises(ValueError, match=r"exactly 60 rows.*got 30"):
+        registry["arousal"][0]({"arousal_event": torch.zeros(30, 4).numpy()}, 0, 2)
 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec2", "sleep2expert"])
