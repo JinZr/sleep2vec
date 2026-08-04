@@ -99,13 +99,11 @@ def merge_arousal_window_records(records: list[Mapping[str, Any]]) -> list[dict[
         tst_hours: float | None = None
         expected_next_start: int | None = None
         previous_token_start: int | None = None
+        previous_window: dict[str, Any] | None = None
 
         for item in ordered:
             token_start = int(item["token_start"])
-            if previous_token_start is not None and token_start == previous_token_start:
-                # DDP samplers may repeat the same logical window as padding; keep the first copy.
-                continue
-            truth, score, current_tst, _ = _validate_arousal_record(item)
+            truth, score, current_tst, true_indices = _validate_arousal_record(item)
             token_count = int(item.get("n_tokens", 0))
             if token_count <= 0:
                 if truth.shape[0] % AROUSAL_SECONDS_PER_TOKEN != 0:
@@ -119,6 +117,29 @@ def merge_arousal_window_records(records: list[Mapping[str, Any]]) -> list[dict[
                     f"Arousal n_tokens does not match target length for path {path}: "
                     f"{token_count} tokens vs {truth.shape[0]} seconds."
                 )
+            if previous_token_start is not None and token_start == previous_token_start:
+                sample_id = item.get("sample_id")
+                previous_sample_id = previous_window["sample_id"]
+                if sample_id is None or previous_sample_id is None:
+                    raise ValueError(
+                        f"Duplicate arousal windows for path {path} token_start={token_start} require sample_id."
+                    )
+                if sample_id != previous_sample_id:
+                    raise ValueError(
+                        f"Arousal windows for path {path} token_start={token_start} have different sample_id values."
+                    )
+                if (
+                    token_count != previous_window["token_count"]
+                    or not np.array_equal(truth, previous_window["truth"])
+                    or not np.allclose(score, previous_window["score"])
+                    or not np.isclose(current_tst, previous_window["tst_hours"])
+                    or not np.allclose(true_indices, previous_window["true_indices"])
+                ):
+                    raise ValueError(
+                        f"Conflicting duplicate arousal window for path {path}, sample_id={sample_id!r}, "
+                        f"token_start={token_start}."
+                    )
+                continue
             if expected_next_start is not None and token_start != expected_next_start:
                 raise ValueError(
                     f"Arousal windows for path {path} are not contiguous and non-overlapping: "
@@ -140,6 +161,14 @@ def merge_arousal_window_records(records: list[Mapping[str, Any]]) -> list[dict[
             token_starts.append(token_start)
             expected_next_start = token_start + token_count
             previous_token_start = token_start
+            previous_window = {
+                "sample_id": item.get("sample_id"),
+                "token_count": token_count,
+                "truth": truth,
+                "score": score,
+                "tst_hours": current_tst,
+                "true_indices": true_indices,
+            }
 
         if not merged_truth:
             continue

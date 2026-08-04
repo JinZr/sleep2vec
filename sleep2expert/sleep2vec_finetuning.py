@@ -1270,6 +1270,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         # Task contract: stage5 is an auxiliary availability channel only; it never masks or rewrites
         # source-scored arousal truth. ArI summaries use the supplied scalar TST.
         token_start = batch["token_start"].to(torch.long).detach().cpu()
+        sample_ids = list(batch["id"])
         paths = list(metadata["path"])
         scalar_keys = (*AROUSAL_SUBTYPE_INDEX_KEYS, AROUSAL_TOTAL_INDEX_KEY, "tst")
         scalar_values = {key: metadata[key].to(torch.float32).detach().cpu() for key in scalar_keys}
@@ -1288,6 +1289,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             if valid_count % 30 != 0 or not valid_seconds[:valid_count].all() or valid_seconds[valid_count:].any():
                 raise ValueError("Arousal valid seconds must be a prefix spanning whole 30-second tokens.")
             record: dict[str, object] = {
+                "sample_id": sample_ids[idx],
                 "path": str(paths[idx]),
                 "token_start": int(token_start[idx].item()),
                 "n_tokens": valid_count // 30,

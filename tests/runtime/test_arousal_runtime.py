@@ -29,6 +29,7 @@ def _record(
     tst_hours: float = 3.0,
     path: str | None = None,
     token_start: int | None = None,
+    sample_id: int | str | None = None,
 ) -> dict[str, object]:
     score = truth.astype(np.float32) * 0.8 + 0.1 if score is None else np.asarray(score, dtype=np.float32)
     subtype_counts = [len(_segments_from_binary(truth[:, subtype_idx])) for subtype_idx in range(len(AROUSAL_SUBTYPES))]
@@ -48,6 +49,8 @@ def _record(
     if token_start is not None:
         record["token_start"] = token_start
         record["n_tokens"] = truth.shape[0] // 30
+    if sample_id is not None:
+        record["sample_id"] = sample_id
     return record
 
 
@@ -174,8 +177,8 @@ def test_merge_arousal_windows_preserves_token_offsets_and_deduplicates_ddp_padd
     second_truth = np.zeros((30, 4), dtype=np.int64)
     first_truth[0:3, 0] = 1
     second_truth[10:13, 1] = 1
-    first = _record(truth=first_truth, path="night.npz", token_start=0)
-    second = _record(truth=second_truth, path="night.npz", token_start=1)
+    first = _record(truth=first_truth, path="night.npz", token_start=0, sample_id="night-0")
+    second = _record(truth=second_truth, path="night.npz", token_start=1, sample_id="night-1")
     for key in (
         "arousal_res_index_per_hour",
         "arousal_spont_index_per_hour",
@@ -191,6 +194,41 @@ def test_merge_arousal_windows_preserves_token_offsets_and_deduplicates_ddp_padd
     assert merged[0]["truth"].shape == (60, 4)
     assert merged[0]["token_starts"] == [0, 1]
     assert merged[0]["n_windows"] == 2
+
+
+def test_merge_arousal_windows_rejects_duplicate_offset_with_different_sample_ids():
+    truth = np.zeros((30, 4), dtype=np.int64)
+    first = _record(truth=truth, path="night.npz", token_start=0, sample_id="sample-a")
+    second = _record(truth=truth, path="night.npz", token_start=0, sample_id="sample-b")
+
+    with pytest.raises(ValueError, match="different sample_id"):
+        merge_arousal_window_records([first, second])
+
+
+def test_merge_arousal_windows_rejects_duplicate_offset_without_sample_ids():
+    truth = np.zeros((30, 4), dtype=np.int64)
+    record = _record(truth=truth, path="night.npz", token_start=0)
+
+    with pytest.raises(ValueError, match="require sample_id"):
+        merge_arousal_window_records([record, record])
+
+
+@pytest.mark.parametrize("mutation", ["truth", "score", "tst", "index"])
+def test_merge_arousal_windows_rejects_conflicting_same_identity_duplicate(mutation: str):
+    truth = np.zeros((30, 4), dtype=np.int64)
+    first = _record(truth=truth, path="night.npz", token_start=0, sample_id="sample-a")
+    second = dict(first)
+    if mutation == "truth":
+        second["truth"] = np.ones((30, 4), dtype=np.int64)
+    elif mutation == "score":
+        second["score"] = np.ones((30, 4), dtype=np.float32)
+    elif mutation == "tst":
+        second["tst_hours"] = 4.0
+    else:
+        second["arousal_res_index_per_hour"] = 1.0
+
+    with pytest.raises(ValueError, match="Conflicting duplicate arousal window"):
+        merge_arousal_window_records([first, second])
 
 
 def test_merge_arousal_windows_rejects_noncontiguous_token_offsets():
@@ -230,6 +268,7 @@ def test_extract_arousal_records_restores_second_major_subtype_shape():
     labels[0, 0, 1] = 1.0
     logits = torch.zeros_like(labels)
     batch = {
+        "id": ["sample-7"],
         "tokens": {"arousal": labels, "stage5": torch.tensor([[2.0]])},
         "metadata": {
             "path": ["night.npz"],
@@ -247,6 +286,7 @@ def test_extract_arousal_records_restores_second_major_subtype_shape():
 
     assert records[0]["truth"].shape == (30, 4)
     assert records[0]["truth"][0].tolist() == [1, 1, 0, 0]
+    assert records[0]["sample_id"] == "sample-7"
     assert records[0]["token_start"] == 7
     assert records[0]["n_tokens"] == 1
 
@@ -258,6 +298,7 @@ def test_extract_arousal_records_does_not_hide_fractional_truth():
     labels = torch.zeros((1, 1, 120), dtype=torch.float32)
     labels[0, 0, 0] = 0.5
     batch = {
+        "id": ["sample-0"],
         "tokens": {"arousal": labels, "stage5": torch.tensor([[2.0]])},
         "metadata": {
             "path": ["night.npz"],
