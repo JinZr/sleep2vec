@@ -1352,9 +1352,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return records
 
         rank, world_size = get_rank_world_size()
+        if world_size == 1:
+            return records
         if not hasattr(dist, "gather_object"):
             if not hasattr(dist, "all_gather_object"):
-                return records
+                raise RuntimeError("Torch distributed object collectives are unavailable; cannot gather AHI records.")
             gathered: list[list[dict[str, np.ndarray]] | None] = [None] * world_size
             dist.all_gather_object(gathered, records)
         else:
@@ -1374,9 +1376,13 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return records
 
         rank, world_size = get_rank_world_size()
+        if world_size == 1:
+            return records
         if not hasattr(dist, "gather_object"):
             if not hasattr(dist, "all_gather_object"):
-                return records
+                raise RuntimeError(
+                    "Torch distributed object collectives are unavailable; cannot gather arousal records."
+                )
             gathered: list[list[dict[str, object]] | None] = [None] * world_size
             dist.all_gather_object(gathered, records)
         else:

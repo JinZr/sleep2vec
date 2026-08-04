@@ -1568,6 +1568,60 @@ def test_ahi_ddp_records_are_gathered_only_on_rank_zero(
 
 
 @pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_ahi_ddp_records_single_rank_returns_local_records_without_object_gather(
+    package_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    local_records = [{"rank": 0}]
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (0, 1))
+    monkeypatch.delattr(finetuning_mod.dist, "gather_object", raising=False)
+    monkeypatch.delattr(finetuning_mod.dist, "all_gather_object", raising=False)
+
+    assert finetuning_cls._gather_ahi_event_records(module, local_records) is local_records
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_ahi_ddp_records_use_all_gather_object_fallback(package_name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+    local_records = [{"rank": 1}]
+
+    def fake_all_gather_object(gathered, records):
+        assert records == local_records
+        gathered[:] = [[{"rank": 0}], [{"rank": 1}]]
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (1, 2))
+    monkeypatch.delattr(finetuning_mod.dist, "gather_object", raising=False)
+    monkeypatch.setattr(finetuning_mod.dist, "all_gather_object", fake_all_gather_object)
+
+    assert finetuning_cls._gather_ahi_event_records(module, local_records) == [{"rank": 0}, {"rank": 1}]
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("rank", [0, 1])
+def test_ahi_ddp_records_fail_without_global_object_gather(
+    package_name: str, rank: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finetuning_mod = importlib.import_module(f"{package_name}.sleep2vec_finetuning")
+    finetuning_cls = finetuning_mod.Sleep2vecFinetuning
+    module = finetuning_cls.__new__(finetuning_cls)
+
+    monkeypatch.setattr(finetuning_mod, "is_torch_distributed_ready", lambda: True)
+    monkeypatch.setattr(finetuning_mod, "get_rank_world_size", lambda: (rank, 2))
+    monkeypatch.delattr(finetuning_mod.dist, "gather_object", raising=False)
+    monkeypatch.delattr(finetuning_mod.dist, "all_gather_object", raising=False)
+
+    with pytest.raises(RuntimeError, match="cannot gather AHI records"):
+        finetuning_cls._gather_ahi_event_records(module, [{"rank": rank}])
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_ahi_ddp_nonzero_rank_uses_broadcast_metrics_without_recomputing(
     package_name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
