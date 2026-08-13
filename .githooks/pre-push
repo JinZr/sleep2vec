@@ -7,29 +7,31 @@ if ! command -v trufflehog >/dev/null 2>&1; then
     exit 1
 fi
 
-zero_sha=0000000000000000000000000000000000000000
+scan_from=${PRE_COMMIT_FROM_REF:-}
+scan_label=${PRE_COMMIT_REMOTE_BRANCH:-${PRE_COMMIT_LOCAL_BRANCH:-HEAD}}
 
-while read -r local_ref local_sha remote_ref remote_sha; do
-    if [ "$local_sha" = "$zero_sha" ]; then
-        continue
-    fi
+# pre-commit omits the commit range when a push contains the repository's full history.
+if [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
+    scan_to=$PRE_COMMIT_TO_REF
+else
+    scan_to=$(git rev-parse "${PRE_COMMIT_LOCAL_BRANCH:-HEAD}")
+fi
 
-    echo "pre-push: scanning $local_ref for secrets"
+echo "pre-push: scanning $scan_label for secrets"
 
-    if [ "$remote_sha" = "$zero_sha" ]; then
-        trufflehog git file://. \
-            --branch "$local_sha" \
-            --results=verified,unknown \
-            --fail \
-            --fail-on-scan-errors \
-            --no-update
-    else
-        trufflehog git file://. \
-            --since-commit "$remote_sha" \
-            --branch "$local_sha" \
-            --results=verified,unknown \
-            --fail \
-            --fail-on-scan-errors \
-            --no-update
-    fi
-done
+if [ -z "$scan_from" ]; then
+    trufflehog git file://. \
+        --branch "$scan_to" \
+        --results=verified,unknown \
+        --fail \
+        --fail-on-scan-errors \
+        --no-update
+else
+    trufflehog git file://. \
+        --since-commit "$scan_from" \
+        --branch "$scan_to" \
+        --results=verified,unknown \
+        --fail \
+        --fail-on-scan-errors \
+        --no-update
+fi
