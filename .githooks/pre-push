@@ -1,0 +1,37 @@
+#!/bin/sh
+
+set -e
+
+if ! command -v trufflehog >/dev/null 2>&1; then
+    echo "pre-push: trufflehog is required (install with: brew install trufflehog)" >&2
+    exit 1
+fi
+
+scan_from=${PRE_COMMIT_FROM_REF:-}
+scan_label=${PRE_COMMIT_REMOTE_BRANCH:-${PRE_COMMIT_LOCAL_BRANCH:-HEAD}}
+
+# pre-commit omits the commit range when a push contains the repository's full history.
+if [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
+    scan_to=$PRE_COMMIT_TO_REF
+else
+    scan_to=$(git rev-parse "${PRE_COMMIT_LOCAL_BRANCH:-HEAD}")
+fi
+
+echo "pre-push: scanning $scan_label for secrets"
+
+if [ -z "$scan_from" ]; then
+    trufflehog git file://. \
+        --branch "$scan_to" \
+        --results=verified,unknown \
+        --fail \
+        --fail-on-scan-errors \
+        --no-update
+else
+    trufflehog git file://. \
+        --since-commit "$scan_from" \
+        --branch "$scan_to" \
+        --results=verified,unknown \
+        --fail \
+        --fail-on-scan-errors \
+        --no-update
+fi

@@ -10,6 +10,25 @@ PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
 
 
 @pytest.mark.parametrize("package_name", PACKAGES)
+@pytest.mark.parametrize(
+    ("label_name", "devices", "expected"),
+    [
+        ("ahi", [0, 1], True),
+        ("arousal", [0, 1], True),
+        ("arousal", [0], False),
+        ("stage5", [0, 1], False),
+    ],
+)
+def test_distributed_event_progress_bar_selection_matches_across_variants(
+    package_name: str, label_name: str, devices: list[int], expected: bool
+):
+    finetune = importlib.import_module(f"{package_name}.finetune")
+    args = argparse.Namespace(label_name=label_name, devices=devices)
+
+    assert finetune._is_distributed_event_finetune(args) is expected
+
+
+@pytest.mark.parametrize("package_name", PACKAGES)
 def test_arousal_builtin_runtime_contract_is_package_local(package_name: str):
     common = importlib.import_module(f"{package_name}.common")
     arousal_metrics = importlib.import_module(f"{package_name}.metrics.arousal")

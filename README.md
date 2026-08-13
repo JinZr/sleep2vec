@@ -44,6 +44,14 @@
 ## Setup
 - Python 3.10+ with CUDA GPUs recommended; PyTorch/Lightning versions are pinned in `requirements.txt` (`torch==2.7.0`, `pytorch-lightning==2.6.1`).
 - Install: `pip install -r requirements.txt` (choose the correct PyTorch wheel for your CUDA version).
+- Install the pre-push secret scan after cloning:
+  ```bash
+  python -m pip install pre-commit
+  brew install trufflehog  # macOS; use the official TruffleHog package for other platforms
+  pre-commit install --hook-type pre-push
+  ```
+  Older clones that set `core.hooksPath=.githooks` should first run
+  `git config --unset-all core.hooksPath`; the tracked pre-commit configuration is the canonical hook entrypoint.
 - Pair-accuracy heatmap logging uses `matplotlib` + `seaborn` (already included in `requirements.txt`).
 - Authenticate to Weights & Biases before running (`WANDB_API_KEY=...` or `WANDB_MODE=offline`) because entrypoints call `wandb.login()`.
 - Default precision is bf16/bf16-mixed; pass `--precision 32` if your GPUs do not support bf16.
