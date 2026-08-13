@@ -51,7 +51,7 @@ def prepare_dataloader(args):
 def _is_distributed_ahi_finetune(args) -> bool:
     devices = getattr(args, "devices", None)
     world_size = len(devices) if isinstance(devices, (list, tuple)) else int(devices or 0)
-    return getattr(args, "label_name", None) == "ahi" and world_size > 1
+    return getattr(args, "label_name", None) in {"ahi", "arousal"} and world_size > 1
 
 
 def supervised(args, config_bundle):

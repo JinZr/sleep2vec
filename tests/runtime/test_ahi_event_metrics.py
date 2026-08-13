@@ -1381,7 +1381,10 @@ def test_supervised_epochs_zero_preserves_ckpt_path_without_test_search_injectio
     assert captured["ckpt_path"] == "manual.ckpt"
 
 
-def test_supervised_uses_custom_progress_bar_for_distributed_ahi(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+@pytest.mark.parametrize("label_name", ["ahi", "arousal"])
+def test_supervised_uses_custom_progress_bar_for_distributed_event_task(
+    label_name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
     from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
@@ -1420,7 +1423,7 @@ def test_supervised_uses_custom_progress_bar_for_distributed_ahi(monkeypatch: py
         print_diagnostics=False,
         ckpt_path="",
         results_csv_path=tmp_path / "results.csv",
-        label_name="ahi",
+        label_name=label_name,
     )
 
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
@@ -1440,7 +1443,7 @@ def test_supervised_uses_custom_progress_bar_for_distributed_ahi(monkeypatch: py
     assert any(isinstance(cb, (DistributedAHIRichProgressBar, DistributedAHITQDMProgressBar)) for cb in callbacks)
 
 
-def test_supervised_leaves_nonahi_on_default_progress_bar_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_supervised_leaves_non_event_task_on_default_progress_bar_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from pytorch_lightning.callbacks import ModelCheckpoint
     from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
