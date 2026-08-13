@@ -1,0 +1,35 @@
+#!/bin/sh
+
+set -e
+
+if ! command -v trufflehog >/dev/null 2>&1; then
+    echo "pre-push: trufflehog is required (install with: brew install trufflehog)" >&2
+    exit 1
+fi
+
+zero_sha=0000000000000000000000000000000000000000
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [ "$local_sha" = "$zero_sha" ]; then
+        continue
+    fi
+
+    echo "pre-push: scanning $local_ref for secrets"
+
+    if [ "$remote_sha" = "$zero_sha" ]; then
+        trufflehog git file://. \
+            --branch "$local_sha" \
+            --results=verified,unknown \
+            --fail \
+            --fail-on-scan-errors \
+            --no-update
+    else
+        trufflehog git file://. \
+            --since-commit "$remote_sha" \
+            --branch "$local_sha" \
+            --results=verified,unknown \
+            --fail \
+            --fail-on-scan-errors \
+            --no-update
+    fi
+done
