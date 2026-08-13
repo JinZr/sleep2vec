@@ -46,9 +46,10 @@ def prepare_dataloader(args):
     return train_loader, val_loader, test_loader
 
 
-def _is_distributed_ahi_finetune(args) -> bool:
+def _is_distributed_event_finetune(args) -> bool:
     devices = getattr(args, "devices", None)
     world_size = len(devices) if isinstance(devices, (list, tuple)) else int(devices or 0)
+    # Event metrics synchronize at epoch end; skip rank-zero-only progress finalization so ranks stay aligned.
     return getattr(args, "label_name", None) in {"ahi", "arousal"} and world_size > 1
 
 
@@ -124,7 +125,7 @@ def supervised(args, config_bundle):
             lr_monitor,
             GradScaleLoggerCallback(),
         ]
-        if _is_distributed_ahi_finetune(args):
+        if _is_distributed_event_finetune(args):
             callbacks.append(build_distributed_ahi_progress_bar())
         enable_checkpointing = True
         trainer_kwargs = dict(

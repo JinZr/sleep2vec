@@ -25,7 +25,7 @@ def test_distributed_event_progress_bar_selection_matches_across_variants(
     finetune = importlib.import_module(f"{package_name}.finetune")
     args = argparse.Namespace(label_name=label_name, devices=devices)
 
-    assert finetune._is_distributed_ahi_finetune(args) is expected
+    assert finetune._is_distributed_event_finetune(args) is expected
 
 
 @pytest.mark.parametrize("package_name", PACKAGES)
