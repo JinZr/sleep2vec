@@ -22,6 +22,7 @@ from agent_tools import (
     plans,
     run_artifacts,
     run_evidence,
+    slurm,
 )
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.models import REPO_ROOT
@@ -145,6 +146,13 @@ def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():
         {"scheduler_type": "slurm", "launched_at": recent, "scheduler_started_at": old}, {}, replacement
     )
     assert adaptive_hparam._grace_satisfied({"scheduler_type": "slurm", "launched_at": old}, {}, replacement) is False
+
+
+def test_adaptive_minutes_since_accepts_slurm_sidecar_timestamp():
+    minutes = adaptive_hparam._minutes_since(slurm._utc_now())
+
+    assert minutes is not None
+    assert 0 <= minutes < 1
 
 
 def _adaptive_recipe(

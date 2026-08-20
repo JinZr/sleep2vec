@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -15,7 +14,7 @@ import tempfile
 import traceback
 from typing import Any
 
-from . import transport
+from . import manifests, transport
 
 
 @dataclass(frozen=True)
@@ -599,7 +598,7 @@ def _job_name(experiment_id: str, run_id: str) -> str:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return manifests.utc_now()
 
 
 def _atomic_create_json(path: str | Path, payload: dict[str, Any]) -> None:
