@@ -126,6 +126,70 @@ def test_show_job_parses_exact_job_and_missing_job(monkeypatch):
     assert slurm.show_job({"target": "local"}, "3880") is None
 
 
+def test_cluster_scheduling_capabilities_use_read_only_scontrol_queries(monkeypatch):
+    outputs = {
+        "scontrol --version": "slurm 20.11.9\n",
+        "scontrol show config": """
+PriorityType              = priority/basic
+SchedulerType             = sched/backfill
+AccountingStorageType     = accounting_storage/none
+PreemptType               = preempt/none
+""",
+        "scontrol show partition -o": (
+            "PartitionName=gpu State=UP MaxTime=2-00:00:00 TotalNodes=8\n"
+            "PartitionName=cpu State=UP MaxTime=INFINITE TotalNodes=16\n"
+        ),
+        "scontrol show reservation -o": "No reservations in the system\n",
+    }
+    calls = []
+
+    def fake_run_shell(host, command, *, timeout):
+        calls.append((host, command, timeout))
+        return subprocess.CompletedProcess([], 0, outputs[command], "")
+
+    monkeypatch.setattr(slurm.transport, "run_shell", fake_run_shell)
+
+    capabilities = slurm.cluster_scheduling_capabilities({"target": "local"}, "gpu")
+
+    assert capabilities == {
+        "slurm_version": "slurm 20.11.9",
+        "priority_type": "priority/basic",
+        "scheduler_type": "sched/backfill",
+        "accounting_storage_type": "accounting_storage/none",
+        "preempt_type": "preempt/none",
+        "multifactor_priority": False,
+        "backfill_enabled": True,
+        "accounting_enabled": False,
+        "preemption_enabled": False,
+        "partition": "gpu",
+        "partition_state": "UP",
+        "partition_max_time": "2-00:00:00",
+        "reservation_count": 0,
+    }
+    assert [command for _host, command, _timeout in calls] == list(outputs)
+    assert not any("sprio" in command or "sacctmgr" in command for _host, command, _timeout in calls)
+
+
+def test_parse_cluster_scheduling_capabilities_detects_multifactor_accounting():
+    capabilities = slurm.parse_cluster_scheduling_capabilities(
+        version_output="slurm 24.05.2\n",
+        config_output="""
+PriorityType = priority/multifactor
+SchedulerType = sched/backfill
+AccountingStorageType = accounting_storage/slurmdbd
+PreemptType = preempt/qos
+""",
+        partition_output="PartitionName=gpu State=UP MaxTime=INFINITE\n",
+        reservation_output="ReservationName=urgent State=ACTIVE\n",
+        partition="gpu",
+    )
+
+    assert capabilities["multifactor_priority"] is True
+    assert capabilities["accounting_enabled"] is True
+    assert capabilities["preemption_enabled"] is True
+    assert capabilities["reservation_count"] == 1
+
+
 def test_cancel_uses_exact_numeric_job_id(monkeypatch):
     calls = []
 

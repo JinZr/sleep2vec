@@ -397,6 +397,67 @@ def show_job(
     )
 
 
+def cluster_scheduling_capabilities(
+    execution: dict[str, Any],
+    partition: str,
+    *,
+    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    outputs: dict[str, str] = {}
+    for action, argv in (
+        ("version query", ["scontrol", "--version"]),
+        ("configuration query", ["scontrol", "show", "config"]),
+        ("partition query", ["scontrol", "show", "partition", "-o"]),
+        ("reservation query", ["scontrol", "show", "reservation", "-o"]),
+    ):
+        result = run_command(execution, argv, timeout=timeout)
+        if result.returncode != 0:
+            raise SlurmCommandError(action, result)
+        outputs[action] = str(result.stdout or "")
+    return parse_cluster_scheduling_capabilities(
+        version_output=outputs["version query"],
+        config_output=outputs["configuration query"],
+        partition_output=outputs["partition query"],
+        reservation_output=outputs["reservation query"],
+        partition=partition,
+    )
+
+
+def parse_cluster_scheduling_capabilities(
+    *,
+    version_output: str,
+    config_output: str,
+    partition_output: str,
+    reservation_output: str,
+    partition: str,
+) -> dict[str, Any]:
+    config = _parse_scontrol_config(config_output)
+    partitions = [_parse_scontrol_oneline(line) for line in partition_output.splitlines() if line.strip()]
+    selected_partition = next((row for row in partitions if row.get("PartitionName") == partition), {})
+    reservation_count = sum(
+        "ReservationName" in _parse_scontrol_oneline(line) for line in reservation_output.splitlines()
+    )
+    priority_type = config.get("PriorityType", "")
+    scheduler_type = config.get("SchedulerType", "")
+    accounting_storage_type = config.get("AccountingStorageType", "")
+    preempt_type = config.get("PreemptType", "")
+    return {
+        "slurm_version": version_output.strip(),
+        "priority_type": priority_type,
+        "scheduler_type": scheduler_type,
+        "accounting_storage_type": accounting_storage_type,
+        "preempt_type": preempt_type,
+        "multifactor_priority": priority_type == "priority/multifactor",
+        "backfill_enabled": scheduler_type == "sched/backfill",
+        "accounting_enabled": accounting_storage_type not in {"", "accounting_storage/none"},
+        "preemption_enabled": preempt_type not in {"", "preempt/none"},
+        "partition": partition,
+        "partition_state": _null_to_empty(selected_partition.get("State", "")),
+        "partition_max_time": _null_to_empty(selected_partition.get("MaxTime", "")),
+        "reservation_count": reservation_count,
+    }
+
+
 def cancel(
     execution: dict[str, Any],
     job_id: str,
@@ -492,12 +553,26 @@ def _parse_scontrol_fields(output: str) -> dict[str, str]:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if len(lines) != 1:
         raise ValueError("scontrol show job --oneliner must return exactly one row.")
+    return _parse_scontrol_oneline(lines[0])
+
+
+def _parse_scontrol_oneline(line: str) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for token in shlex.split(lines[0]):
+    for token in shlex.split(line):
         if "=" not in token:
             continue
         key, value = token.split("=", 1)
         fields[key] = value
+    return fields
+
+
+def _parse_scontrol_config(output: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        fields[key.strip()] = value.strip()
     return fields
 
 

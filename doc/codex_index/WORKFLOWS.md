@@ -249,6 +249,11 @@ evaluation stays on the direct backend. Workspace layout and lifecycle entrypoin
 commit, process, and evidence rules are defined in
 [run_manifest.md](../agent_contracts/run_manifest.md).
 
+Slurm plan warnings provide safe, static priority guidance. `doctor` adds a
+read-only capability check for priority policy, backfill, accounting,
+partition, and visible reservations. These diagnostics do not mutate frozen
+resource requests or promise a priority that only cluster policy can grant.
+
 At task handoff, read the experiment metadata, research log when present, and
 then current canonical manifests. Add a note only when there is a meaningful
 new action, observation, interpretation, decision, conclusion, or correction;

@@ -675,6 +675,28 @@ def _hparam_execution_issues(
                     {"scheduler": scheduler, "preflight_before_workspace": True},
                 )
             )
+        else:
+            priority_message = (
+                "Slurm priority is cluster-managed and cannot be guaranteed by this tool. Keep nice=0, submit "
+                "frozen jobs promptly, request the shortest credible walltime and only necessary CPU, memory, and "
+                "GPU resources, and avoid nodelist unless it is required."
+            )
+            if scheduler.get("nice", 0) > 0:
+                priority_message += f" The configured nice={scheduler['nice']} voluntarily lowers priority."
+            if scheduler.get("nodelist"):
+                priority_message += " The configured nodelist narrows eligible nodes and may delay backfill."
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.WARN,
+                    "execution.scheduler.priority",
+                    priority_message,
+                    None,
+                    {
+                        "nice": scheduler.get("nice", 0),
+                        "nodelist": scheduler.get("nodelist", ""),
+                    },
+                )
+            )
     # An invalid (non-list) gpu_pool already failed above; drop it so the shared rules
     # fall back to runtime.devices, matching the previous inline behaviour. An invalid
     # gpus_per_run skips the pool rules entirely (type failure already reported).

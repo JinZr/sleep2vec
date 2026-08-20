@@ -24,6 +24,7 @@ from agent_tools import (
     manifests,
     plan_hparam,
     plan_rendering,
+    plans,
     run_artifacts,
     run_evidence,
     slurm,
@@ -366,16 +367,18 @@ def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
 def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
+    configured_scheduler = {
+        "type": "slurm",
+        "partition": "gpu",
+        "cpus_per_task": 8,
+        "memory": "64G",
+        "walltime": "01:00:00",
+        "nice": 0,
+    }
     payload["execution"].update(
         {
             "gpus_per_run": 1,
-            "scheduler": {
-                "type": "slurm",
-                "partition": "gpu",
-                "cpus_per_task": 8,
-                "memory": "64G",
-                "walltime": "01:00:00",
-            },
+            "scheduler": configured_scheduler,
         }
     )
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -385,15 +388,64 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path):
     preview = _run("hparam-launch", "--plan-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
+    assert "Slurm priority is cluster-managed and cannot be guaranteed" in result.stdout
     assert preview.returncode == 0, preview.stderr
     plan = json.loads((plan_dir / "plan.json").read_text())
     run = plan["runs"][0]
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert plan["recipe"]["execution"]["scheduler"]["type"] == "slurm"
+    assert plan["recipe"]["execution"]["scheduler"] == configured_scheduler
     assert run["scheduler_type"] == "slurm"
     assert canonical["scheduler_type"] == "slurm"
     assert Path(run["scheduler_script"]).name == "job.sbatch"
+    assert "#SBATCH --nice=0" in Path(run["scheduler_script"]).read_text()
     assert "sbatch --parsable" in _read_table(plan_dir / "launch_manifest.tsv")[0]["command"]
+
+
+def test_slurm_doctor_reports_live_capabilities_without_mutating_scheduler(tmp_path: Path, monkeypatch):
+    recipe_path = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe_path.read_text())
+    configured_scheduler = {
+        "type": "slurm",
+        "partition": "gpu",
+        "cpus_per_task": 8,
+        "memory": "64G",
+        "walltime": "01:00:00",
+        "nice": 0,
+    }
+    payload["execution"].update({"gpus_per_run": 1, "scheduler": configured_scheduler})
+    recipe_path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    recipe, _cfg, report = plans.evaluate_recipe(recipe_path)
+    calls = []
+
+    def capabilities(execution, partition):
+        calls.append((execution.get("target", "local"), partition))
+        return {
+            "slurm_version": "slurm 20.11.9",
+            "priority_type": "priority/basic",
+            "scheduler_type": "sched/backfill",
+            "accounting_storage_type": "accounting_storage/none",
+            "preempt_type": "preempt/none",
+            "multifactor_priority": False,
+            "backfill_enabled": True,
+            "accounting_enabled": False,
+            "preemption_enabled": False,
+            "partition": "gpu",
+            "partition_state": "UP",
+            "partition_max_time": "2-00:00:00",
+            "reservation_count": 0,
+        }
+
+    monkeypatch.setattr(slurm, "cluster_scheduling_capabilities", capabilities)
+
+    doctor = plans.prepare_doctor_report(None, recipe, report)
+
+    capability_issue = next(issue for issue in doctor.issues if issue.field == "execution.scheduler.capabilities")
+    assert capability_issue.status.value == "WARN"
+    assert "priority/basic" in capability_issue.message
+    assert "no setting can guarantee first priority" in capability_issue.message
+    assert capability_issue.evidence["backfill_enabled"] is True
+    assert calls == [("local", "gpu")]
+    assert recipe["execution"]["scheduler"] == configured_scheduler
 
 
 @pytest.mark.parametrize(
@@ -2725,6 +2777,28 @@ def test_hparam_execution_rejects_invalid_runtime_identity(execution, field):
     assert len(issues) == 1
     assert issues[0].field == field
     assert issues[0].status.value == "FAIL"
+
+
+def test_hparam_execution_warns_when_slurm_request_voluntarily_lowers_priority():
+    issues = decision_hparam._hparam_execution_issues(
+        {
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+                "nice": 100,
+                "nodelist": "h20-bj-96",
+            }
+        },
+        {},
+    )
+
+    priority_issue = next(issue for issue in issues if issue.field == "execution.scheduler.priority")
+    assert priority_issue.status.value == "WARN"
+    assert "nice=100 voluntarily lowers priority" in priority_issue.message
+    assert "nodelist narrows eligible nodes" in priority_issue.message
 
 
 def test_hparam_runtime_rejects_gpus_per_run_without_a_physical_pool():

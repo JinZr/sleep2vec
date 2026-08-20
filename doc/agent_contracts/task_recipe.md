@@ -169,6 +169,11 @@ The optional `execution` block configures the managed launcher.
   Slurm recipes reject `gpu_pool`, `max_concurrent`, `conda_env`, locally
   authored `runtime.devices`, unknown scheduler fields, and arbitrary sbatch
   arguments.
+- Slurm plans warn that priority remains cluster-managed. `doctor` may inspect
+  version, priority, backfill, accounting, partition, and reservation
+  capabilities through read-only `scontrol` queries. Advice never changes the
+  frozen scheduler request: `nice=0` is the highest unprivileged nice setting,
+  and no user-side option guarantees first priority.
 - Only the canonical manager runtime—a local target at `REPO_ROOT` without a
   conda wrapper—may omit Python and commit identity. Planning then freezes the
   current manager interpreter and repository HEAD. SSH targets, separate local
