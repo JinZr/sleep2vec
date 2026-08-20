@@ -553,7 +553,7 @@ def write_hparam_plan(
         write_frozen_final_eval_config.unlink()
     combos = hparam_combos(recipe)
     runs = []
-    test_after_fit = evaluation.get("test_after_fit")
+    test_after_fit = evaluation.get("test_after_fit", True)
     run_index_offset = next_run_index(recipe)
     for idx, combo in enumerate(combos):
         identity = run_identity(recipe, run_index_offset + idx, combo)
@@ -598,7 +598,9 @@ def write_hparam_plan(
         if recipe.get("variant") != "sex_age_baseline":
             rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
             rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
-        if test_after_fit is not True:
+        if test_after_fit:
+            command_parts.append("--test-after-fit")
+        else:
             command_parts.append("--no-test-after-fit")
         command = rendering.render_command(command_parts)
         script_path = run_dir / "launch.sh"
@@ -608,7 +610,7 @@ def write_hparam_plan(
             "\n".join(
                 rendering.hparam_script_lines(
                     [command],
-                    test_after_fit=test_after_fit is True,
+                    test_after_fit=test_after_fit,
                     record_exit_code=True,
                     run_cwd=run_cwd,
                 )
@@ -664,7 +666,7 @@ def write_hparam_plan(
                         [sys.executable, "-m", "agent_tools", "hparam-run-queue", "--plan-dir", out, "--execute"]
                     )
                 ],
-                test_after_fit=test_after_fit is True,
+                test_after_fit=test_after_fit,
                 run_cwd=REPO_ROOT,
             )
         )
@@ -686,8 +688,8 @@ def write_hparam_plan(
     final_script_path = physical_out / "final_external_test.sh"
     final_unlocked = final_test_unlocked(evaluation, unlock_final_test)
     test_after_fit_message = (
-        "Run commands evaluate the configured test split because test_after_fit is explicitly unlocked."
-        if test_after_fit is True
+        "Run commands evaluate the configured test split after fit."
+        if test_after_fit
         else "Run commands do not evaluate the external test split."
     )
     plan_lines = [

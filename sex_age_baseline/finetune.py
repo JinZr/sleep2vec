@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         "--test-after-fit",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Run test evaluation after fit; use --no-test-after-fit for locked model selection.",
+        help="Run test evaluation after fit by default; use --no-test-after-fit to opt out.",
     )
     parser.add_argument(
         "--check-val-every-n-epoch",

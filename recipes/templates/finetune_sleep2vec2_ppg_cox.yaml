@@ -1,6 +1,6 @@
-name: sex_age_cox_finetune_example
+name: sleep2vec2_ppg_cox_finetune_example
 task: finetune
-variant: sex_age_baseline
+variant: sleep2vec2
 
 experiment:
   id: ASK_USER
@@ -14,32 +14,29 @@ step:
   purpose: ASK_USER
 
 inputs:
-  config: configs/sex_age_baseline/cox.yaml
+  config: configs/sleep2vec2/ppg_cox_finetune_large.yaml
   label_name: incident_cox
-  ckpt_path: null
+  pretrained_backbone_path: null
 
 runtime:
   devices: [0]
   precision: bf16-mixed
   epochs: 30
-  batch_size: 256
+  batch_size: 12
   num_workers: 8
-  lr: 1.0e-3
-  weight_decay: 1.0e-4
-  gradient_clip_val: 1.0
-  accumulate_grad_batches: 1
+  lr: 1.0e-6
+  weight_decay: 1.0e-5
 
 artifacts:
-  version_name: sex-age-cox-agent-example
-  results_csv_path: results/sex_age_cox_agent_example.csv
+  version_name: sleep2vec2-ppg-cox-agent-example
+  results_csv_path: results/sleep2vec2_ppg_cox_agent_example.csv
   overwrite: false
 
 evaluation_policy:
-  selection_metric: val_c_index
-  selection_mode: max
+  selection_metric: val_loss
+  selection_mode: min
   selection_split: val
-  external_test_locked: true
-  test_after_fit: false
+  external_test_locked: false
 
 decisions:
   task:
@@ -51,16 +48,16 @@ decisions:
   pretrained_backbone_path:
     value: null
     source: explicit_recipe
-    meaning: "sex_age_baseline has no pretrained backbone"
+    meaning: "train downstream model without loading a pretrained backbone"
   train_val_test_policy:
-    value: "select on val; keep test locked"
+    value: "select on val; run test after fit"
     source: explicit_recipe
   external_test_locked:
-    value: true
+    value: false
     source: explicit_recipe
   overwrite_policy:
     value: false
     source: explicit_recipe
   required_channels:
-    value: []
+    value: [ppg]
     source: explicit_config

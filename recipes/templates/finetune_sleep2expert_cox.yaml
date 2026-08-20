@@ -36,8 +36,7 @@ evaluation_policy:
   selection_metric: val_loss
   selection_mode: min
   selection_split: val
-  external_test_locked: true
-  test_after_fit: false
+  external_test_locked: false
 
 decisions:
   task:
@@ -51,10 +50,10 @@ decisions:
     source: explicit_recipe
     meaning: "train downstream model without loading a pretrained backbone"
   train_val_test_policy:
-    value: "select on val; keep test locked"
+    value: "select on val; run test after fit"
     source: explicit_recipe
   external_test_locked:
-    value: true
+    value: false
     source: explicit_recipe
   overwrite_policy:
     value: false

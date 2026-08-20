@@ -34,6 +34,11 @@ decisions:
     source: explicit_user
     rationale: Keep test data locked during tuning.
 
+  test_after_fit:
+    value: false
+    source: explicit_user
+    rationale: Explicitly opt out of the default post-fit test evaluation.
+
   overwrite_policy:
     value: false
     source: explicit_user

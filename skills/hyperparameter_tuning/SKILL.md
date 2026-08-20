@@ -1,7 +1,7 @@
 # Skill: hyperparameter_tuning
 
 ## When to use
-Use for `hparam_tune` recipes that generate validation-only run plans, orchestrate active launch/monitor/select/evaluate, or run append-only adaptive external-optimized tuning through `agent_tools`.
+Use for `hparam_tune` recipes that generate validation-selected run plans, orchestrate active launch/monitor/select/evaluate, or run append-only adaptive external-optimized tuning through `agent_tools`. Managed runs test after fit by default, but candidate selection remains validation-only.
 
 ## Required inputs
 Requires experiment metadata, a named step, base recipe, search method, search parameters, budget, selection metric/mode/split, external-test lock policy, and final evaluation policy. Active orchestration additionally uses `execution:` fields. A local target at `REPO_ROOT` without a conda wrapper may omit Python/commit identity; SSH targets, separate local workdirs, and conda-wrapped targets require explicit `execution.python` and full `execution.runtime_commit`. Adaptive tuning additionally requires `adaptive.enabled=true`; if optimizing test/external metrics, `adaptive.test_feedback_for_selection=true` must be explicit. Omitting `adaptive.suggest.strategy` selects `agent_proposal`; agent proposals additionally require `adaptive.objective_metric` as an explicit non-blank string plus explicit non-empty `adaptive.objective_mode`, `adaptive.round_size`, `adaptive.max_rounds`, and `adaptive.max_runs_total`, are terminal-only, and require replacement to be omitted or exactly disabled. Use explicit `best_neighborhood` only for automatic neighborhood suggestions or active-round replacement.
@@ -18,7 +18,7 @@ Requires experiment metadata, a named step, base recipe, search method, search p
 - `python -m agent_tools hparam-adaptive-step --workflow-dir <dir> --proposal <submission.json>`
 
 ## Decision checklist
-Confirm validation-only selection for static tuning, namespaced `runtime.*` or `yaml:/...` search keys, generated config directory, unique version names, execution target and required Python/commit identity, GPU assignment, W&B project/group, log/PID locations, max concurrency, final-test unlock state, and whether the run is explicitly external-optimized adaptive tuning. For `agent_proposal`, also confirm the numeric authorization bounds and that terminal-only rounds, disabled replacement, and an external two-phase agent driver are intended.
+Confirm validation-only selection for static tuning, the default test-after-fit behavior or an explicit `test_after_fit: false` opt-out, namespaced `runtime.*` or `yaml:/...` search keys, generated config directory, unique version names, execution target and required Python/commit identity, GPU assignment, W&B project/group, log/PID locations, max concurrency, final-test unlock state, and whether the run is explicitly external-optimized adaptive tuning. For `agent_proposal`, also confirm the numeric authorization bounds and that terminal-only rounds, disabled replacement, and an external two-phase agent driver are intended.
 
 ## Stop-and-consult gates
 The agent must stop and ask the user before continuing if any high-impact decision is missing, ambiguous, conflicting, or marked as `ASK_USER`.
@@ -31,7 +31,7 @@ Stop and consult the user if:
 - `selection_metric` or `selection_mode` is missing.
 - `selection_split` is test.
 - `external_test_locked` is missing.
-- Any tuning run would evaluate the external test split.
+- `external_test_locked=true` conflicts with the default test-after-fit behavior and `test_after_fit: false` was not explicitly chosen.
 - Final test evaluation is requested without explicit unlock.
 - `execution.target=ssh` is requested without a host.
 - The target is SSH, a separate local workdir, or conda-wrapped, but `execution.python` or full `execution.runtime_commit` is missing.
@@ -44,7 +44,7 @@ Stop and consult the user if:
 - `agent_proposal` is requested with active replacement, invalid numeric bounds, or an expectation that `hparam-adaptive-loop` will invoke an LLM.
 
 ## Canonical commands
-Generate shell scripts that call the recipe variant's `finetune` module for managed runs. After `agent_tools plan`, preview one launch wave with `hparam-launch`; dry-run is the default, and `--execute` is required to start jobs. Use `hparam-run-queue --execute` when the authorized action is to keep filling capacity until the full current plan is terminal. Monitor with `hparam-monitor`; it updates status but never fills free slots. Add `--health` when remote/GPU/IO/log/progress evidence is needed. Stop only with `hparam-stop --run-id <id> --reason <text>`, rank validation candidates with `hparam-select`, and use the same variant's `infer` module only through explicitly unlocked final evaluation commands.
+Generate shell scripts that call the recipe variant's `finetune` module with an explicit `--test-after-fit` or `--no-test-after-fit`. After `agent_tools plan`, preview one launch wave with `hparam-launch`; dry-run is the default, and `--execute` is required to start jobs. Use `hparam-run-queue --execute` when the authorized action is to keep filling capacity until the full current plan is terminal. Monitor with `hparam-monitor`; it updates status but never fills free slots. Add `--health` when remote/GPU/IO/log/progress evidence is needed. Stop only with `hparam-stop --run-id <id> --reason <text>`, rank validation candidates with `hparam-select`, and use the same variant's `infer` module only through explicitly unlocked final evaluation commands.
 
 For adaptive tuning, initialize with `hparam-adaptive-init`, then use `hparam-adaptive-step` or, for `best_neighborhood` only, `hparam-adaptive-loop`. Initialization freezes round 000 `execution.python` and `execution.runtime_commit` as the workflow identity. Later rounds must keep that identity but may take updated operational execution fields such as `max_concurrent`, GPU allocation, and `env` from the source recipe after preflight. Adaptive commands append to the experiment-level `events.jsonl` and create `run_registry.tsv`, digests, suggestions, and per-round plans; they must not rewrite previous round plans, scripts, configs, logs, or checkpoints.
 

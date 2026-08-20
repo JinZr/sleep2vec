@@ -491,10 +491,7 @@ if __name__ == "__main__":
         "--test-after-fit",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=(
-            "Run test evaluation after training. Use --no-test-after-fit during hyper-parameter search to keep "
-            "external test locked."
-        ),
+        help="Run test evaluation after training by default; use --no-test-after-fit to opt out.",
     )
     parser.add_argument(
         "--check-val-every-n-epoch",

@@ -283,7 +283,6 @@ def hparam_tune_issues(
         "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),
         "selection_split": ("evaluation_policy.selection_split", "train_val_test_policy"),
         "external_test_locked": ("evaluation_policy.external_test_locked", "external_test_locked"),
-        "test_after_fit": ("evaluation_policy.test_after_fit", "test_after_fit"),
         "final_eval_split": ("evaluation_policy.final_eval_split", "final_eval_split"),
         "final_test_unlocked": ("evaluation_policy.final_test_unlocked", "final_eval_unlock"),
         "require_manual_unlock_for_final_test": (
@@ -379,16 +378,30 @@ def hparam_tune_issues(
     )
     if not has_external_lock:
         issues.append(needs_issue("external_test_locked", "external_test_locked must be explicit.", high_impact))
-    test_after_fit = evaluation.get("test_after_fit")
-    final_test_unlocked = evaluation.get("final_test_unlocked")
+    test_after_fit_decision = decisions.get("test_after_fit")
+    test_after_fit = (
+        test_after_fit_decision.value
+        if test_after_fit_decision is not None and test_after_fit_decision.source != "missing"
+        else evaluation.get("test_after_fit", True)
+    )
     external_test_locked = evaluation.get("external_test_locked")
-    if test_after_fit is True and not (external_test_locked is False and final_test_unlocked is True):
+    if type(test_after_fit) is not bool:
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
-                "Run commands would evaluate test data without an explicit test unlock.",
-                "Should test_after_fit be false, or should external_test_locked=false and final_test_unlocked=true?",
+                "test_after_fit must be true or false when provided.",
+                "Should test evaluation run after fit for this task?",
+                {"value": test_after_fit, "evaluation_policy": evaluation},
+            )
+        )
+    elif test_after_fit and external_test_locked is True:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "test_after_fit",
+                "test_after_fit=true would evaluate test while external_test_locked=true.",
+                "Should test_after_fit be false, or should external_test_locked=false?",
                 {"evaluation_policy": evaluation},
             )
         )

@@ -1,4 +1,4 @@
-name: sleep2vec2_ppg_cox_finetune_example
+name: sleep2vec2_ppg_ahi_finetune_example
 task: finetune
 variant: sleep2vec2
 
@@ -14,8 +14,8 @@ step:
   purpose: ASK_USER
 
 inputs:
-  config: configs/sleep2vec2/ppg_cox_finetune_large.yaml
-  label_name: incident_cox
+  config: configs/sleep2vec2/ppg_ahi_finetune_large.yaml
+  label_name: ahi
   pretrained_backbone_path: null
 
 runtime:
@@ -28,37 +28,33 @@ runtime:
   weight_decay: 1.0e-5
 
 artifacts:
-  version_name: sleep2vec2-ppg-cox-agent-example
-  results_csv_path: results/sleep2vec2_ppg_cox_agent_example.csv
+  version_name: sleep2vec2-ppg-ahi-agent-example
+  results_csv_path: results/sleep2vec2_ppg_ahi_agent_example.csv
   overwrite: false
 
 evaluation_policy:
-  selection_metric: val_loss
-  selection_mode: min
+  selection_metric: val_ahi_pearson
+  selection_mode: max
   selection_split: val
-  external_test_locked: true
-  test_after_fit: false
+  external_test_locked: false
 
 decisions:
   task:
     value: finetune
     source: explicit_recipe
   label_name:
-    value: incident_cox
+    value: ahi
     source: explicit_recipe
   pretrained_backbone_path:
     value: null
     source: explicit_recipe
     meaning: "train downstream model without loading a pretrained backbone"
   train_val_test_policy:
-    value: "select on val; keep test locked"
+    value: "select on val; run test after fit"
     source: explicit_recipe
   external_test_locked:
-    value: true
+    value: false
     source: explicit_recipe
   overwrite_policy:
     value: false
     source: explicit_recipe
-  required_channels:
-    value: [ppg]
-    source: explicit_config
