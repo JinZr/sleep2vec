@@ -142,6 +142,25 @@ def test_parse_exit_code():
         slurm.parse_exit_code("0")
 
 
+def test_sidecar_identity_requires_frozen_token_and_job_id():
+    payload = {
+        "schema_version": 1,
+        "scheduler_job_id": "3880",
+        "scheduler_cluster": "wuji-h20",
+        "scheduler_submit_token": "agent-tools-unit",
+        "exit_code": 0,
+    }
+
+    assert slurm.sidecar_identity(payload, "agent-tools-unit", expected_job_id="3880") == slurm.JobIdentity(
+        "3880", "wuji-h20"
+    )
+    assert slurm.terminal_exit_code(payload) == 0
+    with pytest.raises(ValueError, match="submit token"):
+        slurm.sidecar_identity(payload, "different")
+    with pytest.raises(ValueError, match="job id"):
+        slurm.sidecar_identity(payload, "agent-tools-unit", expected_job_id="3881")
+
+
 def test_normalize_resources_freezes_supported_slurm_fields():
     assert slurm.normalize_resources(
         {

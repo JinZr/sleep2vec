@@ -426,6 +426,36 @@ def parse_exit_code(value: str) -> tuple[int, int]:
     return int(match.group(1)), int(match.group(2))
 
 
+def submission_command(script: str, submit_token: str) -> str:
+    return " ".join(transport.sh(part) for part in ["sbatch", "--parsable", f"--comment={submit_token}", script])
+
+
+def sidecar_identity(
+    payload: dict[str, Any],
+    submit_token: str,
+    *,
+    expected_job_id: str | None = None,
+) -> JobIdentity:
+    if payload.get("schema_version") != 1:
+        raise ValueError("Slurm sidecar has an unsupported schema version.")
+    if payload.get("scheduler_submit_token") != submit_token:
+        raise ValueError("Slurm sidecar submit token differs from the frozen run.")
+    job_id = _job_id(str(payload.get("scheduler_job_id") or ""))
+    if expected_job_id is not None and job_id != _job_id(expected_job_id):
+        raise ValueError("Slurm sidecar job id differs from the canonical run.")
+    cluster = str(payload.get("scheduler_cluster") or "")
+    if cluster and re.fullmatch(r"[A-Za-z0-9_.-]+", cluster) is None:
+        raise ValueError("Slurm sidecar cluster name is invalid.")
+    return JobIdentity(job_id, cluster)
+
+
+def terminal_exit_code(payload: dict[str, Any]) -> int:
+    exit_code = payload.get("exit_code")
+    if type(exit_code) is not int or exit_code < 0:
+        raise ValueError("Slurm terminal sidecar exit_code must be a non-negative integer.")
+    return exit_code
+
+
 def _parse_squeue_line(line: str) -> JobObservation:
     parts = line.strip().split("|", 4)
     if len(parts) != 5:

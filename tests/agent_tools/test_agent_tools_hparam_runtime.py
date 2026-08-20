@@ -25,6 +25,7 @@ from agent_tools import (
     plan_rendering,
     run_artifacts,
     run_evidence,
+    slurm,
 )
 from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
 from agent_tools.hparam_runtime import monitor_hparam_runs
@@ -92,6 +93,43 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
             },
         },
     )
+
+
+def _write_slurm_plan(tmp_path: Path, *, run_count: int = 1) -> tuple[Path, dict]:
+    recipe_path = _hparam_recipe(tmp_path)
+    if run_count > 1:
+        payload = yaml.safe_load(recipe_path.read_text())
+        payload["search"]["max_runs"] = run_count
+        payload["search"]["parameters"]["runtime.lr"] = [1e-6 * (index + 1) for index in range(run_count)]
+        recipe_path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    source_plan_dir = tmp_path / "source-plan"
+    result = _run("plan", "--recipe", str(recipe_path), "--output-dir", str(source_plan_dir))
+    assert result.returncode == 0, result.stderr
+    source_plan = json.loads((source_plan_dir / "plan.json").read_text())
+    recipe = source_plan["recipe"]
+    recipe["execution"].update(
+        {
+            "gpus_per_run": 1,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+            },
+        }
+    )
+    source_config = (source_plan_dir / "config.source.yaml").read_bytes()
+    plan_dir = tmp_path / "slurm-plan"
+    plan_hparam.write_hparam_plan(
+        recipe,
+        plan_dir,
+        unlock_final_test=False,
+        source_config_bytes=source_config,
+        source_config_sha256=hashlib.sha256(source_config).hexdigest(),
+    )
+    plan_hparam.commit_hparam_plan(plan_dir)
+    return plan_dir, json.loads((plan_dir / "plan.json").read_text())
 
 
 def _read_table(path: Path) -> list[dict[str, str]]:
@@ -369,6 +407,147 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
     Path(run["scheduler_script"]).write_text(batch_script + "# changed\n")
     with pytest.raises(ValueError, match="snapshot hash changed"):
         run_artifacts.read_hparam_plan(slurm_plan_dir)
+
+
+def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
+    calls = []
+
+    def submit(execution, script, token, *, timeout):
+        calls.append((execution, script, token, timeout))
+        return slurm.JobIdentity(str(3880 + len(calls)), "wuji-h20")
+
+    monkeypatch.setattr(managed_scheduler.slurm, "submit", submit)
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = [
+        row
+        for row in _read_table(tmp_path / "run_manifest.tsv")
+        if row["run_id"] in {run["run_id"] for run in plan["runs"]}
+    ]
+    assert len(calls) == 2
+    assert [row["status"] for row in rows] == ["queued", "queued"]
+    assert [row["scheduler_job_id"] for row in rows] == ["3881", "3882"]
+    assert all(row["gpus"] == "" for row in rows)
+    assert all(row["pid"] == "" and row["process_group_id"] == "" for row in rows)
+    assert all("--devices 0" in Path(run["script"]).read_text() for run in plan["runs"])
+
+
+def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "node": "h20-bj-96",
+                "exit_code": 0,
+            }
+        )
+    )
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "completed"
+    assert canonical["scheduler_raw_state"] == "SIDECAR"
+    assert canonical["scheduler_exit_code"] == "0"
+    assert canonical["scheduler_node"] == "h20-bj-96"
+
+
+def test_slurm_monitor_fails_closed_when_job_disappears_without_sidecar(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "unknown_scheduler"
+    assert "without a terminal sidecar" in canonical["scheduler_reason"]
+
+
+def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("sbatch", 60)),
+    )
+
+    def active_jobs(_execution, *, job_id=None, submit_token=None, timeout=10):
+        assert job_id is None
+        assert submit_token == run["scheduler_submit_token"]
+        return [slurm.JobObservation("3880", "PENDING", "Resources", "", submit_token)]
+
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", active_jobs)
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "queued"
+    assert canonical["scheduler_job_id"] == "3880"
+    assert canonical["scheduler_reason"] == "Resources"
+
+
+def test_slurm_submission_timeout_never_resubmits_unresolved_run(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    calls = []
+
+    def timeout(*_args, **_kwargs):
+        calls.append("submit")
+        raise subprocess.TimeoutExpired("sbatch", 60)
+
+    monkeypatch.setattr(managed_scheduler.slurm, "submit", timeout)
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(RuntimeError, match="outcome is uncertain"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert calls == ["submit"]
+    assert canonical["status"] == "submitting"
+    assert canonical.get("scheduler_job_id", "") == ""
+
+
+def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    cancelled = []
+    monkeypatch.setattr(slurm, "cancel", lambda execution, job_id: cancelled.append((execution, job_id)))
+
+    hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert cancelled == [({"target": "local", "host": ""}, "3880")]
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == "validation diverged"
 
 
 def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_path: Path):
@@ -4648,6 +4827,40 @@ def test_managed_scheduler_capacity_balances_around_other_active_runs():
     assert capacity.slots == 2
     assert allocation is not None
     assert allocation[2] == 1
+
+
+def test_direct_gpu_capacity_does_not_count_active_slurm_allocations():
+    execution = {"gpu_pool": [0, 1], "gpus_per_run": 1, "max_concurrent": 2}
+    expected = {
+        ("direct", "run-000"): {
+            "step_id": "direct",
+            "run_id": "run-000",
+            "status": "planned",
+            "gpus": "",
+        }
+    }
+    workspace = {
+        **expected,
+        ("slurm", "run-001"): {
+            "step_id": "slurm",
+            "run_id": "run-001",
+            "status": "running",
+            "scheduler_type": "slurm",
+            "target": "local",
+            "gpus": "",
+        },
+    }
+
+    capacity = managed_scheduler.capacity_state(
+        execution,
+        {},
+        expected,
+        workspace,
+        expected_keys=set(expected),
+    )
+
+    assert capacity.slots == 2
+    assert capacity.group_loads == [0, 0]
 
 
 def test_managed_scheduler_ignores_external_missing_pid_when_expected_runs_are_terminal(tmp_path: Path, monkeypatch):

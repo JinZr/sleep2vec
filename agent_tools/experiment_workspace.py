@@ -1148,7 +1148,19 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
     status = str(row.get("status") or "planned")
     if status in {"planned", "pending", "submitting", "launch_failed", "superseded"} and job_id:
         raise ValueError(f"Slurm managed run status {status} cannot define scheduler_job_id.")
-    if status in {"queued", "running", "completed", "finished", "failed", "stopped"} and not job_id:
+    if (
+        status
+        in {
+            "queued",
+            "running",
+            "unknown_scheduler",
+            "completed",
+            "finished",
+            "failed",
+            "stopped",
+        }
+        and not job_id
+    ):
         raise ValueError(f"Slurm managed run status {status} requires scheduler_job_id.")
 
 

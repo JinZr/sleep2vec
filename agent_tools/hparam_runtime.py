@@ -12,6 +12,7 @@ from . import (
     managed_scheduler as scheduler,
     run_artifacts as artifacts,
     run_evidence as evidence,
+    slurm,
 )
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
@@ -23,6 +24,7 @@ from .experiment_workspace import (
     merge_run_manifest,
     merge_run_row,
     read_run_manifest,
+    scheduler_type,
     validate_frozen_run_update,
     write_status_report,
 )
@@ -91,6 +93,18 @@ def run_hparam_queue(
         rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             return status_path
+        unresolved_scheduler = sorted(
+            key
+            for key in expected_keys
+            if scheduler_type(rows_by_key[key]) == "slurm"
+            and rows_by_key[key].get("status") in {"submitting", "unknown_scheduler"}
+        )
+        if unresolved_scheduler:
+            step_id, run_id = unresolved_scheduler[0]
+            raise RuntimeError(
+                f"Hparam queue cannot advance because {step_id} / {run_id} has unresolved Slurm state "
+                f"{rows_by_key[unresolved_scheduler[0]].get('status')}."
+            )
         missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
         if missing_pid:
             step_id, run_id = missing_pid[0]
@@ -267,6 +281,7 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     expected_keys = {managed_run_key(run) for run in plan["runs"]}
     status_path = root / "run_status.tsv"
     workspace = experiment_root(recipe)
@@ -298,15 +313,18 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
         if prior.get("target") in (None, ""):
             rows.append(prior)
             continue
-        rows.append(
-            scheduler.observe_run(
-                root,
-                prior,
-                prior,
-                health=health,
-                default_script_commits_terminal_status=False,
+        if scheduler_type(prior) == "slurm":
+            rows.append(scheduler.observe_slurm_run(root, execution, prior, health=health))
+        else:
+            rows.append(
+                scheduler.observe_run(
+                    root,
+                    prior,
+                    prior,
+                    health=health,
+                    default_script_commits_terminal_status=False,
+                )
             )
-        )
     out = status_path
     committed = merge_run_manifest(workspace, rows)
     committed_by_key = {managed_run_key(row): row for row in committed}
@@ -370,61 +388,97 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
             raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
         key = managed_run_key(matched[0])
         previous = workspace_by_key[key]
-        missing_execution_identity = {
-            field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
-        }
-        if previous.get("target") in (None, ""):
-            missing_execution_identity.add("target")
-        if missing_execution_identity:
-            raise ValueError(
-                f"Canonical run is missing execution identity for {run_id}: "
-                f"{', '.join(sorted(missing_execution_identity))}"
-            )
-        if previous.get("status") in TERMINAL_STATUSES:
-            raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
-        target = previous.get("target")
-        if target not in {"local", "ssh"}:
-            raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
-        host = previous.get("host")
-        if target == "ssh" and (not isinstance(host, str) or not host.strip()):
-            raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
-        populated_process_fields = {field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")}
-        if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
-            missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
-            raise ValueError(f"Canonical run has partial process identity for {run_id}; missing: {missing}")
-        remote_host = str(host) if target == "ssh" else None
-        exp_io.validate_managed_output_paths(
-            workspace,
-            [previous["pid_path"]],
-            remote=remote_host,
-        )
-        if populated_process_fields:
-            process_identity = evidence.read_process_identity(previous.get("pid_path"), previous)
-        else:
-            process_identity = evidence.read_process_identity(
-                previous.get("pid_path"),
+        if scheduler_type(previous) == "slurm":
+            if previous.get("status") in TERMINAL_STATUSES:
+                raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
+            target = previous.get("target")
+            host = previous.get("host")
+            if target not in {"local", "ssh"}:
+                raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
+            if target == "ssh" and (not isinstance(host, str) or not host.strip()):
+                raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+            job_id = str(previous.get("scheduler_job_id") or "")
+            cluster = str(previous.get("scheduler_cluster") or "")
+            if not job_id:
+                matches = slurm.active_jobs(
+                    {"target": target, "host": host},
+                    submit_token=str(previous["scheduler_submit_token"]),
+                )
+                if len(matches) != 1:
+                    raise ValueError(
+                        f"Cannot resolve one Slurm job for run_id {run_id}; found {len(matches)} matching jobs."
+                    )
+                job_id = matches[0].job_id
+            slurm.cancel({"target": target, "host": host}, job_id)
+            final = merge_run_row(
                 previous,
-                expected_script=previous.get("script"),
+                {
+                    "step_id": key[0],
+                    "run_id": key[1],
+                    "scheduler_job_id": job_id,
+                    "scheduler_cluster": cluster,
+                    "status": "stopped",
+                    "stopped_at": utc_now(),
+                    "stop_reason": reason,
+                },
             )
-        if process_identity is None:
-            raise ValueError(f"No recorded PID for run_id: {run_id}")
-        for field in PROCESS_IDENTITY_FIELDS:
-            frozen_value = previous.get(field)
-            if frozen_value not in (None, "") and str(frozen_value) != str(process_identity[field]):
-                raise RuntimeError(f"Recorded process identity differs from canonical {field} for run_id: {run_id}")
-        evidence.stop_process_group(previous, process_identity)
-        stopped_at = utc_now()
-        final = merge_run_row(
-            previous,
-            {
-                "step_id": key[0],
-                "run_id": key[1],
-                **process_identity,
-                "status": "stopped",
-                "stopped_at": stopped_at,
-                "stop_reason": reason,
-            },
-        )
+        else:
+            missing_execution_identity = {
+                field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
+            }
+            if previous.get("target") in (None, ""):
+                missing_execution_identity.add("target")
+            if missing_execution_identity:
+                raise ValueError(
+                    f"Canonical run is missing execution identity for {run_id}: "
+                    f"{', '.join(sorted(missing_execution_identity))}"
+                )
+            if previous.get("status") in TERMINAL_STATUSES:
+                raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
+            target = previous.get("target")
+            if target not in {"local", "ssh"}:
+                raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
+            host = previous.get("host")
+            if target == "ssh" and (not isinstance(host, str) or not host.strip()):
+                raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+            populated_process_fields = {
+                field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")
+            }
+            if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
+                missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
+                raise ValueError(f"Canonical run has partial process identity for {run_id}; missing: {missing}")
+            remote_host = str(host) if target == "ssh" else None
+            exp_io.validate_managed_output_paths(
+                workspace,
+                [previous["pid_path"]],
+                remote=remote_host,
+            )
+            if populated_process_fields:
+                process_identity = evidence.read_process_identity(previous.get("pid_path"), previous)
+            else:
+                process_identity = evidence.read_process_identity(
+                    previous.get("pid_path"),
+                    previous,
+                    expected_script=previous.get("script"),
+                )
+            if process_identity is None:
+                raise ValueError(f"No recorded PID for run_id: {run_id}")
+            for field in PROCESS_IDENTITY_FIELDS:
+                frozen_value = previous.get(field)
+                if frozen_value not in (None, "") and str(frozen_value) != str(process_identity[field]):
+                    raise RuntimeError(f"Recorded process identity differs from canonical {field} for run_id: {run_id}")
+            evidence.stop_process_group(previous, process_identity)
+            final = merge_run_row(
+                previous,
+                {
+                    "step_id": key[0],
+                    "run_id": key[1],
+                    **process_identity,
+                    "status": "stopped",
+                    "stopped_at": utc_now(),
+                    "stop_reason": reason,
+                },
+            )
         committed = merge_run_manifest(workspace, [final], lock_held=True)
     committed_by_key = {managed_run_key(item): item for item in committed}
     final_status_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
