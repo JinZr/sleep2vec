@@ -967,9 +967,7 @@ def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: 
 
 
 @pytest.mark.parametrize("value", [None, "", "ASK_USER", "true"])
-def test_unresolved_recipe_test_after_fit_does_not_load_test_index(
-    tmp_path: Path, monkeypatch, value: object
-):
+def test_unresolved_recipe_test_after_fit_does_not_load_test_index(tmp_path: Path, monkeypatch, value: object):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"].pop("test_after_fit")
