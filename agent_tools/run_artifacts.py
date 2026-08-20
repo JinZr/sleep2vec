@@ -131,7 +131,13 @@ def read_hparam_plan(
                     )
             plan_parameters = managed_run_parameters(run)
             workspace_parameters = managed_run_parameters(workspace_row)
-            if set(plan_parameters) != set(workspace_parameters):
+            missing_parameters = set(plan_parameters) - set(workspace_parameters)
+            nonempty_extra_parameters = {
+                field
+                for field in set(workspace_parameters) - set(plan_parameters)
+                if workspace_parameters[field] not in (None, "")
+            }
+            if missing_parameters or nonempty_extra_parameters:
                 raise ValueError(f"Workspace run parameters differ from plan: {run['step_id']} / {run['run_id']}")
             for field, value in plan_parameters.items():
                 expected_value = "" if value is None else str(value)

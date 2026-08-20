@@ -261,6 +261,36 @@ def test_hparam_plan_rejects_workspace_parameter_contract_drift(tmp_path: Path, 
         run_artifacts.read_hparam_plan(plan_dir)
 
 
+def test_hparam_plan_ignores_blank_shared_manifest_parameter_padding(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    historical = dict(payload)
+    historical["step"] = {**payload["step"], "id": "historical"}
+    historical["search"] = {
+        **payload["search"],
+        "parameters": {"runtime.batch_size": [32]},
+    }
+    historical_recipe = tmp_path / "historical.yaml"
+    historical_recipe.write_text(yaml.safe_dump(historical, sort_keys=False))
+    current = dict(payload)
+    current["step"] = {**payload["step"], "id": "current"}
+    current_recipe = tmp_path / "current.yaml"
+    current_recipe.write_text(yaml.safe_dump(current, sort_keys=False))
+    historical_plan = tmp_path / "plans" / "historical"
+    current_plan = tmp_path / "plans" / "current"
+
+    first = _run("plan", "--recipe", str(historical_recipe), "--output-dir", str(historical_plan))
+    second = _run("plan", "--recipe", str(current_recipe), "--output-dir", str(current_plan))
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    with (tmp_path / "run_manifest.tsv").open(newline="") as file_obj:
+        rows = list(csv.DictReader(file_obj, delimiter="\t"))
+    current_row = next(row for row in rows if row["step_id"] == "current")
+    assert current_row["runtime.batch_size"] == ""
+    assert run_artifacts.read_hparam_plan(current_plan)["runs"][0]["runtime.lr"] == 2e-6
+
+
 def test_plan_blocks_missing_experiment_metadata(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
