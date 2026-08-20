@@ -22,12 +22,13 @@ L0-level domain leaf.
 
 Mirrors the three frozensets in `layering.py`.
 
-### Kernel — reusable (26, zero domain signal)
+### Kernel — reusable (27, zero domain signal)
 decision_models, transport, manifests, schema_map, gpu_rules, repo,
 experiment_io, experiment_workspace, experiment_tracking, experiments,
 run_artifacts, run_evidence, hparam, hparam_runtime, hparam_selection,
 adaptive_hparam, adaptive_proposals, recipes, progress, markdown, skills,
-decisions, plans, decision_rules, managed_scheduler, experiment_pipeline.
+decisions, plans, decision_rules, managed_scheduler, slurm,
+experiment_pipeline.
 
 These must stay domain-free — the layering guard allows them **no** domain
 imports.
@@ -38,6 +39,8 @@ preflight, round registration, launch, and lifecycle orchestration.
 
 `managed_scheduler` owns the reusable GPU-capacity, process-observation,
 execution-snapshot, and process-start primitives shared by managed launchers.
+`slurm` owns scheduler CLI transport, machine-readable job identity parsing,
+state normalization, active observation, and cancellation primitives.
 `experiment_pipeline` owns the strict validation-to-external-test state machine
 and exposes it through the `experiments` facade.
 
