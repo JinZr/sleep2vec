@@ -37,10 +37,11 @@ imports.
 submission-validation contract. `adaptive_hparam` owns the surrounding digest,
 preflight, round registration, launch, and lifecycle orchestration.
 
-`managed_scheduler` owns the reusable GPU-capacity, process-observation,
-execution-snapshot, and process-start primitives shared by managed launchers.
-`slurm` owns scheduler CLI transport, machine-readable job identity parsing,
-state normalization, active observation, and cancellation primitives.
+`managed_scheduler` owns backend selection plus the reusable direct
+GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by
+managed launchers. `slurm` owns scheduler resource/script contracts, CLI
+transport, machine-readable job and sidecar identity parsing, state
+normalization, compute-wrapper execution, and cancellation primitives.
 `experiment_pipeline` owns the strict validation-to-external-test state machine
 and exposes it through the `experiments` facade.
 

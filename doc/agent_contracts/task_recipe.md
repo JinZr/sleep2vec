@@ -159,13 +159,24 @@ The optional `execution` block configures the managed launcher.
   arguments, or `~` shorthand. `execution.runtime_commit` names the full
   expected Git commit.
 - Conda wrapping belongs in `execution.conda_env`, not `execution.python`.
+- Omitted `execution.scheduler` resolves to `{type: direct}`. Direct runs use
+  the existing `gpu_pool` / `gpus_per_run` / `max_concurrent` process model.
+- `execution.scheduler.type: slurm` keeps `target` as local/SSH control
+  transport and submits every frozen run as its own allocation. It requires
+  `partition`, `cpus_per_task`, `memory`, and `walltime`; optional scheduler
+  fields are `nice` and `nodelist`. `gpus_per_run` defaults to one and becomes
+  the allocation GPU count plus logical `runtime.devices=[0, ..., N-1]`.
+  Slurm recipes reject `gpu_pool`, `max_concurrent`, `conda_env`, locally
+  authored `runtime.devices`, unknown scheduler fields, and arbitrary sbatch
+  arguments.
 - Only the canonical manager runtime—a local target at `REPO_ROOT` without a
   conda wrapper—may omit Python and commit identity. Planning then freezes the
   current manager interpreter and repository HEAD. SSH targets, separate local
   workdirs, and conda-wrapped targets must author both values explicitly.
-- `hparam-launch` starts one capacity-limited wave.
-  `hparam-run-queue --execute` uses monitor observations and the same locked
-  launch owner until the current plan is terminal.
+- With direct scheduling, `hparam-launch` starts one capacity-limited wave and
+  `hparam-run-queue --execute` keeps filling that capacity. With Slurm, the
+  launch owner submits every launchable leaf job without applying host-global
+  GPU capacity to scheduler allocations.
 - Generated leaf scripts use only `execution.workdir` on `PYTHONPATH`;
   `execution.env.PYTHONPATH` is rejected rather than merged.
 
@@ -178,6 +189,14 @@ rechecks Python/version, commit, repository root, hostname, module origin,
 untracked or ignored importable code, and the run's frozen script/config hashes.
 Plans lacking frozen Python or commit identity must be recreated rather than
 upgraded in place.
+
+Each Slurm run additionally freezes `job.sbatch`, its hash, a deterministic
+submit token, log path, allocation-identity path, and terminal-sidecar path.
+Submission commits `submitting` before `sbatch`; a timeout or SSH disconnect is
+reconciled by the exact token and is never retried blindly. Monitoring uses
+`squeue`/`scontrol` for live state and the atomic terminal sidecar for terminal
+truth; disappearance without that sidecar is `unknown_scheduler`. Stop uses
+the frozen scheduler job id with `scancel`, not PID evidence.
 
 Frozen per-run execution identity and its canonical owner are defined in
 [run_manifest.md](run_manifest.md).

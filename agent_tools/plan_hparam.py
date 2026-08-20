@@ -494,6 +494,14 @@ def freeze_hparam_execution(recipe: dict) -> dict:
             raise ValueError("Cannot freeze the target runtime commit because the manager repository is unavailable.")
         execution["runtime_commit"] = repository["commit"]
     execution["runtime_commit"] = str(execution["runtime_commit"]).lower()
+    scheduler = execution.get("scheduler")
+    if scheduler is None:
+        scheduler = {"type": "direct"}
+    if not isinstance(scheduler, dict):
+        raise ValueError("execution.scheduler must be a mapping.")
+    execution["scheduler"] = scheduler
+    if scheduler.get("type") == "slurm":
+        execution.setdefault("gpus_per_run", 1)
     recipe["execution"] = execution
     return recipe
 
@@ -640,6 +648,7 @@ def write_hparam_plan(
             "config_sha256": file_sha256(write_cfg_copy),
             "script_sha256": file_sha256(write_script_path),
             "terminal_status_owner": "monitor",
+            "scheduler_type": scheduler_type,
             **combo,
         }
         if scheduler_type == "slurm":

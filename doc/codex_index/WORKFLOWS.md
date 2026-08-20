@@ -228,17 +228,23 @@ repaired.
 
 `run_manifest.tsv` is the only lifecycle and execution-identity owner. Status
 tables, matrices, events, and reports are projections. `RESEARCH_LOG.md` is an
-append-only narrative record and is never a status source. Managed launches use a
-dedicated process group with PID, group, and OS start-token evidence; uncertain
-identity never authorizes relaunch or retry. Stop verifies and signals the full
-group before committing `stopped`. Optional health labels remain observational:
+append-only narrative record and is never a status source. Direct managed
+launches use a dedicated process group with PID, group, and OS start-token
+evidence. Slurm managed launches freeze one sbatch leaf job and submit token per
+run, bind one numeric scheduler job id, observe live state through
+`squeue`/`scontrol`, and require the compute wrapper's terminal sidecar for
+terminal truth. Uncertain direct or scheduler identity never authorizes
+relaunch or retry. Stop signals the direct process group or calls `scancel`
+before committing `stopped`. Optional health labels remain observational:
 DDP child GPU activity follows the managed process group, and unavailable
 required probes or first-baseline observations report `health_unknown` rather
 than `possibly_stalled`.
 
-`hparam-launch` starts one capacity-limited wave, while
-`hparam-run-queue --execute` owns continuous queue advancement. Monitor commands
-remain non-launching. Workspace layout and lifecycle entrypoints are defined in
+For direct execution, `hparam-launch` starts one capacity-limited wave. For
+Slurm it submits every launchable leaf job without applying host-global GPU
+capacity. `hparam-run-queue --execute` owns continuous queue advancement and
+observation; monitor commands remain non-launching. Schema-v1 external
+evaluation stays on the direct backend. Workspace layout and lifecycle entrypoints are defined in
 [experiment_workspace.md](../agent_contracts/experiment_workspace.md); reducer,
 commit, process, and evidence rules are defined in
 [run_manifest.md](../agent_contracts/run_manifest.md).

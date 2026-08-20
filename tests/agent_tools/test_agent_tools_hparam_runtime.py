@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -354,9 +355,123 @@ def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
     script = Path(run["script"]).read_text()
     assert run["terminal_status_owner"] == "monitor"
+    assert run["scheduler_type"] == "direct"
+    assert json.loads((plan_dir / "plan.json").read_text())["recipe"]["execution"]["scheduler"] == {"type": "direct"}
     assert canonical["terminal_status_owner"] == "monitor"
+    assert canonical["scheduler_type"] == "direct"
     assert "trap _agent_tools_record_exit EXIT" in script
     assert MONITOR_EXIT_CODE_PREFIX in script
+
+
+def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update(
+        {
+            "gpus_per_run": 1,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+            },
+        }
+    )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    preview = _run("hparam-launch", "--plan-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr
+    assert preview.returncode == 0, preview.stderr
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    run = plan["runs"][0]
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert plan["recipe"]["execution"]["scheduler"]["type"] == "slurm"
+    assert run["scheduler_type"] == "slurm"
+    assert canonical["scheduler_type"] == "slurm"
+    assert Path(run["scheduler_script"]).name == "job.sbatch"
+    assert "sbatch --parsable" in _read_table(plan_dir / "launch_manifest.tsv")[0]["command"]
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    [
+        ("execution", "gpu_pool", [0], r"execution\.gpu_pool is not used"),
+        ("execution", "max_concurrent", 2, r"execution\.max_concurrent is not used"),
+        ("execution", "conda_env", "exp", r"explicit execution\.python path"),
+        ("runtime", "devices", [7], r"derive logical runtime\.devices"),
+    ],
+)
+def test_public_slurm_hparam_recipe_rejects_direct_scheduler_controls(
+    tmp_path: Path,
+    section: str,
+    field: str,
+    value,
+    message: str,
+):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"] = {
+        "type": "slurm",
+        "partition": "gpu",
+        "cpus_per_task": 8,
+        "memory": "64G",
+        "walltime": "01:00:00",
+    }
+    payload.setdefault(section, {})[field] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+
+    assert result.returncode == 1
+    assert re.search(message, result.stdout)
+    assert not (tmp_path / "plan").exists()
+
+
+def test_public_slurm_hparam_recipe_rejects_unknown_scheduler_fields(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"] = {
+        "type": "slurm",
+        "partition": "gpu",
+        "cpus_per_task": 8,
+        "memory": "64G",
+        "walltime": "01:00:00",
+        "sbatch_args": ["--exclusive"],
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+
+    assert result.returncode == 1
+    assert "Unknown hparam execution.scheduler field: sbatch_args" in result.stdout
+    assert not (tmp_path / "plan").exists()
+
+
+@pytest.mark.parametrize(
+    ("scheduler", "message"),
+    [
+        ({}, "execution.scheduler.type must be direct or slurm"),
+        (
+            {"type": "slurm", "partition": "gpu", "cpus_per_task": 8, "memory": "64G"},
+            "Slurm scheduler resources are missing: walltime",
+        ),
+    ],
+)
+def test_public_hparam_recipe_requires_complete_scheduler_contract(tmp_path: Path, scheduler: dict, message: str):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"] = scheduler
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+
+    assert result.returncode == 1
+    assert message in result.stdout
+    assert not (tmp_path / "plan").exists()
 
 
 def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path: Path):

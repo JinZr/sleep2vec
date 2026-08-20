@@ -48,8 +48,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Recipe loading | [`agent_tools/recipes.py`](../../agent_tools/recipes.py) | individual commands |
 | Managed workspace identity | canonical read/merge/CAS owners in [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py) | hparam, planning, or monitoring-local tables and manifest writers |
 | Local/SSH managed I/O | [`agent_tools/experiment_io.py`](../../agent_tools/experiment_io.py) | each experiment command |
-| Managed process identity and stopping | [`agent_tools/run_evidence.py`](../../agent_tools/run_evidence.py) through [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | PID-only checks or caller-local signals |
-| Managed GPU scheduling and process launch | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) | hparam- or pipeline-local capacity, observation, snapshot, and process-start implementations |
+| Managed direct process identity and stopping | [`agent_tools/run_evidence.py`](../../agent_tools/run_evidence.py) through [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | PID-only checks or caller-local signals |
+| Managed scheduler lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) with Slurm primitives in [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | hparam- or pipeline-local capacity, scheduler commands, observation, reconciliation, snapshot, start, or stop implementations |
 | Frozen hparam plan reads | `read_hparam_plan` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | launcher/postprocess-specific parsing |
 | Public hparam operations | [`agent_tools/hparam.py`](../../agent_tools/hparam.py) facade with responsibility modules behind it | direct private cross-module imports |
 | Adaptive agent proposal validation | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py) for canonical snapshots, parameter envelopes, and submission validation; [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) for orchestration | provider callbacks, latest-digest lookup during apply, or lifecycle mutation in the proposal kernel |
@@ -123,7 +123,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
 - Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
 - Reuse `experiments.append_experiment_note` and the workspace research-log owner for semantic notes; do not append Markdown directly or infer lifecycle state from narrative.
-- Reuse `managed_scheduler` for capacity and process lifecycle primitives; keep pipeline policy in `experiment_pipeline`.
+- Reuse `managed_scheduler` for backend selection and lifecycle; use `slurm` for scheduler resource, command, state, and sidecar primitives. Keep schema-v1 external-pipeline policy direct-only in `experiment_pipeline`.
 - Use `experiment-run` for validation-selected external matrices. Monitor commands remain non-launching.
 - Keep external-agent suggestions inside the `adaptive_proposals` snapshot/envelope contract; let `adaptive_hparam` own preflight and lifecycle changes.
 - Generate calls to existing model, preprocess, baseline, and sleep2stat entrypoints rather than adding an agent runtime.
