@@ -21,6 +21,7 @@ from agent_tools import experiment_io, experiment_workspace, experiments, hparam
 from agent_tools.experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     MANAGED_RUN_PATH_FIELDS,
+    SCHEDULER_BINDING_FIELDS,
     append_event,
     canonical_local_experiment_root,
     commit_step_manifest,
@@ -40,6 +41,7 @@ from agent_tools.experiment_workspace import (
     semantic_run_name,
     validate_frozen_run_update,
     validate_managed_run_rows,
+    validate_scheduler_run_identity,
 )
 
 
@@ -1453,6 +1455,103 @@ def test_frozen_validator_allows_only_one_trusted_process_identity_fill():
 
     with pytest.raises(ValueError, match="pid"):
         validate_frozen_run_update({**existing, "pid": 123}, {"pid": 456}, allow_execution_identity_fill=True)
+
+
+def _slurm_identity(tmp_path: Path) -> dict[str, str]:
+    return {
+        "scheduler_type": "slurm",
+        "scheduler_submit_token": "unit-token",
+        "scheduler_script": str(tmp_path / "job.sbatch"),
+        "scheduler_script_sha256": "a" * 64,
+        "scheduler_result_path": str(tmp_path / "slurm_terminal.json"),
+        "allocation_identity_path": str(tmp_path / "allocation_identity.json"),
+    }
+
+
+def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "target": "ssh",
+        "status": "submitting",
+        **_slurm_identity(tmp_path),
+    }
+
+    validate_frozen_run_update(
+        existing,
+        {"scheduler_job_id": "3880", "scheduler_cluster": "wuji-h20"},
+        allow_execution_identity_fill=True,
+    )
+    for field in SCHEDULER_BINDING_FIELDS:
+        with pytest.raises(ValueError, match=field):
+            validate_frozen_run_update(
+                {**existing, "scheduler_job_id": "3880", "scheduler_cluster": "wuji-h20"},
+                {field: "3881"},
+                allow_execution_identity_fill=True,
+            )
+
+
+def test_scheduler_identity_is_backend_specific(tmp_path: Path):
+    validate_scheduler_run_identity({"scheduler_type": "direct", "status": "planned"})
+    validate_scheduler_run_identity({"status": "planned"})
+    validate_scheduler_run_identity({"status": "submitting", **_slurm_identity(tmp_path)})
+    validate_scheduler_run_identity({"status": "queued", "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
+
+    with pytest.raises(ValueError, match="PID process identity"):
+        validate_scheduler_run_identity(
+            {"status": "queued", "scheduler_job_id": "3880", "pid": "42", **_slurm_identity(tmp_path)}
+        )
+    with pytest.raises(ValueError, match="cannot define Slurm"):
+        validate_scheduler_run_identity(
+            {"scheduler_type": "direct", "scheduler_submit_token": "unit-token", "status": "planned"}
+        )
+    with pytest.raises(ValueError, match="requires scheduler_job_id"):
+        validate_scheduler_run_identity({"status": "queued", **_slurm_identity(tmp_path)})
+
+
+def test_manifest_binds_scheduler_job_once_and_updates_observation(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {
+        "experiment_id": "unit",
+        "step_id": "train",
+        "run_id": "run-000",
+        "target": "ssh",
+        **_slurm_identity(tmp_path),
+    }
+    merge_run_manifest(tmp_path, [{**identity, "status": "planned"}])
+    merge_run_manifest(tmp_path, [{"step_id": "train", "run_id": "run-000", "status": "submitting"}])
+    committed = merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": "train",
+                "run_id": "run-000",
+                "status": "queued",
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_state": "PENDING",
+            }
+        ],
+    )
+
+    assert committed[0]["scheduler_job_id"] == "3880"
+    assert committed[0]["scheduler_state"] == "PENDING"
+    updated = merge_run_manifest(
+        tmp_path,
+        [{"step_id": "train", "run_id": "run-000", "scheduler_state": "RUNNING"}],
+    )
+    assert updated[0]["scheduler_state"] == "RUNNING"
+    with pytest.raises(ValueError, match="scheduler_job_id"):
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": "train", "run_id": "run-000", "scheduler_job_id": "3881"}],
+        )
+
+
+def test_scheduler_active_status_does_not_regress_to_pending():
+    for status in ("submitting", "queued"):
+        assert merge_run_row({"status": status}, {"status": "pending"})["status"] == status
 
 
 def test_semantic_run_name_keeps_boolean_settings_readable():

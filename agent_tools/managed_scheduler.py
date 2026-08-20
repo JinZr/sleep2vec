@@ -30,7 +30,7 @@ from .manifests import read_json, utc_now
 from .models import REPO_ROOT
 
 RunKey = tuple[str, str]
-ACTIVE_STATUSES = frozenset({"launched", "running", "unknown_remote", "missing_pid"})
+ACTIVE_STATUSES = frozenset({"submitting", "queued", "launched", "running", "unknown_remote", "missing_pid"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
 LAUNCH_TIMEOUT_SECONDS = 60
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"

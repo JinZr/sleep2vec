@@ -20,6 +20,16 @@ PHASES = {"prepare", "train", "evaluate", "analyze"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
 MONITOR_EXIT_CODE_PREFIX = "AGENT_TOOLS_EXIT_CODE="
 PROCESS_IDENTITY_FIELDS = {"pid", "process_group_id", "process_start_token"}
+SCHEDULER_PLAN_IDENTITY_FIELDS = {
+    "scheduler_type",
+    "scheduler_submit_token",
+    "scheduler_script",
+    "scheduler_script_sha256",
+    "scheduler_result_path",
+    "allocation_identity_path",
+}
+SCHEDULER_BINDING_FIELDS = {"scheduler_job_id", "scheduler_cluster"}
+SCHEDULER_IDENTITY_FIELDS = SCHEDULER_PLAN_IDENTITY_FIELDS | SCHEDULER_BINDING_FIELDS
 EXECUTION_IDENTITY_FIELDS = {
     "target",
     "host",
@@ -29,27 +39,31 @@ EXECUTION_IDENTITY_FIELDS = {
     "log_path",
     "command",
 } | PROCESS_IDENTITY_FIELDS
-FROZEN_RUN_FIELDS = {
-    "experiment_id",
-    "step_id",
-    "run_id",
-    "run_name",
-    "parameter_summary",
-    "version",
-    "config",
-    "config_sha256",
-    "script",
-    "script_sha256",
-    "run_dir",
-    "artifacts",
-    "runtime_dir",
-    "checkpoint_dir",
-    "pipeline_id",
-    "job_id",
-    "attempt",
-    "result_root",
-    "terminal_status_owner",
-} | EXECUTION_IDENTITY_FIELDS
+FROZEN_RUN_FIELDS = (
+    {
+        "experiment_id",
+        "step_id",
+        "run_id",
+        "run_name",
+        "parameter_summary",
+        "version",
+        "config",
+        "config_sha256",
+        "script",
+        "script_sha256",
+        "run_dir",
+        "artifacts",
+        "runtime_dir",
+        "checkpoint_dir",
+        "pipeline_id",
+        "job_id",
+        "attempt",
+        "result_root",
+        "terminal_status_owner",
+    }
+    | EXECUTION_IDENTITY_FIELDS
+    | SCHEDULER_IDENTITY_FIELDS
+)
 MANAGED_RUN_PATH_FIELDS = {
     "artifacts",
     "checkpoint_dir",
@@ -69,6 +83,9 @@ MANAGED_RUN_PATH_FIELDS = {
     "val_logits_path",
     "val_predictions_path",
     "workdir",
+    "scheduler_script",
+    "scheduler_result_path",
+    "allocation_identity_path",
 }
 RESEARCH_LOG_NAME = "RESEARCH_LOG.md"
 RESEARCH_LOG_KINDS = {"action", "observation", "interpretation", "decision", "conclusion"}
@@ -1031,7 +1048,14 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
             merged["status"] = existing_status
     elif incoming_status == "superseded" and existing_status not in {"planned", "pending"}:
         merged["status"] = existing_status
-    elif existing_status in {"launched", "running", "unknown_remote", "missing_pid"} and incoming_status in {
+    elif existing_status in {
+        "submitting",
+        "queued",
+        "launched",
+        "running",
+        "unknown_remote",
+        "missing_pid",
+    } and incoming_status in {
         "planned",
         "pending",
     }:
@@ -1054,7 +1078,13 @@ def validate_frozen_run_update(
         if field not in FROZEN_RUN_FIELDS and field not in incoming_parameters:
             continue
         existing_value = existing.get(field)
-        if field in PROCESS_IDENTITY_FIELDS:
+        if field == "scheduler_type":
+            changed = scheduler_type(existing) != str(incoming_value or "direct")
+        elif field in SCHEDULER_BINDING_FIELDS:
+            if existing_value in (None, "") and allow_execution_identity_fill:
+                continue
+            changed = str(json_ready(incoming_value)) != str(json_ready(existing_value))
+        elif field in PROCESS_IDENTITY_FIELDS:
             if existing_value in (None, "") and allow_execution_identity_fill:
                 continue
             changed = str(json_ready(incoming_value)) != str(json_ready(existing_value))
@@ -1081,6 +1111,41 @@ def validate_frozen_run_update(
             if frozen_dir.is_symlink() or candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
                 step_id, run_id = key or ("", "")
                 raise ValueError(f"checkpoint_path is not a regular managed checkpoint for {step_id} / {run_id}.")
+
+
+def scheduler_type(row: dict[str, Any]) -> str:
+    value = str(row.get("scheduler_type") or "direct")
+    if value not in {"direct", "slurm"}:
+        raise ValueError(f"scheduler_type must be direct or slurm: {value!r}")
+    return value
+
+
+def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
+    backend = scheduler_type(row)
+    populated_process = {field for field in PROCESS_IDENTITY_FIELDS if row.get(field) not in (None, "")}
+    populated_scheduler = {
+        field for field in SCHEDULER_IDENTITY_FIELDS - {"scheduler_type"} if row.get(field) not in (None, "")
+    }
+    if backend == "direct":
+        if populated_scheduler:
+            raise ValueError("Direct managed run cannot define Slurm scheduler identity.")
+        return
+    if populated_process:
+        raise ValueError("Slurm managed run cannot define PID process identity.")
+    required_plan_fields = SCHEDULER_PLAN_IDENTITY_FIELDS - {"scheduler_type"}
+    missing_plan_fields = sorted(field for field in required_plan_fields if row.get(field) in (None, ""))
+    if missing_plan_fields:
+        raise ValueError(f"Slurm managed run is missing scheduler plan identity: {', '.join(missing_plan_fields)}")
+    job_id = str(row.get("scheduler_job_id") or "")
+    if job_id and re.fullmatch(r"[1-9][0-9]*", job_id) is None:
+        raise ValueError(f"Slurm scheduler_job_id must be a positive integer: {job_id!r}")
+    if row.get("scheduler_cluster") not in (None, "") and not job_id:
+        raise ValueError("Slurm scheduler_cluster requires scheduler_job_id.")
+    status = str(row.get("status") or "planned")
+    if status in {"planned", "pending", "submitting", "launch_failed", "superseded"} and job_id:
+        raise ValueError(f"Slurm managed run status {status} cannot define scheduler_job_id.")
+    if status in {"queued", "running", "completed", "finished", "failed", "stopped"} and not job_id:
+        raise ValueError(f"Slurm managed run status {status} requires scheduler_job_id.")
 
 
 def validate_checkpoint_ownership(
@@ -1154,7 +1219,9 @@ def merge_run_manifest(
                     order.append(key)
                 else:
                     validate_frozen_run_update(by_id[key], row, allow_execution_identity_fill=True)
-                by_id[key] = merge_run_row(by_id.get(key, {}), row)
+                merged = merge_run_row(by_id.get(key, {}), row)
+                validate_scheduler_run_identity(merged)
+                by_id[key] = merged
             committed = [by_id[key] for key in order if key in by_id]
             if committed:
                 buffer = io.StringIO()
