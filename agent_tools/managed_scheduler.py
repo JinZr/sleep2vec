@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -1216,7 +1217,6 @@ def observe_slurm_run(
     *,
     health: bool = False,
 ) -> dict[str, Any]:
-    del health
     owner = Path(owner_dir)
     token = str(row["scheduler_submit_token"])
     job_id = str(row.get("scheduler_job_id") or "")
@@ -1237,7 +1237,7 @@ def observe_slurm_run(
                 "status": "completed" if exit_code == 0 else "failed",
             }
         )
-        return _slurm_artifact_observation(observation)
+        return _slurm_artifact_observation(observation, health=health)
 
     allocation = _read_slurm_json(owner, execution, row["allocation_identity_path"])
     if allocation:
@@ -1248,6 +1248,7 @@ def observe_slurm_run(
             observation["scheduler_cluster"] = allocation_identity.cluster
         observation["scheduler_node"] = allocation.get("node", "")
         observation["scheduler_started_at"] = allocation.get("started_at", "")
+    health_error = ""
     try:
         if not job_id:
             matches = slurm.active_jobs(execution, submit_token=token)
@@ -1255,7 +1256,7 @@ def observe_slurm_run(
                 raise ValueError(f"Multiple Slurm jobs match frozen submit token {token}.")
             if not matches:
                 observation.update({"status": "submitting", "scheduler_reason": "submission_unresolved"})
-                return _slurm_artifact_observation(observation)
+                return _slurm_artifact_observation(observation, health=health)
             active = matches[0]
             job_id = active.job_id
             observation["scheduler_job_id"] = job_id
@@ -1272,7 +1273,16 @@ def observe_slurm_run(
                     "scheduler_reason": "Slurm job disappeared without a terminal sidecar.",
                 }
             )
-            return _slurm_artifact_observation(observation)
+            return _slurm_artifact_observation(observation, health=health)
+        if health:
+            try:
+                detailed = slurm.show_job(execution, job_id)
+                if detailed is None:
+                    health_error = "Slurm job details are unavailable."
+                else:
+                    active = detailed
+            except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError, ValueError) as exc:
+                health_error = str(exc)
         if active.comment != token:
             raise ValueError("Observed Slurm job comment differs from the frozen submit token.")
         category = slurm.state_category(active.state)
@@ -1282,6 +1292,7 @@ def observe_slurm_run(
                 "scheduler_reason": active.reason,
                 "scheduler_node": active.node_list or observation.get("scheduler_node", ""),
                 "status": category if category in {"queued", "running"} else "unknown_scheduler",
+                **{f"scheduler_{field}": value for field, value in active.details.items()},
             }
         )
     except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError) as exc:
@@ -1291,7 +1302,8 @@ def observe_slurm_run(
                 "scheduler_reason": str(exc),
             }
         )
-    return _slurm_artifact_observation(observation)
+        health_error = str(exc)
+    return _slurm_artifact_observation(observation, health=health, health_error=health_error)
 
 
 def _read_slurm_json(owner_dir: Path, execution: dict[str, Any], path: str | Path) -> dict[str, Any]:
@@ -1309,14 +1321,48 @@ def _read_slurm_json(owner_dir: Path, execution: dict[str, Any], path: str | Pat
     return payload
 
 
-def _slurm_artifact_observation(row: dict[str, Any]) -> dict[str, Any]:
+def _slurm_artifact_observation(row: dict[str, Any], *, health: bool = False, health_error: str = "") -> dict[str, Any]:
     observed_artifacts = evidence.runtime_artifacts(row)
     if observed_artifacts is not None:
         run_manifest, _manifest, checkpoints = observed_artifacts
         row.update({"run_manifest": run_manifest, "checkpoints": ";".join(checkpoints)})
     row["log_tail"] = evidence.log_tail(row.get("log_path"), row)
+    if health:
+        status = str(row.get("status") or "")
+        if health_error or status in {"submitting", "unknown_scheduler"}:
+            health_status = "health_unknown"
+        elif status == "queued":
+            health_status = "scheduler_queued"
+        elif status == "running":
+            health_status = "scheduler_running"
+        else:
+            health_status = status
+        log_age = evidence.log_age_seconds(row.get("log_path"), row)
+        queue_age = _timestamp_age_seconds(row.get("launched_at")) if status == "queued" else None
+        allocation_age = _timestamp_age_seconds(row.get("scheduler_started_at"))
+        row.update(
+            {
+                "health_status": health_status,
+                "scheduler_health_error": health_error,
+                "scheduler_queue_age_seconds": "" if queue_age is None else queue_age,
+                "scheduler_allocation_age_seconds": "" if allocation_age is None else allocation_age,
+                "log_age_seconds": "" if log_age is None else log_age,
+            }
+        )
     row["monitored_at"] = utc_now()
     return row
+
+
+def _timestamp_age_seconds(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return max(int((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()), 0)
 
 
 def validated_execution_snapshot(

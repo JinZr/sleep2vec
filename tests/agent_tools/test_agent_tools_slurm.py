@@ -87,7 +87,11 @@ def test_show_job_parses_exact_job_and_missing_job(monkeypatch):
             subprocess.CompletedProcess(
                 [],
                 0,
-                "JobId=3880 JobState=COMPLETED Reason=None NodeList=h20-bj-96 Comment=token ExitCode=0:0\n",
+                "JobId=3880 JobState=COMPLETED Reason=None NodeList=h20-bj-96 Comment=token ExitCode=0:0 "
+                "Priority=42 Nice=0 Partition=gpu Account=(null) QOS=N/A Reservation=(null) "
+                "SubmitTime=2026-08-21T01:00:00 EligibleTime=2026-08-21T01:00:01 "
+                "StartTime=2026-08-21T01:05:00 TimeLimit=01:00:00 ReqNodeList=(null) Features=(null) "
+                "ReqTRES=cpu=8,mem=64G,node=1,billing=8,gres/gpu=1 TresPerNode=gres:gpu:1\n",
                 "",
             ),
             subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified"),
@@ -96,7 +100,28 @@ def test_show_job_parses_exact_job_and_missing_job(monkeypatch):
     monkeypatch.setattr(slurm.transport, "run_shell", lambda *_args, **_kwargs: next(results))
 
     assert slurm.show_job({"target": "local"}, "3880") == slurm.JobObservation(
-        "3880", "COMPLETED", "", "h20-bj-96", "token", "0:0"
+        "3880",
+        "COMPLETED",
+        "",
+        "h20-bj-96",
+        "token",
+        "0:0",
+        {
+            "priority": "42",
+            "nice": "0",
+            "partition": "gpu",
+            "account": "",
+            "qos": "",
+            "reservation": "",
+            "submit_time": "2026-08-21T01:00:00",
+            "eligible_time": "2026-08-21T01:00:01",
+            "start_time": "2026-08-21T01:05:00",
+            "time_limit": "01:00:00",
+            "requested_nodes": "",
+            "features": "",
+            "requested_tres": "cpu=8,mem=64G,node=1,billing=8,gres/gpu=1",
+            "tres_per_node": "gres:gpu:1",
+        },
     )
     assert slurm.show_job({"target": "local"}, "3880") is None
 

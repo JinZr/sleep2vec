@@ -599,6 +599,114 @@ def test_slurm_monitor_fails_closed_when_job_disappears_without_sidecar(tmp_path
     assert "without a terminal sidecar" in canonical["scheduler_reason"]
 
 
+def test_slurm_monitor_health_reports_queue_diagnostics_without_pid_or_gpu_probes(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    token = run["scheduler_submit_token"]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "active_jobs",
+        lambda *_args, **_kwargs: [slurm.JobObservation("3880", "PENDING", "Resources", "", token)],
+    )
+    detail_calls = []
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "show_job",
+        lambda *_args, **_kwargs: detail_calls.append(True)
+        or slurm.JobObservation(
+            "3880",
+            "PENDING",
+            "Resources",
+            "",
+            token,
+            details={"priority": "42", "nice": "0", "partition": "gpu", "time_limit": "01:00:00"},
+        ),
+    )
+    monkeypatch.setattr(run_evidence, "log_age_seconds", lambda *_args: None)
+    monkeypatch.setattr(
+        run_evidence,
+        "gpu_summary",
+        lambda *_args, **_kwargs: pytest.fail("Slurm health must not probe host-global GPUs"),
+    )
+    monkeypatch.setattr(
+        run_evidence,
+        "read_process_identity",
+        lambda *_args, **_kwargs: pytest.fail("Slurm health must not read PID identity"),
+    )
+
+    hparam_runtime.monitor_hparam_runs(plan_dir, health=False)
+    without_health = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert "health_status" not in without_health
+    assert detail_calls == []
+
+    hparam_runtime.monitor_hparam_runs(plan_dir, health=True)
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert detail_calls == [True]
+    assert canonical["status"] == "queued"
+    assert canonical["health_status"] == "scheduler_queued"
+    assert canonical["scheduler_reason"] == "Resources"
+    assert canonical["scheduler_priority"] == "42"
+    assert canonical["scheduler_nice"] == "0"
+    assert canonical["scheduler_partition"] == "gpu"
+    assert int(canonical["scheduler_queue_age_seconds"]) >= 0
+
+
+def test_slurm_monitor_health_uses_allocation_start_and_preserves_lifecycle_on_detail_failure(
+    tmp_path: Path, monkeypatch
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    token = run["scheduler_submit_token"]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    started_at = "2026-08-21T00:00:00Z"
+    Path(run["allocation_identity_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": token,
+                "node": "h20-bj-96",
+                "started_at": started_at,
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "active_jobs",
+        lambda *_args, **_kwargs: [slurm.JobObservation("3880", "RUNNING", "", "h20-bj-96", token)],
+    )
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "show_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("detail probe unavailable")),
+    )
+    monkeypatch.setattr(run_evidence, "log_age_seconds", lambda *_args: 12)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir, health=True)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "running"
+    assert canonical["health_status"] == "health_unknown"
+    assert canonical["scheduler_health_error"] == "detail probe unavailable"
+    assert canonical["scheduler_started_at"] == started_at
+    assert canonical["scheduler_node"] == "h20-bj-96"
+    assert canonical["log_age_seconds"] == "12"
+    assert int(canonical["scheduler_allocation_age_seconds"]) >= 0
+
+
 def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]

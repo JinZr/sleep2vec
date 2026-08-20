@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -32,6 +32,7 @@ class JobObservation:
     node_list: str = ""
     comment: str = ""
     exit_code: str = ""
+    details: dict[str, str] = field(default_factory=dict)
 
 
 class SlurmCommandError(RuntimeError):
@@ -374,6 +375,25 @@ def show_job(
         node_list=_null_to_empty(fields.get("NodeList", "")),
         comment=_null_to_empty(fields.get("Comment", "")),
         exit_code=_null_to_empty(fields.get("ExitCode", "")),
+        details={
+            name: _null_to_empty(fields.get(source, ""))
+            for name, source in {
+                "priority": "Priority",
+                "nice": "Nice",
+                "partition": "Partition",
+                "account": "Account",
+                "qos": "QOS",
+                "reservation": "Reservation",
+                "submit_time": "SubmitTime",
+                "eligible_time": "EligibleTime",
+                "start_time": "StartTime",
+                "time_limit": "TimeLimit",
+                "requested_nodes": "ReqNodeList",
+                "features": "Features",
+                "requested_tres": "ReqTRES",
+                "tres_per_node": "TresPerNode",
+            }.items()
+        },
     )
 
 
@@ -489,7 +509,7 @@ def _job_id(value: str) -> str:
 
 
 def _null_to_empty(value: str) -> str:
-    return "" if value in {"", "(null)", "None"} else value
+    return "" if value in {"", "(null)", "None", "N/A", "Unknown"} else value
 
 
 def _positive_int(value: Any, field: str) -> int:

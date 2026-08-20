@@ -1207,6 +1207,9 @@ def test_experiment_monitor_routes_slurm_observation_by_transport(
             "scheduler_raw_state": "PENDING",
             "scheduler_reason": "Resources",
             "scheduler_node": "",
+            "scheduler_priority": "42",
+            "scheduler_queue_age_seconds": 30,
+            "health_status": "scheduler_queued",
             "scheduler_observed_at": "now",
             "status": "queued",
             "monitored_at": "now",
@@ -1229,6 +1232,9 @@ def test_experiment_monitor_routes_slurm_observation_by_transport(
     assert observation["scheduler_cluster"] == "wuji-h20"
     assert observation["scheduler_raw_state"] == "PENDING"
     assert observation["scheduler_reason"] == "Resources"
+    assert observation["scheduler_priority"] == "42"
+    assert observation["scheduler_queue_age_seconds"] == 30
+    assert observation["health_status"] == "scheduler_queued"
     assert observation["scheduler_observed_at"] == "now"
     if remote:
         assert observed[0][2]["target"] == "ssh"

@@ -375,6 +375,24 @@ def monitor_run_row(
         "scheduler_node",
         "scheduler_exit_code",
         "scheduler_observed_at",
+        "scheduler_started_at",
+        "scheduler_priority",
+        "scheduler_nice",
+        "scheduler_partition",
+        "scheduler_account",
+        "scheduler_qos",
+        "scheduler_reservation",
+        "scheduler_submit_time",
+        "scheduler_eligible_time",
+        "scheduler_start_time",
+        "scheduler_time_limit",
+        "scheduler_requested_nodes",
+        "scheduler_features",
+        "scheduler_requested_tres",
+        "scheduler_tres_per_node",
+        "scheduler_health_error",
+        "scheduler_queue_age_seconds",
+        "scheduler_allocation_age_seconds",
     }
     observation = {
         "step_id": row["step_id"],
@@ -480,14 +498,26 @@ def monitor_report(rows: list[dict[str, Any]]) -> str:
     lines = ["# Experiment Monitor", ""]
     if not rows:
         return "# Experiment Monitor\n\nNo runs found.\n"
-    lines.append("| run | setting | status | health | gpu | log age | checkpoints |")
-    lines.append("|---|---|---|---|---|---:|---:|")
+    lines.append("| run | setting | status | scheduler | health | gpu | log age | checkpoints |")
+    lines.append("|---|---|---|---|---|---|---:|---:|")
     for row in rows:
+        scheduler = " ".join(
+            f"{label}={row[field]}"
+            for label, field in (
+                ("job", "scheduler_job_id"),
+                ("state", "scheduler_raw_state"),
+                ("reason", "scheduler_reason"),
+                ("node", "scheduler_node"),
+                ("priority", "scheduler_priority"),
+            )
+            if row.get(field) not in (None, "")
+        )
         lines.append(
-            "| {run} | {setting} | {status} | {health} | {gpu} | {log_age} | {ckpts} |".format(
+            "| {run} | {setting} | {status} | {scheduler} | {health} | {gpu} | {log_age} | {ckpts} |".format(
                 run=f"{row.get('step_id', '')} / {row.get('run_id', '')} — {row.get('run_name', '')}",
                 setting=str(row.get("parameter_summary", "")).replace("|", "/"),
                 status=row.get("status", ""),
+                scheduler=scheduler.replace("|", "/"),
                 health=row.get("health_status", ""),
                 gpu=str(row.get("gpu_summary", "")).replace("|", "/"),
                 log_age=row.get("log_age_seconds", ""),
