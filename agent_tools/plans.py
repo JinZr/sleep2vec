@@ -5,7 +5,6 @@ import csv
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 from typing import Any
 
 import yaml
@@ -19,7 +18,6 @@ from . import (
     repo as repo_tools,
     run_artifacts as artifacts,
     schema_map,
-    slurm,
 )
 from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
 from .configs import config_summary
@@ -521,57 +519,8 @@ def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
 
 
 def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> DecisionReport:
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
-    if recipe.get("task") != "hparam_tune" or scheduler.get("type") != "slurm" or report.blocking_issues():
-        return report
-    try:
-        capabilities = slurm.cluster_scheduling_capabilities(execution, str(scheduler["partition"]))
-    except (slurm.SlurmCommandError, subprocess.TimeoutExpired, ValueError) as exc:
-        return _append_issues(
-            report,
-            [
-                DecisionIssue(
-                    DecisionStatus.WARN,
-                    "execution.scheduler.capabilities",
-                    f"Read-only Slurm capability inspection was unavailable: {exc}",
-                    None,
-                    {"error": str(exc)},
-                )
-            ],
-        )
-
-    priority_type = capabilities["priority_type"] or "unknown priority policy"
-    scheduler_type = capabilities["scheduler_type"] or "unknown scheduler"
-    accounting_type = capabilities["accounting_storage_type"] or "unknown accounting storage"
-    message = (
-        f"Read-only Slurm inspection reports {priority_type}, {scheduler_type}, {accounting_type}, and "
-        f"{capabilities['reservation_count']} visible reservation(s). "
-    )
-    if priority_type == "priority/basic":
-        message += (
-            "Submit time and fitting credible short resource requests into backfill are the practical user-side "
-            "levers; no setting can guarantee first priority."
-        )
-    elif priority_type == "priority/multifactor":
-        message += (
-            "Priority may also depend on cluster-controlled age, fair-share, QOS, and association policy; no "
-            "setting can guarantee first priority."
-        )
-    else:
-        message += "Cluster policy determines ordering; no user-side setting can guarantee first priority."
-    return _append_issues(
-        report,
-        [
-            DecisionIssue(
-                DecisionStatus.WARN,
-                "execution.scheduler.capabilities",
-                message,
-                None,
-                capabilities,
-            )
-        ],
-    )
+    adapter = get_adapter(recipe.get("task"))
+    return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
 
 
 def write_doctor_outputs(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> None:

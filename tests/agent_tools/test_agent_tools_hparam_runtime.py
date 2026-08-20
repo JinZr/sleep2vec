@@ -455,6 +455,33 @@ def test_slurm_doctor_reports_live_capabilities_without_mutating_scheduler(tmp_p
     assert recipe["execution"]["scheduler"] == configured_scheduler
 
 
+def test_slurm_doctor_reports_unavailable_capabilities_as_warning(tmp_path: Path, monkeypatch):
+    recipe_path = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe_path.read_text())
+    configured_scheduler = {
+        "type": "slurm",
+        "partition": "gpu",
+        "cpus_per_task": 8,
+        "memory": "64G",
+        "walltime": "01:00:00",
+    }
+    payload["execution"].update({"gpus_per_run": 1, "scheduler": configured_scheduler})
+    recipe_path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    recipe, _cfg, report = plans.evaluate_recipe(recipe_path)
+
+    def unavailable(_execution, _partition):
+        raise subprocess.TimeoutExpired("scontrol", 10)
+
+    monkeypatch.setattr(slurm, "cluster_scheduling_capabilities", unavailable)
+
+    doctor = plans.prepare_doctor_report(None, recipe, report)
+
+    capability_issue = next(issue for issue in doctor.issues if issue.field == "execution.scheduler.capabilities")
+    assert capability_issue.status.value == "WARN"
+    assert "inspection was unavailable" in capability_issue.message
+    assert recipe["execution"]["scheduler"] == configured_scheduler
+
+
 @pytest.mark.parametrize(
     "artifact_name", ["job.sbatch", "slurm_terminal.json", "allocation_identity.json", "slurm.log"]
 )
