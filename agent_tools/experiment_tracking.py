@@ -164,10 +164,13 @@ def wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict
             )
         if incoming_wandb_run_id:
             wandb_run_ids[key] = incoming_wandb_run_id
+        fields = WANDB_RUN_FIELDS
+        if scheduler_type(existing) == "slurm" or existing.get("terminal_status_owner") == "scheduler_sidecar":
+            fields = fields - {"status"}
         update = {
             "step_id": key[0],
             "run_id": key[1],
-            **{field: row[field] for field in WANDB_RUN_FIELDS if field in row},
+            **{field: row[field] for field in fields if field in row},
         }
         observations[key] = merge_run_row(observations.get(key, {}), update)
     rows = list(observations.values())

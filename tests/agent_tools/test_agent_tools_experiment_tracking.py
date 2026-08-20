@@ -786,6 +786,53 @@ def test_experiment_wandb_sync_applies_directional_terminal_precedence(
     assert synced[0]["run_id"] == "run-000"
 
 
+@pytest.mark.parametrize(("status", "wandb_status"), [("queued", "completed"), ("running", "failed")])
+def test_wandb_observations_do_not_override_slurm_lifecycle(status: str, wandb_status: str):
+    managed = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "managed-v1",
+            "status": status,
+            "scheduler_type": "slurm",
+            "scheduler_submit_token": "unit-token",
+            "scheduler_script": "/plan/job.sbatch",
+            "scheduler_script_sha256": "a" * 64,
+            "scheduler_result_path": "/plan/slurm_terminal.json",
+            "allocation_identity_path": "/plan/slurm_allocation.json",
+            "scheduler_job_id": "3880",
+            "terminal_status_owner": "scheduler_sidecar",
+        }
+    ]
+
+    observations = experiment_tracking.wandb_run_observations(
+        managed,
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-000",
+                "status": wandb_status,
+                "state": "finished" if wandb_status == "completed" else "failed",
+                "wandb_run_id": "wandb-1",
+                "wandb_url": "https://wandb.example/run",
+            }
+        ],
+    )
+
+    assert observations == [
+        {
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "state": "finished" if wandb_status == "completed" else "failed",
+            "wandb_run_id": "wandb-1",
+            "wandb_url": "https://wandb.example/run",
+        }
+    ]
+    assert experiment_workspace.merge_run_row(managed[0], observations[0])["status"] == status
+
+
 def test_wandb_observations_strip_matching_and_frozen_fields():
     managed = [
         {
