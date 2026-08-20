@@ -283,6 +283,7 @@ def hparam_tune_issues(
         "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),
         "selection_split": ("evaluation_policy.selection_split", "train_val_test_policy"),
         "external_test_locked": ("evaluation_policy.external_test_locked", "external_test_locked"),
+        "test_after_fit": ("evaluation_policy.test_after_fit", "test_after_fit"),
         "final_eval_split": ("evaluation_policy.final_eval_split", "final_eval_split"),
         "final_test_unlocked": ("evaluation_policy.final_test_unlocked", "final_eval_unlock"),
         "require_manual_unlock_for_final_test": (
@@ -378,13 +379,7 @@ def hparam_tune_issues(
     )
     if not has_external_lock:
         issues.append(needs_issue("external_test_locked", "external_test_locked must be explicit.", high_impact))
-    test_after_fit_decision = decisions.get("test_after_fit")
-    test_after_fit = (
-        test_after_fit_decision.value
-        if test_after_fit_decision is not None and test_after_fit_decision.source != "missing"
-        else evaluation.get("test_after_fit", True)
-    )
-    external_test_locked = evaluation.get("external_test_locked")
+    test_after_fit = decisions["test_after_fit"].value
     if type(test_after_fit) is not bool:
         issues.append(
             DecisionIssue(
@@ -395,13 +390,13 @@ def hparam_tune_issues(
                 {"value": test_after_fit, "evaluation_policy": evaluation},
             )
         )
-    elif test_after_fit and external_test_locked is True:
+    elif test_after_fit:
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
-                "test_after_fit=true would evaluate test while external_test_locked=true.",
-                "Should test_after_fit be false, or should external_test_locked=false?",
+                "Hyper-parameter trials require test_after_fit=false until validation checkpoint selection is frozen.",
+                "Should test_after_fit be false so final test evaluation remains a separate unlocked step?",
                 {"evaluation_policy": evaluation},
             )
         )

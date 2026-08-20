@@ -1,6 +1,6 @@
 # External Test Policy
 
-Hyper-parameter search selects on validation only. Managed runs evaluate their configured test split after fit by default, but those test metrics must not affect candidate selection. Set `test_after_fit: false` together with `external_test_locked: true` for an explicit no-test run policy.
+Hyper-parameter search selects on validation only. Managed candidate trials must explicitly set `test_after_fit: false`, render `--no-test-after-fit`, and exclude the test split from preflight so checkpoint selection is frozen before external metrics are read.
 
 The selected-model external evaluation remains a separate explicit step. For hparam orchestration, `hparam-select` must rank candidates from validation metrics. `hparam-external-eval` requires `--unlock-final-test`, and copied external-test configs may replace data entry fields only.
 

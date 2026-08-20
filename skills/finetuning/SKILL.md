@@ -4,7 +4,7 @@
 Use for `finetune` tasks that train downstream heads.
 
 ## Required inputs
-Requires config YAML, `--label-name`, data backend inputs, pretrained-backbone policy, monitor metric/mode, and result path. Test-after-fit defaults to enabled; set `test_after_fit: false` only when the run must skip test evaluation.
+Requires config YAML, `--label-name`, data backend inputs, pretrained-backbone policy, monitor metric/mode, and result path. When `test_after_fit` is omitted, agent tools materialize `evaluation_policy.test_after_fit=true` and a `decisions.test_after_fit` record sourced from `policy_default` before consultation; set `test_after_fit: false` when the run must skip test evaluation.
 
 ## First information-gathering commands
 - `python -m agent_tools config-summary --config <config> --json`

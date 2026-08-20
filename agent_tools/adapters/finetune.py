@@ -96,12 +96,7 @@ class FinetuneAdapter(TaskAdapter):
                         {"config_variant": config_variant, "recipe_variant": recipe_variant},
                     )
                 )
-        test_after_fit_decision = decisions.get("test_after_fit")
-        test_after_fit = (
-            test_after_fit_decision.value
-            if test_after_fit_decision is not None and test_after_fit_decision.source != "missing"
-            else evaluation.get("test_after_fit", True)
-        )
+        test_after_fit = decisions["test_after_fit"].value
         if type(test_after_fit) is not bool:
             issues.append(
                 DecisionIssue(
@@ -172,7 +167,7 @@ class FinetuneAdapter(TaskAdapter):
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
         artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-        test_after_fit = evaluation.get("test_after_fit", True)
+        test_after_fit = evaluation["test_after_fit"]
         pieces = [
             "python",
             "-m",

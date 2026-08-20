@@ -1,6 +1,6 @@
 # Agent Consultation Policies
 
-`consultation_policy.yaml` defines the high-impact fields that require explicit user intent before an agent may plan or run an experiment. Runtime defaults are owned by their runtime/rendering code rather than by a second policy file.
+`consultation_policy.yaml` defines the high-impact fields that require explicit user intent before an agent may plan or run an experiment. It also owns the finetune `test_after_fit=true` policy default, which is materialized into the resolved recipe and decision record before consultation. Other runtime defaults remain owned by their runtime/rendering code.
 
 The goal is to prevent silent guessing for high-impact choices such as experiment ownership, step purpose, label selection, split usage, checkpoint selection, external-test evaluation, preset regeneration, and hyper-parameter search space.
 

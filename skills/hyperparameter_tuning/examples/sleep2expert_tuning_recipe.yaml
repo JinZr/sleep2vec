@@ -12,3 +12,6 @@ step:
   phase: train
   purpose: Tune sleep2expert using validation selection.
 base_recipe: recipes/templates/finetune_sleep2expert_ahi.yaml
+evaluation_policy:
+  external_test_locked: true
+  test_after_fit: false

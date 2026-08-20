@@ -1,9 +1,10 @@
 # External Test Locking
 
 - Hyper-parameter search selects on validation.
-- Finetune and hyper-parameter runs test after fit by default. Agent-generated commands render `--test-after-fit` explicitly.
-- Set `test_after_fit=false` with `external_test_locked=true` to opt out; agent-generated commands then render `--no-test-after-fit` explicitly. A locked policy never silently disables the default.
-- Test-after-fit metrics must not affect hyper-parameter selection, which remains validation-only.
+- For direct finetune recipes, an omitted `test_after_fit` is materialized as `evaluation_policy.test_after_fit=true` with a `decisions.test_after_fit` record sourced from `policy_default` before consultation. The resolved recipe and generated command therefore make the default auditable.
+- Set direct finetune `test_after_fit=false` to opt out; agent-generated commands always render `--test-after-fit` or `--no-test-after-fit` explicitly. A locked policy never silently changes the resolved choice.
+- Hyper-parameter trial recipes must explicitly set `test_after_fit=false`; generated trial commands render `--no-test-after-fit`, and preflight does not read the test split.
+- Hyper-parameter selection and checkpoint freezing use validation evidence before any external metrics are read.
 - Direct `infer` or `evaluate` on `eval_split=test` requires both `external_test_locked=false` and `final_test_unlocked=true`.
 - Final external-test evaluation is a separate, explicit command.
 - Final external-test scripts require an explicit existing checkpoint path; unlock does not authorize checkpoint guessing.

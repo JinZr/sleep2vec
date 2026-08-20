@@ -468,7 +468,10 @@ if __name__ == "__main__":
         "--test-after-fit",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Run test evaluation after training by default; use --no-test-after-fit to opt out.",
+        help=(
+            "Run test evaluation after fit by default. Use --no-test-after-fit during validation-based model "
+            "selection; evaluate test separately from the selected checkpoint."
+        ),
     )
     parser.add_argument(
         "--check-val-every-n-epoch",

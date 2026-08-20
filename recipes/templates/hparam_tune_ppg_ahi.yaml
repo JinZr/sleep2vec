@@ -31,8 +31,9 @@ evaluation_policy:
   selection_mode: max
   selection_split: val
   final_eval_split: test
-  external_test_locked: false
+  external_test_locked: true
   require_manual_unlock_for_final_test: true
+  test_after_fit: false
   final_test_unlocked: false
 
 decisions:
@@ -43,10 +44,10 @@ decisions:
     value: ahi
     source: explicit_recipe
   external_test_locked:
-    value: false
+    value: true
     source: explicit_recipe
   train_val_test_policy:
-    value: "select on val; run test after fit"
+    value: "select on val; keep test locked"
     source: explicit_recipe
   overwrite_policy:
     value: false
