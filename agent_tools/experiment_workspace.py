@@ -1029,7 +1029,11 @@ def file_sha256(path: str | Path) -> str:
 
 
 def verify_run_snapshot(run: dict[str, Any]) -> None:
-    for path_field, hash_field in (("config", "config_sha256"), ("script", "script_sha256")):
+    for path_field, hash_field in (
+        ("config", "config_sha256"),
+        ("script", "script_sha256"),
+        ("scheduler_script", "scheduler_script_sha256"),
+    ):
         path = run.get(path_field)
         expected = run.get(hash_field)
         if path and expected and file_sha256(path) != expected:

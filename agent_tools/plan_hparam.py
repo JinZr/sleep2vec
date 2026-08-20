@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from . import plan_context, plan_rendering as rendering, transport
+from . import plan_context, plan_rendering as rendering, slurm, transport
 from .decision_models import DecisionIssue, DecisionStatus
 from .decision_paths import (
     inference_checkpoint_averaging_issue,
@@ -24,6 +24,7 @@ from .decision_paths import (
     validate_input_path,
 )
 from .experiment_workspace import (
+    SCHEDULER_PLAN_IDENTITY_FIELDS,
     append_event,
     ensure_experiment_workspace,
     experiment_root,
@@ -514,6 +515,15 @@ def write_hparam_plan(
         physical_out = physical_out.resolve()
     recipe = freeze_hparam_execution(recipe)
     execution = recipe["execution"]
+    scheduler = execution.get("scheduler") or {}
+    if not isinstance(scheduler, dict):
+        raise ValueError("execution.scheduler must be a mapping.")
+    scheduler_type = str(scheduler.get("type") or "direct")
+    if scheduler_type not in {"direct", "slurm"}:
+        raise ValueError("execution.scheduler.type must be direct or slurm.")
+    slurm_resources = None
+    if scheduler_type == "slurm":
+        slurm_resources = slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1))
     run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
     if not run_cwd.is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
@@ -569,17 +579,20 @@ def write_hparam_plan(
             yaml.safe_dump(run_config, file_obj)
         version = identity["version"]
         runtime = {**runtime_defaults, **runtime_overrides}
-        if execution.get("gpu_pool") or "gpus_per_run" in execution:
+        if scheduler_type == "slurm":
+            runtime["devices"] = list(range(slurm_resources["gpus_per_run"]))
+        elif execution.get("gpu_pool") or "gpus_per_run" in execution:
             gpus_per_run = (
                 int(execution["gpus_per_run"])
                 if "gpus_per_run" in execution
                 else len(coerce_list(runtime_defaults.get("devices"))) or 1
             )
             runtime["devices"] = list(range(gpus_per_run))
+        run_module = rendering.variant_module(recipe, "finetune")
         command_parts = [
             execution["python"],
             "-m",
-            rendering.variant_module(recipe, "finetune"),
+            run_module,
             "--config",
             cfg_copy,
             "--label-name",
@@ -629,6 +642,39 @@ def write_hparam_plan(
             "terminal_status_owner": "monitor",
             **combo,
         }
+        if scheduler_type == "slurm":
+            scheduler_script = run_dir / "job.sbatch"
+            write_scheduler_script = write_run_dir / "job.sbatch"
+            scheduler_result_path = run_dir / "slurm_terminal.json"
+            allocation_identity_path = run_dir / "allocation_identity.json"
+            log_path = run_dir / "slurm.log"
+            token = slurm.submit_token(run, slurm_resources, execution["runtime_commit"])
+            write_text(
+                write_scheduler_script,
+                slurm.render_batch_script(
+                    run=run,
+                    execution={**execution, "workdir": str(run_cwd)},
+                    resources=slurm_resources,
+                    token=token,
+                    result_path=scheduler_result_path,
+                    allocation_identity_path=allocation_identity_path,
+                    log_path=log_path,
+                    module=run_module,
+                ),
+                executable=True,
+            )
+            run.update(
+                {
+                    "scheduler_type": "slurm",
+                    "scheduler_submit_token": token,
+                    "scheduler_script": str(scheduler_script),
+                    "scheduler_script_sha256": file_sha256(write_scheduler_script),
+                    "scheduler_result_path": str(scheduler_result_path),
+                    "allocation_identity_path": str(allocation_identity_path),
+                    "log_path": str(log_path),
+                    "terminal_status_owner": "scheduler_sidecar",
+                }
+            )
         runtime_dir = run_cwd / "log-finetune" / version
         checkpoint_dir = runtime_dir / "checkpoints"
         artifacts_path = run_dir / "artifacts.json"
@@ -813,6 +859,9 @@ def _hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:
         }
         if "terminal_status_owner" in run:
             row["terminal_status_owner"] = run["terminal_status_owner"]
+        for field in sorted(SCHEDULER_PLAN_IDENTITY_FIELDS | {"log_path"}):
+            if field in run:
+                row[field] = run[field]
         row.update({key: run.get(key) for key in parameter_keys})
         rows.append(row)
     return rows

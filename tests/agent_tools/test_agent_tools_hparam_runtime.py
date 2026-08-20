@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ from agent_tools import (
     hparam_runtime,
     managed_scheduler,
     manifests,
+    plan_hparam,
     plan_rendering,
     run_artifacts,
     run_evidence,
@@ -317,6 +319,56 @@ def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
     assert canonical["terminal_status_owner"] == "monitor"
     assert "trap _agent_tools_record_exit EXIT" in script
     assert MONITOR_EXIT_CODE_PREFIX in script
+
+
+def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path: Path):
+    recipe_path = _hparam_recipe(tmp_path)
+    direct_plan_dir = tmp_path / "direct-plan"
+    assert _run("plan", "--recipe", str(recipe_path), "--output-dir", str(direct_plan_dir)).returncode == 0
+    direct_plan = json.loads((direct_plan_dir / "plan.json").read_text())
+    recipe = direct_plan["recipe"]
+    recipe["execution"].update(
+        {
+            "gpus_per_run": 1,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+            },
+        }
+    )
+    source_config = (direct_plan_dir / "config.source.yaml").read_bytes()
+    slurm_plan_dir = tmp_path / "slurm-plan"
+
+    plan_hparam.write_hparam_plan(
+        recipe,
+        slurm_plan_dir,
+        unlock_final_test=False,
+        source_config_bytes=source_config,
+        source_config_sha256=hashlib.sha256(source_config).hexdigest(),
+    )
+    plan_hparam.commit_hparam_plan(slurm_plan_dir)
+
+    run = json.loads((slurm_plan_dir / "plan.json").read_text())["runs"][0]
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    batch_script = Path(run["scheduler_script"]).read_text()
+    assert run["scheduler_type"] == "slurm"
+    assert run["terminal_status_owner"] == "scheduler_sidecar"
+    assert run["scheduler_script_sha256"] == file_sha256(run["scheduler_script"])
+    assert canonical["scheduler_submit_token"] == run["scheduler_submit_token"]
+    assert canonical["scheduler_script_sha256"] == run["scheduler_script_sha256"]
+    assert canonical["scheduler_result_path"] == run["scheduler_result_path"]
+    assert canonical["allocation_identity_path"] == run["allocation_identity_path"]
+    assert canonical["log_path"] == run["log_path"]
+    assert "#SBATCH --gres=gpu:1" in batch_script
+    assert "--devices 0" in Path(run["script"]).read_text()
+    assert "hparam-run-queue" not in batch_script
+
+    Path(run["scheduler_script"]).write_text(batch_script + "# changed\n")
+    with pytest.raises(ValueError, match="snapshot hash changed"):
+        run_artifacts.read_hparam_plan(slurm_plan_dir)
 
 
 def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_path: Path):
