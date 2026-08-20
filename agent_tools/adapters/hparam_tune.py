@@ -143,12 +143,22 @@ class HparamTuneAdapter(TaskAdapter):
             out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
         ]
         offset = next_run_index(recipe)
+        scheduler = (recipe.get("execution") or {}).get("scheduler") or {}
         for idx, combo in enumerate(plan_hparam.hparam_combos(recipe)):
             identity = run_identity(recipe, offset + idx, combo)
             run_dir = out / "runs" / f"{identity['run_id']}--{identity['run_name']}"
             paths.extend(
                 [run_dir / "launch.sh", run_dir / "config.yaml", run_dir / "run.json", run_dir / "artifacts.json"]
             )
+            if scheduler.get("type") == "slurm":
+                paths.extend(
+                    [
+                        run_dir / "job.sbatch",
+                        run_dir / "slurm_terminal.json",
+                        run_dir / "allocation_identity.json",
+                        run_dir / "slurm.log",
+                    ]
+                )
         paths.append(out / "final_external_test.sh")
         return paths
 

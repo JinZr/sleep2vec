@@ -29,7 +29,14 @@ from agent_tools import (
     run_evidence,
     slurm,
 )
-from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
+from agent_tools.experiment_workspace import (
+    MONITOR_EXIT_CODE_PREFIX,
+    file_sha256,
+    merge_run_manifest,
+    merge_run_row,
+    next_run_index,
+    run_identity,
+)
 from agent_tools.hparam_runtime import monitor_hparam_runs
 from agent_tools.models import REPO_ROOT
 
@@ -446,6 +453,78 @@ def test_slurm_doctor_reports_live_capabilities_without_mutating_scheduler(tmp_p
     assert capability_issue.evidence["backfill_enabled"] is True
     assert calls == [("local", "gpu")]
     assert recipe["execution"]["scheduler"] == configured_scheduler
+
+
+@pytest.mark.parametrize(
+    "artifact_name", ["job.sbatch", "slurm_terminal.json", "allocation_identity.json", "slurm.log"]
+)
+def test_slurm_plan_rejects_existing_single_use_artifacts_before_writing(tmp_path: Path, artifact_name: str):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update(
+        {
+            "gpus_per_run": 1,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+            },
+        }
+    )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    resolved, _cfg, report = plans.evaluate_recipe(recipe)
+    assert report.exit_code == 0
+    identity = run_identity(resolved, next_run_index(resolved), plan_hparam.hparam_combos(resolved)[0])
+    run_dir = plan_dir / "runs" / f"{identity['run_id']}--{identity['run_name']}"
+    run_dir.mkdir(parents=True)
+    artifact = run_dir / artifact_name
+    artifact.write_text("stale\n")
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 1
+    assert "Output artifacts already exist" in result.stdout
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_slurm_plan_rejects_scheduler_artifact_symlink_before_writing(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update(
+        {
+            "gpus_per_run": 1,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+            },
+        }
+    )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    resolved, _cfg, report = plans.evaluate_recipe(recipe)
+    assert report.exit_code == 0
+    identity = run_identity(resolved, next_run_index(resolved), plan_hparam.hparam_combos(resolved)[0])
+    run_dir = plan_dir / "runs" / f"{identity['run_id']}--{identity['run_name']}"
+    run_dir.mkdir(parents=True)
+    target = tmp_path / "outside.sbatch"
+    target.write_text("outside\n")
+    artifact = run_dir / "job.sbatch"
+    artifact.symlink_to(target)
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 1
+    assert "Output artifacts are unsafe" in result.stdout
+    assert artifact.is_symlink()
+    assert target.read_text() == "outside\n"
+    assert not (plan_dir / "plan.json").exists()
 
 
 @pytest.mark.parametrize(
