@@ -126,8 +126,8 @@ def finetune_loaded_split_values(recipe: dict, *, load_test: bool | None = None)
         splits.extend(["train", "val"])
 
     if load_test is None:
-        load_test = evaluation["test_after_fit"]
-    if load_test:
+        load_test = evaluation.get("test_after_fit")
+    if load_test is True:
         splits.append("test")
     return splits
 

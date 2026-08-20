@@ -946,9 +946,12 @@ def test_finetune_lock_does_not_silently_disable_default_test_after_fit(tmp_path
     assert not (output_dir / "run.sh").exists()
 
 
-@pytest.mark.parametrize("value", [None, "", "ASK_USER", "false", 0, 1, [], {}])
+@pytest.mark.parametrize("value", [None, "", "ASK_USER", "false", "true", 0, 1, [], {}])
 def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: object):
     recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    write_yaml(recipe, payload)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
         {"decisions": {"test_after_fit": {"value": value, "source": "explicit_user"}}},
@@ -959,7 +962,35 @@ def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: 
 
     assert result.returncode == 2
     assert "test_after_fit" in result.stdout
+    assert "Traceback" not in result.stderr
     assert not (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize("value", [None, "", "ASK_USER", "true"])
+def test_unresolved_recipe_test_after_fit_does_not_load_test_index(
+    tmp_path: Path, monkeypatch, value: object
+):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    payload["decisions"]["test_after_fit"] = {"value": value, "source": "explicit_recipe"}
+    write_yaml(recipe, payload)
+    observed_split_values = []
+    real_index_summary = plan_context.index_summary
+
+    def record_split_values(*args, **kwargs):
+        observed_split_values.append(kwargs.get("split_values"))
+        return real_index_summary(*args, **kwargs)
+
+    monkeypatch.setattr(plan_context, "index_summary", record_split_values)
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plan")
+
+    assert report.exit_code == 2
+    assert any(issue.field == "test_after_fit" for issue in report.issues)
+    assert observed_split_values
+    assert all("test" not in splits for splits in observed_split_values if splits is not None)
+    assert not (tmp_path / "plan" / "run.sh").exists()
 
 
 @pytest.mark.parametrize("value", ["true", "false", 0, 1, [], {}])
