@@ -667,6 +667,7 @@ def write_hparam_plan(
                     token=token,
                     result_path=scheduler_result_path,
                     allocation_identity_path=allocation_identity_path,
+                    execution_snapshot_path=out / "execution_snapshot.json",
                     log_path=log_path,
                     module=run_module,
                 ),

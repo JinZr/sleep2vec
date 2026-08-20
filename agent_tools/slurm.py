@@ -106,6 +106,7 @@ def render_batch_script(
     token: str,
     result_path: str | Path,
     allocation_identity_path: str | Path,
+    execution_snapshot_path: str | Path,
     log_path: str | Path,
     module: str,
 ) -> str:
@@ -150,6 +151,8 @@ def render_batch_script(
         result_path,
         "--allocation-identity-path",
         allocation_identity_path,
+        "--execution-snapshot-path",
+        execution_snapshot_path,
         "--log-path",
         log_path,
         "--submit-token",
@@ -189,6 +192,7 @@ def run_frozen_job(
     config_sha256: str,
     result_path: str,
     allocation_identity_path: str,
+    execution_snapshot_path: str,
     log_path: str,
     submit_token: str,
     workdir: str,
@@ -236,6 +240,15 @@ def run_frozen_job(
                 )
                 if snapshot["module"] != module:
                     raise ValueError("Frozen Slurm module differs from the verified runtime module.")
+                frozen_snapshot = manifests.read_json(execution_snapshot_path)
+                identity_fields = ("python", "python_version")
+                changed = [
+                    field
+                    for field in identity_fields
+                    if not isinstance(frozen_snapshot, dict) or snapshot.get(field) != frozen_snapshot.get(field)
+                ]
+                if changed:
+                    raise ValueError("Frozen Slurm execution identity changed in allocation: " + ", ".join(changed))
                 _atomic_create_json(
                     allocation_identity_path,
                     {
@@ -634,6 +647,7 @@ def _main(argv: list[str] | None = None) -> int:
         "config_sha256",
         "result_path",
         "allocation_identity_path",
+        "execution_snapshot_path",
         "log_path",
         "submit_token",
         "workdir",

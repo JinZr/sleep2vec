@@ -219,6 +219,11 @@ selected run's frozen script/config hashes. Target and leaf `PYTHONPATH`
 contain only `execution.workdir`, so another manager checkout cannot satisfy
 missing imports.
 
+For Slurm, `job.sbatch` carries the plan-level snapshot path into the allocation
+wrapper. The compute node must match the frozen Python executable and version
+before it may start the leaf script. Its hostname remains allocation evidence
+and is not required to equal the submission host.
+
 Dry-run and monitor never probe or create the snapshot. A plan without frozen
 Python/commit identity must be recreated. A missing snapshot may be established
 only while every plan run remains `planned` or `pending` and has no committed
