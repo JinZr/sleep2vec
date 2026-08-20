@@ -492,8 +492,8 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Run test evaluation after training. Use --no-test-after-fit during hyper-parameter search to keep "
-            "external test locked."
+            "Run test evaluation after fit by default. Use --no-test-after-fit during validation-based model "
+            "selection; evaluate test separately from the selected checkpoint."
         ),
     )
     parser.add_argument(

@@ -1,4 +1,4 @@
-name: sleep2vec2_val_only_tuning_example
+name: sleep2vec2_tuning_example
 task: hparam_tune
 variant: sleep2vec2
 experiment:
@@ -11,4 +11,7 @@ step:
   id: tune-sleep2vec2-validation
   phase: train
   purpose: Tune sleep2vec2 using validation selection.
-base_recipe: recipes/templates/finetune_sleep2vec2_ppg_ahi_val_only.yaml
+base_recipe: recipes/templates/finetune_sleep2vec2_ppg_ahi.yaml
+evaluation_policy:
+  external_test_locked: true
+  test_after_fit: false

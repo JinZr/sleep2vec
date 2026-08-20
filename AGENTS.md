@@ -106,7 +106,7 @@ High-impact decisions include label selection, split policy, external-test locki
 
 ## Config Strictness Policy
 - Follow “let it crash” for model/data semantics: missing or inconsistent YAML fields that affect model shape, task semantics, or evaluation should raise immediately.
-- Defaults are acceptable only for optimization/logging/runtime convenience (e.g., epochs, lr, batch size, W&B metadata).
+- Defaults are acceptable only for optimization/logging/runtime convenience (e.g., epochs, lr, batch size, W&B metadata), except that direct `finetune` plans materialize an omitted `test_after_fit` as the documented `true` policy default before consultation and freeze it in resolved artifacts. Hyper-parameter trial recipes must still set `test_after_fit=false` explicitly.
 - When adding new config fields, mark explicitly whether they are required or optional and enforce it in config parsing.
 
 ## Codex Subagent Operating Model

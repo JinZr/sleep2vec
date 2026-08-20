@@ -96,16 +96,13 @@ class FinetuneAdapter(TaskAdapter):
                         {"config_variant": config_variant, "recipe_variant": recipe_variant},
                     )
                 )
-        test_after_fit_decision = decisions.get("test_after_fit")
-        test_after_fit = (
-            test_after_fit_decision.value if test_after_fit_decision is not None else evaluation.get("test_after_fit")
-        )
+        test_after_fit = decisions["test_after_fit"].value
         if type(test_after_fit) is not bool:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.NEEDS_USER_INPUT,
                     "test_after_fit",
-                    "test_after_fit must be explicitly true or false for finetune command generation.",
+                    "test_after_fit must be true or false when provided.",
                     "Should test evaluation run after fit for this task?",
                     {"value": test_after_fit, "evaluation_policy": evaluation},
                 )
@@ -170,7 +167,7 @@ class FinetuneAdapter(TaskAdapter):
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
         artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-        test_after_fit = evaluation.get("test_after_fit")
+        test_after_fit = evaluation["test_after_fit"]
         pieces = [
             "python",
             "-m",
@@ -189,7 +186,9 @@ class FinetuneAdapter(TaskAdapter):
                 variant=str(recipe.get("variant")),
             ),
         ]
-        if test_after_fit is False or evaluation.get("external_test_locked") is True:
+        if test_after_fit:
+            pieces.append("--test-after-fit")
+        else:
             pieces.append("--no-test-after-fit")
         return [render_command(pieces)]
 

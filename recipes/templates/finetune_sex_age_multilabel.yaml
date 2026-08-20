@@ -1,6 +1,6 @@
-name: ppg_cox_finetune_example
+name: sex_age_multilabel_finetune_example
 task: finetune
-variant: sleep2vec
+variant: sex_age_baseline
 
 experiment:
   id: ASK_USER
@@ -14,55 +14,52 @@ step:
   purpose: ASK_USER
 
 inputs:
-  config: configs/ppg_cox_finetune_large.yaml
-  label_name: incident_cox
-  pretrained_backbone_path: null
+  config: configs/sex_age_baseline/multilabel.yaml
+  label_name: disease_multilabel
   ckpt_path: null
 
 runtime:
   devices: [0]
   precision: bf16-mixed
   epochs: 30
-  batch_size: 12
+  batch_size: 256
   num_workers: 8
-  lr: 1.0e-6
-  weight_decay: 1.0e-5
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
-  wandb_mode: offline
 
 artifacts:
-  version_name: ppg-cox-agent-example
-  results_csv_path: results/ppg_cox_agent_example.csv
+  version_name: sex-age-multilabel-agent-example
+  results_csv_path: results/sex_age_multilabel_agent_example.csv
   overwrite: false
 
 evaluation_policy:
-  selection_metric: val_loss
-  selection_mode: min
+  selection_metric: val_macro_auroc
+  selection_mode: max
   selection_split: val
-  external_test_locked: true
-  test_after_fit: false
+  external_test_locked: false
 
 decisions:
   task:
     value: finetune
     source: explicit_recipe
   label_name:
-    value: incident_cox
+    value: disease_multilabel
     source: explicit_recipe
   pretrained_backbone_path:
     value: null
     source: explicit_recipe
-    meaning: "train downstream model without loading a pretrained backbone"
+    meaning: "sex_age_baseline has no pretrained backbone"
   train_val_test_policy:
-    value: "select on val; keep test locked"
+    value: "select on val; run test after fit"
     source: explicit_recipe
   external_test_locked:
-    value: true
+    value: false
     source: explicit_recipe
   overwrite_policy:
     value: false
     source: explicit_recipe
   required_channels:
-    value: [ppg]
+    value: []
     source: explicit_config

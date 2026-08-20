@@ -13,7 +13,7 @@ step:
   phase: train
   purpose: ASK_USER
 
-base_recipe: finetune_sleep2expert_ahi_val_only.yaml
+base_recipe: finetune_sleep2expert_ahi.yaml
 
 search:
   method: grid

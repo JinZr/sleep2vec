@@ -117,7 +117,7 @@ def loads_train_val(epochs: Any) -> bool:
         return True
 
 
-def finetune_loaded_split_values(recipe: dict, *, test_split_opt_in: bool = False) -> list[str]:
+def finetune_loaded_split_values(recipe: dict, *, load_test: bool | None = None) -> list[str]:
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
 
@@ -125,11 +125,9 @@ def finetune_loaded_split_values(recipe: dict, *, test_split_opt_in: bool = Fals
     if loads_train_val(runtime.get("epochs", 30)):
         splits.extend(["train", "val"])
 
-    test_after_fit = evaluation.get("test_after_fit")
-    if test_split_opt_in:
-        if test_after_fit is True:
-            splits.append("test")
-    elif test_after_fit is not False:
+    if load_test is None:
+        load_test = evaluation.get("test_after_fit")
+    if load_test is True:
         splits.append("test")
     return splits
 
@@ -312,7 +310,6 @@ def blocked_script() -> str:
 def hparam_script_lines(
     commands: list[str],
     *,
-    test_after_fit: bool = False,
     final_external_test: bool = False,
     record_exit_code: bool = False,
     run_cwd: str | Path = REPO_ROOT,
@@ -320,11 +317,7 @@ def hparam_script_lines(
     external_test_policy = "# - This script evaluates the configured final test split."
     final_test_policy = "# - Final test evaluation was explicitly unlocked."
     if not final_external_test:
-        external_test_policy = (
-            "# - Run commands evaluate the configured test split after fit."
-            if test_after_fit
-            else "# - Run commands do not evaluate the external test split."
-        )
+        external_test_policy = "# - Run commands do not evaluate the external test split."
         final_test_policy = "# - Final test evaluation requires explicit unlock."
     root = shlex.quote(str(run_cwd))
     exit_code_lines = []

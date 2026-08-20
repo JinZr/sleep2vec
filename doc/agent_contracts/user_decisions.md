@@ -34,6 +34,11 @@ decisions:
     source: explicit_user
     rationale: Keep test data locked during tuning.
 
+  test_after_fit:
+    value: false
+    source: explicit_user
+    rationale: Keep tuning trials validation-only; run final external evaluation separately.
+
   overwrite_policy:
     value: false
     source: explicit_user
@@ -46,7 +51,13 @@ Resolution precedence is:
 3. explicit recipe decision
 4. explicit recipe field
 5. explicit config field
-6. ambiguous or missing
+6. task policy default, when defined
+7. ambiguous or missing
+
+The current task policy default applies only to direct finetune
+`test_after_fit`: when the field remains absent after authored and user
+decisions, agent tools materialize `true` with source `policy_default` in the
+effective recipe before consultation and preserve it in resolved artifacts.
 
 An empty or `ASK_USER` config decision remains unresolved. For other fields,
 empty values are not materialized, and the field-specific consultation rule

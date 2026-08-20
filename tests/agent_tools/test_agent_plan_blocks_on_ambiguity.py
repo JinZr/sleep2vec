@@ -811,20 +811,25 @@ def test_unlock_final_test_required_for_final_external_script(tmp_path: Path):
     assert not (unlocked_output / "final_external_test.sh").exists()
 
 
-def test_unlock_final_test_with_explicit_ckpt_generates_final_script(tmp_path: Path):
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_unlock_final_test_with_explicit_ckpt_generates_final_script(tmp_path: Path, variant: str):
     ckpt = tmp_path / "best model.ckpt"
     ckpt.write_text("checkpoint")
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt)
+    recipe = _hparam_recipe(tmp_path, variant=variant, ckpt_path=ckpt)
     output_dir = tmp_path / "unlocked"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 0
     script = (output_dir / "final_external_test.sh").read_text()
-    assert "python -m sleep2vec.infer" in script
+    assert f"python -m {variant}.infer" in script
     assert shlex_quote(str(ckpt)) in script
     assert "This script evaluates the configured final test split." in script
     assert "Run commands do not evaluate the external test split." not in script
+    trial_script = Path(_first_run(output_dir)["script"]).read_text()
+    assert f"python -m {variant}.finetune" in trial_script
+    assert "--no-test-after-fit" in trial_script
+    assert "--test-after-fit" not in trial_script
 
 
 def test_unlock_final_test_uses_hparam_user_decision_checkpoint(tmp_path: Path):
@@ -878,6 +883,7 @@ def test_plan_uses_user_decision_test_after_fit_in_command(tmp_path: Path):
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"].pop("test_after_fit")
     write_yaml(recipe, payload)
+    source_bytes = recipe.read_bytes()
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
         {"decisions": {"test_after_fit": {"value": False, "source": "explicit_user"}}},
@@ -888,11 +894,64 @@ def test_plan_uses_user_decision_test_after_fit_in_command(tmp_path: Path):
 
     assert result.returncode == 0
     assert "--no-test-after-fit" in (output_dir / "run.sh").read_text()
+    assert recipe.read_bytes() == source_bytes
+    effective = json.loads((output_dir / "plan.json").read_text())["recipe"]
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    assert effective["evaluation_policy"]["test_after_fit"] is False
+    assert effective["decisions"]["test_after_fit"]["source"] == "explicit_user"
+    assert resolved["evaluation_policy"]["test_after_fit"] is False
+    assert resolved["decisions"]["test_after_fit"]["source"] == "explicit_user"
 
 
-@pytest.mark.parametrize("value", [None, "", "ASK_USER", "false", 0, 1, [], {}])
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_finetune_plan_materializes_test_after_fit_policy_default(tmp_path: Path, variant: str):
+    recipe = write_finetune_recipe(tmp_path, variant=variant)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    payload["evaluation_policy"]["external_test_locked"] = False
+    write_yaml(recipe, payload)
+    source_bytes = recipe.read_bytes()
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    script = (output_dir / "run.sh").read_text()
+    assert f"python -m {variant}.finetune" in script
+    assert "--test-after-fit" in script
+    assert "--no-test-after-fit" not in script
+    assert recipe.read_bytes() == source_bytes
+    source = yaml.safe_load(recipe.read_text())
+    assert "test_after_fit" not in source["evaluation_policy"]
+    assert "test_after_fit" not in source["decisions"]
+    effective = json.loads((output_dir / "plan.json").read_text())["recipe"]
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    for frozen in (effective, resolved):
+        assert frozen["evaluation_policy"]["test_after_fit"] is True
+        assert frozen["decisions"]["test_after_fit"]["value"] is True
+        assert frozen["decisions"]["test_after_fit"]["source"] == "policy_default"
+
+
+def test_finetune_lock_does_not_silently_disable_default_test_after_fit(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "test_after_fit=true would evaluate test while external_test_locked=true" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize("value", [None, "", "ASK_USER", "false", "true", 0, 1, [], {}])
 def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: object):
     recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    write_yaml(recipe, payload)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
         {"decisions": {"test_after_fit": {"value": value, "source": "explicit_user"}}},
@@ -902,8 +961,34 @@ def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: 
     result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
-    assert "test_after_fit must be explicitly true or false" in result.stdout
+    assert "test_after_fit" in result.stdout
+    assert "Traceback" not in result.stderr
     assert not (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize("value", [None, "", "ASK_USER", "true"])
+def test_unresolved_recipe_test_after_fit_does_not_load_test_index(tmp_path: Path, monkeypatch, value: object):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    payload["decisions"]["test_after_fit"] = {"value": value, "source": "explicit_recipe"}
+    write_yaml(recipe, payload)
+    observed_split_values = []
+    real_index_summary = plan_context.index_summary
+
+    def record_split_values(*args, **kwargs):
+        observed_split_values.append(kwargs.get("split_values"))
+        return real_index_summary(*args, **kwargs)
+
+    monkeypatch.setattr(plan_context, "index_summary", record_split_values)
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plan")
+
+    assert report.exit_code == 2
+    assert any(issue.field == "test_after_fit" for issue in report.issues)
+    assert observed_split_values
+    assert all("test" not in splits for splits in observed_split_values if splits is not None)
+    assert not (tmp_path / "plan" / "run.sh").exists()
 
 
 @pytest.mark.parametrize("value", ["true", "false", 0, 1, [], {}])
@@ -2180,11 +2265,53 @@ def test_model_variant_controls_generated_hparam_module(tmp_path: Path, variant:
     assert f"export PYTHONPATH={shlex_quote(str(REPO_ROOT))}" in script
     assert f"python -m {variant}.finetune" in script
     assert "--no-test-after-fit" in script
+    assert "--test-after-fit" not in script
     assert f"--results-csv-path {shlex_quote(str(tmp_path / 'results.csv'))}" in script
 
 
-def test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked(tmp_path: Path):
+@pytest.mark.parametrize(("test_after_fit", "expected_exit"), [(False, 0), (True, 2)])
+def test_hparam_plan_excludes_test_from_trial_split_preflight(
+    tmp_path: Path, monkeypatch, test_after_fit: bool, expected_exit: int
+):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"]["test_after_fit"] = test_after_fit
+    payload["decisions"]["test_after_fit"] = {"value": test_after_fit, "source": "explicit_recipe"}
+    write_yaml(recipe, payload)
+    observed_split_values = []
+    real_index_summary = plan_context.index_summary
+
+    def record_split_values(*args, **kwargs):
+        observed_split_values.append(kwargs.get("split_values"))
+        return real_index_summary(*args, **kwargs)
+
+    monkeypatch.setattr(plan_context, "index_summary", record_split_values)
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plan")
+
+    assert report.exit_code == expected_exit
+    assert observed_split_values
+    assert all("test" not in split_values for split_values in observed_split_values if split_values is not None)
+
+
+def test_hparam_plan_requires_explicit_local_test_after_fit_false(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "test_after_fit" in result.stdout
+    assert "must be explicit in the hparam recipe" in result.stdout
+    assert not (output_dir / "runs").exists()
+    assert not (output_dir / "final_external_test.sh").exists()
+
+
+def test_hparam_plan_rejects_test_after_fit_true_even_when_final_test_is_unlocked(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"].update(
         {
@@ -2206,18 +2333,9 @@ def test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked(tmp_path: Pa
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert result.returncode == 0
-    script = Path(_first_run(output_dir)["script"]).read_text()
-    assert "python -m sleep2vec2.finetune" in script
-    assert "--no-test-after-fit" not in script
-    assert "Run commands evaluate the configured test split after fit." in script
-    assert "Run commands do not evaluate the external test split." not in script
-    assert "Run commands evaluate the configured test split after fit." in (output_dir / "run_all.sh").read_text()
-    assert not (output_dir / "final_external_test.sh").exists()
-    plan = (output_dir / "plan.md").read_text()
-    assert "Run commands evaluate the configured test split" in plan
-    assert "explicit checkpoint path is required" in plan
-    assert "explicit unlock is required" not in plan
+    assert result.returncode == 2
+    assert "require test_after_fit=false until validation checkpoint selection is frozen" in result.stdout
+    assert not (output_dir / "runs").exists()
 
 
 def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_path: Path):
@@ -2226,7 +2344,7 @@ def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_pa
     payload["evaluation_policy"].update(
         {
             "external_test_locked": False,
-            "test_after_fit": True,
+            "test_after_fit": False,
             "final_test_unlocked": True,
             "require_manual_unlock_for_final_test": False,
         }
@@ -2234,7 +2352,7 @@ def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_pa
     payload["decisions"].update(
         {
             "external_test_locked": {"value": False, "source": "explicit_user"},
-            "test_after_fit": {"value": True, "source": "explicit_user"},
+            "test_after_fit": {"value": False, "source": "explicit_user"},
             "final_eval_unlock": {"value": True, "source": "explicit_user"},
         }
     )
@@ -2268,7 +2386,7 @@ def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_c
     payload["evaluation_policy"].update(
         {
             "external_test_locked": False,
-            "test_after_fit": True,
+            "test_after_fit": False,
             "final_test_unlocked": True,
             "require_manual_unlock_for_final_test": False,
         }
@@ -2276,7 +2394,7 @@ def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_c
     payload["decisions"].update(
         {
             "external_test_locked": {"value": False, "source": "explicit_user"},
-            "test_after_fit": {"value": True, "source": "explicit_user"},
+            "test_after_fit": {"value": False, "source": "explicit_user"},
             "final_eval_unlock": {"value": True, "source": "explicit_user"},
             "overwrite_policy": {"value": True, "source": "explicit_user"},
         }
@@ -2295,6 +2413,9 @@ def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_c
     assert result.returncode == 0
     assert not stale_final_script.exists()
     assert not stale_final_config.exists()
+    trial_script = Path(_first_run(output_dir)["script"]).read_text()
+    assert "--no-test-after-fit" in trial_script
+    assert "--test-after-fit" not in trial_script
     plan = (output_dir / "plan.md").read_text()
     assert "explicit checkpoint path is required" in plan
     assert "Final external-test script generated" not in plan

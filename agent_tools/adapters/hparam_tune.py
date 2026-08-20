@@ -158,7 +158,7 @@ class HparamTuneAdapter(TaskAdapter):
         if recipe.get("task") != self.task:
             return None
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        split_values = finetune_loaded_split_values(recipe, test_split_opt_in=True)
+        split_values = finetune_loaded_split_values(recipe, load_test=False)
         if self._effective_preset_path(config_summary) not in (None, ""):
             return [], inputs.get("config"), split_values
         data = (config_summary or {}).get("data") or {}

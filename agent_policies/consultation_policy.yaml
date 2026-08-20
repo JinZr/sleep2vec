@@ -1,3 +1,10 @@
+task_defaults:
+  finetune:
+    test_after_fit:
+      value: true
+      source: policy_default
+      meaning: Run the configured test split after fit unless the recipe or user explicitly opts out.
+
 high_impact_fields:
   - id: task
     required_for_tasks: ["preset_prepare", "finetune", "infer", "evaluate", "hparam_tune", "sleep2stat"]

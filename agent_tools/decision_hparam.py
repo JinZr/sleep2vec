@@ -379,16 +379,24 @@ def hparam_tune_issues(
     )
     if not has_external_lock:
         issues.append(needs_issue("external_test_locked", "external_test_locked must be explicit.", high_impact))
-    test_after_fit = evaluation.get("test_after_fit")
-    final_test_unlocked = evaluation.get("final_test_unlocked")
-    external_test_locked = evaluation.get("external_test_locked")
-    if test_after_fit is True and not (external_test_locked is False and final_test_unlocked is True):
+    test_after_fit = decisions["test_after_fit"].value
+    if type(test_after_fit) is not bool:
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
-                "Run commands would evaluate test data without an explicit test unlock.",
-                "Should test_after_fit be false, or should external_test_locked=false and final_test_unlocked=true?",
+                "test_after_fit must be true or false when provided.",
+                "Should test evaluation run after fit for this task?",
+                {"value": test_after_fit, "evaluation_policy": evaluation},
+            )
+        )
+    elif test_after_fit:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "test_after_fit",
+                "Hyper-parameter trials require test_after_fit=false until validation checkpoint selection is frozen.",
+                "Should test_after_fit be false so final test evaluation remains a separate unlocked step?",
                 {"evaluation_policy": evaluation},
             )
         )

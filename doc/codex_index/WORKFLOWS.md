@@ -203,6 +203,14 @@ Hparam `plan.json` independently records the exact byte digest of
 `recipe.resolved.yaml`; every managed consumer verifies that digest before
 trusting the frozen recipe.
 
+Direct finetune plans materialize an omitted `test_after_fit` as the documented
+`true` policy default and freeze the resolved choice plus an explicit
+`--test-after-fit` or `--no-test-after-fit` argument. Hyperparameter candidate
+trials instead require explicit `test_after_fit=false`, exclude test from
+preflight, and render `--no-test-after-fit`. Selection and checkpoint freezing
+use validation evidence before the separately unlocked final external
+evaluation reads test metrics.
+
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do
 not require this unlock. See

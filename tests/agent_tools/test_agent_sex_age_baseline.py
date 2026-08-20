@@ -494,6 +494,8 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     assert len(scripts) == 1
     script = scripts[0].read_text()
     assert "python -m sex_age_baseline.finetune" in script
+    assert "--no-test-after-fit" in script
+    assert "--test-after-fit" not in script
     assert "--wandb-mode" not in script
 
 
