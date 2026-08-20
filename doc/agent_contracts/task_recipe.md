@@ -207,7 +207,9 @@ Submission commits `submitting` before `sbatch`; a timeout or SSH disconnect is
 reconciled by the exact token and is never retried blindly. Monitoring uses
 `squeue`/`scontrol` for live state and the atomic terminal sidecar for terminal
 truth; disappearance without that sidecar is `unknown_scheduler`. Stop uses
-the frozen scheduler job id with `scancel`, not PID evidence.
+the frozen scheduler job id with `scancel`, not PID evidence. A cancellation
+signal received while the allocation wrapper is still validating frozen
+identity terminates the job without starting the leaf process.
 
 Frozen per-run execution identity and its canonical owner are defined in
 [run_manifest.md](run_manifest.md).

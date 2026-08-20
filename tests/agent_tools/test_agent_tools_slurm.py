@@ -450,3 +450,63 @@ def test_run_frozen_job_rejects_allocation_interpreter_drift_before_spawn(
     assert not allocation_path.exists()
     assert json.loads(result_path.read_text())["exit_code"] == 2
     assert field in log_path.read_text()
+
+
+@pytest.mark.parametrize("signum", [slurm.signal.SIGTERM, slurm.signal.SIGINT])
+def test_run_frozen_job_does_not_spawn_after_signal_during_verification(tmp_path: Path, monkeypatch, signum: int):
+    config = tmp_path / "config.yaml"
+    config.write_text("task: unit\n")
+    script = tmp_path / "launch.sh"
+    script.write_text("#!/usr/bin/env bash\ntrue\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    snapshot = {
+        "python": "/opt/python",
+        "python_version": "3.10.0",
+        "runtime_commit": "c" * 40,
+        "runtime_repo_root": str(tmp_path),
+        "module": "sleep2vec.finetune",
+        "module_origin": str(tmp_path / "sleep2vec" / "finetune.py"),
+    }
+    snapshot_path = tmp_path / "execution_snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot))
+    handlers = {}
+
+    def capture_signal(current_signum, handler):
+        previous = handlers.get(current_signum, slurm.signal.SIG_DFL)
+        handlers[current_signum] = handler
+        return previous
+
+    monkeypatch.setattr(slurm.signal, "signal", capture_signal)
+    from agent_tools import managed_scheduler
+
+    def inspect(*_args, **_kwargs):
+        handlers[signum](signum, None)
+        return snapshot
+
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
+    spawned = []
+    monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs)))
+    result_path = tmp_path / "slurm_terminal.json"
+
+    exit_code = slurm.run_frozen_job(
+        run_id="run-000",
+        command="/opt/python -m sleep2vec.finetune --config config.yaml",
+        script=str(script),
+        script_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
+        config=str(config),
+        config_sha256=hashlib.sha256(config.read_bytes()).hexdigest(),
+        result_path=str(result_path),
+        allocation_identity_path=str(tmp_path / "allocation_identity.json"),
+        execution_snapshot_path=str(snapshot_path),
+        log_path=str(tmp_path / "slurm.log"),
+        submit_token="agent-tools-unit",
+        workdir=str(tmp_path),
+        python="/opt/python",
+        runtime_commit="c" * 40,
+        module="sleep2vec.finetune",
+    )
+
+    assert spawned == []
+    assert exit_code == 128 + signum
+    assert json.loads(result_path.read_text())["exit_code"] == 128 + signum

@@ -249,31 +249,34 @@ def run_frozen_job(
                 ]
                 if changed:
                     raise ValueError("Frozen Slurm execution identity changed in allocation: " + ", ".join(changed))
-                _atomic_create_json(
-                    allocation_identity_path,
-                    {
-                        "schema_version": 1,
-                        "scheduler_job_id": job_id,
-                        "scheduler_cluster": cluster,
-                        "scheduler_submit_token": submit_token,
-                        "node": node,
-                        "started_at": started_at,
-                        "execution_snapshot": snapshot,
-                    },
-                )
-                child = subprocess.Popen(
-                    [script],
-                    cwd=workdir,
-                    env=os.environ.copy(),
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=False,
-                )
-                exit_code = child.wait()
-                if exit_code < 0:
-                    exit_code = 128 + abs(exit_code)
-                if received_signal and exit_code == 0:
+                if received_signal:
                     exit_code = 128 + received_signal
+                else:
+                    _atomic_create_json(
+                        allocation_identity_path,
+                        {
+                            "schema_version": 1,
+                            "scheduler_job_id": job_id,
+                            "scheduler_cluster": cluster,
+                            "scheduler_submit_token": submit_token,
+                            "node": node,
+                            "started_at": started_at,
+                            "execution_snapshot": snapshot,
+                        },
+                    )
+                    child = subprocess.Popen(
+                        [script],
+                        cwd=workdir,
+                        env=os.environ.copy(),
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=False,
+                    )
+                    exit_code = child.wait()
+                    if exit_code < 0:
+                        exit_code = 128 + abs(exit_code)
+                    if received_signal and exit_code == 0:
+                        exit_code = 128 + received_signal
             except BaseException:
                 traceback.print_exc(file=log)
                 if received_signal:
