@@ -168,7 +168,9 @@ The optional `execution` block configures the managed launcher.
   the allocation GPU count plus logical `runtime.devices=[0, ..., N-1]`.
   Slurm recipes reject `gpu_pool`, `max_concurrent`, `conda_env`, locally
   authored `runtime.devices`, unknown scheduler fields, and arbitrary sbatch
-  arguments.
+  arguments. They also reject `SLURM_*` and `CUDA_VISIBLE_DEVICES` entries in
+  `execution.env` because allocation identity and GPU isolation belong to the
+  scheduler.
 - Slurm plans warn that priority remains cluster-managed. `doctor` may inspect
   version, priority, backfill, accounting, partition, and reservation
   capabilities through read-only `scontrol` queries. Advice never changes the

@@ -748,6 +748,20 @@ def _hparam_execution_issues(
                         {"value": value},
                     )
                 )
+            if (
+                isinstance(env_name, str)
+                and scheduler_type == "slurm"
+                and (env_name.startswith("SLURM_") or env_name == "CUDA_VISIBLE_DEVICES")
+            ):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        f"{env_name} is owned by Slurm and cannot be overridden in execution.env.",
+                        None,
+                        {env_name: value},
+                    )
+                )
         for env_name, field in {
             "PYTHONPATH": "execution.workdir",
             "WANDB_PROJECT": "execution.wandb_project",

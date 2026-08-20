@@ -4115,6 +4115,49 @@ def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_na
     assert f"execution.env.{env_name}" in result.stdout
 
 
+@pytest.mark.parametrize(
+    "env_name", ["SLURM_JOB_ID", "SLURM_CLUSTER_NAME", "SLURM_ARRAY_TASK_ID", "CUDA_VISIBLE_DEVICES"]
+)
+def test_slurm_hparam_rejects_scheduler_owned_environment_before_plan_write(tmp_path: Path, env_name: str):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update(
+        {
+            "gpus_per_run": 1,
+            "env": {env_name: "unit"},
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+            },
+        }
+    )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    for result in (doctor, planned):
+        assert result.returncode == 1
+        assert f"execution.env.{env_name}" in result.stdout
+        assert "owned by Slurm" in result.stdout
+    assert not (plan_dir / "plan.json").exists()
+    assert not (plan_dir / "recipe.resolved.yaml").exists()
+    assert not (plan_dir / "run_all.sh").exists()
+
+
+def test_direct_hparam_allows_slurm_named_environment_variable():
+    issues = decision_hparam._hparam_execution_issues(
+        {"scheduler": {"type": "direct"}, "env": {"SLURM_JOB_ID": "outer-allocation"}},
+        {},
+    )
+
+    assert not [issue for issue in issues if issue.field == "execution.env.SLURM_JOB_ID"]
+
+
 def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
         tmp_path,
