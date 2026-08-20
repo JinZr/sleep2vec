@@ -2910,7 +2910,7 @@ def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspa
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-@pytest.mark.parametrize("gpus_per_run", [0, False, 0.5, 1.5, "0.5", "1.5"])
+@pytest.mark.parametrize("gpus_per_run", [0, False, 0.5, 1.0, 1.5, "0.5", "1", "1.5"])
 def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     issues = decision_hparam._hparam_execution_issues(
         {"gpu_pool": [0, 1], "gpus_per_run": gpus_per_run},
@@ -2921,6 +2921,36 @@ def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     assert issues[0].field == "execution.gpus_per_run"
     assert issues[0].status.value == "FAIL"
     assert "must be a positive integer" in issues[0].message
+
+
+@pytest.mark.parametrize("gpus_per_run", [1.0, "1"])
+def test_slurm_hparam_rejects_coerced_gpu_count_before_plan_write(tmp_path: Path, gpus_per_run):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update(
+        {
+            "gpus_per_run": gpus_per_run,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+            },
+        }
+    )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    for result in (doctor, planned):
+        assert result.returncode == 1
+        assert "execution.gpus_per_run must be a positive integer" in result.stdout
+    assert not (plan_dir / "plan.json").exists()
+    assert not (plan_dir / "recipe.resolved.yaml").exists()
+    assert not (plan_dir / "run_all.sh").exists()
 
 
 @pytest.mark.parametrize("max_concurrent", [True, 1.0, 1.5, "1", 0])

@@ -164,8 +164,9 @@ The optional `execution` block configures the managed launcher.
 - `execution.scheduler.type: slurm` keeps `target` as local/SSH control
   transport and submits every frozen run as its own allocation. It requires
   `partition`, `cpus_per_task`, `memory`, and `walltime`; optional scheduler
-  fields are `nice` and `nodelist`. `gpus_per_run` defaults to one and becomes
-  the allocation GPU count plus logical `runtime.devices=[0, ..., N-1]`.
+  fields are `nice` and `nodelist`. `gpus_per_run` is a positive YAML integer,
+  defaults to one, and becomes the allocation GPU count plus logical
+  `runtime.devices=[0, ..., N-1]`.
   Slurm recipes reject `gpu_pool`, `max_concurrent`, `conda_env`, locally
   authored `runtime.devices`, unknown scheduler fields, and arbitrary sbatch
   arguments. They also reject `SLURM_*` and `CUDA_VISIBLE_DEVICES` entries in

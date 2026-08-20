@@ -641,18 +641,8 @@ def _hparam_execution_issues(
         )
     gpus_per_run = None
     if "gpus_per_run" in execution:
-        try:
-            raw_gpus_per_run = execution["gpus_per_run"]
-            gpus_per_run = int(raw_gpus_per_run)
-            if (
-                isinstance(raw_gpus_per_run, bool)
-                or gpus_per_run <= 0
-                or isinstance(raw_gpus_per_run, float)
-                and not raw_gpus_per_run.is_integer()
-            ):
-                raise ValueError
-        except (TypeError, ValueError):
-            gpus_per_run = None
+        raw_gpus_per_run = execution["gpus_per_run"]
+        if type(raw_gpus_per_run) is not int or raw_gpus_per_run <= 0:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
@@ -662,6 +652,8 @@ def _hparam_execution_issues(
                     {"gpus_per_run": execution.get("gpus_per_run")},
                 )
             )
+        else:
+            gpus_per_run = raw_gpus_per_run
     if scheduler_type == "slurm" and isinstance(scheduler, dict) and not (set(scheduler) - _HPARAM_SCHEDULER_FIELDS):
         try:
             slurm.normalize_resources(scheduler, gpus_per_run if gpus_per_run is not None else 1)
