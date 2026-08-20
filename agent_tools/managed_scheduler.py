@@ -1234,6 +1234,7 @@ def observe_slurm_run(
                 "scheduler_node": terminal.get("node", ""),
                 "scheduler_exit_code": exit_code,
                 "scheduler_started_at": terminal.get("started_at", ""),
+                "launched_at": row.get("launched_at") or utc_now(),
                 "status": "completed" if exit_code == 0 else "failed",
             }
         )
@@ -1246,6 +1247,7 @@ def observe_slurm_run(
             job_id = allocation_identity.job_id
             observation["scheduler_job_id"] = job_id
             observation["scheduler_cluster"] = allocation_identity.cluster
+            observation["launched_at"] = row.get("launched_at") or utc_now()
         observation["scheduler_node"] = allocation.get("node", "")
         observation["scheduler_started_at"] = allocation.get("started_at", "")
     health_error = ""
@@ -1260,6 +1262,7 @@ def observe_slurm_run(
             active = matches[0]
             job_id = active.job_id
             observation["scheduler_job_id"] = job_id
+            observation["launched_at"] = row.get("launched_at") or utc_now()
         else:
             matches = slurm.active_jobs(execution, job_id=job_id)
             active = matches[0] if matches else None

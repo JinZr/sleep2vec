@@ -884,6 +884,71 @@ def test_slurm_submission_timeout_never_resubmits_unresolved_run(tmp_path: Path,
     assert canonical.get("scheduler_job_id", "") == ""
 
 
+@pytest.mark.parametrize("binding_source", ["queue", "allocation", "terminal"])
+@pytest.mark.parametrize("launched_at", ["", "2026-01-01T00:00:00Z"])
+def test_slurm_late_job_binding_records_launch_time_without_overwriting_existing(
+    tmp_path: Path, monkeypatch, binding_source: str, launched_at: str
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    row = {
+        **run,
+        "status": "submitting",
+        "target": "local",
+        "scheduler_job_id": "",
+        "launched_at": launched_at,
+    }
+    token = run["scheduler_submit_token"]
+    if binding_source == "allocation":
+        Path(run["allocation_identity_path"]).write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scheduler_job_id": "3880",
+                    "scheduler_cluster": "wuji-h20",
+                    "scheduler_submit_token": token,
+                    "node": "h20-bj-96",
+                    "started_at": "2026-08-21T00:00:00Z",
+                }
+            )
+        )
+    elif binding_source == "terminal":
+        Path(run["scheduler_result_path"]).write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scheduler_job_id": "3880",
+                    "scheduler_cluster": "wuji-h20",
+                    "scheduler_submit_token": token,
+                    "node": "h20-bj-96",
+                    "started_at": "2026-08-21T00:00:00Z",
+                    "ended_at": "2026-08-21T00:01:00Z",
+                    "exit_code": 0,
+                }
+            )
+        )
+
+    def active_jobs(_execution, *, job_id=None, submit_token=None, timeout=10):
+        if binding_source == "terminal":
+            pytest.fail("Terminal sidecar binding must not query Slurm")
+        if binding_source == "queue":
+            assert job_id is None
+            assert submit_token == token
+        else:
+            assert job_id == "3880"
+            assert submit_token is None
+        return [slurm.JobObservation("3880", "RUNNING", "", "h20-bj-96", token)]
+
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", active_jobs)
+    monkeypatch.setattr(managed_scheduler, "utc_now", lambda: "2026-08-21T00:02:00Z")
+
+    observed = managed_scheduler.observe_slurm_run(plan_dir, {"target": "local"}, row)
+
+    assert observed["status"] == ("completed" if binding_source == "terminal" else "running")
+    assert observed["scheduler_job_id"] == "3880"
+    assert observed["launched_at"] == (launched_at or "2026-08-21T00:02:00Z")
+
+
 def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
