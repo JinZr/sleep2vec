@@ -67,7 +67,7 @@ _RUNTIME_FIELDS = {
     "batch_size",
     "seed",
 }
-_EXECUTION_FIELDS = {"gpu_pool", "gpus_per_run", "max_concurrent", "max_attempts"}
+_EXECUTION_FIELDS = {"gpu_pool", "gpus_per_run", "max_concurrent", "max_attempts", "scheduler"}
 _EVALUATION_FIELDS = {"external_test_locked", "final_test_unlocked"}
 _CHECKPOINT_POLICY_FIELDS = {
     "avg_ckpts",
@@ -232,6 +232,11 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
 
     execution = _mapping(spec, "execution")
     _reject_unknown_fields(execution, _EXECUTION_FIELDS, "execution")
+    if "scheduler" in execution:
+        scheduler = _mapping(execution, "scheduler")
+        _reject_unknown_fields(scheduler, {"type"}, "execution.scheduler")
+        if scheduler.get("type") != "direct":
+            raise ValueError("Schema v1 external evaluation supports only execution.scheduler.type=direct.")
     gpu_pool = execution.get("gpu_pool")
     if (
         not isinstance(gpu_pool, list)
