@@ -24,6 +24,7 @@ from .experiment_workspace import (
     read_run_manifest,
     resolve_external_run_row,
     resolve_run_row,
+    scheduler_type,
     validate_checkpoint_ownership,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -311,46 +312,71 @@ def monitor_run_row(
     remote: str | None = None,
 ) -> dict[str, Any]:
     previous = resolve_run_row(previous_rows, row) or {}
-    has_managed_script = any(source.get("script") not in (None, "") for source in (row, previous))
-    has_process_identity = any(source.get("pid_path") not in (None, "") for source in (row, previous))
-    has_execution_evidence = any(
-        source.get(field) not in (None, "") for source in (row, previous) for field in ("pid_path", "state")
-    )
-    # Hparam scripts expose process identity for monitor-owned exit inference; lifecycle scripts self-commit.
-    legacy_script_owner = has_managed_script and not has_process_identity
-    owner_row = previous if previous.get("terminal_status_owner") not in (None, "") else row
-    script_commits_terminal_status = managed_scheduler.script_commits_terminal_status(
-        owner_row,
-        default=legacy_script_owner,
-    )
-    if (previous.get("status") or row.get("status")) == "running" and has_managed_script and not has_execution_evidence:
-        return {
-            "step_id": row["step_id"],
-            "run_id": row["run_id"],
-            "status": "running",
-            "health_status": "running",
-            "monitored_at": utc_now(),
-        }
     observation_row = dict(row)
     transport_override = bool(remote and not observation_row.get("host"))
     if transport_override:
         observation_row["target"] = "ssh"
         observation_row["host"] = remote
-    status = evidence.status_row(
-        root,
-        observation_row,
-        previous,
-        script_commits_terminal_status=script_commits_terminal_status,
-        health=True,
-    )
+    scheduler_row = previous if previous.get("scheduler_type") not in (None, "") else row
+    if scheduler_type(scheduler_row) == "slurm":
+        has_execution_identity = any(source.get("target") not in (None, "") for source in (row, previous))
+        if has_execution_identity:
+            execution = {"target": observation_row.get("target") or "local"}
+            if execution["target"] == "ssh":
+                execution["host"] = observation_row.get("host")
+            status = managed_scheduler.observe_slurm_run(root, execution, observation_row, health=True)
+        else:
+            status = observation_row
+    else:
+        has_managed_script = any(source.get("script") not in (None, "") for source in (row, previous))
+        has_process_identity = any(source.get("pid_path") not in (None, "") for source in (row, previous))
+        has_execution_evidence = any(
+            source.get(field) not in (None, "") for source in (row, previous) for field in ("pid_path", "state")
+        )
+        # Hparam scripts expose process identity for monitor-owned exit inference; lifecycle scripts self-commit.
+        legacy_script_owner = has_managed_script and not has_process_identity
+        owner_row = previous if previous.get("terminal_status_owner") not in (None, "") else row
+        script_commits_terminal_status = managed_scheduler.script_commits_terminal_status(
+            owner_row,
+            default=legacy_script_owner,
+        )
+        if (
+            (previous.get("status") or row.get("status")) == "running"
+            and has_managed_script
+            and not has_execution_evidence
+        ):
+            status = {
+                "step_id": row["step_id"],
+                "run_id": row["run_id"],
+                "status": "running",
+                "health_status": "running",
+                "monitored_at": utc_now(),
+            }
+        else:
+            status = evidence.status_row(
+                root,
+                observation_row,
+                previous,
+                script_commits_terminal_status=script_commits_terminal_status,
+                health=True,
+            )
     if status.get("status") == "finished":
         status["status"] = "completed"
     if status.get("health_status") == "finished":
         status["health_status"] = "completed"
+    observation_fields = evidence.RUN_STATUS_FIELDS | {
+        "scheduler_job_id",
+        "scheduler_cluster",
+        "scheduler_raw_state",
+        "scheduler_reason",
+        "scheduler_node",
+        "scheduler_exit_code",
+        "scheduler_observed_at",
+    }
     observation = {
         "step_id": row["step_id"],
         "run_id": row["run_id"],
-        **{field: status[field] for field in evidence.RUN_STATUS_FIELDS if field in status},
+        **{field: status[field] for field in observation_fields if field in status},
     }
     if transport_override:
         observation.pop("target", None)
