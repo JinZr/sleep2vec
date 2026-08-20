@@ -11,7 +11,6 @@ import shlex
 import signal
 import socket
 import subprocess
-import sys
 import tempfile
 import traceback
 from typing import Any
