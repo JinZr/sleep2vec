@@ -115,6 +115,20 @@ def test_successful_source_accepts_no_test_after_fit_manifest(tmp_path: Path, mo
     assert states[0]["failed_runs"] == []
 
 
+@pytest.mark.parametrize("status", ["submitting", "unknown_scheduler"])
+def test_slurm_source_uncertainty_blocks_external_pipeline(tmp_path: Path, monkeypatch, status: str):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    run = {"step_id": "train-age", "run_id": "run-000"}
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {"runs": [run]})
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [{**run, "status": status}])
+
+    states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
+
+    assert states[0]["uncertain_runs"] == ["run-000"]
+    assert experiment_pipeline._source_summary_status(states) == "blocked"
+
+
 def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "external-v1"

@@ -586,6 +586,8 @@ def test_managed_run_parameters_reject_legacy_prefix():
         ("running", {"status": "planned"}, "running"),
         ("running", {"status": "pending"}, "running"),
         ("unknown_remote", {"status": "planned"}, "unknown_remote"),
+        ("unknown_scheduler", {"status": "planned"}, "unknown_scheduler"),
+        ("unknown_scheduler", {"status": "pending"}, "unknown_scheduler"),
         ("missing_pid", {"status": "pending"}, "missing_pid"),
         ("running", {"status": "failed"}, "failed"),
         ("planned", {"status": "superseded"}, "superseded"),

@@ -1058,6 +1058,7 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
         "launched",
         "running",
         "unknown_remote",
+        "unknown_scheduler",
         "missing_pid",
     } and incoming_status in {
         "planned",
