@@ -1233,6 +1233,7 @@ def observe_slurm_run(
                 "scheduler_reason": "",
                 "scheduler_node": terminal.get("node", ""),
                 "scheduler_exit_code": exit_code,
+                "scheduler_started_at": terminal.get("started_at", ""),
                 "status": "completed" if exit_code == 0 else "failed",
             }
         )
@@ -1246,6 +1247,7 @@ def observe_slurm_run(
             observation["scheduler_job_id"] = job_id
             observation["scheduler_cluster"] = allocation_identity.cluster
         observation["scheduler_node"] = allocation.get("node", "")
+        observation["scheduler_started_at"] = allocation.get("started_at", "")
     try:
         if not job_id:
             matches = slurm.active_jobs(execution, submit_token=token)

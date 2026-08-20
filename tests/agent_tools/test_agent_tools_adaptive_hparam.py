@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -43,6 +44,107 @@ def _read_table(path: Path) -> list[dict[str, str]]:
     delimiter = "\t" if path.suffix == ".tsv" else ","
     with path.open(newline="") as file_obj:
         return list(csv.DictReader(file_obj, delimiter=delimiter))
+
+
+def test_adaptive_accepted_starts_are_backend_aware():
+    rows = [
+        {"step_id": "direct", "run_id": "run-000", "status": "launched"},
+        {
+            "step_id": "slurm",
+            "run_id": "run-001",
+            "status": "queued",
+            "scheduler_type": "slurm",
+            "scheduler_job_id": "3880",
+        },
+        {
+            "step_id": "slurm",
+            "run_id": "run-002",
+            "status": "submitting",
+            "scheduler_type": "slurm",
+        },
+        {
+            "step_id": "slurm",
+            "run_id": "run-003",
+            "status": "unknown_scheduler",
+            "scheduler_type": "slurm",
+            "scheduler_job_id": "3881",
+        },
+    ]
+
+    assert adaptive_hparam._accepted_start_keys(rows) == {("direct", "run-000"), ("slurm", "run-001")}
+
+
+@pytest.mark.parametrize(("observed_status", "expected_unresolved"), [("queued", False), ("submitting", True)])
+def test_adaptive_interrupted_slurm_launch_reconciles_by_scheduler_identity(
+    tmp_path: Path, monkeypatch, observed_status: str, expected_unresolved: bool
+):
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "submitting",
+        "scheduler_type": "slurm",
+        "scheduler_submit_token": "unit-token",
+        "target": "local",
+    }
+    observed = {
+        **row,
+        "status": observed_status,
+        **({"scheduler_job_id": "3880"} if observed_status == "queued" else {}),
+    }
+    merged = []
+    monkeypatch.setattr(
+        adaptive_hparam.artifacts,
+        "read_hparam_plan",
+        lambda _plan_dir: {"recipe": {"execution": {"target": "local"}}},
+    )
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [row])
+    monkeypatch.setattr(
+        adaptive_hparam.managed_scheduler,
+        "observe_slurm_run",
+        lambda owner_dir, execution, current: observed,
+    )
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "merge_run_manifest",
+        lambda _workspace, updates: merged.extend(updates) or updates,
+    )
+    monkeypatch.setattr(
+        adaptive_hparam.evidence,
+        "read_process_identity",
+        lambda *_args, **_kwargs: pytest.fail("Slurm recovery must not read PID identity"),
+    )
+
+    rows, unresolved, reconciled = adaptive_hparam._reconcile_interrupted_launch(
+        tmp_path, tmp_path / "round", {("train-model", "run-000")}
+    )
+
+    assert unresolved == ({("train-model", "run-000")} if expected_unresolved else set())
+    assert reconciled == (set() if expected_unresolved else {("train-model", "run-000")})
+    assert merged == ([] if expected_unresolved else [observed])
+    assert rows == (merged if merged else [row])
+
+
+def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():
+    old = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    replacement = {"grace_minutes": 1}
+
+    assert (
+        adaptive_hparam._grace_satisfied(
+            {
+                "scheduler_type": "slurm",
+                "launched_at": old,
+                "scheduler_started_at": recent,
+            },
+            {},
+            replacement,
+        )
+        is False
+    )
+    assert adaptive_hparam._grace_satisfied(
+        {"scheduler_type": "slurm", "launched_at": recent, "scheduler_started_at": old}, {}, replacement
+    )
+    assert adaptive_hparam._grace_satisfied({"scheduler_type": "slurm", "launched_at": old}, {}, replacement) is False
 
 
 def _adaptive_recipe(

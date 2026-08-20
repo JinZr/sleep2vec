@@ -173,11 +173,14 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
 
     launched_events = launched_event_keys()
     for key in sorted(started_keys - launched_events):
+        event = {"step_id": key[0], "run_id": key[1], "gpus": canonical_by_key[key].get("gpus", "")}
+        if scheduler_type(canonical_by_key[key]) == "slurm":
+            event["scheduler_job_id"] = canonical_by_key[key]["scheduler_job_id"]
         try:
             append_event(
                 workspace,
                 "run_launched",
-                {"step_id": key[0], "run_id": key[1], "gpus": canonical_by_key[key].get("gpus", "")},
+                event,
             )
         except Exception:
             if key not in launched_event_keys():
