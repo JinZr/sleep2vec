@@ -174,7 +174,7 @@ def render_batch_script(
             "",
             "set -euo pipefail",
             f"cd {transport.sh(workdir)}",
-            f"export PYTHONPATH={transport.sh(workdir)}${{PYTHONPATH:+:$PYTHONPATH}}",
+            f"export PYTHONPATH={transport.sh(workdir)}",
             *env_lines,
             "",
             f"exec {' '.join(transport.sh(part) for part in worker)}",

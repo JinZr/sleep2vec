@@ -384,6 +384,8 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path):
     assert "agent_tools.slurm run-frozen-job" in script
     assert f"--execution-snapshot-path {tmp_path / 'execution_snapshot.json'}" in script
     assert f"--log-path {log_path}" in script
+    assert "export PYTHONPATH=/shared/repo" in script
+    assert "${PYTHONPATH" not in script
     assert "hparam-run-queue" not in script
     assert "CUDA_VISIBLE_DEVICES" not in script
     assert "start_new_session" not in script
