@@ -206,8 +206,9 @@ Each Slurm run additionally freezes `job.sbatch`, its hash, a deterministic
 submit token, log path, allocation-identity path, and terminal-sidecar path.
 Submission commits `submitting` before `sbatch`; a timeout or SSH disconnect is
 reconciled by the exact token and is never retried blindly. Monitoring uses
-`squeue`/`scontrol` for live state and the atomic terminal sidecar for terminal
-truth; disappearance without that sidecar is `unknown_scheduler`. Stop uses
+`squeue`/`scontrol` for live state and requires both a terminal scheduler
+observation and the matching atomic terminal sidecar for terminal truth;
+incomplete terminal evidence is `unknown_scheduler`. Stop uses
 the frozen scheduler job id with `scancel`, not PID evidence. A cancellation
 signal received while the allocation wrapper is still validating frozen
 identity terminates the job without starting the leaf process.

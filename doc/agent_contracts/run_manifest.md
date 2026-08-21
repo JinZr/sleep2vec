@@ -139,11 +139,13 @@ submission.
 Live state comes from `squeue` and `scontrol`. The compute wrapper revalidates
 the runtime commit, module origin, CLI, and frozen launch/config hashes, runs the
 leaf script in the allocation foreground, and atomically writes allocation and
-terminal JSON sidecars bound to the same token and job id. Because accounting
-may be disabled, a vanished job without the terminal sidecar becomes active
-`unknown_scheduler` rather than inferred success or failure. `hparam-stop`
-calls `scancel` on the bound job id and commits `stopped` only after the cancel
-request succeeds.
+terminal JSON sidecars bound to the same token and job id. A canonical terminal
+status requires both the matching terminal sidecar and a terminal scheduler
+observation; a scheduler failure overrides a zero wrapper exit code. Because
+accounting may be disabled, a vanished job or an incomplete terminal evidence
+pair becomes active `unknown_scheduler` rather than inferred success or
+failure. `hparam-stop` calls `scancel` on the bound job id and commits `stopped`
+only after the cancel request succeeds.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
 identity, it records `process_identity_error` with the canonical status update.

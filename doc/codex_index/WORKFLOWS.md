@@ -232,10 +232,11 @@ append-only narrative record and is never a status source. Direct managed
 launches use a dedicated process group with PID, group, and OS start-token
 evidence. Slurm managed launches freeze one sbatch leaf job and submit token per
 run, bind one numeric scheduler job id, observe live state through
-`squeue`/`scontrol`, and require the compute wrapper's terminal sidecar for
-terminal truth. Uncertain direct or scheduler identity never authorizes
-relaunch or retry. Stop signals the direct process group or calls `scancel`
-before committing `stopped`. Optional health labels remain observational:
+`squeue`/`scontrol`, and require both a terminal scheduler observation and the
+compute wrapper's matching terminal sidecar for terminal truth. Uncertain direct
+or scheduler identity never authorizes relaunch or retry. Stop signals the direct
+process group or calls `scancel` before committing `stopped`. Optional health
+labels remain observational:
 DDP child GPU activity follows the managed process group, and unavailable
 required probes or first-baseline observations report `health_unknown` rather
 than `possibly_stalled`.

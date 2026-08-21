@@ -1168,20 +1168,7 @@ def _reconcile_slurm_submission(
 ) -> tuple[dict[str, Any], RuntimeError | None]:
     terminal = _read_slurm_json(owner_dir, execution, row["scheduler_result_path"])
     if terminal:
-        identity = slurm.sidecar_identity(terminal, row["scheduler_submit_token"])
-        exit_code = slurm.terminal_exit_code(terminal)
-        return (
-            {
-                **_submitted_slurm_row(
-                    row,
-                    identity,
-                    raw_state="SIDECAR",
-                    status="completed" if exit_code == 0 else "failed",
-                ),
-                "scheduler_exit_code": exit_code,
-            },
-            None,
-        )
+        return observe_slurm_run(owner_dir, execution, row), None
     try:
         matches = slurm.active_jobs(execution, submit_token=row["scheduler_submit_token"])
     except Exception as reconcile_error:
@@ -1223,35 +1210,38 @@ def observe_slurm_run(
     cluster = str(row.get("scheduler_cluster") or "")
     terminal = _read_slurm_json(owner, execution, row["scheduler_result_path"])
     observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
+    terminal_exit_code: int | None = None
     if terminal:
         identity = slurm.sidecar_identity(terminal, token, expected_job_id=job_id or None)
-        exit_code = slurm.terminal_exit_code(terminal)
+        if cluster and identity.cluster and identity.cluster != cluster:
+            raise ValueError("Slurm terminal sidecar cluster differs from the canonical run.")
+        job_id = identity.job_id
+        cluster = identity.cluster or cluster
+        terminal_exit_code = slurm.terminal_exit_code(terminal)
         observation.update(
             {
-                "scheduler_job_id": identity.job_id,
-                "scheduler_cluster": identity.cluster or row.get("scheduler_cluster", ""),
-                "scheduler_raw_state": "SIDECAR",
-                "scheduler_reason": "",
+                "scheduler_job_id": job_id,
+                "scheduler_cluster": cluster,
                 "scheduler_node": terminal.get("node", ""),
-                "scheduler_exit_code": exit_code,
+                "scheduler_exit_code": terminal_exit_code,
                 "scheduler_started_at": terminal.get("started_at", ""),
                 "launched_at": row.get("launched_at") or utc_now(),
-                "status": "completed" if exit_code == 0 else "failed",
             }
         )
-        return _slurm_artifact_observation(observation, health=health)
-
-    allocation = _read_slurm_json(owner, execution, row["allocation_identity_path"])
-    if allocation:
-        allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
-        if not job_id:
-            job_id = allocation_identity.job_id
-            observation["scheduler_job_id"] = job_id
-            observation["scheduler_cluster"] = allocation_identity.cluster
-            cluster = allocation_identity.cluster
-            observation["launched_at"] = row.get("launched_at") or utc_now()
-        observation["scheduler_node"] = allocation.get("node", "")
-        observation["scheduler_started_at"] = allocation.get("started_at", "")
+    else:
+        allocation = _read_slurm_json(owner, execution, row["allocation_identity_path"])
+        if allocation:
+            allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
+            if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
+                raise ValueError("Slurm allocation sidecar cluster differs from the canonical run.")
+            cluster = allocation_identity.cluster or cluster
+            if not job_id:
+                job_id = allocation_identity.job_id
+                observation["scheduler_job_id"] = job_id
+                observation["launched_at"] = row.get("launched_at") or utc_now()
+            observation["scheduler_cluster"] = cluster
+            observation["scheduler_node"] = allocation.get("node", "")
+            observation["scheduler_started_at"] = allocation.get("started_at", "")
     health_error = ""
     try:
         if not job_id:
@@ -1275,7 +1265,11 @@ def observe_slurm_run(
                 {
                     "status": "unknown_scheduler",
                     "scheduler_raw_state": "MISSING",
-                    "scheduler_reason": "Slurm job disappeared without a terminal sidecar.",
+                    "scheduler_reason": (
+                        "Slurm job disappeared before terminal scheduler state was observed."
+                        if terminal
+                        else "Slurm job disappeared without a terminal sidecar."
+                    ),
                 }
             )
             return _slurm_artifact_observation(observation, health=health)
@@ -1291,12 +1285,27 @@ def observe_slurm_run(
         if active.comment != token:
             raise ValueError("Observed Slurm job comment differs from the frozen submit token.")
         category = slurm.state_category(active.state)
+        reason = active.reason
+        if terminal_exit_code is not None:
+            if category == "completed":
+                status = "completed" if terminal_exit_code == 0 else "failed"
+            elif category in {"failed", "cancelled"}:
+                status = "failed"
+            elif category in {"queued", "running"}:
+                status = category
+            else:
+                status = "unknown_scheduler"
+                reason = reason or "Slurm terminal sidecar is present but scheduler state is not recognized."
+        else:
+            status = category if category in {"queued", "running"} else "unknown_scheduler"
+            if category in {"completed", "failed", "cancelled"}:
+                reason = reason or "Terminal scheduler state is missing the matching terminal sidecar."
         observation.update(
             {
                 "scheduler_raw_state": active.state,
-                "scheduler_reason": active.reason,
+                "scheduler_reason": reason,
                 "scheduler_node": active.node_list or observation.get("scheduler_node", ""),
-                "status": category if category in {"queued", "running"} else "unknown_scheduler",
+                "status": status,
                 **{f"scheduler_{field}": value for field, value in active.details.items()},
             }
         )
