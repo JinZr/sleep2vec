@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 
 import pytest
@@ -510,7 +511,8 @@ def test_normalize_resources_rejects_unsafe_values(field: str, value, message: s
         slurm.normalize_resources(scheduler, 1)
 
 
-def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path):
+@pytest.mark.parametrize("whitespace", [" ", "\t"])
+def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path, whitespace: str):
     run = {
         "experiment_id": "unit experiment",
         "step_id": "tune",
@@ -533,7 +535,7 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path):
         1,
     )
     token = slurm.submit_token(run, resources, "c" * 40)
-    log_path = tmp_path / "run%j" / "slurm%A-%a.log"
+    log_path = tmp_path / f"run{whitespace}dir%j" / "slurm%A-%a.log"
 
     script = slurm.render_batch_script(
         run=run,
@@ -552,12 +554,16 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path):
     assert "#SBATCH --gres=gpu:1" in script
     assert "#SBATCH --no-requeue" in script
     assert f"#SBATCH --comment={token}" in script
-    assert f"#SBATCH --output={str(log_path).replace('%', '%%')}" in script
-    assert f"#SBATCH --error={str(log_path).replace('%', '%%')}" in script
+    escaped_log_path = str(log_path).replace("%", "%%")
+    output_directive = next(line for line in script.splitlines() if line.startswith("#SBATCH --output="))
+    error_directive = next(line for line in script.splitlines() if line.startswith("#SBATCH --error="))
+    assert shlex.split(output_directive) == ["#SBATCH", f"--output={escaped_log_path}"]
+    assert shlex.split(error_directive) == ["#SBATCH", f"--error={escaped_log_path}"]
     assert "agent_tools.slurm run-frozen-job" in script
     assert f"--execution-snapshot-path {tmp_path / 'execution_snapshot.json'}" in script
     assert '--execution-snapshot-sha256 "${1:-}"' in script
-    assert f"--log-path {log_path}" in script
+    worker = shlex.split(next(line for line in script.splitlines() if line.startswith("exec ")))
+    assert worker[worker.index("--log-path") + 1] == str(log_path)
     assert "export PYTHONPATH=/shared/repo" in script
     assert "${PYTHONPATH" not in script
     assert "hparam-run-queue" not in script

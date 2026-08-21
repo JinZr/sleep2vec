@@ -112,7 +112,7 @@ def render_batch_script(
 ) -> str:
     workdir = str(execution["workdir"])
     job_name = _job_name(str(run["experiment_id"]), str(run["run_id"]))
-    directive_log_path = str(log_path).replace("%", "%%")
+    directive_log_path = transport.sh(str(log_path).replace("%", "%%"))
     directives = [
         f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={resources['partition']}",
