@@ -137,6 +137,10 @@ commands route to the bound cluster. If submission times out, returns malformed
 output, or loses SSH after possible submission, the launcher searches the exact
 frozen comment token; zero or multiple matches remain unresolved and never
 authorize another submission.
+Before invoking `sbatch` on either a local or SSH submission host, the canonical
+submission command removes every inherited `SBATCH_*` variable so ambient
+client options cannot override frozen directives; other submission environment
+remains available.
 
 Live state comes from `squeue` and `scontrol`. The compute wrapper verifies the
 exact execution-snapshot bytes before parsing them, then revalidates the runtime

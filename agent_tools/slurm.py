@@ -352,7 +352,7 @@ def submit(
 ) -> JobIdentity:
     result = run_command(
         execution,
-        ["sbatch", "--parsable", f"--comment={submit_token}", script, _sha256(execution_snapshot_sha256)],
+        _submission_argv(script, submit_token, execution_snapshot_sha256),
         timeout=timeout,
     )
     if result.returncode != 0:
@@ -553,10 +553,20 @@ def parse_exit_code(value: str) -> tuple[int, int]:
 
 
 def submission_command(script: str, submit_token: str, execution_snapshot_sha256: str | None = None) -> str:
+    return " ".join(transport.sh(part) for part in _submission_argv(script, submit_token, execution_snapshot_sha256))
+
+
+def _submission_argv(script: str, submit_token: str, execution_snapshot_sha256: str | None = None) -> list[str]:
     argv = ["sbatch", "--parsable", f"--comment={submit_token}", script]
     if execution_snapshot_sha256:
         argv.append(_sha256(execution_snapshot_sha256))
-    return " ".join(transport.sh(part) for part in argv)
+    return [
+        "bash",
+        "-c",
+        'for name in "${!SBATCH_@}"; do unset "$name"; done; exec "$@"',
+        "agent-tools-sbatch",
+        *argv,
+    ]
 
 
 def sidecar_identity(

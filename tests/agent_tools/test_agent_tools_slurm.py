@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -44,7 +45,11 @@ def test_submit_quotes_remote_arguments_and_parses_identity(monkeypatch):
     assert calls == [
         (
             "baichuan3",
-            "sbatch --parsable '--comment=token;$(touch nope)' '/shared/run dir/job.sbatch' " + "d" * 64,
+            slurm.submission_command(
+                "/shared/run dir/job.sbatch",
+                "token;$(touch nope)",
+                "d" * 64,
+            ),
             10,
         )
     ]
@@ -87,6 +92,57 @@ def test_submit_rejects_malformed_execution_snapshot_digest_before_transport(mon
         )
 
     assert calls == []
+
+
+def test_submit_strips_ambient_sbatch_environment_on_submission_host(tmp_path: Path, monkeypatch):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture_env = tmp_path / "env.txt"
+    capture_argv = tmp_path / "argv.txt"
+    fake_sbatch = fake_bin / "sbatch"
+    fake_sbatch.write_text(
+        "#!/usr/bin/env bash\n"
+        'env | sort > "$CAPTURE_ENV"\n'
+        'printf "%s\\n" "$@" > "$CAPTURE_ARGV"\n'
+        'printf "3880;wuji-h20\\n"\n'
+    )
+    fake_sbatch.chmod(0o755)
+    calls = []
+
+    def fake_run_shell(host, command, *, timeout):
+        calls.append((host, command, timeout))
+        env = {
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "CAPTURE_ENV": str(capture_env),
+            "CAPTURE_ARGV": str(capture_argv),
+            "SBATCH_PARTITION": "wrong-partition",
+            "SBATCH_FUTURE_OPTION": "wrong-future-value",
+            "KEEP_ME": "kept",
+        }
+        return subprocess.run(["bash", "-c", command], text=True, capture_output=True, timeout=timeout, env=env)
+
+    monkeypatch.setattr(slurm.transport, "run_shell", fake_run_shell)
+    digest = "d" * 64
+
+    identity = slurm.submit(
+        {"target": "ssh", "host": "baichuan3"},
+        "/shared/job.sbatch",
+        "token",
+        execution_snapshot_sha256=digest,
+    )
+
+    assert identity == slurm.JobIdentity("3880", "wuji-h20")
+    assert calls == [("baichuan3", slurm.submission_command("/shared/job.sbatch", "token", digest), 10)]
+    environment = capture_env.read_text().splitlines()
+    assert not any(line.startswith("SBATCH_") for line in environment)
+    assert "KEEP_ME=kept" in environment
+    assert capture_argv.read_text().splitlines() == [
+        "--parsable",
+        "--comment=token",
+        "/shared/job.sbatch",
+        digest,
+    ]
 
 
 def test_active_jobs_filters_exact_submit_token(monkeypatch):

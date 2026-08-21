@@ -214,6 +214,9 @@ incomplete terminal evidence is `unknown_scheduler`. Stop uses
 the frozen scheduler job id with `scancel`, not PID evidence. A cancellation
 signal received while the allocation wrapper is still validating frozen
 identity terminates the job without starting the leaf process.
+The submission command strips every ambient `SBATCH_*` variable on the local or
+SSH submission host before invoking `sbatch`, while preserving ordinary runtime
+environment such as `PATH` and Slurm client configuration.
 
 Frozen per-run execution identity and its canonical owner are defined in
 [run_manifest.md](run_manifest.md).
