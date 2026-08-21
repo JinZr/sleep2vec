@@ -848,3 +848,57 @@ def test_run_frozen_job_forwards_signal_to_active_srun_and_records_terminal_side
     assert exit_code == 128 + signum
     assert created_sidecars == [Path(kwargs["allocation_identity_path"]), Path(kwargs["result_path"])]
     assert json.loads(Path(kwargs["result_path"]).read_text())["exit_code"] == 128 + signum
+
+
+@pytest.mark.parametrize("signum", [slurm.signal.SIGTERM, slurm.signal.SIGINT])
+def test_run_frozen_job_forwards_signal_received_before_popen_returns_exactly_once(
+    tmp_path: Path, monkeypatch, signum: int
+):
+    kwargs, snapshot = _frozen_job_inputs(tmp_path)
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
+    handlers = {}
+
+    def capture_signal(current_signum, handler):
+        previous = handlers.get(current_signum, slurm.signal.SIG_DFL)
+        handlers[current_signum] = handler
+        return previous
+
+    monkeypatch.setattr(slurm.signal, "signal", capture_signal)
+    from agent_tools import managed_scheduler
+
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    sent_signals = []
+
+    class ActiveStep:
+        def wait(self):
+            return -signum
+
+        def poll(self):
+            return None
+
+        def send_signal(self, child_signum):
+            sent_signals.append(child_signum)
+
+    child = ActiveStep()
+
+    def signal_before_return(*_args, **_kwargs):
+        handlers[signum](signum, None)
+        return child
+
+    monkeypatch.setattr(slurm.subprocess, "Popen", signal_before_return)
+    created_sidecars = []
+    real_atomic_create_json = slurm._atomic_create_json
+
+    def record_sidecar(path, payload):
+        created_sidecars.append(Path(path))
+        real_atomic_create_json(path, payload)
+
+    monkeypatch.setattr(slurm, "_atomic_create_json", record_sidecar)
+
+    exit_code = slurm.run_frozen_job(**kwargs)
+
+    assert sent_signals == [signum]
+    assert exit_code == 128 + signum
+    assert created_sidecars == [Path(kwargs["allocation_identity_path"]), Path(kwargs["result_path"])]
+    assert json.loads(Path(kwargs["result_path"]).read_text())["exit_code"] == 128 + signum

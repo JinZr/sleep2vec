@@ -222,7 +222,8 @@ def run_frozen_job(
         if child is not None and child.poll() is None:
             child.send_signal(signum)
 
-    old_handlers = {signum: signal.signal(signum, forward_signal) for signum in (signal.SIGTERM, signal.SIGINT)}
+    forwarded_signals = (signal.SIGTERM, signal.SIGINT)
+    old_handlers = {signum: signal.signal(signum, forward_signal) for signum in forwarded_signals}
     exit_code = 2
     log_target = Path(log_path)
     log_target.parent.mkdir(parents=True, exist_ok=True)
@@ -276,42 +277,49 @@ def run_frozen_job(
                 ]
                 if changed:
                     raise ValueError("Frozen Slurm execution identity changed in allocation: " + ", ".join(changed))
-                if received_signal:
-                    exit_code = 128 + received_signal
-                else:
-                    _atomic_create_json(
-                        allocation_identity_path,
-                        {
-                            "schema_version": 1,
-                            "scheduler_job_id": job_id,
-                            "scheduler_cluster": cluster,
-                            "scheduler_submit_token": submit_token,
-                            "node": node,
-                            "started_at": started_at,
-                            "execution_snapshot": snapshot,
-                        },
-                    )
-                    child_env = os.environ.copy()
-                    for env_name in tuple(child_env):
-                        if env_name in _DISTRIBUTED_ENV_FIELDS or env_name.startswith("MASTER_"):
-                            child_env.pop(env_name)
-                    child = subprocess.Popen(
-                        [
-                            "srun",
-                            "--nodes=1",
-                            f"--ntasks={expected_tasks}",
-                            f"--ntasks-per-node={expected_tasks}",
-                            "--gpu-bind=none",
-                            "--kill-on-bad-exit=1",
-                            "--quit-on-interrupt",
-                            script,
-                        ],
-                        cwd=workdir,
-                        env=child_env,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=False,
-                    )
+                previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded_signals)
+                try:
+                    if received_signal:
+                        exit_code = 128 + received_signal
+                    else:
+                        _atomic_create_json(
+                            allocation_identity_path,
+                            {
+                                "schema_version": 1,
+                                "scheduler_job_id": job_id,
+                                "scheduler_cluster": cluster,
+                                "scheduler_submit_token": submit_token,
+                                "node": node,
+                                "started_at": started_at,
+                                "execution_snapshot": snapshot,
+                            },
+                        )
+                        child_env = os.environ.copy()
+                        for env_name in tuple(child_env):
+                            if env_name in _DISTRIBUTED_ENV_FIELDS or env_name.startswith("MASTER_"):
+                                child_env.pop(env_name)
+                        child = subprocess.Popen(
+                            [
+                                "srun",
+                                "--nodes=1",
+                                f"--ntasks={expected_tasks}",
+                                f"--ntasks-per-node={expected_tasks}",
+                                "--gpu-bind=none",
+                                "--kill-on-bad-exit=1",
+                                "--quit-on-interrupt",
+                                script,
+                            ],
+                            cwd=workdir,
+                            env=child_env,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            start_new_session=False,
+                        )
+                        if received_signal and child.poll() is None:
+                            child.send_signal(received_signal)
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                if child is not None:
                     exit_code = child.wait()
                     if exit_code < 0:
                         exit_code = 128 + abs(exit_code)
