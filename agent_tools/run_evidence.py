@@ -33,6 +33,7 @@ RUN_EVIDENCE_FIELDS = {
     "command",
     "launched_at",
     "monitored_at",
+    "stop_requested_at",
     "stopped_at",
     "stop_reason",
     "run_manifest",

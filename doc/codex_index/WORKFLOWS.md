@@ -234,8 +234,10 @@ evidence. Slurm managed launches freeze one sbatch leaf job and submit token per
 run, bind one numeric scheduler job id, observe live state through
 `squeue`/`scontrol`, and require both a terminal scheduler observation and the
 compute wrapper's matching terminal sidecar for terminal truth. Uncertain direct
-or scheduler identity never authorizes relaunch or retry. Stop signals the direct
-process group or calls `scancel` before committing `stopped`. Optional health
+or scheduler identity never authorizes relaunch or retry. Direct stop waits for
+the process group to exit. Slurm stop records a nonterminal request after
+`scancel` succeeds and commits `stopped` only after matching scheduler
+cancellation evidence. Optional health
 labels remain observational:
 DDP child GPU activity follows the managed process group, and unavailable
 required probes or first-baseline observations report `health_unknown` rather

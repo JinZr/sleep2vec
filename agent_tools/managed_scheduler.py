@@ -35,7 +35,7 @@ from .models import REPO_ROOT
 
 RunKey = tuple[str, str]
 ACTIVE_STATUSES = frozenset(
-    {"submitting", "queued", "launched", "running", "unknown_remote", "unknown_scheduler", "missing_pid"}
+    {"submitting", "queued", "launched", "running", "stopping", "unknown_remote", "unknown_scheduler", "missing_pid"}
 )
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
 LAUNCH_TIMEOUT_SECONDS = 60
@@ -1230,6 +1230,7 @@ def observe_slurm_run(
     token = str(row["scheduler_submit_token"])
     job_id = str(row.get("scheduler_job_id") or "")
     cluster = str(row.get("scheduler_cluster") or "")
+    stop_requested = row.get("stop_requested_at") not in (None, "")
     terminal = _read_slurm_json(owner, execution, row["scheduler_result_path"])
     observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
     terminal_exit_code: int | None = None
@@ -1309,18 +1310,27 @@ def observe_slurm_run(
         category = slurm.state_category(active.state)
         reason = active.reason
         if terminal_exit_code is not None:
-            if category == "completed":
+            if category == "cancelled" and stop_requested:
+                status = "stopped"
+            elif category == "completed":
                 status = "completed" if terminal_exit_code == 0 else "failed"
             elif category in {"failed", "cancelled"}:
                 status = "failed"
             elif category in {"queued", "running"}:
-                status = category
+                status = "stopping" if stop_requested else category
             else:
                 status = "unknown_scheduler"
                 reason = reason or "Slurm terminal sidecar is present but scheduler state is not recognized."
         else:
-            status = category if category in {"queued", "running"} else "unknown_scheduler"
-            if category in {"completed", "failed", "cancelled"}:
+            if category == "cancelled" and stop_requested:
+                status = "stopped"
+            else:
+                status = (
+                    "stopping"
+                    if stop_requested and category in {"queued", "running"}
+                    else category if category in {"queued", "running"} else "unknown_scheduler"
+                )
+            if category in {"completed", "failed", "cancelled"} and status != "stopped":
                 reason = reason or "Terminal scheduler state is missing the matching terminal sidecar."
         observation.update(
             {
@@ -1331,6 +1341,8 @@ def observe_slurm_run(
                 **{f"scheduler_{field}": value for field, value in active.details.items()},
             }
         )
+        if status == "stopped":
+            observation["stopped_at"] = row.get("stopped_at") or observation["scheduler_observed_at"]
     except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError) as exc:
         observation.update(
             {

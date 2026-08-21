@@ -1057,6 +1057,7 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
         "queued",
         "launched",
         "running",
+        "stopping",
         "unknown_remote",
         "unknown_scheduler",
         "missing_pid",
@@ -1157,6 +1158,7 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
         in {
             "queued",
             "running",
+            "stopping",
             "unknown_scheduler",
             "completed",
             "finished",

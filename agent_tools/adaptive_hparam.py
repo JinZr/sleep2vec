@@ -46,7 +46,7 @@ from .plans import build_plan, preflight_plan
 from .recipes import load_recipe_with_base, recipe_name
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
-_SLURM_ACCEPTED_STATUSES = {"queued", "running", "completed", "finished", "failed", "stopped"}
+_SLURM_ACCEPTED_STATUSES = {"queued", "running", "stopping", "completed", "finished", "failed", "stopped"}
 
 
 class AdaptivePreflightError(RuntimeError):
@@ -847,6 +847,8 @@ def _drain_bad_runs(
         if stopped:
             state.stopped_run_keys.extend(stopped)
             state.retirement_credit -= len(stopped)
+        else:
+            continue
         canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
         if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
@@ -1920,8 +1922,10 @@ def _stop_bad_running_runs(
         if key not in keys or row.get("status") != "running":
             continue
         stop_hparam_run(round_dir, str(row["run_id"]), reason="adaptive replacement")
-        _append_event(root, "stop_bad_running_run", {"round_dir": str(round_dir), "run_id": row["run_id"]})
-        stopped.append(key)
+        canonical_by_key = {managed_run_key(item): item for item in read_run_manifest(workspace)}
+        if canonical_by_key[key].get("status") == "stopped":
+            _append_event(root, "stop_bad_running_run", {"round_dir": str(round_dir), "run_id": row["run_id"]})
+            stopped.append(key)
     return stopped
 
 

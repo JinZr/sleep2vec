@@ -1133,13 +1133,137 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
         "cancel",
         lambda execution, job_id, *, cluster=None: cancelled.append((execution, job_id, cluster)),
     )
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
 
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert cancelled == [({"target": "local", "host": ""}, "3880", "wuji-h20")]
-    assert canonical["status"] == "stopped"
+    assert canonical["status"] == "stopping"
+    assert canonical["status"] not in hparam_runtime.TERMINAL_STATUSES
+    assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert canonical.get("stopped_at", "") == ""
     assert canonical["stop_reason"] == "validation diverged"
+    assert _read_table(plan_dir / "run_status.tsv")[0] == canonical
+    assert _read_table(plan_dir / "launch_manifest.tsv")[0] == canonical
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_stop_requested") == 1
+    assert [event["event_type"] for event in events].count("run_stopped") == 0
+
+    with pytest.raises(ValueError, match="pending stop request"):
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="repeat request")
+
+    assert cancelled == [({"target": "local", "host": ""}, "3880", "wuji-h20")]
+
+
+@pytest.mark.parametrize(
+    ("initial_status", "scheduler_state", "terminal_sidecar", "terminal_exit_code", "expected_status"),
+    [
+        ("queued", "PENDING", False, 0, "stopping"),
+        ("running", "RUNNING", False, 0, "stopping"),
+        ("running", "RUNNING", True, 143, "stopping"),
+        ("running", "COMPLETING", True, 143, "stopping"),
+        ("running", "SUSPENDED", True, 143, "stopping"),
+        ("queued", "CANCELLED", False, 0, "stopped"),
+        ("running", "CANCELLED", False, 0, "stopped"),
+        ("running", "CANCELLED", True, 143, "stopped"),
+        ("running", "COMPLETED", True, 0, "completed"),
+        ("running", "FAILED", True, 143, "failed"),
+    ],
+)
+def test_slurm_stop_request_waits_for_matching_scheduler_cancellation(
+    tmp_path: Path,
+    monkeypatch,
+    initial_status: str,
+    scheduler_state: str,
+    terminal_sidecar: bool,
+    terminal_exit_code: int,
+    expected_status: str,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    token = run["scheduler_submit_token"]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    if initial_status == "running":
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "running"}],
+        )
+    monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
+    hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
+    if terminal_sidecar:
+        Path(run["scheduler_result_path"]).write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scheduler_job_id": "3880",
+                    "scheduler_cluster": "wuji-h20",
+                    "scheduler_submit_token": token,
+                    "node": "h20-bj-96",
+                    "exit_code": terminal_exit_code,
+                }
+            )
+        )
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "active_jobs",
+        lambda *_args, **_kwargs: [
+            slurm.JobObservation("3880", scheduler_state, "", "h20-bj-96", token)
+        ],
+    )
+    monkeypatch.setattr(managed_scheduler, "utc_now", lambda: "2026-08-21T03:41:00Z")
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == expected_status
+    assert canonical["scheduler_raw_state"] == scheduler_state
+    assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert canonical["stop_reason"] == "validation diverged"
+    assert canonical.get("stopped_at", "") == (
+        "2026-08-21T03:41:00Z" if expected_status == "stopped" else ""
+    )
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_stop_requested") == 1
+    assert [event["event_type"] for event in events].count("run_stopped") == (
+        1 if expected_status == "stopped" else 0
+    )
+    if expected_status == "stopped":
+        hparam_runtime.monitor_hparam_runs(plan_dir)
+        repeated_events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        assert [event["event_type"] for event in repeated_events].count("run_stop_requested") == 1
+        assert [event["event_type"] for event in repeated_events].count("run_stopped") == 1
+
+
+def test_slurm_stop_failure_does_not_commit_request_state(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in (tmp_path / "run_manifest.tsv", plan_dir / "run_status.tsv", plan_dir / "launch_manifest.tsv")
+    }
+    monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cancel failed")))
+
+    with pytest.raises(RuntimeError, match="cancel failed"):
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
+
+    assert {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in (tmp_path / "run_manifest.tsv", plan_dir / "run_status.tsv", plan_dir / "launch_manifest.tsv")
+    } == before
 
 
 def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_path: Path):

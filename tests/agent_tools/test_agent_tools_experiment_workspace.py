@@ -585,6 +585,8 @@ def test_managed_run_parameters_reject_legacy_prefix():
         ("launched", {"status": "pending"}, "launched"),
         ("running", {"status": "planned"}, "running"),
         ("running", {"status": "pending"}, "running"),
+        ("stopping", {"status": "planned"}, "stopping"),
+        ("stopping", {"status": "pending"}, "stopping"),
         ("unknown_remote", {"status": "planned"}, "unknown_remote"),
         ("unknown_scheduler", {"status": "planned"}, "unknown_scheduler"),
         ("unknown_scheduler", {"status": "pending"}, "unknown_scheduler"),
@@ -1500,6 +1502,7 @@ def test_scheduler_identity_is_backend_specific(tmp_path: Path):
     validate_scheduler_run_identity({"status": "planned"})
     validate_scheduler_run_identity({"status": "submitting", **_slurm_identity(tmp_path)})
     validate_scheduler_run_identity({"status": "queued", "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
+    validate_scheduler_run_identity({"status": "stopping", "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
 
     with pytest.raises(ValueError, match="PID process identity"):
         validate_scheduler_run_identity(

@@ -49,7 +49,7 @@ validated manifest.
 
 ## Status reducer
 
-The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff `submitting`/`queued`, active `launched`/`running`/`unknown_remote`/`unknown_scheduler`/`missing_pid`, and terminal `completed`/`failed`/`finished`/`launch_failed`/`stopped`/`superseded` states.
+The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff `submitting`/`queued`, active `launched`/`running`/`stopping`/`unknown_remote`/`unknown_scheduler`/`missing_pid`, and terminal `completed`/`failed`/`finished`/`launch_failed`/`stopped`/`superseded` states.
 
 - An update without status preserves the existing status.
 - Terminal status is sticky, except incoming `failed` evidence may correct `completed` or `finished`.
@@ -146,13 +146,16 @@ Live state comes from `squeue` and `scontrol`. The compute wrapper verifies the
 exact execution-snapshot bytes before parsing them, then revalidates the runtime
 commit, module origin, CLI, and frozen launch/config hashes, runs the leaf script
 in the allocation foreground, and atomically writes allocation and terminal
-JSON sidecars bound to the same token and job id. A canonical terminal status
-requires both the matching terminal sidecar and a terminal scheduler
-observation; a scheduler failure overrides a zero wrapper exit code. Because
+JSON sidecars bound to the same token and job id. A canonical completed or
+failed status requires both the matching terminal sidecar and a terminal
+scheduler observation; a scheduler failure overrides a zero wrapper exit code. Because
 accounting may be disabled, a vanished job or an incomplete terminal evidence
 pair becomes active `unknown_scheduler` rather than inferred success or
-failure. `hparam-stop` calls `scancel` on the bound job id and commits `stopped`
-only after the cancel request succeeds.
+failure. `hparam-stop` records a successful `scancel` request as nonterminal
+`stopping` with its reason and request time. Monitoring commits `stopped` only
+after the same scheduler job is observed as `CANCELLED`; this explicit stop
+intent is the narrow exception that does not require a terminal sidecar because
+a pending job may never start its wrapper.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
 identity, it records `process_identity_error` with the canonical status update.

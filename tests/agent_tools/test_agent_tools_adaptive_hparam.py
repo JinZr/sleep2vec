@@ -3333,6 +3333,18 @@ def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(t
     def fake_stop(run_dir, run_id, *, reason):
         call_order.append("stop")
         stopped.append((Path(run_dir), run_id))
+        merge_run_manifest(
+            tmp_path,
+            [
+                {
+                    "step_id": run["step_id"],
+                    "run_id": run_id,
+                    "status": "stopped",
+                    "stopped_at": manifests.utc_now(),
+                    "stop_reason": reason,
+                }
+            ],
+        )
         return Path(run_dir) / "run_status.tsv"
 
     def record_launch_round(root, event_type, payload):
@@ -4076,12 +4088,50 @@ def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Pa
     monkeypatch.setattr(run_evidence, "log_has_failure", fake_log_has_failure)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
 
-    adaptive_hparam._stop_bad_running_runs(workflow_dir, round_dir, adaptive_hparam.load_recipe_with_base(recipe))
+    confirmed = adaptive_hparam._stop_bad_running_runs(
+        workflow_dir, round_dir, adaptive_hparam.load_recipe_with_base(recipe)
+    )
 
     assert seen_rows[0][0] == "/remote/run.log"
     assert seen_rows[0][1]["target"] == "ssh"
     assert seen_rows[0][1]["host"] == "baichuan3"
     assert stopped == [(round_dir, "run-000")]
+    assert confirmed == []
+
+
+def test_async_slurm_stop_does_not_launch_replacement_before_confirmation(tmp_path: Path, monkeypatch):
+    bad_key = ("train-model", "run-000")
+    pending_key = ("train-model-round-001", "run-000")
+    pending_row = {"step_id": pending_key[0], "run_id": pending_key[1], "status": "pending"}
+    state = adaptive_hparam._ReplacementState(
+        next_round=1,
+        next_dir=tmp_path / "round_001",
+        next_plan_keys={pending_key},
+        started_keys=set(),
+        launch_failed_keys=set(),
+        retirement_credit=1,
+    )
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [pending_row])
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_launch_with_recovery",
+        lambda *_args, **_kwargs: pytest.fail("replacement must wait for scheduler cancellation confirmation"),
+    )
+
+    rows = adaptive_hparam._drain_bad_runs(
+        tmp_path,
+        tmp_path,
+        state,
+        tmp_path / "round_000",
+        {},
+        [bad_key],
+        [pending_row],
+    )
+
+    assert rows == [pending_row]
+    assert state.retirement_credit == 1
+    assert state.stopped_run_keys == []
 
 
 def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
