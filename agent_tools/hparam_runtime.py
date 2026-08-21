@@ -401,22 +401,40 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
             raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
         key = managed_run_key(matched[0])
         previous = workspace_by_key[key]
-        if scheduler_type(previous) == "slurm":
+        backend = scheduler_type(previous)
+        if backend == "slurm":
             if previous.get("status") in TERMINAL_STATUSES:
                 raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
             if previous.get("stop_requested_at") not in (None, ""):
                 raise ValueError(f"Run already has a pending stop request: {run_id}")
-            target = previous.get("target")
-            host = previous.get("host")
-            if target not in {"local", "ssh"}:
-                raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
-            if target == "ssh" and (not isinstance(host, str) or not host.strip()):
-                raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+        else:
+            missing_execution_identity = {
+                field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
+            }
+            if previous.get("target") in (None, ""):
+                missing_execution_identity.add("target")
+            if missing_execution_identity:
+                raise ValueError(
+                    f"Canonical run is missing execution identity for {run_id}: "
+                    f"{', '.join(sorted(missing_execution_identity))}"
+                )
+            if previous.get("status") in TERMINAL_STATUSES:
+                raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
+
+        target = previous.get("target")
+        host = previous.get("host")
+        if target not in {"local", "ssh"}:
+            raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
+        if target == "ssh" and (not isinstance(host, str) or not host.strip()):
+            raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+        execution = {"target": target, "host": host}
+
+        if backend == "slurm":
             job_id = str(previous.get("scheduler_job_id") or "")
             cluster = str(previous.get("scheduler_cluster") or "")
             if not job_id:
                 matches = slurm.active_jobs(
-                    {"target": target, "host": host},
+                    execution,
                     submit_token=str(previous["scheduler_submit_token"]),
                     cluster=cluster or None,
                 )
@@ -425,7 +443,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                         f"Cannot resolve one Slurm job for run_id {run_id}; found {len(matches)} matching jobs."
                     )
                 job_id = matches[0].job_id
-            slurm.cancel({"target": target, "host": host}, job_id, cluster=cluster or None)
+            slurm.cancel(execution, job_id, cluster=cluster or None)
             final = merge_run_row(
                 previous,
                 {
@@ -440,24 +458,6 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
             )
             stop_event_type = "run_stop_requested"
         else:
-            missing_execution_identity = {
-                field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
-            }
-            if previous.get("target") in (None, ""):
-                missing_execution_identity.add("target")
-            if missing_execution_identity:
-                raise ValueError(
-                    f"Canonical run is missing execution identity for {run_id}: "
-                    f"{', '.join(sorted(missing_execution_identity))}"
-                )
-            if previous.get("status") in TERMINAL_STATUSES:
-                raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
-            target = previous.get("target")
-            if target not in {"local", "ssh"}:
-                raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
-            host = previous.get("host")
-            if target == "ssh" and (not isinstance(host, str) or not host.strip()):
-                raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
             populated_process_fields = {
                 field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")
             }
