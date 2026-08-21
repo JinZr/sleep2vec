@@ -764,6 +764,7 @@ def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypat
     [
         ("RUNNING", 0, "running"),
         ("COMPLETING", 0, "running"),
+        ("SUSPENDED", 0, "running"),
         ("COMPLETED", 7, "failed"),
         ("FAILED", 0, "failed"),
         ("CANCELLED", 0, "failed"),

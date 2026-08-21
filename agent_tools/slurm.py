@@ -526,7 +526,7 @@ def state_category(value: str) -> str:
     state = normalize_state(value)
     if state in {"PENDING", "CONFIGURING"}:
         return "queued"
-    if state in {"RUNNING", "COMPLETING"}:
+    if state in {"RUNNING", "COMPLETING", "SUSPENDED"}:
         return "running"
     if state == "COMPLETED":
         return "completed"

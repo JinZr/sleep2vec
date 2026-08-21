@@ -280,6 +280,7 @@ def test_cancel_uses_exact_numeric_job_id(monkeypatch):
         ("CONFIGURING", "queued"),
         ("RUNNING", "running"),
         ("COMPLETING", "running"),
+        ("SUSPENDED", "running"),
         ("COMPLETED+", "completed"),
         ("CANCELLED", "cancelled"),
         ("OUT_OF_MEMORY", "failed"),
