@@ -56,18 +56,15 @@ class AdaptivePreflightError(RuntimeError):
         super().__init__(f"Round 000 plan failed preflight with exit code {report.exit_code}: {details}")
 
 
+def _is_accepted_start(row: dict[str, Any]) -> bool:
+    if scheduler_type(row) == "direct":
+        return row.get("status") in {"launched", "running"}
+    job_id = str(row.get("scheduler_job_id") or "")
+    return row.get("status") in _SLURM_ACCEPTED_STATUSES and job_id.isdigit() and int(job_id) > 0
+
+
 def _accepted_start_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    return {
-        managed_run_key(row)
-        for row in rows
-        if (
-            scheduler_type(row) == "slurm"
-            and row.get("status") in _SLURM_ACCEPTED_STATUSES
-            and str(row.get("scheduler_job_id") or "").isdigit()
-            and int(row["scheduler_job_id"]) > 0
-        )
-        or (scheduler_type(row) == "direct" and row.get("status") in {"launched", "running"})
-    }
+    return {managed_run_key(row) for row in rows if _is_accepted_start(row)}
 
 
 def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path:
@@ -1487,13 +1484,13 @@ def _reconcile_interrupted_launch(
         if key not in plan_keys:
             continue
         if scheduler_type(row) == "slurm":
-            if key in _accepted_start_keys([row]):
+            if _is_accepted_start(row):
                 reconciled.add(key)
                 continue
             if row.get("status") not in {"submitting", "unknown_scheduler"}:
                 continue
             observed = managed_scheduler.observe_slurm_run(plan_dir, execution, row)
-            if key in _accepted_start_keys([observed]):
+            if _is_accepted_start(observed):
                 updates.append(observed)
                 reconciled.add(key)
             else:
@@ -1563,7 +1560,7 @@ def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
                 raise ValueError(f"Uncommitted adaptive run is missing from the canonical manifest: {run_key}")
             status = str(row.get("status") or "")
             if scheduler_type(row) == "slurm":
-                if status in {"submitting", "unknown_scheduler"} or run_key in _accepted_start_keys([row]):
+                if status in {"submitting", "unknown_scheduler"} or _is_accepted_start(row):
                     unresolved.append((round_index, str(row["run_id"])))
                 elif status in {"planned", "pending"}:
                     abandoned.append((round_index, row))
