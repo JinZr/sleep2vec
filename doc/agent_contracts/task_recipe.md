@@ -224,14 +224,17 @@ reconciled by the exact token and is never retried blindly. Monitoring uses
 `sacct` allocation when the job has aged out of the controller. It requires
 both a terminal scheduler observation and the matching atomic terminal sidecar
 for terminal truth;
-incomplete terminal evidence is `unknown_scheduler`. Stop uses
-the frozen scheduler job id with `scancel`, not PID evidence. A successful
-request records nonterminal `stopping`; only a matching scheduler `CANCELLED`
-observation commits canonical `stopped`, even when cancellation prevented the
-wrapper from writing a terminal sidecar. A cancellation signal received while
-the allocation wrapper is still validating frozen identity terminates the job
-without starting the leaf process. Live Slurm transition flags remain active;
-raw `STOPPED` retains its allocation and is not canonical `stopped`.
+incomplete terminal evidence is `unknown_scheduler`. Stop first records the
+frozen scheduler job id, nonterminal `stopping`, request time, and reason in the
+canonical manifest, then uses that job id with `scancel`, not PID evidence. An
+interrupted or failed cancellation keeps the request recoverable; the same
+reason may retry it, while a different reason cannot overwrite it. Only a
+matching scheduler `CANCELLED` observation commits canonical `stopped`, even
+when cancellation prevented the wrapper from writing a terminal sidecar. A
+cancellation signal received while the allocation wrapper is still validating
+frozen identity terminates the job without starting the leaf process. Live
+Slurm transition flags remain active; raw `STOPPED` retains its allocation and
+is not canonical `stopped`.
 The submission command strips every ambient `SBATCH_*` variable on the local or
 SSH submission host before invoking `sbatch`, while preserving ordinary runtime
 environment such as `PATH` and Slurm client configuration.
@@ -281,6 +284,10 @@ Without explicit bounds, numeric parameters use their original minimum and
 maximum, and categorical proposals remain within the original choices. A
 disabled adaptive block starts no suggestion protocol. Active-round replacement
 and automatic neighborhood suggestions require explicit `best_neighborhood`.
+Each confirmed replacement start grants one retirement credit. A durable Slurm
+`stopping` request reserves one credit in plan order but does not release
+capacity; only scheduler-confirmed `stopped` may precede a capacity-dependent
+replacement launch.
 
 ### Agent proposal handshake
 

@@ -829,6 +829,9 @@ def _drain_bad_runs(
         if state.retirement_credit <= 0 and not pending:
             break
         run_key = ordered_bad_run_keys[bad_index]
+        before_stop = dict({managed_run_key(row): row for row in canonical_rows}[run_key])
+        if scheduler_type(before_stop) == "slurm" and state.retirement_credit <= 0:
+            break
         bad_index += 1
         try:
             stopped = _stop_bad_running_runs(root, round_dir, recipe, run_keys={run_key})
@@ -842,6 +845,18 @@ def _drain_bad_runs(
                 + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
             ) from exc
         if not stopped:
+            canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+            after_stop = canonical_by_key[run_key]
+            if (
+                before_stop.get("stop_requested_at") in (None, "")
+                and after_stop.get("status") == "stopping"
+                and after_stop.get("stop_requested_at") not in (None, "")
+                and after_stop.get("stop_reason") == "adaptive replacement"
+            ):
+                state.retirement_credit -= 1
+                if state.retirement_credit <= 0:
+                    break
+                continue
             break
         state.stopped_run_keys.extend(stopped)
         state.retirement_credit -= len(stopped)

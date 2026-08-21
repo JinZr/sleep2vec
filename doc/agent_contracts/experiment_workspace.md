@@ -158,7 +158,12 @@ invalid and are not repaired in place.
 - `hparam-launch` validates frozen artifacts and explicitly starts one eligible wave; dry-run remains the default.
 - `hparam-run-queue` is the explicit long-running action that repeatedly fills available capacity until every current-plan run is terminal; dry-run performs one preview and returns.
 - `hparam-monitor` observes registered runs and never schedules pending work.
-- `hparam-stop` requires a reason. Direct runs verify and stop the complete process group before committing terminal state. Slurm runs record a nonterminal stop request after `scancel` succeeds and commit `stopped` only after the matching job is observed as `CANCELLED`.
+- `hparam-stop` requires a reason. Direct runs verify and stop the complete
+  process group before committing terminal state. Slurm runs atomically record
+  nonterminal `stopping`, request time, reason, and job binding before
+  `scancel`; an interrupted request is retriable only with the same reason, and
+  `stopped` is committed only after the matching job is observed as
+  `CANCELLED`.
 - `hparam-select` writes step-scoped validation ranking.
 - `hparam-adaptive-*` appends rounds and commits replacements through the canonical owner.
 - `experiment-note` atomically appends one evidence-backed research-log entry and never changes lifecycle state.

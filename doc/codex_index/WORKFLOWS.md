@@ -241,9 +241,10 @@ observation and the compute wrapper's matching terminal sidecar for terminal
 truth. Uncertain direct
 or scheduler identity never authorizes relaunch or retry. Direct stop waits for
 the process group to exit. Slurm stop records a nonterminal request after
-`scancel` succeeds and commits `stopped` only after matching scheduler
-cancellation evidence; stale monitor observations cannot overwrite that stop
-intent. Optional health
+freezing its job binding and before dispatching `scancel`; same-reason retries
+preserve the original request, and `stopped` is committed only after matching
+scheduler cancellation evidence. Stale monitor observations cannot overwrite
+that stop intent. Optional health
 labels remain observational:
 DDP child GPU activity follows the managed process group, and unavailable
 required probes or first-baseline observations report `health_unknown` rather

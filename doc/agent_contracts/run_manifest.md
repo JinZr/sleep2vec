@@ -157,9 +157,11 @@ If controller and accounting evidence are unavailable, a vanished job or an
 incomplete terminal evidence pair becomes active `unknown_scheduler` rather
 than inferred success or failure. An accounting terminal record is scheduler
 evidence only; ordinary completion or failure still requires the matching
-sidecar. `hparam-stop` records a successful `scancel` request as nonterminal
-`stopping` with its reason and request time. Monitoring commits `stopped` only
-after the same scheduler job is observed as `CANCELLED`; this explicit stop
+sidecar. Before `scancel`, `hparam-stop` atomically records nonterminal
+`stopping` with its reason, request time, and frozen job binding. A failed or
+interrupted cancellation preserves that canonical intent and may be retried
+only with the same reason. Monitoring commits `stopped` only after the same
+scheduler job is observed as `CANCELLED`; this explicit stop
 intent is the narrow exception that does not require a terminal sidecar because
 a pending job may never start its wrapper. Slurm transition flags remain active;
 in particular, raw `STOPPED` retains its allocation and maps to canonical

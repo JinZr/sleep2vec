@@ -405,8 +405,9 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         if backend == "slurm":
             if previous.get("status") in TERMINAL_STATUSES:
                 raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
-            if previous.get("stop_requested_at") not in (None, ""):
-                raise ValueError(f"Run already has a pending stop request: {run_id}")
+            pending_stop = previous.get("stop_requested_at") not in (None, "")
+            if pending_stop and previous.get("stop_reason") != reason:
+                raise ValueError(f"Run already has a pending stop request with a different reason: {run_id}")
         else:
             missing_execution_identity = {
                 field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
@@ -432,6 +433,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         if backend == "slurm":
             job_id = str(previous.get("scheduler_job_id") or "")
             cluster = str(previous.get("scheduler_cluster") or "")
+            if pending_stop and not job_id:
+                raise ValueError(f"Pending Slurm stop request is missing scheduler job identity: {run_id}")
             if not job_id:
                 matches = slurm.active_jobs(
                     execution,
@@ -443,20 +446,28 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                         f"Cannot resolve one Slurm job for run_id {run_id}; found {len(matches)} matching jobs."
                     )
                 job_id = matches[0].job_id
+            if pending_stop:
+                committed = workspace_rows
+            else:
+                final = merge_run_row(
+                    previous,
+                    {
+                        "step_id": key[0],
+                        "run_id": key[1],
+                        "scheduler_job_id": job_id,
+                        "scheduler_cluster": cluster,
+                        "status": "stopping",
+                        "stop_requested_at": utc_now(),
+                        "stop_reason": reason,
+                    },
+                )
+                committed = merge_run_manifest(workspace, [final], lock_held=True)
+                append_event(
+                    workspace,
+                    "run_stop_requested",
+                    {"step_id": key[0], "run_id": run_id, "reason": reason},
+                )
             slurm.cancel(execution, job_id, cluster=cluster or None)
-            final = merge_run_row(
-                previous,
-                {
-                    "step_id": key[0],
-                    "run_id": key[1],
-                    "scheduler_job_id": job_id,
-                    "scheduler_cluster": cluster,
-                    "status": "stopping",
-                    "stop_requested_at": utc_now(),
-                    "stop_reason": reason,
-                },
-            )
-            stop_event_type = "run_stop_requested"
         else:
             populated_process_fields = {
                 field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")
@@ -496,17 +507,17 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                     "stop_reason": reason,
                 },
             )
-            stop_event_type = "run_stopped"
-        committed = merge_run_manifest(workspace, [final], lock_held=True)
+            committed = merge_run_manifest(workspace, [final], lock_held=True)
     committed_by_key = {managed_run_key(item): item for item in committed}
     final_status_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
     write_rows(status_path, final_status_rows)
     write_rows(manifest_path, final_status_rows)
-    append_event(
-        workspace,
-        stop_event_type,
-        {"step_id": key[0], "run_id": run_id, "reason": reason},
-    )
+    if backend != "slurm":
+        append_event(
+            workspace,
+            "run_stopped",
+            {"step_id": key[0], "run_id": run_id, "reason": reason},
+        )
     write_status_report(workspace)
     return status_path
 

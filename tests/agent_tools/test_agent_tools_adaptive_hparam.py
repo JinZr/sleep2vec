@@ -4130,25 +4130,41 @@ def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Pa
     assert confirmed == []
 
 
-def test_async_slurm_stop_does_not_launch_replacement_before_confirmation(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(("retirement_credit", "expected_requests"), [(0, 0), (1, 1), (2, 2)])
+def test_async_slurm_stop_consumes_credit_without_launching_before_confirmation(
+    tmp_path: Path, monkeypatch, retirement_credit: int, expected_requests: int
+):
     bad_keys = [("train-model", f"run-{index:03d}") for index in range(3)]
     pending_key = ("train-model-round-001", "run-000")
     pending_row = {"step_id": pending_key[0], "run_id": pending_key[1], "status": "pending"}
+    bad_rows = [
+        {"step_id": step_id, "run_id": run_id, "status": "running", "scheduler_type": "slurm"}
+        for step_id, run_id in bad_keys
+    ]
     state = adaptive_hparam._ReplacementState(
         next_round=1,
         next_dir=tmp_path / "round_001",
         next_plan_keys={pending_key},
         started_keys=set(),
         launch_failed_keys=set(),
-        retirement_credit=1,
+        retirement_credit=retirement_credit,
     )
     stop_calls = []
 
     def request_stop(*_args, **kwargs):
+        run_key = next(iter(kwargs["run_keys"]))
         stop_calls.append(kwargs["run_keys"])
+        row = next(item for item in bad_rows if adaptive_hparam.managed_run_key(item) == run_key)
+        row.update(
+            {
+                "status": "stopping",
+                "stop_requested_at": "2026-08-21T03:40:00Z",
+                "stop_reason": "adaptive replacement",
+            }
+        )
         return []
 
-    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [pending_row])
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [pending_row, *bad_rows])
     monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", request_stop)
     monkeypatch.setattr(
         adaptive_hparam,
@@ -4167,8 +4183,59 @@ def test_async_slurm_stop_does_not_launch_replacement_before_confirmation(tmp_pa
     )
 
     assert rows == [pending_row]
-    assert stop_calls == [{bad_keys[0]}]
-    assert state.retirement_credit == 1
+    assert stop_calls == [{key} for key in bad_keys[:expected_requests]]
+    assert state.retirement_credit == 0
+    assert state.stopped_run_keys == []
+    assert [row["status"] for row in bad_rows] == ["stopping"] * expected_requests + ["running"] * (
+        len(bad_rows) - expected_requests
+    )
+
+
+def test_async_slurm_stop_dispatch_error_does_not_request_later_runs(tmp_path: Path, monkeypatch):
+    bad_keys = [("train-model", f"run-{index:03d}") for index in range(2)]
+    bad_rows = [{"step_id": step_id, "run_id": run_id, "status": "running"} for step_id, run_id in bad_keys]
+    state = adaptive_hparam._ReplacementState(
+        next_round=1,
+        next_dir=tmp_path / "round_001",
+        next_plan_keys=set(),
+        started_keys=set(),
+        launch_failed_keys=set(),
+        retirement_credit=2,
+        round_committed=True,
+    )
+    stop_calls = []
+
+    def fail_after_intent(*_args, **kwargs):
+        run_key = next(iter(kwargs["run_keys"]))
+        stop_calls.append(run_key)
+        row = next(item for item in bad_rows if adaptive_hparam.managed_run_key(item) == run_key)
+        row.update(
+            {
+                "status": "stopping",
+                "stop_requested_at": "2026-08-21T03:40:00Z",
+                "stop_reason": "adaptive replacement",
+            }
+        )
+        raise RuntimeError("scancel failed")
+
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: bad_rows)
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", fail_after_intent)
+
+    with pytest.raises(RuntimeError, match="failed while stopping run-000"):
+        adaptive_hparam._drain_bad_runs(
+            tmp_path,
+            tmp_path,
+            state,
+            tmp_path / "round_000",
+            {},
+            bad_keys,
+            [],
+        )
+
+    assert stop_calls == [bad_keys[0]]
+    assert bad_rows[0]["status"] == "stopping"
+    assert bad_rows[1]["status"] == "running"
+    assert state.retirement_credit == 2
     assert state.stopped_run_keys == []
 
 
