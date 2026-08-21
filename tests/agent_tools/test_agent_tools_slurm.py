@@ -360,6 +360,7 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path):
         1,
     )
     token = slurm.submit_token(run, resources, "c" * 40)
+    log_path = tmp_path / "run%j" / "slurm%A-%a.log"
 
     script = slurm.render_batch_script(
         run=run,
@@ -369,7 +370,7 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path):
         result_path=tmp_path / "slurm_terminal.json",
         allocation_identity_path=tmp_path / "allocation_identity.json",
         execution_snapshot_path=tmp_path / "execution_snapshot.json",
-        log_path=tmp_path / "slurm.log",
+        log_path=log_path,
         module="sleep2vec.finetune",
     )
 
@@ -378,8 +379,11 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path):
     assert "#SBATCH --gres=gpu:1" in script
     assert "#SBATCH --no-requeue" in script
     assert f"#SBATCH --comment={token}" in script
+    assert f"#SBATCH --output={str(log_path).replace('%', '%%')}" in script
+    assert f"#SBATCH --error={str(log_path).replace('%', '%%')}" in script
     assert "agent_tools.slurm run-frozen-job" in script
     assert f"--execution-snapshot-path {tmp_path / 'execution_snapshot.json'}" in script
+    assert f"--log-path {log_path}" in script
     assert "hparam-run-queue" not in script
     assert "CUDA_VISIBLE_DEVICES" not in script
     assert "start_new_session" not in script

@@ -112,6 +112,7 @@ def render_batch_script(
 ) -> str:
     workdir = str(execution["workdir"])
     job_name = _job_name(str(run["experiment_id"]), str(run["run_id"]))
+    directive_log_path = str(log_path).replace("%", "%%")
     directives = [
         f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={resources['partition']}",
@@ -124,8 +125,8 @@ def render_batch_script(
         f"#SBATCH --gres=gpu:{resources['gpus_per_run']}",
         "#SBATCH --no-requeue",
         f"#SBATCH --comment={token}",
-        f"#SBATCH --output={log_path}",
-        f"#SBATCH --error={log_path}",
+        f"#SBATCH --output={directive_log_path}",
+        f"#SBATCH --error={directive_log_path}",
     ]
     if resources.get("nodelist"):
         directives.append(f"#SBATCH --nodelist={resources['nodelist']}")
