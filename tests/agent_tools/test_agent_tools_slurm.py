@@ -254,30 +254,99 @@ def test_accounting_job_queries_exact_allocation_on_bound_cluster(monkeypatch):
 
     def fake_run_command(execution, argv, *, timeout):
         calls.append((execution, argv, timeout))
-        output = "3880|COMPLETED|0:0|h20-bj-96\n3880.batch|COMPLETED|0:0|h20-bj-96\n"
+        output = "3880|COMPLETED|0:0|h20-bj-96|agent-tools-unit\n3880.batch|COMPLETED|0:0|h20-bj-96|\n"
         return subprocess.CompletedProcess([], 0, output, "")
 
     monkeypatch.setattr(slurm, "run_command", fake_run_command)
 
-    assert slurm.accounting_job({"target": "local"}, "3880", cluster="wuji-h20") == slurm.JobObservation(
-        "3880", "COMPLETED", node_list="h20-bj-96", exit_code="0:0"
-    )
+    assert slurm.accounting_job(
+        {"target": "local"},
+        "3880",
+        submit_token="agent-tools-unit",
+        cluster="wuji-h20",
+    ) == slurm.JobObservation("3880", "COMPLETED", node_list="h20-bj-96", comment="agent-tools-unit", exit_code="0:0")
     assert calls == [
         (
             {"target": "local"},
             [
                 "sacct",
+                "--duplicates",
                 "--noheader",
                 "--parsable2",
                 "--allocations",
                 "--clusters=wuji-h20",
                 "--jobs",
                 "3880",
-                "--format=JobIDRaw,State%64,ExitCode,NodeList",
+                "--format=JobIDRaw,State%64,ExitCode,NodeList,Comment%64",
             ],
             10,
         )
     ]
+
+
+def test_accounting_job_authenticates_space_padded_comment(monkeypatch):
+    submit_token = "agent-tools-unit"
+    padded_comment = submit_token.rjust(64)
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, f"3880|COMPLETED|0:0|h20-bj-96|{padded_comment}\n", ""
+        ),
+    )
+
+    assert slurm.accounting_job({"target": "local"}, "3880", submit_token=submit_token) == slurm.JobObservation(
+        "3880", "COMPLETED", node_list="h20-bj-96", comment=submit_token, exit_code="0:0"
+    )
+
+
+@pytest.mark.parametrize("comment", ["", "other-token"])
+def test_accounting_job_rejects_unique_unauthenticated_comment(monkeypatch, comment: str):
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, f"3880|COMPLETED|0:0|h20-bj-96|{comment}\n", ""),
+    )
+
+    with pytest.raises(ValueError, match="exactly one authenticated allocation row"):
+        slurm.accounting_job({"target": "local"}, "3880", submit_token="agent-tools-unit")
+
+
+def test_accounting_job_selects_unique_submit_token_from_duplicate_records(monkeypatch):
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [],
+            0,
+            "3880|FAILED|1:0|old-node|other-token\n"
+            "3880|COMPLETED|0:0|h20-bj-96|agent-tools-unit\n"
+            "3880|CANCELLED|0:15|older-node|\n",
+            "",
+        ),
+    )
+
+    assert slurm.accounting_job({"target": "local"}, "3880", submit_token="agent-tools-unit") == slurm.JobObservation(
+        "3880", "COMPLETED", node_list="h20-bj-96", comment="agent-tools-unit", exit_code="0:0"
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "3880|COMPLETED|0:0|node-a|agent-tools-unit\n" "3880|FAILED|1:0|node-b|agent-tools-unit\n",
+        "3880|COMPLETED|0:0|node-a|other-token\n3880|FAILED|1:0|node-b|\n",
+    ],
+)
+def test_accounting_job_rejects_duplicate_records_without_one_token_match(monkeypatch, output: str):
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, output, ""),
+    )
+
+    with pytest.raises(ValueError, match="exactly one authenticated allocation row"):
+        slurm.accounting_job({"target": "local"}, "3880", submit_token="agent-tools-unit")
 
 
 def test_follow_up_commands_route_to_bound_cluster(monkeypatch):

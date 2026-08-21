@@ -1285,7 +1285,12 @@ def observe_slurm_run(
             active = slurm.show_job(execution, job_id, cluster=cluster or None)
         from_accounting = False
         if active is None:
-            active = slurm.accounting_job(execution, job_id, cluster=cluster or None)
+            active = slurm.accounting_job(
+                execution,
+                job_id,
+                submit_token=token,
+                cluster=cluster or None,
+            )
             from_accounting = active is not None
         if active is None:
             observation.update(

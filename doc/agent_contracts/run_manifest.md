@@ -143,8 +143,13 @@ client options cannot override frozen directives; other submission environment
 remains available.
 
 Live controller state comes from `squeue` and `scontrol`. If both no longer know
-a bound job, monitoring queries its exact allocation record through `sacct` on
-the bound cluster when accounting is available. The compute wrapper verifies
+a bound job, monitoring queries duplicate allocation records through `sacct`
+on the bound cluster when accounting is available. Accounting identity requires
+exactly one JobID row whose comment matches the frozen submit token; blank,
+mismatched, absent, or ambiguous comments fail without changing canonical
+lifecycle. A cluster that does not retain job comments cannot provide terminal
+accounting identity, so monitoring remains unchanged and fails closed. The
+compute wrapper verifies
 the exact execution-snapshot bytes before parsing them, then revalidates the
 runtime commit, module origin, CLI, and frozen launch/config hashes. It requires
 the allocation task count to match the frozen GPU count and starts one foreground

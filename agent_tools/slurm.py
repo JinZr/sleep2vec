@@ -475,23 +475,27 @@ def accounting_job(
     execution: dict[str, Any],
     job_id: str,
     *,
+    submit_token: str,
     cluster: str | None = None,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> JobObservation | None:
     job_id = _job_id(job_id)
-    argv = ["sacct", "--noheader", "--parsable2", "--allocations"]
+    argv = ["sacct", "--duplicates", "--noheader", "--parsable2", "--allocations"]
     cluster_name = _cluster_name(cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
-    argv.extend(["--jobs", job_id, "--format=JobIDRaw,State%64,ExitCode,NodeList"])
+    argv.extend(["--jobs", job_id, "--format=JobIDRaw,State%64,ExitCode,NodeList,Comment%64"])
     result = run_command(execution, argv, timeout=timeout)
     if result.returncode != 0:
         raise SlurmCommandError("accounting query", result)
     lines = [line for line in str(result.stdout or "").splitlines() if line.strip()]
     observations = [_parse_sacct_line(line) for line in lines if line.split("|", 1)[0].strip() == job_id]
-    if len(observations) > 1:
-        raise ValueError(f"sacct returned multiple allocation rows for job {job_id}.")
-    return observations[0] if observations else None
+    if not observations:
+        return None
+    matches = [item for item in observations if item.comment == submit_token]
+    if len(matches) != 1:
+        raise ValueError(f"sacct did not return exactly one authenticated allocation row for job {job_id}.")
+    return matches[0]
 
 
 def cluster_scheduling_capabilities(
@@ -683,18 +687,19 @@ def _parse_squeue_line(line: str) -> JobObservation:
         state=normalize_state(parts[1]),
         reason=_null_to_empty(parts[2]),
         node_list=_null_to_empty(parts[3]),
-        comment=_null_to_empty(parts[4]),
+        comment=_null_to_empty(parts[4].strip()),
     )
 
 
 def _parse_sacct_line(line: str) -> JobObservation:
-    parts = line.strip().split("|", 3)
-    if len(parts) != 4:
+    parts = line.strip().split("|", 4)
+    if len(parts) != 5:
         raise ValueError(f"Invalid sacct output row: {line!r}")
     return JobObservation(
         job_id=_job_id(parts[0]),
         state=normalize_state(parts[1].split(maxsplit=1)[0]),
         node_list=_null_to_empty(parts[3]),
+        comment=_null_to_empty(parts[4].strip()),
         exit_code=_null_to_empty(parts[2]),
     )
 
